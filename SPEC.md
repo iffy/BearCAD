@@ -326,8 +326,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   active, outside body edges/faces hover-glow and a click projects the edge (a face or
   vertex projects the whole body) through `Action::ProjectElement`; both entry points
   share `Action::ProjectSources`. Lua tool name `"project"`. Each projected edge becomes a
-  construction-style line drawn dashed in its own **projection color** (teal, distinct from
-  construction's color) and usable like construction geometry (snapping, constraints).
+  construction-style line drawn **solid cyan** (#1186; distinct from dashed construction)
+  and usable like construction geometry (snapping, constraints).
   Projections are **associative**: each geometry recompute re-resolves the source edge and
   rewrites the projected line, so it follows its source body. Sources are geometry-keyed
   (mesh edges have no stable topological name), so if a rebuild moves/removes the source
@@ -372,7 +372,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   delivered through eframe's `raw_input_hook`, so they build genuine egui pointer state —
   driving click-select and drags end to end, asserting on geometry via
   `bearcad.line_endpoints`.
-  Construction (dashed grey) and projected (dashed teal, #140) styling take precedence.
+  Construction (dashed grey) and projected (solid cyan, #140/#1186) styling take precedence.
   **Construction geometry draws only inside its own sketch (#994):** it is scaffolding — a guide
   to dimension and constrain against, never model geometry — so a construction line or circle is
   hidden whenever its sketch isn't the open one (`construction_geometry_visible`). Left visible

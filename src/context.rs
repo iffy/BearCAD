@@ -3474,8 +3474,16 @@ pub fn edge_construction_for_element(doc: &Document, element: SceneElement) -> O
 }
 
 /// Whether a selected line, edge, or curve uses dashed (construction) highlighting.
+/// Projected lines are construction-like but draw solid (#1186).
 pub fn selection_highlight_dashed(doc: &Document, element: SceneElement) -> Option<bool> {
-    edge_construction_for_element(doc, element)
+    match element {
+        SceneElement::Line(index) => {
+            let line = doc.lines.get(index)?;
+            Some(line.construction && line.projection.is_none())
+        }
+        SceneElement::Circle(index) => doc.circles.get(index).map(|circle| circle.construction),
+        _ => None,
+    }
 }
 
 /// Tri-state visibility for the selected hideable targets (#1152).

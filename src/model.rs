@@ -294,9 +294,9 @@ pub struct Line {
     pub chamfer_fillet_parent: Option<LineKey>,
     /// Set when this line is an **associative projection** of external 3D geometry into its
     /// sketch (#140): each geometry recompute re-resolves the source and rewrites the
-    /// endpoints (see `crate::projection`). Projected lines render dashed in their own color
-    /// (distinct from construction), are fixed (not draggable), and otherwise behave like
-    /// construction geometry.
+    /// endpoints (see `crate::projection`). Projected lines render solid cyan (#1186;
+    /// distinct from dashed construction), are fixed (not draggable), and otherwise behave
+    /// like construction geometry.
     #[serde(default)]
     pub projection: Option<ProjectionSource>,
 }

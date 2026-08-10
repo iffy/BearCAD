@@ -11,9 +11,9 @@ What the colors in the 3D viewport mean, for every kind of geometry and state.
 
 ## Lines
 
-Solid sketch lines change color with their constraint state; construction and projected
-geometry draw dashed in their own colors. On a body face, unconstrained strokes pick a
-dark or light blue-grey so they contrast the face (and brighten while that sketch is open).
+Solid sketch lines change color with their constraint state; construction draws dashed
+grey, projected draws solid cyan. On a body face, unconstrained strokes pick a dark or
+light blue-grey so they contrast the face (and brighten while that sketch is open).
 
 | Kind | Normal | Hovered | Selected |
 |---|---|---|---|

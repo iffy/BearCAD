@@ -26,7 +26,7 @@ you're in sketch mode. Press **Esc** (with nothing in progress) to leave the ske
   shapes, its origin and axes, and the sketched-on face's own edges and corners.
 - **Project outside geometry in:** in sketch mode a **Projection** tool appears in the
   toolbar — click an outside body edge (or a face/vertex to take the whole body) and it
-  lands on the sketch plane as a dashed [projected line](/docs/styles#lines) that follows
+  lands on the sketch plane as a solid cyan [projected line](/docs/styles#lines) that follows
   its source, ready to snap and constrain against. Or select edges before opening the
   sketch and press **Y** inside it.
 - When faces overlap under the cursor, the one nearest the camera wins — you never pick a

@@ -93,7 +93,7 @@ pub enum Tool {
     /// `SketchOffsetOperation`. Outside a sketch: click a face to sketch on it first.
     Offset,
     /// Sketch mode only: click an outside body edge (or a body) to project it into the
-    /// open sketch as an associative dashed reference line (#140's Y shortcut, as a
+    /// open sketch as an associative solid cyan reference line (#140/#1186; Y shortcut as a
     /// discoverable toolbar tool).
     Project,
     /// Pick two or more closed sketch profiles (circles or line loops) as cross sections,
@@ -25692,9 +25692,9 @@ mod tests {
         assert_eq!(Tool::from_name("project"), Some(Tool::Project));
     }
 
-    /// #983: projecting a construction plane creates a dashed reference line along the two
-    /// planes' intersection; the sketch's own (parallel) plane is refused; deleting the line
-    /// (the Project tool's un-project click) removes the reference.
+    /// #983/#1186: projecting a construction plane creates a solid cyan reference line along
+    /// the two planes' intersection; the sketch's own (parallel) plane is refused; deleting
+    /// the line (the Project tool's un-project click) removes the reference.
     #[test]
     fn project_element_projects_a_plane_and_unprojects_on_delete() {
         use crate::hierarchy::SceneElement;

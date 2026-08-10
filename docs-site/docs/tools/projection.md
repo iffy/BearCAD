@@ -14,7 +14,7 @@ as reference lines you can snap, dimension, and constrain against.
 - Click a **projected line** to remove it from the sketch.
 - Or select edges, a body, or a plane with the Select tool before opening the sketch, then
   press **Y** inside it.
-- Projected lines draw dashed in their own teal, and behave like construction geometry.
+- Projected lines draw solid cyan, and behave like construction geometry.
 
 The tool picks outside geometry only; the sketch's own drawn geometry belongs to the other
 sketch tools.

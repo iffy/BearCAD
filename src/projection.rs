@@ -2,12 +2,12 @@
 //!
 //! Pressing **Y** with body edges selected (or a whole body/extrusion) while a sketch is
 //! open creates one construction-style [`Line`](crate::model::Line) per source edge, carrying
-//! a [`ProjectionSource`](crate::model::ProjectionSource). Every geometry recompute calls
-//! [`refresh_projections`], which re-resolves each source edge and rewrites the projected
-//! line's endpoints — so projections follow their source **associatively**. Sources are
-//! geometry-keyed (mesh edges have no stable topological name): when a rebuild moves or
-//! removes the source edge, the projection keeps its last resolved shape as a static
-//! fallback instead of dangling.
+//! a [`ProjectionSource`](crate::model::ProjectionSource) and drawn solid cyan (#1186).
+//! Every geometry recompute calls [`refresh_projections`], which re-resolves each source
+//! edge and rewrites the projected line's endpoints — so projections follow their source
+//! **associatively**. Sources are geometry-keyed (mesh edges have no stable topological
+//! name): when a rebuild moves or removes the source edge, the projection keeps its last
+//! resolved shape as a static fallback instead of dangling.
 
 use crate::model::{Document, ProjectionSource, SketchId};
 use glam::Vec3;

@@ -449,7 +449,7 @@ pub struct ViewportPalette {
     pub rect_line_constrained: Color32,
     pub preview: Color32,
     pub construction: Color32,
-    /// Associative projections (#140): dashed like construction, but their own color.
+    /// Associative projections (#140/#1186): solid cyan (construction-like, but not dashed).
     pub projection: Color32,
     pub dim_edge_highlight: Color32,
     pub construction_plane_fill: Color32,
@@ -1324,7 +1324,8 @@ impl ViewportScene {
                 // Same solid 2px width on body faces and planes (#1153): the thinner dark stroke
                 // from #1149 read as wispy/non-solid under AA.
                 const STROKE_WIDTH: f32 = 2.0;
-                if line.construction {
+                // Projected lines are construction-like but draw solid cyan (#1186).
+                if line.construction && line.projection.is_none() {
                     mesh.push_dashed_polyline_segment(
                         &points,
                         color,
@@ -10056,6 +10057,103 @@ mod tests {
         assert!(
             dashed_line_indices > solid_line_indices,
             "dashed construction line should emit more stroke segments than a solid line (dashed={dashed_line_indices} solid={solid_line_indices})"
+        );
+    }
+
+    /// #1186: projected lines keep construction semantics but draw **solid** cyan, not dashed.
+    #[test]
+    fn projected_line_produces_solid_stroke_segments_not_dashes() {
+        let mut state = AppState::default();
+        state.apply(crate::actions::Action::BeginSketch {
+            face: FaceId::ConstructionPlane(pkey(0)),
+            viewport: None,
+        });
+        let session = state.sketch_session.unwrap();
+        let mut projected = crate::model::Line::from_local_endpoints(
+            session.sketch,
+            0.0,
+            0.0,
+            80.0,
+            0.0,
+        );
+        projected.construction = true;
+        projected.projection = Some(crate::model::ProjectionSource::Plane {
+            plane: pkey(2),
+        });
+        let mut construction = projected.clone();
+        construction.projection = None;
+        let mut solid = projected.clone();
+        solid.construction = false;
+        solid.projection = None;
+        let cam = state.cam.clone();
+        let viewport = test_viewport();
+        let mut projected_doc = state.doc.clone();
+        projected_doc.lines.insert(projected);
+        let mut construction_doc = state.doc.clone();
+        construction_doc.lines.insert(construction);
+        let mut solid_doc = state.doc.clone();
+        solid_doc.lines.insert(solid);
+        let empty_sel = crate::selection::SceneSelection::default();
+        let empty_vis = crate::hierarchy::ElementVisibility::default();
+        let build = |doc: &crate::model::Document| {
+            ViewportScene::build(&ViewportSceneInput {
+                doc,
+                cam: &cam,
+                viewport,
+                palette: ViewportPalette::default(),
+                sketch_session: Some(session),
+                selection: &empty_sel,
+                cut_highlight_bodies: Vec::new(),
+                faded_bodies: Vec::new(),
+                sketch_repeat_ghost: Vec::new(),
+                sketch_ghost_lines: Vec::new(),
+                edit_preview_meshes: std::collections::HashMap::new(),
+                element_visibility: &empty_vis,
+                preview_rect: None,
+                preview_line: None,
+                preview_circle: None,
+                preview_extrusion: None,
+                preview_solid: None,
+                repeat_ghosts: Vec::new(),
+                cut_surface_ghosts: Vec::new(),
+                preview_cut_body: None,
+                preview_replacement: PreviewReplacement::default(),
+                highlighted_bezier_handles: Vec::new(),
+                editing_extrusion: None,
+                plane_preview: None,
+                active_sketch_face: None,
+                dimension_labels: &[],
+                dim_label_view: None,
+                plane_gizmo: None,
+                extrude_gizmo: None,
+                vertex_treatment_gizmo: None,
+                arrow_gizmos: Vec::new(),
+                move_rotation_gizmo: None,
+                revolve_arc_gizmo: None,
+                vertex_treatment_preview: None,
+                hover_highlight: None,
+                extra_pick_highlights: Vec::new(),
+                colored_pick_highlights: Vec::new(),
+                colored_element_highlights: Vec::new(),
+                tinted_bodies: Vec::new(),
+                colored_segments: Vec::new(),
+                parameter_highlight_elements: Vec::new(),
+                hover_color: Color32::WHITE,
+                document_health: &DocumentHealth::default(),
+                constraint_graphics: None,
+                constraint_connector_color: None,
+            })
+        };
+        let projected_n = build(&projected_doc).stroke_indices.len();
+        let construction_n = build(&construction_doc).stroke_indices.len();
+        let solid_n = build(&solid_doc).stroke_indices.len();
+        assert_eq!(
+            projected_n, solid_n,
+            "projected line should be solid (stroke={projected_n}), not dashed like construction (stroke={construction_n})"
+        );
+        assert!(
+            construction_n > solid_n,
+            "sanity: construction still dashes (construction={construction_n} solid={solid_n})"
         );
     }
 

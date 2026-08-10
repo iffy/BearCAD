@@ -234,7 +234,7 @@ pub fn generate(dir: &std::path::Path) {
         ("line-on-body", palette.rect_line_on_body, false),
         ("line-constrained", palette.rect_line_constrained, false),
         ("line-construction", palette.construction, true),
-        ("line-projected", palette.projection, true),
+        ("line-projected", palette.projection, false), // solid cyan (#1186)
     ];
     for (name, color, dashed) in kinds {
         line_swatch(dir, name, color, dashed, LineState::Normal);

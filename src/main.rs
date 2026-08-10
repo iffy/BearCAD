@@ -17029,7 +17029,7 @@ pub(crate) mod col {
     pub const CONSTRUCTION: Color32 = crate::construction::CONSTRUCTION_RGBA;
     /// Fully-constrained solid lines (#172): no remaining degrees of freedom.
     pub const RECT_LINE_CONSTRAINED: Color32 = Color32::from_rgb(225, 228, 235);
-    /// Associative projections (#140): dashed like construction, in their own teal.
+    /// Associative projections (#140/#1186): solid cyan (construction-like, not dashed).
     pub const PROJECTION: Color32 = Color32::from_rgb(70, 200, 190);
     /// Faded appearance for geometry outside the active sketch face.
     pub const SKETCH_DIMMED: f32 = crate::gpu_viewport::SKETCH_DIMMED;
@@ -28118,7 +28118,8 @@ impl App {
                     sketch_color(col::RECT_LINE, dim)
                 };
                 let color = health_tint_color(base, health.element_status(SceneElement::Line(li)));
-                if line.construction {
+                // Projected lines are construction-like but draw solid cyan (#1186).
+                if line.construction && line.projection.is_none() {
                     draw_construction_line_segment(&painter, &project, doc, line, color, 2.0);
                 } else {
                     draw_line_segment(&painter, &project, doc, line, color, 2.0);
@@ -29293,7 +29294,7 @@ impl App {
                 "Shape — b cycles cuboid/cylinder/sphere • type the sizes • Enter: create • Esc: cancel"
             }
             Tool::Project => {
-                "Projection — click an outside edge, body, or plane to bring it in as a dashed reference; click a projected line to remove it • Esc: done"
+                "Projection — click an outside edge, body, or plane to bring it in as a solid cyan reference; click a projected line to remove it • Esc: done"
             }
             Tool::Loft => {
                 if self
