@@ -23,6 +23,12 @@ toolbar holds the [drawing tools](/docs/drawing-tools); **Back** returns to the 
 Remove a view with the **×** on its card, or select any element and press **Delete**.
 Reopen a drawing from its Elements pane row.
 
+## Resizing cards
+
+With **Select**, a selected projection shows corner grips. Drag a corner to resize the
+card (centre stays put). Aligned partners share the matching axis — Above/Below share
+width, Left/Right share height — so a resize on any of them updates the linked dimension.
+
 ## Exporting
 
 **Export** saves a vector **PDF** or **SVG**. Both are WYSIWYG at the page's configured
@@ -62,6 +68,10 @@ bearcad.drawing_angle{ drawing = d, view = 0,
 
 -- Page size and margin, in millimetres; omitted keys keep their current value.
 bearcad.drawing_page{ drawing = d, width = 297, height = 210, margin = 12 }
+
+-- Resize a projection card (page fractions 0..1). Aligned views share the matching
+-- axis: Above/Below share width, Left/Right share height. Omitted keys keep the value.
+bearcad.drawing_view_size{ drawing = d, view = 0, width = 0.3, height = 0.4 }
 
 -- Export the drawing as a vector PDF, or as an SVG.
 bearcad.export_drawing_pdf{ drawing = d, path = "plate.pdf" }

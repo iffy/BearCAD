@@ -2385,6 +2385,13 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   wireframe. The projection logic is `drawing::styled_view_geometry`, shared by the editor
   pane (greys darkened for the dark sheet) and both exports (the `Canvas` trait gained a
   filled-polygon primitive). `Action::SetDrawingViewStyle`.
+- **View card size (#1207):** each projection stores `size_x`/`size_y` as page fractions
+  (default 0.42). Under **Select**, a selected card shows corner grips; dragging a corner
+  resizes about the card centre (`Action::SetDrawingViewSize`, one undo step for the
+  whole drag). Above/Below aligned partners share width, Left/Right share height —
+  resizing any of them propagates the linked axis through the alignment graph
+  (`drawing::apply_view_size`). Aligned children inherit the parent's size on creation.
+  Scriptable: `bearcad.drawing_view_size{ drawing, view, width?, height? }`.
 - **View scale (#300):** each view has a print **Scale** as `page:model` text, e.g. `1:20`
   (1 page mm represents 20 model mm) — any positive numbers work (`2:3`, `10:1`). The field
   only commits text that parses, so an erroneous entry leaves the last valid scale in

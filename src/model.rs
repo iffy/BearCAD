@@ -4181,6 +4181,13 @@ pub struct DrawingView {
     pub pos_x: f32,
     #[serde(default = "default_view_pos")]
     pub pos_y: f32,
+    /// Card size as a fraction of the page (#1207). Width and height are independent; aligned
+    /// views share the matching axis (Above/Below share `size_x`, Left/Right share `size_y`).
+    /// Defaults to 0.42 — the historical fixed card size.
+    #[serde(default = "default_view_size")]
+    pub size_x: f32,
+    #[serde(default = "default_view_size")]
+    pub size_y: f32,
     /// Body edges whose length dimension is shown, keyed by their quantized world endpoints
     /// (order-normalized, smaller endpoint first) — a geometry identity that survives
     /// rebuilds, like [`crate::hierarchy::SceneElement::BodyEdge`]. A new view starts with
@@ -4263,6 +4270,8 @@ impl DrawingView {
             label_text: None,
             pos_x: default_view_pos(),
             pos_y: default_view_pos(),
+            size_x: default_view_size(),
+            size_y: default_view_size(),
             scale: None,
             style: DrawingViewStyle::default(),
         }
@@ -4287,6 +4296,8 @@ impl DrawingView {
             label_text: None,
             pos_x: default_view_pos(),
             pos_y: default_view_pos(),
+            size_x: default_view_size(),
+            size_y: default_view_size(),
             scale: None,
             style: DrawingViewStyle::default(),
         }
@@ -4474,6 +4485,12 @@ fn default_page_margin_mm() -> f32 {
 fn default_view_pos() -> f32 {
     0.5
 }
+/// Default card size fraction — historically the fixed 0.42 of the page (#1207).
+pub fn default_view_size() -> f32 {
+    0.42
+}
+/// Smallest allowed card size fraction (keeps a corner grip grabbable).
+pub const MIN_VIEW_SIZE_FRAC: f32 = 0.05;
 
 impl Default for Drawing {
     fn default() -> Self {

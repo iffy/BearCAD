@@ -213,6 +213,140 @@ pub fn resolved_view_scale(doc: &Document, drawing: crate::model::DrawingKey, vi
     }
 }
 
+/// A view's stored card size as page fractions, floored to the minimum (#1207).
+pub fn view_size_frac(view: &DrawingView) -> (f32, f32) {
+    (
+        view.size_x.max(crate::model::MIN_VIEW_SIZE_FRAC),
+        view.size_y.max(crate::model::MIN_VIEW_SIZE_FRAC),
+    )
+}
+
+/// Clamp a page-fraction card size into the allowed range (#1207).
+pub fn clamp_view_size_frac(size: f32) -> f32 {
+    size.clamp(crate::model::MIN_VIEW_SIZE_FRAC, 1.0)
+}
+
+/// Views that share **width** (`size_x`) with `view` via Above/Below alignment links (#1207).
+/// The graph is undirected so resizing a child updates its parent and siblings.
+pub fn views_sharing_size_x(views: &[DrawingView], view: usize) -> Vec<usize> {
+    views_sharing_size_axis(views, view, /* share_x */ true)
+}
+
+/// Views that share **height** (`size_y`) with `view` via Left/Right alignment links (#1207).
+pub fn views_sharing_size_y(views: &[DrawingView], view: usize) -> Vec<usize> {
+    views_sharing_size_axis(views, view, /* share_x */ false)
+}
+
+fn views_sharing_size_axis(views: &[DrawingView], view: usize, share_x: bool) -> Vec<usize> {
+    if view >= views.len() {
+        return Vec::new();
+    }
+    let n = views.len();
+    let mut adj = vec![Vec::new(); n];
+    for (i, v) in views.iter().enumerate() {
+        if let (Some(p), Some(dir)) = (v.aligned_parent, v.aligned_dir) {
+            if p < n && p != i && dir.shares_pos_x() == share_x {
+                adj[i].push(p);
+                adj[p].push(i);
+            }
+        }
+    }
+    let mut seen = vec![false; n];
+    let mut stack = vec![view];
+    let mut out = Vec::new();
+    seen[view] = true;
+    while let Some(i) = stack.pop() {
+        out.push(i);
+        for &j in &adj[i] {
+            if !seen[j] {
+                seen[j] = true;
+                stack.push(j);
+            }
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+/// Write `size_x`/`size_y` onto `view` and every linked view on each axis (#1207).
+/// Width propagates across Above/Below links; height across Left/Right.
+pub fn apply_view_size(views: &mut [DrawingView], view: usize, size_x: f32, size_y: f32) {
+    if view >= views.len() {
+        return;
+    }
+    let sx = clamp_view_size_frac(size_x);
+    let sy = clamp_view_size_frac(size_y);
+    let share_x = views_sharing_size_x(views, view);
+    let share_y = views_sharing_size_y(views, view);
+    for i in share_x {
+        views[i].size_x = sx;
+    }
+    for i in share_y {
+        views[i].size_y = sy;
+    }
+}
+
+/// The root of an aligned scale chain (#364/#1207): walk `aligned_parent` until free.
+pub fn aligned_scale_root(views: &[DrawingView], view: usize) -> usize {
+    let mut root = view;
+    let mut guard = 0;
+    while guard < views.len() {
+        guard += 1;
+        let Some(v) = views.get(root) else {
+            break;
+        };
+        match v.aligned_parent {
+            Some(p) if p != root && views.get(p).is_some() => root = p,
+            _ => break,
+        }
+    }
+    root
+}
+
+/// Card corner positions in page-local coordinates for a view centred at `center` with
+/// size `(cell_w, cell_h)` — TL, TR, BR, BL (#1207).
+pub fn view_card_corners(center: glam::Vec2, cell_w: f32, cell_h: f32) -> [glam::Vec2; 4] {
+    let hx = cell_w * 0.5;
+    let hy = cell_h * 0.5;
+    [
+        glam::Vec2::new(center.x - hx, center.y - hy), // TL
+        glam::Vec2::new(center.x + hx, center.y - hy), // TR
+        glam::Vec2::new(center.x + hx, center.y + hy), // BR
+        glam::Vec2::new(center.x - hx, center.y + hy), // BL
+    ]
+}
+
+/// Which corner grip (0=TL…3=BL) of a card is under `pointer`, if any (#1207).
+pub fn view_resize_handle_hit(
+    pointer: glam::Vec2,
+    corners: &[glam::Vec2; 4],
+    radius: f32,
+) -> Option<usize> {
+    let r2 = radius * radius;
+    corners
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| {
+            let d2 = (*c - pointer).length_squared();
+            (d2 <= r2).then_some((d2, i))
+        })
+        .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(_, i)| i)
+}
+
+/// New card size (page fractions) when a corner grip is dragged, keeping the card centre
+/// fixed (#1207). `page` is the page size in the same units as `pointer`/`center`.
+pub fn view_size_from_corner_drag(
+    center: glam::Vec2,
+    pointer: glam::Vec2,
+    page: glam::Vec2,
+) -> (f32, f32) {
+    let half = (pointer - center).abs();
+    let sx = clamp_view_size_frac(2.0 * half.x / page.x.max(1e-3));
+    let sy = clamp_view_size_frac(2.0 * half.y / page.y.max(1e-3));
+    (sx, sy)
+}
+
 /// The projected `(right, up)` bounding box of a view's geometry, or `None` if it has none.
 fn view_projected_bbox(
     doc: &Document,
@@ -647,11 +781,14 @@ pub fn projected_segment_on_circle(a: glam::Vec2, b: glam::Vec2, pcs: &[Projecte
 /// PDF points per millimetre (1 pt = 1/72 in): exports are sized in points so the PDF page
 /// physically matches the drawing's configured mm page (#298).
 pub const PT_PER_MM: f32 = 72.0 / 25.4;
-/// A placed view card's size as a fraction of the page — the same 0.42 the editor uses, so the
-/// export lays out where the editor showed it (#297).
-const CELL_FRAC: f32 = 0.42;
+/// Default placed view card size as a fraction of the page (#297/#1207) — kept public so the
+/// editor, export, and scripting agree. Per-view sizes live on each view's `size_x`/`size_y`;
+/// this is only the historical default.
+pub const CELL_FRAC: f32 = 0.42;
 /// Padding inside a view card between its border and the projected geometry.
 pub const CELL_PAD: f32 = 12.0;
+/// Screen-pixel half-size of a selected view's corner resize grip (#1207).
+pub const VIEW_RESIZE_HANDLE_RADIUS_PX: f32 = 6.0;
 
 /// Stroke width for the model's projected edges and detected circles (#327). Kept clearly
 /// heavier than the dimension/extension lines so the part outline reads as the primary geometry.
@@ -1168,11 +1305,12 @@ fn render_drawing<C: Canvas>(
     // in the annotation loop below just like any other note — the export no longer stamps its own
     // title into the top margin (that never appeared in the WYSIWYG editor).
 
-    let cell_w = width * CELL_FRAC;
-    let cell_h = height * CELL_FRAC;
     for (vi, view) in drawing.views.iter().enumerate() {
         // Aligned children (#296) resolve their shared axis to the parent's.
         let (px, py) = resolved_view_pos(doc, index, vi);
+        let (sx, sy) = view_size_frac(view);
+        let cell_w = width * sx;
+        let cell_h = height * sy;
         let cell_x = px * width - cell_w * 0.5;
         let cell_y = py * height - cell_h * 0.5;
         // No card border in exports (#337): the grey rectangle is an editor-only affordance for
@@ -1233,6 +1371,13 @@ fn render_drawing<C: Canvas>(
         };
         let to_screen_for = |v: usize| {
             let (px, py) = resolved_view_pos(doc, index, v);
+            let (sx, sy) = drawing
+                .views
+                .get(v)
+                .map(view_size_frac)
+                .unwrap_or((CELL_FRAC, CELL_FRAC));
+            let cell_w = width * sx;
+            let cell_h = height * sy;
             let cell_x = px * width - cell_w * 0.5;
             let cell_y = py * height - cell_h * 0.5;
             let scale_text = resolved_view_scale(doc, index, v);
@@ -1329,8 +1474,25 @@ fn export_view_transform(
     // export canvas); otherwise auto-fit to the card.
     let scale = match scale_text.and_then(crate::model::parse_drawing_scale) {
         Some(factor) => factor * PT_PER_MM,
-        // Aligned children share their parent's auto-fit scale so edges line up (#364).
-        None => view_autofit_scale(doc, views, view_index, area_w, area_h, 0.9),
+        // Aligned children share their parent's auto-fit scale so edges line up (#364). Use
+        // the scale-root's card area when sizes differ (#1207).
+        None => {
+            let root = aligned_scale_root(views, view_index);
+            let (aw, ah) = if root == view_index {
+                (area_w, area_h)
+            } else if let Some(rv) = views.get(root) {
+                let (sx, sy) = view_size_frac(rv);
+                // Approximate page size from this view's cell + its own size fraction.
+                let page_w = cell_w / view_size_frac(&views[view_index]).0.max(1e-6);
+                let page_h = cell_h / view_size_frac(&views[view_index]).1.max(1e-6);
+                let rw = page_w * sx - 2.0 * CELL_PAD;
+                let rh = page_h * sy - caption_h - 2.0 * CELL_PAD;
+                (rw.max(1e-3), rh.max(1e-3))
+            } else {
+                (area_w, area_h)
+            };
+            view_autofit_scale(doc, views, root, aw, ah, 0.9)
+        }
     };
     // Aligned children align to their parent along the shared edge (#364), not just their card.
     let bbox_center = view_render_center(doc, views, view_index);
@@ -1913,6 +2075,54 @@ mod tests {
         assert!((bot_right.y - 0.0).abs() < 1e-5 && (bot_right.x - 10.0).abs() < 1e-5, "{bot_right:?}");
     }
 
+    /// #1207: corner-grip hit testing and centre-fixed size math for view card resize.
+    #[test]
+    fn view_resize_handles_hit_and_size_from_drag() {
+        let center = glam::Vec2::new(100.0, 80.0);
+        let corners = view_card_corners(center, 40.0, 30.0);
+        assert_eq!(corners[0], glam::Vec2::new(80.0, 65.0)); // TL
+        assert_eq!(corners[2], glam::Vec2::new(120.0, 95.0)); // BR
+        assert_eq!(
+            view_resize_handle_hit(glam::Vec2::new(120.0, 95.0), &corners, 6.0),
+            Some(2)
+        );
+        assert_eq!(
+            view_resize_handle_hit(glam::Vec2::new(100.0, 80.0), &corners, 6.0),
+            None
+        );
+        // Drag BR further out on a 200×100 page → size 0.4 × 0.6 (2*half/page).
+        let (sx, sy) = view_size_from_corner_drag(
+            center,
+            glam::Vec2::new(140.0, 110.0),
+            glam::Vec2::new(200.0, 100.0),
+        );
+        assert!((sx - 0.4).abs() < 1e-4 && (sy - 0.6).abs() < 1e-4, "got {sx}×{sy}");
+    }
+
+    /// #1207: size_x propagates across Above/Below, size_y across Left/Right.
+    #[test]
+    fn apply_view_size_propagates_linked_axes() {
+        use crate::model::AlignDir;
+        let base = DrawingView::from_bodies(vec![bkey(0)], DrawingOrientation::Top);
+        let mut views = vec![
+            base.clone(),
+            DrawingView {
+                aligned_parent: Some(0),
+                aligned_dir: Some(AlignDir::Right),
+                ..base.clone()
+            },
+            DrawingView {
+                aligned_parent: Some(0),
+                aligned_dir: Some(AlignDir::Below),
+                ..base
+            },
+        ];
+        apply_view_size(&mut views, 0, 0.2, 0.3);
+        assert!((views[0].size_x - 0.2).abs() < 1e-4 && (views[0].size_y - 0.3).abs() < 1e-4);
+        assert!((views[1].size_x - CELL_FRAC).abs() < 1e-4 && (views[1].size_y - 0.3).abs() < 1e-4);
+        assert!((views[2].size_x - 0.2).abs() < 1e-4 && (views[2].size_y - CELL_FRAC).abs() < 1e-4);
+    }
+
     /// #345: a free-angle orientation projects with its stored basis, so a free basis equal to a
     /// preset's reproduces that preset exactly (the convention `view_cube::free_basis` is chosen so
     /// a spun Front pose == the Front projection).
@@ -1949,6 +2159,7 @@ mod tests {
             dimensioned_circles: Vec::new(),
 circle_dim_offsets: Vec::new(), aligned_parent: None, aligned_dir: None,
             scale: None, style: Default::default(), pos_x: 0.5, pos_y: 0.5,
+            size_x: CELL_FRAC, size_y: CELL_FRAC,
             align_lines: false,
 label_hidden: false, label_pos: Default::default(), label_text: None,
         };
@@ -2012,6 +2223,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
             dimensioned_circles: Vec::new(),
 circle_dim_offsets: Vec::new(), aligned_parent: None, aligned_dir: None,
             scale: None, style: Default::default(), pos_x: 0.5, pos_y: 0.5,
+            size_x: CELL_FRAC, size_y: CELL_FRAC,
             align_lines: false,
 label_hidden: false, label_pos: Default::default(), label_text: None,
         };
@@ -2236,6 +2448,8 @@ circle_dim_offsets: Vec::new(),
                 style: Default::default(),
                 pos_x: 0.5,
                 pos_y: 0.5,
+                size_x: CELL_FRAC,
+                size_y: CELL_FRAC,
                 align_lines: false,
 label_hidden: false,
                 label_pos: Default::default(),

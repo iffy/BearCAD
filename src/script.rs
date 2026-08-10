@@ -298,6 +298,13 @@ pub enum Instruction {
         x: f32,
         y: f32,
     },
+    /// Resize a placed view's card (page fractions) (#1207).
+    SetDrawingViewSize {
+        drawing: usize,
+        view: usize,
+        size_x: f32,
+        size_y: f32,
+    },
     /// Toggle the length dimension of a view's edge, named by its two world endpoints.
     ToggleDrawingDimension {
         drawing: usize,
@@ -1196,6 +1203,15 @@ impl Instruction {
             ),
             Instruction::MoveDrawingView { drawing, view, x, y } => format!(
                 "bearcad.drawing_move_view{{ drawing = {drawing}, view = {view}, x = {x}, y = {y} }}"
+            ),
+            Instruction::SetDrawingViewSize {
+                drawing,
+                view,
+                size_x,
+                size_y,
+            } => format!(
+                "bearcad.drawing_view_size{{ drawing = {drawing}, view = {view}, \
+                 width = {size_x}, height = {size_y} }}"
             ),
             Instruction::ToggleDrawingDimension {
                 drawing,
@@ -5896,6 +5912,25 @@ impl ScriptRunner {
                     view,
                     pos_x: x,
                     pos_y: y,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::SetDrawingViewSize {
+                drawing,
+                view,
+                size_x,
+                size_y,
+            } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
+                let result = state.apply(Action::SetDrawingViewSize {
+                    drawing,
+                    view,
+                    size_x,
+                    size_y,
                 });
                 self.record_action_error(result);
                 StepResult::Continue

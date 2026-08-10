@@ -6021,6 +6021,50 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Resize a projection card (page fractions) (#1207). Omitted width/height keep the
+    // current value; linked aligned views share the matching axis.
+    api.set(
+        "drawing_view_size",
+        lua.create_function(|lua, opts: Table| {
+            check_keys(
+                &opts,
+                "drawing_view_size",
+                &["drawing", "view", "width", "height", "size_x", "size_y"],
+            )?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let drawing: usize = opts.get("drawing")?;
+            let view: usize = opts.get("view")?;
+            let (cur_x, cur_y) = {
+                let state = unsafe { tick.state() };
+                state
+                    .doc
+                    .drawings
+                    .keys()
+                    .nth(drawing)
+                    .and_then(|dkey| state.doc.drawings.get(dkey))
+                    .and_then(|d| d.views.get(view))
+                    .map(|v| (v.size_x, v.size_y))
+                    .unwrap_or((crate::drawing::CELL_FRAC, crate::drawing::CELL_FRAC))
+            };
+            let size_x: f32 = opts
+                .get::<Option<f32>>("width")?
+                .or(opts.get::<Option<f32>>("size_x")?)
+                .unwrap_or(cur_x);
+            let size_y: f32 = opts
+                .get::<Option<f32>>("height")?
+                .or(opts.get::<Option<f32>>("size_y")?)
+                .unwrap_or(cur_y);
+            unsafe {
+                tick.exec(Instruction::SetDrawingViewSize {
+                    drawing,
+                    view,
+                    size_x,
+                    size_y,
+                })
+            }
+        })?,
+    )?;
+
     // Add a free text annotation to a drawing page (#312), positioned by page fraction.
     api.set(
         "drawing_text",
@@ -11026,6 +11070,36 @@ mod tests {
         assert!(
             hidden.doc.drawings[dkey(0)].views[0].dimensioned_circles.is_empty(),
             "toggling the same circle twice hides it again"
+        );
+    }
+
+    /// #1207: `bearcad.drawing_view_size{}` resizes a projection card; aligned partners
+    /// pick up the shared axis.
+    #[test]
+    fn lua_drawing_view_size_resizes_and_propagates() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 40, height = 20 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "top" }
+            bearcad.drawing_align_view{ drawing = d, parent = 0, dir = "right", pos = 0.75 }
+            bearcad.drawing_align_view{ drawing = d, parent = 0, dir = "below", pos = 0.75 }
+            bearcad.drawing_view_size{ drawing = d, view = 0, width = 0.3, height = 0.5 }
+            "#,
+        );
+        let views = &state.doc.drawings[dkey(0)].views;
+        assert!((views[0].size_x - 0.3).abs() < 1e-4 && (views[0].size_y - 0.5).abs() < 1e-4);
+        assert!(
+            (views[1].size_x - crate::drawing::CELL_FRAC).abs() < 1e-4
+                && (views[1].size_y - 0.5).abs() < 1e-4,
+            "Right child shares height"
+        );
+        assert!(
+            (views[2].size_x - 0.3).abs() < 1e-4
+                && (views[2].size_y - crate::drawing::CELL_FRAC).abs() < 1e-4,
+            "Below child shares width"
         );
     }
 

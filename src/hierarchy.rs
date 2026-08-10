@@ -6523,6 +6523,8 @@ label_hidden: false,
                 label_text: None,
                 pos_x: 0.5,
                 pos_y: 0.5,
+                size_x: crate::drawing::CELL_FRAC,
+                size_y: crate::drawing::CELL_FRAC,
             }],
             ..Default::default()
         });
@@ -6575,6 +6577,8 @@ label_hidden: false,
                 label_text: None,
                 pos_x: 0.5,
                 pos_y: 0.5,
+                size_x: crate::drawing::CELL_FRAC,
+                size_y: crate::drawing::CELL_FRAC,
             }],
             ..Default::default()
         });

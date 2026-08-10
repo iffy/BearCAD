@@ -829,6 +829,20 @@ impl<'a> EmitCtx<'a> {
                         .as_lua_in(Some(self.doc)),
                     );
                     out.push('\n');
+                    // Card size (#1207): only emit when it differs from the default.
+                    let def = crate::drawing::CELL_FRAC;
+                    if (view.size_x - def).abs() > 1e-4 || (view.size_y - def).abs() > 1e-4 {
+                        out.push_str(
+                            &Instruction::SetDrawingViewSize {
+                                drawing: dord,
+                                view: vi,
+                                size_x: view.size_x,
+                                size_y: view.size_y,
+                            }
+                            .as_lua_in(Some(self.doc)),
+                        );
+                        out.push('\n');
+                    }
                 }
                 for ann in d.annotations.values() {
                     out.push_str(

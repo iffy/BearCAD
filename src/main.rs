@@ -946,6 +946,18 @@ struct PlaneResizeDrag {
     start_extent: crate::model::PlaneExtent,
 }
 
+/// A drawing view card being resized by a corner grip (#1207). Size is mutated live while the
+/// pointer is down (linked aligned views follow on the shared axes); on release a single
+/// `SetDrawingViewSize` commits the whole drag as one undo step.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DrawingViewResizeDrag {
+    drawing: model::DrawingKey,
+    view: usize,
+    /// Corner index: 0=TL, 1=TR, 2=BR, 3=BL.
+    corner: usize,
+    start_size: (f32, f32),
+}
+
 /// A drag on the Move tool's rotation ring (#216): the cursor's angle around the ring centre
 /// and the move angle when the grab started; the ring turns with the cursor.
 /// A drag rotating a selected sketch text with the Move tool's rotation ring (#286). The text's
@@ -3312,6 +3324,8 @@ struct App {
     /// press that began on a card is resolved touch-safely, without egui's hover-based overlap
     /// arbitration (which touch can't provide before the press).
     drawing_view_drag: Option<(model::DrawingKey, usize)>,
+    /// In-flight corner resize of a selected drawing projection (#1207).
+    drawing_view_resize_drag: Option<DrawingViewResizeDrag>,
     /// Whether the Parameters pane was visible before entering the Drawing workbench (#398):
     /// it hides by default there (still re-showable from the View menu) and this restores it
     /// on the way back to the model.
@@ -4412,6 +4426,7 @@ impl App {
             drawing_zoom: 1.0,
             drawing_pan: egui::Vec2::ZERO,
             drawing_view_drag: None,
+            drawing_view_resize_drag: None,
             params_visible_before_drawing: false,
             drawing_window: None,
             report_issue: None,
@@ -12325,6 +12340,7 @@ impl App {
         self.sketch_move_drag = None;
         self.exploder = None;
         self.drawing_view_drag = None;
+        self.drawing_view_resize_drag = None;
         self.calibration_point_drag = None;
         self.text_tool_anchor = None;
         self.drawing_text_anchor = None;
@@ -22715,8 +22731,36 @@ impl App {
                 i.pointer.primary_down(),
             )
         });
-        // The grab ends when the finger/button lifts.
+        // The grab ends when the finger/button lifts. A corner resize commits on release as
+        // one undo step (#1207), matching plane corner grips.
         if !primary_down {
+            if let Some(drag) = self.drawing_view_resize_drag.take() {
+                let ended = self
+                    .state
+                    .doc
+                    .drawings
+                    .get(drag.drawing)
+                    .and_then(|d| d.views.get(drag.view))
+                    .map(|v| (v.size_x, v.size_y));
+                if let Some(ended) = ended {
+                    if let Some(d) = self.state.doc.drawings.get_mut(drag.drawing) {
+                        crate::drawing::apply_view_size(
+                            &mut d.views,
+                            drag.view,
+                            drag.start_size.0,
+                            drag.start_size.1,
+                        );
+                    }
+                    if ended != drag.start_size {
+                        self.state.apply(Action::SetDrawingViewSize {
+                            drawing: drag.drawing,
+                            view: drag.view,
+                            size_x: ended.0,
+                            size_y: ended.1,
+                        });
+                    }
+                }
+            }
             self.drawing_view_drag = None;
         }
 
@@ -22733,7 +22777,8 @@ impl App {
         // to a card on top instead of the background.
         let bg_pan_delta = (bg.dragged() || (primary_down && press_origin.is_some()))
             .then_some(pointer_delta);
-        let mut pan_suppressed_by_card = self.drawing_view_drag.is_some();
+        let mut pan_suppressed_by_card =
+            self.drawing_view_drag.is_some() || self.drawing_view_resize_drag.is_some();
         let scroll = if bg.hovered() { raw_scroll_y(ui.ctx()) } else { 0.0 };
         if scroll != 0.0 {
             let f = (1.0 + scroll * 0.0015).clamp(0.5, 2.0);
@@ -22895,8 +22940,7 @@ impl App {
             // WYSIWYG with the exports (#376): the card is exactly the export's page fraction
             // (no pixel clamp) and text sizes scale with the on-screen page, so layout
             // decisions — e.g. whether a dimension label fits along its line — match the PDF.
-            let cell_w = page.width() * 0.42;
-            let cell_h = page.height() * 0.42;
+            // Per-view card sizes (#1207) replace the old fixed 0.42 × 0.42 of the page.
             let px_per_pt = {
                 let page_w_mm = self
                     .state
@@ -22911,12 +22955,94 @@ impl App {
             // The export's 11 pt dimension/caption font, in on-screen pixels.
             let dim_font = 11.0 * px_per_pt;
             let painter = ui.painter().clone();
+
+            // Live corner-resize update (#1207): keep the card centre fixed and propagate
+            // linked axes while the pointer is down.
+            if let Some(drag) = self.drawing_view_resize_drag {
+                if drag.drawing == drawing && primary_down {
+                    if let Some(pp) = pointer_screen {
+                        let (rpx, rpy) =
+                            crate::drawing::resolved_view_pos(&self.state.doc, drawing, drag.view);
+                        let center = glam::Vec2::new(
+                            page.min.x + rpx * page.width(),
+                            page.min.y + rpy * page.height(),
+                        );
+                        let (sx, sy) = crate::drawing::view_size_from_corner_drag(
+                            center,
+                            glam::Vec2::new(pp.x, pp.y),
+                            glam::Vec2::new(page.width(), page.height()),
+                        );
+                        if let Some(d) = self.state.doc.drawings.get_mut(drawing) {
+                            crate::drawing::apply_view_size(&mut d.views, drag.view, sx, sy);
+                        }
+                    }
+                    pan_suppressed_by_card = true;
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+                }
+            }
+
+            // Re-read views after a live resize may have rewritten sizes.
+            let views = self
+                .state
+                .doc
+                .drawings
+                .get(drawing)
+                .map(|d| d.views.clone())
+                .unwrap_or_default();
+
             for (vi, view) in views.iter().enumerate() {
                 // Aligned children (#296) resolve their shared axis to the parent's.
                 let (rpx, rpy) = crate::drawing::resolved_view_pos(&self.state.doc, drawing, vi);
                 let center =
                     page.min + egui::vec2(rpx * page.width(), rpy * page.height());
+                let (sx, sy) = crate::drawing::view_size_frac(view);
+                let cell_w = page.width() * sx;
+                let cell_h = page.height() * sy;
                 let cell = egui::Rect::from_center_size(center, egui::vec2(cell_w, cell_h));
+
+                // Corner grips on the selected projection under the Select tool (#1207). Hit
+                // them before the card-move grab so a corner press resizes instead of moves.
+                let selected_here = self
+                    .state
+                    .is_drawing_element_selected(drawing, context::DrawingElementRef::Projection(vi));
+                if selected_here
+                    && self.state.tool == Tool::Select
+                    && self.drawing_view_resize_drag.is_none()
+                    && self.drawing_view_drag.is_none()
+                {
+                    let corners = crate::drawing::view_card_corners(
+                        glam::Vec2::new(center.x, center.y),
+                        cell_w,
+                        cell_h,
+                    );
+                    let hit = pointer_screen.and_then(|pp| {
+                        crate::drawing::view_resize_handle_hit(
+                            glam::Vec2::new(pp.x, pp.y),
+                            &corners,
+                            crate::drawing::VIEW_RESIZE_HANDLE_RADIUS_PX + 2.0,
+                        )
+                    });
+                    if let Some(corner) = hit {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+                        pan_suppressed_by_card = true;
+                        if primary_down
+                            && press_origin.is_some_and(|o| {
+                                crate::drawing::view_resize_handle_hit(
+                                    glam::Vec2::new(o.x, o.y),
+                                    &corners,
+                                    crate::drawing::VIEW_RESIZE_HANDLE_RADIUS_PX + 2.0,
+                                ) == Some(corner)
+                            })
+                        {
+                            self.drawing_view_resize_drag = Some(DrawingViewResizeDrag {
+                                drawing,
+                                view: vi,
+                                corner,
+                                start_size: (view.size_x, view.size_y),
+                            });
+                        }
+                    }
+                }
 
                 // Drag anywhere on the card to move it (#293) — not just the caption strip, so
                 // grabbing the projection itself doesn't fall through and pan the page. The
@@ -22931,14 +23057,17 @@ impl App {
                 // it works on touch (no pre-press hover) as well as mouse (mobile/touch). A press that
                 // began inside this card claims it for the duration of the press; the grab is
                 // remembered across frames so it survives the card sliding under the finger.
-                if self.drawing_view_drag.is_none()
+                // Corner resize owns the pointer when active (#1207).
+                if self.drawing_view_resize_drag.is_none()
+                    && self.drawing_view_drag.is_none()
                     && primary_down
                     && press_origin.is_some_and(|o| cell.contains(o))
                 {
                     self.drawing_view_drag = Some((drawing, vi));
                     pan_suppressed_by_card = true;
                 }
-                let grabbed = self.drawing_view_drag == Some((drawing, vi));
+                let grabbed = self.drawing_view_drag == Some((drawing, vi))
+                    && self.drawing_view_resize_drag.is_none();
                 // Only the Select tool moves views (#374): with e.g. the Dimension tool a drag
                 // across a card must not relocate it (the grab still suppresses the page pan so
                 // it doesn't fall through).
@@ -22960,7 +23089,10 @@ impl App {
                         move_view = Some((vi, nx, ny));
                     }
                 }
-                if drag.hovered() && self.state.tool == Tool::Select {
+                if drag.hovered()
+                    && self.state.tool == Tool::Select
+                    && self.drawing_view_resize_drag.is_none()
+                {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                 }
                 // Clicking a card selects it (#289): the context pane opens its view editor.
@@ -23011,6 +23143,42 @@ impl App {
                     egui::Stroke::new(1.0, egui::Color32::from_gray(80))
                 };
                 painter.rect_stroke(cell.shrink(2.0), 2.0, stroke, egui::StrokeKind::Inside);
+                // Corner resize grips on the selected projection (#1207).
+                if selected_here && self.state.tool == Tool::Select {
+                    let corners = crate::drawing::view_card_corners(
+                        glam::Vec2::new(center.x, center.y),
+                        cell_w,
+                        cell_h,
+                    );
+                    let r = crate::drawing::VIEW_RESIZE_HANDLE_RADIUS_PX;
+                    for (ci, c) in corners.iter().enumerate() {
+                        let hot = self.drawing_view_resize_drag.is_some_and(|d| {
+                            d.drawing == drawing && d.view == vi && d.corner == ci
+                        }) || pointer_screen.is_some_and(|pp| {
+                            crate::drawing::view_resize_handle_hit(
+                                glam::Vec2::new(pp.x, pp.y),
+                                &corners,
+                                r + 2.0,
+                            ) == Some(ci)
+                        });
+                        let rect = egui::Rect::from_center_size(
+                            egui::pos2(c.x, c.y),
+                            egui::vec2(r * 2.0, r * 2.0),
+                        );
+                        let fill = if hot {
+                            egui::Color32::WHITE
+                        } else {
+                            egui::Color32::from_rgb(90, 150, 230)
+                        };
+                        painter.rect_filled(rect, 1.5, fill);
+                        painter.rect_stroke(
+                            rect,
+                            1.5,
+                            egui::Stroke::new(1.5, egui::Color32::from_rgb(90, 150, 230)),
+                            egui::StrokeKind::Middle,
+                        );
+                    }
+                }
                 let source_label =
                     crate::drawing::drawing_view_source_label(&self.state.doc, view);
                 let scale_suffix =
@@ -23127,15 +23295,30 @@ impl App {
                 let _ = extent;
                 let scale = match resolved_scale.as_deref().and_then(model::parse_drawing_scale) {
                     Some(factor) => factor * px_per_page_mm,
-                    // Aligned children share their parent's auto-fit scale so edges line up (#364).
-                    None => crate::drawing::view_autofit_scale(
-                        &self.state.doc,
-                        &views,
-                        vi,
-                        draw_area.width(),
-                        draw_area.height(),
-                        0.9,
-                    ),
+                    // Aligned children share their parent's auto-fit scale so edges line up
+                    // (#364). Compute against the scale-root's card so different card sizes
+                    // don't desync the group (#1207).
+                    None => {
+                        let root = crate::drawing::aligned_scale_root(&views, vi);
+                        let (root_area_w, root_area_h) = if root == vi {
+                            (draw_area.width(), draw_area.height())
+                        } else {
+                            let rv = &views[root];
+                            let (rsx, rsy) = crate::drawing::view_size_frac(rv);
+                            let pad = crate::drawing::CELL_PAD * px_per_pt;
+                            let rw = page.width() * rsx - 2.0 * pad;
+                            let rh = page.height() * rsy - 26.0 * px_per_pt - 2.0 * pad;
+                            (rw.max(1e-3), rh.max(1e-3))
+                        };
+                        crate::drawing::view_autofit_scale(
+                            &self.state.doc,
+                            &views,
+                            root,
+                            root_area_w,
+                            root_area_h,
+                            0.9,
+                        )
+                    }
                 };
                 // Aligned children line up to their parent along the shared edge (#364).
                 let bbox_center = {
@@ -23940,8 +24123,6 @@ impl App {
                 if !parent_ok {
                     self.drawing_align_parent = None;
                 } else {
-                    let cell_w = page.width() * 0.42;
-                    let cell_h = page.height() * 0.42;
                     let (rpx, rpy) =
                         crate::drawing::resolved_view_pos(&self.state.doc, drawing, p);
                     let pcenter =
@@ -23954,7 +24135,12 @@ impl App {
                     } else {
                         model::AlignDir::Above
                     };
-                    let parent_orient = self.state.doc.drawings[drawing].views[p].orientation;
+                    let parent_view = &self.state.doc.drawings[drawing].views[p];
+                    let parent_orient = parent_view.orientation;
+                    // Ghost inherits the parent's card size (#1207).
+                    let (psx, psy) = crate::drawing::view_size_frac(parent_view);
+                    let cell_w = page.width() * psx;
+                    let cell_h = page.height() * psy;
                     if let Some(child) = crate::drawing::aligned_child_orientation(parent_orient, dir)
                     {
                         // Free-axis position from the cursor; shared axis follows the parent.

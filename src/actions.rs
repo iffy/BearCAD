@@ -2321,6 +2321,14 @@ pub enum Action {
         pos_x: f32,
         pos_y: f32,
     },
+    /// Resize a placed view's card (page fractions) (#1207). Width propagates across
+    /// Above/Below aligned links; height across Left/Right.
+    SetDrawingViewSize {
+        drawing: crate::model::DrawingKey,
+        view: usize,
+        size_x: f32,
+        size_y: f32,
+    },
     /// Change a placed view's projection orientation (#274).
     SetDrawingViewOrientation {
         drawing: crate::model::DrawingKey,
@@ -11236,6 +11244,9 @@ impl AppState {
                 };
                 view.pos_x = pos_x;
                 view.pos_y = pos_y;
+                // Inherit card size so the pair starts matched; linked axes stay in sync (#1207).
+                view.size_x = pv.size_x;
+                view.size_y = pv.size_y;
                 view.scale = pv.scale.clone();
                 view.style = pv.style;
                 view.aligned_parent = Some(parent);
@@ -11257,6 +11268,27 @@ impl AppState {
                 // stays locked to its parent (enforced in `resolved_view_pos`).
                 v.pos_x = pos_x.clamp(0.0, 1.0);
                 v.pos_y = pos_y.clamp(0.0, 1.0);
+                ActionResult::Ok
+            }
+            Action::SetDrawingViewSize {
+                drawing,
+                view,
+                size_x,
+                size_y,
+            } => {
+                let Some(d) = self.doc.drawings.get_mut(drawing) else {
+                    return ActionResult::Err(format!("No drawing {}", drawing.index()));
+                };
+                if d.views.get(view).is_none() {
+                    return ActionResult::Err(format!("No view {view}"));
+                }
+                crate::drawing::apply_view_size(&mut d.views, view, size_x, size_y);
+                let (sx, sy) = crate::drawing::view_size_frac(&d.views[view]);
+                self.status = format!(
+                    "Resized view to {:.0}% × {:.0}%",
+                    sx * 100.0,
+                    sy * 100.0
+                );
                 ActionResult::Ok
             }
             Action::SetDrawingViewOrientation { drawing, view, orientation } => {
@@ -23684,6 +23716,108 @@ mod tests {
             orientation: DrawingOrientation::Isometric,
         });
         assert_eq!(state.doc.drawings[dkey(0)].views[0].orientation, DrawingOrientation::Isometric);
+    }
+
+    /// #1207: resizing a view's card clamps fractions and undoes as one step.
+    #[test]
+    fn drawing_view_size_sets_clamps_and_undoes() {
+        use crate::model::DrawingOrientation;
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::AddDrawingView {
+            drawing: dkey(0),
+            bodies: vec![bkey(0)],
+            orientation: DrawingOrientation::Front,
+        });
+        let before = {
+            let v = &state.doc.drawings[dkey(0)].views[0];
+            (v.size_x, v.size_y)
+        };
+        assert!((before.0 - 0.42).abs() < 1e-4 && (before.1 - 0.42).abs() < 1e-4);
+
+        state.apply(Action::SetDrawingViewSize {
+            drawing: dkey(0),
+            view: 0,
+            size_x: 0.3,
+            size_y: 0.55,
+        });
+        let v = &state.doc.drawings[dkey(0)].views[0];
+        assert!((v.size_x - 0.3).abs() < 1e-4 && (v.size_y - 0.55).abs() < 1e-4);
+
+        // Out of range clamps.
+        state.apply(Action::SetDrawingViewSize {
+            drawing: dkey(0),
+            view: 0,
+            size_x: 2.0,
+            size_y: 0.01,
+        });
+        let v = &state.doc.drawings[dkey(0)].views[0];
+        assert!((v.size_x - 1.0).abs() < 1e-4);
+        assert!((v.size_y - crate::model::MIN_VIEW_SIZE_FRAC).abs() < 1e-4);
+
+        state.apply(Action::UndoLast);
+        let v = &state.doc.drawings[dkey(0)].views[0];
+        assert!((v.size_x - 0.3).abs() < 1e-4 && (v.size_y - 0.55).abs() < 1e-4);
+    }
+
+    /// #1207: resizing one view of an aligned group updates the shared axis on its partners.
+    #[test]
+    fn drawing_view_size_propagates_along_aligned_axes() {
+        use crate::model::{AlignDir, DrawingOrientation};
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::AddDrawingView {
+            drawing: dkey(0),
+            bodies: vec![bkey(0)],
+            orientation: DrawingOrientation::Top,
+        });
+        // Parent 0; Right child 1; Below child 2.
+        state.apply(Action::AddAlignedDrawingView {
+            drawing: dkey(0),
+            parent: 0,
+            dir: AlignDir::Right,
+            pos: 0.75,
+        });
+        state.apply(Action::AddAlignedDrawingView {
+            drawing: dkey(0),
+            parent: 0,
+            dir: AlignDir::Below,
+            pos: 0.75,
+        });
+        // Children inherit the parent's default size.
+        for i in 0..3 {
+            let v = &state.doc.drawings[dkey(0)].views[i];
+            assert!((v.size_x - 0.42).abs() < 1e-4 && (v.size_y - 0.42).abs() < 1e-4, "view {i}");
+        }
+
+        // Resize the Top (parent): width shared with Below child, height with Right child.
+        state.apply(Action::SetDrawingViewSize {
+            drawing: dkey(0),
+            view: 0,
+            size_x: 0.25,
+            size_y: 0.35,
+        });
+        let views = &state.doc.drawings[dkey(0)].views;
+        assert!((views[0].size_x - 0.25).abs() < 1e-4 && (views[0].size_y - 0.35).abs() < 1e-4);
+        // Right child shares height, keeps its own width.
+        assert!((views[1].size_x - 0.42).abs() < 1e-4 && (views[1].size_y - 0.35).abs() < 1e-4);
+        // Below child shares width, keeps its own height.
+        assert!((views[2].size_x - 0.25).abs() < 1e-4 && (views[2].size_y - 0.42).abs() < 1e-4);
+
+        // Resize the Below child: width goes back up the chain to Top (and not Right's width).
+        state.apply(Action::SetDrawingViewSize {
+            drawing: dkey(0),
+            view: 2,
+            size_x: 0.5,
+            size_y: 0.2,
+        });
+        let views = &state.doc.drawings[dkey(0)].views;
+        assert!((views[0].size_x - 0.5).abs() < 1e-4, "parent width follows child");
+        assert!((views[0].size_y - 0.35).abs() < 1e-4, "parent height unchanged");
+        assert!((views[1].size_x - 0.42).abs() < 1e-4 && (views[1].size_y - 0.35).abs() < 1e-4);
+        assert!((views[2].size_x - 0.5).abs() < 1e-4 && (views[2].size_y - 0.2).abs() < 1e-4);
     }
 
     /// #300: a view's print scale accepts `page:model` text, rejects anything else (keeping
