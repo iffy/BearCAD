@@ -2528,6 +2528,10 @@ pub fn nearest_sketch_line_in_sketch(
     // Measured as an **infinite line in screen space** from two nearby projected points
     // (#394): the old ±10 m segment endpoints usually fail to project (behind the camera /
     // outside the frustum), which silently made the axes unpickable and unhoverable.
+    //
+    // Lose near-ties to real sketch geometry (#1183): a true plan view stacks face edges that
+    // lie on the sketch u/v axes with those axes in projection; the body edge is the more
+    // specific pick when both land under the cursor.
     if let Some(frame) = crate::face::sketch_geometry_frame(doc, sketch) {
         let mut consider_axis = |axis: crate::model::SketchAxis, dir: Vec3| {
             let (Some(p0), Some(p1)) = (
@@ -2543,8 +2547,11 @@ pub fn nearest_sketch_line_in_sketch(
             let dn = d / d.length();
             let rel = screen - p0;
             let dist = (rel.x * dn.y - rel.y * dn.x).abs();
+            const ORIGIN_AXIS_TIE_EPS_PX: f32 = 0.5;
             if dist <= crate::touch::hit(LINE_PICK_RADIUS_PX)
-                && best.as_ref().is_none_or(|(_, best_d)| dist < *best_d)
+                && best
+                    .as_ref()
+                    .is_none_or(|(_, best_d)| dist + ORIGIN_AXIS_TIE_EPS_PX < *best_d)
             {
                 best = Some((ConstraintLine::OriginAxis(axis), dist));
             }

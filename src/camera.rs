@@ -36,13 +36,10 @@ impl StandardView {
     /// Spherical camera parameters that place the eye on this side of `target`.
     ///
     /// Orientations follow the mainstream CAD convention (#100): front = +X right / +Z up,
-    /// top = +X right / +Y up, right = +Y right / +Z up; back/left/bottom mirrored. The
-    /// top/bottom yaw matters even though the view is (almost) straight down/up: the eye
-    /// keeps a tiny horizontal offset (`PITCH_LIMIT` is ~88°), and that offset direction —
-    /// `(cos yaw, sin yaw)`, which ends up screen-*down* via the world-Z up hint — is what
-    /// sets the plan view's roll. Top uses the front yaw (tilt the front view up onto the
-    /// model: +Y becomes screen-up) and bottom uses the back yaw (tilt the front view down:
-    /// +Y becomes screen-down).
+    /// top = +X right / +Y up, right = +Y right / +Z up; back/left/bottom mirrored. At the
+    /// poles, yaw alone sets plan-view roll via [`Camera::polar_orbit_up`] (the yaw direction
+    /// is screen-down). Top uses the front yaw (+Y screen-up); bottom uses the back yaw
+    /// (−Y screen-up).
     pub fn yaw_pitch(self) -> (f32, f32) {
         use std::f32::consts::{FRAC_PI_2, PI};
         match self {
@@ -50,8 +47,8 @@ impl StandardView {
             Self::Back => (FRAC_PI_2, 0.0),
             Self::Right => (0.0, 0.0),
             Self::Left => (PI, 0.0),
-            Self::Top => (-FRAC_PI_2, PITCH_LIMIT),
-            Self::Bottom => (FRAC_PI_2, -PITCH_LIMIT),
+            Self::Top => (-FRAC_PI_2, FRAC_PI_2),
+            Self::Bottom => (FRAC_PI_2, -FRAC_PI_2),
         }
     }
 }
@@ -240,8 +237,8 @@ pub struct Camera {
     pub target: Vec3,
     /// Azimuth around the up (Z) axis, radians.
     pub yaw: f32,
-    /// Elevation above the ground plane, radians. Clamped away from straight
-    /// down/up so the look-at `up` vector never degenerates.
+    /// Elevation above the ground plane, radians. Clamped to ±90°; at the poles
+    /// [`Self::view_up_hint`] uses yaw for roll so look-at stays well-defined.
     pub pitch: f32,
     /// Distance from `target` to the eye.
     pub distance: f32,
@@ -327,7 +324,10 @@ fn slerp_direction(from: Vec3, to: Vec3, t: f32) -> Vec3 {
     (from * a + to * b).normalize_or_zero()
 }
 
-const PITCH_LIMIT: f32 = 1.54; // ~88°, just shy of the singularity at 90°.
+/// Max |pitch| for yaw/pitch poses. Exact ±90° is allowed (#1183: plan views must be
+/// orthogonal); [`Camera::view_up_hint`] switches to a yaw-derived up at the poles so
+/// `look_at_rh` never degenerates when world-Z is parallel to the look direction.
+const PITCH_LIMIT: f32 = std::f32::consts::FRAC_PI_2;
 
 impl Camera {
     fn spherical_offset(&self) -> Vec3 {
@@ -381,7 +381,21 @@ impl Camera {
         if let Some(up) = self.view_up.filter(|u| u.length_squared() >= 1e-8) {
             return up;
         }
-        Self::orbit_look_up(self.target - self.eye())
+        let forward = self.target - self.eye();
+        // True plan views (#1183): world-Z is parallel to look, so roll comes from yaw.
+        let f = forward.normalize_or_zero();
+        if f.z.abs() > 0.999 {
+            return Self::polar_orbit_up(self.yaw);
+        }
+        Self::orbit_look_up(forward)
+    }
+
+    /// Look-at up at a polar (top/bottom) view. The yaw direction is treated as
+    /// screen-down — matching the historical slight-tilt convention — so top with
+    /// the front yaw lands +Y screen-up and bottom with the back yaw lands −Y
+    /// screen-up (#100 / #1183).
+    fn polar_orbit_up(yaw: f32) -> Vec3 {
+        -Vec3::new(yaw.cos(), yaw.sin(), 0.0)
     }
 
     /// Leave sketch edit view: bake trackball motion and restore world-Z orbit.
@@ -467,15 +481,21 @@ impl Camera {
 
     /// Standard/world view transitions must not inherit a lingering sketch-mode
     /// `view_up` (#100): a preset chosen after sketching would land rolled by the
-    /// sketch frame. Animate the roll back to the world up and drop the override
-    /// when the transition completes. (The pitch clamp keeps top/bottom ~2° off
-    /// the pole, so `Vec3::Z` stays a valid look-at up hint there.)
+    /// sketch frame. Animate the roll back to the world (or polar) up and drop the
+    /// override when the transition completes. At top/bottom the destination up is
+    /// yaw-derived so `look_at_rh` stays well-defined at the true pole (#1183).
     fn world_up_on_complete(&mut self) {
         if self.view_up.is_none() {
             return;
         }
         if let Some(t) = self.transition.as_mut() {
-            t.to_view_up = Vec3::Z;
+            let to_pitch = t.to_pitch;
+            t.to_view_up = if to_pitch.abs() > 0.999 * std::f32::consts::FRAC_PI_2 {
+                // Yaw at completion is from_yaw + delta_yaw.
+                Self::polar_orbit_up(t.from_yaw + t.delta_yaw)
+            } else {
+                Vec3::Z
+            };
             t.animate_view_up = true;
             t.clear_view_up_on_complete = true;
         }
@@ -1014,12 +1034,12 @@ impl Camera {
 
     fn capture_orbit_base_right(forward: Vec3, up: Vec3, yaw: f32) -> Vec3 {
         let forward = forward.normalize_or_zero();
-        // The pitch (vertical-drag) axis is camera screen-right = forward × up. This stays
-        // well-conditioned even at the top/bottom presets (`PITCH_LIMIT` keeps ~2° off the
-        // pole), so a vertical drag from a plan view is a true trackball tilt about
-        // screen-right — e.g. dragging down from the top view tips the eye toward +Y/back
-        // (#100). Previously the near-pole axis was the eye's horizontal offset direction,
-        // which is screen-*down*, so vertical drags at the poles read as sideways spins.
+        // The pitch (vertical-drag) axis is camera screen-right = forward × up. At the
+        // poles `polar_orbit_up` / the fallback below keep this well-conditioned, so a
+        // vertical drag from a plan view is a true trackball tilt about screen-right —
+        // e.g. dragging down from the top view tips the eye toward +Y/back (#100).
+        // Previously the near-pole axis was the eye's horizontal offset direction, which
+        // is screen-*down*, so vertical drags at the poles read as sideways spins.
         let mut right = forward.cross(up);
         if right.length_squared() < 1e-8 {
             // Exactly at a pole with a parallel up hint: reconstruct screen-right from yaw.
@@ -1559,12 +1579,49 @@ mod tests {
         cam.yaw = yaw;
         cam.pitch = pitch;
         let top = (cam.eye() - cam.target).normalize();
-        assert!(top.z > 0.95, "top view should look from +Z, got {top:?}");
+        assert!(
+            top.z > 0.9999,
+            "top view should look straight from +Z, got {top:?}"
+        );
+        assert!(
+            top.x.abs() < 1e-3 && top.y.abs() < 1e-3,
+            "top view must be on-axis, got {top:?}"
+        );
         let (yaw, pitch) = StandardView::Bottom.yaw_pitch();
         cam.yaw = yaw;
         cam.pitch = pitch;
         let bottom = (cam.eye() - cam.target).normalize();
-        assert!(bottom.z < -0.95, "bottom view should look from -Z, got {bottom:?}");
+        assert!(
+            bottom.z < -0.9999,
+            "bottom view should look straight from -Z, got {bottom:?}"
+        );
+        assert!(
+            bottom.x.abs() < 1e-3 && bottom.y.abs() < 1e-3,
+            "bottom view must be on-axis, got {bottom:?}"
+        );
+    }
+
+    /// #1183: top/bottom presets must be orthogonal to the ground. A ~2° tilt made tall
+    /// posts project outside a base's plan silhouette (studs "sticking out" of a beam).
+    #[test]
+    fn top_view_is_orthogonal_so_verticals_collapse() {
+        let mut cam = Camera::default();
+        cam.set_projection_mode(ProjectionMode::Orthographic);
+        let (yaw, pitch) = StandardView::Top.yaw_pitch();
+        cam.yaw = yaw;
+        cam.pitch = pitch;
+        let viewport = test_viewport();
+        let vp = cam.view_proj(viewport);
+        // 7 ft post on a 3.5 in-wide beam — the setup that made #1183 obvious.
+        let base = Vec3::new(0.0, 0.0, 0.0);
+        let top = Vec3::new(0.0, 0.0, 7.0 * 12.0 * 25.4);
+        let p0 = cam.project(base, viewport, &vp).expect("base visible");
+        let p1 = cam.project(top, viewport, &vp).expect("top visible");
+        assert!(
+            (p0 - p1).length() < 0.5,
+            "true top view collapses world-Z: base={p0:?} top={p1:?} delta={}",
+            (p0 - p1).length()
+        );
     }
 
     /// #100: every standard view must match the mainstream CAD screen convention.
@@ -1873,10 +1930,26 @@ mod tests {
     #[test]
     fn orbit_look_up_flips_when_viewing_from_below() {
         let mut cam = Camera::default();
-        cam.pitch = -PITCH_LIMIT;
+        // Steeply from below but not at the true south pole (polar views use yaw-roll).
+        cam.pitch = -1.4;
         assert!(
             cam.view_up_hint().dot(Vec3::Z) < -0.9,
             "look-at up should flip below the target"
+        );
+    }
+
+    #[test]
+    fn polar_view_up_matches_cad_top_bottom_roll() {
+        // Top / front yaw → +Y screen-up; bottom / back yaw → −Y screen-up.
+        let top_up = Camera::polar_orbit_up(StandardView::Top.yaw_pitch().0);
+        let bottom_up = Camera::polar_orbit_up(StandardView::Bottom.yaw_pitch().0);
+        assert!(
+            (top_up - Vec3::Y).length() < 1e-5,
+            "top plan roll should be +Y, got {top_up:?}"
+        );
+        assert!(
+            (bottom_up - (-Vec3::Y)).length() < 1e-5,
+            "bottom plan roll should be −Y, got {bottom_up:?}"
         );
     }
 
