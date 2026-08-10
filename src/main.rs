@@ -5851,6 +5851,13 @@ impl App {
                 self.state.apply(Action::ToggleConstruction);
             }
 
+            // V: toggle visibility of the selection on the Select tool (#1152).
+            if self.state.tool == Tool::Select
+                && ctx.input(|i| i.key_pressed(egui::Key::V))
+            {
+                self.state.apply(Action::ToggleSelectionVisibility);
+            }
+
             // Z: zoom to fit — the selection if anything is selected, else everything (#279).
             // `consume_key(NONE, …)` requires no modifier, so it never catches Cmd/Ctrl+Z (undo).
             // In the Drawing workbench it fits the page instead (reset the drawing pan/zoom).
@@ -13080,6 +13087,7 @@ impl App {
         let context_input = context::ContextInput {
             doc: &self.state.doc,
             selection: &self.state.scene_selection,
+            element_visibility: &self.state.element_visibility,
             tool: self.state.tool,
             in_drawing_workbench: self.state.editing_drawing.is_some(),
             open_drawing: self.state.editing_drawing,
@@ -13966,6 +13974,7 @@ impl App {
         context::sync_calibrate_draft(&mut self.state.context_pane, &self.state.doc, &content);
         if self.state.panes.is_visible(Pane::Context) {
             let mut construction_change: Option<bool> = None;
+            let mut visibility_change: Option<bool> = None;
             let mut rect_anchor_change: Option<actions::RectAnchor> = None;
             let mut shape_edit: Option<context::ShapeEdit> = None;
             let mut circle_anchor_change: Option<actions::CircleAnchor> = None;
@@ -14043,6 +14052,9 @@ impl App {
                         },
                         &mut |construction| {
                             construction_change = Some(construction);
+                        },
+                        &mut |visible| {
+                            visibility_change = Some(visible);
                         },
                         &mut |anchor| rect_anchor_change = Some(anchor),
                         &mut |anchor| circle_anchor_change = Some(anchor),
@@ -15414,6 +15426,10 @@ impl App {
             if let Some(construction) = construction_change {
                 self.state
                     .apply(Action::ApplyConstruction { construction });
+            }
+            if let Some(visible) = visibility_change {
+                self.state
+                    .apply(Action::ApplySelectionVisibility { visible });
             }
             if let Some(curve_mode) = curve_mode_change {
                 self.state.apply(Action::ApplyCurveMode { curve_mode });

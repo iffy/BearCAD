@@ -2622,6 +2622,23 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     api.set(
+        "apply_visibility",
+        lua.create_function(|lua, visible: Value| {
+            let visible = parse_bool(visible, "visible")?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::ApplySelectionVisibility { visible }) }
+        })?,
+    )?;
+
+    api.set(
+        "toggle_visibility",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::ToggleSelectionVisibility) }
+        })?,
+    )?;
+
+    api.set(
         "set_dim",
         lua.create_function(|lua, (axis, value): (String, String)| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();

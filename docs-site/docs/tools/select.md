@@ -66,7 +66,8 @@ tool that gathers elements uses this same control — see
 
 With nothing selected, the context pane holds the document's
 [**Default units**](/docs/parameters#display-units). **Delete** removes the selection;
-**N** jumps to the name field for renaming.
+**N** jumps to the name field for renaming. **V** toggles whether the selection is
+visible (same as the **Visible** checkbox in the context pane).
 
 ## Help
 

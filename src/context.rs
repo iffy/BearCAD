@@ -4,7 +4,7 @@ use crate::actions::{ExtrudeBodyMode, Tool};
 use crate::document_health::{health_status_label, selection_frozen_summary, DocumentHealth, HealthStatus};
 use crate::element_picker::{ElementFilter, ElementKind, ElementPicker, PickLimit, PickRule};
 use crate::geometric_constraints::{constraint_pane_rows, ConstraintPaneRow};
-use crate::hierarchy::SceneElement;
+use crate::hierarchy::{ElementVisibility, SceneElement};
 use crate::model::{Document, SketchId};
 use crate::names::{element_name, single_nameable_from_selection};
 use crate::selection::SceneSelection;
@@ -19,6 +19,8 @@ pub const PANE_TITLE: &str = "Context";
 pub struct ContextInput<'a> {
     pub doc: &'a Document,
     pub selection: &'a SceneSelection,
+    /// Per-element visibility toggles (#1152): drives the Select tool's Visible checkbox.
+    pub element_visibility: &'a ElementVisibility,
     pub tool: Tool,
     /// True while a technical drawing is open (#317): the model-only "Selection" element picker
     /// is suppressed, since drawing projections/annotations have their own selection state.
@@ -966,6 +968,8 @@ pub struct ContextPaneContent {
     /// Tangent-constraint (`T`) checkbox while the line tool is active (#73).
     pub tangent_constraint: Option<bool>,
     pub construction: Option<ConstructionControl>,
+    /// Visible checkbox for the Select tool's selection (#1152).
+    pub visibility: Option<VisibilityControl>,
     /// Rectangle anchor radio (#532): `Some` while the Rectangle tool is active.
     pub rect_anchor: Option<crate::actions::RectAnchor>,
     /// Circle anchor radio: `Some` while the Circle tool is active.
@@ -1235,6 +1239,13 @@ pub struct ContextPaneState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConstructionControl {
+    pub value: TriState,
+    pub target_count: usize,
+}
+
+/// Visibility tri-state for the Select tool's selection (#1152).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VisibilityControl {
     pub value: TriState,
     pub target_count: usize,
 }
@@ -2959,6 +2970,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
                 value: tri_state_from_bool(construction),
                 target_count: 1,
             }),
+            visibility: None,
             constraints: None,
             constraint_axis_dirs: None,
             snapping,
@@ -3020,6 +3032,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
                 value: tri_state_from_bool(construction),
                 target_count: 1,
             }),
+            visibility: None,
             constraints: None,
             constraint_axis_dirs: None,
             snapping,
@@ -3083,6 +3096,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
                 value: tri_state_from_bool(construction),
                 target_count: 1,
             }),
+            visibility: None,
             constraints: None,
             constraint_axis_dirs: None,
             snapping,
@@ -3139,6 +3153,15 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     } else {
         construction_targets_from_selection(input.selection)
     };
+    // Visible checkbox only on the Select tool when something hideable is selected (#1152).
+    let visibility = (input.tool == Tool::Select).then(|| {
+        let vis_targets =
+            crate::hierarchy::visibility_targets_from_selection(input.selection);
+        (!vis_targets.is_empty()).then(|| VisibilityControl {
+            value: visibility_tri_state(input.element_visibility, &vis_targets),
+            target_count: vis_targets.len(),
+        })
+    }).flatten();
     let constraints = (input.tool == Tool::Constraint)
         .then(|| constraint_pane_rows(input.selection));
     ContextPaneContent {
@@ -3153,6 +3176,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             value: construction_tri_state(input.doc, &targets),
             target_count: targets.len(),
         }),
+        visibility,
         constraints,
         constraint_axis_dirs: input.sketch_axis_screen_dirs,
         snapping,
@@ -3364,6 +3388,25 @@ pub fn edge_construction_for_element(doc: &Document, element: SceneElement) -> O
 /// Whether a selected line, edge, or curve uses dashed (construction) highlighting.
 pub fn selection_highlight_dashed(doc: &Document, element: SceneElement) -> Option<bool> {
     edge_construction_for_element(doc, element)
+}
+
+/// Tri-state visibility for the selected hideable targets (#1152).
+pub fn visibility_tri_state(visibility: &ElementVisibility, targets: &[SceneElement]) -> TriState {
+    let mut any_on = false;
+    let mut any_off = false;
+    for element in targets {
+        if visibility.is_visible(element.clone()) {
+            any_on = true;
+        } else {
+            any_off = true;
+        }
+    }
+    match (any_on, any_off) {
+        (true, true) => TriState::Mixed,
+        (true, false) => TriState::On,
+        (false, true) => TriState::Off,
+        (false, false) => TriState::On,
+    }
 }
 
 pub fn construction_tri_state(doc: &Document, targets: &[SceneElement]) -> TriState {
@@ -4150,6 +4193,10 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "Whether this lands as construction geometry — dashed guides to measure and \
              snap against that never become part of a profile.",
         ),
+        "Visible" | "Visible (mixed)" => Some(
+            "Whether the selection is drawn in the viewport. Uncheck (or press V) to hide \
+             it without deleting it.",
+        ),
         "Snapping" => {
             Some("Whether drawing snaps to nearby geometry — vertices, midpoints, and axes.")
         }
@@ -4377,6 +4424,7 @@ pub fn show_pane(
     on_curve_mode_changed: &mut impl FnMut(bool),
     on_tangent_constraint_changed: &mut impl FnMut(bool),
     on_construction_changed: &mut impl FnMut(bool),
+    on_visibility_changed: &mut impl FnMut(bool),
     on_rect_anchor_changed: &mut impl FnMut(crate::actions::RectAnchor),
     on_circle_anchor_changed: &mut impl FnMut(crate::actions::CircleAnchor),
     on_constraint_clicked: &mut impl FnMut(crate::geometric_constraints::GeometricConstraintType),
@@ -4865,6 +4913,28 @@ pub fn show_pane(
         ui.add_enabled_ui(controls_enabled, |ui| {
             if checkbox_row(ui, label, &mut checked, Some(shortcuts::TOGGLE_CONSTRUCTION)) {
                 on_construction_changed(checked);
+            }
+        });
+        if control.target_count > 1 {
+            ui.label(
+                egui::RichText::new(format!("{} items", control.target_count))
+                    .color(egui::Color32::from_gray(140))
+                    .size(11.0),
+            );
+        }
+    }
+
+    // Visible checkbox with V shortcut on the Select tool (#1152).
+    if let Some(control) = &content.visibility {
+        any_control = true;
+        let label = match control.value {
+            TriState::Mixed => "Visible (mixed)",
+            _ => "Visible",
+        };
+        let mut checked = control.value == TriState::On;
+        ui.add_enabled_ui(controls_enabled, |ui| {
+            if checkbox_row(ui, label, &mut checked, Some(shortcuts::TOGGLE_VISIBILITY)) {
+                on_visibility_changed(checked);
             }
         });
         if control.target_count > 1 {
@@ -7814,10 +7884,18 @@ mod tests {
         doc
     }
 
+
+    fn empty_visibility() -> &'static ElementVisibility {
+        use std::sync::OnceLock;
+        static V: OnceLock<ElementVisibility> = OnceLock::new();
+        V.get_or_init(ElementVisibility::default)
+    }
+
     fn input<'a>(doc: &'a Document, selection: &'a SceneSelection) -> ContextInput<'a> {
         ContextInput {
             doc,
             selection,
+            element_visibility: empty_visibility(),
             tool: Tool::Select,
             in_drawing_workbench: false,
             open_drawing: None,
@@ -8179,6 +8257,7 @@ mod tests {
         let input = ContextInput {
             doc: &doc,
             selection: &selection,
+            element_visibility: empty_visibility(),
             tool: Tool::Select,
             in_drawing_workbench: false,
             open_drawing: None,
@@ -9202,6 +9281,7 @@ mod tests {
             circle_anchor: None,
                 tangent_constraint: None,
                 construction: None,
+                visibility: None,
                 constraints: None,
                 constraint_axis_dirs: None,
                 snapping: None,
@@ -9270,6 +9350,7 @@ mod tests {
         let content = context_pane_content(&ContextInput {
             doc: &doc,
             selection: &SceneSelection::default(),
+            element_visibility: empty_visibility(),
             tool: Tool::Select,
             in_drawing_workbench: false,
             open_drawing: None,
@@ -9348,6 +9429,7 @@ mod tests {
                     value: TriState::On,
                     target_count: 1,
                 }),
+                visibility: None,
                 constraints: None,
                 constraint_axis_dirs: None,
                 snapping: None,
@@ -9418,6 +9500,7 @@ mod tests {
         let content = context_pane_content(&ContextInput {
             doc: &doc,
             selection: &SceneSelection::default(),
+            element_visibility: empty_visibility(),
             tool: Tool::Line,
             in_drawing_workbench: false,
             open_drawing: None,
@@ -9483,6 +9566,43 @@ mod tests {
         assert_eq!(content.tangent_constraint, Some(false));
     }
 
+    /// #1152: Select tool shows a Visible checkbox for hideable selection.
+    #[test]
+    fn select_tool_shows_visible_checkbox_for_selection() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 0.0));
+        let mut sel = SceneSelection::default();
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), false);
+        let content = context_pane_content(&input(&doc, &sel));
+        assert_eq!(
+            content.visibility,
+            Some(VisibilityControl {
+                value: TriState::On,
+                target_count: 1,
+            })
+        );
+        let mut vis = ElementVisibility::default();
+        vis.set_visible(SceneElement::Line(lkey(0)), false);
+        let content = context_pane_content(&ContextInput {
+            element_visibility: &vis,
+            ..input(&doc, &sel)
+        });
+        assert_eq!(
+            content.visibility,
+            Some(VisibilityControl {
+                value: TriState::Off,
+                target_count: 1,
+            })
+        );
+        // Other tools do not show the Visible control.
+        let content = context_pane_content(&ContextInput {
+            tool: Tool::Move,
+            ..input(&doc, &sel)
+        });
+        assert!(content.visibility.is_none());
+    }
+
     #[test]
     fn shows_name_when_single_element_selected() {
         let mut doc = Document::default();
@@ -9507,6 +9627,10 @@ mod tests {
                 tangent_constraint: None,
                 construction: Some(ConstructionControl {
                     value: TriState::Off,
+                    target_count: 1,
+                }),
+                visibility: Some(VisibilityControl {
+                    value: TriState::On,
                     target_count: 1,
                 }),
                 constraints: None,
@@ -9634,6 +9758,7 @@ mod tests {
         let content = context_pane_content(&ContextInput {
             doc: &doc,
             selection: &SceneSelection::default(),
+            element_visibility: empty_visibility(),
             tool: Tool::Select,
             in_drawing_workbench: false,
             open_drawing: None,
@@ -9711,6 +9836,7 @@ mod tests {
         let content = context_pane_content(&ContextInput {
             doc: &doc,
             selection: &sel,
+            element_visibility: empty_visibility(),
             tool: Tool::Select,
             in_drawing_workbench: false,
             open_drawing: None,
@@ -9791,6 +9917,7 @@ mod tests {
                     value: TriState::On,
                     target_count: 1,
                 }),
+                visibility: None,
                 constraints: None,
                 constraint_axis_dirs: None,
                 snapping: None,
@@ -9860,6 +9987,7 @@ mod tests {
         let content = context_pane_content(&ContextInput {
             doc: &doc,
             selection: &SceneSelection::default(),
+            element_visibility: empty_visibility(),
             tool: Tool::Constraint,
             in_drawing_workbench: false,
             open_drawing: None,

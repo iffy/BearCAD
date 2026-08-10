@@ -591,6 +591,12 @@ pub enum Instruction {
     },
     /// Toggle construction/substantial on draw op or each constructable selected target.
     ToggleConstruction,
+    /// Set visibility of every hideable target in the selection (#1152).
+    ApplySelectionVisibility {
+        visible: bool,
+    },
+    /// Toggle visibility of every hideable target in the selection (#1152).
+    ToggleSelectionVisibility,
     SetElementName {
         element: SceneElement,
         name: String,
@@ -1378,6 +1384,10 @@ impl Instruction {
                 format!("bearcad.apply_construction({construction})")
             }
             Instruction::ToggleConstruction => "bearcad.toggle_construction()".to_string(),
+            Instruction::ApplySelectionVisibility { visible } => {
+                format!("bearcad.apply_visibility({visible})")
+            }
+            Instruction::ToggleSelectionVisibility => "bearcad.toggle_visibility()".to_string(),
             Instruction::SetElementName { element, name } => {
                 format!(
                     "bearcad.set_name({}, {name:?})",
@@ -2905,6 +2915,12 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             construction: *construction,
         }),
         Action::ToggleConstruction => Some(Instruction::ToggleConstruction),
+        Action::ApplySelectionVisibility { visible } => {
+            Some(Instruction::ApplySelectionVisibility {
+                visible: *visible,
+            })
+        }
+        Action::ToggleSelectionVisibility => Some(Instruction::ToggleSelectionVisibility),
         Action::AddGeometricConstraint(kind) => Some(Instruction::AddGeometricConstraint(*kind)),
         Action::ApplyConstraintShortcut(key) => Some(Instruction::ApplyConstraintShortcut(*key)),
         Action::DragVertex { point, u, v } => Some(Instruction::DragVertex {
@@ -6158,6 +6174,14 @@ impl ScriptRunner {
             }
             Instruction::ToggleConstruction => {
                 let _ = state.apply(Action::ToggleConstruction);
+                StepResult::Continue
+            }
+            Instruction::ApplySelectionVisibility { visible } => {
+                let _ = state.apply(Action::ApplySelectionVisibility { visible });
+                StepResult::Continue
+            }
+            Instruction::ToggleSelectionVisibility => {
+                let _ = state.apply(Action::ToggleSelectionVisibility);
                 StepResult::Continue
             }
             Instruction::SetElementName { element, name } => {

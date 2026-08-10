@@ -593,6 +593,11 @@ impl ElementVisibility {
         next
     }
 
+    /// Whether any element in `targets` is individually visible (own flag only).
+    pub fn any_visible(&self, targets: &[SceneElement]) -> bool {
+        targets.iter().any(|e| self.is_visible(e.clone()))
+    }
+
     /// Hide every element in `extra` on top of the current toggles (#524): the rollback
     /// marker builds a render-only visibility that suppresses everything created after it.
     pub fn with_hidden(&self, extra: &HashSet<SceneElement>) -> Self {
@@ -1720,6 +1725,79 @@ pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNod
         // graph node of their own (#967).
         | SceneElement::DrawingElement { .. } => return None,
     })
+}
+
+/// The element whose visibility toggle a selection item should drive (#1152).
+///
+/// Hierarchy rows (bodies, sketches, lines, …) hide themselves. Body mesh parts
+/// (faces/edges/vertices/axes) hide their body; extrusion analytic edges hide the extrusion.
+/// Transient picks (origin, axes, points, drawing page items) have no hide target.
+pub fn visibility_target_for_element(element: &SceneElement) -> Option<SceneElement> {
+    match element {
+        SceneElement::BodyEdge { body, .. }
+        | SceneElement::BodyVertex { body, .. }
+        | SceneElement::BodyFace { body, .. }
+        | SceneElement::BodyCylinder { body, .. }
+        | SceneElement::BodyAxis { body, .. } => Some(SceneElement::Body(*body)),
+        SceneElement::ExtrusionEdge { extrusion, .. } => Some(SceneElement::Extrusion(*extrusion)),
+        SceneElement::FaceEdge(line) => match line {
+            ConstraintLine::FaceEdge { face, .. } => face_owner_element(face),
+            ConstraintLine::Line(i) => Some(SceneElement::Line(*i)),
+            ConstraintLine::OriginAxis(_) => None,
+        },
+        SceneElement::Point(_)
+        | SceneElement::Origin
+        | SceneElement::GlobalAxis(_)
+        | SceneElement::SketchFace(_)
+        | SceneElement::MovePoint(_)
+        | SceneElement::RepeatedFace { .. }
+        | SceneElement::DrawingElement { .. } => None,
+        other if hierarchy_node_for_element(other).is_some() => Some(other.clone()),
+        _ => None,
+    }
+}
+
+/// Unique visibility targets for the current selection (#1152), ordered stably.
+pub fn visibility_targets_from_selection(selection: &SceneSelection) -> Vec<SceneElement> {
+    let mut targets: Vec<SceneElement> = selection
+        .iter()
+        .filter_map(|e| visibility_target_for_element(&e))
+        .collect();
+    targets.sort_by_key(|e| visibility_sort_key(e));
+    targets.dedup();
+    targets
+}
+
+fn visibility_sort_key(element: &SceneElement) -> (u8, u64) {
+    match element {
+        SceneElement::ConstructionPlane(i) => (0, i.index() as u64),
+        SceneElement::Sketch(i) => (1, i.index() as u64),
+        SceneElement::Line(i) => (2, i.index() as u64),
+        SceneElement::Circle(i) => (3, i.index() as u64),
+        SceneElement::Constraint(i) => (4, i.index() as u64),
+        SceneElement::Extrusion(i) => (5, i.index() as u64),
+        SceneElement::Body(i) => (6, i.index() as u64),
+        SceneElement::Image(i) => (7, i.index() as u64),
+        SceneElement::BooleanOp(i) => (8, i.index() as u64),
+        SceneElement::MoveOp(i) => (9, i.index() as u64),
+        SceneElement::MirrorOp(i) => (10, i.index() as u64),
+        SceneElement::RepeatOp(i) => (11, i.index() as u64),
+        SceneElement::SketchRepeatOp(i) => (12, i.index() as u64),
+        SceneElement::SketchOffsetOp(i) => (13, i.index() as u64),
+        SceneElement::SketchMirrorOp(i) => (14, i.index() as u64),
+        SceneElement::SketchVertexTreatmentOp(i) => (15, i.index() as u64),
+        SceneElement::SketchSliceOp(i) => (16, i.index() as u64),
+        SceneElement::SketchText(i) => (17, i.index() as u64),
+        SceneElement::SliceOp(i) => (18, i.index() as u64),
+        SceneElement::EdgeTreatmentOp(i) => (19, i.index() as u64),
+        SceneElement::Revolution(i) => (20, i.index() as u64),
+        SceneElement::Shape(i) => (21, i.index() as u64),
+        SceneElement::SweepOp(i) => (22, i.index() as u64),
+        SceneElement::Component(i) => (23, i.index() as u64),
+        SceneElement::UnitInstance(i) => (24, i.index() as u64),
+        SceneElement::Joint(i) => (25, i.index() as u64),
+        _ => (255, 0),
+    }
 }
 
 /// A timeline rollback point (#524/#545): the element to roll back to, plus whether the

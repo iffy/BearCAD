@@ -116,6 +116,8 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
 }
 
 pub const TOGGLE_CONSTRUCTION: ShortcutHint = ShortcutHint::plain("X");
+/// Toggle visibility of the selected objects on the Select tool (#1152).
+pub const TOGGLE_VISIBILITY: ShortcutHint = ShortcutHint::plain("V");
 /// Curve-mode toggle for the line tool (#73): the next point drawn gets bezier handles.
 /// A primary-modifier shortcut (#127), not a plain letter — a bare `B` collided with typing
 /// into the in-progress line's length field (its expression syntax accepts letters).
@@ -240,6 +242,10 @@ pub fn all_shortcuts() -> Vec<ShortcutSection> {
             ("Delete / Backspace".to_string(), "Delete the selection".to_string()),
             ("Z".to_string(), "Zoom to fit (the selection, or everything)".to_string()),
             ("N".to_string(), "Rename the selected element".to_string()),
+            (
+                "V".to_string(),
+                "Toggle visibility of the selection (Select tool)".to_string(),
+            ),
             ("Tab".to_string(), "Next dimension field while drawing".to_string()),
         ],
     });
@@ -404,6 +410,25 @@ mod shortcut_list_tests {
             labels.iter().any(|d| d.contains("Next tab")),
             "next-tab binding missing: {labels:?}"
         );
+    }
+
+    /// #1152: V toggles selection visibility on the Select tool.
+    #[test]
+    fn shortcut_list_covers_toggle_visibility() {
+        let sections = all_shortcuts();
+        let everywhere = sections
+            .iter()
+            .find(|s| s.title == "Everywhere")
+            .expect("Everywhere section");
+        assert!(
+            everywhere
+                .entries
+                .iter()
+                .any(|(k, d)| k == "V" && d.to_lowercase().contains("visibility")),
+            "V visibility shortcut missing: {:?}",
+            everywhere.entries
+        );
+        assert_eq!(format_shortcut(TOGGLE_VISIBILITY), "V");
     }
 }
 

@@ -685,6 +685,10 @@ pub fn instruction_from_json(
             construction: req_bool_flag(o, "construction", "apply_construction")?,
         }),
         "toggle_construction" => Ok(Instruction::ToggleConstruction),
+        "apply_visibility" => Ok(Instruction::ApplySelectionVisibility {
+            visible: req_bool_flag(o, "visible", "apply_visibility")?,
+        }),
+        "toggle_visibility" => Ok(Instruction::ToggleSelectionVisibility),
         "clear_selection" => Ok(Instruction::ClearSceneSelection),
         "delete_selection" => Ok(Instruction::DeleteSelection),
 

@@ -1897,6 +1897,13 @@ pub enum Action {
         color: [u8; 3],
     },
     ToggleElementVisibility(SceneElement),
+    /// Set visibility on every hideable target in the selection (#1152). Select tool only.
+    ApplySelectionVisibility {
+        visible: bool,
+    },
+    /// Toggle visibility of every hideable target in the selection (#1152). Select tool only.
+    /// When any target is visible, all are hidden; when all are hidden, all are shown.
+    ToggleSelectionVisibility,
     OrbitCamera { delta: (f32, f32) },
     PanCamera { delta: (f32, f32), viewport_height: f32 },
     ZoomCamera {
@@ -2772,6 +2779,8 @@ impl Action {
                     | Action::ClearSceneSelection
                     | Action::SetElementVisible { .. }
                     | Action::ToggleElementVisibility(_)
+                    | Action::ApplySelectionVisibility { .. }
+                    | Action::ToggleSelectionVisibility
                     | Action::ToggleFpsMode
                     | Action::EditDrawing { .. }
                     | Action::MoveDrawingView { .. }
@@ -13835,6 +13844,52 @@ label_hidden: false,
                 self.status = format!(
                     "{} {}",
                     element_label(element),
+                    if visible { "shown" } else { "hidden" }
+                );
+                ActionResult::Ok
+            }
+            Action::ApplySelectionVisibility { visible } => {
+                if self.tool != Tool::Select {
+                    return ActionResult::Err(
+                        "Switch to Select to change selection visibility".to_string(),
+                    );
+                }
+                let targets =
+                    crate::hierarchy::visibility_targets_from_selection(&self.scene_selection);
+                if targets.is_empty() {
+                    return ActionResult::Err("No hideable selection".to_string());
+                }
+                for element in &targets {
+                    self.element_visibility
+                        .set_visible(element.clone(), visible);
+                }
+                self.status = format!(
+                    "{} item(s) {}",
+                    targets.len(),
+                    if visible { "shown" } else { "hidden" }
+                );
+                ActionResult::Ok
+            }
+            Action::ToggleSelectionVisibility => {
+                if self.tool != Tool::Select {
+                    return ActionResult::Err(
+                        "Switch to Select to change selection visibility".to_string(),
+                    );
+                }
+                let targets =
+                    crate::hierarchy::visibility_targets_from_selection(&self.scene_selection);
+                if targets.is_empty() {
+                    return ActionResult::Err("No hideable selection".to_string());
+                }
+                // If any is visible, hide all; if all are hidden, show all (#1152).
+                let visible = !self.element_visibility.any_visible(&targets);
+                for element in &targets {
+                    self.element_visibility
+                        .set_visible(element.clone(), visible);
+                }
+                self.status = format!(
+                    "{} item(s) {}",
+                    targets.len(),
                     if visible { "shown" } else { "hidden" }
                 );
                 ActionResult::Ok
@@ -27085,6 +27140,94 @@ mod tests {
         let mut state = AppState::default();
         state.apply(Action::ToggleElementVisibility(SceneElement::Sketch(skey(0))));
         assert!(!state.element_visibility.is_visible(SceneElement::Sketch(skey(0))));
+    }
+
+    /// #1152: V / ToggleSelectionVisibility hides and shows the selection on Select.
+    #[test]
+    fn toggle_selection_visibility_hides_and_shows() {
+        let mut state = AppState::default();
+        state.apply(Action::SetTool(Tool::Select));
+        state
+            .scene_selection
+            .insert(SceneElement::Sketch(skey(0)));
+        assert!(state
+            .element_visibility
+            .is_visible(SceneElement::Sketch(skey(0))));
+        assert_eq!(
+            state.apply(Action::ToggleSelectionVisibility),
+            ActionResult::Ok
+        );
+        assert!(!state
+            .element_visibility
+            .is_visible(SceneElement::Sketch(skey(0))));
+        assert_eq!(
+            state.apply(Action::ToggleSelectionVisibility),
+            ActionResult::Ok
+        );
+        assert!(state
+            .element_visibility
+            .is_visible(SceneElement::Sketch(skey(0))));
+    }
+
+    /// #1152: ApplySelectionVisibility sets every target the same way.
+    #[test]
+    fn apply_selection_visibility_sets_all() {
+        let mut state = AppState::default();
+        state.apply(Action::SetTool(Tool::Select));
+        state
+            .scene_selection
+            .insert(SceneElement::Sketch(skey(0)));
+        assert_eq!(
+            state.apply(Action::ApplySelectionVisibility { visible: false }),
+            ActionResult::Ok
+        );
+        assert!(!state
+            .element_visibility
+            .is_visible(SceneElement::Sketch(skey(0))));
+        assert_eq!(
+            state.apply(Action::ApplySelectionVisibility { visible: true }),
+            ActionResult::Ok
+        );
+        assert!(state
+            .element_visibility
+            .is_visible(SceneElement::Sketch(skey(0))));
+    }
+
+    /// #1152: a body edge maps to its body for hide/show.
+    #[test]
+    fn toggle_selection_visibility_maps_body_edge_to_body() {
+        let mut state = AppState::default();
+        state.apply(Action::SetTool(Tool::Select));
+        let body = state.doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        state.scene_selection.insert(SceneElement::BodyEdge {
+            body,
+            a: [0, 0, 0],
+            b: [1, 0, 0],
+        });
+        assert_eq!(
+            state.apply(Action::ToggleSelectionVisibility),
+            ActionResult::Ok
+        );
+        assert!(!state.element_visibility.is_visible(SceneElement::Body(body)));
+    }
+
+    /// #1152: only the Select tool toggles selection visibility.
+    #[test]
+    fn toggle_selection_visibility_requires_select_tool() {
+        let mut state = AppState::default();
+        state.apply(Action::SetTool(Tool::Move));
+        state
+            .scene_selection
+            .insert(SceneElement::Sketch(skey(0)));
+        assert!(matches!(
+            state.apply(Action::ToggleSelectionVisibility),
+            ActionResult::Err(_)
+        ));
     }
 
     #[test]
