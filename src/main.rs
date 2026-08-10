@@ -13341,7 +13341,25 @@ impl App {
                 let orientation = model::DrawingOrientation::default();
                 match element {
                     SceneElement::Body(body) => {
-                        self.state.apply(Action::AddDrawingView { drawing, body, orientation });
+                        self.state.apply(Action::AddDrawingView {
+                            drawing,
+                            bodies: vec![body],
+                            orientation,
+                        });
+                    }
+                    SceneElement::Component(component) => {
+                        // Whole component → one multi-body projection (#1190).
+                        let bodies = self.state.component_body_indices(component);
+                        if bodies.is_empty() {
+                            self.state.status =
+                                "This component has no bodies to project".to_string();
+                        } else {
+                            self.state.apply(Action::AddDrawingView {
+                                drawing,
+                                bodies,
+                                orientation,
+                            });
+                        }
                     }
                     SceneElement::Sketch(sketch) => {
                         self.state
@@ -14132,16 +14150,8 @@ impl App {
                             .drawings
                             .get(d)
                             .and_then(|dr| dr.views.get(v))?;
-                        let source = match view.sketch {
-                            Some(si) => crate::names::node_label(
-                                &self.state.doc,
-                                hierarchy::HierarchyNode::Sketch(si),
-                            ),
-                            None => crate::names::node_label(
-                                &self.state.doc,
-                                hierarchy::HierarchyNode::Body(view.body),
-                            ),
-                        };
+                        let source =
+                            crate::drawing::drawing_view_source_label(&self.state.doc, view);
                         let aligned = view.aligned_parent.is_some();
                         // Aligned children show their inherited scale (#296/#300).
                         let scale = if aligned {
@@ -22540,10 +22550,6 @@ impl App {
         let mut pending_angle: Option<(usize, model::DrawingEdgeKey)> =
             ui.data(|d| d.get_temp(pending_angle_id));
 
-        let body_label = |doc: &model::Document, bi: crate::model::BodyKey| {
-            crate::names::node_label(doc, hierarchy::HierarchyNode::Body(bi))
-        };
-
         // Escape no longer leaves the Drawing workbench (#318) — it's used for cancelling
         // in-progress tool actions. A Back button (in the toolbar, left of Select) returns to
         // the model instead.
@@ -22713,13 +22719,8 @@ impl App {
                     egui::Stroke::new(1.0, egui::Color32::from_gray(80))
                 };
                 painter.rect_stroke(cell.shrink(2.0), 2.0, stroke, egui::StrokeKind::Inside);
-                let source_label = match view.sketch {
-                    Some(si) => crate::names::node_label(
-                        &self.state.doc,
-                        hierarchy::HierarchyNode::Sketch(si),
-                    ),
-                    None => body_label(&self.state.doc, view.body),
-                };
+                let source_label =
+                    crate::drawing::drawing_view_source_label(&self.state.doc, view);
                 let scale_suffix =
                     crate::drawing::resolved_view_scale(&self.state.doc, drawing, vi)
                         .map(|s| format!(" ({s})"))
@@ -23766,9 +23767,25 @@ impl App {
                     let orientation = model::DrawingOrientation::default();
                     let added = match payload.0.clone() {
                         SceneElement::Body(body) => matches!(
-                            self.state.apply(Action::AddDrawingView { drawing, body, orientation }),
+                            self.state.apply(Action::AddDrawingView {
+                                drawing,
+                                bodies: vec![body],
+                                orientation,
+                            }),
                             actions::ActionResult::Ok
                         ),
+                        SceneElement::Component(component) => {
+                            let bodies = self.state.component_body_indices(component);
+                            !bodies.is_empty()
+                                && matches!(
+                                    self.state.apply(Action::AddDrawingView {
+                                        drawing,
+                                        bodies,
+                                        orientation,
+                                    }),
+                                    actions::ActionResult::Ok
+                                )
+                        }
                         SceneElement::Sketch(sketch) => matches!(
                             self.state
                                 .apply(Action::AddDrawingSketchView { drawing, sketch, orientation }),

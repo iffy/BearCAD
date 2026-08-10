@@ -562,7 +562,71 @@ pub const MODEL_STROKE: f32 = 1.6;
 /// than [`MODEL_STROKE`] so annotations sit visually beneath the model outline.
 pub const DIM_STROKE: f32 = 0.6;
 
-/// The world-space feature edges a drawing view projects (#278): a body's solid-mesh unique
+/// Combined solid mesh of every body a view projects (#1190/#1191). Empty/`None` for sketch
+/// views or when no body still has geometry.
+pub fn drawing_view_solid_mesh(
+    doc: &Document,
+    view: &DrawingView,
+) -> Option<crate::extrude::SolidMesh> {
+    if view.sketch.is_some() {
+        return None;
+    }
+    let mut mesh = crate::extrude::SolidMesh::default();
+    for &bi in &view.bodies {
+        if let Some(solid) = crate::extrude::body_solid_mesh(doc, bi) {
+            mesh.triangles.extend(solid.triangles);
+        }
+    }
+    (!mesh.is_empty()).then_some(mesh)
+}
+
+/// Caption source label for a view: sketch name, single body name, component name when all
+/// bodies belong to one component (#1190), otherwise a short multi-body summary (#1191).
+pub fn drawing_view_source_label(doc: &Document, view: &DrawingView) -> String {
+    use crate::hierarchy::HierarchyNode;
+    use crate::names::node_label;
+    if let Some(si) = view.sketch {
+        return node_label(doc, HierarchyNode::Sketch(si));
+    }
+    match view.bodies.as_slice() {
+        [] => "Projection".to_string(),
+        [bi] => node_label(doc, HierarchyNode::Body(*bi)),
+        bodies => {
+            // Prefer the component name when every body is owned by the same component (or a
+            // nested one under it) — the usual "add whole component" case (#1190).
+            if let Some(label) = shared_component_label(doc, bodies) {
+                return label;
+            }
+            if bodies.len() <= 3 {
+                bodies
+                    .iter()
+                    .map(|bi| node_label(doc, HierarchyNode::Body(*bi)))
+                    .collect::<Vec<_>>()
+                    .join(" + ")
+            } else {
+                format!("{} bodies", bodies.len())
+            }
+        }
+    }
+}
+
+/// When every body is owned by the same component (possibly nested under it), that
+/// component's label; otherwise `None`.
+fn shared_component_label(doc: &Document, bodies: &[crate::model::BodyKey]) -> Option<String> {
+    use crate::hierarchy::{owning_component, HierarchyNode, SceneElement};
+    use crate::names::node_label;
+    let mut owners = bodies.iter().map(|&bi| {
+        owning_component(doc, &SceneElement::Body(bi))
+    });
+    let first = owners.next()??;
+    if owners.all(|o| o == Some(first)) {
+        Some(node_label(doc, HierarchyNode::Component(first)))
+    } else {
+        None
+    }
+}
+
+/// The world-space feature edges a drawing view projects (#278): each body's solid-mesh unique
 /// edges, or — when the view's `sketch` is set — that sketch's line/circle geometry. Shared by
 /// the editor pane and the SVG/PDF export so both draw the same thing.
 pub fn drawing_view_world_edges(doc: &Document, view: &DrawingView) -> Vec<(Vec3, Vec3)> {
@@ -585,15 +649,21 @@ pub fn drawing_view_world_edges(doc: &Document, view: &DrawingView) -> Vec<(Vec3
         edges
     } else {
         // Crease/feature edges only — the view-dependent silhouette (#319) is added later, in
-        // the stroke geometry, so it doesn't interfere with circle detection (#313).
-        crate::extrude::body_solid_mesh(doc, view.body)
-            .map(|mesh| crate::gpu_viewport::solid_mesh_unique_edges(&mesh))
-            .unwrap_or_default()
+        // the stroke geometry, so it doesn't interfere with circle detection (#313). Multi-body
+        // views union each body's creases (#1190/#1191).
+        let mut edges = Vec::new();
+        for &bi in &view.bodies {
+            if let Some(mesh) = crate::extrude::body_solid_mesh(doc, bi) {
+                edges.extend(crate::gpu_viewport::solid_mesh_unique_edges(&mesh));
+            }
+        }
+        edges
     }
 }
 
 /// The view-dependent silhouette edges of a body view (#319): a cylinder's straight sides and
-/// other smooth-surface outlines that aren't crease edges. Empty for sketch views.
+/// other smooth-surface outlines that aren't crease edges. Empty for sketch views. Multi-body
+/// views use the combined mesh so silhouettes account for the whole assembly (#1190/#1191).
 pub fn drawing_view_silhouette_edges(
     doc: &Document,
     views: &[DrawingView],
@@ -602,7 +672,7 @@ pub fn drawing_view_silhouette_edges(
     if view.sketch.is_some() {
         return Vec::new();
     }
-    let Some(mesh) = crate::extrude::body_solid_mesh(doc, view.body) else {
+    let Some(mesh) = drawing_view_solid_mesh(doc, view) else {
         return Vec::new();
     };
     let (right, up) = resolved_view_axes(views, view);
@@ -811,7 +881,7 @@ pub fn styled_view_geometry(
     if view.sketch.is_some() || view.style == DrawingViewStyle::Wireframe {
         return wireframe();
     }
-    let Some(mesh) = crate::extrude::body_solid_mesh(doc, view.body) else {
+    let Some(mesh) = drawing_view_solid_mesh(doc, view) else {
         return wireframe();
     };
     // Depth grows toward the viewer along the view's out-of-page axis.
@@ -1009,10 +1079,7 @@ fn render_drawing<C: Canvas>(
         let cell_y = py * height - cell_h * 0.5;
         // No card border in exports (#337): the grey rectangle is an editor-only affordance for
         // selecting/dragging a view; a printed drawing shows just the projection and its caption.
-        let source = match view.sketch {
-            Some(si) => crate::names::node_label(doc, crate::hierarchy::HierarchyNode::Sketch(si)),
-            None => crate::names::node_label(doc, crate::hierarchy::HierarchyNode::Body(view.body)),
-        };
+        let source = drawing_view_source_label(doc, view);
         // An aligned child inherits its parent's scale (#296/#300).
         let scale_text = resolved_view_scale(doc, index, vi);
         let scale_suffix = scale_text
@@ -1754,7 +1821,7 @@ mod tests {
 
         // The rendered bases come from resolved_view_axes unfolding the Top parent (X, -Y).
         let parent = DrawingView {
-            body: bkey(0), sketch: None, orientation: O::Top,
+            bodies: vec![bkey(0)], sketch: None, orientation: O::Top,
             dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
             dimensioned_circles: Vec::new(),
 circle_dim_offsets: Vec::new(), aligned_parent: None, aligned_dir: None,
@@ -1817,7 +1884,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
     fn aligned_child_ring_roll_renders_the_chosen_orientation() {
         use crate::model::{AlignDir, DrawingOrientation as O};
         let parent = DrawingView {
-            body: bkey(0), sketch: None, orientation: O::Front,
+            bodies: vec![bkey(0)], sketch: None, orientation: O::Front,
             dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
             dimensioned_circles: Vec::new(),
 circle_dim_offsets: Vec::new(), aligned_parent: None, aligned_dir: None,
@@ -2032,7 +2099,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
         doc.drawings.insert(Drawing {
             name: Some("Plate".to_string()),
             views: vec![DrawingView {
-                body: bkey(0),
+                bodies: vec![bkey(0)],
                 sketch: None,
                 orientation: DrawingOrientation::Front,
                 dimensioned_edges: Vec::new(),

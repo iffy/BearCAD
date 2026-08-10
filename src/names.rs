@@ -614,10 +614,7 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
         HierarchyNode::DrawingProjection { drawing, view } => {
             match doc.drawings.get(drawing).and_then(|d| d.views.get(view)) {
                 Some(v) => {
-                    let source = match v.sketch {
-                        Some(si) => node_label(doc, HierarchyNode::Sketch(si)),
-                        None => node_label(doc, HierarchyNode::Body(v.body)),
-                    };
+                    let source = crate::drawing::drawing_view_source_label(doc, v);
                     format!("{source} — {}", v.orientation.label())
                 }
                 None => "Projection".to_string(),

@@ -5,10 +5,12 @@ title: Projection
 
 # Projection
 
-Adds a **view** — a body or sketch projected from a chosen direction — to the page.
+Adds a **view** — a body, several bodies, a whole component, or a sketch projected from a
+chosen direction — to the page.
 
-With the tool active, click a body or sketch in the Elements pane, or drag its row onto
-the page. Click a placed view to reopen its editor. Options:
+With the tool active, click a body, component, or sketch in the Elements pane, or drag its
+row onto the page. **Shift+click** more bodies (or a component) to add them to the
+selected projection. Click a placed view to reopen its editor. Options:
 
 - **Direction:** drag the navigation bear, click a face or corner, or use the numpad
   (4 left, 5 front, 6 right, 8 top, 2 bottom, 0 back). For an arbitrary angle, orbit the

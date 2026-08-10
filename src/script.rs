@@ -258,11 +258,17 @@ pub enum Instruction {
     ExportDrawingSvg { drawing: usize, path: String },
     /// Export a technical drawing to a single-page vector PDF file.
     ExportDrawingPdf { drawing: usize, path: String },
-    /// Add a body view (in an orientation) to a drawing.
+    /// Add a body (or multi-body) view in an orientation to a drawing (#1190/#1191).
     AddDrawingView {
         drawing: usize,
-        body: usize,
+        bodies: Vec<usize>,
         orientation: crate::model::DrawingOrientation,
+    },
+    /// Append bodies to an existing body projection (#1191).
+    AddBodiesToDrawingView {
+        drawing: usize,
+        view: usize,
+        bodies: Vec<usize>,
     },
     /// Add a sketch projection to a drawing (#278/#403) — `bearcad.drawing_view{ sketch = i }`.
     AddDrawingSketchView {
@@ -1143,12 +1149,33 @@ impl Instruction {
             }
             Instruction::AddDrawingView {
                 drawing,
-                body,
+                bodies,
                 orientation,
-            } => format!(
-                "bearcad.drawing_view{{ drawing = {drawing}, body = {body}, orientation = {:?} }}",
-                orientation.label().to_ascii_lowercase()
-            ),
+            } => {
+                let orient = orientation.label().to_ascii_lowercase();
+                match bodies.as_slice() {
+                    [b] => format!(
+                        "bearcad.drawing_view{{ drawing = {drawing}, body = {b}, orientation = {orient:?} }}"
+                    ),
+                    many => format!(
+                        "bearcad.drawing_view{{ drawing = {drawing}, bodies = {{{}}}, orientation = {orient:?} }}",
+                        many.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(", ")
+                    ),
+                }
+            }
+            Instruction::AddBodiesToDrawingView {
+                drawing,
+                view,
+                bodies,
+            } => match bodies.as_slice() {
+                [b] => format!(
+                    "bearcad.drawing_view_add{{ drawing = {drawing}, view = {view}, body = {b} }}"
+                ),
+                many => format!(
+                    "bearcad.drawing_view_add{{ drawing = {drawing}, view = {view}, bodies = {{{}}} }}",
+                    many.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(", ")
+                ),
+            },
             Instruction::AddDrawingSketchView {
                 drawing,
                 sketch,
@@ -5756,21 +5783,54 @@ impl ScriptRunner {
             }
             Instruction::AddDrawingView {
                 drawing,
-                body,
+                bodies,
                 orientation,
             } => {
                 let Some(drawing) = drawing_key(&state.doc, drawing) else {
                     self.last_action_error = Some(format!("No drawing {drawing}"));
                     return StepResult::Continue;
                 };
-                let Some(body) = body_key(&state.doc, body) else {
-                    self.last_action_error = Some(format!("No body {body}"));
+                let resolved = body_keys(&state.doc, &bodies);
+                if resolved.len() != bodies.len() {
+                    let missing = bodies
+                        .iter()
+                        .find(|&&b| body_key(&state.doc, b).is_none())
+                        .copied()
+                        .unwrap_or(0);
+                    self.last_action_error = Some(format!("No body {missing}"));
                     return StepResult::Continue;
-                };
+                }
                 let result = state.apply(Action::AddDrawingView {
                     drawing,
-                    body,
+                    bodies: resolved,
                     orientation,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::AddBodiesToDrawingView {
+                drawing,
+                view,
+                bodies,
+            } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
+                let resolved = body_keys(&state.doc, &bodies);
+                if resolved.len() != bodies.len() {
+                    let missing = bodies
+                        .iter()
+                        .find(|&&b| body_key(&state.doc, b).is_none())
+                        .copied()
+                        .unwrap_or(0);
+                    self.last_action_error = Some(format!("No body {missing}"));
+                    return StepResult::Continue;
+                }
+                let result = state.apply(Action::AddBodiesToDrawingView {
+                    drawing,
+                    view,
+                    bodies: resolved,
                 });
                 self.record_action_error(result);
                 StepResult::Continue

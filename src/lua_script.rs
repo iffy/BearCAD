@@ -5817,8 +5817,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     // Technical drawings (#180): `bearcad.drawing{ name? }` creates a drawing (and opens its
-    // pane), returning its index; `bearcad.drawing_view{ drawing, body, orientation? }` adds a
-    // body view in an orientation ("front"/"top"/"iso"/…, default front).
+    // pane), returning its index; `bearcad.drawing_view{ drawing, body|bodies|component|sketch,
+    // orientation? }` adds a projection. Multi-body and whole-component views are #1190/#1191.
     api.set(
         "drawing",
         lua.create_function(|lua, opts: Option<Table>| {
@@ -5837,7 +5837,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "drawing_view",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            check_keys(&opts, "drawing_view", &["drawing", "body", "sketch", "orientation"])?;
+            check_keys(
+                &opts,
+                "drawing_view",
+                &["drawing", "body", "bodies", "component", "sketch", "orientation"],
+            )?;
             let drawing: usize = opts.get("drawing")?;
             let orientation = match opts.get::<Option<String>>("orientation")? {
                 Some(name) => crate::model::DrawingOrientation::from_name(&name).ok_or_else(|| {
@@ -5845,25 +5849,115 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 })?,
                 None => crate::model::DrawingOrientation::default(),
             };
-            // A view projects either a body or a sketch (#278/#403).
+            // A view projects a body, several bodies, a component, or a sketch (#278/#403/#1190/#1191).
             let body: Option<usize> = opts.get("body")?;
+            let bodies: Option<Vec<usize>> = opts.get("bodies")?;
+            let component: Option<usize> = opts.get("component")?;
             let sketch: Option<usize> = opts.get("sketch")?;
+            let source_count = usize::from(body.is_some())
+                + usize::from(bodies.is_some())
+                + usize::from(component.is_some())
+                + usize::from(sketch.is_some());
+            if source_count != 1 {
+                return Err(mlua::Error::external(
+                    "drawing_view requires exactly one of `body`, `bodies`, `component`, or `sketch`",
+                ));
+            }
             unsafe {
-                match (body, sketch) {
-                    (Some(body), None) => tick.exec(Instruction::AddDrawingView {
-                        drawing,
-                        body,
-                        orientation,
-                    }),
-                    (None, Some(sketch)) => tick.exec(Instruction::AddDrawingSketchView {
+                if let Some(sketch) = sketch {
+                    return tick.exec(Instruction::AddDrawingSketchView {
                         drawing,
                         sketch,
                         orientation,
-                    }),
-                    _ => Err(mlua::Error::external(
-                        "drawing_view requires exactly one of `body` or `sketch`",
-                    )),
+                    });
                 }
+                let bodies = if let Some(body) = body {
+                    vec![body]
+                } else if let Some(bodies) = bodies {
+                    if bodies.is_empty() {
+                        return Err(mlua::Error::external("`bodies` must not be empty"));
+                    }
+                    bodies
+                } else {
+                    let ci = component.expect("component set");
+                    let state = tick.state();
+                    let Some(ck) = state.doc.components.keys().nth(ci) else {
+                        return Err(mlua::Error::external(format!("No component {ci}")));
+                    };
+                    let bodies: Vec<usize> = state
+                        .component_body_indices(ck)
+                        .into_iter()
+                        .filter_map(|bk| state.doc.bodies.keys().position(|k| k == bk))
+                        .collect();
+                    if bodies.is_empty() {
+                        return Err(mlua::Error::external(
+                            "This component has no bodies to project",
+                        ));
+                    }
+                    bodies
+                };
+                tick.exec(Instruction::AddDrawingView {
+                    drawing,
+                    bodies,
+                    orientation,
+                })
+            }
+        })?,
+    )?;
+    // Append bodies to an existing projection (#1191) — the scripted form of shift-click.
+    api.set(
+        "drawing_view_add",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "drawing_view_add",
+                &["drawing", "view", "body", "bodies", "component"],
+            )?;
+            let drawing: usize = opts.get("drawing")?;
+            let view: usize = opts.get("view")?;
+            let body: Option<usize> = opts.get("body")?;
+            let bodies: Option<Vec<usize>> = opts.get("bodies")?;
+            let component: Option<usize> = opts.get("component")?;
+            let source_count = usize::from(body.is_some())
+                + usize::from(bodies.is_some())
+                + usize::from(component.is_some());
+            if source_count != 1 {
+                return Err(mlua::Error::external(
+                    "drawing_view_add requires exactly one of `body`, `bodies`, or `component`",
+                ));
+            }
+            unsafe {
+                let bodies = if let Some(body) = body {
+                    vec![body]
+                } else if let Some(bodies) = bodies {
+                    if bodies.is_empty() {
+                        return Err(mlua::Error::external("`bodies` must not be empty"));
+                    }
+                    bodies
+                } else {
+                    let ci = component.expect("component set");
+                    let state = tick.state();
+                    let Some(ck) = state.doc.components.keys().nth(ci) else {
+                        return Err(mlua::Error::external(format!("No component {ci}")));
+                    };
+                    let bodies: Vec<usize> = state
+                        .component_body_indices(ck)
+                        .into_iter()
+                        .filter_map(|bk| state.doc.bodies.keys().position(|k| k == bk))
+                        .collect();
+                    if bodies.is_empty() {
+                        return Err(mlua::Error::external(
+                            "This component has no bodies to project",
+                        ));
+                    }
+                    bodies
+                };
+                tick.exec(Instruction::AddBodiesToDrawingView {
+                    drawing,
+                    view,
+                    bodies,
+                })
             }
         })?,
     )?;
@@ -9099,7 +9193,7 @@ mod tests {
             local ok3 = pcall(function()
                 bearcad.drawing_view{ drawing = d }
             end)
-            assert(not ok3, "drawing_view without body or sketch should error")
+            assert(not ok3, "drawing_view without a source should error")
             "#,
         );
         assert_eq!(state.doc.repeat_ops.len(), 1);
@@ -10783,6 +10877,75 @@ mod tests {
         "#,
         );
         assert_eq!(state.doc.drawings[dkey(0)].views.len(), 0);
+    }
+
+    /// #1191: `bodies = {…}` puts several bodies in one projection; `drawing_view_add` appends
+    /// more (the scripted form of shift-click).
+    #[test]
+    fn lua_drawing_view_accepts_multiple_bodies_and_append() {
+        use crate::model::body_key_for_slot as bkey;
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 20, height = 20 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            bearcad.rect{ x = 30, y = 0, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5 }
+            bearcad.rect{ x = 50, y = 0, width = 8, height = 8 }
+            bearcad.extrude{ polygon = {8, 9, 10, 11}, distance = 3 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, bodies = {0, 1}, orientation = "front" }
+            assert(bearcad.count("drawing") == 1)
+            bearcad.drawing_view_add{ drawing = d, view = 0, body = 2 }
+        "#,
+        );
+        assert_eq!(state.doc.drawings[dkey(0)].views.len(), 1, "one shared projection");
+        assert_eq!(
+            state.doc.drawings[dkey(0)].views[0].bodies,
+            vec![bkey(0), bkey(1), bkey(2)],
+            "all three bodies land in the same view"
+        );
+        // Multi-body edges are the union of each body's creases.
+        let edges = crate::drawing::drawing_view_world_edges(
+            &state.doc,
+            &state.doc.drawings[dkey(0)].views[0],
+        );
+        assert!(
+            edges.len() > 12,
+            "two boxes contribute more creases than one alone, got {}",
+            edges.len()
+        );
+    }
+
+    /// #1190: `component = i` expands a component into one multi-body projection.
+    #[test]
+    fn lua_drawing_view_accepts_a_whole_component() {
+        use crate::model::body_key_for_slot as bkey;
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 20, height = 20 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            bearcad.rect{ x = 30, y = 0, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5 }
+            local c = bearcad.component{ name = "Frame" }
+            bearcad.move_to_component{ kind = "body", index = 0, component = c }
+            bearcad.move_to_component{ kind = "body", index = 1, component = c }
+            local d = bearcad.drawing{ name = "Assembly" }
+            bearcad.drawing_view{ drawing = d, component = c, orientation = "top" }
+        "#,
+        );
+        assert_eq!(state.doc.drawings[dkey(0)].views.len(), 1);
+        let view = &state.doc.drawings[dkey(0)].views[0];
+        let mut bodies = view.bodies.clone();
+        bodies.sort_unstable();
+        assert_eq!(bodies, vec![bkey(0), bkey(1)], "component expands to both bodies");
+        // Caption prefers the component name.
+        let label = crate::drawing::drawing_view_source_label(&state.doc, view);
+        assert!(
+            label.contains("Frame"),
+            "multi-body component view labels with the component name, got {label:?}"
+        );
     }
 
     /// #180: `bearcad.drawing_dimension{}` toggles a view edge's length dimension, keyed by the

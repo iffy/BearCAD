@@ -2294,11 +2294,19 @@ pub enum Action {
         height_mm: Option<f32>,
         margin_mm: Option<f32>,
     },
-    /// Add a body view (in a given orientation) to a drawing.
+    /// Add a body view (in a given orientation) to a drawing. `bodies` may hold several for an
+    /// assembly projection (#1190/#1191); each must exist.
     AddDrawingView {
         drawing: crate::model::DrawingKey,
-        body: crate::model::BodyKey,
+        bodies: Vec<crate::model::BodyKey>,
         orientation: crate::model::DrawingOrientation,
+    },
+    /// Append bodies to an existing body projection (#1191): shift-click more bodies into the
+    /// same card. Sketches refuse; already-present bodies are ignored.
+    AddBodiesToDrawingView {
+        drawing: crate::model::DrawingKey,
+        view: usize,
+        bodies: Vec<crate::model::BodyKey>,
     },
     /// Add a sketch projection to a drawing (#278).
     AddDrawingSketchView {
@@ -10916,7 +10924,7 @@ impl AppState {
                 let orientation = crate::model::DrawingOrientation::default();
                 let added = self.apply(Action::AddDrawingView {
                     drawing,
-                    body,
+                    bodies: vec![body],
                     orientation,
                 });
                 if matches!(added, ActionResult::Ok) {
@@ -10955,12 +10963,20 @@ impl AppState {
             }
             Action::AddDrawingView {
                 drawing,
-                body,
+                bodies,
                 orientation,
             } => {
-                if !self.doc.bodies.contains(body) {
-                    return ActionResult::Err(format!("No body {body:?}"));
+                if bodies.is_empty() {
+                    return ActionResult::Err("AddDrawingView needs at least one body".into());
                 }
+                for &body in &bodies {
+                    if !self.doc.bodies.contains(body) {
+                        return ActionResult::Err(format!("No body {body:?}"));
+                    }
+                }
+                // Dedup while preserving order.
+                let mut seen = std::collections::HashSet::new();
+                let bodies: Vec<_> = bodies.into_iter().filter(|b| seen.insert(*b)).collect();
                 if self.doc.drawings.get(drawing).is_none() {
                     return ActionResult::Err(format!("No drawing {}", drawing.index()));
                 }
@@ -10969,34 +10985,64 @@ impl AppState {
                 let step = (self.doc.drawings[drawing].views.len() % 6) as f32 * 0.06;
                 // Views start with no dimensions shown (#331); the projection's context pane has
                 // "Show all dimensions"/"Hide all dimensions" buttons to populate or clear them.
-                let view = crate::model::DrawingView {
-                    body,
-                    sketch: None,
-                    orientation,
-                    dimensioned_edges: Vec::new(),
-                    angle_dims: Vec::new(),
-                dimension_offsets: Vec::new(),
-                dimensioned_circles: Vec::new(),
-circle_dim_offsets: Vec::new(),
-                aligned_parent: None,
-                aligned_dir: None,
-                align_lines: false,
-label_hidden: false,
-                label_pos: Default::default(),
-                label_text: None,
-                    pos_x: (0.35 + step).min(0.9),
-                    pos_y: (0.35 + step).min(0.9),
-                    scale: None,
-                    style: Default::default(),
-                };
+                let mut view = crate::model::DrawingView::from_bodies(bodies.clone(), orientation);
+                view.pos_x = (0.35 + step).min(0.9);
+                view.pos_y = (0.35 + step).min(0.9);
                 self.doc.drawings[drawing].views.push(view);
                 let vi = self.doc.drawings[drawing].views.len() - 1;
                 self.select_drawing_only(drawing, crate::context::DrawingElementRef::Projection(vi));
+                let source = if bodies.len() == 1 {
+                    format!("body {}", bodies[0].index())
+                } else {
+                    format!("{} bodies", bodies.len())
+                };
                 self.status = format!(
-                    "Added {} view of body {} to drawing {}",
+                    "Added {} view of {} to drawing {}",
                     orientation.label(),
-                    body.index(),
+                    source,
                     drawing.index()
+                );
+                ActionResult::Ok
+            }
+            Action::AddBodiesToDrawingView {
+                drawing,
+                view,
+                bodies,
+            } => {
+                if bodies.is_empty() {
+                    return ActionResult::Err("No bodies to add".into());
+                }
+                for &body in &bodies {
+                    if !self.doc.bodies.contains(body) {
+                        return ActionResult::Err(format!("No body {body:?}"));
+                    }
+                }
+                let Some(d) = self.doc.drawings.get_mut(drawing) else {
+                    return ActionResult::Err(format!("No drawing {}", drawing.index()));
+                };
+                let Some(v) = d.views.get_mut(view) else {
+                    return ActionResult::Err(format!("No view {view}"));
+                };
+                if v.sketch.is_some() {
+                    let e = "Can't add bodies to a sketch projection".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let mut added = 0usize;
+                for body in bodies {
+                    if !v.bodies.contains(&body) {
+                        v.bodies.push(body);
+                        added += 1;
+                    }
+                }
+                if added == 0 {
+                    self.status = "Those bodies are already in the projection".to_string();
+                    return ActionResult::Ok;
+                }
+                self.select_drawing_only(drawing, crate::context::DrawingElementRef::Projection(view));
+                self.status = format!(
+                    "Added {added} body{} to projection {view}",
+                    if added == 1 { "" } else { "s" }
                 );
                 ActionResult::Ok
             }
@@ -11009,27 +11055,9 @@ label_hidden: false,
                 }
                 let step = (self.doc.drawings[drawing].views.len() % 6) as f32 * 0.06;
                 // Views start with no dimensions shown (#331).
-                let view = crate::model::DrawingView {
-                    // A sketch view names no body; a vacant slot never resolves to one.
-                    body: crate::arena::Key::from_bits(u64::MAX),
-                    sketch: Some(sketch),
-                    orientation,
-                    dimensioned_edges: Vec::new(),
-                    angle_dims: Vec::new(),
-                dimension_offsets: Vec::new(),
-                dimensioned_circles: Vec::new(),
-circle_dim_offsets: Vec::new(),
-                aligned_parent: None,
-                aligned_dir: None,
-                align_lines: false,
-label_hidden: false,
-                label_pos: Default::default(),
-                label_text: None,
-                    pos_x: (0.35 + step).min(0.9),
-                    pos_y: (0.35 + step).min(0.9),
-                    scale: None,
-                    style: Default::default(),
-                };
+                let mut view = crate::model::DrawingView::from_sketch(sketch, orientation);
+                view.pos_x = (0.35 + step).min(0.9);
+                view.pos_y = (0.35 + step).min(0.9);
                 self.doc.drawings[drawing].views.push(view);
                 let vi = self.doc.drawings[drawing].views.len() - 1;
                 self.select_drawing_only(drawing, crate::context::DrawingElementRef::Projection(vi));
@@ -11059,27 +11087,19 @@ label_hidden: false,
                 } else {
                     (pos.clamp(0.0, 1.0), pv.pos_y)
                 };
-                // Views start with no dimensions shown (#331).
-                let view = crate::model::DrawingView {
-                    body: pv.body,
-                    sketch: pv.sketch,
-                    orientation,
-                    dimensioned_edges: Vec::new(),
-                    angle_dims: Vec::new(),
-                    dimension_offsets: Vec::new(),
-                    dimensioned_circles: Vec::new(),
-circle_dim_offsets: Vec::new(),
-                    pos_x,
-                    pos_y,
-                    scale: pv.scale.clone(),
-                    style: pv.style,
-                    aligned_parent: Some(parent),
-                    aligned_dir: Some(dir),
-                    align_lines: false,
-label_hidden: false,
-                    label_pos: Default::default(),
-                    label_text: None,
+                // Views start with no dimensions shown (#331). Multi-body parents carry all
+                // their bodies into the aligned child (#1190/#1191).
+                let mut view = if let Some(si) = pv.sketch {
+                    crate::model::DrawingView::from_sketch(si, orientation)
+                } else {
+                    crate::model::DrawingView::from_bodies(pv.bodies.clone(), orientation)
                 };
+                view.pos_x = pos_x;
+                view.pos_y = pos_y;
+                view.scale = pv.scale.clone();
+                view.style = pv.style;
+                view.aligned_parent = Some(parent);
+                view.aligned_dir = Some(dir);
                 self.doc.drawings[drawing].views.push(view);
                 let vi = self.doc.drawings[drawing].views.len() - 1;
                 self.select_drawing_only(drawing, crate::context::DrawingElementRef::Projection(vi));
@@ -13631,22 +13651,91 @@ label_hidden: false,
                     return ActionResult::Ok;
                 }
                 let consumed_by_tool = match &element {
-                    // The Add-view tool (#289): a body or sketch clicked (Elements pane) drops
-                    // a projection of it on the open drawing page and selects that projection
-                    // so the context pane opens its editor.
+                    // The Add-view tool (#289): a body, sketch, or component clicked (Elements
+                    // pane) drops a projection on the open drawing page and selects it so the
+                    // context pane opens its editor. Shift+click appends more bodies to the
+                    // selected projection (#1191); a component expands to all its bodies (#1190).
                     SceneElement::Body(bi)
                         if self.tool == Tool::DrawingAdd && self.editing_drawing.is_some() =>
                     {
                         let drawing = self.editing_drawing.unwrap();
                         let body = *bi;
-                        let result = self.apply(Action::AddDrawingView {
-                            drawing,
-                            body,
-                            orientation: crate::model::DrawingOrientation::default(),
-                        });
-                        if matches!(result, ActionResult::Ok) {
-                            let vi = self.doc.drawings[drawing].views.len() - 1;
-                            self.select_drawing_only(drawing, crate::context::DrawingElementRef::Projection(vi));
+                        let orientation = crate::model::DrawingOrientation::default();
+                        if additive {
+                            if let Some(view) = self
+                                .selected_drawing_view()
+                                .filter(|(d, _)| *d == drawing)
+                                .map(|(_, v)| v)
+                                .filter(|&v| {
+                                    self.doc
+                                        .drawings
+                                        .get(drawing)
+                                        .and_then(|d| d.views.get(v))
+                                        .is_some_and(|vv| vv.sketch.is_none())
+                                })
+                            {
+                                let _ = self.apply(Action::AddBodiesToDrawingView {
+                                    drawing,
+                                    view,
+                                    bodies: vec![body],
+                                });
+                            } else {
+                                let _ = self.apply(Action::AddDrawingView {
+                                    drawing,
+                                    bodies: vec![body],
+                                    orientation,
+                                });
+                            }
+                        } else {
+                            let _ = self.apply(Action::AddDrawingView {
+                                drawing,
+                                bodies: vec![body],
+                                orientation,
+                            });
+                        }
+                        true
+                    }
+                    SceneElement::Component(ci)
+                        if self.tool == Tool::DrawingAdd && self.editing_drawing.is_some() =>
+                    {
+                        let drawing = self.editing_drawing.unwrap();
+                        let bodies = self.component_body_indices(*ci);
+                        if bodies.is_empty() {
+                            self.status = "This component has no bodies to project".to_string();
+                        } else {
+                            let orientation = crate::model::DrawingOrientation::default();
+                            if additive {
+                                if let Some(view) = self
+                                    .selected_drawing_view()
+                                    .filter(|(d, _)| *d == drawing)
+                                    .map(|(_, v)| v)
+                                    .filter(|&v| {
+                                        self.doc
+                                            .drawings
+                                            .get(drawing)
+                                            .and_then(|d| d.views.get(v))
+                                            .is_some_and(|vv| vv.sketch.is_none())
+                                    })
+                                {
+                                    let _ = self.apply(Action::AddBodiesToDrawingView {
+                                        drawing,
+                                        view,
+                                        bodies,
+                                    });
+                                } else {
+                                    let _ = self.apply(Action::AddDrawingView {
+                                        drawing,
+                                        bodies,
+                                        orientation,
+                                    });
+                                }
+                            } else {
+                                let _ = self.apply(Action::AddDrawingView {
+                                    drawing,
+                                    bodies,
+                                    orientation,
+                                });
+                            }
                         }
                         true
                     }
@@ -23436,7 +23525,7 @@ mod tests {
         state.apply(Action::CreateDrawing { name: None });
         state.apply(Action::AddDrawingView {
             drawing: dkey(0),
-            body: bkey(0),
+            bodies: vec![bkey(0)],
             orientation: DrawingOrientation::Front,
         });
 
@@ -23474,7 +23563,7 @@ mod tests {
         state.apply(Action::CreateDrawing { name: None });
         state.apply(Action::AddDrawingView {
             drawing: dkey(0),
-            body: bkey(0),
+            bodies: vec![bkey(0)],
             orientation: DrawingOrientation::Front,
         });
         let result = state.apply(Action::SetDrawingViewScale {
@@ -23512,7 +23601,7 @@ mod tests {
         state.apply(Action::CreateDrawing { name: None });
         state.apply(Action::AddDrawingView {
             drawing: dkey(0),
-            body: bkey(0),
+            bodies: vec![bkey(0)],
             orientation: DrawingOrientation::Isometric,
         });
 
@@ -23572,7 +23661,7 @@ mod tests {
         state.apply(Action::CreateDrawing { name: None });
         state.apply(Action::AddDrawingView {
             drawing: dkey(0),
-            body: bkey(0),
+            bodies: vec![bkey(0)],
             orientation: DrawingOrientation::Front,
         });
         state.apply(Action::MoveDrawingView { drawing: dkey(0), view: 0, pos_x: 0.4, pos_y: 0.4 });
@@ -25658,7 +25747,7 @@ mod tests {
         state.apply(Action::CreateDrawing { name: None });
         state.apply(Action::AddDrawingView {
             drawing: dkey(0),
-            body: bkey(0),
+            bodies: vec![bkey(0)],
             orientation: crate::model::DrawingOrientation::Top,
         });
         let center = [100, 200, 300];
@@ -28580,7 +28669,7 @@ mod tests {
         let drawing = &state.doc.drawings[dkey(0)];
         assert_eq!(drawing.name.as_deref(), Some("Plate"));
         assert_eq!(drawing.views.len(), 1, "one view of the body");
-        assert_eq!(drawing.views[0].body, bkey(0));
+        assert_eq!(drawing.views[0].bodies[0], bkey(0));
         assert_eq!(drawing.views[0].orientation, DrawingOrientation::default());
 
         // Unnamed body → default "Drawing N" title, still with a view.
@@ -28589,12 +28678,112 @@ mod tests {
             ActionResult::Ok
         );
         assert_eq!(state.doc.drawings[dkey(1)].name, None);
-        assert_eq!(state.doc.drawings[dkey(1)].views[0].body, bkey(1));
+        assert_eq!(state.doc.drawings[dkey(1)].views[0].bodies[0], bkey(1));
 
         assert!(matches!(
             state.apply(Action::CreateDrawingOfBody { body: bkey(99) }),
             ActionResult::Err(_)
         ));
+    }
+
+    /// #1191: shift-click path — append bodies to the selected projection rather than opening
+    /// a second card. Plain click still creates a new view.
+    #[test]
+    fn drawing_add_shift_click_appends_bodies_to_the_selected_view() {
+        use crate::hierarchy::SceneElement;
+        use crate::model::DrawingOrientation;
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateDrawing { name: None });
+        let drawing = state.editing_drawing.expect("drawing open");
+        state.tool = Tool::DrawingAdd;
+
+        // Plain click → new view of body 0.
+        assert_eq!(
+            state.apply(Action::ClickSceneElement {
+                element: SceneElement::Body(bkey(0)),
+                additive: false,
+            }),
+            ActionResult::Ok
+        );
+        assert_eq!(state.doc.drawings[drawing].views.len(), 1);
+        assert_eq!(state.doc.drawings[drawing].views[0].bodies, vec![bkey(0)]);
+
+        // Shift+click body 1 → same view now holds both.
+        assert_eq!(
+            state.apply(Action::ClickSceneElement {
+                element: SceneElement::Body(bkey(1)),
+                additive: true,
+            }),
+            ActionResult::Ok
+        );
+        assert_eq!(
+            state.doc.drawings[drawing].views.len(),
+            1,
+            "shift-click must not open a second card"
+        );
+        assert_eq!(
+            state.doc.drawings[drawing].views[0].bodies,
+            vec![bkey(0), bkey(1)]
+        );
+
+        // Plain click again → a fresh view.
+        assert_eq!(
+            state.apply(Action::ClickSceneElement {
+                element: SceneElement::Body(bkey(0)),
+                additive: false,
+            }),
+            ActionResult::Ok
+        );
+        assert_eq!(state.doc.drawings[drawing].views.len(), 2);
+        assert_eq!(state.doc.drawings[drawing].views[1].bodies, vec![bkey(0)]);
+        assert_eq!(
+            state.doc.drawings[drawing].views[1].orientation,
+            DrawingOrientation::default()
+        );
+    }
+
+    /// #1190: with the Projection tool active, clicking a component projects every body in it
+    /// as one multi-body view.
+    #[test]
+    fn drawing_add_component_projects_every_body() {
+        use crate::hierarchy::SceneElement;
+        use crate::model::ComponentMember as CM;
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateComponent {
+            name: Some("Frame".to_string()),
+            parent: None,
+        });
+        state
+            .doc
+            .set_component_member(CM::Body(bkey(0)), Some(ckey(0)));
+        state
+            .doc
+            .set_component_member(CM::Body(bkey(1)), Some(ckey(0)));
+        state.apply(Action::CreateDrawing { name: None });
+        let drawing = state.editing_drawing.expect("drawing open");
+        state.tool = Tool::DrawingAdd;
+
+        assert_eq!(
+            state.apply(Action::ClickSceneElement {
+                element: SceneElement::Component(ckey(0)),
+                additive: false,
+            }),
+            ActionResult::Ok
+        );
+        assert_eq!(state.doc.drawings[drawing].views.len(), 1);
+        let mut bodies = state.doc.drawings[drawing].views[0].bodies.clone();
+        bodies.sort_unstable();
+        assert_eq!(bodies, vec![bkey(0), bkey(1)]);
+        let label = crate::drawing::drawing_view_source_label(
+            &state.doc,
+            &state.doc.drawings[drawing].views[0],
+        );
+        assert!(
+            label.contains("Frame"),
+            "caption should name the component, got {label:?}"
+        );
     }
 
     #[test]

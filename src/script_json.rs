@@ -852,16 +852,124 @@ pub fn instruction_from_json(
                 None => DrawingOrientation::default(),
             };
             let drawing = req_usize(o, "drawing", "drawing_view")?;
-            // A view projects either a body or a sketch (#278/#403).
-            match (opt_usize(o, "body")?, opt_usize(o, "sketch")?) {
-                (Some(body), None) => {
-                    Ok(Instruction::AddDrawingView { drawing, body, orientation })
-                }
-                (None, Some(sketch)) => {
-                    Ok(Instruction::AddDrawingSketchView { drawing, sketch, orientation })
-                }
-                _ => Err("drawing_view requires exactly one of `body` or `sketch`".into()),
+            // A view projects a body, several bodies, a component, or a sketch (#278/#403/#1190/#1191).
+            let body = opt_usize(o, "body")?;
+            let bodies = match o.get("bodies") {
+                Some(Value::Array(_)) => Some(usize_list(o, "bodies")?),
+                Some(_) => return Err("drawing_view `bodies` must be an array".into()),
+                None => None,
+            };
+            let component = opt_usize(o, "component")?;
+            let sketch = opt_usize(o, "sketch")?;
+            let source_count = usize::from(body.is_some())
+                + usize::from(bodies.is_some())
+                + usize::from(component.is_some())
+                + usize::from(sketch.is_some());
+            if source_count != 1 {
+                return Err(
+                    "drawing_view requires exactly one of `body`, `bodies`, `component`, or `sketch`"
+                        .into(),
+                );
             }
+            if let Some(sketch) = sketch {
+                return Ok(Instruction::AddDrawingSketchView {
+                    drawing,
+                    sketch,
+                    orientation,
+                });
+            }
+            let bodies = if let Some(body) = body {
+                vec![body]
+            } else if let Some(bodies) = bodies {
+                if bodies.is_empty() {
+                    return Err("drawing_view `bodies` must not be empty".into());
+                }
+                bodies
+            } else {
+                // Component ordinal → every body currently inside it (#1190).
+                let ci = component.expect("component set");
+                let Some(ck) = doc.components.keys().nth(ci) else {
+                    return Err(format!("No component {ci}"));
+                };
+                // Expand via ownership the same way export does — without needing AppState.
+                let bodies: Vec<usize> = doc
+                    .bodies
+                    .keys()
+                    .enumerate()
+                    .filter(|(_, bi)| {
+                        crate::hierarchy::owning_component(
+                            doc,
+                            &crate::hierarchy::SceneElement::Body(*bi),
+                        )
+                        .is_some_and(|owner| doc.component_chain(owner).contains(&ck))
+                    })
+                    .map(|(ord, _)| ord)
+                    .collect();
+                if bodies.is_empty() {
+                    return Err("This component has no bodies to project".into());
+                }
+                bodies
+            };
+            Ok(Instruction::AddDrawingView {
+                drawing,
+                bodies,
+                orientation,
+            })
+        }
+        "drawing_view_add" => {
+            let drawing = req_usize(o, "drawing", "drawing_view_add")?;
+            let view = req_usize(o, "view", "drawing_view_add")?;
+            let body = opt_usize(o, "body")?;
+            let bodies = match o.get("bodies") {
+                Some(Value::Array(_)) => Some(usize_list(o, "bodies")?),
+                Some(_) => return Err("drawing_view_add `bodies` must be an array".into()),
+                None => None,
+            };
+            let component = opt_usize(o, "component")?;
+            let source_count = usize::from(body.is_some())
+                + usize::from(bodies.is_some())
+                + usize::from(component.is_some());
+            if source_count != 1 {
+                return Err(
+                    "drawing_view_add requires exactly one of `body`, `bodies`, or `component`"
+                        .into(),
+                );
+            }
+            let bodies = if let Some(body) = body {
+                vec![body]
+            } else if let Some(bodies) = bodies {
+                if bodies.is_empty() {
+                    return Err("drawing_view_add `bodies` must not be empty".into());
+                }
+                bodies
+            } else {
+                let ci = component.expect("component set");
+                let Some(ck) = doc.components.keys().nth(ci) else {
+                    return Err(format!("No component {ci}"));
+                };
+                let bodies: Vec<usize> = doc
+                    .bodies
+                    .keys()
+                    .enumerate()
+                    .filter(|(_, bi)| {
+                        crate::hierarchy::owning_component(
+                            doc,
+                            &crate::hierarchy::SceneElement::Body(*bi),
+                        )
+                        .is_some_and(|owner| doc.component_chain(owner).contains(&ck))
+                    })
+                    .map(|(ord, _)| ord)
+                    .collect();
+                if bodies.is_empty() {
+                    return Err("This component has no bodies to project".into());
+                }
+                bodies
+            };
+            Ok(Instruction::AddBodiesToDrawingView {
+                drawing,
+                view,
+                bodies,
+            })
         }
         "drawing_page" => Ok(Instruction::SetDrawingPage {
             drawing: req_usize(o, "drawing", "drawing_page")?,
@@ -3391,7 +3499,7 @@ mod tests {
             instruction_from_json(&Document::default(), "drawing_view", &json!({ "drawing": 0, "body": 1 })),
             Ok(Instruction::AddDrawingView {
                 drawing: 0,
-                body: 1,
+                bodies: vec![1],
                 orientation: DrawingOrientation::Front,
             })
         );
@@ -3402,7 +3510,7 @@ mod tests {
             ),
             Ok(Instruction::AddDrawingView {
                 drawing: 0,
-                body: 0,
+                bodies: vec![0],
                 orientation: DrawingOrientation::Isometric,
             })
         );

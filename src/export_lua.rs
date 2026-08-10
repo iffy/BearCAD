@@ -797,16 +797,21 @@ impl<'a> EmitCtx<'a> {
                         );
                         out.push('\n');
                     } else {
-                        let bord = self
-                            .doc
+                        let bords: Vec<usize> = view
                             .bodies
-                            .keys()
-                            .position(|k| k == view.body)
-                            .unwrap_or(0);
+                            .iter()
+                            .map(|bi| {
+                                self.doc
+                                    .bodies
+                                    .keys()
+                                    .position(|k| k == *bi)
+                                    .unwrap_or(0)
+                            })
+                            .collect();
                         out.push_str(
                             &Instruction::AddDrawingView {
                                 drawing: dord,
-                                body: bord,
+                                bodies: bords,
                                 orientation: view.orientation,
                             }
                             .as_lua_in(Some(self.doc)),

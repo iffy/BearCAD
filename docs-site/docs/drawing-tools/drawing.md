@@ -9,7 +9,8 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 # <img src={useBaseUrl("/img/icons/drawing.svg")} width="30" /> Technical drawings
 
 A drawing is a black-on-white sheet for printing. A document can hold any number, each
-collecting **views** — a body shown from a chosen direction.
+collecting **views** — a body, several bodies, or a whole component shown from a chosen
+direction.
 
 ![A drawing page with front and top views of a plate, dimensions shown](/img/screenshots/drawing.png)
 
@@ -40,6 +41,10 @@ local d = bearcad.drawing{ name = "Plate" }
 bearcad.drawing_view{ drawing = d, body = 0, orientation = "top" }
 bearcad.drawing_view{ drawing = d, body = 0, orientation = "iso" }
 bearcad.drawing_view{ drawing = d, sketch = 0 }  -- a sketch projects too
+-- Several bodies (or a whole component) share one projection card.
+bearcad.drawing_view{ drawing = d, bodies = {0, 1}, orientation = "front" }
+bearcad.drawing_view{ drawing = d, component = 0 }
+bearcad.drawing_view_add{ drawing = d, view = 0, body = 1 }  -- shift-click
 
 -- Dimension an edge of view 0 by its two world endpoints.
 bearcad.drawing_dimension{ drawing = d, view = 0, a = {0, 0, 0}, b = {40, 0, 0} }
@@ -63,6 +68,7 @@ bearcad.export_drawing_pdf{ drawing = d, path = "plate.pdf" }
 bearcad.export_drawing_svg{ drawing = d, path = "plate.svg" }
 ```
 
-`bearcad.drawing{}` returns the drawing's index. `orientation` defaults to `"front"`;
+`bearcad.drawing{}` returns the drawing's index. `drawing_view` takes exactly one of
+`body`, `bodies`, `component`, or `sketch`. `orientation` defaults to `"front"`;
 accepts `front`/`back`/`left`/`right`/`top`/`bottom`/`iso` or a diagonal like
 `front-right`. `bearcad.count("drawing")` returns the number of drawings.

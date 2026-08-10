@@ -4159,14 +4159,18 @@ impl DrawingOrientation {
     }
 }
 
-/// One view on a technical [`Drawing`] (#180): a body projected in a fixed orientation.
+/// One view on a technical [`Drawing`] (#180): one or more bodies (or a sketch) projected in a
+/// fixed orientation. Multi-body projections hold an assembly in one card (#1190/#1191).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DrawingView {
-    /// The body this view projects (the source when `sketch` is `None`).
-    pub body: BodyKey,
-    /// When `Some`, this view projects a **sketch** rather than a body (#278). Kept as an
-    /// optional field (rather than replacing `body` with an enum) so older saved drawings —
-    /// which only ever had `body` — deserialize unchanged.
+    /// Bodies this view projects when `sketch` is `None`. Empty for sketch-only views.
+    /// One body is the usual case; several come from shift-clicking more bodies onto the same
+    /// projection (#1191) or adding a whole component (#1190).
+    #[serde(default)]
+    pub bodies: Vec<BodyKey>,
+    /// When `Some`, this view projects a **sketch** rather than bodies (#278). Kept as an
+    /// optional field (rather than replacing `bodies` with an enum) so older saved drawings —
+    /// which only ever had a body — deserialize with a custom path if needed.
     #[serde(default)]
     pub sketch: Option<SketchId>,
     #[serde(default)]
@@ -4237,6 +4241,56 @@ pub struct DrawingView {
     /// interpolation fields (#338), resolved against the document's parameters.
     #[serde(default)]
     pub label_text: Option<String>,
+}
+
+impl DrawingView {
+    /// A body (or multi-body) projection with default card placement and no dimensions shown.
+    pub fn from_bodies(bodies: Vec<BodyKey>, orientation: DrawingOrientation) -> Self {
+        Self {
+            bodies,
+            sketch: None,
+            orientation,
+            dimensioned_edges: Vec::new(),
+            angle_dims: Vec::new(),
+            dimension_offsets: Vec::new(),
+            dimensioned_circles: Vec::new(),
+            circle_dim_offsets: Vec::new(),
+            aligned_parent: None,
+            aligned_dir: None,
+            align_lines: false,
+            label_hidden: false,
+            label_pos: DrawingLabelPos::default(),
+            label_text: None,
+            pos_x: default_view_pos(),
+            pos_y: default_view_pos(),
+            scale: None,
+            style: DrawingViewStyle::default(),
+        }
+    }
+
+    /// A sketch projection (#278).
+    pub fn from_sketch(sketch: SketchId, orientation: DrawingOrientation) -> Self {
+        Self {
+            bodies: Vec::new(),
+            sketch: Some(sketch),
+            orientation,
+            dimensioned_edges: Vec::new(),
+            angle_dims: Vec::new(),
+            dimension_offsets: Vec::new(),
+            dimensioned_circles: Vec::new(),
+            circle_dim_offsets: Vec::new(),
+            aligned_parent: None,
+            aligned_dir: None,
+            align_lines: false,
+            label_hidden: false,
+            label_pos: DrawingLabelPos::default(),
+            label_text: None,
+            pos_x: default_view_pos(),
+            pos_y: default_view_pos(),
+            scale: None,
+            style: DrawingViewStyle::default(),
+        }
+    }
 }
 
 /// Where a drawing view's caption label sits within its card (#372).

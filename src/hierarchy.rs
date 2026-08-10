@@ -1147,14 +1147,23 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
             edges.push((HierarchyNode::Circle(ci), HierarchyNode::SketchSliceOp(oi)));
         }
     }
-    // A drawing projection depends on its source body/sketch (#281).
+    // A drawing projection depends on its source body/sketch (#281). Multi-body views
+    // depend on every body (#1190/#1191).
     for (di, drawing) in doc.drawings.iter() {
         for (vi, view) in drawing.views.iter().enumerate() {
-            let source = match view.sketch {
-                Some(si) => HierarchyNode::Sketch(si),
-                None => HierarchyNode::Body(view.body),
-            };
-            edges.push((source, HierarchyNode::DrawingProjection { drawing: di, view: vi }));
+            if let Some(si) = view.sketch {
+                edges.push((
+                    HierarchyNode::Sketch(si),
+                    HierarchyNode::DrawingProjection { drawing: di, view: vi },
+                ));
+            } else {
+                for &bi in &view.bodies {
+                    edges.push((
+                        HierarchyNode::Body(bi),
+                        HierarchyNode::DrawingProjection { drawing: di, view: vi },
+                    ));
+                }
+            }
         }
     }
     // Fuse-merge/cut extrusions consume their host body (#1106/#1107): the prior body is a
@@ -4161,6 +4170,7 @@ pub fn show_pane(
                             rolled_back,
                             collapsed_components,
                             active_component,
+                            active_drawing,
                             on_toggle_visibility,
                             on_click_element,
                             on_delete_element,
@@ -4168,6 +4178,7 @@ pub fn show_pane(
                             on_move_to_component,
                             on_export_component,
                             on_export_component_step,
+                            on_add_to_drawing,
                         );
                         continue;
                     }
@@ -4899,7 +4910,8 @@ fn component_list_rows(
 
 /// One component row in the List view (#423): collapse triangle, eye toggle, icon, name;
 /// click selects, right-click offers a nested component / delete; rows dropped on it move
-/// into the component.
+/// into the component. With a drawing open, the row also drags onto the page and offers
+/// **Add to drawing** (#1190).
 #[allow(clippy::too_many_arguments)]
 fn show_component_row(
     ui: &mut egui::Ui,
@@ -4916,6 +4928,7 @@ fn show_component_row(
     rolled_back: &HashSet<SceneElement>,
     collapsed_components: &mut HashSet<crate::model::ComponentKey>,
     active_component: Option<crate::model::ComponentKey>,
+    active_drawing: Option<crate::model::DrawingKey>,
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
     on_click_element: &mut impl FnMut(SceneElement, bool),
     on_delete_element: &mut impl FnMut(SceneElement),
@@ -4923,6 +4936,7 @@ fn show_component_row(
     on_move_to_component: &mut impl FnMut(SceneElement, Option<crate::model::ComponentKey>),
     on_export_component: &mut impl FnMut(crate::model::ComponentKey),
     on_export_component_step: &mut impl FnMut(crate::model::ComponentKey),
+    on_add_to_drawing: &mut impl FnMut(SceneElement),
 ) {
     let element = SceneElement::Component(ci);
     let visible = visibility.effective_visible(doc, element.clone());
@@ -5008,13 +5022,31 @@ fn show_component_row(
             let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
             on_click_element(element.clone(), additive);
         }
-        // Component rows drag too, to re-parent into another component (#423).
-        response
-            .interact(egui::Sense::drag())
-            .dnd_set_drag_payload(ComponentDragPayload(element.clone()));
+        // With a drawing open, drag the component onto the page as a multi-body projection
+        // (#1190). Otherwise rows re-parent into another component (#423).
+        if active_drawing.is_some() {
+            response
+                .interact(egui::Sense::drag())
+                .dnd_set_drag_payload(DrawingDragPayload(element.clone()));
+            if let Some(icon_resp) = Some(&icon_response) {
+                icon_resp
+                    .clone()
+                    .interact(egui::Sense::drag())
+                    .dnd_set_drag_payload(DrawingDragPayload(element.clone()));
+            }
+        } else {
+            response
+                .interact(egui::Sense::drag())
+                .dnd_set_drag_payload(ComponentDragPayload(element.clone()));
+        }
         response.context_menu(|ui| {
             if ui.button("New component inside").clicked() {
                 on_add_component(Some(ci));
+                ui.close();
+            }
+            // In the Drawing workbench, project every body in the component as one view (#1190).
+            if active_drawing.is_some() && ui.button("Add to drawing").clicked() {
+                on_add_to_drawing(element.clone());
                 ui.close();
             }
             // Export the component's bodies (#521): everything filed into it and its nested
@@ -5039,10 +5071,11 @@ fn show_component_row(
     });
     // Whole-row drop target (#430): rect-based so releasing over any child widget (the
     // name label, the icon) still lands the drop — `Response::dnd_release_payload` misses
-    // when a child covers the pointer.
+    // when a child covers the pointer. Disabled while a drawing is open (rows drag to the
+    // page instead).
     let row_rect = row.response.rect;
-    let dragging =
-        egui::DragAndDrop::has_payload_of_type::<ComponentDragPayload>(ui.ctx());
+    let dragging = active_drawing.is_none()
+        && egui::DragAndDrop::has_payload_of_type::<ComponentDragPayload>(ui.ctx());
     if dragging && ui.rect_contains_pointer(row_rect) {
         ui.painter().rect_stroke(
             row_rect,
@@ -5387,12 +5420,15 @@ fn show_row(
                 None => response.rect,
             },
         );
-        // With a drawing open, body and sketch rows drag onto the page (#290): the drop
-        // places a projection at the pointer. Both the name label and the type icon are
-        // grab handles (#368). Re-sensed for drag so the payload arms; plain clicks still
+        // With a drawing open, body, sketch, and component rows drag onto the page (#290/#1190):
+        // the drop places a projection at the pointer. Both the name label and the type icon
+        // are grab handles (#368). Re-sensed for drag so the payload arms; plain clicks still
         // select as usual.
         if active_drawing.is_some()
-            && matches!(node, HierarchyNode::Body(_) | HierarchyNode::Sketch(_))
+            && matches!(
+                node,
+                HierarchyNode::Body(_) | HierarchyNode::Sketch(_) | HierarchyNode::Component(_)
+            )
         {
             response
                 .interact(egui::Sense::drag())
@@ -6285,7 +6321,7 @@ mod tests {
         });
         doc.drawings.insert(crate::model::Drawing {
             views: vec![crate::model::DrawingView {
-                body: bkey(0),
+                bodies: vec![bkey(0)],
                 sketch: None,
                 orientation: crate::model::DrawingOrientation::Front,
                 dimensioned_edges: Vec::new(),
@@ -6332,7 +6368,7 @@ label_hidden: false,
         let b = crate::hierarchy::quantize_body_point(glam::Vec3::new(40.0, 0.0, 0.0));
         doc.drawings.insert(crate::model::Drawing {
             views: vec![crate::model::DrawingView {
-                body: bkey(0),
+                bodies: vec![bkey(0)],
                 sketch: None,
                 orientation: crate::model::DrawingOrientation::Front,
                 dimensioned_edges: vec![(a, b)],
