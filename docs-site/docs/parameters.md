@@ -15,10 +15,11 @@ Elements pane highlights everything that uses that parameter — and hovering a 
 focusing its fields) also **glows those users green in the 3D view**: the dimensions
 referencing it, the geometry they drive, and any body whose extrude distance uses it.
 
-Each row's **gear** opens that parameter's options (multiple can be open at once):
+Each row's **gear** opens that parameter's options under its name (multiple can be open
+at once):
 
-- **Minimum**, **Maximum**, **Step** — optional expressions. Unit kind (length vs angle)
-  comes from the default value. Importers must stay within these.
+- **Min**, **Max**, **Step** — optional expressions. Unit kind (length vs angle) comes
+  from the default value. Importers must stay within these.
 - **Primary** — checked = a knob someone
   [importing this file](/docs/files#importing-bearcad-files) is meant to change;
   unchecked = secondary/internal. Advisory only. A new parameter starts primary when its

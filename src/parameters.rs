@@ -1562,6 +1562,28 @@ pub fn parameter_edit_enter_pressed(
     enter_pressed && (has_focus || lost_focus)
 }
 
+/// Whether a gear-options min/max/step field should commit its draft this frame (#1179).
+///
+/// Enter commits (via [`parameter_edit_enter_pressed`]). Any focus loss also commits —
+/// blur must not discard the draft (that was the #1179 bug).
+pub fn parameter_options_field_should_commit(
+    enter_pressed: bool,
+    has_focus: bool,
+    lost_focus: bool,
+) -> bool {
+    lost_focus || parameter_edit_enter_pressed(enter_pressed, has_focus, lost_focus)
+}
+
+/// Draft text → expression for [`Action::SetParameterBound`]: empty clears the bound.
+pub fn parameter_options_bound_expression(draft: &str) -> Option<String> {
+    let t = draft.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
+}
+
 /// One row of the selected unit's parameter list (#728).
 pub struct UnitParamRow {
     pub name: String,
@@ -1803,8 +1825,9 @@ fn show_unit_parameters_section(ui: &mut egui::Ui, app: &mut AppState) {
 }
 
 /// Min / max / step fields plus the Primary checkbox for one parameter's gear-options
-/// panel (#1176). Commits queue into `set_primary` / `set_bound` so the caller can apply
-/// them after the grid borrow ends.
+/// panel (#1176). Indented under the parameter name with a tree gutter (#1178). Commits
+/// queue into `set_primary` / `set_bound` so the caller can apply them after the grid
+/// borrow ends. Bound fields commit on Enter **and** on blur (#1179).
 fn show_parameter_options_fields(
     ui: &mut egui::Ui,
     app: &mut AppState,
@@ -1817,67 +1840,108 @@ fn show_parameter_options_fields(
     set_primary: &mut Option<(ParameterKey, bool)>,
     set_bound: &mut Option<(ParameterKey, ParameterBound, Option<String>)>,
 ) {
-    use egui::TextEdit;
+    use egui::{pos2, Stroke, TextEdit};
 
-    let mut primary_flag = primary;
-    let resp = ui.checkbox(&mut primary_flag, "Primary");
-    crate::context::note_help_rect(ui, "Primary", resp.rect);
-    if resp.changed() {
-        *set_primary = Some((index, primary_flag));
-    }
-    resp.on_hover_text(
-        "Offered first when this file is imported. Unchecked = internal (secondary).",
+    // Tree rows under the parameter name (#1178): Primary, Min, Max, Step.
+    // The gutter is a vertical line that turns a corner on the last row.
+    const GUTTER: f32 = 12.0;
+    let bounds: [(ParameterBound, &Option<String>, &str); 3] = [
+        (ParameterBound::Minimum, minimum, "Min"),
+        (ParameterBound::Maximum, maximum, "Max"),
+        (ParameterBound::Step, step, "Step"),
+    ];
+    let n_rows = 1 + bounds.len(); // Primary + bounds
+    let stroke = Stroke::new(
+        1.0,
+        ui.visuals().widgets.noninteractive.fg_stroke.color.gamma_multiply(0.45),
     );
 
-    for (which, current, label) in [
-        (ParameterBound::Minimum, minimum, "Minimum"),
-        (ParameterBound::Maximum, maximum, "Maximum"),
-        (ParameterBound::Step, step, "Step"),
-    ] {
+    let row_gap = ui.spacing().item_spacing.y;
+    for row_i in 0..n_rows {
+        let is_last = row_i + 1 == n_rows;
         ui.horizontal(|ui| {
-            ui.label(RichText::new(label).size(11.0));
-            let editing = app.parameters_pane.options_editing == Some((index, which));
-            if editing {
-                let resp = ui.add(
-                    TextEdit::singleline(&mut app.parameters_pane.options_draft)
-                        .desired_width(120.0)
-                        .hint_text("expression"),
-                );
-                if app.parameters_pane.options_editing_focus {
-                    resp.request_focus();
-                    app.parameters_pane.options_editing_focus = false;
-                }
-                if parameter_edit_enter_pressed(enter, resp.has_focus(), resp.lost_focus()) {
-                    let draft = app.parameters_pane.options_draft.trim().to_string();
-                    *set_bound = Some((
-                        index,
-                        which,
-                        if draft.is_empty() {
-                            None
-                        } else {
-                            Some(draft)
-                        },
-                    ));
-                    app.parameters_pane.options_editing = None;
-                    app.parameters_pane.options_draft.clear();
-                } else if resp.lost_focus() {
-                    app.parameters_pane.options_editing = None;
-                    app.parameters_pane.options_draft.clear();
-                }
+            // Tree gutter: continuous vertical stem under the name, elbow on each row
+            // (and only the last row ends the stem so it "turns the corner").
+            let row_h = ui.spacing().interact_size.y.max(14.0);
+            let (gutter_rect, _) =
+                ui.allocate_exact_size(egui::vec2(GUTTER, row_h), egui::Sense::hover());
+            let x = gutter_rect.left() + 4.0;
+            let mid_y = gutter_rect.center().y;
+            let painter = ui.painter();
+            // Reach across the inter-row gap so the stem reads continuous.
+            let top_y = if row_i == 0 {
+                // Peek up toward the parameter name above this block.
+                gutter_rect.top() - row_gap
             } else {
-                let display = current.as_deref().filter(|s| !s.is_empty()).unwrap_or("—");
-                let resp = ui.add(
-                    egui::Label::new(RichText::new(display).size(11.0)).sense(egui::Sense::click()),
+                gutter_rect.top() - row_gap * 0.5
+            };
+            let bottom_y = if is_last {
+                mid_y
+            } else {
+                gutter_rect.bottom() + row_gap * 0.5
+            };
+            painter.line_segment([pos2(x, top_y), pos2(x, bottom_y)], stroke);
+            // Horizontal turn toward the label.
+            painter.line_segment([pos2(x, mid_y), pos2(gutter_rect.right() - 1.0, mid_y)], stroke);
+
+            if row_i == 0 {
+                let mut primary_flag = primary;
+                let resp = ui.checkbox(&mut primary_flag, "Primary");
+                crate::context::note_help_rect(ui, "Primary", resp.rect);
+                if resp.changed() {
+                    *set_primary = Some((index, primary_flag));
+                }
+                resp.on_hover_text(
+                    "Offered first when this file is imported. Unchecked = internal (secondary).",
                 );
-                if resp
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text(format!("{label} (optional expression)"))
-                    .clicked()
-                {
-                    app.parameters_pane.options_editing = Some((index, which));
-                    app.parameters_pane.options_draft =
-                        current.clone().unwrap_or_default();
-                    app.parameters_pane.options_editing_focus = true;
+            } else {
+                let (which, current, label) = bounds[row_i - 1];
+                ui.label(RichText::new(label).size(11.0));
+                let editing = app.parameters_pane.options_editing == Some((index, which));
+                if editing {
+                    let resp = ui.add(
+                        TextEdit::singleline(&mut app.parameters_pane.options_draft)
+                            .desired_width(96.0)
+                            .hint_text("expression"),
+                    );
+                    if app.parameters_pane.options_editing_focus {
+                        resp.request_focus();
+                        app.parameters_pane.options_editing_focus = false;
+                    }
+                    if parameter_options_field_should_commit(
+                        enter,
+                        resp.has_focus(),
+                        resp.lost_focus(),
+                    ) {
+                        *set_bound = Some((
+                            index,
+                            which,
+                            parameter_options_bound_expression(&app.parameters_pane.options_draft),
+                        ));
+                        app.parameters_pane.options_editing = None;
+                        app.parameters_pane.options_draft.clear();
+                        if enter {
+                            ui.input_mut(|i| {
+                                i.consume_key(egui::Modifiers::NONE, Key::Enter);
+                            });
+                        }
+                    }
+                } else {
+                    let display = current.as_deref().filter(|s| !s.is_empty()).unwrap_or("—");
+                    let resp = ui.add(
+                        egui::Label::new(RichText::new(display).size(11.0))
+                            .sense(egui::Sense::click()),
+                    );
+                    if resp
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(format!("{label} (optional expression)"))
+                        .clicked()
+                    {
+                        app.parameters_pane.options_editing = Some((index, which));
+                        app.parameters_pane.options_draft =
+                            current.clone().unwrap_or_default();
+                        app.parameters_pane.options_editing_focus = true;
+                    }
                 }
             }
         });
@@ -2145,9 +2209,9 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                     }
                     ui.end_row();
 
-                    // Expanded options below this parameter (#1176): min, max, step, Primary.
+                    // Expanded options under the name with a tree gutter (#1176/#1178) —
+                    // not in the value column.
                     if options_open {
-                        ui.label("");
                         let options_cell = ui.vertical(|ui| {
                             ui.add_space(2.0);
                             show_parameter_options_fields(
@@ -2164,6 +2228,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                             );
                             ui.add_space(4.0);
                         });
+                        ui.label("");
                         ui.label("");
                         if options_cell.response.contains_pointer() {
                             hovered_name = Some(param_name.clone());
@@ -2768,6 +2833,27 @@ mod tests {
         assert!(parameter_edit_enter_pressed(true, true, false));
         assert!(!parameter_edit_enter_pressed(true, false, false));
         assert!(!parameter_edit_enter_pressed(false, false, true));
+    }
+
+    /// #1179: min/max/step must commit when the field loses focus, not only on Enter.
+    #[test]
+    fn parameter_options_field_commits_on_blur() {
+        // Blur without Enter: commit (this was false before the fix — draft discarded).
+        assert!(parameter_options_field_should_commit(false, false, true));
+        // Enter (singleline surrenders focus): commit.
+        assert!(parameter_options_field_should_commit(true, false, true));
+        // Enter while still focused: commit.
+        assert!(parameter_options_field_should_commit(true, true, false));
+        // Still typing: do not commit.
+        assert!(!parameter_options_field_should_commit(false, true, false));
+        assert!(!parameter_options_field_should_commit(false, false, false));
+    }
+
+    #[test]
+    fn parameter_options_bound_expression_empty_clears() {
+        assert_eq!(parameter_options_bound_expression("  5mm  ").as_deref(), Some("5mm"));
+        assert_eq!(parameter_options_bound_expression("   "), None);
+        assert_eq!(parameter_options_bound_expression(""), None);
     }
 
     #[test]
