@@ -12793,8 +12793,8 @@ impl App {
                         "Auto-zoom off".to_string()
                     };
                 }
-                // Import/Export toolbar buttons (#352): the same actions as the File menu, grouped
-                // under a popup on each icon.
+                // Import/Export toolbar buttons (#352/#1175): same items, order, labels, and
+                // dividers as File → Import / File → Export (verb dropped under the icon).
                 ui.separator();
                 // Flush icon buttons like the tool buttons (#475) — `menu_image_button`
                 // wraps the icon in a padded, always-framed menu button that rendered
@@ -12807,55 +12807,57 @@ impl App {
                     TOOLBAR_ICON_SIZE,
                 );
                 egui::Popup::menu(&import_btn).show(|ui| {
+                    // Order matches native File → Import (#1175): BearCAD, McMaster, STL,
+                    // STEP, Image, Lua — no dividers. Web omits BearCAD/McMaster (#1022).
                     #[cfg(not(target_arch = "wasm32"))]
-                    if ui.button("Import BearCAD File…").clicked() {
+                    if ui.button("BearCAD File…").clicked() {
                         self.import_unit();
                         ui.close();
                     }
-                    if ui.button("Import STL…").clicked() {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if ui.button("McMaster-Carr…").clicked() {
+                        self.state.apply(Action::SetMcMasterWindow {
+                            open: Some(true),
+                            part: None,
+                        });
+                        ui.close();
+                    }
+                    if ui.button("STL…").clicked() {
                         self.import_stl();
                         ui.close();
                     }
-                    if ui.button("Import STEP…").clicked() {
+                    if ui.button("STEP…").clicked() {
                         self.import_step();
                         ui.close();
                     }
-                    if ui.button("Import Image…").clicked() {
+                    if ui.button("Image…").clicked() {
                         self.import_image();
                         ui.close();
                     }
-                    if ui.button("Import Lua Script…").clicked() {
+                    if ui.button("Lua Script…").clicked() {
                         self.import_lua();
                         ui.close();
-                    }
-                    // The catalog, in a window (#1022): pick a part on McMaster's own site
-                    // and its CAD lands in the document instead of in Downloads.
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        ui.separator();
-                        if ui.button("Import from McMaster-Carr…").clicked() {
-                            self.state.apply(Action::SetMcMasterWindow {
-                                open: Some(true),
-                                part: None,
-                            });
-                            ui.close();
-                        }
                     }
                 });
                 let export_btn = icons::selectable_icon_button_at(
                     ui,
                     icons::IconId::Export,
                     false,
-                    "Export all bodies as STL or STEP",
+                    "Export all bodies as STL or STEP, or the document as Lua",
                     TOOLBAR_ICON_SIZE,
                 );
                 egui::Popup::menu(&export_btn).show(|ui| {
-                    if ui.button("Export STL…").clicked() {
+                    // Order matches File → Export (#1175): STL, STEP, Lua Script.
+                    if ui.button("STL…").clicked() {
                         self.export_stl_all();
                         ui.close();
                     }
-                    if ui.button("Export STEP…").clicked() {
+                    if ui.button("STEP…").clicked() {
                         self.export_step_all();
+                        ui.close();
+                    }
+                    if ui.button("Lua Script…").clicked() {
+                        self.export_document_lua();
                         ui.close();
                     }
                 });
