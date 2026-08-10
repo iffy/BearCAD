@@ -12258,14 +12258,7 @@ impl App {
 
     /// Title for a main-window tab index (reads live state for the active tab).
     fn main_tab_title(&self, index: usize) -> String {
-        let win = self.workspace.main();
-        if index == win.active {
-            tabs::Workspace::tab_title(&self.state)
-        } else if let Some(tab) = win.tabs.get(index) {
-            tabs::Workspace::tab_title(&tab.state)
-        } else {
-            "Untitled".into()
-        }
+        self.window_tab_title(tabs::WindowId::MAIN, index)
     }
 
     /// Park live `self.state` into the active main tab slot, then load `index` into `self.state`.
@@ -12551,19 +12544,51 @@ impl App {
         }
     }
 
-    /// Tab strip for the main window: titles, dirty star, reorder, close, context menu.
+    /// Title for tab `index` in `window_id`.
+    ///
+    /// **Precondition:** `self.state` holds the active tab of that window (main always;
+    /// detached only while its viewport callback has swapped live state in).
+    fn window_tab_title(&self, window_id: tabs::WindowId, index: usize) -> String {
+        let Some(wi) = self.workspace.window_index(window_id) else {
+            return "Untitled".into();
+        };
+        let win = &self.workspace.windows[wi];
+        if index == win.active {
+            tabs::Workspace::tab_title(&self.state)
+        } else if let Some(tab) = win.tabs.get(index) {
+            tabs::Workspace::tab_title(&tab.state)
+        } else {
+            "Untitled".into()
+        }
+    }
+
+    /// Tab strip for the main window (same chrome as every secondary window — #1210).
     fn draw_main_tab_bar(&mut self, ui: &mut egui::Ui) {
-        let tab_count = self.workspace.main().tabs.len();
-        // Always show the strip so Cmd+T is discoverable.
-        let mut switch_to: Option<usize> = None;
-        let mut close_id: Option<tabs::TabId> = None;
-        let mut detach_id: Option<tabs::TabId> = None;
-        let mut duplicate_same = false;
-        let mut reorder: Option<(usize, usize)> = None;
-        let mut new_tab = false;
+        let action = self.paint_window_tab_bar(ui, tabs::WindowId::MAIN);
+        self.apply_tab_bar_action(tabs::WindowId::MAIN, action);
+    }
+
+    /// Paint the filing-tab strip for any host window. Does not mutate tabs; returns
+    /// requested actions for the caller to apply (main applies immediately; detached
+    /// windows apply after live state is parked back into the workspace slot — #1210).
+    ///
+    /// **Precondition:** `self.state` is the active tab of `window_id`.
+    fn paint_window_tab_bar(
+        &mut self,
+        ui: &mut egui::Ui,
+        window_id: tabs::WindowId,
+    ) -> TabBarAction {
+        let mut action = TabBarAction::default();
+        let Some(wi) = self.workspace.window_index(window_id) else {
+            return action;
+        };
+        let tab_count = self.workspace.windows[wi].tabs.len();
+        let active = self.workspace.windows[wi].active;
+        let drag_key = egui::Id::new(("tab_drag_from", window_id.0));
         let mut selected_tab_rect: Option<egui::Rect> = None;
 
         // Filing-tab strip: trapezoid chips with a baseline that breaks under the active tab (#1134).
+        // Shared by main and every detached window so secondary windows are not a special case (#1210).
         egui::Panel::top("tab_bar")
             .exact_size(TAB_BAR_HEIGHT)
             .frame(
@@ -12577,7 +12602,6 @@ impl App {
                     }),
             )
             .show(ui, |ui| {
-                // Full strip rect before layout (for the baseline spanning the window width).
                 let bar = ui.max_rect();
                 ui.spacing_mut().item_spacing.x = 2.0;
                 ui.horizontal(|ui| {
@@ -12586,69 +12610,64 @@ impl App {
                     {
                         ui.add_space(72.0);
                     }
-                    let active = self.workspace.main().active;
                     for i in 0..tab_count {
-                        let title = self.main_tab_title(i);
-                        let tab_id = self.workspace.main().tabs[i].id;
+                        let title = self.window_tab_title(window_id, i);
+                        let tab_id = self.workspace.windows[wi].tabs[i].id;
                         let selected = i == active;
-                        // Close (X) always visible, including on unfocused tabs (#1134).
                         let (response, close_clicked) =
                             document_tab_chip(ui, &title, selected, true);
                         if selected {
                             selected_tab_rect = Some(response.rect);
                         }
                         if close_clicked {
-                            close_id = Some(tab_id);
+                            action.close_id = Some(tab_id);
                         } else if response.clicked() {
-                            switch_to = Some(i);
+                            action.switch_to = Some(i);
                         }
-                        // Drag to reorder: start drag on press, drop on another tab.
                         if response.dragged() {
                             ui.ctx().memory_mut(|m| {
-                                m.data.insert_temp(egui::Id::new("tab_drag_from"), i);
+                                m.data.insert_temp(drag_key, i);
                             });
                         }
                         if response.hovered() && ui.input(|inp| inp.pointer.any_released()) {
                             if let Some(from) =
-                                ui.ctx().memory(|m| m.data.get_temp::<usize>(egui::Id::new("tab_drag_from")))
+                                ui.ctx().memory(|m| m.data.get_temp::<usize>(drag_key))
                             {
                                 if from != i {
-                                    reorder = Some((from, i));
+                                    action.reorder = Some((from, i));
                                 }
                                 ui.ctx().memory_mut(|m| {
-                                    m.data.remove::<usize>(egui::Id::new("tab_drag_from"));
+                                    m.data.remove::<usize>(drag_key);
                                 });
                             }
                         }
                         response.context_menu(|ui| {
                             if ui.button("New Tab").clicked() {
-                                new_tab = true;
+                                action.new_tab = true;
                                 ui.close();
                             }
                             if ui.button("Duplicate Tab (same document)").clicked() {
-                                duplicate_same = true;
+                                action.duplicate_same = true;
                                 ui.close();
                             }
                             if ui.button("Move to New Window").clicked() {
-                                detach_id = Some(tab_id);
+                                action.detach_id = Some(tab_id);
                                 ui.close();
                             }
                             ui.separator();
                             if ui.button("Close Tab").clicked() {
-                                close_id = Some(tab_id);
+                                action.close_id = Some(tab_id);
                                 ui.close();
                             }
                         });
                     }
                     if tab_bar_icon_button(ui, icons::IconId::Plus, "New tab").clicked() {
-                        new_tab = true;
+                        action.new_tab = true;
                     }
                 });
 
                 // Baseline under the strip: continuous grey line that gaps under the selected
                 // tab so the active filing tab reads as attached to the chrome beneath (#1134).
-                // Colour matches the active tab outline (#1138).
-                // Drawn inside the panel so the clip rect includes the strip.
                 let y = bar.bottom() - 0.5;
                 let sep = egui::Stroke::new(1.0, TAB_BASELINE);
                 let painter = ui.painter();
@@ -12678,25 +12697,164 @@ impl App {
                 .insert_temp(egui::Id::new("main_tab_sep_gap"), selected_tab_rect);
         });
 
-        if let Some(i) = switch_to {
-            self.sync_active_document_siblings();
-            self.switch_main_tab(i);
+        action
+    }
+
+    /// Apply tab-strip actions for `window_id`.
+    ///
+    /// **Precondition:** `self.state` is that window's active tab (same as
+    /// [`Self::paint_window_tab_bar`]).
+    ///
+    /// Close / detach on secondary windows must run only after live state is parked back
+    /// into the workspace (see [`Self::apply_tab_bar_close_detach`]); this method still
+    /// handles them for the main window where `self.state` is always the main active tab.
+    fn apply_tab_bar_action(&mut self, window_id: tabs::WindowId, action: TabBarAction) {
+        if window_id == tabs::WindowId::MAIN {
+            if let Some(i) = action.switch_to {
+                self.sync_active_document_siblings();
+                self.switch_main_tab(i);
+            }
+            if let Some((from, to)) = action.reorder {
+                self.reorder_main_tab(from, to);
+            }
+            if action.new_tab {
+                self.new_blank_tab();
+            }
+            if action.duplicate_same {
+                self.new_same_document_tab();
+            }
+            if let Some(id) = action.close_id {
+                self.request_close_tab(id);
+            }
+            if let Some(id) = action.detach_id {
+                self.detach_tab_to_window(id);
+            }
+            return;
         }
-        if let Some((from, to)) = reorder {
-            self.reorder_main_tab(from, to);
+
+        // Secondary window: live mutations only (self.state is this window's active tab).
+        if let Some(i) = action.switch_to {
+            self.sync_window_document_siblings(window_id);
+            self.switch_window_tab(window_id, i);
         }
-        if new_tab {
-            self.new_blank_tab();
+        if let Some((from, to)) = action.reorder {
+            self.reorder_window_tab(window_id, from, to);
         }
-        if duplicate_same {
-            self.new_same_document_tab();
+        if action.new_tab {
+            self.new_blank_tab_in(window_id);
         }
-        if let Some(id) = close_id {
+        if action.duplicate_same {
+            self.new_same_document_tab_in(window_id);
+        }
+    }
+
+    /// Close / detach after a secondary window's live state has been parked into the
+    /// workspace slot (so dirty checks and window removal see real document state).
+    fn apply_tab_bar_close_detach(&mut self, action: &TabBarAction) {
+        if let Some(id) = action.close_id {
             self.request_close_tab(id);
         }
-        if let Some(id) = detach_id {
+        if let Some(id) = action.detach_id {
             self.detach_tab_to_window(id);
         }
+    }
+
+    /// Like [`Self::sync_active_document_siblings`] but for any window whose active tab
+    /// is currently in `self.state`.
+    fn sync_window_document_siblings(&mut self, window_id: tabs::WindowId) {
+        let Some(wi) = self.workspace.window_index(window_id) else {
+            return;
+        };
+        let active = self.workspace.windows[wi].active;
+        let tab_id = self.workspace.windows[wi].tabs[active].id;
+        let doc_id = self.workspace.windows[wi].tabs[active].document_id;
+        if self.workspace.document_view_count(doc_id) <= 1 {
+            return;
+        }
+        self.workspace
+            .sync_document_from(doc_id, tab_id, &self.state);
+    }
+
+    /// Switch active tab inside `window_id` (live state is that window's active tab).
+    fn switch_window_tab(&mut self, window_id: tabs::WindowId, index: usize) {
+        let Some(wi) = self.workspace.window_index(window_id) else {
+            return;
+        };
+        let win = &mut self.workspace.windows[wi];
+        if index >= win.tabs.len() || index == win.active {
+            return;
+        }
+        let old = win.active;
+        std::mem::swap(&mut self.state, &mut win.tabs[old].state);
+        win.active = index;
+        std::mem::swap(&mut self.state, &mut win.tabs[index].state);
+        self.clear_interaction_transients();
+    }
+
+    /// Reorder tabs in `window_id` while live state is its active tab.
+    fn reorder_window_tab(&mut self, window_id: tabs::WindowId, from: usize, to: usize) {
+        let Some(wi) = self.workspace.window_index(window_id) else {
+            return;
+        };
+        // Park live state, reorder, unpark (active index may move).
+        let active = self.workspace.windows[wi].active;
+        std::mem::swap(
+            &mut self.state,
+            &mut self.workspace.windows[wi].tabs[active].state,
+        );
+        self.workspace.reorder_tab(window_id, from, to);
+        let active = self.workspace.windows[wi].active;
+        std::mem::swap(
+            &mut self.state,
+            &mut self.workspace.windows[wi].tabs[active].state,
+        );
+    }
+
+    /// Open a blank tab in `window_id` (live state is that window's active tab).
+    fn new_blank_tab_in(&mut self, window_id: tabs::WindowId) {
+        let Some(wi) = self.workspace.window_index(window_id) else {
+            return;
+        };
+        let active = self.workspace.windows[wi].active;
+        std::mem::swap(
+            &mut self.state,
+            &mut self.workspace.windows[wi].tabs[active].state,
+        );
+        self.workspace.open_blank_tab(window_id);
+        let active = self
+            .workspace
+            .window_index(window_id)
+            .map(|i| self.workspace.windows[i].active)
+            .unwrap_or(0);
+        let wi = self.workspace.window_index(window_id).unwrap();
+        std::mem::swap(
+            &mut self.state,
+            &mut self.workspace.windows[wi].tabs[active].state,
+        );
+        self.clear_interaction_transients();
+        self.state.status = "New tab".into();
+    }
+
+    /// Duplicate the active tab's document into a new tab in the same window.
+    fn new_same_document_tab_in(&mut self, window_id: tabs::WindowId) {
+        let Some(wi) = self.workspace.window_index(window_id) else {
+            return;
+        };
+        let active = self.workspace.windows[wi].active;
+        let source = self.workspace.windows[wi].tabs[active].id;
+        std::mem::swap(
+            &mut self.state,
+            &mut self.workspace.windows[wi].tabs[active].state,
+        );
+        self.workspace.open_same_document_tab(window_id, source);
+        let wi = self.workspace.window_index(window_id).unwrap();
+        let active = self.workspace.windows[wi].active;
+        std::mem::swap(
+            &mut self.state,
+            &mut self.workspace.windows[wi].tabs[active].state,
+        );
+        self.clear_interaction_transients();
+        self.state.status = "New tab (same document)".into();
     }
 
     /// Detached tab windows: each is an immediate viewport with its own tab strip + content.
@@ -16030,12 +16188,12 @@ impl App {
             });
     }
 
-    /// Detached tab windows: each is a full application window (#1133) with the same
-    /// toolbar, panes, status bar, and viewport as the main window.
+    /// Detached tab windows: each is a full application window (#1133 / #1210) with the
+    /// same tab strip, toolbar, panes, status bar, and viewport as the main window.
     fn render_detached_windows(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.sync_active_document_siblings();
 
-        let detached: Vec<(usize, u64, String)> = self
+        let detached: Vec<(usize, tabs::WindowId, u64, String)> = self
             .workspace
             .windows
             .iter()
@@ -16046,14 +16204,17 @@ impl App {
                     let t = &w.tabs[w.active];
                     format!("{} — BearCAD", tabs::Workspace::tab_title(&t.state))
                 };
-                (wi, w.viewport_key, title)
+                (wi, w.id, w.viewport_key, title)
             })
             .collect();
 
         let mut tabs_to_close: Vec<tabs::TabId> = Vec::new();
+        // Close/detach from a secondary strip must run after that window's live state is
+        // parked back into the workspace (dirty checks, window removal).
+        let mut deferred_strip_actions: Vec<TabBarAction> = Vec::new();
 
-        for (wi, viewport_key, title) in detached {
-            if wi >= self.workspace.windows.len() {
+        for (_wi, win_id, viewport_key, title) in detached {
+            if self.workspace.window_index(win_id).is_none() {
                 continue;
             }
             let builder = egui::ViewportBuilder::default()
@@ -16068,72 +16229,35 @@ impl App {
                 .with_title_shown(false);
             let vp_id = egui::ViewportId::from_hash_of(("detached_tab", viewport_key));
             let mut close_requested = false;
+            let mut strip_action = TabBarAction::default();
+            // Preserve the main window's tab→toolbar gap cover; secondary strips write the
+            // same temp key for their own chrome pass, then we restore main's value.
+            let main_sep_gap = ctx.memory(|m| {
+                m.data
+                    .get_temp::<Option<egui::Rect>>(egui::Id::new("main_tab_sep_gap"))
+            });
             ctx.show_viewport_immediate(vp_id, builder, |vui, _class| {
                 theme::apply(vui.ctx());
+                let Some(wi) = self.workspace.window_index(win_id) else {
+                    return;
+                };
                 let active = self.workspace.windows[wi].active;
                 std::mem::swap(
                     &mut self.state,
                     &mut self.workspace.windows[wi].tabs[active].state,
                 );
-                // Tab strip for this host window (mirrors the main strip).
-                egui::Panel::top("tab_bar")
-                    .exact_size(28.0)
-                    .frame(
-                        egui::Frame::NONE
-                            .fill(vui.visuals().panel_fill)
-                            .inner_margin(egui::Margin::symmetric(4, 2)),
-                    )
-                    .show(vui, |ui| {
-                        ui.horizontal(|ui| {
-                            #[cfg(target_os = "macos")]
-                            {
-                                ui.add_space(72.0);
-                            }
-                            let n = self.workspace.windows[wi].tabs.len();
-                            for i in 0..n {
-                                let label = if i == self.workspace.windows[wi].active {
-                                    tabs::Workspace::tab_title(&self.state)
-                                } else {
-                                    tabs::Workspace::tab_title(
-                                        &self.workspace.windows[wi].tabs[i].state,
-                                    )
-                                };
-                                let selected = i == self.workspace.windows[wi].active;
-                                if ui.selectable_label(selected, label).clicked() && !selected {
-                                    let old = self.workspace.windows[wi].active;
-                                    std::mem::swap(
-                                        &mut self.state,
-                                        &mut self.workspace.windows[wi].tabs[old].state,
-                                    );
-                                    self.workspace.windows[wi].active = i;
-                                    std::mem::swap(
-                                        &mut self.state,
-                                        &mut self.workspace.windows[wi].tabs[i].state,
-                                    );
-                                    self.clear_interaction_transients();
-                                }
-                            }
-                            if ui
-                                .add(egui::Button::new("+").frame(false))
-                                .on_hover_text("New tab")
-                                .clicked()
-                            {
-                                let active = self.workspace.windows[wi].active;
-                                std::mem::swap(
-                                    &mut self.state,
-                                    &mut self.workspace.windows[wi].tabs[active].state,
-                                );
-                                let win_id = self.workspace.windows[wi].id;
-                                let _ = self.workspace.open_blank_tab(win_id);
-                                let active = self.workspace.windows[wi].active;
-                                std::mem::swap(
-                                    &mut self.state,
-                                    &mut self.workspace.windows[wi].tabs[active].state,
-                                );
-                                self.clear_interaction_transients();
-                            }
-                        });
-                    });
+                // Same filing-tab strip as the main window (#1210) — not a simplified special case.
+                assert!(
+                    detached_window_uses_main_tab_strip(),
+                    "secondary windows must share the main filing-tab strip (#1210)"
+                );
+                strip_action = self.paint_window_tab_bar(vui, win_id);
+                self.apply_tab_bar_action(win_id, TabBarAction {
+                    // Live mutations only here; close/detach deferred until after park.
+                    close_id: None,
+                    detach_id: None,
+                    ..strip_action
+                });
                 if detached_window_is_full_application() {
                     let vctx = vui.ctx().clone();
                     self.render_window_chrome(vui, &vctx, frame);
@@ -16155,6 +16279,9 @@ impl App {
                             }
                         });
                 }
+                let Some(wi) = self.workspace.window_index(win_id) else {
+                    return;
+                };
                 let active = self.workspace.windows[wi].active;
                 std::mem::swap(
                     &mut self.state,
@@ -16164,11 +16291,36 @@ impl App {
                     close_requested = true;
                 }
             });
+            // Restore main strip gap so main chrome still covers under the selected main tab.
+            ctx.memory_mut(|m| {
+                if let Some(gap) = main_sep_gap {
+                    m.data
+                        .insert_temp(egui::Id::new("main_tab_sep_gap"), gap);
+                } else {
+                    m.data
+                        .remove::<Option<egui::Rect>>(egui::Id::new("main_tab_sep_gap"));
+                }
+            });
+            if strip_action.close_id.is_some() || strip_action.detach_id.is_some() {
+                deferred_strip_actions.push(TabBarAction {
+                    switch_to: None,
+                    reorder: None,
+                    new_tab: false,
+                    duplicate_same: false,
+                    close_id: strip_action.close_id,
+                    detach_id: strip_action.detach_id,
+                });
+            }
             if close_requested {
-                for t in &self.workspace.windows[wi].tabs {
-                    tabs_to_close.push(t.id);
+                if let Some(wi) = self.workspace.window_index(win_id) {
+                    for t in &self.workspace.windows[wi].tabs {
+                        tabs_to_close.push(t.id);
+                    }
                 }
             }
+        }
+        for action in deferred_strip_actions {
+            self.apply_tab_bar_close_detach(&action);
         }
         for id in tabs_to_close {
             self.request_close_tab(id);
@@ -16409,6 +16561,23 @@ impl App {
 /// toolbar, docked panes, status bar, and central viewport (#1133).
 fn detached_window_is_full_application() -> bool {
     true
+}
+
+/// Secondary windows use the same filing-tab strip as the main window (#1210) — not a
+/// simplified selectable-label special case. Gated the same way as full chrome (#1133).
+fn detached_window_uses_main_tab_strip() -> bool {
+    true
+}
+
+/// Actions requested from a window's tab strip this frame.
+#[derive(Clone, Copy, Debug, Default)]
+struct TabBarAction {
+    switch_to: Option<usize>,
+    close_id: Option<tabs::TabId>,
+    detach_id: Option<tabs::TabId>,
+    duplicate_same: bool,
+    reorder: Option<(usize, usize)>,
+    new_tab: bool,
 }
 
 impl eframe::App for App {
@@ -33744,6 +33913,20 @@ mod tests {
         assert!(
             super::detached_window_is_full_application(),
             "detached windows must use full application chrome"
+        );
+    }
+
+    #[test]
+    fn secondary_windows_use_main_filing_tab_strip() {
+        // #1210: secondary windows must paint the same filing-tab strip as main (chips,
+        // baseline gap, close, context menu) — not a simplified special-case strip.
+        assert!(
+            super::detached_window_uses_main_tab_strip(),
+            "detached windows must use the main filing-tab strip"
+        );
+        assert!(
+            super::detached_window_is_full_application(),
+            "tab strip identity requires full application chrome"
         );
     }
 
