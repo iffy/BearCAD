@@ -5724,12 +5724,15 @@ impl App {
             return;
         }
 
-        // Y projects the selected body edges into the open sketch (#140).
+        // Y activates the Projection tool inside a sketch (#1193): select outside
+        // geometry, Enter projects; Enter on only projected lines un-projects.
         if self.state.sketch_session.is_some()
             && !keyboard_shortcuts_suppressed(ctx)
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Y))
         {
-            self.state.apply(Action::ProjectSelection);
+            if self.state.tool != Tool::Project {
+                self.state.apply(Action::SetTool(Tool::Project));
+            }
         }
 
         // Cmd/Ctrl+B toggles curve mode (#127) even while the in-progress line's inline
@@ -12795,19 +12798,10 @@ impl App {
                 self.tool_button(ui, icons::IconId::Chamfer, Tool::Chamfer, "Chamfer");
                 self.tool_button(ui, icons::IconId::Offset, Tool::Offset, "Offset");
                 self.tool_button(ui, icons::IconId::Text, Tool::Text, "Text");
-                // Project (#140, made discoverable): sketch mode only — click outside
-                // edges/bodies to bring them in as dashed associative references.
-                if self.state.sketch_session.is_some()
-                    && icons::selectable_icon_button_at(
-                        ui,
-                        icons::IconId::Project,
-                        self.state.tool == Tool::Project,
-                        "Projection — click an outside edge, body, or plane to reference it in this sketch (or select edges and press Y)",
-                        TOOLBAR_ICON_SIZE,
-                    )
-                    .clicked()
-                {
-                    self.state.apply(Action::SetTool(Tool::Project));
+                // Project (#140/#1193): sketch mode only — select outside geometry, Enter
+                // projects (or un-projects when only projected lines are selected).
+                if self.state.sketch_session.is_some() {
+                    self.tool_button(ui, icons::IconId::Project, Tool::Project, "Projection");
                 }
                 self.tool_button(ui, icons::IconId::Plane, Tool::ConstructionPlane, "Plane");
                 self.tool_button(ui, icons::IconId::Extrude, Tool::Extrude, "Extrude");
@@ -24797,6 +24791,7 @@ impl App {
                 | Tool::Shell
                 | Tool::Revolve
                 | Tool::Sweep
+                | Tool::Project
         ) {
             Some(construction::PickOcclusion::new(
                 &self.state.doc,
@@ -25999,61 +25994,72 @@ impl App {
             }
         }
 
-        // Project tool (#140): click an outside body edge to project it into the open
-        // sketch; a body face or vertex projects the whole body's edges.
+        // Project tool (#140/#1193): select outside geometry (or already-projected lines),
+        // then Enter projects (or un-projects when the selection is only projected lines).
         if self.state.tool == Tool::Project {
-            if let (Some(session), Some(pp)) = (self.state.sketch_session, pointer_screen) {
-                if ui.input(|i| i.pointer.primary_pressed()) {
-                    let body_vertex =
-                        construction::nearest_body_vertex(pp, &project, &self.state.doc)
-                            .and_then(|(kind, _)| match kind {
-                                construction::PickTargetKind::BodyVertex { body, .. } => {
-                                    Some(SceneElement::Body(body))
-                                }
-                                _ => None,
-                            });
-                    let gp = cam.ground_point(pp, viewport, &vp);
-                    let picked = body_vertex.or_else(|| {
-                        resolve_pick_target(pp, &project, gp, &self.state.doc, pick_occlusion)
-                            .and_then(|target| match target.kind {
-                                construction::PickTargetKind::BodyEdge { body, a, b } => {
-                                    Some(SceneElement::BodyEdge {
-                                        body,
-                                        a: hierarchy::quantize_body_point(a),
-                                        b: hierarchy::quantize_body_point(b),
-                                    })
-                                }
-                                construction::PickTargetKind::BodyFace { body, .. } => {
-                                    Some(SceneElement::Body(body))
-                                }
-                                construction::PickTargetKind::ConstructionPlane(index) => {
-                                    Some(SceneElement::ConstructionPlane(index))
-                                }
-                                construction::PickTargetKind::Line(index) => {
-                                    Some(SceneElement::Line(index))
-                                }
-                                _ => None,
-                            })
-                    });
-                    // One definition of what the tool takes (#983): the same rule the
-                    // picker and the Exploder's fan are pruned by, so a click can never
-                    // land on something they didn't offer (and vice versa).
-                    let rule =
-                        crate::element_picker::PickRule::ProjectableInto(session.sketch);
-                    match picked.filter(|element| rule.allows(&self.state.doc, element)) {
-                        // A projected line is re-picked to un-project it (#983): the
-                        // reference is removed from the sketch.
-                        Some(element @ SceneElement::Line(_)) => {
-                            self.state.apply(Action::DeleteElement { element });
-                            self.state.status = "Removed the projected reference".to_string();
-                        }
-                        Some(element) => {
-                            self.state.apply(Action::ProjectElement { element });
-                        }
-                        None => {
-                            self.state.status =
-                                "Project: click an outside body edge, face, vertex, or plane — or a projected line to remove it"
-                                    .to_string();
+            if let Some(session) = self.state.sketch_session {
+                if ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    && !ui.ctx().egui_wants_keyboard_input()
+                    && !self.state.scene_selection.is_empty()
+                {
+                    self.state.apply(Action::ProjectSelection);
+                } else if let Some(pp) = pointer_screen {
+                    if ui.input(|i| i.pointer.primary_pressed()) {
+                        let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
+                        let body_vertex =
+                            construction::nearest_body_vertex(pp, &project, &self.state.doc)
+                                .and_then(|(kind, _)| match kind {
+                                    construction::PickTargetKind::BodyVertex { body, .. } => {
+                                        Some(SceneElement::Body(body))
+                                    }
+                                    _ => None,
+                                });
+                        let gp = cam.ground_point(pp, viewport, &vp);
+                        let picked = body_vertex.or_else(|| {
+                            resolve_pick_target(pp, &project, gp, &self.state.doc, pick_occlusion)
+                                .and_then(|target| match target.kind {
+                                    construction::PickTargetKind::BodyEdge { body, a, b } => {
+                                        Some(SceneElement::BodyEdge {
+                                            body,
+                                            a: hierarchy::quantize_body_point(a),
+                                            b: hierarchy::quantize_body_point(b),
+                                        })
+                                    }
+                                    construction::PickTargetKind::BodyFace { body, .. } => {
+                                        Some(SceneElement::Body(body))
+                                    }
+                                    construction::PickTargetKind::ConstructionPlane(index) => {
+                                        Some(SceneElement::ConstructionPlane(index))
+                                    }
+                                    construction::PickTargetKind::Line(index) => {
+                                        Some(SceneElement::Line(index))
+                                    }
+                                    _ => None,
+                                })
+                        });
+                        // One definition of what the tool takes (#983): the same rule the
+                        // picker and the Exploder's fan are pruned by, so a click can never
+                        // land on something they didn't offer (and vice versa).
+                        let rule =
+                            crate::element_picker::PickRule::ProjectableInto(session.sketch);
+                        match picked.filter(|element| rule.allows(&self.state.doc, element)) {
+                            Some(element) => {
+                                self.state.apply(Action::ClickSceneElement {
+                                    element,
+                                    additive,
+                                });
+                                let n = self.state.scene_selection.ordered().len();
+                                self.state.status = format!(
+                                    "Projection: {n} selected — Enter to project (or un-project if only projected lines)"
+                                );
+                            }
+                            None if !additive => {
+                                self.state.apply(Action::ClearSceneSelection);
+                                self.state.status =
+                                    "Projection: select an outside edge, face, vertex, or plane — or a projected line to un-project"
+                                        .to_string();
+                            }
+                            None => {}
                         }
                     }
                 }
@@ -29311,7 +29317,7 @@ impl App {
                 "Shape — b cycles cuboid/cylinder/sphere • type the sizes • Enter: create • Esc: cancel"
             }
             Tool::Project => {
-                "Projection — click an outside edge, body, or plane to bring it in as a solid cyan reference; click a projected line to remove it • Esc: done"
+                "Projection — select outside edges/bodies/planes, Enter projects as solid cyan references; select projected lines and Enter to un-project • Esc: done"
             }
             Tool::Loft => {
                 if self

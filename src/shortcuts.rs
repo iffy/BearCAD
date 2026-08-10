@@ -97,12 +97,14 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
         // and B collides with no other tool letter or constraint mnemonic. Repeated B
         // cycles cuboid → cylinder → sphere.
         Tool::Shape => Some(ShortcutHint::plain("B")),
+        // Y for Projection inside a sketch (#1193): select outside geometry, Enter projects;
+        // Enter on a selection of only already-projected lines un-projects them.
+        Tool::Project => Some(ShortcutHint::plain("Y")),
         // No plain-letter shortcut; toolbar/palette only. (Plane creation isn't
         // common enough to spend a letter on, #462.)
         Tool::ConstructionPlane
         | Tool::Offset
         | Tool::Loft
-        | Tool::Project
         | Tool::Revolve
         | Tool::Sweep
         | Tool::Combine
@@ -289,7 +291,11 @@ pub fn all_shortcuts() -> Vec<ShortcutSection> {
         title: "Sketch mode",
         scope: Some("while a sketch is open"),
         entries: vec![
-            ("Y".to_string(), "Project the selected outside edges/body into the sketch".to_string()),
+            (
+                "Y".to_string(),
+                "Projection tool — select outside edges/bodies, Enter projects; Enter on projected lines un-projects"
+                    .to_string(),
+            ),
             ("X".to_string(), "Toggle construction (reference) geometry".to_string()),
             (format!("{cmd}B"), "Toggle curve mode while drawing a line".to_string()),
         ],
@@ -475,6 +481,8 @@ mod tests {
         // #909/#921: the Shape and Joint tools too, both cycling on a repeat press.
         assert_eq!(tool_shortcut(Tool::Shape), Some(ShortcutHint::plain("B")));
         assert_eq!(tool_shortcut(Tool::Joint), Some(ShortcutHint::plain("J")));
+        // #1193: Y activates the Projection tool in a sketch (select, then Enter commits).
+        assert_eq!(tool_shortcut(Tool::Project), Some(ShortcutHint::plain("Y")));
         assert_eq!(tool_shortcut(Tool::Select), None);
     }
 

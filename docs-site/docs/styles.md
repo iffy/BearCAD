@@ -21,7 +21,7 @@ light blue-grey so they contrast the face (and brighten while that sketch is ope
 | **On a body face** — unconstrained; dark or light for face contrast | ![](/img/screenshots/styles/line-on-body.png) | ![](/img/screenshots/styles/line-on-body-hovered.png) | ![](/img/screenshots/styles/line-on-body-selected.png) |
 | **Fully constrained** — dimensioned and immobile | ![](/img/screenshots/styles/line-constrained.png) | ![](/img/screenshots/styles/line-constrained-hovered.png) | ![](/img/screenshots/styles/line-constrained-selected.png) |
 | **Construction** — reference geometry, never part of the solid; shows only inside its own sketch | ![](/img/screenshots/styles/line-construction.png) | ![](/img/screenshots/styles/line-construction-hovered.png) | ![](/img/screenshots/styles/line-construction-selected.png) |
-| **Projected** — traced from outside the sketch (press `Y`); follows its source | ![](/img/screenshots/styles/line-projected.png) | ![](/img/screenshots/styles/line-projected-hovered.png) | ![](/img/screenshots/styles/line-projected-selected.png) |
+| **Projected** — traced from outside the sketch (`Y` then Enter); follows its source | ![](/img/screenshots/styles/line-projected.png) | ![](/img/screenshots/styles/line-projected-hovered.png) | ![](/img/screenshots/styles/line-projected-selected.png) |
 
 ## Points
 

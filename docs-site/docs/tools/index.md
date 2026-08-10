@@ -26,7 +26,7 @@ any of them apart yourself.
 | <img src={useBaseUrl("/img/icons/chamfer.svg")} width="22" /> | [Chamfer](/docs/tools/chamfer) | `K` | Cut a corner or edge flat. |
 | <img src={useBaseUrl("/img/icons/offset.svg")} width="22" /> | [Offset](/docs/tools/offset) | — | Parallel copies of sketch edges a constant distance away. |
 | <img src={useBaseUrl("/img/icons/text.svg")} width="22" /> | [Text](/docs/tools/text) | `T` | Place editable lettering in a sketch. |
-| <img src={useBaseUrl("/img/icons/project.svg")} width="22" /> | [Projection](/docs/tools/projection) | — | In a sketch: pull outside edges in as references (or select and press `Y`). |
+| <img src={useBaseUrl("/img/icons/project.svg")} width="22" /> | [Projection](/docs/tools/projection) | `Y` | In a sketch: select outside edges, Enter projects (or un-projects projected lines). |
 | <img src={useBaseUrl("/img/icons/plane.svg")} width="22" /> | [Construction Plane](/docs/tools/construction-plane) | — | Add a flat reference plane to sketch on. |
 | <img src={useBaseUrl("/img/icons/shape_cuboid.svg")} width="22" /> | [Shape](/docs/tools/shape) | `B` | Place a cuboid, cylinder, or sphere straight into 3D. |
 | <img src={useBaseUrl("/img/icons/extrude.svg")} width="22" /> | [Extrude](/docs/tools/extrude) | `E` | Pull a sketch face into a solid — or cut into one. |

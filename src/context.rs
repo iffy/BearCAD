@@ -4120,9 +4120,9 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
              Pressing O again flips it.",
         ),
         (Some(Tool::Project), "Selection") => Some(
-            "The outside geometry to pull onto this sketch plane — click a body edge to \
-             project it, a face or corner to take the whole body's edges, or a plane for \
-             its crossing line. Clicking a projected line removes it.",
+            "The outside geometry to pull onto this sketch plane — select body edges, \
+             a face or corner for a whole body, or a plane for its crossing line, then \
+             press Enter. Select only projected lines and press Enter to un-project them.",
         ),
         (Some(Tool::Sketch), "Selection") => Some(
             "The face the new sketch opens on — a construction plane, a flat body face, \

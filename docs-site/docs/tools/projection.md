@@ -5,16 +5,15 @@ title: Projection
 
 # Projection
 
-Available inside a sketch, **Projection** pulls outside 3D geometry onto the sketch plane
-as reference lines you can snap, dimension, and constrain against.
+Available inside a sketch (**Y**), **Projection** pulls outside 3D geometry onto the sketch
+plane as reference lines you can snap, dimension, and constrain against.
 
-- Click an outside **body edge** to project that edge; click a **face** or **corner** to
-  project the whole body's feature edges.
-- Click a **construction plane** to project the line where it crosses the sketch plane.
-- Click a **projected line** to remove it from the sketch.
-- Or select edges, a body, or a plane with the Select tool before opening the sketch, then
-  press **Y** inside it.
-- Projected lines draw solid cyan, and behave like construction geometry.
+- Select outside **body edges** (a **face** or **corner** takes the whole body), or a
+  **construction plane**, then press **Enter** to project.
+- Select only **projected lines** and press **Enter** to un-project them.
+- Or select edges/a body/a plane before opening the sketch, then **Y** → **Enter**.
+- Projected lines draw solid cyan, behave like construction geometry, and show the
+  projector icon in the Elements pane.
 
 The tool picks outside geometry only; the sketch's own drawn geometry belongs to the other
 sketch tools.
@@ -31,8 +30,7 @@ lands in a sketch opened on it automatically.
 ## Scripting
 
 ```lua
-bearcad.ui.tool("project")   -- inside a sketch
--- or project the current selection, the Y shortcut's action:
+bearcad.ui.tool("project")   -- inside a sketch (same as Y)
 bearcad.select{ kind = "body", index = 0 }
-bearcad.ui.palette("run", "project selection")
+bearcad.ui.palette("run", "project selection")  -- Enter on the tool
 ```

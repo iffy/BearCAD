@@ -316,20 +316,25 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   `PickRule::InSketch` while a sketch is open (#982) — so the Selection Exploder's fan,
   which prunes to what the focused picker takes, can never offer a datum plane, world
   axis, or body that a click would refuse. Outside geometry enters a sketch only through
-  the Projection tool (#140) — or **Y** on a selection made before the sketch was opened.
-- **Projections (#140):** selecting external 3D geometry (a body's
-  edges via 3D selection, #156 — or a whole body/extrusion, which projects all of its
-  feature edges) and, with a sketch open, pressing **Y** (or "Project Selection into
-  Sketch" in the palette) projects it onto the sketch plane, along the plane normal. Discoverable via
-  **`Tool::Project`** (shown as **Projection** since #753 — the verb read as a noun): a
-  toolbar button that appears only in sketch mode — with it
-  active, outside body edges/faces hover-glow and a click projects the edge (a face or
-  vertex projects the whole body) through `Action::ProjectElement`; both entry points
-  share `Action::ProjectSources`. Lua tool name `"project"`. Each projected edge becomes a
+  the Projection tool (#140/#1193).
+- **Projections (#140/#1193):** **`Tool::Project`** (shown as **Projection** since #753 —
+  the verb read as a noun; Lua `"project"`; shortcut **Y** in sketch mode) is a toolbar
+  tool that appears only while a sketch is open. With it active, outside body edges/faces
+  and crossing planes hover-glow and **clicks select** them (Shift multi-selects); **Enter**
+  projects the selection onto the sketch plane along the plane normal through
+  `Action::ProjectSelection` → `Action::ProjectSources`. A face or vertex projects the
+  whole body's edges; a body does the same. Selecting external 3D geometry before opening
+  the sketch, then activating Project (**Y**) and pressing Enter, works the same — the
+  tool's picker keeps projectable items across the handoff. Palette "Project Selection into
+  Sketch" still runs `Action::ProjectSelection` directly. Each projected edge becomes a
   construction-style line drawn **solid cyan** (#1186; distinct from dashed construction)
   and usable like construction geometry (snapping, constraints). While the host sketch is
   open, projected lines **show through bodies** (depth-disabled; #1192) so a body between
-  the camera and the sketch plane does not hide the reference.
+  the camera and the sketch plane does not hide the reference. In the Elements pane,
+  projected lines wear the **Projection** (projector) icon, not the plain line glyph (#1193).
+  **Un-project (#1193):** when the selection is **only** already-projected lines of the
+  open sketch, Enter (or Project Selection) **un-projects** them (removes the references).
+  A mixed selection of projected lines and outside sources still projects the sources.
   Projections are **associative**: each geometry recompute re-resolves the source edge and
   rewrites the projected line, so it follows its source body. Sources are geometry-keyed
   (mesh edges have no stable topological name), so if a rebuild moves/removes the source
@@ -346,7 +351,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   nothing and is refused up front.
   **The tool picks outside geometry only (#983)**: its picker carries
   `PickRule::ProjectableInto(sketch)` — bodies, their edges/corners, crossing planes, and
-  this sketch's **already-projected lines**, which a click **un-projects** (removes) —
+  this sketch's **already-projected lines** (selected so Enter can un-project them) —
   never the sketch's own drawn geometry. The hover path, the click path, and the Selection
   Exploder's fan all consult that one rule, so none can offer what another would refuse.
 - Sketch entities: line, arc, circle, ellipse, spline, point, and construction-geometry

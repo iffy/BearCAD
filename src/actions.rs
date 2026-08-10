@@ -8111,7 +8111,7 @@ impl AppState {
                             .to_string()
                     }
                     Tool::Project => {
-                        "Projection tool — click an outside edge (or a body) to bring it into the sketch as a reference".to_string()
+                        "Projection tool — select outside edges/bodies/planes, Enter projects; Enter on projected lines un-projects".to_string()
                     }
                     Tool::Text if self.sketch_session.is_some() => {
                         "Text tool — click to place text, or drag a box to set its width".to_string()
@@ -9226,6 +9226,55 @@ impl AppState {
                 });
             }
             Action::ProjectSelection => {
+                let Some(session) = self.sketch_session else {
+                    return ActionResult::Err("Open a sketch to project into".to_string());
+                };
+                // #1193: if every selected item is already a projected line of this sketch,
+                // Enter un-projects them (removes the references). A mixed selection still
+                // projects its outside sources.
+                if !self.scene_selection.is_empty() {
+                    let mut projected_lines = Vec::new();
+                    let mut only_projected = true;
+                    for el in self.scene_selection.ordered() {
+                        match el {
+                            crate::hierarchy::SceneElement::Line(li) => {
+                                if self.doc.lines.get(li).is_some_and(|l| {
+                                    l.sketch == session.sketch && l.projection.is_some()
+                                }) {
+                                    projected_lines.push(li);
+                                } else {
+                                    only_projected = false;
+                                    break;
+                                }
+                            }
+                            _ => {
+                                only_projected = false;
+                                break;
+                            }
+                        }
+                    }
+                    if only_projected {
+                        let n = projected_lines.len();
+                        for li in projected_lines {
+                            let _ = self.apply_inner(Action::DeleteElement {
+                                element: crate::hierarchy::SceneElement::Line(li),
+                            });
+                        }
+                        self.scene_selection.clear();
+                        self.status = format!("Un-projected {n} reference(s)");
+                        self.refresh_document_health();
+                        return ActionResult::Ok;
+                    }
+                }
+                // A single selected element projects through ProjectElement so that action
+                // stays on the live path (tests/scripts use it too); multi-select batches
+                // via ProjectSources.
+                let ordered = self.scene_selection.ordered();
+                if ordered.len() == 1 {
+                    return self.apply_inner(Action::ProjectElement {
+                        element: ordered[0].clone(),
+                    });
+                }
                 let sources = crate::projection::projection_sources_from_selection(
                     &self.doc,
                     &self.scene_selection,
@@ -26153,6 +26202,77 @@ mod tests {
         assert!(
             (x0 - a.x).abs() < 1e-3 || (x0 - b.x).abs() < 1e-3,
             "refresh must snap the projected line back to its source, got {x0}"
+        );
+    }
+
+    /// #1193: ProjectSelection with a selection of only projected lines un-projects them
+    /// (Enter on the Project tool when nothing else is selected).
+    #[test]
+    fn project_selection_unprojects_when_only_projected_lines_selected() {
+        use crate::hierarchy::SceneElement;
+
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(pkey(0)),
+            viewport: None,
+        });
+        // Project YZ into the ground sketch → one solid cyan reference line.
+        state.apply(Action::ProjectElement {
+            element: SceneElement::ConstructionPlane(pkey(2)),
+        });
+        let li = state.doc.lines.keys().last().expect("projected line");
+        assert!(state.doc.lines[li].projection.is_some());
+
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Line(li),
+            additive: false,
+        });
+        let before = state.doc.lines.len();
+        let result = state.apply(Action::ProjectSelection);
+        assert!(matches!(result, ActionResult::Ok), "{result:?}: {}", state.status);
+        assert_eq!(state.doc.lines.len(), before - 1, "projected line is removed");
+        assert!(!state.doc.lines.contains(li));
+        assert!(
+            state.status.to_lowercase().contains("un-project")
+                || state.status.to_lowercase().contains("removed"),
+            "status should report un-project, got {}",
+            state.status
+        );
+    }
+
+    /// #1193: a mixed selection (projected line + projectable source) still projects the
+    /// source rather than un-projecting — un-project only when *every* selected item is a
+    /// projected line.
+    #[test]
+    fn project_selection_projects_when_selection_mixes_sources_and_projections() {
+        use crate::hierarchy::SceneElement;
+
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(pkey(0)),
+            viewport: None,
+        });
+        state.apply(Action::ProjectElement {
+            element: SceneElement::ConstructionPlane(pkey(2)),
+        });
+        let projected = state.doc.lines.keys().last().expect("projected line");
+        let before = state.doc.lines.len();
+
+        // Projected line + XZ plane (another projectable source).
+        state.scene_selection.clear();
+        state.scene_selection.insert(SceneElement::Line(projected));
+        state
+            .scene_selection
+            .insert(SceneElement::ConstructionPlane(pkey(1)));
+        let result = state.apply(Action::ProjectSelection);
+        assert!(matches!(result, ActionResult::Ok), "{result:?}: {}", state.status);
+        assert!(
+            state.doc.lines.len() > before,
+            "mixed selection should project the plane, not un-project the line"
+        );
+        assert!(
+            state.doc.lines.contains(projected),
+            "existing projection stays when selection is mixed"
         );
     }
 

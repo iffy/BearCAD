@@ -3524,7 +3524,15 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
         HierarchyNode::Component(_) => IconId::Component,
         HierarchyNode::ConstructionPlane(_) => IconId::Plane,
         HierarchyNode::Sketch(_) => IconId::Sketch,
-        HierarchyNode::Line(_) => IconId::Line,
+        // #1193: projected sketch lines wear the Projection tool's icon so they read
+        // differently from ordinary drawn lines in the Elements pane.
+        HierarchyNode::Line(index) => {
+            if doc.lines.get(index).is_some_and(|l| l.projection.is_some()) {
+                IconId::Project
+            } else {
+                IconId::Line
+            }
+        }
         HierarchyNode::Circle(_) => IconId::Circle,
         HierarchyNode::Constraint(index) => doc
             .constraints
@@ -5765,6 +5773,34 @@ mod tests {
     use crate::model::boolean_op_key_for_slot as bopkey;
     use super::*;
     use crate::model::ShapeKind;
+
+    /// #1193: projected sketch lines wear the Projection tool's icon in the Elements pane,
+    /// not the plain line glyph.
+    #[test]
+    fn projected_line_uses_projection_icon_in_elements_pane() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
+        let mut plain = crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0);
+        plain.construction = false;
+        let plain_li = doc.lines.insert(plain);
+        let mut projected = crate::model::Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0);
+        projected.construction = true;
+        projected.projection = Some(crate::model::ProjectionSource::Plane {
+            plane: pkey(2),
+        });
+        let projected_li = doc.lines.insert(projected);
+
+        assert_eq!(
+            icon_for_hierarchy_node(&doc, HierarchyNode::Line(plain_li)),
+            Some(IconId::Line),
+            "drawn lines keep the line icon"
+        );
+        assert_eq!(
+            icon_for_hierarchy_node(&doc, HierarchyNode::Line(projected_li)),
+            Some(IconId::Project),
+            "projected lines wear the Projection (projector) icon"
+        );
+    }
 
     /// #1056: the two directions between a member and its scene element must agree. They used
     /// to be written out separately, and the "move this into that component" side had quietly
