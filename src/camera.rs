@@ -194,7 +194,8 @@ pub const SKETCH_EDIT_FRAME_PADDING_PX: f32 = 15.0;
 /// Extra breathing room multiplier applied when framing a bounding box, so the fitted content
 /// never sits flush against the viewport edge. Shared by zoom-to-fit ([`Camera::
 /// frame_bounds_instant`]) and sketch entry so both frame content the same amount (#544).
-pub const ZOOM_FIT_MARGIN: f32 = 1.15;
+/// Bumped from 1.15 → 1.25 so Z leaves a visible pixel margin around thin/long geometry (#1181).
+pub const ZOOM_FIT_MARGIN: f32 = 1.25;
 
 /// How the ground plane renders in the viewport (#159): the classic line grid, or a solid
 /// filled plane in the grid's grey.
@@ -831,18 +832,17 @@ impl Camera {
     /// margin. Orientation is left alone. The old largest-axis-extent heuristic overshot
     /// badly from diagonal views (a box's screen-projected diagonal is larger than any
     /// single axis extent), clipping the model.
+    ///
+    /// Uses the same look-at up as rendering ([`Self::view_up_hint`]) so sketch-mode
+    /// framing (custom `view_up`) doesn't under-estimate distance and clip corners (#1181).
     pub fn frame_bounds_instant(&mut self, min: Vec3, max: Vec3, aspect: f32) {
         let center = (min + max) * 0.5;
         let half = ((max - min) * 0.5).max(Vec3::splat(0.5));
-        // Camera basis at the current orientation: unit vector from target toward the eye,
-        // plus the view plane's right/up.
+        // Camera basis matching `view_proj` / `look_at_rh`: back toward the eye, plus the
+        // view plane's right/up from the current up hint (world Z or sketch `view_up`).
         let back = (self.eye() - self.target).normalize_or_zero();
-        let world_up = Vec3::Z;
-        let mut right = world_up.cross(back).normalize_or_zero();
-        if right.length_squared() < 1e-6 {
-            right = Vec3::X;
-        }
-        let up = back.cross(right).normalize_or_zero();
+        let forward = -back;
+        let (right, up) = self.camera_axes(forward);
         let tan_y = (self.fov_y * 0.5).tan();
         let tan_x = tan_y * aspect.max(0.1);
         let mut distance = 0.5f32;
@@ -2150,6 +2150,65 @@ mod tests {
         let near = cam.distance_to_fit_corners(center, Vec3::Z, &small, 8.0, viewport);
         let far = cam.distance_to_fit_corners(center, Vec3::Z, &large, 8.0, viewport);
         assert!(far > near * 5.0);
+    }
+
+    /// #1181: zoom-to-fit must leave a visible margin and must not clip, including sketch-mode
+    /// orientations with a custom `view_up` (the axes used for framing must match rendering).
+    #[test]
+    fn frame_bounds_leaves_screen_margin() {
+        // Portrait-ish central viewport like the report screenshot (side panes squeeze the 3D area).
+        let viewport = Rect::from_min_size(Pos2::new(100.0, 80.0), egui::vec2(681.0, 837.0));
+        let aspect = viewport.width() / viewport.height();
+        // Report geometry: ~8ft × 37mm rectangle on the ground plane.
+        let min = Vec3::new(-2353.6443, 38.8091, 0.0);
+        let max = Vec3::new(84.755615, 76.058784, 0.0);
+        let half = ((max - min) * 0.5).max(Vec3::splat(0.5));
+        let center = (min + max) * 0.5;
+        // At least ~8% of the shorter side free on every edge after ZOOM_FIT_MARGIN.
+        let min_wanted = viewport.height().min(viewport.width()) * 0.08;
+
+        let orientations: &[(&str, f32, f32, Option<Vec3>)] = &[
+            ("default_iso", ISOMETRIC_YAW, ISOMETRIC_PITCH, None),
+            (
+                "top_sketch",
+                -std::f32::consts::FRAC_PI_2,
+                PITCH_LIMIT,
+                Some(Vec3::Y),
+            ),
+            // Shallow tilt + sketch view-up: the old world-Z framing axes under-estimated
+            // distance here and clipped the AABB corners.
+            ("shallow_sketch", -0.9, 1.1, Some(Vec3::Y)),
+        ];
+
+        for (name, yaw, pitch, up) in orientations {
+            let mut cam = Camera::default();
+            cam.set_pose_instant(Some(*yaw), Some(*pitch), Some(400.0), Some(Vec3::ZERO));
+            if let Some(up) = up {
+                cam.set_view_up(Some(*up));
+            }
+            cam.frame_bounds_instant(min, max, aspect);
+            let vp = cam.view_proj(viewport);
+            let mut min_inset = f32::MAX;
+            for sx in [-1.0f32, 1.0] {
+                for sy in [-1.0f32, 1.0] {
+                    for sz in [-1.0f32, 1.0] {
+                        let p = center + Vec3::new(sx * half.x, sy * half.y, sz * half.z);
+                        let screen = cam
+                            .project(p, viewport, &vp)
+                            .unwrap_or_else(|| panic!("{name}: corner should project"));
+                        let inset_l = screen.x - viewport.min.x;
+                        let inset_r = viewport.max.x - screen.x;
+                        let inset_t = screen.y - viewport.min.y;
+                        let inset_b = viewport.max.y - screen.y;
+                        min_inset = min_inset.min(inset_l).min(inset_r).min(inset_t).min(inset_b);
+                    }
+                }
+            }
+            assert!(
+                min_inset >= min_wanted,
+                "{name}: zoom-to-fit margin too tight: min inset {min_inset:.1}px, want ≥ {min_wanted:.1}px (#1181)"
+            );
+        }
     }
 
     #[test]
