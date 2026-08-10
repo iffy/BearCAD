@@ -769,6 +769,9 @@ pub fn occt_body_shape(doc: &Document, body_index: crate::model::BodyKey) -> Opt
         crate::model::BodySource::Sliced { op, target, piece } => {
             return occt_sliced_output_shape(doc, op, target, piece);
         }
+        crate::model::BodySource::Shelled { op, target } => {
+            return occt_shelled_output_shape(doc, op, target);
+        }
         crate::model::BodySource::EdgeTreated { op, target } => {
             return occt_edge_treated_output_shape(doc, op, target);
         }
@@ -3409,6 +3412,97 @@ pub fn slice_piece_count(doc: &Document, op_index: crate::model::SliceOpKey, tar
     Some(occt_slice_pieces(doc, op_index, target)?.len())
 }
 
+/// The BREP solid of one shell-operation output (#1156): the input body hollowed to the
+/// op's wall thickness with the listed open faces removed.
+fn occt_shelled_output_shape(
+    doc: &Document,
+    op_index: crate::model::ShellOpKey,
+    target: usize,
+) -> Option<crate::kernel::Shape> {
+    let op = doc.shell_ops.get(op_index)?;
+    let &input = op.targets.get(target)?;
+    if op.outputs.contains(&input) {
+        return None;
+    }
+    let shape = occt_body_shape(doc, input)?;
+    let thickness = crate::value::eval_length_mm_in_doc(&op.thickness, doc)?;
+    if !(thickness > 0.0) {
+        return None;
+    }
+    // Open faces belonging to this target: convert FaceId → (point, outward normal).
+    let mut open: Vec<(glam::Vec3, glam::Vec3)> = Vec::new();
+    for face in &op.open_faces {
+        let Some(owner) = crate::model::body_index_for_face(doc, face) else {
+            continue;
+        };
+        if owner != input {
+            continue;
+        }
+        let Some(frame) = crate::face::sketch_frame(doc, face.clone()) else {
+            continue;
+        };
+        let point = face_boundary_loop_world(doc, face)
+            .map(|pts| pts.iter().copied().sum::<glam::Vec3>() / pts.len().max(1) as f32)
+            .unwrap_or(frame.origin);
+        let normal = frame.normal.normalize_or_zero();
+        if normal.length_squared() < 1e-12 {
+            continue;
+        }
+        open.push((point, normal));
+    }
+    shape.shell(&open, thickness)
+}
+
+/// Preview meshes for an in-progress shell (#1156): the would-be hollowed solids for each
+/// target (falls back to the solid input mesh when the kernel can't build).
+pub fn preview_shell_meshes(
+    doc: &Document,
+    targets: &[crate::model::BodyKey],
+    open_faces: &[crate::model::FaceId],
+    thickness: f32,
+) -> Option<Vec<SolidMesh>> {
+    if !(thickness > 0.0) || targets.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(targets.len());
+    for &bi in targets {
+        let Some(shape) = occt_body_shape(doc, bi) else {
+            // Fall back to the un-shelled solid mesh so the preview still shows something.
+            out.push(body_solid_mesh(doc, bi)?);
+            continue;
+        };
+        let mut open: Vec<(glam::Vec3, glam::Vec3)> = Vec::new();
+        for face in open_faces {
+            let Some(owner) = crate::model::body_index_for_face(doc, face) else {
+                continue;
+            };
+            if owner != bi {
+                continue;
+            }
+            let Some(frame) = crate::face::sketch_frame(doc, face.clone()) else {
+                continue;
+            };
+            let point = face_boundary_loop_world(doc, face)
+                .map(|pts| pts.iter().copied().sum::<glam::Vec3>() / pts.len().max(1) as f32)
+                .unwrap_or(frame.origin);
+            let normal = frame.normal.normalize_or_zero();
+            if normal.length_squared() < 1e-12 {
+                continue;
+            }
+            open.push((point, normal));
+        }
+        if let Some(shelled) = shape.shell(&open, thickness) {
+            let tris = shelled.tessellate(0.2);
+            if !tris.is_empty() {
+                out.push(SolidMesh { triangles: tris });
+                continue;
+            }
+        }
+        out.push(body_solid_mesh(doc, bi)?);
+    }
+    Some(out)
+}
+
 
 /// The whole (possibly multi-solid) OCCT result of one boolean operation: A-side bodies
 /// fused, then combined with the fused B side per the operation's algebra. Difference
@@ -4819,6 +4913,19 @@ pub fn selection_world_bounds(
                     }
                 }
             }
+            SceneElement::ShellOp(op) => {
+                let outputs = doc
+                    .shell_ops
+                    .get(op)
+                    .map(|o| o.outputs.clone())
+                    .unwrap_or_default();
+                for bi in outputs {
+                    if let Some((min, max)) = body_solid_mesh(doc, bi).and_then(|m| m.bounds()) {
+                        extend(min);
+                        extend(max);
+                    }
+                }
+            }
             SceneElement::EdgeTreatmentOp(op) => {
                 let outputs = doc
                     .edge_treatment_ops
@@ -5860,6 +5967,11 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: crate::model::BodyKey) -
             let tris = shape.tessellate(OCCT_DEFLECTION as f64);
             return (!tris.is_empty()).then_some(SolidMesh { triangles: tris });
         }
+    }
+    if let crate::model::BodySource::Shelled { op, target } = body.source {
+        let shape = occt_shelled_output_shape(doc, op, target)?;
+        let tris = shape.tessellate(OCCT_DEFLECTION as f64);
+        return (!tris.is_empty()).then_some(SolidMesh { triangles: tris });
     }
     // Fuse the body's added extrusions into one real solid via OCCT and subtract its cut
     // extrusions (#86/#35) when they're all kernel-representable; otherwise fall back to

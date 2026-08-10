@@ -1340,6 +1340,15 @@ pub enum BodySource {
         #[serde(default)]
         piece: usize,
     },
+    /// The hollowed output of one input of a shell operation (Shell tool, #1156): `op`
+    /// indexes `Document::shell_ops`, `target` is the input's position in the op's target
+    /// list. The input body becomes a shadow body; this output carries the hollow solid.
+    Shelled {
+        #[serde(rename = "shell_op")]
+        op: ShellOpKey,
+        #[serde(default)]
+        target: usize,
+    },
     /// The chamfered/filleted output of one input of an edge-treatment operation (#531): `op`
     /// indexes `Document::edge_treatment_ops`, `target` is the input's position within that
     /// operation's target list. The input body becomes a shadow body; this output carries the
@@ -1402,6 +1411,7 @@ impl BodySource {
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
             | Self::Sliced { .. }
+            | Self::Shelled { .. }
             | Self::EdgeTreated { .. }
             | Self::UnitInstance(_)
             | Self::UnitCut { .. } => &[],
@@ -1427,6 +1437,7 @@ impl BodySource {
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
             | Self::Sliced { .. }
+            | Self::Shelled { .. }
             | Self::EdgeTreated { .. }
             | Self::UnitInstance(_) => &[],
         }
@@ -1447,6 +1458,7 @@ impl BodySource {
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
             | Self::Sliced { .. }
+            | Self::Shelled { .. }
             | Self::EdgeTreated { .. }
             | Self::UnitInstance(_)
             | Self::UnitCut { .. } => None,
@@ -1486,6 +1498,7 @@ impl BodySource {
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
             | Self::Sliced { .. }
+            | Self::Shelled { .. }
             | Self::EdgeTreated { .. }
             | Self::UnitInstance(_)
             | Self::UnitCut { .. } => {}
@@ -1532,6 +1545,7 @@ impl BodySource {
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
             | Self::Sliced { .. }
+            | Self::Shelled { .. }
             | Self::EdgeTreated { .. }
             | Self::UnitInstance(_) => {}
         }
@@ -1585,6 +1599,7 @@ impl BodySource {
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
             | Self::Sliced { .. }
+            | Self::Shelled { .. }
             | Self::EdgeTreated { .. }
             | Self::UnitInstance(_) => {}
         }
@@ -1675,6 +1690,27 @@ pub fn body_shadowed_by_other_ops(
     skip_slice: Option<SliceOpKey>,
     skip_edge_treatment: Option<EdgeTreatmentOpKey>,
 ) -> bool {
+    body_shadowed_by_other_ops_ex(
+        doc,
+        body,
+        skip_boolean,
+        skip_move,
+        skip_slice,
+        skip_edge_treatment,
+        None,
+    )
+}
+
+/// Like [`body_shadowed_by_other_ops`], also skipping a shell op being edited (#1156).
+pub fn body_shadowed_by_other_ops_ex(
+    doc: &Document,
+    body: BodyKey,
+    skip_boolean: Option<crate::model::BooleanOpKey>,
+    skip_move: Option<MoveOpKey>,
+    skip_slice: Option<SliceOpKey>,
+    skip_edge_treatment: Option<EdgeTreatmentOpKey>,
+    skip_shell: Option<ShellOpKey>,
+) -> bool {
     doc.boolean_ops.iter().any(|(oi, o)| {
         skip_boolean != Some(oi) && (o.a.contains(&body) || (!o.keep_b && o.b.contains(&body)))
     }) || doc.move_ops.iter().any(|(oi, o)| {
@@ -1683,6 +1719,8 @@ pub fn body_shadowed_by_other_ops(
         skip_slice != Some(oi) && o.targets.contains(&body)
     }) || doc.edge_treatment_ops.iter().any(|(oi, o)| {
         skip_edge_treatment != Some(oi) && o.targets.contains(&body)
+    }) || doc.shell_ops.iter().any(|(oi, o)| {
+        skip_shell != Some(oi) && o.targets.contains(&body)
     }) || body_is_fuse_host(doc, body)
 }
 
@@ -1892,6 +1930,12 @@ pub fn repeat_op_key_for_slot(n: usize) -> RepeatOpKey {
 /// The same for a slice operation (#1055) — tests only, same caveat.
 #[cfg(test)]
 pub fn slice_op_key_for_slot(n: usize) -> SliceOpKey {
+    crate::arena::Key::from_bits((n as u64) << 32)
+}
+
+/// The same for a shell operation (#1156) — tests only, same caveat.
+#[cfg(test)]
+pub fn shell_op_key_for_slot(n: usize) -> ShellOpKey {
     crate::arena::Key::from_bits((n as u64) << 32)
 }
 
@@ -3261,6 +3305,35 @@ pub struct SliceOperation {
 /// How anything names a slice operation (#1055).
 pub type SliceOpKey = crate::arena::Key<SliceOperation>;
 
+/// A shell operation (Shell tool, #1156): hollows whole bodies to a wall thickness,
+/// optionally removing picked open faces. Each input body becomes a **shadow** body; each
+/// hollow result is a fresh [`Body`] with a [`BodySource::Shelled`] source. Open faces are
+/// analytic body faces ([`FaceId`]) that belong to one of the targets; adjacent open faces
+/// also remove the wall between them (OCCT `MakeThickSolid`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ShellOperation {
+    /// Input bodies; each is shelled independently.
+    pub targets: Vec<BodyKey>,
+    /// Faces to open (remove), leaving the wall thickness around them.
+    #[serde(default)]
+    pub open_faces: Vec<FaceId>,
+    /// Wall thickness expression (mm when evaluated). Must be positive.
+    #[serde(default = "default_shell_thickness")]
+    pub thickness: String,
+    /// Output bodies matching `targets` order.
+    #[serde(default)]
+    pub outputs: Vec<BodyKey>,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+fn default_shell_thickness() -> String {
+    "1".to_string()
+}
+
+/// How anything names a shell operation (#1156).
+pub type ShellOpKey = crate::arena::Key<ShellOperation>;
+
 /// One edge treated by an [`EdgeTreatmentOperation`] (#531): the stable, parametric edge
 /// identity is the extrusion-relative [`ExtrusionEdgeRef`] (a topological face/edge address
 /// that re-resolves to live world coordinates on every rebuild), **not** a coordinate snapshot
@@ -3678,6 +3751,9 @@ pub enum ShapeKind {
     RepeatOperation,
     /// A slice operation on bodies (its fragment bodies are separate `Body` entries).
     SliceOperation,
+    /// A shell operation on bodies (#1156): its hollowed output bodies are separate
+    /// `Body` entries; the originals become shadow bodies.
+    ShellOperation,
     /// An edge chamfer/fillet operation on bodies (#531): its beveled output bodies are
     /// separate `Body` entries; the originals become shadow bodies.
     EdgeTreatmentOperation,
@@ -4468,6 +4544,10 @@ pub struct Document {
     /// Slice operations on bodies (the Slice tool, #181).
     #[serde(default)]
     pub slice_ops: crate::arena::Arena<SliceOperation>,
+    /// Shell operations on bodies (the Shell tool, #1156): each shadows its input bodies
+    /// and produces hollowed output bodies.
+    #[serde(default)]
+    pub shell_ops: crate::arena::Arena<ShellOperation>,
     /// Edge chamfer/fillet operations on bodies (#531): each shadows its input bodies and
     /// produces beveled output bodies.
     #[serde(default)]
@@ -4596,6 +4676,7 @@ pub enum ComponentMember {
     MirrorOp(MirrorOpKey),
     RepeatOp(RepeatOpKey),
     SliceOp(SliceOpKey),
+    ShellOp(ShellOpKey),
     EdgeTreatmentOp(EdgeTreatmentOpKey),
     Revolution(RevolutionKey),
     Sweep(SweepKey),
@@ -4718,6 +4799,7 @@ impl Default for Document {
             mirror_ops: crate::arena::Arena::new(),
             repeat_ops: crate::arena::Arena::new(),
             slice_ops: crate::arena::Arena::new(),
+            shell_ops: crate::arena::Arena::new(),
             edge_treatment_ops: crate::arena::Arena::new(),
             sketch_repeat_ops: crate::arena::Arena::new(),
             sketch_offset_ops: crate::arena::Arena::new(),

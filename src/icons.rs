@@ -54,6 +54,8 @@ pub enum IconId {
     Repeat,
     Offset,
     Slice,
+    /// The Shell tool (#1156): hollow a body to a wall thickness.
+    Shell,
     /// The Joint tool (#894): two links sharing a pin.
     Joint,
     /// Per-kind joint icons (#899), drawn in the pane and at the joint's frame in 3D.
@@ -135,7 +137,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 92] = [
+    pub const ALL: [Self; 93] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -174,6 +176,7 @@ impl IconId {
         Self::Repeat,
         Self::Offset,
         Self::Slice,
+        Self::Shell,
         Self::Joint,
         Self::JointRigid,
         Self::JointSlider,
@@ -270,6 +273,7 @@ impl IconId {
             Self::Repeat => include_str!("assets/icons/repeat.svg"),
             Self::Offset => include_str!("assets/icons/offset.svg"),
             Self::Slice => include_str!("assets/icons/slice.svg"),
+            Self::Shell => include_str!("assets/icons/shell.svg"),
             Self::Joint => include_str!("assets/icons/joint.svg"),
             Self::JointRigid => include_str!("assets/icons/joint_rigid.svg"),
             Self::JointSlider => include_str!("assets/icons/joint_slider.svg"),
@@ -369,6 +373,7 @@ impl IconId {
             Self::Repeat => "Repeat",
             Self::Offset => "Offset",
             Self::Slice => "Slice",
+            Self::Shell => "Shell",
             Self::Joint => "Joint",
             Self::JointRigid => "Rigid joint",
             Self::JointSlider => "Slider joint",

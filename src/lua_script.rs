@@ -136,6 +136,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::SketchSliceOp(_) => "sketch_slice_op",
         SceneElement::SketchText(_) => "sketch_text",
         SceneElement::SliceOp(_) => "slice_op",
+        SceneElement::ShellOp(_) => "shell_op",
         SceneElement::EdgeTreatmentOp(_) => "edge_treatment_op",
         SceneElement::Revolution(_) => "revolution",
         SceneElement::Shape(_) => "shape",
@@ -181,6 +182,7 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
             doc.repeat_ops.keys().position(|k| k == key).unwrap_or(0)
         }
         SceneElement::SliceOp(key) => doc.slice_ops.keys().position(|k| k == key).unwrap_or(0),
+        SceneElement::ShellOp(key) => doc.shell_ops.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::SketchRepeatOp(key) => {
             doc.sketch_repeat_ops.keys().position(|k| k == key).unwrap_or(0)
         }
@@ -1652,6 +1654,24 @@ fn parse_slice_op_args(
     }
     let extend_infinite: bool = opts.get::<Option<bool>>("extend")?.unwrap_or(true);
     Ok((targets, cutters, extend_infinite))
+}
+
+/// Parse a `bearcad.shell`/`edit_shell` table into `(bodies, open faces, thickness)` (#1156).
+fn parse_shell_op_args(
+    lua: &Lua,
+    opts: &Table,
+) -> mlua::Result<(Vec<usize>, Vec<crate::model::FaceId>, String)> {
+    let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
+    let mut open_faces: Vec<crate::model::FaceId> = Vec::new();
+    if let Some(list) = opts.get::<Option<Vec<Table>>>("faces")? {
+        for table in list {
+            open_faces.push(parse_face_id_table(lua, table)?);
+        }
+    }
+    let thickness: String = opts
+        .get::<Option<String>>("thickness")?
+        .unwrap_or_else(|| "1".to_string());
+    Ok((targets, open_faces, thickness))
 }
 
 /// One slice cutter table: `{ kind = "line", index = i }` or a planar face-spec.
@@ -5481,6 +5501,51 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let (targets, cutters, extend_infinite) = parse_slice_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::EditSliceOp { op, targets, cutters, extend_infinite })?;
+            }
+            Ok(())
+        })?,
+    )?;
+
+    api.set(
+        "shell",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(&opts, "shell", &["bodies", "faces", "thickness", "name"])?;
+            let (targets, open_faces, thickness) = parse_shell_op_args(lua, &opts)?;
+            unsafe {
+                tick.exec(Instruction::CreateShellOp {
+                    targets,
+                    open_faces,
+                    thickness,
+                })?;
+            }
+            let element = SceneElement::ShellOp(unsafe {
+                tick.state()
+                    .doc
+                    .shell_ops
+                    .keys()
+                    .last()
+                    .unwrap_or_else(|| crate::arena::Key::from_bits(u64::MAX))
+            });
+            drop(tick);
+            apply_optional_name(lua, element, Some(opts))
+        })?,
+    )?;
+
+    api.set(
+        "edit_shell",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(&opts, "edit_shell", &["index", "bodies", "faces", "thickness"])?;
+            let op: usize = opts.get("index")?;
+            let (targets, open_faces, thickness) = parse_shell_op_args(lua, &opts)?;
+            unsafe {
+                tick.exec(Instruction::EditShellOp {
+                    op,
+                    targets,
+                    open_faces,
+                    thickness,
+                })?;
             }
             Ok(())
         })?,

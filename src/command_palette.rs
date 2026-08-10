@@ -41,6 +41,7 @@ pub enum PaletteCommandId {
     ToolMirror,
     ToolRepeat,
     ToolSlice,
+    ToolShell,
     ToolText,
     /// Open the Selection Exploder at the cursor (#576) — the palette equivalent of pressing Space.
     OpenExploder,
@@ -183,6 +184,7 @@ impl PaletteCommand {
             PaletteCommandId::ToolMirror => PaletteOutcome::Action(Action::SetTool(Tool::Mirror)),
             PaletteCommandId::ToolRepeat => PaletteOutcome::Action(Action::SetTool(Tool::Repeat)),
             PaletteCommandId::ToolSlice => PaletteOutcome::Action(Action::SetTool(Tool::Slice)),
+            PaletteCommandId::ToolShell => PaletteOutcome::Action(Action::SetTool(Tool::Shell)),
             PaletteCommandId::ToolText => PaletteOutcome::Action(Action::SetTool(Tool::Text)),
             PaletteCommandId::OpenExploder => PaletteOutcome::OpenExploder,
             PaletteCommandId::ToolPlane => {
@@ -604,6 +606,11 @@ const BASE_COMMANDS: &[PaletteCommand] = &[
         PaletteCommandId::ToolSlice,
         "Slice Tool",
         "slice tool cut split plane 3d",
+    ),
+    PaletteCommand::new(
+        PaletteCommandId::ToolShell,
+        "Shell Tool",
+        "shell tool hollow wall thickness 3d",
     ),
     PaletteCommand::new(
         PaletteCommandId::ToolText,
@@ -1083,6 +1090,7 @@ mod tests {
             ("combine", Tool::Combine),
             ("mirror", Tool::Mirror),
             ("slice", Tool::Slice),
+            ("shell", Tool::Shell),
         ] {
             let cmd = best_match(query, &cmds)
                 .unwrap_or_else(|| panic!("palette should list a command matching {query:?}"));

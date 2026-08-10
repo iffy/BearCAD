@@ -92,6 +92,12 @@ mod ffi {
             dists: *const f64,
             n: c_ulong,
         ) -> *mut BearcadShape;
+        pub fn bearcad_shape_shell(
+            s: *const BearcadShape,
+            faces: *const f64,
+            n_faces: c_ulong,
+            thickness: f64,
+        ) -> *mut BearcadShape;
         pub fn bearcad_face_boolean_loop(
             a_xy: *const f64,
             a_n: c_ulong,
@@ -454,6 +460,34 @@ impl Shape {
         self.edge_treatment(edges, dists, ffi::bearcad_shape_chamfer)
     }
 
+    /// Hollow this solid (Shell tool, #1156): remove the listed faces and leave walls of
+    /// `thickness` mm (positive, applied inward). Each face is `(point_on_face, outward_normal)`.
+    /// An empty face list makes a closed hollow. `None` on failure or non-positive thickness.
+    pub fn shell(&self, open_faces: &[(glam::Vec3, glam::Vec3)], thickness: f32) -> Option<Shape> {
+        if thickness <= 0.0 {
+            return None;
+        }
+        let mut flat = Vec::with_capacity(open_faces.len() * 6);
+        for (p, n) in open_faces {
+            flat.extend_from_slice(&[
+                p.x as f64, p.y as f64, p.z as f64, n.x as f64, n.y as f64, n.z as f64,
+            ]);
+        }
+        let raw = unsafe {
+            ffi::bearcad_shape_shell(
+                self.raw,
+                if flat.is_empty() {
+                    std::ptr::null()
+                } else {
+                    flat.as_ptr()
+                },
+                open_faces.len() as std::os::raw::c_ulong,
+                thickness as f64,
+            )
+        };
+        (!raw.is_null()).then_some(Shape { raw })
+    }
+
     /// Shared marshalling for [`Shape::fillet`]/[`Shape::chamfer`]: flatten the edge
     /// endpoint pairs to `[ax,ay,az,bx,by,bz, ...]` (as `prism`/`loft` flatten points)
     /// and the amounts to `f64`, then call the given FFI entry point.
@@ -656,6 +690,29 @@ mod tests {
         // Length mismatch is also rejected up front.
         let edge = (Vec3::new(1.0, 1.0, 0.0), Vec3::new(1.0, 1.0, 1.0));
         assert!(cube.fillet(&[edge], &[0.1, 0.2]).is_none());
+    }
+
+    /// #1156: shell a 10×10×10 cube with the top face open and 1 mm walls → volume ≈
+    /// outer − inner, with the open top leaving no top wall.
+    #[test]
+    fn shell_open_top_of_a_cube_has_the_expected_volume() {
+        let cube = Shape::prism(&square(0.0, 0.0, 10.0, 10.0), Vec3::new(0.0, 0.0, 10.0)).unwrap();
+        let open = (Vec3::new(5.0, 5.0, 10.0), Vec3::new(0.0, 0.0, 1.0));
+        let shelled = cube.shell(&[open], 1.0).expect("shell built");
+        let v = shelled.volume().expect("volume");
+        // Outer 10³ minus the inner cavity: 8×8×9 (floor+4 walls at 1 mm; open top).
+        let expected = 1000.0 - 8.0 * 8.0 * 9.0;
+        assert!(
+            (v - expected).abs() < 1.0,
+            "shelled volume {v}, expected ~{expected}"
+        );
+    }
+
+    #[test]
+    fn shell_rejects_non_positive_thickness() {
+        let cube = Shape::prism(&square(0.0, 0.0, 1.0, 1.0), Vec3::new(0.0, 0.0, 1.0)).unwrap();
+        assert!(cube.shell(&[], 0.0).is_none());
+        assert!(cube.shell(&[], -1.0).is_none());
     }
 
     #[test]

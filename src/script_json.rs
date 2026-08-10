@@ -140,6 +140,7 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
         SceneElement::SketchSliceOp(_) => "sketch_slice_op",
         SceneElement::SketchText(_) => "sketch_text",
         SceneElement::SliceOp(_) => "slice_op",
+        SceneElement::ShellOp(_) => "shell_op",
         SceneElement::EdgeTreatmentOp(_) => "edge_treatment_op",
         SceneElement::Revolution(_) => "revolution",
         SceneElement::Shape(_) => "shape",
@@ -176,6 +177,7 @@ pub fn scene_element_selection_index(
         SceneElement::MirrorOp(key) => doc.mirror_ops.keys().position(|k| k == *key),
         SceneElement::RepeatOp(key) => doc.repeat_ops.keys().position(|k| k == *key),
         SceneElement::SliceOp(key) => doc.slice_ops.keys().position(|k| k == *key),
+        SceneElement::ShellOp(key) => doc.shell_ops.keys().position(|k| k == *key),
         SceneElement::SketchRepeatOp(key) => {
             doc.sketch_repeat_ops.keys().position(|k| k == *key)
         }

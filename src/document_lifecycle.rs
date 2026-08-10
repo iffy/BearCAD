@@ -90,6 +90,7 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
         SceneElement::SketchRepeatOp(index) => doc.sketch_repeat_ops.contains(index),
         SceneElement::SketchSliceOp(index) => doc.sketch_slice_ops.contains(index),
         SceneElement::SliceOp(index) => doc.slice_ops.contains(index),
+        SceneElement::ShellOp(index) => doc.shell_ops.contains(index),
         SceneElement::EdgeTreatmentOp(index) => doc.edge_treatment_ops.contains(index),
         SceneElement::Revolution(index) => doc.revolutions.contains(index),
         SceneElement::Shape(index) => doc.primitives.contains(index),
@@ -434,6 +435,24 @@ pub fn delete_element(doc: &mut Document, element: SceneElement) -> bool {
                 for &input in &op.targets {
                     if !crate::model::body_shadowed_by_other_ops(doc, input, None, None, None, None)
                     {
+                        if let Some(body) = doc.bodies.get_mut(input) {
+                            body.shadow = false;
+                        }
+                    }
+                }
+                changed = true;
+            }
+        }
+        SceneElement::ShellOp(index) => {
+            // Deleting the shell removes its hollowed outputs and un-shadows inputs (#1156).
+            if let Some(op) = doc.shell_ops.remove(index) {
+                for &out in &op.outputs {
+                    doc.bodies.remove(out);
+                }
+                for &input in &op.targets {
+                    if !crate::model::body_shadowed_by_other_ops_ex(
+                        doc, input, None, None, None, None, None,
+                    ) {
                         if let Some(body) = doc.bodies.get_mut(input) {
                             body.shadow = false;
                         }

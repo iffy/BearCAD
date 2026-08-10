@@ -42,6 +42,7 @@ extern "C" {
     fn kernel_boolean(a: u32, b: u32, op: i32) -> u32;
     fn kernel_fillet(h: u32, edges: &[f64], radii: &[f64]) -> u32;
     fn kernel_chamfer(h: u32, edges: &[f64], dists: &[f64]) -> u32;
+    fn kernel_shell(h: u32, faces: &[f64], thickness: f64) -> u32;
     fn kernel_volume(h: u32) -> f64;
     fn kernel_tessellate(h: u32, deflection: f64) -> Vec<f64>;
     fn kernel_shape_free(h: u32);
@@ -245,6 +246,20 @@ impl Shape {
         }
         let d: Vec<f64> = dists.iter().map(|&x| x as f64).collect();
         Self::from_handle(kernel_chamfer(self.handle, &flat_edges(edges), &d))
+    }
+
+    /// Hollow a solid (Shell tool, #1156); see the native `Shape::shell`.
+    pub fn shell(&self, open_faces: &[(glam::Vec3, glam::Vec3)], thickness: f32) -> Option<Shape> {
+        if thickness <= 0.0 {
+            return None;
+        }
+        let mut flat = Vec::with_capacity(open_faces.len() * 6);
+        for (p, n) in open_faces {
+            flat.extend_from_slice(&[
+                p.x as f64, p.y as f64, p.z as f64, n.x as f64, n.y as f64, n.z as f64,
+            ]);
+        }
+        Self::from_handle(kernel_shell(self.handle, &flat, thickness as f64))
     }
 
     /// Rigid-transform this shape (see the native `Shape::transformed`).

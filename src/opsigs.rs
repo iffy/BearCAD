@@ -123,6 +123,7 @@ pub fn tool_label(tool: Tool) -> &'static str {
         Tool::Mirror => "Mirror",
         Tool::Repeat => "Repeat",
         Tool::Slice => "Slice",
+        Tool::Shell => "Shell",
         Tool::Joint => "Joint",
         Tool::Text => "Text",
         Tool::DrawingAdd => "Drawing projection",
@@ -666,6 +667,17 @@ impl Operation for Slice {
     const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
+pub struct Shell;
+impl Operation for Shell {
+    const TOOL: Tool = Tool::Shell;
+    const VARIANT: &'static str = "";
+    const INPUTS: &'static [ElementType] = &[ElementType::Body, ElementType::Face];
+    const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
+    const SHADOWS: &'static [ElementType] = &[ElementType::Body];
+    const HOST_EFFECT: HostBodyEffect = HostBodyEffect::ShadowHostAndProduce;
+    const SPACE: OpSpace = OpSpace::ThreeD;
+}
+
 pub struct Joint;
 impl Operation for Joint {
     const TOOL: Tool = Tool::Joint;
@@ -759,6 +771,7 @@ pub static ALL_OPERATIONS: &[OpSig] = &[
     sig::<MirrorCut>(),
     sig::<Repeat>(),
     sig::<Slice>(),
+    sig::<Shell>(),
     sig::<Joint>(),
     sig::<Text>(),
     sig::<DrawingAdd>(),

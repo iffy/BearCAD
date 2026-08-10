@@ -563,6 +563,19 @@ pub enum Instruction {
         cutters: Vec<crate::model::SliceCutter>,
         extend_infinite: bool,
     },
+    /// Hollow bodies to a wall thickness (Shell tool, #1156).
+    CreateShellOp {
+        targets: Vec<usize>,
+        open_faces: Vec<crate::model::FaceId>,
+        thickness: String,
+    },
+    /// Re-point an existing shell operation.
+    EditShellOp {
+        op: usize,
+        targets: Vec<usize>,
+        open_faces: Vec<crate::model::FaceId>,
+        thickness: String,
+    },
     SetElementVisible {
         element: SceneElement,
         visible: Option<bool>,
@@ -1341,6 +1354,24 @@ impl Instruction {
             Instruction::EditSliceOp { op, targets, cutters, extend_infinite } => {
                 slice_op_lua("bearcad.edit_slice", Some(*op), doc, targets, cutters, *extend_infinite)
             }
+            Instruction::CreateShellOp {
+                targets,
+                open_faces,
+                thickness,
+            } => shell_op_lua("bearcad.shell", None, doc, targets, open_faces, thickness),
+            Instruction::EditShellOp {
+                op,
+                targets,
+                open_faces,
+                thickness,
+            } => shell_op_lua(
+                "bearcad.edit_shell",
+                Some(*op),
+                doc,
+                targets,
+                open_faces,
+                thickness,
+            ),
             Instruction::SetElementVisible { element, visible } => {
                 let target = element_lua_ref(element, doc);
                 let verb = match visible {
@@ -2175,6 +2206,11 @@ fn element_script_tokens(
             index: ordinal_or_slot(doc.map(|d| d.slice_ops.keys().position(|k| k == i)), i.index()),
             point: None,
         },
+        SceneElement::ShellOp(i) => ElementScriptTokens {
+            kind: "shell_op",
+            index: ordinal_or_slot(doc.map(|d| d.shell_ops.keys().position(|k| k == i)), i.index()),
+            point: None,
+        },
         // The op's arena slot, not its ordinal (#1070).
         SceneElement::EdgeTreatmentOp(i) => ElementScriptTokens {
             kind: "edge_treatment_op",
@@ -2368,6 +2404,16 @@ fn slice_op_ordinal(doc: &crate::model::Document, key: crate::model::SliceOpKey)
 /// The slice operation an ordinal names — the inverse of [`slice_op_ordinal`].
 fn slice_op_key(doc: &crate::model::Document, ordinal: usize) -> Option<crate::model::SliceOpKey> {
     doc.slice_ops.keys().nth(ordinal)
+}
+
+/// A shell operation's ordinal among the live ones (#1156).
+fn shell_op_ordinal(doc: &crate::model::Document, key: crate::model::ShellOpKey) -> Option<usize> {
+    doc.shell_ops.keys().position(|k| k == key)
+}
+
+/// The shell operation an ordinal names — the inverse of [`shell_op_ordinal`].
+fn shell_op_key(doc: &crate::model::Document, ordinal: usize) -> Option<crate::model::ShellOpKey> {
+    doc.shell_ops.keys().nth(ordinal)
 }
 
 /// A repeat's ordinal among the live ones — what a script writes (#1055).
@@ -2635,6 +2681,26 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 extend_infinite: *extend_infinite,
             })
         }
+        Action::CreateShellOperation {
+            targets,
+            open_faces,
+            thickness,
+        } => Some(Instruction::CreateShellOp {
+            targets: body_ordinals(doc, targets)?,
+            open_faces: open_faces.clone(),
+            thickness: thickness.clone(),
+        }),
+        Action::EditShellOperation {
+            op,
+            targets,
+            open_faces,
+            thickness,
+        } => Some(Instruction::EditShellOp {
+            op: shell_op_ordinal(doc, *op)?,
+            targets: body_ordinals(doc, targets)?,
+            open_faces: open_faces.clone(),
+            thickness: thickness.clone(),
+        }),
         Action::NewDocument => Some(Instruction::New),
         Action::Open { path } => Some(Instruction::Open(path.clone())),
         Action::Save { path } => Some(Instruction::Save(path.clone())),
@@ -3580,6 +3646,36 @@ fn slice_op_lua(
     format!("{call}{{ {} }}", parts.join(", "))
 }
 
+fn shell_op_lua(
+    call: &str,
+    op: Option<usize>,
+    doc: Option<&crate::model::Document>,
+    targets: &[usize],
+    open_faces: &[crate::model::FaceId],
+    thickness: &str,
+) -> String {
+    let mut parts = Vec::new();
+    if let Some(op) = op {
+        parts.push(format!("index = {op}"));
+    }
+    parts.push(format!(
+        "bodies = {{{}}}",
+        targets.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+    ));
+    if !open_faces.is_empty() {
+        parts.push(format!(
+            "faces = {{{}}}",
+            open_faces
+                .iter()
+                .map(|f| face_id_lua_ref(f, doc))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    parts.push(format!("thickness = {thickness:?}"));
+    format!("{call}{{ {} }}", parts.join(", "))
+}
+
 /// Script table for one slice cutter: a face-spec, or `{ kind = "line", index = i }` (#1126).
 fn slice_cutter_lua_ref(
     cutter: &crate::model::SliceCutter,
@@ -3843,6 +3939,7 @@ fn tool_lua_name(tool: Tool) -> &'static str {
         Tool::Mirror => "mirror",
         Tool::Repeat => "repeat",
         Tool::Slice => "slice",
+        Tool::Shell => "shell",
         Tool::Joint => "joint",
         Tool::Text => "text",
         Tool::DrawingAdd => "drawing_add",
@@ -6180,6 +6277,40 @@ impl ScriptRunner {
                     targets,
                     cutters,
                     extend_infinite,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::CreateShellOp {
+                targets,
+                open_faces,
+                thickness,
+            } => {
+                let targets = body_keys(&state.doc, &targets);
+                let result = state.apply(Action::CreateShellOperation {
+                    targets,
+                    open_faces,
+                    thickness,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::EditShellOp {
+                op,
+                targets,
+                open_faces,
+                thickness,
+            } => {
+                let targets = body_keys(&state.doc, &targets);
+                let Some(op) = shell_op_key(&state.doc, op) else {
+                    self.last_action_error = Some(format!("Shell operation {op} not found"));
+                    return StepResult::Continue;
+                };
+                let result = state.apply(Action::EditShellOperation {
+                    op,
+                    targets,
+                    open_faces,
+                    thickness,
                 });
                 self.record_action_error(result);
                 StepResult::Continue

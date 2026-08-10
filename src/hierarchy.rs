@@ -62,6 +62,8 @@ pub enum HierarchyNode {
     SketchText(crate::model::SketchTextKey),
     /// A slice operation on bodies (Slice tool); its fragment bodies nest under it.
     SliceOp(crate::model::SliceOpKey),
+    /// A shell operation on bodies (Shell tool, #1156); its hollowed output bodies nest under it.
+    ShellOp(crate::model::ShellOpKey),
     /// An edge chamfer/fillet operation on bodies (#531); its beveled output bodies nest under
     /// it and its input bodies + treated edges feed it as graph inputs.
     EdgeTreatmentOp(crate::model::EdgeTreatmentOpKey),
@@ -205,6 +207,8 @@ pub enum SceneElement {
     SketchText(crate::model::SketchTextKey),
     /// A slice operation on bodies (Slice tool).
     SliceOp(crate::model::SliceOpKey),
+    /// A shell operation on bodies (Shell tool, #1156).
+    ShellOp(crate::model::ShellOpKey),
     /// An edge chamfer/fillet operation on bodies (#531).
     EdgeTreatmentOp(crate::model::EdgeTreatmentOpKey),
     /// A revolved solid (Revolve tool, #211).
@@ -516,6 +520,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::SketchSliceOp(i) => SceneElement::SketchSliceOp(i),
         HierarchyNode::SketchText(i) => SceneElement::SketchText(i),
         HierarchyNode::SliceOp(i) => SceneElement::SliceOp(i),
+        HierarchyNode::ShellOp(i) => SceneElement::ShellOp(i),
         HierarchyNode::EdgeTreatmentOp(i) => SceneElement::EdgeTreatmentOp(i),
         HierarchyNode::Revolution(i) => SceneElement::Revolution(i),
         HierarchyNode::Shape(i) => SceneElement::Shape(i),
@@ -537,6 +542,7 @@ pub fn node_editable_operation(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::MirrorOp(i) => Some(SceneElement::MirrorOp(i)),
         HierarchyNode::RepeatOp(i) => Some(SceneElement::RepeatOp(i)),
         HierarchyNode::SliceOp(i) => Some(SceneElement::SliceOp(i)),
+        HierarchyNode::ShellOp(i) => Some(SceneElement::ShellOp(i)),
         HierarchyNode::Revolution(i) => Some(SceneElement::Revolution(i)),
         HierarchyNode::Shape(i) => Some(SceneElement::Shape(i)),
         HierarchyNode::SweepOp(i) => Some(SceneElement::SweepOp(i)),
@@ -753,6 +759,7 @@ impl ElementVisibility {
                 .get(index)
                 .is_some_and(|t| self.effective_visible(doc, SceneElement::Sketch(t.sketch))),
             SceneElement::SliceOp(_) => true,
+            SceneElement::ShellOp(_) => true,
             SceneElement::EdgeTreatmentOp(_) => true,
             SceneElement::Revolution(_) => true,
             SceneElement::Shape(_) => true,
@@ -999,6 +1006,11 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
     for (oi, op) in doc.edge_treatment_ops.iter() {
         for &bi in &op.targets {
             edges.push((HierarchyNode::Body(bi), HierarchyNode::EdgeTreatmentOp(oi)));
+        }
+    }
+    for (oi, op) in doc.shell_ops.iter() {
+        for &bi in &op.targets {
+            edges.push((HierarchyNode::Body(bi), HierarchyNode::ShellOp(oi)));
         }
     }
 
@@ -1701,6 +1713,7 @@ pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNod
         SceneElement::SketchSliceOp(i) => HierarchyNode::SketchSliceOp(*i),
         SceneElement::SketchText(i) => HierarchyNode::SketchText(*i),
         SceneElement::SliceOp(i) => HierarchyNode::SliceOp(*i),
+        SceneElement::ShellOp(i) => HierarchyNode::ShellOp(*i),
         SceneElement::EdgeTreatmentOp(i) => HierarchyNode::EdgeTreatmentOp(*i),
         SceneElement::Revolution(i) => HierarchyNode::Revolution(*i),
         SceneElement::Shape(i) => HierarchyNode::Shape(*i),
@@ -1789,6 +1802,7 @@ fn visibility_sort_key(element: &SceneElement) -> (u8, u64) {
         SceneElement::SketchSliceOp(i) => (16, i.index() as u64),
         SceneElement::SketchText(i) => (17, i.index() as u64),
         SceneElement::SliceOp(i) => (18, i.index() as u64),
+        SceneElement::ShellOp(i) => (18, i.index() as u64 + 100_000),  // distinct sort key
         SceneElement::EdgeTreatmentOp(i) => (19, i.index() as u64),
         SceneElement::Revolution(i) => (20, i.index() as u64),
         SceneElement::Shape(i) => (21, i.index() as u64),
@@ -2139,6 +2153,22 @@ pub fn build_hierarchy(
             .collect();
         roots.push(HierarchyEntry {
             node: HierarchyNode::SliceOp(oi),
+            children,
+        });
+    }
+    // Shell operations (#1156): hollowed output bodies nest under the op.
+    for (oi, op) in doc.shell_ops.iter() {
+        let children = op
+            .outputs
+            .iter()
+            .filter(|&&bi| doc.bodies.contains(bi))
+            .map(|&bi| HierarchyEntry {
+                node: HierarchyNode::Body(bi),
+                children: Vec::new(),
+            })
+            .collect();
+        roots.push(HierarchyEntry {
+            node: HierarchyNode::ShellOp(oi),
             children,
         });
     }
@@ -2508,6 +2538,7 @@ impl ElementFilter {
             | HierarchyNode::SketchVertexTreatmentOp(_)
             | HierarchyNode::SketchSliceOp(_)
             | HierarchyNode::SliceOp(_)
+            | HierarchyNode::ShellOp(_)
             | HierarchyNode::EdgeTreatmentOp(_)
             | HierarchyNode::Revolution(_)
             | HierarchyNode::SweepOp(_)
@@ -2644,6 +2675,7 @@ pub fn component_member_element(member: crate::model::ComponentMember) -> Option
         CM::MirrorOp(i) => SceneElement::MirrorOp(i),
         CM::RepeatOp(i) => SceneElement::RepeatOp(i),
         CM::SliceOp(i) => SceneElement::SliceOp(i),
+        CM::ShellOp(i) => SceneElement::ShellOp(i),
         CM::EdgeTreatmentOp(i) => SceneElement::EdgeTreatmentOp(i),
         CM::Revolution(i) => SceneElement::Revolution(i),
         CM::Sweep(i) => SceneElement::SweepOp(i),
@@ -2668,6 +2700,7 @@ pub fn component_member_for_element(
         SceneElement::MirrorOp(i) => CM::MirrorOp(*i),
         SceneElement::RepeatOp(i) => CM::RepeatOp(*i),
         SceneElement::SliceOp(i) => CM::SliceOp(*i),
+        SceneElement::ShellOp(i) => CM::ShellOp(*i),
         SceneElement::EdgeTreatmentOp(i) => CM::EdgeTreatmentOp(*i),
         SceneElement::Revolution(i) => CM::Revolution(*i),
         SceneElement::SweepOp(i) => CM::Sweep(*i),
@@ -2690,6 +2723,7 @@ pub fn component_member_for_node(node: &HierarchyNode) -> Option<crate::model::C
         HierarchyNode::MirrorOp(i) => CM::MirrorOp(*i),
         HierarchyNode::RepeatOp(i) => CM::RepeatOp(*i),
         HierarchyNode::SliceOp(i) => CM::SliceOp(*i),
+        HierarchyNode::ShellOp(i) => CM::ShellOp(*i),
         HierarchyNode::EdgeTreatmentOp(i) => CM::EdgeTreatmentOp(*i),
         HierarchyNode::Revolution(i) => CM::Revolution(*i),
         HierarchyNode::SweepOp(i) => CM::Sweep(*i),
@@ -2742,6 +2776,7 @@ pub fn owning_component(
                 BodySource::Mirrored { op, .. } => doc.component_of(CM::MirrorOp(*op)),
                 BodySource::Boolean { op, .. } => doc.component_of(CM::BooleanOp(*op)),
                 BodySource::Sliced { op, .. } => doc.component_of(CM::SliceOp(*op)),
+                BodySource::Shelled { op, .. } => doc.component_of(CM::ShellOp(*op)),
                 BodySource::EdgeTreated { op, .. } => {
                     doc.component_of(CM::EdgeTreatmentOp(*op))
                 }
@@ -2758,6 +2793,7 @@ pub fn owning_component(
         SceneElement::MirrorOp(i) => doc.component_of(CM::MirrorOp(*i)),
         SceneElement::RepeatOp(i) => doc.component_of(CM::RepeatOp(*i)),
         SceneElement::SliceOp(i) => doc.component_of(CM::SliceOp(*i)),
+        SceneElement::ShellOp(i) => doc.component_of(CM::ShellOp(*i)),
         SceneElement::EdgeTreatmentOp(i) => doc.component_of(CM::EdgeTreatmentOp(*i)),
         SceneElement::Revolution(i) => doc.component_of(CM::Revolution(*i)),
         // A shape isn't a component member of its own (#909).
@@ -2857,6 +2893,7 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
             .get(index)
             .map(|t| SceneElement::Sketch(t.sketch)),
         SceneElement::SliceOp(_) => None,
+        SceneElement::ShellOp(_) => None,
         SceneElement::EdgeTreatmentOp(_) => None,
         SceneElement::Revolution(_) | SceneElement::Shape(_) => None,
         SceneElement::SweepOp(_) => None,
@@ -3076,6 +3113,14 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         }
         SceneElement::SliceOp(index) => {
             if let Some(op) = doc.slice_ops.get(index) {
+                for &output in &op.outputs {
+                    out.insert(SceneElement::Body(output));
+                    collect_descendants(doc, SceneElement::Body(output), out);
+                }
+            }
+        }
+        SceneElement::ShellOp(index) => {
+            if let Some(op) = doc.shell_ops.get(index) {
                 for &output in &op.outputs {
                     out.insert(SceneElement::Body(output));
                     collect_descendants(doc, SceneElement::Body(output), out);
@@ -3505,6 +3550,7 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
         HierarchyNode::SketchSliceOp(_) => IconId::Slice,
         HierarchyNode::SketchText(_) => IconId::Text,
         HierarchyNode::SliceOp(_) => IconId::Slice,
+        HierarchyNode::ShellOp(_) => IconId::Shell,
         HierarchyNode::EdgeTreatmentOp(index) => {
             match doc.edge_treatment_ops.get(index).map(|o| o.kind) {
                 Some(crate::model::VertexTreatmentKind::Fillet) => IconId::Fillet,
@@ -5656,6 +5702,7 @@ fn component_member_node(node: HierarchyNode) -> bool {
             | HierarchyNode::MoveOp(_)
             | HierarchyNode::RepeatOp(_)
             | HierarchyNode::SliceOp(_)
+            | HierarchyNode::ShellOp(_)
             | HierarchyNode::Revolution(_)
             | HierarchyNode::SweepOp(_)
     )

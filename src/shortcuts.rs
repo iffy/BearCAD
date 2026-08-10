@@ -109,6 +109,7 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
         | Tool::Mirror
         | Tool::Repeat
         | Tool::Slice
+        | Tool::Shell
         | Tool::DrawingAdd
         | Tool::DrawingAlign => None,
         Tool::Select => None,

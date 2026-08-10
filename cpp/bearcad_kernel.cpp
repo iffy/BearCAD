@@ -30,6 +30,12 @@
 #include <NCollection_List.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
+#include <BRepOffsetAPI_MakeThickSolid.hxx>
+#include <BRepAdaptor_Surface.hxx>
+#include <BRepLProp_SLProps.hxx>
+#include <GeomAbs_JoinType.hxx>
+#include <BRepOffset_Mode.hxx>
+#include <Precision.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepTools_WireExplorer.hxx>
 #include <STEPControl_Writer.hxx>
@@ -728,6 +734,117 @@ extern "C" BearcadShape* bearcad_shape_chamfer(const BearcadShape* s, const doub
     try {
         TopoDS_Shape result =
             apply_edge_treatment<BRepFilletAPI_MakeChamfer>(s->shape, edges, dists, n);
+        if (result.IsNull()) {
+            return nullptr;
+        }
+        return new BearcadShape{result};
+    } catch (const Standard_Failure&) {
+        return nullptr;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+// Match each requested open face (point + normal) to a TopoDS_Face on `shape`, then hollow
+// with BRepOffsetAPI_MakeThickSolid (inward offset = −thickness). Empty face list → closed shell.
+extern "C" BearcadShape* bearcad_shape_shell(const BearcadShape* s, const double* faces,
+                                             unsigned long n_faces, double thickness) {
+    if (s == nullptr || thickness <= 0.0) {
+        return nullptr;
+    }
+    if (n_faces > 0 && faces == nullptr) {
+        return nullptr;
+    }
+    try {
+        // Gather solid faces once for matching.
+        NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> faceMap;
+        for (TopExp_Explorer ex(s->shape, TopAbs_FACE); ex.More(); ex.Next()) {
+            faceMap.Add(ex.Current());
+        }
+        NCollection_List<TopoDS_Shape> closing;
+        // Tolerance scales with the solid's size, like edge matching.
+        Bnd_Box bbox;
+        BRepBndLib::Add(s->shape, bbox);
+        double xmin, ymin, zmin, xmax, ymax, zmax;
+        bbox.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+        double diag = std::sqrt((xmax - xmin) * (xmax - xmin) + (ymax - ymin) * (ymax - ymin)
+                                + (zmax - zmin) * (zmax - zmin));
+        double tol = std::max(1e-3, diag * 1e-3);
+        double cos_tol = 0.85;  // ~32° — generous for quantized mesh normals
+
+        for (unsigned long i = 0; i < n_faces; ++i) {
+            const double* f = faces + i * 6;
+            gp_Pnt want_p(f[0], f[1], f[2]);
+            gp_Dir want_n(f[3], f[4], f[5]);
+            bool matched = false;
+            for (int k = 1; k <= faceMap.Extent(); ++k) {
+                const TopoDS_Face& face = TopoDS::Face(faceMap(k));
+                // Skip faces already claimed as open.
+                bool already = false;
+                for (NCollection_List<TopoDS_Shape>::Iterator it(closing); it.More(); it.Next()) {
+                    if (it.Value().IsSame(face)) {
+                        already = true;
+                        break;
+                    }
+                }
+                if (already) {
+                    continue;
+                }
+                // Project the sample point onto the face surface; accept if near and normal agrees.
+                BRepAdaptor_Surface surf(face, true);
+                double u0 = surf.FirstUParameter();
+                double u1 = surf.LastUParameter();
+                double v0 = surf.FirstVParameter();
+                double v1 = surf.LastVParameter();
+                // Sample the UV mid + project via surface props at a few grid points; pick nearest.
+                double best_dist2 = 1e300;
+                double best_u = 0.5 * (u0 + u1);
+                double best_v = 0.5 * (v0 + v1);
+                const int N = 5;
+                for (int iu = 0; iu < N; ++iu) {
+                    for (int iv = 0; iv < N; ++iv) {
+                        double u = u0 + (u1 - u0) * (iu + 0.5) / N;
+                        double v = v0 + (v1 - v0) * (iv + 0.5) / N;
+                        gp_Pnt p = surf.Value(u, v);
+                        double d2 = p.SquareDistance(want_p);
+                        if (d2 < best_dist2) {
+                            best_dist2 = d2;
+                            best_u = u;
+                            best_v = v;
+                        }
+                    }
+                }
+                if (best_dist2 > tol * tol) {
+                    continue;
+                }
+                BRepLProp_SLProps props(surf, best_u, best_v, 1, Precision::Confusion());
+                if (!props.IsNormalDefined()) {
+                    continue;
+                }
+                gp_Dir n = props.Normal();
+                if (face.Orientation() == TopAbs_REVERSED) {
+                    n.Reverse();
+                }
+                if (std::abs(n.Dot(want_n)) < cos_tol) {
+                    continue;
+                }
+                closing.Append(face);
+                matched = true;
+                break;
+            }
+            if (!matched) {
+                return nullptr;
+            }
+        }
+
+        // Negative offset = inward for a solid with outward face normals.
+        BRepOffsetAPI_MakeThickSolid maker;
+        maker.MakeThickSolidByJoin(s->shape, closing, -thickness, tol, BRepOffset_Skin, false,
+                                   false, GeomAbs_Intersection);
+        if (!maker.IsDone()) {
+            return nullptr;
+        }
+        TopoDS_Shape result = maker.Shape();
         if (result.IsNull()) {
             return nullptr;
         }

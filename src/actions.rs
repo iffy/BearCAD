@@ -127,6 +127,9 @@ pub enum Tool {
     /// fragments on either side of the cutter planes. Inputs become shadow bodies; the
     /// fragments are new bodies; the operation is editable.
     Slice,
+    /// Hollow bodies to a wall thickness, optionally opening picked faces (Shell tool,
+    /// #1156). Inputs become shadow bodies; hollowed outputs are new bodies; editable.
+    Shell,
     /// Join two parts with a kinematic relationship (Joint tool, #891/#894): pick the
     /// parts, snap their mating frames with Move-style point pairs, choose a kind, commit.
     /// No output bodies — the driven side is posed in place at recompute.
@@ -147,7 +150,7 @@ pub enum Tool {
 impl Tool {
     /// Every tool — exhaustive checks, opsigs coverage, etc.
     #[allow(dead_code)] // used by opsigs tests and any exhaustive tool walks
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 26] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -169,6 +172,7 @@ impl Tool {
         Self::Mirror,
         Self::Repeat,
         Self::Slice,
+        Self::Shell,
         Self::Joint,
         Self::Text,
         Self::DrawingAdd,
@@ -200,6 +204,7 @@ impl Tool {
             "repeat" | "linear_repeat" | "pattern" => Some(Tool::Repeat),
             "offset" => Some(Tool::Offset),
             "slice" | "split" => Some(Tool::Slice),
+            "shell" | "hollow" => Some(Tool::Shell),
             "joint" => Some(Tool::Joint),
             "text" => Some(Tool::Text),
             "project" | "projection" => Some(Tool::Project),
@@ -1109,6 +1114,36 @@ impl Default for CreatingSlice {
             cutters: Vec::new(),
             picking_cutter: false,
             extend_infinite: true,
+            editing: None,
+        }
+    }
+}
+
+/// In-progress shell operation (Shell tool, #1156): target bodies, open faces on those
+/// bodies, wall thickness expression, and which picker the next click lands on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreatingShell {
+    pub targets: Vec<crate::model::BodyKey>,
+    pub open_faces: Vec<crate::model::FaceId>,
+    /// Which picker the next viewport click adds to: `false` = a target body, `true` = an
+    /// open face on the selected bodies.
+    pub picking_faces: bool,
+    /// Thickness text shown in the ValueInput (mm expression).
+    pub thickness_text: String,
+    /// Live evaluated thickness while typing / default.
+    pub thickness_live: f32,
+    /// `Some(op)` while re-editing a committed operation.
+    pub editing: Option<crate::model::ShellOpKey>,
+}
+
+impl Default for CreatingShell {
+    fn default() -> Self {
+        Self {
+            targets: Vec::new(),
+            open_faces: Vec::new(),
+            picking_faces: false,
+            thickness_text: "1".to_string(),
+            thickness_live: 1.0,
             editing: None,
         }
     }
@@ -2742,6 +2777,21 @@ pub enum Action {
         cutters: Vec<crate::model::SliceCutter>,
         extend_infinite: bool,
     },
+    /// Commit the in-progress Shell-tool operation (#1156).
+    CommitShell,
+    /// Scripted/replayed shell with an explicit payload.
+    CreateShellOperation {
+        targets: Vec<crate::model::BodyKey>,
+        open_faces: Vec<crate::model::FaceId>,
+        thickness: String,
+    },
+    /// Re-point an existing shell operation at new targets / open faces / thickness.
+    EditShellOperation {
+        op: crate::model::ShellOpKey,
+        targets: Vec<crate::model::BodyKey>,
+        open_faces: Vec<crate::model::FaceId>,
+        thickness: String,
+    },
     SetExtrudeBodyMode { mode: ExtrudeBodyMode },
     /// Toggle symmetric extrude (half distance each way from the sketch plane, #504).
     SetExtrudeSymmetric { symmetric: bool },
@@ -3377,6 +3427,8 @@ pub struct AppState {
     pub tutorial_anchor_rects: std::collections::HashMap<crate::tutorial::UiAnchor, egui::Rect>,
     /// In-progress slice operation (Slice tool).
     pub creating_slice: Option<CreatingSlice>,
+    /// In-progress shell operation (Shell tool, #1156).
+    pub creating_shell: Option<CreatingShell>,
     /// In-progress in-sketch slice (#238), active when the Slice tool runs with a sketch open.
     pub creating_sketch_slice: Option<CreatingSketchSlice>,
     /// The technical drawing (#180) currently open in the drawing pane, if any. UI state
@@ -3591,6 +3643,7 @@ impl Default for AppState {
             tutorial: None,
             tutorial_anchor_rects: std::collections::HashMap::new(),
             creating_slice: None,
+            creating_shell: None,
             creating_sketch_slice: None,
             editing_drawing: None,
             selected_drawing_elements: Vec::new(),
@@ -6519,6 +6572,83 @@ pub(crate) fn commit_inline_parameter_defs<'a>(
     Ok(())
 }
 
+/// Resolve a mesh [`SceneElement::BodyFace`] key to an analytic [`FaceId`] on that body
+/// (#1156): match quantized centroid+normal against the body's sketchable faces.
+fn shell_face_from_body_face(
+    doc: &Document,
+    body: crate::model::BodyKey,
+    centroid: [i32; 3],
+    normal: [i32; 3],
+) -> Option<crate::model::FaceId> {
+    let q = crate::hierarchy::quantize_body_point;
+    for face in crate::face::analytic_faces_of_body(doc, body) {
+        let Some(frame) = crate::face::sketch_frame(doc, face.clone()) else {
+            continue;
+        };
+        // Prefer a true geometric centre when we have a boundary loop.
+        let c = crate::extrude::face_boundary_loop_world(doc, &face)
+            .map(|pts| pts.iter().copied().sum::<glam::Vec3>() / pts.len().max(1) as f32)
+            .unwrap_or(frame.origin);
+        let n = frame.normal.normalize_or_zero();
+        if q(c) == centroid && q(n) == normal {
+            return Some(face);
+        }
+        // Normal may flip depending on frame orientation — accept either direction.
+        if q(c) == centroid && q(-n) == normal {
+            return Some(face);
+        }
+    }
+    None
+}
+
+/// Shared validation for creating/editing a shell operation (#1156).
+fn validate_shell_inputs(
+    doc: &Document,
+    targets: &[crate::model::BodyKey],
+    open_faces: &[crate::model::FaceId],
+    thickness: &str,
+    editing: Option<crate::model::ShellOpKey>,
+) -> Result<f32, String> {
+    if targets.is_empty() {
+        return Err("Pick at least one body to shell".to_string());
+    }
+    let amount = crate::value::eval_length_mm_in_doc(thickness, doc)
+        .ok_or_else(|| format!("Invalid thickness expression '{thickness}'"))?;
+    if !(amount > 0.0) {
+        return Err("Wall thickness must be positive".to_string());
+    }
+    let editing_inputs: Vec<crate::model::BodyKey> = editing
+        .and_then(|e| doc.shell_ops.get(e))
+        .map(|o| o.targets.clone())
+        .unwrap_or_default();
+    let mut seen = std::collections::HashSet::new();
+    for &bi in targets {
+        let Some(body) = doc.bodies.get(bi) else {
+            return Err(format!("Body {bi:?} not found"));
+        };
+        let is_unit = matches!(body.source, crate::model::BodySource::UnitInstance(_));
+        if body.shadow && !is_unit && !editing_inputs.contains(&bi) {
+            return Err(format!("Body {bi:?} is already consumed by another operation"));
+        }
+        if !seen.insert(bi) {
+            return Err(format!("Body {bi:?} is picked twice"));
+        }
+    }
+    for face in open_faces {
+        let Some(owner) = crate::model::body_index_for_face(doc, face) else {
+            return Err("An open face does not belong to a body".to_string());
+        };
+        if !targets.contains(&owner) {
+            return Err("Open faces must belong to a selected body".to_string());
+        }
+        // Analytic planar frame must resolve so the kernel can match the face.
+        if crate::face::sketch_frame(doc, face.clone()).is_none() {
+            return Err("An open face is not a valid body face".to_string());
+        }
+    }
+    Ok(amount)
+}
+
 /// Shared validation for creating/editing a slice operation. `editing` is the op being
 /// edited (its own inputs are shadow bodies, so re-picking them is allowed).
 fn validate_slice_inputs(
@@ -6618,6 +6748,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::SketchSliceOp(i) => format!("Sketch slice {}", i.index()),
         SceneElement::SketchText(i) => format!("Text {}", i.index()),
         SceneElement::SliceOp(i) => format!("Slice operation {}", i.index()),
+        SceneElement::ShellOp(i) => format!("Shell operation {}", i.index()),
         SceneElement::EdgeTreatmentOp(i) => format!("Edge treatment operation {}", i.index()),
         SceneElement::Revolution(i) => format!("Revolve operation {}", i.index()),
         SceneElement::Shape(i) => format!("Shape {}", i.index()),
@@ -7791,6 +7922,15 @@ impl AppState {
                         ..CreatingSlice::default()
                     });
                 }
+                if self.creating_shell.is_some() && tool != Tool::Shell {
+                    self.creating_shell = None;
+                }
+                if tool == Tool::Shell && self.creating_shell.is_none() {
+                    self.creating_shell = Some(CreatingShell {
+                        targets: handoff_bodies(&self.doc, &handoff),
+                        ..CreatingShell::default()
+                    });
+                }
                 if self.creating_revolve.is_some() && tool != Tool::Revolve {
                     self.creating_revolve = None;
                 }
@@ -7950,6 +8090,10 @@ impl AppState {
                     }
                     Tool::Slice => {
                         "Slice tool — pick bodies, then cutting planes/faces, Enter commits"
+                            .to_string()
+                    }
+                    Tool::Shell => {
+                        "Shell tool — pick bodies, then open faces, set wall thickness, Enter commits"
                             .to_string()
                     }
                     Tool::Project => {
@@ -13024,6 +13168,202 @@ label_hidden: false,
                 self.status = "Edited slice".to_string();
                 ActionResult::Ok
             }
+            Action::CommitShell => {
+                let Some(cs) = self.creating_shell.take() else {
+                    return ActionResult::Err("No shell operation in progress".to_string());
+                };
+                let thickness = if cs.thickness_text.trim().is_empty() {
+                    format!("{}", cs.thickness_live)
+                } else {
+                    cs.thickness_text.clone()
+                };
+                let result = match cs.editing {
+                    Some(op) => self.apply(Action::EditShellOperation {
+                        op,
+                        targets: cs.targets.clone(),
+                        open_faces: cs.open_faces.clone(),
+                        thickness,
+                    }),
+                    None => self.apply(Action::CreateShellOperation {
+                        targets: cs.targets.clone(),
+                        open_faces: cs.open_faces.clone(),
+                        thickness,
+                    }),
+                };
+                if matches!(result, ActionResult::Err(_)) {
+                    self.creating_shell = Some(cs);
+                } else {
+                    self.creating_shell = Some(CreatingShell::default());
+                }
+                result
+            }
+            Action::CreateShellOperation {
+                targets,
+                open_faces,
+                thickness,
+            } => {
+                if let Err(e) = validate_shell_inputs(&self.doc, &targets, &open_faces, &thickness, None)
+                {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                // Kernel feasibility trial: reject if any output fails to build while its input did.
+                {
+                    let mut trial = self.doc.clone();
+                    let op_index = trial.shell_ops.insert(crate::model::ShellOperation {
+                        targets: targets.clone(),
+                        open_faces: open_faces.clone(),
+                        thickness: thickness.clone(),
+                        outputs: Vec::new(),
+                        name: None,
+                    });
+                    let mut trial_outputs = Vec::new();
+                    for target in 0..targets.len() {
+                        trial_outputs.push(trial.bodies.insert(crate::model::Body {
+                            source: crate::model::BodySource::Shelled { op: op_index, target },
+                            material: None,
+                            name: None,
+                            shadow: false,
+                        }));
+                    }
+                    trial.shell_ops[op_index].outputs = trial_outputs.clone();
+                    for (t, &input) in targets.iter().enumerate() {
+                        if crate::extrude::occt_body_shape(&self.doc, input).is_some()
+                            && crate::extrude::occt_body_shape(&trial, trial_outputs[t]).is_none()
+                        {
+                            let e = format!(
+                                "Shell of {thickness} mm doesn't fit (kernel can't build it) — try a smaller thickness or different open faces"
+                            );
+                            self.status = e.clone();
+                            return ActionResult::Err(e);
+                        }
+                    }
+                }
+                let op_index = self.doc.shell_ops.insert(crate::model::ShellOperation {
+                    targets: targets.clone(),
+                    open_faces: open_faces.clone(),
+                    thickness: thickness.clone(),
+                    outputs: Vec::new(),
+                    name: None,
+                });
+                self.doc.shape_order.push(ShapeKind::ShellOperation);
+                let mut outputs = Vec::new();
+                for target in 0..targets.len() {
+                    outputs.push(self.doc.bodies.insert(crate::model::Body {
+                        source: crate::model::BodySource::Shelled { op: op_index, target },
+                        material: None,
+                        name: None,
+                        shadow: false,
+                    }));
+                    self.doc.shape_order.push(ShapeKind::Body);
+                }
+                self.doc.shell_ops[op_index].outputs = outputs;
+                for &input in targets.iter() {
+                    if let Some(body) = self.doc.bodies.get_mut(input) {
+                        body.shadow = true;
+                    }
+                }
+                self.refresh_document_health();
+                self.status = format!("Shell: {} body(ies)", targets.len());
+                ActionResult::Ok
+            }
+            Action::EditShellOperation {
+                op,
+                targets,
+                open_faces,
+                thickness,
+            } => {
+                if self.doc.shell_ops.get(op).is_none() {
+                    let e = format!("Shell operation {op:?} not found");
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                if let Err(e) =
+                    validate_shell_inputs(&self.doc, &targets, &open_faces, &thickness, Some(op))
+                {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let old_targets = self.doc.shell_ops[op].targets.clone();
+                for &input in old_targets.iter() {
+                    if let Some(body) = self.doc.bodies.get_mut(input) {
+                        body.shadow = false;
+                    }
+                }
+                {
+                    let entry = &mut self.doc.shell_ops[op];
+                    entry.targets = targets.clone();
+                    entry.open_faces = open_faces.clone();
+                    entry.thickness = thickness.clone();
+                }
+                // Feasibility trial under the new inputs.
+                {
+                    let trial = self.doc.clone();
+                    for (t, &input) in targets.iter().enumerate() {
+                        let out = trial.shell_ops[op].outputs.get(t).copied();
+                        if let Some(out) = out {
+                            if crate::extrude::occt_body_shape(&self.doc, input).is_some()
+                                && crate::extrude::occt_body_shape(&trial, out).is_none()
+                            {
+                                // Restore targets/shadows from old.
+                                self.doc.shell_ops[op].targets = old_targets.clone();
+                                for &input in old_targets.iter() {
+                                    if let Some(body) = self.doc.bodies.get_mut(input) {
+                                        body.shadow = true;
+                                    }
+                                }
+                                let e = format!(
+                                    "Shell of {thickness} mm doesn't fit (kernel can't build it)"
+                                );
+                                self.status = e.clone();
+                                return ActionResult::Err(e);
+                            }
+                        }
+                    }
+                }
+                for &input in targets.iter() {
+                    if let Some(body) = self.doc.bodies.get_mut(input) {
+                        body.shadow = true;
+                    }
+                }
+                for &input in old_targets.iter() {
+                    if crate::model::body_shadowed_by_other_ops_ex(
+                        &self.doc, input, None, None, None, None, Some(op),
+                    ) {
+                        if let Some(body) = self.doc.bodies.get_mut(input) {
+                            body.shadow = true;
+                        }
+                    }
+                }
+                // Resize outputs 1:1 with targets.
+                let existing = self.doc.shell_ops[op].outputs.clone();
+                let mut outputs = Vec::with_capacity(targets.len());
+                for (target, _) in targets.iter().enumerate() {
+                    let source = crate::model::BodySource::Shelled { op, target };
+                    if let Some(&bi) = existing.get(target) {
+                        if let Some(body) = self.doc.bodies.get_mut(bi) {
+                            body.source = source;
+                        }
+                        outputs.push(bi);
+                    } else {
+                        outputs.push(self.doc.bodies.insert(crate::model::Body {
+                            source,
+                            material: None,
+                            name: None,
+                            shadow: false,
+                        }));
+                        self.doc.shape_order.push(ShapeKind::Body);
+                        self.doc.undo_groups.push(1);
+                    }
+                }
+                for &bi in existing.iter().skip(targets.len()) {
+                    self.doc.bodies.remove(bi);
+                }
+                self.doc.shell_ops[op].outputs = outputs;
+                self.refresh_document_health();
+                self.status = "Edited shell".to_string();
+                ActionResult::Ok
+            }
             Action::CommitRevolve => {
                 let Some(mut cr) = self.creating_revolve.take() else {
                     return ActionResult::Err("No revolve in progress".to_string());
@@ -16038,6 +16378,16 @@ pub fn focus_tool_picker(state: &mut AppState, target: crate::context::PickerTar
                 cs.picking_cutter = true;
             }
         }
+        P::ShellTargets => {
+            if let Some(cs) = state.creating_shell.as_mut() {
+                cs.picking_faces = false;
+            }
+        }
+        P::ShellOpenFaces => {
+            if let Some(cs) = state.creating_shell.as_mut() {
+                cs.picking_faces = true;
+            }
+        }
         P::SketchSliceTargets => {
             if let Some(cs) = state.creating_sketch_slice.as_mut() {
                 cs.picking_cutter = false;
@@ -16217,6 +16567,35 @@ pub fn apply_pick(
                     cs.cutters.remove(i);
                 }
                 None => cs.cutters.push(cutter),
+            }
+            true
+        }
+        (P::ShellOpenFaces, element) => {
+            // Analytic face (SketchFace / construction plane) or mesh BodyFace resolved to
+            // FaceId via the body's known analytic faces (#1156).
+            let face = if let Some(face) = element.as_face_id() {
+                face
+            } else if let SceneElement::BodyFace { body, centroid, normal } = element {
+                match shell_face_from_body_face(&state.doc, *body, *centroid, *normal) {
+                    Some(f) => f,
+                    None => return false,
+                }
+            } else {
+                return false;
+            };
+            let Some(cs) = state.creating_shell.as_mut() else { return false };
+            // Only faces on selected bodies.
+            let Some(owner) = crate::model::body_index_for_face(&state.doc, &face) else {
+                return false;
+            };
+            if !cs.targets.contains(&owner) {
+                return false;
+            }
+            match cs.open_faces.iter().position(|f| *f == face) {
+                Some(i) => {
+                    cs.open_faces.remove(i);
+                }
+                None => cs.open_faces.push(face),
             }
             true
         }
@@ -16489,6 +16868,25 @@ pub fn toggle_body_in_active_tool(state: &mut AppState, bi: crate::model::BodyKe
             crate::element_picker::toggle_picked(&mut cs.targets, bi);
             if was_empty && !already && cs.targets.len() == 1 {
                 cs.picking_cutter = true;
+            }
+            true
+        }
+        Tool::Shell => {
+            // First body hands focus to Open faces (like Slice, #1154).
+            let cs = state
+                .creating_shell
+                .get_or_insert_with(CreatingShell::default);
+            let was_empty = cs.targets.is_empty();
+            let already = cs.targets.iter().any(|t| *t == bi);
+            crate::element_picker::toggle_picked(&mut cs.targets, bi);
+            // Drop open faces that no longer sit on a selected body.
+            let targets = cs.targets.clone();
+            cs.open_faces.retain(|f| {
+                crate::model::body_index_for_face(&state.doc, f)
+                    .is_some_and(|owner| targets.contains(&owner))
+            });
+            if was_empty && !already && cs.targets.len() == 1 {
+                cs.picking_faces = true;
             }
             true
         }
@@ -23626,6 +24024,138 @@ mod tests {
             extend_infinite: true,
         });
         assert!(matches!(shadowed, ActionResult::Err(_)));
+    }
+
+    /// #1156: shell a box with its top face open — input shadows, one hollow output, undoable.
+    #[test]
+    fn shell_hollows_a_box_and_shadows_the_input() {
+        use crate::model::shell_op_key_for_slot as shkey;
+        let mut state = two_box_state(false);
+        // Box 0 is a 10×10×5 extrusion (z 0..5). Open the top cap.
+        let ext = state.doc.extrusions.keys().next().unwrap();
+        let profile = state.doc.extrusions[ext].faces[0].clone();
+        let top = FaceId::ExtrudeCap {
+            extrusion: ext,
+            profile,
+            top: true,
+        };
+        let bodies_before = state.doc.bodies.len();
+        let result = state.apply(Action::CreateShellOperation {
+            targets: vec![bkey(0)],
+            open_faces: vec![top],
+            thickness: "1".to_string(),
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert_eq!(state.doc.shell_ops.len(), 1);
+        let op = state.doc.shell_ops.values().nth(0).unwrap();
+        assert_eq!(op.outputs.len(), 1);
+        let out = op.outputs[0];
+        assert!(matches!(
+            state.doc.bodies[out].source,
+            crate::model::BodySource::Shelled { op, .. } if op == shkey(0)
+        ));
+        assert!(!state.doc.bodies[out].shadow);
+        assert!(state.doc.bodies[bkey(0)].shadow, "input becomes a shadow body");
+        assert!(
+            crate::extrude::body_solid_mesh(&state.doc, out).is_some(),
+            "shelled output should have a kernel mesh"
+        );
+        // Hollow volume is less than the solid 10×10×5 = 500.
+        if let Some(shape) = crate::extrude::occt_body_shape(&state.doc, out) {
+            let v = shape.volume().unwrap_or(0.0);
+            assert!(v > 0.0 && v < 500.0, "shelled volume {v} should be under 500");
+        }
+        assert_eq!(state.doc.bodies.len(), bodies_before + 1);
+
+        state.apply(Action::UndoLast);
+        assert!(state.doc.shell_ops.is_empty());
+        assert_eq!(state.doc.bodies.len(), bodies_before);
+        assert!(!state.doc.bodies[bkey(0)].shadow);
+    }
+
+    /// #1156: first body pick arms Open faces; further body picks keep Bodies focused.
+    #[test]
+    fn shell_first_body_arms_open_faces() {
+        use crate::hierarchy::SceneElement;
+        let mut state = two_box_state(false);
+        state.apply(Action::SetTool(Tool::Shell));
+        assert!(!state.creating_shell.as_ref().unwrap().picking_faces);
+
+        assert!(apply_pick(
+            &mut state,
+            crate::context::PickerTarget::ShellTargets,
+            &SceneElement::Body(bkey(0)),
+        ));
+        let cs = state.creating_shell.as_ref().unwrap();
+        assert_eq!(cs.targets, vec![bkey(0)]);
+        assert!(cs.picking_faces, "after the first body, Open faces takes focus");
+
+        focus_tool_picker(&mut state, crate::context::PickerTarget::ShellTargets);
+        assert!(!state.creating_shell.as_ref().unwrap().picking_faces);
+        assert!(apply_pick(
+            &mut state,
+            crate::context::PickerTarget::ShellTargets,
+            &SceneElement::Body(bkey(1)),
+        ));
+        assert!(
+            !state.creating_shell.as_ref().unwrap().picking_faces,
+            "a second body leaves focus on Bodies"
+        );
+    }
+
+    /// #1156: shell rejects empty targets, non-positive thickness, and shadow inputs.
+    #[test]
+    fn shell_validation_rejects_bad_inputs() {
+        let mut state = two_box_state(false);
+        let empty = state.apply(Action::CreateShellOperation {
+            targets: Vec::new(),
+            open_faces: Vec::new(),
+            thickness: "1".to_string(),
+        });
+        assert!(matches!(empty, ActionResult::Err(_)));
+        let bad_t = state.apply(Action::CreateShellOperation {
+            targets: vec![bkey(0)],
+            open_faces: Vec::new(),
+            thickness: "0".to_string(),
+        });
+        assert!(matches!(bad_t, ActionResult::Err(_)));
+        state.doc.bodies.values_mut().nth(0).unwrap().shadow = true;
+        let shadowed = state.apply(Action::CreateShellOperation {
+            targets: vec![bkey(0)],
+            open_faces: Vec::new(),
+            thickness: "1".to_string(),
+        });
+        assert!(matches!(shadowed, ActionResult::Err(_)));
+    }
+
+    /// #1156: edit shell updates thickness and keeps one output body.
+    #[test]
+    fn shell_edit_updates_thickness() {
+        let mut state = two_box_state(false);
+        let ext = state.doc.extrusions.keys().next().unwrap();
+        let profile = state.doc.extrusions[ext].faces[0].clone();
+        let top = FaceId::ExtrudeCap {
+            extrusion: ext,
+            profile,
+            top: true,
+        };
+        state.apply(Action::CreateShellOperation {
+            targets: vec![bkey(0)],
+            open_faces: vec![top.clone()],
+            thickness: "1".to_string(),
+        });
+        let op = state.doc.shell_ops.keys().next().unwrap();
+        let out = state.doc.shell_ops[op].outputs[0];
+        let result = state.apply(Action::EditShellOperation {
+            op,
+            targets: vec![bkey(0)],
+            open_faces: vec![top],
+            thickness: "2".to_string(),
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert_eq!(state.doc.shell_ops[op].thickness, "2");
+        assert_eq!(state.doc.shell_ops[op].outputs, vec![out]);
+        assert!(state.doc.bodies[bkey(0)].shadow);
     }
 
     /// #1126: a sketch line on the top face of a box laser-cuts through the body, splitting

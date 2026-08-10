@@ -783,6 +783,81 @@ pub fn sketch_label(doc: &Document, sketch: SketchId) -> String {
     format!("Sketch {} on {face}", sketch.index())
 }
 
+/// Every sketchable analytic face of a live body (#1156): extrusion caps/sides, revolve
+/// flats, and primitive flats. Used by Shell open-face resolution from a mesh BodyFace.
+pub fn analytic_faces_of_body(doc: &Document, body: crate::model::BodyKey) -> Vec<FaceId> {
+    let Some(body_rec) = doc.bodies.get(body) else {
+        return Vec::new();
+    };
+    let mut faces: Vec<FaceId> = Vec::new();
+    for &ei in body_rec.source.extrusion_indices() {
+        let Some(ext) = doc.extrusions.get(ei) else {
+            continue;
+        };
+        for profile in &ext.faces {
+            for top in [true, false] {
+                faces.push(FaceId::ExtrudeCap {
+                    extrusion: ei,
+                    profile: profile.clone(),
+                    top,
+                });
+            }
+            for edge in 0..crate::extrude::side_face_count(profile) {
+                faces.push(FaceId::ExtrudeSide {
+                    extrusion: ei,
+                    profile: profile.clone(),
+                    edge: edge as u8,
+                });
+            }
+        }
+    }
+    if let crate::model::BodySource::Primitive(pi) = body_rec.source {
+        if let Some(shape) = doc.primitives.get(pi) {
+            for face in crate::primitives::flat_faces(shape) {
+                faces.push(FaceId::PrimitiveFace {
+                    primitive: pi,
+                    face,
+                });
+            }
+        }
+    }
+    if let crate::model::BodySource::Revolve(ri) = body_rec.source {
+        if let Some(rev) = doc.revolutions.get(ri) {
+            for profile in &rev.faces {
+                for end in [true, false] {
+                    faces.push(FaceId::RevolveCap {
+                        revolution: ri,
+                        profile: profile.clone(),
+                        end,
+                    });
+                }
+                for edge in 0..crate::extrude::side_face_count(profile) {
+                    faces.push(FaceId::RevolveSide {
+                        revolution: ri,
+                        profile: profile.clone(),
+                        edge: edge as u8,
+                    });
+                }
+            }
+        }
+    }
+    // Solid with primitive base (#1104): include the base's flat faces.
+    if let crate::model::BodySource::Solid {
+        base: Some(pi), ..
+    } = body_rec.source
+    {
+        if let Some(shape) = doc.primitives.get(pi) {
+            for face in crate::primitives::flat_faces(shape) {
+                faces.push(FaceId::PrimitiveFace {
+                    primitive: pi,
+                    face,
+                });
+            }
+        }
+    }
+    faces
+}
+
 pub fn face_label(_doc: &Document, face: FaceId) -> String {
     match face {
         FaceId::ConstructionPlane(i) => format!("Construction plane {}", i.index()),

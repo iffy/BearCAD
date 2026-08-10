@@ -141,6 +141,10 @@ pub struct ContextInput<'a> {
     pub slice_op: Option<SliceControl>,
     /// "Edit slice" entry point.
     pub slice_edit_start: Option<crate::model::SliceOpKey>,
+    /// Shell tool state (#1156): `Some` while the Shell tool is active.
+    pub shell_op: Option<ShellControl>,
+    /// "Edit shell" entry point.
+    pub shell_edit_start: Option<crate::model::ShellOpKey>,
     /// "Edit revolve" entry point (#211): `Some(op)` when exactly one revolution is selected.
     pub revolve_edit_start: Option<crate::model::RevolutionKey>,
     /// "Edit sweep" entry point: `Some(op)` when exactly one sweep is selected.
@@ -738,6 +742,29 @@ pub enum SliceEdit {
     Commit,
 }
 
+/// What the Shell tool's context section shows (#1156): target bodies, open faces, wall
+/// thickness, and which picker the next viewport click lands on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShellControl {
+    pub targets: Vec<crate::model::BodyKey>,
+    pub open_faces: Vec<crate::model::FaceId>,
+    /// `true` while the open-faces picker is active.
+    pub picking_faces: bool,
+    /// Thickness expression text for the ValueInput.
+    pub thickness_text: String,
+    /// Live evaluated thickness (mm) for the computed preview.
+    pub thickness_live: f32,
+    pub editing: bool,
+    pub can_commit: bool,
+}
+
+/// One edit from the Shell context section (#1156).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ShellEdit {
+    Thickness(String),
+    Commit,
+}
+
 /// In-sketch Slice control (#238): the two-role picker for slicing sketch lines/circles/faces by
 /// cutter lines. Mirrors [`SliceControl`] but without the 3D extend-to-infinity toggle.
 #[derive(Clone, Debug, PartialEq)]
@@ -1068,6 +1095,10 @@ pub struct ContextPaneContent {
     pub slice_op: Option<SliceControl>,
     /// "Edit slice" button target.
     pub slice_edit_start: Option<crate::model::SliceOpKey>,
+    /// Shell tool controls (#1156).
+    pub shell_op: Option<ShellControl>,
+    /// "Edit shell" button target.
+    pub shell_edit_start: Option<crate::model::ShellOpKey>,
     /// "Edit revolve" button target (#211).
     pub revolve_edit_start: Option<crate::model::RevolutionKey>,
     /// "Edit sweep" button target.
@@ -1347,6 +1378,10 @@ pub enum PickerTarget {
     SketchSliceCutters,
     /// The Slice tool's target bodies (`CreatingSlice::targets`, #955).
     SliceTargets,
+    /// The Shell tool's target bodies (`CreatingShell::targets`, #1156).
+    ShellTargets,
+    /// The Shell tool's open faces (`CreatingShell::open_faces`, #1156).
+    ShellOpenFaces,
     /// The Slice tool's cutters (`CreatingSlice::cutters`, #955/#1126): faces/planes and
     /// sketch lines. Consumed
     /// destructively, so they carry the red highlight override.
@@ -1668,6 +1703,7 @@ fn tool_context_title(input: &ContextInput<'_>) -> Option<&'static str> {
         || input.boolean_op.as_ref().is_some_and(|c| c.editing)
         || input.repeat_op.as_ref().is_some_and(|c| c.editing)
         || input.slice_op.as_ref().is_some_and(|c| c.editing)
+        || input.shell_op.as_ref().is_some_and(|c| c.editing)
         || input.sketch_offset.as_ref().is_some_and(|c| c.editing);
     Some(match input.tool {
         Tool::Select => return None,
@@ -1743,6 +1779,13 @@ fn tool_context_title(input: &ContextInput<'_>) -> Option<&'static str> {
             (true, false) => "Slice (in sketch)",
             (false, true) => "Edit slice",
             (false, false) => "Slice",
+        },
+        Tool::Shell => {
+            if input.shell_op.as_ref().is_some_and(|c| c.editing) {
+                "Edit shell"
+            } else {
+                "Shell"
+            }
         },
         Tool::Text => "Text",
         Tool::DrawingAdd | Tool::DrawingAlign => return None,
@@ -2500,6 +2543,37 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
             render: PickerRender::Shared,
         });
     }
+    if let Some(sh) = input.shell_op.as_ref() {
+        // Shell's two pickers (#1156): bodies, then open faces on those bodies.
+        tool_pickers.push(body_tool_picker(
+            input.doc,
+            "Bodies",
+            PickerTarget::ShellTargets,
+            &sh.targets,
+            None,
+            !sh.picking_faces,
+        ));
+        let mut faces = ElementPicker::new(
+            ElementFilter::kinds(&[ElementKind::Face, ElementKind::Profile]),
+            PickLimit::Infinite,
+        )
+        .with_rule(PickRule::OnBodies(sh.targets.clone()))
+        .with_selected_color(crate::theme::CUT_ACCENT);
+        faces.set_focused(sh.picking_faces);
+        faces.set_picked(
+            input.doc,
+            sh.open_faces
+                .iter()
+                .map(|f| crate::hierarchy::SceneElement::from_face_id(f.clone())),
+        );
+        tool_pickers.push(ToolPickerView {
+            heading: "Open faces",
+            picker: faces,
+            target: PickerTarget::ShellOpenFaces,
+            separator_above: false,
+            render: PickerRender::Shared,
+        });
+    }
     if let Some(m) = input.mirror_op.as_ref() {
         // Primary picker: the mirror plane — a construction plane or a flat body face (#566).
         // Single-pick, and focused (the pick target) until a plane is chosen.
@@ -2942,7 +3016,9 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let repeat_edit_start = input.repeat_edit_start;
     let shape = input.shape.clone();
     let slice_op = input.slice_op.clone();
+    let shell_op = input.shell_op.clone();
     let slice_edit_start = input.slice_edit_start;
+    let shell_edit_start = input.shell_edit_start;
     let revolve_edit_start = input.revolve_edit_start;
     let sweep_edit_start = input.sweep_edit_start;
     let calibrate_start = input.calibrate_start;
@@ -3013,6 +3089,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             repeat_edit_start,
             slice_op: slice_op.clone(),
             slice_edit_start,
+            shell_op: shell_op.clone(),
+            shell_edit_start,
             revolve_edit_start,
             sweep_edit_start,
         calibrate_start,
@@ -3075,6 +3153,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             repeat_edit_start,
             slice_op: slice_op.clone(),
             slice_edit_start,
+            shell_op: shell_op.clone(),
+            shell_edit_start,
             revolve_edit_start,
             sweep_edit_start,
         calibrate_start,
@@ -3139,6 +3219,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             repeat_edit_start,
             slice_op: slice_op.clone(),
             slice_edit_start,
+            shell_op: shell_op.clone(),
+            shell_edit_start,
             revolve_edit_start,
             sweep_edit_start,
         calibrate_start,
@@ -3219,6 +3301,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         repeat_edit_start,
         slice_op,
         slice_edit_start,
+        shell_op,
+        shell_edit_start,
         revolve_edit_start,
         sweep_edit_start,
         calibrate_start,
@@ -4463,6 +4547,8 @@ pub fn show_pane(
     on_repeat_edit_start: &mut impl FnMut(crate::model::RepeatOpKey),
     on_slice_edit: &mut impl FnMut(SliceEdit),
     on_slice_edit_start: &mut impl FnMut(crate::model::SliceOpKey),
+    on_shell_edit: &mut impl FnMut(ShellEdit),
+    on_shell_edit_start: &mut impl FnMut(crate::model::ShellOpKey),
     on_revolve_edit_start: &mut impl FnMut(crate::model::RevolutionKey),
     on_sweep_edit_start: &mut impl FnMut(crate::model::SweepKey),
     on_calibrate_start: &mut impl FnMut(crate::model::TracingImageKey),
@@ -6781,6 +6867,32 @@ pub fn show_pane(
         }
     }
 
+    if let Some(control) = &content.shell_op {
+        any_control = true;
+        labeled_row(ui, "Thickness", |ui| {
+            ui.add_enabled_ui(controls_enabled, |ui| {
+                let mut text = control.thickness_text.clone();
+                let resp = crate::expression_input::ValueInput::new(
+                    "shell_thickness",
+                    crate::expression_input::ValueKind::Length,
+                )
+                .width(90.0)
+                .show(ui, &mut text, doc);
+                if resp.changed() {
+                    on_shell_edit(ShellEdit::Thickness(text));
+                }
+            });
+        });
+        ui.add_space(2.0);
+        if primary_button(
+            ui,
+            control.can_commit && controls_enabled,
+            if control.editing { "Apply changes" } else { "Shell" },
+        ) {
+            on_shell_edit(ShellEdit::Commit);
+        }
+    }
+
     // In-sketch Slice (#238/#955): Targets and Cutters are real `ToolPickerView`s now,
     // rendered with every other tool picker above; only the commit button lives here.
     if let Some(control) = &content.sketch_slice {
@@ -7189,6 +7301,14 @@ pub fn show_pane(
         ui.separator();
         if ui.button("Edit slice").clicked() {
             on_slice_edit_start(op);
+        }
+    }
+
+    if let Some(op) = content.shell_edit_start {
+        any_control = true;
+        ui.separator();
+        if ui.button("Edit shell").clicked() {
+            on_shell_edit_start(op);
         }
     }
 
@@ -7949,6 +8069,8 @@ mod tests {
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
+            shell_op: None,
+            shell_edit_start: None,
             revolve_edit_start: None,
             sweep_edit_start: None,
             calibrate_start: None,
@@ -8311,6 +8433,8 @@ mod tests {
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
+            shell_op: None,
+            shell_edit_start: None,
             revolve_edit_start: None,
             sweep_edit_start: None,
             calibrate_start: None,
@@ -9325,6 +9449,8 @@ mod tests {
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
+            shell_op: None,
+            shell_edit_start: None,
             revolve_edit_start: None,
             sweep_edit_start: None,
             calibrate_start: None,
@@ -9404,6 +9530,8 @@ mod tests {
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
+            shell_op: None,
+            shell_edit_start: None,
             revolve_edit_start: None,
             sweep_edit_start: None,
             calibrate_start: None,
@@ -9475,6 +9603,8 @@ mod tests {
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
+            shell_op: None,
+            shell_edit_start: None,
             revolve_edit_start: None,
             sweep_edit_start: None,
             calibrate_start: None,
@@ -9554,6 +9684,8 @@ mod tests {
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
+            shell_op: None,
+            shell_edit_start: None,
             revolve_edit_start: None,
             sweep_edit_start: None,
             calibrate_start: None,
@@ -9685,6 +9817,8 @@ mod tests {
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
+            shell_op: None,
+            shell_edit_start: None,
             revolve_edit_start: None,
             sweep_edit_start: None,
             calibrate_start: None,
@@ -9812,6 +9946,8 @@ mod tests {
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
+            shell_op: None,
+            shell_edit_start: None,
             revolve_edit_start: None,
             sweep_edit_start: None,
             calibrate_start: None,
@@ -9890,6 +10026,8 @@ mod tests {
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
+            shell_op: None,
+            shell_edit_start: None,
             revolve_edit_start: None,
             sweep_edit_start: None,
             calibrate_start: None,
@@ -9971,6 +10109,8 @@ mod tests {
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
+            shell_op: None,
+            shell_edit_start: None,
             revolve_edit_start: None,
             sweep_edit_start: None,
             calibrate_start: None,
@@ -10041,6 +10181,8 @@ mod tests {
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
+            shell_op: None,
+            shell_edit_start: None,
             revolve_edit_start: None,
             sweep_edit_start: None,
             calibrate_start: None,

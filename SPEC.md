@@ -1514,6 +1514,13 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     exited.
   Picking side-wall faces as cutters remains a tracked follow-up (#191).
 
+- **Shell tool (#1156):** hollows whole bodies to a wall thickness expression, optionally
+  removing picked open faces (adjacent opens remove the shared wall). Two real element
+  pickers — **Bodies** then **Open faces** (faces on the selected bodies only; first body
+  arms Open faces). Inputs become shadow bodies; each hollowed output is `BodySource::Shelled`
+  under an editable `ShellOperation`. Preview is the hollowed solid (semi-transparent).
+  Scripting: `bearcad.shell{ bodies, faces?, thickness?, name? }` / `bearcad.edit_shell{ index, … }`.
+
 - **Joint tool (#891/#894):** joins two parts — bodies, components, or unit instances
   (`model::JointRef`) — with a kinematic relationship (`model::Joint`,
   `Document::joints`, `ShapeKind::Joint`).

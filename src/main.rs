@@ -8983,6 +8983,22 @@ impl App {
                     self.state.apply(Action::SetTool(Tool::Slice));
                 }
             }
+            SE::ShellOp(op) => {
+                if let Some(existing) = self.state.doc.shell_ops.get(op).cloned() {
+                    let thickness_live =
+                        crate::value::eval_length_mm_in_doc(&existing.thickness, &self.state.doc)
+                            .unwrap_or(1.0);
+                    self.state.creating_shell = Some(actions::CreatingShell {
+                        targets: existing.targets,
+                        open_faces: existing.open_faces,
+                        picking_faces: false,
+                        thickness_text: existing.thickness,
+                        thickness_live,
+                        editing: Some(op),
+                    });
+                    self.state.apply(Action::SetTool(Tool::Shell));
+                }
+            }
             SE::BooleanOp(op) => {
                 if let Some(existing) = self.state.doc.boolean_ops.get(op).cloned() {
                     self.state.creating_boolean = Some(actions::CreatingBoolean {
@@ -10627,6 +10643,51 @@ impl App {
             "Slice: {} body(ies), {} cutter(s) picked",
             cs.targets.len(),
             cs.cutters.len()
+        );
+    }
+
+    /// Shell tool (#1156): pick bodies, then open faces on those bodies; thickness in the
+    /// context pane. Enter commits.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_shell_tool(
+        &mut self,
+        ui: &egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+        _cam: &camera::Camera,
+        _viewport: egui::Rect,
+        _vp: &glam::Mat4,
+        pick_occlusion: Option<&construction::PickOcclusion>,
+        tool_pickers: &[context::ToolPickerView],
+    ) {
+        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+            && self
+                .state
+                .creating_shell
+                .as_ref()
+                .is_some_and(|c| !c.targets.is_empty())
+            && !ui.ctx().egui_wants_keyboard_input()
+        {
+            self.state.apply(Action::CommitShell);
+            return;
+        }
+        if !ui.input(|i| i.pointer.primary_pressed()) {
+            return;
+        }
+        let Some(pp) = pointer_screen else {
+            return;
+        };
+        if !self.click_into_focused_picker(tool_pickers, pp, project, pick_occlusion) {
+            return;
+        }
+        let cs = self
+            .state
+            .creating_shell
+            .get_or_insert_with(actions::CreatingShell::default);
+        self.state.status = format!(
+            "Shell: {} body(ies), {} open face(s)",
+            cs.targets.len(),
+            cs.open_faces.len()
         );
     }
 
@@ -12614,6 +12675,7 @@ impl App {
                 self.tool_button(ui, icons::IconId::Mirror, Tool::Mirror, "Mirror");
                 self.tool_button(ui, icons::IconId::Repeat, Tool::Repeat, "Repeat");
                 self.tool_button(ui, icons::IconId::Slice, Tool::Slice, "Slice");
+                self.tool_button(ui, icons::IconId::Shell, Tool::Shell, "Shell");
                 self.tool_button(ui, icons::IconId::Joint, Tool::Joint, "Joint");
                 self.tool_button(ui, icons::IconId::Dimension, Tool::Dimension, "Dimension");
                 self.tool_button(ui, icons::IconId::Constraint, Tool::Constraint, "Constraint");
@@ -14047,6 +14109,21 @@ impl App {
                 }
             }),
             slice_edit_start: None,
+            shell_op: (self.state.tool == Tool::Shell).then(|| {
+                let cs = self.state.creating_shell.as_ref();
+                context::ShellControl {
+                    targets: cs.map(|c| c.targets.clone()).unwrap_or_default(),
+                    open_faces: cs.map(|c| c.open_faces.clone()).unwrap_or_default(),
+                    picking_faces: cs.map(|c| c.picking_faces).unwrap_or(false),
+                    thickness_text: cs
+                        .map(|c| c.thickness_text.clone())
+                        .unwrap_or_else(|| "1".to_string()),
+                    thickness_live: cs.map(|c| c.thickness_live).unwrap_or(1.0),
+                    editing: cs.map(|c| c.editing.is_some()).unwrap_or(false),
+                    can_commit: cs.map(|c| !c.targets.is_empty()).unwrap_or(false),
+                }
+            }),
+            shell_edit_start: None,
             revolve_edit_start: None,
             sweep_edit_start: None,
             loft_body: (self.state.tool == Tool::Loft
@@ -14237,6 +14314,8 @@ impl App {
             let mut repeat_edit_begin: Option<crate::model::RepeatOpKey> = None;
             let mut slice_edit: Option<context::SliceEdit> = None;
             let mut slice_edit_begin: Option<crate::model::SliceOpKey> = None;
+            let mut shell_edit: Option<context::ShellEdit> = None;
+            let mut shell_edit_begin: Option<crate::model::ShellOpKey> = None;
             let mut revolve_edit_begin: Option<model::RevolutionKey> = None;
             let mut sweep_edit_begin: Option<model::SweepKey> = None;
             // Help mode (#672): the row helpers collect a note per control as the pane lays
@@ -14307,6 +14386,8 @@ impl App {
                         &mut |op| repeat_edit_begin = Some(op),
                         &mut |edit| slice_edit = Some(edit),
                         &mut |op| slice_edit_begin = Some(op),
+                        &mut |edit| shell_edit = Some(edit),
+                        &mut |op| shell_edit_begin = Some(op),
                         &mut |op| revolve_edit_begin = Some(op),
                         &mut |op| sweep_edit_begin = Some(op),
                         &mut |image| calibrate_begin = Some(image),
@@ -15227,6 +15308,28 @@ impl App {
             if let Some(op) = slice_edit_begin {
                 self.begin_operation_edit(hierarchy::SceneElement::SliceOp(op));
             }
+            if let Some(edit) = shell_edit {
+                match edit {
+                    context::ShellEdit::Commit => {
+                        self.state.apply(Action::CommitShell);
+                    }
+                    context::ShellEdit::Thickness(text) => {
+                        let cs = self
+                            .state
+                            .creating_shell
+                            .get_or_insert_with(actions::CreatingShell::default);
+                        cs.thickness_text = text.clone();
+                        if let Some(v) =
+                            crate::value::eval_length_mm_in_doc(&text, &self.state.doc)
+                        {
+                            cs.thickness_live = v;
+                        }
+                    }
+                }
+            }
+            if let Some(op) = shell_edit_begin {
+                self.begin_operation_edit(hierarchy::SceneElement::ShellOp(op));
+            }
             if let Some(op) = boolean_edit_begin {
                 self.begin_operation_edit(hierarchy::SceneElement::BooleanOp(op));
             }
@@ -15536,6 +15639,29 @@ impl App {
                                 actions::focus_tool_picker(&mut self.state, target);
                             } else {
                                 remove_or_clear(&mut cs.cutters, edit);
+                            }
+                        }
+                    }
+                    context::PickerTarget::ShellTargets => {
+                        if let Some(cs) = self.state.creating_shell.as_mut() {
+                            if edit == context::ToolPickerAction::Focus {
+                                actions::focus_tool_picker(&mut self.state, target);
+                            } else {
+                                remove_or_clear(&mut cs.targets, edit);
+                                let targets = cs.targets.clone();
+                                cs.open_faces.retain(|f| {
+                                    crate::model::body_index_for_face(&self.state.doc, f)
+                                        .is_some_and(|o| targets.contains(&o))
+                                });
+                            }
+                        }
+                    }
+                    context::PickerTarget::ShellOpenFaces => {
+                        if let Some(cs) = self.state.creating_shell.as_mut() {
+                            if edit == context::ToolPickerAction::Focus {
+                                actions::focus_tool_picker(&mut self.state, target);
+                            } else {
+                                remove_or_clear(&mut cs.open_faces, edit);
                             }
                         }
                     }
@@ -24272,6 +24398,7 @@ impl App {
                 | Tool::Move
                 | Tool::Repeat
                 | Tool::Slice
+                | Tool::Shell
                 | Tool::Revolve
                 | Tool::Sweep
         ) {
@@ -25402,6 +25529,19 @@ impl App {
 
         if self.state.tool == Tool::Slice {
             self.handle_slice_tool(
+                ui,
+                &project,
+                pointer_screen,
+                &cam,
+                viewport,
+                &vp,
+                pick_occlusion,
+                tool_pickers,
+            );
+        }
+
+        if self.state.tool == Tool::Shell {
+            self.handle_shell_tool(
                 ui,
                 &project,
                 pointer_screen,
@@ -27384,6 +27524,24 @@ impl App {
                 }
             }
         }
+        // Shell tool (#1156): preview the hollowed solid (semi-transparent replacement).
+        if self.state.tool == Tool::Shell {
+            if let Some(cs) = self.state.creating_shell.as_ref() {
+                if !cs.targets.is_empty() {
+                    if let Some(solids) = extrude::preview_shell_meshes(
+                        doc,
+                        &cs.targets,
+                        &cs.open_faces,
+                        cs.thickness_live,
+                    ) {
+                        scene_input.preview_replacement = gpu_viewport::PreviewReplacement {
+                            bodies: cs.targets.clone(),
+                            solids,
+                        };
+                    }
+                }
+            }
+        }
         let scene = gpu_viewport::ViewportScene::build(&scene_input);
         // Always underpaint the viewport with the theme background (#1032). If the GPU
         // blit misses a frame (surface not ready after maximize, cold-start pipelines),
@@ -28795,6 +28953,14 @@ impl App {
                     "Slice — pick cutting planes/faces in the Cutters picker • Enter: commit • Esc: cancel"
                 } else {
                     "Slice — click one or more bodies to slice"
+                }
+            }
+            Tool::Shell => {
+                let cs = self.state.creating_shell.as_ref();
+                if cs.is_some_and(|c| !c.targets.is_empty()) {
+                    "Shell — pick open faces, set wall thickness • Enter: commit • Esc: cancel"
+                } else {
+                    "Shell — click one or more bodies to hollow"
                 }
             }
             Tool::Text => {

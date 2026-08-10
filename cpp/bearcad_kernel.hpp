@@ -78,6 +78,14 @@ BearcadShape* bearcad_shape_fillet(const BearcadShape* s, const double* edges,
 BearcadShape* bearcad_shape_chamfer(const BearcadShape* s, const double* edges,
                                     const double* dists, unsigned long n);
 
+// Hollow a solid (Shell tool, #1156): remove `n_faces` faces and leave walls of
+// thickness `thickness` (positive mm, applied inward). Each face is a 6-tuple
+// (px,py,pz, nx,ny,nz) — a point on the face plus its outward unit normal; faces
+// on the solid are matched by surface proximity and normal alignment.
+// `n_faces == 0` makes a closed hollow (no openings). NULL on failure.
+BearcadShape* bearcad_shape_shell(const BearcadShape* s, const double* faces,
+                                  unsigned long n_faces, double thickness);
+
 // Boolean-combine two planar faces given as closed 2D loops (`a_xy`/`b_xy` laid
 // out x,y,x,y,... on the z=0 plane; loops closed implicitly, first point not
 // repeated). `op`: 1 = cut (a − b), 2 = common (a ∩ b) — matching
