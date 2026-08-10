@@ -19323,10 +19323,9 @@ fn dim_input_max_size() -> egui::Vec2 {
 const DIM_LABEL_GAP: f32 = 8.0;
 const DIM_LABEL_PAD: f32 = 2.0;
 const DIM_REPULSION_ITERS: usize = 16;
-
-/// Preferred offsets from edge anchors (width: bottom mid, height: left mid, line: segment mid).
-const WIDTH_LABEL_OFFSET: egui::Vec2 = egui::Vec2::new(-20.0, 14.0);
-const HEIGHT_LABEL_OFFSET: egui::Vec2 = egui::Vec2::new(-48.0, -4.0);
+/// Keep floating ValueInputs clear of sketch corners/endpoints so a click can still
+/// land on them while drawing (#1184).
+const DIM_CORNER_CLEARANCE_PX: f32 = 12.0;
 /// Perpendicular gap from the line to the nearest edge of the dimension input.
 const LINE_LABEL_DISTANCE: f32 = 18.0;
 
@@ -19373,39 +19372,150 @@ fn separation_vector(moving: egui::Rect, obstacle: egui::Rect, padding: f32) -> 
     }
 }
 
-fn resolve_rectangle_dim_positions(
-    bottom_mid: egui::Pos2,
-    left_mid: egui::Pos2,
-) -> (egui::Pos2, egui::Pos2) {
-    let mut width_pos = bottom_mid + WIDTH_LABEL_OFFSET;
-    let mut height_pos = left_mid + HEIGHT_LABEL_OFFSET;
-    for _ in 0..DIM_REPULSION_ITERS {
-        let w_rect = dim_input_rect_at(width_pos, dim_input_max_size());
-        let h_rect = dim_input_rect_at(height_pos, dim_input_max_size());
-        let w_push = separation_vector(w_rect, h_rect, DIM_LABEL_PAD);
-        let h_push = separation_vector(h_rect, w_rect, DIM_LABEL_PAD);
-        if w_push.length_sq() + h_push.length_sq() < 0.25 {
-            break;
-        }
-        width_pos += w_push;
-        height_pos += h_push;
-    }
-    (width_pos, height_pos)
-}
-
 fn rectangle_labels_clear(width: egui::Rect, height: egui::Rect) -> bool {
     !width.intersects(height.expand(DIM_LABEL_PAD))
 }
 
+/// Whether a dim-input rect keeps every point in `points` outside its body by
+/// [`DIM_CORNER_CLEARANCE_PX`] (so corners remain clickable).
+fn layout_clears_points(rect: egui::Rect, points: &[egui::Pos2]) -> bool {
+    let hit_r = DIM_CORNER_CLEARANCE_PX;
+    points.iter().all(|p| {
+        let hit = egui::Rect::from_center_size(*p, egui::vec2(hit_r * 2.0, hit_r * 2.0));
+        !rect.intersects(hit)
+    })
+}
+
+/// Unit perpendicular to the edge that points *away* from `interior` (the shape centre).
+fn edge_outward_unit(pa: egui::Pos2, pb: egui::Pos2, interior: egui::Pos2) -> egui::Vec2 {
+    let delta = pb - pa;
+    if delta.length_sq() < 1e-4 {
+        let away = pa - interior;
+        if away.length_sq() > 1e-4 {
+            return away.normalized();
+        }
+        return egui::vec2(-1.0, -1.0).normalized();
+    }
+    let dir = delta.normalized();
+    let perp_a = egui::vec2(-dir.y, dir.x);
+    let perp_b = -perp_a;
+    let mid = pa.lerp(pb, 0.5);
+    if (mid + perp_a - interior).length_sq() >= (mid + perp_b - interior).length_sq() {
+        perp_a
+    } else {
+        perp_b
+    }
+}
+
+/// Place a dim input beside segment `pa`–`pb`, on the side of `outward`, far enough that the
+/// segment and every point in `clear_points` stay free of the box (#1184).
+fn edge_dim_layout(
+    pa: egui::Pos2,
+    pb: egui::Pos2,
+    outward: egui::Vec2,
+    text: &str,
+    clear_points: &[egui::Pos2],
+) -> DimInputLayout {
+    let size = dim_input_size_for_text(text);
+    let mid = pa.lerp(pb, 0.5);
+    let dir = if outward.length_sq() > 1e-8 {
+        outward.normalized()
+    } else {
+        line_perpendicular_unit(pa, pb)
+    };
+    let mut gap = LINE_LABEL_DISTANCE;
+    for _ in 0..DIM_REPULSION_ITERS * 2 {
+        let center_dist = gap + aabb_half_extent_along(dir, size);
+        let center = mid + dir * center_dist;
+        let layout = layout_at(center - size * 0.5, size);
+        let padded = layout.rect.expand(DIM_LABEL_GAP);
+        if !segment_intersects_rect(pa, pb, padded) && layout_clears_points(layout.rect, clear_points)
+        {
+            return layout;
+        }
+        gap += 2.0;
+    }
+    let center_dist = gap + aabb_half_extent_along(dir, size);
+    layout_at(mid + dir * center_dist - size * 0.5, size)
+}
+
+/// Width/height floating inputs for an in-progress rectangle.
+///
+/// `corners` are the four screen-space corners in UV order (bottom-left, bottom-right,
+/// top-right, top-left). Labels sit **outside** their edge (outward from the shape centre)
+/// and never cover a corner — fixed screen offsets used to park them on top of the free
+/// corner when UV axes didn't match screen bottom/left (#1184).
 fn rectangle_dim_layouts(
-    bottom_mid: egui::Pos2,
-    left_mid: egui::Pos2,
+    corners: [egui::Pos2; 4],
     width_text: &str,
     height_text: &str,
 ) -> (DimInputLayout, DimInputLayout) {
-    let (width_pos, height_pos) = resolve_rectangle_dim_positions(bottom_mid, left_mid);
-    let width = layout_at(width_pos, dim_input_size_for_text(width_text));
-    let height = layout_at(height_pos, dim_input_size_for_text(height_text));
+    let interior = (corners[0].to_vec2()
+        + corners[1].to_vec2()
+        + corners[2].to_vec2()
+        + corners[3].to_vec2())
+        * 0.25;
+    let interior = egui::pos2(interior.x, interior.y);
+    let clear = corners.as_slice();
+    let w_out = edge_outward_unit(corners[0], corners[1], interior);
+    let h_out = edge_outward_unit(corners[0], corners[3], interior);
+    let mut width = edge_dim_layout(corners[0], corners[1], w_out, width_text, clear);
+    let mut height = edge_dim_layout(corners[0], corners[3], h_out, height_text, clear);
+    // Keep the two boxes from stacking; push along each edge's outward when they collide.
+    for _ in 0..DIM_REPULSION_ITERS {
+        let w_push = separation_vector(width.rect, height.rect, DIM_LABEL_PAD);
+        let h_push = separation_vector(height.rect, width.rect, DIM_LABEL_PAD);
+        if w_push.length_sq() + h_push.length_sq() < 0.25 {
+            break;
+        }
+        // Prefer sliding further *out* rather than back over the shape.
+        let w_delta = if w_push.dot(w_out) >= 0.0 {
+            w_push
+        } else {
+            w_out * w_push.length()
+        };
+        let h_delta = if h_push.dot(h_out) >= 0.0 {
+            h_push
+        } else {
+            h_out * h_push.length()
+        };
+        width = layout_at(width.pos + w_delta, width.rect.size());
+        height = layout_at(height.pos + h_delta, height.rect.size());
+    }
+    // After mutual repulsion, re-assert corner clearance by walking further out if needed.
+    if !layout_clears_points(width.rect, clear) {
+        width = edge_dim_layout(corners[0], corners[1], w_out, width_text, clear);
+    }
+    if !layout_clears_points(height.rect, clear) {
+        height = edge_dim_layout(corners[0], corners[3], h_out, height_text, clear);
+    }
+    // Final mutual-clear pass: if still overlapping after re-outward, push once more.
+    for _ in 0..DIM_REPULSION_ITERS {
+        if rectangle_labels_clear(width.rect, height.rect)
+            && layout_clears_points(width.rect, clear)
+            && layout_clears_points(height.rect, clear)
+        {
+            break;
+        }
+        let w_push = separation_vector(width.rect, height.rect, DIM_LABEL_PAD);
+        let h_push = separation_vector(height.rect, width.rect, DIM_LABEL_PAD);
+        let w_delta = if w_push.length_sq() < 1e-6 {
+            w_out * 2.0
+        } else if w_push.dot(w_out) >= 0.0 {
+            w_push
+        } else {
+            w_out * w_push.length().max(2.0)
+        };
+        let h_delta = if h_push.length_sq() < 1e-6 {
+            h_out * 2.0
+        } else if h_push.dot(h_out) >= 0.0 {
+            h_push
+        } else {
+            h_out * h_push.length().max(2.0)
+        };
+        width = layout_at(width.pos + w_delta, width.rect.size());
+        height = layout_at(height.pos + h_delta, height.rect.size());
+    }
     debug_assert!(rectangle_labels_clear(width.rect, height.rect));
     (width, height)
 }
@@ -19467,19 +19577,6 @@ fn aabb_half_extent_along(dir: egui::Vec2, size: egui::Vec2) -> f32 {
     size.x * 0.5 * n.x.abs() + size.y * 0.5 * n.y.abs()
 }
 
-fn line_dim_top_left(
-    pa: egui::Pos2,
-    pb: egui::Pos2,
-    gap_from_line: f32,
-    size: egui::Vec2,
-) -> egui::Pos2 {
-    let mid = pa.lerp(pb, 0.5);
-    let perp = line_perpendicular_unit(pa, pb);
-    let center_dist = gap_from_line + aabb_half_extent_along(-perp, size);
-    let center = mid + perp * center_dist;
-    center - size * 0.5
-}
-
 fn dist_point_to_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
     let ab = b - a;
     if ab.length_sq() < 1e-8 {
@@ -19507,17 +19604,10 @@ fn dist_rect_to_segment(rect: egui::Rect, pa: egui::Pos2, pb: egui::Pos2) -> f32
 }
 
 fn line_dim_layout(pa: egui::Pos2, pb: egui::Pos2, text: &str) -> DimInputLayout {
-    let size = dim_input_size_for_text(text);
-    let mut gap = LINE_LABEL_DISTANCE;
-    for _ in 0..DIM_REPULSION_ITERS {
-        let pos = line_dim_top_left(pa, pb, gap, size);
-        let rect = dim_input_rect_at(pos, size).expand(DIM_LABEL_GAP);
-        if !segment_intersects_rect(pa, pb, rect) {
-            return layout_at(pos, size);
-        }
-        gap += 2.0;
-    }
-    layout_at(line_dim_top_left(pa, pb, gap, size), size)
+    // Same outward placement as rectangle edges, and clear of both endpoints so a click can
+    // still pin the free corner while drawing (#1184).
+    let outward = line_perpendicular_unit(pa, pb);
+    edge_dim_layout(pa, pb, outward, text, &[pa, pb])
 }
 
 fn pointer_over_dim_inputs(pointer: egui::Pos2, layouts: &[DimInputLayout]) -> bool {
@@ -19788,14 +19878,13 @@ fn rectangle_dim_layout_from_corners(
     width_text: &str,
     height_text: &str,
 ) -> Option<(DimInputLayout, DimInputLayout)> {
-    let bottom_mid = project(corners[0].lerp(corners[1], 0.5))?;
-    let left_mid = project(corners[0].lerp(corners[3], 0.5))?;
-    Some(rectangle_dim_layouts(
-        bottom_mid,
-        left_mid,
-        width_text,
-        height_text,
-    ))
+    let screen = [
+        project(corners[0])?,
+        project(corners[1])?,
+        project(corners[2])?,
+        project(corners[3])?,
+    ];
+    Some(rectangle_dim_layouts(screen, width_text, height_text))
 }
 
 fn rect_highlight_edge(corners: [Vec3; 4], edge: RectDimEdge) -> (Vec3, Vec3) {
@@ -31770,32 +31859,117 @@ mod tests {
         assert_eq!(format_live_dimension(25.4, LengthUnit::In), "1.0 in");
     }
 
-    fn rectangle_anchors(shape: egui::Rect) -> (egui::Pos2, egui::Pos2) {
-        (
-            egui::pos2(shape.center().x, shape.max.y),
-            egui::pos2(shape.min.x, shape.center().y),
-        )
+    /// UV-order screen corners for an axis-aligned rect: BL, BR, TR, TL.
+    fn rectangle_screen_corners(shape: egui::Rect) -> [egui::Pos2; 4] {
+        [
+            shape.left_bottom(),
+            shape.right_bottom(),
+            shape.right_top(),
+            shape.left_top(),
+        ]
+    }
+
+    fn assert_rectangle_labels_clear_corners(
+        corners: [egui::Pos2; 4],
+        width: super::DimInputLayout,
+        height: super::DimInputLayout,
+    ) {
+        use super::DIM_CORNER_CLEARANCE_PX;
+        for (i, corner) in corners.iter().enumerate() {
+            let hit = egui::Rect::from_center_size(
+                *corner,
+                egui::vec2(DIM_CORNER_CLEARANCE_PX * 2.0, DIM_CORNER_CLEARANCE_PX * 2.0),
+            );
+            assert!(
+                !width.rect.intersects(hit),
+                "width label covers corner {i} at {corner:?}: {:?}",
+                width.rect
+            );
+            assert!(
+                !height.rect.intersects(hit),
+                "height label covers corner {i} at {corner:?}: {:?}",
+                height.rect
+            );
+        }
     }
 
     #[test]
-    fn rectangle_dim_labels_use_preferred_offsets_when_clear() {
-        use super::{
-            rectangle_dim_layouts, HEIGHT_LABEL_OFFSET, WIDTH_LABEL_OFFSET,
-        };
+    fn rectangle_dim_labels_sit_outside_shape_when_clear() {
+        use super::{rectangle_dim_layouts, LINE_LABEL_DISTANCE};
         let shape = egui::Rect::from_min_max(egui::pos2(50.0, 50.0), egui::pos2(400.0, 400.0));
-        let (bottom_mid, left_mid) = rectangle_anchors(shape);
-        let (width, height) = rectangle_dim_layouts(bottom_mid, left_mid, "10", "10");
-        assert_eq!(width.pos, bottom_mid + WIDTH_LABEL_OFFSET);
-        assert_eq!(height.pos, left_mid + HEIGHT_LABEL_OFFSET);
+        let corners = rectangle_screen_corners(shape);
+        let (width, height) = rectangle_dim_layouts(corners, "10", "10");
+        // Width label rides the bottom edge, below it; height rides the left edge, to its left.
+        assert!(
+            width.rect.center().y > shape.max.y,
+            "width label should sit below the shape"
+        );
+        assert!(
+            height.rect.center().x < shape.min.x,
+            "height label should sit left of the shape"
+        );
+        let bottom_mid = corners[0].lerp(corners[1], 0.5);
+        let left_mid = corners[0].lerp(corners[3], 0.5);
+        let w_gap = width.rect.top() - bottom_mid.y;
+        let h_gap = left_mid.x - height.rect.right();
+        assert!(
+            (w_gap - LINE_LABEL_DISTANCE).abs() < 1.0,
+            "width gap {w_gap} != {LINE_LABEL_DISTANCE}"
+        );
+        assert!(
+            (h_gap - LINE_LABEL_DISTANCE).abs() < 1.0,
+            "height gap {h_gap} != {LINE_LABEL_DISTANCE}"
+        );
+        assert_rectangle_labels_clear_corners(corners, width, height);
     }
 
     #[test]
     fn rectangle_dim_labels_avoid_each_other() {
         use super::{rectangle_dim_layouts, rectangle_labels_clear};
         let shape = egui::Rect::from_min_max(egui::pos2(100.0, 100.0), egui::pos2(200.0, 160.0));
-        let (bottom_mid, left_mid) = rectangle_anchors(shape);
-        let (width, height) = rectangle_dim_layouts(bottom_mid, left_mid, "10", "10");
+        let corners = rectangle_screen_corners(shape);
+        let (width, height) = rectangle_dim_layouts(corners, "10", "10");
         assert!(rectangle_labels_clear(width.rect, height.rect));
+        assert_rectangle_labels_clear_corners(corners, width, height);
+    }
+
+    /// #1184: thin previews and flipped UV orientation must not park a ValueInput on a corner.
+    #[test]
+    fn rectangle_dim_labels_never_cover_corners() {
+        use super::rectangle_dim_layouts;
+        // Flat wide rect — the bug screenshot shape (long wall, short thickness).
+        let flat = egui::Rect::from_min_max(egui::pos2(200.0, 300.0), egui::pos2(1000.0, 330.0));
+        let corners = rectangle_screen_corners(flat);
+        let (width, height) = rectangle_dim_layouts(corners, "1219.2", "88.9");
+        assert_rectangle_labels_clear_corners(corners, width, height);
+
+        // Tall thin rect.
+        let tall = egui::Rect::from_min_max(egui::pos2(400.0, 100.0), egui::pos2(430.0, 500.0));
+        let corners = rectangle_screen_corners(tall);
+        let (width, height) = rectangle_dim_layouts(corners, "30", "400");
+        assert_rectangle_labels_clear_corners(corners, width, height);
+
+        // UV "bottom" edge projects to the top of the screen AABB (flipped V): labels must
+        // still go *outside* the projected shape, not into its interior over a corner.
+        let flipped = [
+            egui::pos2(200.0, 200.0), // UV BL → screen top-left of shape
+            egui::pos2(800.0, 200.0), // UV BR → screen top-right
+            egui::pos2(800.0, 240.0), // UV TR → screen bottom-right
+            egui::pos2(200.0, 240.0), // UV TL → screen bottom-left
+        ];
+        let (width, height) = rectangle_dim_layouts(flipped, "600", "40");
+        assert_rectangle_labels_clear_corners(flipped, width, height);
+        let shape = egui::Rect::from_points(&flipped);
+        assert!(
+            !shape.intersects(width.rect) || width.rect.intersect(shape).area() < 1.0,
+            "width label should not sit inside the shape: {:?} vs {shape:?}",
+            width.rect
+        );
+        assert!(
+            !shape.intersects(height.rect) || height.rect.intersect(shape).area() < 1.0,
+            "height label should not sit inside the shape: {:?} vs {shape:?}",
+            height.rect
+        );
     }
 
     #[test]
@@ -31877,20 +32051,33 @@ mod tests {
 
     #[test]
     fn rectangle_dim_labels_push_apart_when_overlapping() {
-        use super::{
-            rectangle_dim_layouts, rectangle_labels_clear, HEIGHT_LABEL_OFFSET,
-            WIDTH_LABEL_OFFSET,
-        };
-        // Very short preview: preferred width/height labels overlap near the bottom-left corner.
+        use super::{rectangle_dim_layouts, rectangle_labels_clear};
+        // Very short preview: preferred width/height labels would overlap near one corner.
         let shape = egui::Rect::from_min_max(egui::pos2(300.0, 300.0), egui::pos2(340.0, 308.0));
-        let (bottom_mid, left_mid) = rectangle_anchors(shape);
-        let (width, height) = rectangle_dim_layouts(bottom_mid, left_mid, "10", "10");
-        assert!(
-            width.pos != bottom_mid + WIDTH_LABEL_OFFSET
-                || height.pos != left_mid + HEIGHT_LABEL_OFFSET,
-            "at least one label should move when they overlap"
-        );
+        let corners = rectangle_screen_corners(shape);
+        let (width, height) = rectangle_dim_layouts(corners, "10", "10");
         assert!(rectangle_labels_clear(width.rect, height.rect));
+        assert_rectangle_labels_clear_corners(corners, width, height);
+    }
+
+    /// #1184: a short line's length ValueInput must not swallow either endpoint.
+    #[test]
+    fn line_dim_label_never_covers_endpoints() {
+        use super::{line_dim_layout, DIM_CORNER_CLEARANCE_PX};
+        let pa = egui::pos2(200.0, 200.0);
+        let pb = egui::pos2(240.0, 200.0); // shorter than the input box
+        let layout = line_dim_layout(pa, pb, "40");
+        for (name, p) in [("start", pa), ("end", pb)] {
+            let hit = egui::Rect::from_center_size(
+                p,
+                egui::vec2(DIM_CORNER_CLEARANCE_PX * 2.0, DIM_CORNER_CLEARANCE_PX * 2.0),
+            );
+            assert!(
+                !layout.rect.intersects(hit),
+                "line dim covers {name} endpoint {p:?}: {:?}",
+                layout.rect
+            );
+        }
     }
 
     fn line_dim_center(layout: super::DimInputLayout) -> egui::Pos2 {

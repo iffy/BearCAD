@@ -244,7 +244,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   while already on the Rectangle tool (and not mid-draw) **toggles** the anchor mode (the same
   key that selects the tool). The width/height dimension
   inputs always read the **full** extents in both modes (centre mode's cursor sits half a side
-  from the centre). `CreatingRect::corners` resolves the two opposite corners for the preview,
+  from the centre). Live width/height (and line length) ValueInputs sit **outside** their edge
+  and clear every corner/endpoint so a click can still land there (#1184).
+  `CreatingRect::corners` resolves the two opposite corners for the preview,
   the live dimensions, and the commit, honoring the anchor and any locked width/height.
 - **Circle anchor mode:** the Circle tool's context pane has the same two-icon radio —
   **centre + radius** (`CircleAnchor::Center`, the classic behavior: the first click is the
