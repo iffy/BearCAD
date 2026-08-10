@@ -4642,10 +4642,11 @@ struct ScreenshotRequest {
 /// Frames to wait for a captured frame before asking again (#872): an occluded window
 /// skips its paint, and wgpu ≥29 reports that as `CurrentSurfaceTexture::Occluded` — the
 /// capture request is dropped along with the frame, so it has to be re-sent.
-const SCREENSHOT_RETRY_FRAMES: u32 = 10;
+/// Shared with the DEV report-issue capture path (#1177).
+pub(crate) const SCREENSHOT_RETRY_FRAMES: u32 = 10;
 /// How many times to ask before giving up, so a permanently hidden window fails the
 /// script instead of hanging until `--timeout`.
-const SCREENSHOT_MAX_ATTEMPTS: u32 = 12;
+pub(crate) const SCREENSHOT_MAX_ATTEMPTS: u32 = 12;
 
 struct ScreenshotCrop {
     /// 3D viewport rect in logical points.

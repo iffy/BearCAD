@@ -6150,23 +6150,81 @@ impl App {
                 })
                 .collect()
         });
-        if screenshots.is_empty() {
-            return;
+
+        if !screenshots.is_empty() {
+            let report_pending = self
+                .report_issue
+                .as_ref()
+                .is_some_and(|w| w.pending.is_some());
+            // Route by priority: an in-flight report beats a leftover script (#1177).
+            match screenshot_recipient(report_pending, self.script.is_some()) {
+                Some(ScreenshotRecipient::ReportIssue) => {
+                    // A DEV report waiting on the main window's screenshot (#627).
+                    if let Some(window) = &mut self.report_issue {
+                        if let (Some(pending), Some(image)) =
+                            (window.pending.take(), screenshots.first())
+                        {
+                            let image = (**image).clone();
+                            self.finish_issue_report(
+                                pending.text,
+                                pending.include_json,
+                                Some(image),
+                            );
+                        }
+                    }
+                }
+                Some(ScreenshotRecipient::Script) => {
+                    if let Some(runner) = &mut self.script {
+                        for image in screenshots {
+                            if let Err(e) = runner.on_screenshot(&image) {
+                                runner.error = Some(e);
+                                runner.done = true;
+                                self.state.status = format!(
+                                    "Script error: {}",
+                                    runner.error.as_deref().unwrap_or("")
+                                );
+                            }
+                        }
+                    }
+                }
+                None => {}
+            }
         }
 
-        if let Some(runner) = &mut self.script {
-            for image in screenshots {
-                if let Err(e) = runner.on_screenshot(&image) {
-                    runner.error = Some(e);
-                    runner.done = true;
-                    self.state.status = format!("Script error: {}", runner.error.as_deref().unwrap_or(""));
-                }
+        // Re-ask / give up when the report is still waiting (#1177 / #872).
+        #[cfg(not(target_arch = "wasm32"))]
+        self.tick_report_issue_screenshot(ctx);
+    }
+
+    /// Keep a DEV report-issue capture alive: re-send if the frame was dropped, fail
+    /// with a clear message instead of hanging on "Capturing screenshot…" (#1177).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn tick_report_issue_screenshot(&mut self, ctx: &egui::Context) {
+        let Some(window) = self.report_issue.as_mut() else {
+            return;
+        };
+        let Some(pending) = window.pending.as_mut() else {
+            return;
+        };
+        match tick_report_screenshot_wait(&mut pending.frames_waited, &mut pending.attempts) {
+            ReportScreenshotTick::Waiting => {
+                ctx.request_repaint();
             }
-        } else if let Some(window) = &mut self.report_issue {
-            // A DEV report waiting on the main window's screenshot (#627).
-            if let (Some(pending), Some(image)) = (window.pending.take(), screenshots.first()) {
-                let image = (**image).clone();
-                self.finish_issue_report(pending.text, pending.include_json, Some(image));
+            ReportScreenshotTick::Resend => {
+                ctx.send_viewport_cmd_to(
+                    egui::ViewportId::ROOT,
+                    egui::ViewportCommand::Screenshot(egui::UserData::default()),
+                );
+                ctx.request_repaint();
+            }
+            ReportScreenshotTick::GiveUp => {
+                window.pending = None;
+                window.last_result = Some(
+                    "Screenshot was never delivered — the window never painted \
+                     (fully covered, minimized, or the display is asleep). \
+                     Uncheck the screenshot box or try again."
+                        .to_string(),
+                );
             }
         }
     }
@@ -16661,7 +16719,12 @@ impl eframe::App for App {
             if let Some((text, with_screenshot, include_json)) = submit {
                 if with_screenshot {
                     if let Some(window) = &mut self.report_issue {
-                        window.pending = Some(PendingIssueReport { text, include_json });
+                        window.pending = Some(PendingIssueReport {
+                            text,
+                            include_json,
+                            frames_waited: 0,
+                            attempts: 1,
+                        });
                         window.last_result = None;
                     }
                     // Capture the MAIN window, not the report window.
@@ -16669,6 +16732,7 @@ impl eframe::App for App {
                         egui::ViewportId::ROOT,
                         egui::ViewportCommand::Screenshot(egui::UserData::default()),
                     );
+                    ctx.request_repaint();
                 } else {
                     self.finish_issue_report(text, include_json, None);
                 }
@@ -16747,6 +16811,59 @@ impl ReportIssueWindow {
 struct PendingIssueReport {
     text: String,
     include_json: bool,
+    /// Frames waited since the capture command was last sent (#1177 / #872).
+    frames_waited: u32,
+    /// How many times the command has been sent, the first included.
+    attempts: u32,
+}
+
+/// Who should receive a delivered screenshot event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScreenshotRecipient {
+    /// DEV report waiting on capture (#627 / #1177).
+    ReportIssue,
+    /// Script runner (active or leftover after a run).
+    Script,
+}
+
+/// Prefer an in-flight issue report over a leftover script runner that would swallow
+/// the capture (#1177). A finished script stays in `App::script` and its `on_screenshot`
+/// no-ops when idle — the old `if script { … } else if report` order hung the reporter
+/// on "Capturing screenshot…".
+fn screenshot_recipient(report_pending: bool, has_script: bool) -> Option<ScreenshotRecipient> {
+    if report_pending {
+        Some(ScreenshotRecipient::ReportIssue)
+    } else if has_script {
+        Some(ScreenshotRecipient::Script)
+    } else {
+        None
+    }
+}
+
+/// Result of ticking a report-issue screenshot wait (#1177 / #872).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReportScreenshotTick {
+    /// Keep waiting; no action this frame.
+    Waiting,
+    /// Re-send the Screenshot viewport command.
+    Resend,
+    /// Give up — capture never arrived.
+    GiveUp,
+}
+
+/// Advance a report-issue capture wait: re-ask every few frames, then give up so the
+/// window never hangs forever on "Capturing screenshot…" (#1177).
+fn tick_report_screenshot_wait(frames_waited: &mut u32, attempts: &mut u32) -> ReportScreenshotTick {
+    *frames_waited += 1;
+    if *frames_waited < script::SCREENSHOT_RETRY_FRAMES {
+        return ReportScreenshotTick::Waiting;
+    }
+    *frames_waited = 0;
+    if *attempts >= script::SCREENSHOT_MAX_ATTEMPTS {
+        return ReportScreenshotTick::GiveUp;
+    }
+    *attempts += 1;
+    ReportScreenshotTick::Resend
 }
 
 /// File an issue into the repo's local todoer db via the `todoer` CLI (#627): the text's
@@ -29985,6 +30102,61 @@ mod tests {
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::body_key_for_slot as bkey;
     use super::*;
+
+    /// #1177: a leftover script runner must not steal the DEV report-issue capture.
+    #[test]
+    fn report_issue_screenshot_beats_leftover_script() {
+        assert_eq!(
+            screenshot_recipient(true, true),
+            Some(ScreenshotRecipient::ReportIssue),
+            "in-flight report must win over a script that already finished"
+        );
+        assert_eq!(
+            screenshot_recipient(true, false),
+            Some(ScreenshotRecipient::ReportIssue)
+        );
+        assert_eq!(
+            screenshot_recipient(false, true),
+            Some(ScreenshotRecipient::Script)
+        );
+        assert_eq!(screenshot_recipient(false, false), None);
+    }
+
+    /// #1177: report-issue capture retries, then gives up instead of hanging forever.
+    #[test]
+    fn report_issue_screenshot_wait_retries_then_gives_up() {
+        let mut frames = 0;
+        let mut attempts = 1;
+        // First few frames: just wait.
+        for _ in 0..script::SCREENSHOT_RETRY_FRAMES - 1 {
+            assert_eq!(
+                tick_report_screenshot_wait(&mut frames, &mut attempts),
+                ReportScreenshotTick::Waiting
+            );
+        }
+        // Then re-send.
+        assert_eq!(
+            tick_report_screenshot_wait(&mut frames, &mut attempts),
+            ReportScreenshotTick::Resend
+        );
+        assert_eq!(attempts, 2);
+        assert_eq!(frames, 0);
+
+        // Exhaust remaining attempts.
+        while attempts < script::SCREENSHOT_MAX_ATTEMPTS {
+            frames = script::SCREENSHOT_RETRY_FRAMES - 1;
+            assert_eq!(
+                tick_report_screenshot_wait(&mut frames, &mut attempts),
+                ReportScreenshotTick::Resend
+            );
+        }
+        // Full wait after the last send, then give up.
+        frames = script::SCREENSHOT_RETRY_FRAMES - 1;
+        assert_eq!(
+            tick_report_screenshot_wait(&mut frames, &mut attempts),
+            ReportScreenshotTick::GiveUp
+        );
+    }
 
     /// #942: hovering the wall between two nested loops highlights the wall — the resolved
     /// region carries the inner loop as a hole, so the fill leaves the middle alone instead of
