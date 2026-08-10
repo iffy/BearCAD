@@ -19438,12 +19438,63 @@ fn edge_dim_layout(
     layout_at(mid + dir * center_dist - size * 0.5, size)
 }
 
+/// Unit along edge `pa`→`pb`, or a stable fallback when the edge is degenerate.
+fn edge_tangent_unit(pa: egui::Pos2, pb: egui::Pos2) -> egui::Vec2 {
+    let delta = pb - pa;
+    if delta.length_sq() < 1e-4 {
+        return egui::vec2(1.0, 0.0);
+    }
+    delta.normalized()
+}
+
+/// Split two overlapping dim-input rects with a single free separation vector, half each
+/// way. Applying `separation_vector` to both boxes independently can push them the *same*
+/// direction when they fully coincide (identical pens) — they never unstick (#1194).
+fn separate_dim_layouts(
+    width: DimInputLayout,
+    height: DimInputLayout,
+    pad: f32,
+) -> (DimInputLayout, DimInputLayout) {
+    let push = separation_vector(width.rect, height.rect, pad);
+    if push.length_sq() < 1e-8 {
+        return (width, height);
+    }
+    let half = push * 0.5;
+    (
+        layout_at(width.pos + half, width.rect.size()),
+        layout_at(height.pos - half, height.rect.size()),
+    )
+}
+
+/// Nudge a layout further along `outward` until corners/endpoints stay clickable.
+fn push_layout_clear_of_points(
+    mut layout: DimInputLayout,
+    outward: egui::Vec2,
+    points: &[egui::Pos2],
+) -> DimInputLayout {
+    let dir = if outward.length_sq() > 1e-8 {
+        outward.normalized()
+    } else {
+        egui::vec2(-1.0, -1.0).normalized()
+    };
+    for _ in 0..DIM_REPULSION_ITERS * 2 {
+        if layout_clears_points(layout.rect, points) {
+            break;
+        }
+        layout = layout_at(layout.pos + dir * 2.0, layout.rect.size());
+    }
+    layout
+}
+
 /// Width/height floating inputs for an in-progress rectangle.
 ///
 /// `corners` are the four screen-space corners in UV order (bottom-left, bottom-right,
 /// top-right, top-left). Labels sit **outside** their edge (outward from the shape centre)
 /// and never cover a corner — fixed screen offsets used to park them on top of the free
 /// corner when UV axes didn't match screen bottom/left (#1184).
+///
+/// Mutual repulsion uses a single free separation (half each way) so fully coinciding
+/// labels still split, including degenerate near-zero previews while drawing (#1194).
 fn rectangle_dim_layouts(
     corners: [egui::Pos2; 4],
     width_text: &str,
@@ -19458,64 +19509,58 @@ fn rectangle_dim_layouts(
     let clear = corners.as_slice();
     let w_out = edge_outward_unit(corners[0], corners[1], interior);
     let h_out = edge_outward_unit(corners[0], corners[3], interior);
+    let w_tan = edge_tangent_unit(corners[0], corners[1]);
+    let h_tan = edge_tangent_unit(corners[0], corners[3]);
     let mut width = edge_dim_layout(corners[0], corners[1], w_out, width_text, clear);
     let mut height = edge_dim_layout(corners[0], corners[3], h_out, height_text, clear);
-    // Keep the two boxes from stacking; push along each edge's outward when they collide.
-    for _ in 0..DIM_REPULSION_ITERS {
-        let w_push = separation_vector(width.rect, height.rect, DIM_LABEL_PAD);
-        let h_push = separation_vector(height.rect, width.rect, DIM_LABEL_PAD);
-        if w_push.length_sq() + h_push.length_sq() < 0.25 {
-            break;
-        }
-        // Prefer sliding further *out* rather than back over the shape.
-        let w_delta = if w_push.dot(w_out) >= 0.0 {
-            w_push
-        } else {
-            w_out * w_push.length()
-        };
-        let h_delta = if h_push.dot(h_out) >= 0.0 {
-            h_push
-        } else {
-            h_out * h_push.length()
-        };
-        width = layout_at(width.pos + w_delta, width.rect.size());
-        height = layout_at(height.pos + h_delta, height.rect.size());
-    }
-    // After mutual repulsion, re-assert corner clearance by walking further out if needed.
-    if !layout_clears_points(width.rect, clear) {
-        width = edge_dim_layout(corners[0], corners[1], w_out, width_text, clear);
-    }
-    if !layout_clears_points(height.rect, clear) {
-        height = edge_dim_layout(corners[0], corners[3], h_out, height_text, clear);
-    }
-    // Final mutual-clear pass: if still overlapping after re-outward, push once more.
-    for _ in 0..DIM_REPULSION_ITERS {
+
+    for _ in 0..DIM_REPULSION_ITERS * 2 {
         if rectangle_labels_clear(width.rect, height.rect)
             && layout_clears_points(width.rect, clear)
             && layout_clears_points(height.rect, clear)
         {
             break;
         }
-        let w_push = separation_vector(width.rect, height.rect, DIM_LABEL_PAD);
-        let h_push = separation_vector(height.rect, width.rect, DIM_LABEL_PAD);
-        let w_delta = if w_push.length_sq() < 1e-6 {
-            w_out * 2.0
-        } else if w_push.dot(w_out) >= 0.0 {
-            w_push
-        } else {
-            w_out * w_push.length().max(2.0)
-        };
-        let h_delta = if h_push.length_sq() < 1e-6 {
-            h_out * 2.0
-        } else if h_push.dot(h_out) >= 0.0 {
-            h_push
-        } else {
-            h_out * h_push.length().max(2.0)
-        };
-        width = layout_at(width.pos + w_delta, width.rect.size());
-        height = layout_at(height.pos + h_delta, height.rect.size());
+        if !rectangle_labels_clear(width.rect, height.rect) {
+            let before = (width.pos, height.pos);
+            (width, height) = separate_dim_layouts(width, height, DIM_LABEL_PAD);
+            // Coincident boxes: free separation may be a pure axis step that leaves them
+            // still stacked after half-and-half when sizes differ only slightly — also
+            // slide along each edge away from the shared corner.
+            if !rectangle_labels_clear(width.rect, height.rect)
+                || (width.pos - before.0).length_sq() + (height.pos - before.1).length_sq() < 0.25
+            {
+                width = layout_at(width.pos + w_tan * 2.0, width.rect.size());
+                height = layout_at(height.pos + h_tan * 2.0, height.rect.size());
+            }
+        }
+        // After sliding, walk further out so corners stay free (don't reset to mid-edge).
+        width = push_layout_clear_of_points(width, w_out, clear);
+        height = push_layout_clear_of_points(height, h_out, clear);
     }
-    debug_assert!(rectangle_labels_clear(width.rect, height.rect));
+
+    // Last-resort guarantee: keep walking width along its edge / height outward until clear.
+    for _ in 0..DIM_REPULSION_ITERS * 4 {
+        if rectangle_labels_clear(width.rect, height.rect)
+            && layout_clears_points(width.rect, clear)
+            && layout_clears_points(height.rect, clear)
+        {
+            break;
+        }
+        if !rectangle_labels_clear(width.rect, height.rect) {
+            width = layout_at(width.pos + w_tan * 4.0, width.rect.size());
+            height = layout_at(height.pos + h_out * 4.0, height.rect.size());
+        }
+        width = push_layout_clear_of_points(width, w_out, clear);
+        height = push_layout_clear_of_points(height, h_out, clear);
+    }
+
+    debug_assert!(
+        rectangle_labels_clear(width.rect, height.rect),
+        "rectangle dim labels still overlap after separation: {:?} vs {:?}",
+        width.rect,
+        height.rect
+    );
     (width, height)
 }
 
@@ -32077,6 +32122,77 @@ mod tests {
         let (width, height) = rectangle_dim_layouts(corners, "10", "10");
         assert!(rectangle_labels_clear(width.rect, height.rect));
         assert_rectangle_labels_clear_corners(corners, width, height);
+    }
+
+    /// #1194: live rectangle drawing must never leave width/height ValueInputs overlapping
+    /// (the debug_assert in `rectangle_dim_layouts` fired in real use after #1184).
+    #[test]
+    fn rectangle_dim_labels_clear_for_degenerate_and_skewed_previews() {
+        use super::{rectangle_dim_layouts, rectangle_labels_clear};
+        let texts = [
+            ("10", "10"),
+            ("1219.2 mm", "88.9 mm"),
+            ("3.5 in", "0.1 in"),
+            ("mmmmmmmmmmmmmmmmmmmm", "mmmmmmmmmmmmmmmmmmmm"), // max-width fields
+        ];
+        let shapes = [
+            // Near-zero click (first frame after pin).
+            egui::Rect::from_min_max(egui::pos2(400.0, 300.0), egui::pos2(401.0, 301.0)),
+            egui::Rect::from_min_max(egui::pos2(400.0, 300.0), egui::pos2(400.5, 300.5)),
+            // Tiny square / stub.
+            egui::Rect::from_min_max(egui::pos2(400.0, 300.0), egui::pos2(408.0, 308.0)),
+            egui::Rect::from_min_max(egui::pos2(400.0, 300.0), egui::pos2(420.0, 305.0)),
+            // Very flat / very tall.
+            egui::Rect::from_min_max(egui::pos2(100.0, 400.0), egui::pos2(900.0, 402.0)),
+            egui::Rect::from_min_max(egui::pos2(500.0, 50.0), egui::pos2(502.0, 700.0)),
+        ];
+        for shape in shapes {
+            let corners = rectangle_screen_corners(shape);
+            for (w_text, h_text) in texts {
+                let (width, height) = rectangle_dim_layouts(corners, w_text, h_text);
+                assert!(
+                    rectangle_labels_clear(width.rect, height.rect),
+                    "labels overlap for shape {shape:?} texts {w_text:?}/{h_text:?}: {:?} vs {:?}",
+                    width.rect,
+                    height.rect
+                );
+                assert_rectangle_labels_clear_corners(corners, width, height);
+            }
+        }
+        // Degenerate: all four corners collapsed (or nearly).
+        let collapsed = [egui::pos2(300.0, 200.0); 4];
+        let (width, height) = rectangle_dim_layouts(collapsed, "10", "10");
+        assert!(
+            rectangle_labels_clear(width.rect, height.rect),
+            "collapsed corners: {:?} vs {:?}",
+            width.rect,
+            height.rect
+        );
+        // Skewed parallelogram projection (perspective-ish).
+        let skewed = [
+            egui::pos2(200.0, 400.0),
+            egui::pos2(600.0, 380.0),
+            egui::pos2(640.0, 200.0),
+            egui::pos2(180.0, 220.0),
+        ];
+        let (width, height) = rectangle_dim_layouts(skewed, "88.9 mm", "50 mm");
+        assert!(rectangle_labels_clear(width.rect, height.rect));
+        assert_rectangle_labels_clear_corners(skewed, width, height);
+        // Acute angle at the shared corner: outward normals nearly parallel.
+        let acute = [
+            egui::pos2(400.0, 400.0),
+            egui::pos2(700.0, 405.0),
+            egui::pos2(710.0, 200.0),
+            egui::pos2(405.0, 150.0),
+        ];
+        let (width, height) = rectangle_dim_layouts(acute, "1219.2 mm", "88.9 mm");
+        assert!(
+            rectangle_labels_clear(width.rect, height.rect),
+            "acute shared corner: {:?} vs {:?}",
+            width.rect,
+            height.rect
+        );
+        assert_rectangle_labels_clear_corners(acute, width, height);
     }
 
     /// #1184: a short line's length ValueInput must not swallow either endpoint.
