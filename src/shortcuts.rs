@@ -172,9 +172,15 @@ pub fn action_row(ui: &mut Ui, selected: bool, label: &str, shortcut: Option<Sho
     ui.horizontal(|ui| {
         let response = ui.selectable_label(selected, label);
         if let Some(hint) = shortcut {
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(shortcut_rich_text(hint));
-            });
+            // Explicit id: nested RTL thrashing auto-ids across multipass (#1169 / egui#8343).
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .layout(Layout::right_to_left(Align::Center))
+                    .id(ui.id().with(("action_row_shortcut", label))),
+                |ui| {
+                    ui.label(shortcut_rich_text(hint));
+                },
+            );
         }
         response
     })

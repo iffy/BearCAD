@@ -1120,6 +1120,10 @@ pub enum PickerEvent {
 }
 
 const ROW_ICON_SIZE: f32 = 14.0;
+/// Space reserved on the right of the combo strip for the painted dropdown caret.
+const CARET_RESERVE: f32 = 14.0;
+/// Inset from the strip's right edge to the caret triangle centre.
+const CARET_INSET: f32 = 11.0;
 
 fn row_icon(ui: &mut egui::Ui, icon: IconId) {
     ui.add(
@@ -1189,22 +1193,27 @@ fn render_combo(
                     ui.add_space(4.0);
                 }
             }
-            // Right-aligned dropdown caret (painted — the ▾ glyph is missing from the font).
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                let c = rect.center();
-                ui.painter().add(egui::Shape::convex_polygon(
-                    vec![
-                        egui::pos2(c.x - 3.0, c.y - 2.0),
-                        egui::pos2(c.x + 3.0, c.y - 2.0),
-                        egui::pos2(c.x, c.y + 2.5),
-                    ],
-                    Color32::from_gray(150),
-                    egui::Stroke::NONE,
-                ));
-            });
+            // Room for the painted caret so summary chips don't run under it.
+            ui.add_space(CARET_RESERVE);
         });
     });
+
+    // Dropdown caret painted on the strip — not a nested right_to_left allocate.
+    // Nested RTL inside horizontal thrashing auto-ids between egui multipass frames
+    // (todoer #1169 / emilk/egui#8343); the caret is decoration only.
+    {
+        let strip = inner.response.rect;
+        let c = egui::pos2(strip.right() - CARET_INSET, strip.center().y);
+        ui.painter().add(egui::Shape::convex_polygon(
+            vec![
+                egui::pos2(c.x - 3.0, c.y - 2.0),
+                egui::pos2(c.x + 3.0, c.y - 2.0),
+                egui::pos2(c.x, c.y + 2.5),
+            ],
+            Color32::from_gray(150),
+            egui::Stroke::NONE,
+        ));
+    }
 
     // One interactable over the whole strip (click to focus + toggle popup).
     let response = ui
@@ -2247,5 +2256,43 @@ mod tests {
         let mut p = ElementPicker::new(ElementFilter::kind(ElementKind::Body), PickLimit::Finite(2));
         p.set_picked(&Document::default(), [body(0), line(0), body(1), body(2)]);
         assert_eq!(p.picked(), &[body(0), body(1)]);
+    }
+
+    /// #1169: the combo strip used nested `right_to_left` + `allocate_exact_size` for the
+    /// dropdown caret, which thrashing auto-ids between egui multipass frames (and logged
+    /// `Widget rect … changed id between passes`). Painting the caret without a widget —
+    /// and without nested RTL — must still lay out empty and filled strips cleanly.
+    #[test]
+    fn combo_strip_survives_multipass_frames() {
+        let ctx = egui::Context::default();
+        ctx.options_mut(|o| {
+            o.max_passes = std::num::NonZeroUsize::new(2).unwrap();
+        });
+        let doc = Document::default();
+        let mut picker = ElementPicker::new(ElementFilter::everything(), PickLimit::Infinite);
+
+        for frame in 0..6 {
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    // First show of a Grid requests a multipass discard — exercises the
+                    // same path that used to thrash the caret's auto-id (#1169).
+                    if frame == 0 {
+                        egui::Grid::new("picker_multipass_probe").show(ui, |ui| {
+                            ui.label("probe");
+                            ui.end_row();
+                        });
+                    }
+                    let _ = show(ui, &picker, &doc, "picker_stability_a");
+                    // A second stable-id picker so two strips sit stacked like the
+                    // context pane's tool pickers.
+                    let _ = show(ui, &picker, &doc, "picker_stability_b");
+                });
+            });
+            if frame == 2 {
+                picker.pick(&doc, body(0));
+                picker.pick(&doc, line(0));
+            }
+        }
+        assert_eq!(picker.picked().len(), 2);
     }
 }

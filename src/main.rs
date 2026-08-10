@@ -3997,8 +3997,11 @@ impl App {
                                 .color(egui::Color32::from_rgb(255, 200, 80))
                                 .size(11.0),
                             );
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
+                            // Explicit id: nested RTL thrashing auto-ids (#1169 / egui#8343).
+                            ui.scope_builder(
+                                egui::UiBuilder::new()
+                                    .layout(egui::Layout::right_to_left(egui::Align::Center))
+                                    .id(ui.id().with("tutorial_bubble_close")),
                                 |ui| {
                                     // The bundled ✕ SVG, never a font glyph — that renders
                                     // as an empty box on some platforms (#325).
@@ -4069,8 +4072,11 @@ impl App {
                             if run.step > 0 && ui.button("Back").clicked() {
                                 back = true;
                             }
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
+                            // Explicit id: nested RTL thrashing auto-ids (#1169 / egui#8343).
+                            ui.scope_builder(
+                                egui::UiBuilder::new()
+                                    .layout(egui::Layout::right_to_left(egui::Align::Center))
+                                    .id(ui.id().with("tutorial_bubble_next")),
                                 |ui| {
                                     if step.done.is_none() || run.hold {
                                         let last = run.step + 1 == tut.steps.len();
@@ -12931,40 +12937,46 @@ impl App {
                 // Update badge (#427): a bright button in the bottom-right corner when a
                 // newer release exists; unobtrusive — no popup, no interruption. The
                 // tutorial launcher sits just left of it.
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    self.show_update_badge(ui, ctx);
-                    self.show_tutorial_button(ui);
-                    // Compact layout: the docked panes float as windows; these always-
-                    // visible toggles open and close them.
-                    if touch::compact(ctx) {
-                        for (label, pane) in [
-                            ("Params", Pane::Parameters),
-                            ("Context", Pane::Context),
-                            ("Elements", Pane::Hierarchy),
-                        ] {
-                            let response = ui.selectable_label(
-                                self.state.panes.is_visible(pane),
-                                egui::RichText::new(label).size(11.0),
-                            );
-                            // Where the tutorial's orb points when a phone step needs a
-                            // pane opened (#828).
-                            self.state
-                                .tutorial_anchor_rects
-                                .insert(tutorial::UiAnchor::PaneButton(pane), response.rect);
-                            if response.clicked() {
-                                self.state.apply(Action::TogglePane(pane));
+                // Explicit id keeps nested RTL auto-ids stable across multipass (#1169).
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .layout(egui::Layout::right_to_left(egui::Align::Center))
+                        .id(ui.id().with("status_bar_trailing")),
+                    |ui| {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        self.show_update_badge(ui, ctx);
+                        self.show_tutorial_button(ui);
+                        // Compact layout: the docked panes float as windows; these always-
+                        // visible toggles open and close them.
+                        if touch::compact(ctx) {
+                            for (label, pane) in [
+                                ("Params", Pane::Parameters),
+                                ("Context", Pane::Context),
+                                ("Elements", Pane::Hierarchy),
+                            ] {
+                                let response = ui.selectable_label(
+                                    self.state.panes.is_visible(pane),
+                                    egui::RichText::new(label).size(11.0),
+                                );
+                                // Where the tutorial's orb points when a phone step needs a
+                                // pane opened (#828).
+                                self.state
+                                    .tutorial_anchor_rects
+                                    .insert(tutorial::UiAnchor::PaneButton(pane), response.rect);
+                                if response.clicked() {
+                                    self.state.apply(Action::TogglePane(pane));
+                                }
                             }
                         }
-                    }
-                    // The status message fills whatever's left, truncating as needed.
-                    ui.with_layout(
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| {
-                            ui.add(egui::Label::new(status).truncate());
-                        },
-                    );
-                });
+                        // The status message fills whatever's left, truncating as needed.
+                        ui.with_layout(
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.add(egui::Label::new(status).truncate());
+                            },
+                        );
+                    },
+                );
             });
         });
 

@@ -4029,45 +4029,59 @@ pub fn show_pane(
 ) {
     ui.horizontal(|ui| {
         ui.heading(PANE_TITLE);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // The Tree view is retired (#252): a strict tree can't show an element with multiple
-            // inputs (e.g. a body that's both an op output and another op's input), so only List
-            // and the dependency-aware Graph remain. The enum variant stays for script
-            // back-compat; a lingering `Tree` mode renders as List (see the match below).
-            for (mode, icon, tooltip) in [
-                (HierarchyViewMode::Graph, IconId::ViewGraph, "Graph-node view"),
-                (HierarchyViewMode::List, IconId::ViewList, "List view"),
-            ] {
-                let selected =
-                    *view_mode == mode || (mode == HierarchyViewMode::List && *view_mode == HierarchyViewMode::Tree);
-                if selectable_icon_button(ui, icon, selected, tooltip).clicked() {
-                    *view_mode = mode;
+        // Explicit id so nested RTL auto-ids stay stable across multipass (#1169 / egui#8343).
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .layout(egui::Layout::right_to_left(egui::Align::Center))
+                .id(ui.id().with("hierarchy_mode_toolbar")),
+            |ui| {
+                // The Tree view is retired (#252): a strict tree can't show an element with multiple
+                // inputs (e.g. a body that's both an op output and another op's input), so only List
+                // and the dependency-aware Graph remain. The enum variant stays for script
+                // back-compat; a lingering `Tree` mode renders as List (see the match below).
+                for (mode, icon, tooltip) in [
+                    (HierarchyViewMode::Graph, IconId::ViewGraph, "Graph-node view"),
+                    (HierarchyViewMode::List, IconId::ViewList, "List view"),
+                ] {
+                    let selected = *view_mode == mode
+                        || (mode == HierarchyViewMode::List && *view_mode == HierarchyViewMode::Tree);
+                    ui.push_id(icon.label(), |ui| {
+                        if selectable_icon_button(ui, icon, selected, tooltip).clicked() {
+                            *view_mode = mode;
+                        }
+                    });
                 }
-            }
-            // Force-layout toggle (#525): only meaningful in the Graph view. When on, nodes
-            // repel and space themselves; when off, the layout freezes so a busy graph holds
-            // still to read and drag.
-            if *view_mode == HierarchyViewMode::Graph {
-                if selectable_icon_button(
-                    ui,
-                    IconId::GraphForce,
-                    *graph_force,
-                    "Force layout — auto-space nodes",
-                )
-                .clicked()
-                {
-                    *graph_force = !*graph_force;
+                // Force-layout toggle (#525): only meaningful in the Graph view. When on, nodes
+                // repel and space themselves; when off, the layout freezes so a busy graph holds
+                // still to read and drag.
+                if *view_mode == HierarchyViewMode::Graph {
+                    ui.push_id("graph_force", |ui| {
+                        if selectable_icon_button(
+                            ui,
+                            IconId::GraphForce,
+                            *graph_force,
+                            "Force layout — auto-space nodes",
+                        )
+                        .clicked()
+                        {
+                            *graph_force = !*graph_force;
+                        }
+                    });
                 }
-            }
-            // Add menu (#423): the + opens a popup with creatable containers.
-            let add = selectable_icon_button(ui, IconId::Plus, false, "Add…");
-            egui::Popup::menu(&add).show(|ui| {
-                if ui.button("New component").clicked() {
-                    on_add_component(None);
-                    ui.close();
-                }
-            });
-        });
+                // Add menu (#423): the + opens a popup with creatable containers.
+                let add = ui
+                    .push_id("hierarchy_add", |ui| {
+                        selectable_icon_button(ui, IconId::Plus, false, "Add…")
+                    })
+                    .inner;
+                egui::Popup::menu(&add).show(|ui| {
+                    if ui.button("New component").clicked() {
+                        on_add_component(None);
+                        ui.close();
+                    }
+                });
+            },
+        );
     });
     ui.separator();
 
