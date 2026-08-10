@@ -1117,6 +1117,10 @@ struct ExploderState {
     zoom_mul: f32,
     /// The in-progress drill-in animation (#559), if any.
     drill_anim: Option<DrillAnim>,
+    /// Shift was held when the fan opened (#1198). The first leaf pick is additive even after
+    /// Shift is released, and the fan dismisses immediately — unlike Shift held only while
+    /// clicking loupes, which keeps the fan open for multi-select.
+    opened_with_shift: bool,
 }
 
 impl ExploderState {
@@ -24161,8 +24165,16 @@ impl App {
                         return (true, None, false);
                     }
                     // Leaf: the tool picks its thing via the redirected pointer; then collapse the
-                    // fan — unless Shift holds it open for multi-select.
-                    Act::Leaf => close_after = !shift,
+                    // fan — unless Shift holds it open for multi-select. Opening *with* Shift is
+                    // one-shot additive (#1198): always dismiss after the first leaf, even if
+                    // Shift is still down.
+                    Act::Leaf => {
+                        let opened_with_shift = self
+                            .exploder
+                            .as_ref()
+                            .is_some_and(|ex| ex.opened_with_shift);
+                        close_after = opened_with_shift || !shift;
+                    }
                     // Clicking outside every loupe just dismisses the fan — it must NOT change the
                     // selection (#575): don't deselect, don't select what's under the cursor. Report
                     // the frame as exploder-active with close-after, so the pointer is redirected to
@@ -24265,6 +24277,8 @@ impl App {
                 hovered: None,
                 zoom_mul: 1.0,
                 drill_anim: None,
+                // Capture Shift at open time (#1198) — sticky for the first additive pick.
+                opened_with_shift: shift,
             });
             return (true, None, false);
         }
@@ -25301,7 +25315,13 @@ impl App {
                     Tool::Select | Tool::Constraint | Tool::Dimension
                 ) {
                     if let Some(element) = scene_element_from_pick(&target) {
-                        let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
+                        // Additive if Shift is held *now*, or if the fan was opened with Shift
+                        // (#1198) — that sticky one-shot still adds after Shift is released.
+                        let additive = ui.input(|i| additive_click_modifiers(&i.modifiers))
+                            || self
+                                .exploder
+                                .as_ref()
+                                .is_some_and(|ex| ex.opened_with_shift);
                         self.state
                             .apply(Action::ClickSceneElement { element, additive });
                         exploder_owns_press = true;
@@ -34026,6 +34046,7 @@ mod tests {
             hovered: None,
             zoom_mul: 1.0,
             drill_anim: None,
+            opened_with_shift: false,
         }
     }
 
@@ -34195,6 +34216,7 @@ mod tests {
             hovered: None,
             zoom_mul: 1.0,
             drill_anim: None,
+            opened_with_shift: false,
         };
         let vp = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
         let project = |w: Vec3| Some(egui::pos2(400.0 + w.x, 300.0 - w.y)); // screen y flips
@@ -34243,6 +34265,7 @@ mod tests {
             hovered: None,
             zoom_mul: 1.0,
             drill_anim: None,
+            opened_with_shift: false,
         };
         let vp = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 900.0));
         let project = |w: Vec3| Some(egui::pos2(400.0 + w.x, 300.0 - w.y));

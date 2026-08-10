@@ -4320,11 +4320,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     api.set(
         "key",
-        lua.create_function(|lua, name: String| {
+        // Optional `{ shift = true }` (etc.) holds modifiers for the key tap (#1198).
+        lua.create_function(|lua, (name, opts): (String, Option<Table>)| {
             let key = parse_key(&name)
                 .map_err(mlua::Error::external)?;
+            let mods = click_mods(opts)?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            unsafe { tick.exec(Instruction::Key(key)) }
+            unsafe { tick.exec(Instruction::Key { key, mods }) }
         })?,
     )?;
 

@@ -846,7 +846,9 @@ pub enum Instruction {
     },
     RightDrag { dx: f32, dy: f32 },
     RightDragShift { dx: f32, dy: f32 },
-    Key(Key),
+    /// A key tap, optionally with modifiers held for that press (#1198: Shift+Space opens
+    /// the Selection Exploder in one-shot additive mode).
+    Key { key: Key, mods: ClickMods },
     KeyDown(Key),
     KeyUp(Key),
     Type(String),
@@ -1917,7 +1919,9 @@ impl Instruction {
             Instruction::RightDragShift { dx, dy } => {
                 format!("bearcad.ui.right_drag_pan({dx}, {dy})")
             }
-            Instruction::Key(key) => format!("bearcad.ui.key({:?})", key_name(*key)),
+            Instruction::Key { key, mods } => {
+                format!("bearcad.ui.key({:?}{})", key_name(*key), mods.lua_opts())
+            }
             Instruction::KeyDown(key) => format!("bearcad.ui.keydown({:?})", key_name(*key)),
             Instruction::KeyUp(key) => format!("bearcad.ui.keyup({:?})", key_name(*key)),
             Instruction::Type(text) => format!("bearcad.ui.type({text:?})"),
@@ -4522,26 +4526,28 @@ impl SyntheticInput {
         ]);
     }
 
-    pub fn key(&mut self, key: Key) {
-        self.push_key(key, true);
-        self.push_key(key, false);
+    /// A key tap with modifiers held for both the press and the release (#1198).
+    /// Pass [`ClickMods::default`] for a plain key.
+    pub fn key_with(&mut self, key: Key, mods: ClickMods) {
+        self.push_key(key, true, mods);
+        self.push_key(key, false, mods);
     }
 
     pub fn key_down(&mut self, key: Key) {
-        self.push_key(key, true);
+        self.push_key(key, true, ClickMods::default());
     }
 
     pub fn key_up(&mut self, key: Key) {
-        self.push_key(key, false);
+        self.push_key(key, false, ClickMods::default());
     }
 
-    fn push_key(&mut self, key: Key, pressed: bool) {
+    fn push_key(&mut self, key: Key, pressed: bool, mods: ClickMods) {
         self.push_event(egui::Event::Key {
             key,
             physical_key: None,
             pressed,
             repeat: false,
-            modifiers: Modifiers::NONE,
+            modifiers: mods.egui(),
         });
     }
 
@@ -7175,8 +7181,8 @@ impl ScriptRunner {
                 synthetic.right_drag(vp, dx, dy, true);
                 StepResult::Continue
             }
-            Instruction::Key(key) => {
-                synthetic.key(key);
+            Instruction::Key { key, mods } => {
+                synthetic.key_with(key, mods);
                 StepResult::Continue
             }
             Instruction::KeyDown(key) => {
