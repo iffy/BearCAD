@@ -1957,7 +1957,11 @@ fn point_in_tri(p: eframe::egui::Pos2, a: eframe::egui::Pos2, b: eframe::egui::P
     let inv = 1.0 / denom;
     let u = (dot11 * dot02 - dot01 * dot12) * inv;
     let v = (dot00 * dot12 - dot01 * dot02) * inv;
-    u >= 0.0 && v >= 0.0 && (u + v) <= 1.0
+    // Inclusive edges with a small epsilon — matches `polygon::point_in_triangle_2d`.
+    // Exact boundary hits (e.g. rectangle diagonal under a true top view) otherwise
+    // drop out of both fan triangles and leave only the construction plane to pick.
+    const EPS: f32 = 1e-4;
+    u >= -EPS && v >= -EPS && (u + v) <= 1.0 + EPS
 }
 
 fn dist_point_to_quad_edges(p: eframe::egui::Pos2, quad: [eframe::egui::Pos2; 4]) -> f32 {
@@ -2718,6 +2722,44 @@ mod tests {
                     )
             ),
             "clicking a repeated cuboid's top should pick RepeatedFace, got {hit:?}"
+        );
+    }
+
+    /// Interaction `revolve_axis_click` / CI: under a true top view (#1183) the geometric
+    /// center of a ground rectangle must pick the polygon profile, not a construction plane.
+    #[test]
+    fn pick_sketch_face_finds_rectangle_center_under_true_top_view() {
+        // Full default document (all three datum planes), matching the live app.
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+        crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 20.0, 10.0, [false; 4]);
+
+        let mut cam = crate::camera::Camera::default();
+        let (yaw, pitch) = crate::camera::StandardView::Top.yaw_pitch();
+        cam.yaw = yaw;
+        cam.pitch = pitch;
+        cam.target = glam::Vec3::new(10.0, -2.5, 0.0);
+        cam.distance = 38.347;
+        let viewport = eframe::egui::Rect::from_min_size(
+            eframe::egui::pos2(0.0, 0.0),
+            eframe::egui::vec2(1280.0, 800.0),
+        );
+        let vp = cam.view_proj(viewport);
+        let project = |p: Vec3| cam.project(p, viewport, &vp);
+        let eye = cam.eye();
+
+        let center = project(glam::Vec3::new(10.0, 5.0, 0.0)).expect("center projects");
+        let face = pick_sketch_face(center, &project, &doc, eye);
+        assert!(
+            matches!(face, Some(FaceId::Polygon(_))),
+            "center of a ground rectangle under true top view must pick the profile, got {face:?}"
+        );
+
+        let near = project(glam::Vec3::new(5.0, 2.5, 0.0)).expect("near-center projects");
+        let face_near = pick_sketch_face(near, &project, &doc, eye);
+        assert!(
+            matches!(face_near, Some(FaceId::Polygon(_))),
+            "near-center should pick the profile, got {face_near:?}"
         );
     }
 

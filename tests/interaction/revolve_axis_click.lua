@@ -13,9 +13,11 @@ bearcad.ui.pane("parameters", "hide")
 bearcad.ui.auto_zoom(false)
 bearcad.ui.ground("off")
 bearcad.ui.view("top")
-bearcad.ui.wait(5)
+-- View transitions are animated (~0.35s); wait enough frames for true top-view
+-- pitch (#1183) before zoom_fit / profile pick.
+bearcad.ui.wait(30)
 bearcad.ui.zoom_fit()
-bearcad.ui.wait(5)
+bearcad.ui.wait(10)
 bearcad.ui.tool("revolve")
 bearcad.ui.wait(5)
 
@@ -27,7 +29,8 @@ local function picker(name)
 end
 
 assert(picker("Profile").focused, "Profile is the primary, armed first")
--- Click inside the rectangle to take its profile.
+-- Geometric center of the 20×10 rectangle. Under true top view this is on the
+-- fan-triangulation diagonal; point_in_tri must include edges (see face.rs).
 bearcad.ui.click_ground(10, 5)
 bearcad.ui.wait(5)
 assert(#picker("Profile").items == 1,
