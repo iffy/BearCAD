@@ -327,7 +327,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   vertex projects the whole body) through `Action::ProjectElement`; both entry points
   share `Action::ProjectSources`. Lua tool name `"project"`. Each projected edge becomes a
   construction-style line drawn **solid cyan** (#1186; distinct from dashed construction)
-  and usable like construction geometry (snapping, constraints).
+  and usable like construction geometry (snapping, constraints). While the host sketch is
+  open, projected lines **show through bodies** (depth-disabled; #1192) so a body between
+  the camera and the sketch plane does not hide the reference.
   Projections are **associative**: each geometry recompute re-resolves the source edge and
   rewrites the projected line, so it follows its source body. Sources are geometry-keyed
   (mesh edges have no stable topological name), so if a rebuild moves/removes the source

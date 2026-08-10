@@ -1324,7 +1324,13 @@ impl ViewportScene {
                 // Same solid 2px width on body faces and planes (#1153): the thinner dark stroke
                 // from #1149 read as wispy/non-solid under AA.
                 const STROKE_WIDTH: f32 = 2.0;
-                // Projected lines are construction-like but draw solid cyan (#1186).
+                // Projected lines are construction-like but draw solid cyan (#1186). While the
+                // host sketch is open they must show through bodies (#1192) — they only draw
+                // then anyway (#994 construction visibility) — so use the depth-disabled
+                // wireframe layer instead of the depth-tested stroke path.
+                if line.projection.is_some() {
+                    mesh.set_index_layer(MeshIndexLayer::Wireframe);
+                }
                 if line.construction && line.projection.is_none() {
                     mesh.push_dashed_polyline_segment(
                         &points,
@@ -1343,6 +1349,9 @@ impl ViewportScene {
                         input.viewport,
                         &vp,
                     );
+                }
+                if line.projection.is_some() {
+                    mesh.set_index_layer(MeshIndexLayer::Base);
                 }
             }
         }
@@ -10144,16 +10153,142 @@ mod tests {
                 constraint_connector_color: None,
             })
         };
-        let projected_n = build(&projected_doc).stroke_indices.len();
-        let construction_n = build(&construction_doc).stroke_indices.len();
-        let solid_n = build(&solid_doc).stroke_indices.len();
+        let baseline = build(&state.doc);
+        let projected_scene = build(&projected_doc);
+        let construction_scene = build(&construction_doc);
+        let solid_scene = build(&solid_doc);
+        // #1192: projected lines live on the depth-disabled wireframe layer (show through
+        // bodies while the host sketch is open). Solid/construction still use depth-tested
+        // screen-space strokes. Compare deltas so other scene strokes don't confuse counts.
+        let projected_wire =
+            projected_scene.wireframe_indices.len() - baseline.wireframe_indices.len();
+        let projected_stroke =
+            projected_scene.stroke_indices.len() - baseline.stroke_indices.len();
+        let construction_stroke =
+            construction_scene.stroke_indices.len() - baseline.stroke_indices.len();
+        let solid_stroke = solid_scene.stroke_indices.len() - baseline.stroke_indices.len();
         assert_eq!(
-            projected_n, solid_n,
-            "projected line should be solid (stroke={projected_n}), not dashed like construction (stroke={construction_n})"
+            projected_wire, solid_stroke,
+            "projected line should be solid (wire +{projected_wire}), not dashed like construction (stroke +{construction_stroke})"
         );
         assert!(
-            construction_n > solid_n,
-            "sanity: construction still dashes (construction={construction_n} solid={solid_n})"
+            construction_stroke > solid_stroke,
+            "sanity: construction still dashes (construction +{construction_stroke} solid +{solid_stroke})"
+        );
+        assert_eq!(
+            projected_stroke, 0,
+            "projected line must not grow the depth-tested stroke layer (would hide behind bodies)"
+        );
+    }
+
+    /// #1192: while editing the sketch that hosts a projection, the solid cyan reference
+    /// must show through bodies (depth-disabled). Projected lines already only draw when
+    /// their sketch is open (#994), so the ordinary stroke path always uses the wireframe
+    /// layer for them — never the depth-tested screen-space stroke path that solids use.
+    #[test]
+    fn projected_line_draws_depth_test_disabled_in_host_sketch() {
+        let mut state = AppState::default();
+        state.apply(crate::actions::Action::BeginSketch {
+            face: FaceId::ConstructionPlane(pkey(0)),
+            viewport: None,
+        });
+        let session = state.sketch_session.unwrap();
+        let mut projected = crate::model::Line::from_local_endpoints(
+            session.sketch,
+            0.0,
+            0.0,
+            80.0,
+            0.0,
+        );
+        projected.construction = true;
+        projected.projection = Some(crate::model::ProjectionSource::Plane {
+            plane: pkey(2),
+        });
+        let mut solid = projected.clone();
+        solid.construction = false;
+        solid.projection = None;
+        let cam = state.cam.clone();
+        let viewport = test_viewport();
+        let mut projected_doc = state.doc.clone();
+        projected_doc.lines.insert(projected);
+        let mut solid_doc = state.doc.clone();
+        solid_doc.lines.insert(solid);
+        let empty_sel = crate::selection::SceneSelection::default();
+        let empty_vis = crate::hierarchy::ElementVisibility::default();
+        let build = |doc: &crate::model::Document| {
+            ViewportScene::build(&ViewportSceneInput {
+                doc,
+                cam: &cam,
+                viewport,
+                palette: ViewportPalette::default(),
+                sketch_session: Some(session),
+                selection: &empty_sel,
+                cut_highlight_bodies: Vec::new(),
+                faded_bodies: Vec::new(),
+                sketch_repeat_ghost: Vec::new(),
+                sketch_ghost_lines: Vec::new(),
+                edit_preview_meshes: std::collections::HashMap::new(),
+                element_visibility: &empty_vis,
+                preview_rect: None,
+                preview_line: None,
+                preview_circle: None,
+                preview_extrusion: None,
+                preview_solid: None,
+                repeat_ghosts: Vec::new(),
+                cut_surface_ghosts: Vec::new(),
+                preview_cut_body: None,
+                preview_replacement: PreviewReplacement::default(),
+                highlighted_bezier_handles: Vec::new(),
+                editing_extrusion: None,
+                plane_preview: None,
+                active_sketch_face: None,
+                dimension_labels: &[],
+                dim_label_view: None,
+                plane_gizmo: None,
+                extrude_gizmo: None,
+                vertex_treatment_gizmo: None,
+                arrow_gizmos: Vec::new(),
+                move_rotation_gizmo: None,
+                revolve_arc_gizmo: None,
+                vertex_treatment_preview: None,
+                hover_highlight: None,
+                extra_pick_highlights: Vec::new(),
+                colored_pick_highlights: Vec::new(),
+                colored_element_highlights: Vec::new(),
+                tinted_bodies: Vec::new(),
+                colored_segments: Vec::new(),
+                parameter_highlight_elements: Vec::new(),
+                hover_color: Color32::WHITE,
+                document_health: &DocumentHealth::default(),
+                constraint_graphics: None,
+                constraint_connector_color: None,
+            })
+        };
+        let baseline = build(&state.doc);
+        let projected_scene = build(&projected_doc);
+        let solid_scene = build(&solid_doc);
+        let projected_wire =
+            projected_scene.wireframe_indices.len() - baseline.wireframe_indices.len();
+        let projected_stroke =
+            projected_scene.stroke_indices.len() - baseline.stroke_indices.len();
+        let solid_stroke = solid_scene.stroke_indices.len() - baseline.stroke_indices.len();
+        let solid_wire = solid_scene.wireframe_indices.len() - baseline.wireframe_indices.len();
+        assert!(
+            projected_wire >= 6,
+            "projected line must land in the depth-disabled wireframe layer (#1192), got wire +{projected_wire}"
+        );
+        assert_eq!(
+            projected_stroke, 0,
+            "projected line must not grow depth-tested strokes (bodies would occlude it), got stroke +{projected_stroke}"
+        );
+        // Sanity: ordinary solid sketch lines still depth-test (same as before #1192).
+        assert!(
+            solid_stroke >= 6,
+            "solid sketch line still uses depth-tested strokes, got stroke +{solid_stroke}"
+        );
+        assert_eq!(
+            solid_wire, 0,
+            "solid sketch line must not use the always-on wireframe layer, got wire +{solid_wire}"
         );
     }
 
