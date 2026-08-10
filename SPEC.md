@@ -329,8 +329,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   Sketch" still runs `Action::ProjectSelection` directly. Each projected edge becomes a
   construction-style line drawn **solid cyan** (#1186; distinct from dashed construction)
   and usable like construction geometry (snapping, constraints). While the host sketch is
-  open, projected lines **show through bodies** (depth-disabled; #1192) so a body between
-  the camera and the sketch plane does not hide the reference. In the Elements pane,
+  open, **all of that sketch's lines** — solid, construction, and projected — **show through
+  bodies** (depth-disabled; #1192/#1200) so a body between the camera and the sketch plane
+  does not hide the profile. Closed sketches keep depth-tested strokes. In the Elements pane,
   projected lines wear the **Projection** (projector) icon, not the plain line glyph (#1193).
   **Un-project (#1193):** when the selection is **only** already-projected lines of the
   open sketch, Enter (or Project Selection) **un-projects** them (removes the references).

@@ -1325,11 +1325,14 @@ impl ViewportScene {
                 // Same solid 2px width on body faces and planes (#1153): the thinner dark stroke
                 // from #1149 read as wispy/non-solid under AA.
                 const STROKE_WIDTH: f32 = 2.0;
-                // Projected lines are construction-like but draw solid cyan (#1186). While the
-                // host sketch is open they must show through bodies (#1192) — they only draw
-                // then anyway (#994 construction visibility) — so use the depth-disabled
-                // wireframe layer instead of the depth-tested stroke path.
-                if line.projection.is_some() {
+                // While the host sketch is open, every line of that sketch shows through
+                // bodies (#1200) — solid, construction, and projected cyan (#1192/#1186)
+                // alike — so a body between the camera and the sketch plane cannot hide the
+                // profile. Closed sketches keep depth-tested strokes (#1157).
+                let show_through = input
+                    .sketch_session
+                    .is_some_and(|s| s.sketch == line.sketch);
+                if show_through {
                     mesh.set_index_layer(MeshIndexLayer::Wireframe);
                 }
                 if line.construction && line.projection.is_none() {
@@ -1351,7 +1354,7 @@ impl ViewportScene {
                         &vp,
                     );
                 }
-                if line.projection.is_some() {
+                if show_through {
                     mesh.set_index_layer(MeshIndexLayer::Base);
                 }
             }
@@ -1515,13 +1518,18 @@ impl ViewportScene {
                 !sketch_circle_is_active(input.doc, s, ci, circle.sketch)
             });
             let element = SceneElement::Circle(ci);
-            // Committed circle strokes depth-test like body-face lines (#1157 / #1174):
-            // screen-space width + STROKE_DEPTH_BIAS so they sit on the face without
-            // freestanding ribbons, and the solid occludes them when the host face is
-            // behind the body. #1140 put body-coplanar rings on the always-on wireframe
-            // layer to dodge z-fighting with gold selection — that made the ring show
-            // through the cube. Selection/hover still use Wireframe (see push_selection
-            // / face hover); only the ordinary committed stroke is depth-tested.
+            // Committed circle strokes depth-test like body-face lines (#1157 / #1174)
+            // when their sketch is closed: screen-space width + STROKE_DEPTH_BIAS so they
+            // sit on the face, and the solid occludes them when the host face is behind
+            // the body. While the host sketch is open they show through bodies like
+            // lines (#1200). Selection/hover still use Wireframe (see push_selection /
+            // face hover).
+            let show_through = input
+                .sketch_session
+                .is_some_and(|s| s.sketch == circle.sketch);
+            if show_through {
+                mesh.set_index_layer(MeshIndexLayer::Wireframe);
+            }
             mesh.push_circle_strokes(
                 input.doc,
                 circle,
@@ -1544,6 +1552,9 @@ impl ViewportScene {
                     input.document_health.element_status(element),
                 ),
             );
+            if show_through {
+                mesh.set_index_layer(MeshIndexLayer::Overlay);
+            }
         }
 
         // Origin marker (#189): a distinct dot at the active sketch's own origin so it's
@@ -10087,12 +10098,18 @@ mod tests {
             constraint_graphics: None,
             constraint_connector_color: None,
         });
-        // Construction dashes are screen-space stroke segments (#1157), not base-mesh indices.
-        let dashed_line_indices = dashed_scene.stroke_indices.len();
-        let solid_line_indices = solid_scene.stroke_indices.len();
+        // Open-sketch lines land on the depth-disabled wireframe layer (#1200); construction
+        // still emits more dash quads than a solid stroke of the same length.
+        let dashed_line_indices = dashed_scene.wireframe_indices.len();
+        let solid_line_indices = solid_scene.wireframe_indices.len();
         assert!(
             dashed_line_indices > solid_line_indices,
-            "dashed construction line should emit more stroke segments than a solid line (dashed={dashed_line_indices} solid={solid_line_indices})"
+            "dashed construction line should emit more wireframe segments than a solid line (dashed={dashed_line_indices} solid={solid_line_indices})"
+        );
+        assert_eq!(
+            dashed_scene.stroke_indices.len(),
+            solid_scene.stroke_indices.len(),
+            "open-sketch construction/solid must not use the depth-tested stroke layer"
         );
     }
 
@@ -10184,36 +10201,41 @@ mod tests {
         let projected_scene = build(&projected_doc);
         let construction_scene = build(&construction_doc);
         let solid_scene = build(&solid_doc);
-        // #1192: projected lines live on the depth-disabled wireframe layer (show through
-        // bodies while the host sketch is open). Solid/construction still use depth-tested
-        // screen-space strokes. Compare deltas so other scene strokes don't confuse counts.
+        // #1192/#1200: while the host sketch is open, projected / solid / construction lines
+        // all live on the depth-disabled wireframe layer. Projected is solid (same quad count
+        // as a solid line), construction still dashes (more quads).
         let projected_wire =
             projected_scene.wireframe_indices.len() - baseline.wireframe_indices.len();
         let projected_stroke =
             projected_scene.stroke_indices.len() - baseline.stroke_indices.len();
-        let construction_stroke =
-            construction_scene.stroke_indices.len() - baseline.stroke_indices.len();
+        let construction_wire =
+            construction_scene.wireframe_indices.len() - baseline.wireframe_indices.len();
+        let solid_wire = solid_scene.wireframe_indices.len() - baseline.wireframe_indices.len();
         let solid_stroke = solid_scene.stroke_indices.len() - baseline.stroke_indices.len();
         assert_eq!(
-            projected_wire, solid_stroke,
-            "projected line should be solid (wire +{projected_wire}), not dashed like construction (stroke +{construction_stroke})"
+            projected_wire, solid_wire,
+            "projected line should be solid (wire +{projected_wire}), not dashed like construction (wire +{construction_wire})"
         );
         assert!(
-            construction_stroke > solid_stroke,
-            "sanity: construction still dashes (construction +{construction_stroke} solid +{solid_stroke})"
+            construction_wire > solid_wire,
+            "sanity: construction still dashes (construction +{construction_wire} solid +{solid_wire})"
         );
         assert_eq!(
             projected_stroke, 0,
             "projected line must not grow the depth-tested stroke layer (would hide behind bodies)"
         );
+        assert_eq!(
+            solid_stroke, 0,
+            "open-sketch solid line must not grow the depth-tested stroke layer (#1200)"
+        );
     }
 
-    /// #1192: while editing the sketch that hosts a projection, the solid cyan reference
-    /// must show through bodies (depth-disabled). Projected lines already only draw when
-    /// their sketch is open (#994), so the ordinary stroke path always uses the wireframe
-    /// layer for them — never the depth-tested screen-space stroke path that solids use.
+    /// #1192/#1200: while editing a sketch, every line of that sketch shows through bodies
+    /// (depth-disabled wireframe layer) — projected cyan references and ordinary solid
+    /// strokes alike. Closed sketches still depth-test (see
+    /// `closed_sketch_solid_line_still_depth_tests`).
     #[test]
-    fn projected_line_draws_depth_test_disabled_in_host_sketch() {
+    fn open_sketch_lines_draw_depth_test_disabled() {
         let mut state = AppState::default();
         state.apply(crate::actions::Action::BeginSketch {
             face: FaceId::ConstructionPlane(pkey(0)),
@@ -10234,12 +10256,17 @@ mod tests {
         let mut solid = projected.clone();
         solid.construction = false;
         solid.projection = None;
+        let mut construction = projected.clone();
+        construction.construction = true;
+        construction.projection = None;
         let cam = state.cam.clone();
         let viewport = test_viewport();
         let mut projected_doc = state.doc.clone();
         projected_doc.lines.insert(projected);
         let mut solid_doc = state.doc.clone();
         solid_doc.lines.insert(solid);
+        let mut construction_doc = state.doc.clone();
+        construction_doc.lines.insert(construction);
         let empty_sel = crate::selection::SceneSelection::default();
         let empty_vis = crate::hierarchy::ElementVisibility::default();
         let build = |doc: &crate::model::Document| {
@@ -10294,12 +10321,17 @@ mod tests {
         let baseline = build(&state.doc);
         let projected_scene = build(&projected_doc);
         let solid_scene = build(&solid_doc);
+        let construction_scene = build(&construction_doc);
         let projected_wire =
             projected_scene.wireframe_indices.len() - baseline.wireframe_indices.len();
         let projected_stroke =
             projected_scene.stroke_indices.len() - baseline.stroke_indices.len();
         let solid_stroke = solid_scene.stroke_indices.len() - baseline.stroke_indices.len();
         let solid_wire = solid_scene.wireframe_indices.len() - baseline.wireframe_indices.len();
+        let construction_wire =
+            construction_scene.wireframe_indices.len() - baseline.wireframe_indices.len();
+        let construction_stroke =
+            construction_scene.stroke_indices.len() - baseline.stroke_indices.len();
         assert!(
             projected_wire >= 6,
             "projected line must land in the depth-disabled wireframe layer (#1192), got wire +{projected_wire}"
@@ -10308,14 +10340,98 @@ mod tests {
             projected_stroke, 0,
             "projected line must not grow depth-tested strokes (bodies would occlude it), got stroke +{projected_stroke}"
         );
-        // Sanity: ordinary solid sketch lines still depth-test (same as before #1192).
+        // #1200: ordinary solid/construction sketch lines of the open sketch also show through.
         assert!(
-            solid_stroke >= 6,
-            "solid sketch line still uses depth-tested strokes, got stroke +{solid_stroke}"
+            solid_wire >= 6,
+            "open-sketch solid line must use depth-disabled wireframe (#1200), got wire +{solid_wire}"
         );
         assert_eq!(
-            solid_wire, 0,
-            "solid sketch line must not use the always-on wireframe layer, got wire +{solid_wire}"
+            solid_stroke, 0,
+            "open-sketch solid line must not use depth-tested strokes, got stroke +{solid_stroke}"
+        );
+        assert!(
+            construction_wire > solid_wire,
+            "open-sketch construction still dashes on the wireframe layer (construction +{construction_wire} solid +{solid_wire})"
+        );
+        assert_eq!(
+            construction_stroke, 0,
+            "open-sketch construction must not use depth-tested strokes, got stroke +{construction_stroke}"
+        );
+    }
+
+    /// #1200 / #1157: when no sketch is open, committed solid lines still depth-test so
+    /// bodies in front occlude them. Only the open sketch's geometry is always-on.
+    #[test]
+    fn closed_sketch_solid_line_still_depth_tests() {
+        let mut state = AppState::default();
+        state.apply(crate::actions::Action::BeginSketch {
+            face: FaceId::ConstructionPlane(pkey(0)),
+            viewport: None,
+        });
+        let sketch = state.sketch_session.unwrap().sketch;
+        state.doc.lines.insert(crate::model::Line::from_local_endpoints(
+            sketch, 0.0, 0.0, 80.0, 0.0,
+        ));
+        state.sketch_session = None;
+        let cam = state.cam.clone();
+        let viewport = test_viewport();
+        let empty_sel = crate::selection::SceneSelection::default();
+        let empty_vis = crate::hierarchy::ElementVisibility::default();
+        let scene = ViewportScene::build(&ViewportSceneInput {
+            doc: &state.doc,
+            cam: &cam,
+            viewport,
+            palette: ViewportPalette::default(),
+            sketch_session: None,
+            selection: &empty_sel,
+            cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
+            sketch_repeat_ghost: Vec::new(),
+            sketch_ghost_lines: Vec::new(),
+            edit_preview_meshes: std::collections::HashMap::new(),
+            element_visibility: &empty_vis,
+            preview_rect: None,
+            preview_line: None,
+            preview_circle: None,
+            preview_extrusion: None,
+            preview_solid: None,
+            repeat_ghosts: Vec::new(),
+            cut_surface_ghosts: Vec::new(),
+            preview_cut_body: None,
+            preview_replacement: PreviewReplacement::default(),
+            highlighted_bezier_handles: Vec::new(),
+            editing_extrusion: None,
+            plane_preview: None,
+            active_sketch_face: None,
+            dimension_labels: &[],
+            dim_label_view: None,
+            plane_gizmo: None,
+            extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
+            arrow_gizmos: Vec::new(),
+            move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
+            vertex_treatment_preview: None,
+            hover_highlight: None,
+            extra_pick_highlights: Vec::new(),
+            colored_pick_highlights: Vec::new(),
+            colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
+            colored_segments: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
+            hover_color: Color32::WHITE,
+            document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
+        });
+        assert!(
+            !scene.stroke_indices.is_empty(),
+            "closed-sketch solid line must use depth-tested strokes (#1157), got stroke indices empty"
+        );
+        assert!(
+            scene.wireframe_indices.is_empty(),
+            "closed-sketch solid line must not use always-on wireframe, got wire +{}",
+            scene.wireframe_indices.len()
         );
     }
 
