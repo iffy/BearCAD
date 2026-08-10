@@ -19524,12 +19524,13 @@ fn pointer_over_dim_inputs(pointer: egui::Pos2, layouts: &[DimInputLayout]) -> b
     layouts.iter().any(|layout| layout.rect.contains(pointer))
 }
 
-fn format_live_dimension(v: f32) -> String {
-    if v.abs() < 0.1 {
-        "0".to_string()
-    } else {
-        format!("{:.1}", v)
-    }
+/// Format a live mouse-driven length for a sketch/tool ValueInput (#1182).
+///
+/// `v` is millimetres (internal storage); `unit` is the document or sketch default so
+/// the field shows e.g. `3.5 in` rather than the raw `88.9`. Matches other gizmo-driven
+/// fields (vertex treatment, extrude, repeat) that use [`format_length_display_in`].
+fn format_live_dimension(v_mm: f32, unit: crate::value::LengthUnit) -> String {
+    crate::value::format_length_display_in(v_mm, unit)
 }
 
 /// Second click on the viewport (not a dimension input) commits the in-progress sketch.
@@ -25471,11 +25472,18 @@ impl App {
                                 actions::RectAnchor::Corner => 1.0,
                                 actions::RectAnchor::Center => 2.0,
                             };
+                            // Live dims follow the sketch's effective unit (#1182), not raw mm.
+                            let unit = crate::model::effective_length_unit(
+                                &self.state.doc,
+                                session.sketch,
+                            );
                             if !cr.user_edited[0] {
-                                cr.texts[0] = format_live_dimension(scale * (bu - au).abs());
+                                cr.texts[0] =
+                                    format_live_dimension(scale * (bu - au).abs(), unit);
                             }
                             if !cr.user_edited[1] {
-                                cr.texts[1] = format_live_dimension(scale * (bv - av).abs());
+                                cr.texts[1] =
+                                    format_live_dimension(scale * (bv - av).abs(), unit);
                             }
                             // The opposite corner only tracks the cursor when both dims are free.
                             self.state.rect_opposite_snap =
@@ -25569,7 +25577,11 @@ impl App {
                             cc.last_mouse = gp;
                             if !cc.user_edited {
                                 let radius = cc.radius(&frame, &self.state.doc);
-                                cc.text = format_live_dimension(radius * 2.0);
+                                let unit = crate::model::effective_length_unit(
+                                    &self.state.doc,
+                                    session.sketch,
+                                );
+                                cc.text = format_live_dimension(radius * 2.0, unit);
                             }
                         }
                     }
@@ -25661,7 +25673,12 @@ impl App {
                                 let (bu, bv) = world_to_local(&frame, sgp);
                                 let du = bu - au;
                                 let dv = bv - av;
-                                cl.text = format_live_dimension((du * du + dv * dv).sqrt());
+                                let unit = crate::model::effective_length_unit(
+                                    &self.state.doc,
+                                    session.sketch,
+                                );
+                                cl.text =
+                                    format_live_dimension((du * du + dv * dv).sqrt(), unit);
                                 snap_target
                             };
                         }
@@ -26587,7 +26604,8 @@ impl App {
 
                     if !cp.user_edited_offset {
                         let (off, ang) = cp.live_dims();
-                        cp.offset_text = format_live_dimension(off);
+                        let unit = self.state.doc.default_length_unit;
+                        cp.offset_text = format_live_dimension(off, unit);
                         if cp.reference.is_axis() && !cp.user_edited_angle {
                             cp.angle_text = format!("{:.0}", ang);
                         }
@@ -31739,6 +31757,17 @@ mod tests {
     #[test]
     fn live_mouse_tracking_still_selects_before_user_types() {
         assert!(should_select_all_rect_value(false, true, true, false, false, false));
+    }
+
+    /// #1182: live rectangle/line/circle ValueInputs must show the document/sketch unit
+    /// (e.g. 3.5 in), not the raw internal millimetre length (88.9).
+    #[test]
+    fn format_live_dimension_follows_document_unit() {
+        use crate::value::LengthUnit;
+        assert_eq!(format_live_dimension(88.9, LengthUnit::In), "3.5 in");
+        assert_eq!(format_live_dimension(88.9, LengthUnit::Mm), "88.9 mm");
+        assert_eq!(format_live_dimension(0.0, LengthUnit::In), "0 in");
+        assert_eq!(format_live_dimension(25.4, LengthUnit::In), "1.0 in");
     }
 
     fn rectangle_anchors(shape: egui::Rect) -> (egui::Pos2, egui::Pos2) {
