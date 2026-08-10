@@ -591,9 +591,20 @@ fn occt_solid_with_primitive_base(
     add_indices: &[crate::model::ExtrusionKey],
     cut_indices: &[crate::model::ExtrusionKey],
 ) -> Option<crate::kernel::Shape> {
-    use crate::kernel::BoolOp;
     let primitive = doc.primitives.get(base)?;
-    let mut solid = crate::primitives::kernel_shape(doc, primitive)?;
+    let solid = crate::primitives::kernel_shape(doc, primitive)?;
+    occt_fuse_then_cut_extrusions(doc, solid, add_indices, cut_indices)
+}
+
+/// Fuse each additive extrusion onto `solid`, then subtract the cuts (#1104/#1168).
+/// Shared by primitive-base solids and post-shell extrusions on a hollow body.
+fn occt_fuse_then_cut_extrusions(
+    doc: &Document,
+    mut solid: crate::kernel::Shape,
+    add_indices: &[crate::model::ExtrusionKey],
+    cut_indices: &[crate::model::ExtrusionKey],
+) -> Option<crate::kernel::Shape> {
+    use crate::kernel::BoolOp;
     for &ei in add_indices {
         let extrusion = doc.extrusions.get(ei)?;
         let distance = effective_distance(doc, extrusion);
@@ -769,8 +780,15 @@ pub fn occt_body_shape(doc: &Document, body_index: crate::model::BodyKey) -> Opt
         crate::model::BodySource::Sliced { op, target, piece } => {
             return occt_sliced_output_shape(doc, op, target, piece);
         }
-        crate::model::BodySource::Shelled { op, target } => {
-            return occt_shelled_output_shape(doc, op, target);
+        crate::model::BodySource::Shelled {
+            op,
+            target,
+            ref add,
+            ref cut,
+        } => {
+            // Hollow first, then fuse/cut any post-shell extrusions (#1168).
+            let hollow = occt_shelled_output_shape(doc, op, target)?;
+            return occt_fuse_then_cut_extrusions(doc, hollow, add, cut);
         }
         crate::model::BodySource::EdgeTreated { op, target } => {
             return occt_edge_treated_output_shape(doc, op, target);
@@ -5968,10 +5986,14 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: crate::model::BodyKey) -
             return (!tris.is_empty()).then_some(SolidMesh { triangles: tris });
         }
     }
-    if let crate::model::BodySource::Shelled { op, target } = body.source {
-        let shape = occt_shelled_output_shape(doc, op, target)?;
-        let tris = shape.tessellate(OCCT_DEFLECTION as f64);
-        return (!tris.is_empty()).then_some(SolidMesh { triangles: tris });
+    if let crate::model::BodySource::Shelled { op, target, ref add, ref cut } = body.source {
+        // Pure hollow meshes directly; fused add/cut go through `occt_body_shape` below
+        // so the boss/cut shows up in the viewport (#1168).
+        if add.is_empty() && cut.is_empty() {
+            let shape = occt_shelled_output_shape(doc, op, target)?;
+            let tris = shape.tessellate(OCCT_DEFLECTION as f64);
+            return (!tris.is_empty()).then_some(SolidMesh { triangles: tris });
+        }
     }
     // Fuse the body's added extrusions into one real solid via OCCT and subtract its cut
     // extrusions (#86/#35) when they're all kernel-representable; otherwise fall back to

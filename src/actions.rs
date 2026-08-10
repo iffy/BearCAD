@@ -13227,7 +13227,12 @@ label_hidden: false,
                     let mut trial_outputs = Vec::new();
                     for target in 0..targets.len() {
                         trial_outputs.push(trial.bodies.insert(crate::model::Body {
-                            source: crate::model::BodySource::Shelled { op: op_index, target },
+                            source: crate::model::BodySource::Shelled {
+                                op: op_index,
+                                target,
+                                add: Vec::new(),
+                                cut: Vec::new(),
+                            },
                             material: None,
                             name: None,
                             shadow: false,
@@ -13257,7 +13262,12 @@ label_hidden: false,
                 let mut outputs = Vec::new();
                 for target in 0..targets.len() {
                     outputs.push(self.doc.bodies.insert(crate::model::Body {
-                        source: crate::model::BodySource::Shelled { op: op_index, target },
+                        source: crate::model::BodySource::Shelled {
+                            op: op_index,
+                            target,
+                            add: Vec::new(),
+                            cut: Vec::new(),
+                        },
                         material: None,
                         name: None,
                         shadow: false,
@@ -13342,11 +13352,27 @@ label_hidden: false,
                         }
                     }
                 }
-                // Resize outputs 1:1 with targets.
+                // Resize outputs 1:1 with targets. Keep any post-shell fuse add/cut lists
+                // already on an existing output (#1168).
                 let existing = self.doc.shell_ops[op].outputs.clone();
                 let mut outputs = Vec::with_capacity(targets.len());
                 for (target, _) in targets.iter().enumerate() {
-                    let source = crate::model::BodySource::Shelled { op, target };
+                    let (add, cut) = existing
+                        .get(target)
+                        .and_then(|&bi| self.doc.bodies.get(bi))
+                        .map(|b| match &b.source {
+                            crate::model::BodySource::Shelled { add, cut, .. } => {
+                                (add.clone(), cut.clone())
+                            }
+                            _ => (Vec::new(), Vec::new()),
+                        })
+                        .unwrap_or_default();
+                    let source = crate::model::BodySource::Shelled {
+                        op,
+                        target,
+                        add,
+                        cut,
+                    };
                     if let Some(&bi) = existing.get(target) {
                         if let Some(body) = self.doc.bodies.get_mut(bi) {
                             body.source = source;

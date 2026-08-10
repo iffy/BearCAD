@@ -8151,6 +8151,72 @@ mod tests {
         assert_eq!(live.source.extrusion_indices(), [xkey(0), xkey(1)]);
     }
 
+    /// #1168: extruding off a face of a *shelled* body must merge into the hollow solid,
+    /// not re-grow a solid cuboid from the shadow primitive (which fills the cavity and
+    /// makes the shell look "gone").
+    #[test]
+    fn lua_extrude_merge_onto_shelled_cuboid_keeps_the_shell() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 40, depth = 30, height = 20 }
+            bearcad.shell{
+                bodies = {0},
+                faces = {{ kind = "primitive_face", primitive = 0, face = "top" }},
+                thickness = "2"
+            }
+            bearcad.begin_sketch{ kind = "primitive_face", primitive = 0, face = "side", edge = 0 }
+            bearcad.rect{ x = 5, y = 5, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15, body = "merge" }
+            "#,
+        );
+        assert_eq!(state.doc.shell_ops.len(), 1);
+        assert_eq!(state.doc.extrusions.len(), 1);
+        // Cuboid (shadowed by shell) + pure shelled (shadowed by fuse) + fused shelled+boss.
+        assert_eq!(
+            state.doc.bodies.len(),
+            3,
+            "primitive + shelled host + fuse-merge output"
+        );
+        let live: Vec<_> = state
+            .doc
+            .bodies
+            .iter()
+            .filter(|(_, b)| !b.shadow)
+            .collect();
+        assert_eq!(live.len(), 1, "exactly one live body, got {}", live.len());
+        let (live_bi, live) = live[0];
+        assert!(
+            matches!(
+                &live.source,
+                crate::model::BodySource::Shelled { add, cut, .. }
+                    if add.as_slice() == [xkey(0)] && cut.is_empty()
+            ),
+            "live body must be the shelled solid with the merged extrusion, got {:?}",
+            live.source
+        );
+        // The bug was a Solid{base: cuboid, add: extrusion} that refilled the cavity.
+        assert!(
+            state
+                .doc
+                .bodies
+                .values()
+                .all(|b| b.source.primitive_base().is_none() || b.shadow),
+            "no live Solid-with-primitive-base may steal the shell's place"
+        );
+        let shape = crate::extrude::occt_body_shape(&state.doc, live_bi)
+            .expect("shelled+boss kernel solid");
+        let v = shape.volume().expect("volume");
+        // Solid cuboid + boss = 40*30*20 + 10*10*15 = 25500. Hollow walls + boss is well under.
+        let solid_plus_boss = 40.0 * 30.0 * 20.0 + 10.0 * 10.0 * 15.0;
+        assert!(
+            v > 100.0 && v < solid_plus_boss - 1000.0,
+            "volume {v} should stay hollow (well under solid+boss {solid_plus_boss})"
+        );
+        // Pure shell (no boss) is still less than solid cuboid.
+        assert!(v < 40.0 * 30.0 * 20.0 + 10.0 * 10.0 * 15.0 * 0.5 + 500.0);
+    }
+
     /// #1104/#1106: extruding from a Shape-tool cuboid face with `body = "merge"` shadows
     /// the pure cuboid body and produces a new combined Solid as the extrusion's output.
     #[test]

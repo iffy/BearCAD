@@ -1343,11 +1343,19 @@ pub enum BodySource {
     /// The hollowed output of one input of a shell operation (Shell tool, #1156): `op`
     /// indexes `Document::shell_ops`, `target` is the input's position in the op's target
     /// list. The input body becomes a shadow body; this output carries the hollow solid.
+    /// Extrusions fused onto / cut from the hollow after shelling live in `add`/`cut`
+    /// (#1168) — same role as [`BodySource::Solid`]'s lists on a primitive base.
     Shelled {
         #[serde(rename = "shell_op")]
         op: ShellOpKey,
         #[serde(default)]
         target: usize,
+        /// Extrusions fused onto the hollow solid after shelling (#1168).
+        #[serde(default)]
+        add: Vec<ExtrusionKey>,
+        /// Extrusions cut from the hollow solid after shelling (#1168).
+        #[serde(default)]
+        cut: Vec<ExtrusionKey>,
     },
     /// The chamfered/filleted output of one input of an edge-treatment operation (#531): `op`
     /// indexes `Document::edge_treatment_ops`, `target` is the input's position within that
@@ -1401,7 +1409,7 @@ impl BodySource {
         match self {
             Self::Extrusion(index) => std::slice::from_ref(index),
             Self::Extrusions(indices) => indices.as_slice(),
-            Self::Solid { add, .. } => add.as_slice(),
+            Self::Solid { add, .. } | Self::Shelled { add, .. } => add.as_slice(),
             Self::Loft(_)
             | Self::Revolve(_)
             | Self::Primitive(_)
@@ -1411,7 +1419,6 @@ impl BodySource {
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
             | Self::Sliced { .. }
-            | Self::Shelled { .. }
             | Self::EdgeTreated { .. }
             | Self::UnitInstance(_)
             | Self::UnitCut { .. } => &[],
@@ -1420,10 +1427,10 @@ impl BodySource {
     }
 
     /// Extrusions **subtracted** (cut) from the body (#35). Empty for every non-`Solid`
-    /// form except a unit cut (#726).
+    /// form except a unit cut (#726) and a shelled body with post-shell cuts (#1168).
     pub fn cut_extrusion_indices(&self) -> &[ExtrusionKey] {
         match self {
-            Self::Solid { cut, .. } => cut.as_slice(),
+            Self::Solid { cut, .. } | Self::Shelled { cut, .. } => cut.as_slice(),
             Self::UnitCut { cut, .. } => cut.as_slice(),
             Self::Extrusion(_)
             | Self::Extrusions(_)
@@ -1437,7 +1444,6 @@ impl BodySource {
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
             | Self::Sliced { .. }
-            | Self::Shelled { .. }
             | Self::EdgeTreated { .. }
             | Self::UnitInstance(_) => &[],
         }
@@ -1477,7 +1483,7 @@ impl BodySource {
                 *self = Self::Extrusions(vec![*existing, extrusion]);
             }
             Self::Extrusions(indices) => indices.push(extrusion),
-            Self::Solid { add, .. } => add.push(extrusion),
+            Self::Solid { add, .. } | Self::Shelled { add, .. } => add.push(extrusion),
             // A primitive base takes its first added extrusion by becoming a `Solid` whose
             // base is that primitive (#1104); further adds push onto the list.
             Self::Primitive(pi) => {
@@ -1498,7 +1504,6 @@ impl BodySource {
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
             | Self::Sliced { .. }
-            | Self::Shelled { .. }
             | Self::EdgeTreated { .. }
             | Self::UnitInstance(_)
             | Self::UnitCut { .. } => {}
@@ -1523,7 +1528,7 @@ impl BodySource {
                     cut: vec![extrusion],
                 };
             }
-            Self::Solid { cut, .. } => cut.push(extrusion),
+            Self::Solid { cut, .. } | Self::Shelled { cut, .. } => cut.push(extrusion),
             // A primitive base takes its first cut by becoming a `Solid` whose base is that
             // primitive (#1104); the cut list starts with this extrusion.
             Self::Primitive(pi) => {
@@ -1545,7 +1550,6 @@ impl BodySource {
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
             | Self::Sliced { .. }
-            | Self::Shelled { .. }
             | Self::EdgeTreated { .. }
             | Self::UnitInstance(_) => {}
         }
@@ -1583,6 +1587,11 @@ impl BodySource {
                     }
                 }
             }
+            // Shelled keeps its form; empty add/cut is the pure hollow (#1168).
+            Self::Shelled { add, cut, .. } => {
+                add.retain(|&ei| ei != extrusion);
+                cut.retain(|&ei| ei != extrusion);
+            }
             // A unit cut keeps its form with an empty list (#726): it then reads as the
             // intact unit; the sync pass re-shadows accordingly.
             Self::UnitCut { cut, .. } => {
@@ -1599,7 +1608,6 @@ impl BodySource {
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
             | Self::Sliced { .. }
-            | Self::Shelled { .. }
             | Self::EdgeTreated { .. }
             | Self::UnitInstance(_) => {}
         }
@@ -1622,7 +1630,9 @@ impl BodySource {
         match self {
             Self::Extrusion(e) => Some(*e),
             Self::Extrusions(indices) => indices.last().copied(),
-            Self::Solid { add, cut, .. } => add.last().copied().or_else(|| cut.last().copied()),
+            Self::Solid { add, cut, .. } | Self::Shelled { add, cut, .. } => {
+                add.last().copied().or_else(|| cut.last().copied())
+            }
             _ => None,
         }
     }
@@ -1669,6 +1679,19 @@ impl BodySource {
                 }
                 Some(Self::Solid {
                     base: *base,
+                    add,
+                    cut,
+                })
+            }
+            // Peel the last fused extrusion; pure hollow when add and cut are empty (#1168).
+            Self::Shelled { op, target, add, cut } => {
+                let add: Vec<ExtrusionKey> =
+                    add.iter().copied().filter(|&e| e != extrusion).collect();
+                let cut: Vec<ExtrusionKey> =
+                    cut.iter().copied().filter(|&e| e != extrusion).collect();
+                Some(Self::Shelled {
+                    op: *op,
+                    target: *target,
                     add,
                     cut,
                 })
@@ -1784,22 +1807,57 @@ pub fn body_index_for_face(doc: &Document, face: &FaceId) -> Option<BodyKey> {
     }
 }
 
-/// The body built on primitive shape `primitive` (#909/#1104): either a pure
-/// [`BodySource::Primitive`] body or a [`BodySource::Solid`] whose `base` is that shape
-/// after an extrusion was added to / cut from it. Prefers a live body when fuse-merge
-/// left the pure primitive as a shadow (#1106).
-pub fn body_index_for_primitive(doc: &Document, primitive: PrimitiveKey) -> Option<BodyKey> {
-    let mut shadow = None;
-    for (key, body) in doc.bodies.iter() {
-        if body.source.primitive_base() != Some(primitive) {
-            continue;
-        }
-        if !body.shadow {
-            return Some(key);
-        }
-        shadow.get_or_insert(key);
+/// Whether this body source ultimately derives from Shape-tool primitive `primitive`
+/// (#1168): pure primitive, solid-with-that-base, or a shell (or further shell) of such.
+fn source_derives_from_primitive(
+    doc: &Document,
+    source: &BodySource,
+    primitive: PrimitiveKey,
+) -> bool {
+    match source {
+        BodySource::Primitive(p) => *p == primitive,
+        BodySource::Solid {
+            base: Some(p), ..
+        } => *p == primitive,
+        BodySource::Shelled { op, target, .. } => doc
+            .shell_ops
+            .get(*op)
+            .and_then(|o| o.targets.get(*target).copied())
+            .and_then(|bi| doc.bodies.get(bi))
+            .is_some_and(|b| source_derives_from_primitive(doc, &b.source, primitive)),
+        _ => false,
     }
-    shadow
+}
+
+/// The body built on primitive shape `primitive` (#909/#1104): a pure
+/// [`BodySource::Primitive`] body, a [`BodySource::Solid`] whose `base` is that shape,
+/// or a live [`BodySource::Shelled`] hollow of either (#1168). Prefers a live body when
+/// fuse-merge / shell left the pure primitive as a shadow (#1106); among several live
+/// matches, the fuse-chain leaf (not a host of another match).
+pub fn body_index_for_primitive(doc: &Document, primitive: PrimitiveKey) -> Option<BodyKey> {
+    let matches: Vec<(BodyKey, bool)> = doc
+        .bodies
+        .iter()
+        .filter(|(_, b)| source_derives_from_primitive(doc, &b.source, primitive))
+        .map(|(k, b)| (k, b.shadow))
+        .collect();
+    let live: Vec<BodyKey> = matches
+        .iter()
+        .filter(|(_, shadow)| !shadow)
+        .map(|(k, _)| *k)
+        .collect();
+    // Prefer the fuse-chain leaf: a live body that is not the fuse host of another match.
+    if let Some(&leaf) = live.iter().find(|&&k| {
+        !live
+            .iter()
+            .any(|&other| other != k && fuse_host_of(doc, other) == Some(k))
+    }) {
+        return Some(leaf);
+    }
+    if let Some(&k) = live.first() {
+        return Some(k);
+    }
+    matches.first().map(|(k, _)| *k)
 }
 
 /// Body index whose source is `revolution` (#621) — the revolve analogue of
@@ -5357,6 +5415,75 @@ mod tests {
         let missing = sketch_key_for_slot(99);
         assert_eq!(effective_length_unit(&doc, missing), LengthUnit::Mm);
         assert_eq!(effective_angle_unit(&doc, missing), AngleUnit::Deg);
+    }
+
+    /// #1168: a shell output of a cuboid is the live body for that primitive's faces —
+    /// not the shadow primitive input. Append/cut on Shelled record the fused extrusions.
+    #[test]
+    fn shelled_body_owns_primitive_faces_and_takes_fused_extrusions() {
+        let pi = PrimitiveKey::from_bits(1);
+        let ei = ExtrusionKey::from_bits(2);
+        let mut doc = Document::default();
+        let input = doc.bodies.insert(Body {
+            source: BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: true,
+        });
+        let op = doc.shell_ops.insert(ShellOperation {
+            targets: vec![input],
+            open_faces: Vec::new(),
+            thickness: "1".to_string(),
+            outputs: Vec::new(),
+            name: None,
+        });
+        let out = doc.bodies.insert(Body {
+            source: BodySource::Shelled {
+                op,
+                target: 0,
+                add: Vec::new(),
+                cut: Vec::new(),
+            },
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        doc.shell_ops[op].outputs = vec![out];
+
+        assert_eq!(
+            body_index_for_primitive(&doc, pi),
+            Some(out),
+            "live shelled body owns the cuboid's faces, not the shadow input"
+        );
+
+        let mut src = BodySource::Shelled {
+            op,
+            target: 0,
+            add: Vec::new(),
+            cut: Vec::new(),
+        };
+        src.append_extrusion(ei);
+        assert_eq!(src.extrusion_indices(), [ei]);
+        assert!(src.cut_extrusion_indices().is_empty());
+        assert_eq!(src.producing_extrusion(), Some(ei));
+        assert_eq!(
+            src.predecessor_source(ei),
+            Some(BodySource::Shelled {
+                op,
+                target: 0,
+                add: Vec::new(),
+                cut: Vec::new(),
+            })
+        );
+        let mut cut_src = BodySource::Shelled {
+            op,
+            target: 0,
+            add: Vec::new(),
+            cut: Vec::new(),
+        };
+        cut_src.append_cut_extrusion(ei);
+        assert_eq!(cut_src.cut_extrusion_indices(), [ei]);
+        assert!(cut_src.extrusion_indices().is_empty());
     }
 
     /// #1104: adding/cutting an extrusion on a Shape-tool body turns Primitive into Solid
