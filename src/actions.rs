@@ -1994,7 +1994,7 @@ pub enum Action {
     AddParameter { name: String, expression: String },
     /// Flip a parameter's primary/secondary flag (#727): primary parameters are the
     /// knobs an importing file is offered first; advisory only. UI: gear-options
-    /// **Primary** checkbox (#1176).
+    /// **Private** checkbox (#1176/#1180) — checked = secondary (`primary: false`).
     SetParameterPrimary { index: crate::model::ParameterKey, primary: bool },
     /// Set or clear a parameter's minimum / maximum / step expression (#1176).
     /// `expression: None` (or empty) clears the bound.
@@ -9353,7 +9353,7 @@ impl AppState {
                 self.status = format!(
                     "{} is now {}",
                     param.name,
-                    if primary { "primary" } else { "secondary" }
+                    if primary { "public" } else { "private" }
                 );
                 ActionResult::Ok
             }

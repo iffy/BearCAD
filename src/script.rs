@@ -1788,8 +1788,9 @@ impl Instruction {
             Instruction::SetParameterExpression { index, expression } => {
                 format!("bearcad.parameter(\"value\", {index}, {expression:?})")
             }
+            // #1180: script surface is `private` (inverse of stored primary).
             Instruction::SetParameterPrimary { index, primary } => {
-                format!("bearcad.parameter(\"primary\", {index}, {primary})")
+                format!("bearcad.parameter(\"private\", {index}, {})", !primary)
             }
             Instruction::SetParameterBound { index, which, expression } => {
                 let action = which.label();

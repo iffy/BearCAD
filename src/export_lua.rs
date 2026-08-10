@@ -46,7 +46,8 @@ pub fn document_to_lua(doc: &Document) -> String {
                 out.push('\n');
                 let index = free_ordinal;
                 free_ordinal += 1;
-                // #1176: options (primary, min, max, step) after the add.
+                // #1176/#1180: options (private, min, max, step) after the add.
+                // Emitted as `parameter("private", …)` — inverse of stored `primary`.
                 let default_primary =
                     crate::parameters::new_parameter_primary_default(&param.expression);
                 if param.primary != default_primary {

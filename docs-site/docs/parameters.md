@@ -20,16 +20,16 @@ at once):
 
 - **Min**, **Max**, **Step** — optional expressions. Unit kind (length vs angle) comes
   from the default value. Importers must stay within these.
-- **Primary** — checked = a knob someone
-  [importing this file](/docs/files#importing-bearcad-files) is meant to change;
-  unchecked = secondary/internal. Advisory only. A new parameter starts primary when its
-  value is a plain number and secondary when it's an expression.
+- **Private** — checked = internal (hidden from
+  [import](/docs/files#importing-bearcad-files) by default); unchecked = a knob importers
+  are meant to change. Advisory only. A new parameter starts unchecked when its value is
+  a plain number and checked when it's an expression.
 
 ## An imported unit's parameters
 
 Select a [unit instance](/docs/files#importing-bearcad-files) and its parameters lead the
-pane under the instance's name — primary knobs first, with an **Internals** eye that
-reveals the secondary ones. You can't edit the unit's min/max/step/primary; you only
+pane under the instance's name — public knobs first, with an **Internals** eye that
+reveals the private ones. You can't edit the unit's min/max/step/private; you only
 **override** the value on that instance (snapped to step, clamped to min/max). With both
 min and max set, a **slider** sits above the value. Overridden values read gold; **✕**
 restores the part's own value.
@@ -115,7 +115,7 @@ exactly one **sketch** selected it becomes **Sketch units** — a per-sketch ove
 bearcad.parameter("add", "A", "5mm")
 bearcad.parameter("value", 0, "A + 5in")     -- edit parameter 0's expression
 bearcad.parameter("name", 0, "Len")
-bearcad.parameter("primary", 0, true)        -- front-door knob vs internal
+bearcad.parameter("private", 0, true)        -- hide from import (internal)
 bearcad.parameter("min", 0, "1mm")           -- optional bounds for importers
 bearcad.parameter("max", 0, "100mm")
 bearcad.parameter("step", 0, "0.5mm")

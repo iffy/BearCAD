@@ -3878,22 +3878,26 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     }
                     Ok(Value::Nil)
                 }
-                "primary" => {
+                // #1180: Private is the inverse of primary (true = secondary/hidden).
+                "private" => {
                     let index = match args.get(1) {
                         Some(Value::Integer(i)) => *i as usize,
                         Some(Value::Number(n)) => n.round() as usize,
-                        _ => return Err(mlua::Error::external("parameter primary requires index")),
+                        _ => return Err(mlua::Error::external("parameter private requires index")),
                     };
-                    let primary = match args.get(2) {
+                    let private = match args.get(2) {
                         Some(Value::Boolean(b)) => *b,
                         _ => {
                             return Err(mlua::Error::external(
-                                "parameter primary requires true/false",
+                                "parameter private requires true/false",
                             ))
                         }
                     };
                     unsafe {
-                        tick.exec(Instruction::SetParameterPrimary { index, primary })?;
+                        tick.exec(Instruction::SetParameterPrimary {
+                            index,
+                            primary: !private,
+                        })?;
                     }
                     Ok(Value::Nil)
                 }
@@ -10123,23 +10127,24 @@ mod tests {
         assert_eq!(state.doc.extrusions[xkey(0)].expression, "d");
     }
 
-    /// #1176: parameter min/max/step and primary are scriptable.
+    /// #1176/#1180: parameter min/max/step and private are scriptable.
+    /// `private true` hides the knob (secondary); default plain value is public.
     #[test]
-    fn lua_parameter_bounds_and_primary() {
+    fn lua_parameter_bounds_and_private() {
         let state = run_lua(
             r#"
             bearcad.parameter("add", "width", "10mm")
             bearcad.parameter("min", 0, "5mm")
             bearcad.parameter("max", 0, "50mm")
             bearcad.parameter("step", 0, "2.5mm")
-            bearcad.parameter("primary", 0, false)
+            bearcad.parameter("private", 0, true)
             "#,
         );
         let p = state.doc.parameters.values().next().unwrap();
         assert_eq!(p.minimum.as_deref(), Some("5mm"));
         assert_eq!(p.maximum.as_deref(), Some("50mm"));
         assert_eq!(p.step.as_deref(), Some("2.5mm"));
-        assert!(!p.primary);
+        assert!(!p.primary, "private true ⇒ secondary");
         let state = run_lua(
             r#"
             bearcad.parameter("add", "width", "10mm")

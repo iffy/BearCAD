@@ -1209,11 +1209,11 @@ pub fn try_commit_inline_parameter_definition(
     Ok(Some(InlineParameterCommit::Created(name)))
 }
 
-/// The `primary` flag a **newly created** parameter starts with (#727): primary when the
-/// expression is a plain self-contained value (a bare number, with or without a unit — a
-/// knob someone is meant to turn), secondary when it references anything else (derived,
-/// usually internal). Computed once at creation; re-computing on later edits would fight
-/// the user's own toggle.
+/// The `primary` flag a **newly created** parameter starts with (#727/#1180): primary
+/// (Private **unchecked**) when the expression is a plain self-contained value (a bare
+/// number, with or without a unit — a knob someone is meant to turn), secondary (Private
+/// checked) when it references anything else (derived, usually internal). Computed once
+/// at creation; re-computing on later edits would fight the user's own toggle.
 pub fn new_parameter_primary_default(expression: &str) -> bool {
     crate::value::eval_length_mm(expression).is_some()
         || crate::value::eval_angle_rad(expression).is_some()
@@ -1824,10 +1824,10 @@ fn show_unit_parameters_section(ui: &mut egui::Ui, app: &mut AppState) {
     }
 }
 
-/// Min / max / step fields plus the Primary checkbox for one parameter's gear-options
-/// panel (#1176). Indented under the parameter name with a tree gutter (#1178). Commits
-/// queue into `set_primary` / `set_bound` so the caller can apply them after the grid
-/// borrow ends. Bound fields commit on Enter **and** on blur (#1179).
+/// Min / max / step fields plus the Private checkbox for one parameter's gear-options
+/// panel (#1176/#1180). Indented under the parameter name with a tree gutter (#1178).
+/// Commits queue into `set_primary` / `set_bound` so the caller can apply them after the
+/// grid borrow ends. Bound fields commit on Enter **and** on blur (#1179).
 fn show_parameter_options_fields(
     ui: &mut egui::Ui,
     app: &mut AppState,
@@ -1842,7 +1842,7 @@ fn show_parameter_options_fields(
 ) {
     use egui::{pos2, Stroke, TextEdit};
 
-    // Tree rows under the parameter name (#1178): Primary, Min, Max, Step.
+    // Tree rows under the parameter name (#1178): Private, Min, Max, Step.
     // The gutter is a vertical line that turns a corner on the last row.
     const GUTTER: f32 = 12.0;
     let bounds: [(ParameterBound, &Option<String>, &str); 3] = [
@@ -1850,7 +1850,7 @@ fn show_parameter_options_fields(
         (ParameterBound::Maximum, maximum, "Max"),
         (ParameterBound::Step, step, "Step"),
     ];
-    let n_rows = 1 + bounds.len(); // Primary + bounds
+    let n_rows = 1 + bounds.len(); // Private + bounds
     let stroke = Stroke::new(
         1.0,
         ui.visuals().widgets.noninteractive.fg_stroke.color.gamma_multiply(0.45),
@@ -1885,14 +1885,16 @@ fn show_parameter_options_fields(
             painter.line_segment([pos2(x, mid_y), pos2(gutter_rect.right() - 1.0, mid_y)], stroke);
 
             if row_i == 0 {
-                let mut primary_flag = primary;
-                let resp = ui.checkbox(&mut primary_flag, "Primary");
-                crate::context::note_help_rect(ui, "Primary", resp.rect);
+                // #1180: Private is the inverse of primary — checked = secondary/hidden
+                // from import; unchecked = public (default for plain-value new params).
+                let mut private_flag = !primary;
+                let resp = ui.checkbox(&mut private_flag, "Private");
+                crate::context::note_help_rect(ui, "Private", resp.rect);
                 if resp.changed() {
-                    *set_primary = Some((index, primary_flag));
+                    *set_primary = Some((index, !private_flag));
                 }
                 resp.on_hover_text(
-                    "Offered first when this file is imported. Unchecked = internal (secondary).",
+                    "Checked = internal (hidden from import by default). Unchecked = offered first when this file is imported.",
                 );
             } else {
                 let (which, current, label) = bounds[row_i - 1];
@@ -2163,7 +2165,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                             if options_open {
                                 "Hide parameter options"
                             } else {
-                                "Parameter options (min, max, step, primary)"
+                                "Parameter options (min, max, step, private)"
                             },
                         );
                         crate::context::note_help_rect(ui, "Parameter options", gear.rect);
@@ -2396,8 +2398,8 @@ mod tests {
         doc
     }
 
-    /// #727: a new parameter is primary when its expression is a plain self-contained
-    /// value, secondary when it references anything; derived parameters are secondary.
+    /// #727/#1180: a new parameter is public (Private unchecked) when its expression is a
+    /// plain self-contained value, private when it references anything.
     #[test]
     fn new_parameters_default_primary_from_their_expression() {
         let mut doc = Document::default();
@@ -2405,12 +2407,12 @@ mod tests {
         let with_unit = add_parameter(&mut doc, "gap".to_string(), "2.5mm".to_string()).unwrap();
         let angle = add_parameter(&mut doc, "tilt".to_string(), "45deg".to_string()).unwrap();
         let derived = add_parameter(&mut doc, "half".to_string(), "width / 2".to_string()).unwrap();
-        assert!(doc.parameters[plain].primary, "a bare number is a knob");
-        assert!(doc.parameters[with_unit].primary, "a number with a unit is a knob");
-        assert!(doc.parameters[angle].primary, "an angle literal is a knob");
+        assert!(doc.parameters[plain].primary, "a bare number is public (Private unchecked)");
+        assert!(doc.parameters[with_unit].primary, "a number with a unit is public");
+        assert!(doc.parameters[angle].primary, "an angle literal is public");
         assert!(
             !doc.parameters[derived].primary,
-            "an expression referencing another parameter is internal"
+            "an expression referencing another parameter is private"
         );
     }
 
@@ -2517,8 +2519,9 @@ mod tests {
         assert!((clamp_and_snap_value(&no_min, 11.0) - 9.0).abs() < 1e-4); // max 10, nearest step ≤10 is 9
     }
 
-    /// #727: the flag round-trips through save/load; a document saved without the field
-    /// (an existing file) loads secondary; the toggle action flips it.
+    /// #727/#1180: the flag round-trips through save/load; a document saved without the
+    /// field loads secondary (Private checked); the toggle action flips it. Plain-value
+    /// new params start public (Private unchecked).
     #[test]
     fn primary_flag_round_trips_and_defaults_secondary() {
         let mut state = AppState::default();
@@ -2527,13 +2530,16 @@ mod tests {
             expression: "10".to_string(),
         });
         let width = state.doc.parameters.keys().next().expect("the parameter");
-        assert!(state.doc.parameters[width].primary);
+        assert!(
+            state.doc.parameters[width].primary,
+            "plain value ⇒ public, Private unchecked by default (#1180)"
+        );
         let r = state.apply(crate::actions::Action::SetParameterPrimary {
             index: width,
             primary: false,
         });
         assert_eq!(r, crate::actions::ActionResult::Ok);
-        assert!(!state.doc.parameters[width].primary, "the toggle flips it");
+        assert!(!state.doc.parameters[width].primary, "marking private flips primary off");
         state.apply(crate::actions::Action::SetParameterPrimary { index: width, primary: true });
 
         let path = std::env::temp_dir().join("bearcad_primary_roundtrip.bearcad");

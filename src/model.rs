@@ -214,8 +214,9 @@ pub struct Parameter {
     /// nothing is blocked either way. Existing documents load secondary (`default`); a
     /// newly created parameter is primary when its expression is a plain self-contained
     /// value and secondary when it references anything — computed once at creation
-    /// (see `new_parameter_primary_default`), never recomputed on edit. Toggled via the
-    /// gear-options **Primary** checkbox (#1176), not an eyeball.
+    /// (see `new_parameter_primary_default`), never recomputed on edit. UI toggles the
+    /// inverse via the gear-options **Private** checkbox (#1176/#1180): checked = this
+    /// flag false; plain-value new params start with Private unchecked.
     #[serde(default)]
     pub primary: bool,
     /// Optional minimum bound as an expression (#1176). Same unit kind as the default

@@ -361,18 +361,22 @@ fn run_parameter(
                 },
             )
         }
-        "primary" => {
+        // #1180: Private is the inverse of primary (true = secondary/hidden).
+        "private" => {
             let index = a
                 .get(1)
                 .and_then(Value::as_u64)
-                .ok_or("parameter primary requires index")? as usize;
-            let primary = a
+                .ok_or("parameter private requires index")? as usize;
+            let private = a
                 .get(2)
                 .and_then(Value::as_bool)
-                .ok_or("parameter primary requires true/false")?;
+                .ok_or("parameter private requires true/false")?;
             exec(
                 runner,
-                Instruction::SetParameterPrimary { index, primary },
+                Instruction::SetParameterPrimary {
+                    index,
+                    primary: !private,
+                },
                 state,
                 synthetic,
                 viewport,

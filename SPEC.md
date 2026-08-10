@@ -2658,12 +2658,14 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
 - A parameter has: name, expression (text), evaluated value, unit, optional
   description, and optional **minimum** / **maximum** / **step** expressions (#1176).
 - Parameter changes are DAG nodes (§4.1).
-- **Primary/secondary (#727/#1176):** `Parameter.primary` marks a file's front-door knobs —
-  what someone importing the file is expected to change (secondary = internals; advisory
-  only, nothing blocked). Toggled by the **Primary** checkbox in the per-row gear-options
-  panel (not an eyeball), scripted as `bearcad.parameter("primary", i, bool)`. Defaults:
-  existing documents load **secondary** (`serde(default)`); a **new** parameter is primary
-  iff its expression is a plain self-contained value (`new_parameter_primary_default`),
+- **Primary/secondary / Private (#727/#1176/#1180):** `Parameter.primary` marks a file's
+  front-door knobs — what someone importing the file is expected to change (secondary =
+  internals; advisory only, nothing blocked). UI toggles the **inverse** via the
+  **Private** checkbox in the per-row gear-options panel (not an eyeball): checked =
+  secondary, unchecked = primary. Scripted as `bearcad.parameter("private", i, bool)`
+  (`true` ⇒ secondary). Defaults: existing documents load **secondary**
+  (`serde(default)` on `primary`); a **new** parameter is primary (Private unchecked) iff
+  its expression is a plain self-contained value (`new_parameter_primary_default`),
   computed once at creation and never on later edits.
 - **Bounds (#1176):** `Parameter.minimum` / `maximum` / `step` are optional expressions
   (`Option<String>`, empty clears). Unit kind (length vs angle) follows the default
@@ -3538,7 +3540,7 @@ edit writes that instance's `parameter_overrides` (`Action::SetUnitParameterOver
 `bearcad.unit_override{ instance =, name =, value = }`; omitting `value` clears) — never
 the source file, never other instances. Overrides are clamp-and-snapped to the unit
 parameter's min/max/step; with both min and max set the row shows a **slider**. The
-importer cannot edit the unit's options (min/max/step/primary). Overridden values render
+importer cannot edit the unit's options (min/max/step/private). Overridden values render
 gold with a ✕ back to the unit's own value; help-mode text is keyed on "Unit
 parameters"/"Unit parameter"/"Override"/"Internals". Instances are also
 findable/selectable by name.

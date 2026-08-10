@@ -4321,9 +4321,10 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "The part's secondary parameters — internals its author didn't put at the \
              front door. The eye shows or hides them.",
         ),
-        "Primary" => Some(
-            "Whether this parameter is a knob for whoever imports this file: eye open — \
-             offered first; eye closed — an internal value. Nothing is blocked either way.",
+        "Private" => Some(
+            "When checked, this parameter is internal — hidden from import by default. \
+             Unchecked, it is a knob for whoever imports this file. Nothing is blocked \
+             either way.",
         ),
         "Library directory" => Some(
             "Where your reusable parts live. A document can import a file under this folder \
