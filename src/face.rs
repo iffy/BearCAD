@@ -244,6 +244,37 @@ pub fn sketch_frame(doc: &Document, face: FaceId) -> Option<SketchFrame> {
             let shape = doc.primitives.get(primitive)?;
             crate::primitives::face_frame(doc, shape, face)
         }
+        // Live mesh face (#1173): frame from the coplanar triangle group, normal matching
+        // the quantized key so a sketch on a shell's inner wall sits on that wall.
+        FaceId::BodyMeshFace {
+            body,
+            centroid,
+            normal,
+        } => {
+            let tris = crate::extrude::body_face_triangles(doc, body, centroid, normal)?;
+            if tris.is_empty() {
+                return None;
+            }
+            let mut n = (tris[0][1] - tris[0][0])
+                .cross(tris[0][2] - tris[0][0])
+                .normalize_or_zero();
+            if n.length_squared() < 1e-8 {
+                return None;
+            }
+            let key_n = crate::hierarchy::dequantize_body_point(normal).normalize_or_zero();
+            if n.dot(key_n) < 0.0 {
+                n = -n;
+            }
+            let origin = crate::extrude::face_group_center(&tris);
+            let u_axis = crate::primitives::plane_u_axis(n);
+            let v_axis = n.cross(u_axis).normalize_or_zero();
+            Some(SketchFrame {
+                origin,
+                u_axis,
+                v_axis,
+                normal: n,
+            })
+        }
     }
 }
 
@@ -731,7 +762,10 @@ pub fn sketch_camera_target(doc: &Document, sketch: SketchId) -> Option<SketchCa
                 zoom: Some(zoom),
             })
         }
-        FaceId::RevolveCap { .. } | FaceId::RevolveSide { .. } | FaceId::PrimitiveFace { .. } => {
+        FaceId::RevolveCap { .. }
+        | FaceId::RevolveSide { .. }
+        | FaceId::PrimitiveFace { .. }
+        | FaceId::BodyMeshFace { .. } => {
             let poly = match face {
                 FaceId::RevolveCap {
                     revolution,
@@ -750,6 +784,14 @@ pub fn sketch_camera_target(doc: &Document, sketch: SketchId) -> Option<SketchCa
                 FaceId::PrimitiveFace { primitive, face } => {
                     let shape = doc.primitives.get(primitive)?;
                     crate::primitives::face_polygon(doc, shape, face)?
+                }
+                FaceId::BodyMeshFace {
+                    body,
+                    centroid,
+                    normal,
+                } => {
+                    let tris = crate::extrude::body_face_triangles(doc, body, centroid, normal)?;
+                    tris.iter().flat_map(|t| t.iter().copied()).collect()
                 }
                 _ => unreachable!(),
             };
@@ -899,6 +941,13 @@ pub fn face_label(_doc: &Document, face: FaceId) -> String {
             };
             format!("Primitive {} {which} face", primitive.index())
         }
+        FaceId::BodyMeshFace { body, centroid, .. } => format!(
+            "Body {} face at ({:.3}, {:.3}, {:.3})",
+            body.index(),
+            centroid[0] as f32 / 1000.0,
+            centroid[1] as f32 / 1000.0,
+            centroid[2] as f32 / 1000.0
+        ),
     }
 }
 
@@ -974,7 +1023,8 @@ fn sketch_host_face(doc: &Document, face: &FaceId) -> Option<FaceId> {
         | FaceId::RevolveSide { .. }
         | FaceId::UnitFace { .. }
         | FaceId::PrimitiveFace { .. }
-        | FaceId::RepeatedFace { .. } => return None,
+        | FaceId::RepeatedFace { .. }
+        | FaceId::BodyMeshFace { .. } => return None,
     };
     doc.sketches.get(sketch).map(|s| s.face.clone())
 }
@@ -1004,6 +1054,114 @@ fn is_shell_open_face(doc: &Document, face: &FaceId) -> bool {
     doc.shell_ops
         .iter()
         .any(|(_, op)| op.open_faces.iter().any(|f| f == face))
+}
+
+/// Map a mesh face key (quantized centroid + normal) to an analytic [`FaceId`] on that body
+/// when one matches (#1156/#1173). Outer shell walls map back to their primitive/extrude
+/// faces; inner walls (and other non-analytic flats) return `None`.
+pub fn analytic_face_from_mesh(
+    doc: &Document,
+    body: crate::model::BodyKey,
+    centroid: [i32; 3],
+    normal: [i32; 3],
+) -> Option<FaceId> {
+    let q = crate::hierarchy::quantize_body_point;
+    for face in analytic_faces_of_body(doc, body) {
+        let Some(frame) = sketch_frame(doc, face.clone()) else {
+            continue;
+        };
+        let c = crate::extrude::face_boundary_loop_world(doc, &face)
+            .map(|pts| pts.iter().copied().sum::<Vec3>() / pts.len().max(1) as f32)
+            .unwrap_or(frame.origin);
+        let n = frame.normal.normalize_or_zero();
+        if q(c) == centroid && (q(n) == normal || q(-n) == normal) {
+            return Some(face);
+        }
+    }
+    None
+}
+
+/// Sketchable [`FaceId`] for a coplanar mesh-face triangle group under the cursor (#1173):
+/// the matching analytic face when one exists, else a [`FaceId::BodyMeshFace`] so shell
+/// inner walls (and other non-analytic flats) can host a sketch.
+fn sketch_face_id_for_mesh_group(
+    doc: &Document,
+    body: crate::model::BodyKey,
+    triangles: &[[Vec3; 3]],
+) -> Option<FaceId> {
+    if triangles.is_empty() {
+        return None;
+    }
+    let centroid = crate::extrude::face_group_center(triangles);
+    let normal = (triangles[0][1] - triangles[0][0])
+        .cross(triangles[0][2] - triangles[0][0])
+        .normalize_or_zero();
+    if normal.length_squared() < 1e-8 {
+        return None;
+    }
+    let q = crate::hierarchy::quantize_body_point;
+    let (qc, qn) = (q(centroid), q(normal));
+    if let Some(analytic) = analytic_face_from_mesh(doc, body, qc, qn) {
+        // Don't re-offer open faces the shell removed.
+        if !is_shell_open_face(doc, &analytic) {
+            return Some(analytic);
+        }
+    }
+    Some(FaceId::BodyMeshFace {
+        body,
+        centroid: qc,
+        normal: qn,
+    })
+}
+
+/// Screen-space pick of a body mesh face group: 0 when the cursor is inside any projected
+/// triangle, else the min edge distance — plus the world point under the cursor for depth.
+fn mesh_face_pick_distance(
+    screen: eframe::egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<eframe::egui::Pos2>,
+    triangles: &[[Vec3; 3]],
+) -> Option<(f32, Vec3)> {
+    if triangles.is_empty() {
+        return None;
+    }
+    let mut best_dist = f32::MAX;
+    let mut at = crate::extrude::face_group_center(triangles);
+    let mut inside = false;
+    for tri in triangles {
+        let (Some(a), Some(b), Some(c)) = (project(tri[0]), project(tri[1]), project(tri[2]))
+        else {
+            continue;
+        };
+        if point_in_tri(screen, a, b, c) {
+            inside = true;
+            // Barycentric world point under the cursor.
+            let area = (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
+            if area.abs() > 1e-6 {
+                let w0 = ((b.x - screen.x) * (c.y - screen.y)
+                    - (c.x - screen.x) * (b.y - screen.y))
+                    / area;
+                let w1 = ((c.x - screen.x) * (a.y - screen.y)
+                    - (a.x - screen.x) * (c.y - screen.y))
+                    / area;
+                let w2 = 1.0 - w0 - w1;
+                if w0 >= -1e-4 && w1 >= -1e-4 && w2 >= -1e-4 {
+                    at = tri[0] * w0 + tri[1] * w1 + tri[2] * w2;
+                }
+            }
+            best_dist = 0.0;
+            break;
+        }
+        let edge = dist_point_to_segment_px(screen, a, b)
+            .min(dist_point_to_segment_px(screen, b, c))
+            .min(dist_point_to_segment_px(screen, c, a));
+        if edge < best_dist {
+            best_dist = edge;
+        }
+    }
+    if !inside && best_dist == f32::MAX {
+        return None;
+    }
+    Some((if inside { 0.0 } else { best_dist }, at))
 }
 
 fn centroid(points: &[Vec3]) -> Vec3 {
@@ -1367,6 +1525,54 @@ pub fn pick_sketch_face(
         }
     }
 
+    // Live mesh faces of every body (#1173): a shell's inner wall, a boolean face, an
+    // imported flat — anything that has no (or a different) analytic identity. Ranked by
+    // the same screen-distance + eye-depth rules as the analytics above, so the surface
+    // under the cursor nearest the camera wins over a parallel outer face behind it.
+    // Bounds-reject bodies first so a large document does not walk every mesh every frame.
+    let bounds = crate::extrude::body_world_bounds_all(doc);
+    for (bi, body) in doc.bodies.iter() {
+        if body.shadow {
+            continue;
+        }
+        if !bounds.get(&bi).copied().flatten().is_some_and(|b| {
+            crate::construction::screen_bounds_hit(screen, project, b, 0.0)
+        }) {
+            continue;
+        }
+        let group_bounds = crate::extrude::body_face_group_bounds(doc, bi);
+        let groups = crate::extrude::body_face_groups(doc, bi);
+        for (gi, triangles) in groups.iter().enumerate() {
+            // Cylindrical walls are not sketchable flats.
+            if crate::extrude::fit_cylinder(triangles).is_some() {
+                continue;
+            }
+            if !group_bounds.get(gi).is_some_and(|b| {
+                crate::construction::screen_bounds_hit(screen, project, *b, 0.0)
+            }) {
+                continue;
+            }
+            let Some((dist, c)) = mesh_face_pick_distance(screen, project, triangles) else {
+                continue;
+            };
+            let Some(candidate) = sketch_face_id_for_mesh_group(doc, bi, triangles) else {
+                continue;
+            };
+            if sketch_shadows(&shadowed_hosts, &candidate, dist) {
+                continue;
+            }
+            consider_face_pick_sized(
+                &mut best,
+                FacePick {
+                    face: candidate,
+                    dist,
+                    depth: depth(c),
+                    area: f32::INFINITY,
+                },
+            );
+        }
+    }
+
     best.map(|pick| pick.face)
 }
 
@@ -1493,6 +1699,28 @@ pub fn sketch_faces_near(
             };
             if let Some((dist, c)) = polygon_face_pick_distance(screen, project, &poly) {
                 push(FaceId::PrimitiveFace { primitive: pi, face }, c, dist);
+            }
+        }
+    }
+    // Live mesh faces (#1173): shell inners and other non-analytic flats, so the Selection
+    // Exploder can fan them out when more than one surface sits under the cursor.
+    for (bi, body) in doc.bodies.iter() {
+        if body.shadow {
+            continue;
+        }
+        for triangles in crate::extrude::body_face_groups(doc, bi).iter() {
+            if crate::extrude::fit_cylinder(triangles).is_some() {
+                continue;
+            }
+            let Some((dist, c)) = mesh_face_pick_distance(screen, project, triangles) else {
+                continue;
+            };
+            let Some(candidate) = sketch_face_id_for_mesh_group(doc, bi, triangles) else {
+                continue;
+            };
+            // Analytic faces already pushed above — don't double-list the same outer wall.
+            if matches!(candidate, FaceId::BodyMeshFace { .. }) {
+                push(candidate, c, dist);
             }
         }
     }
@@ -2193,6 +2421,105 @@ mod tests {
             matches!(face, Some(FaceId::ExtrudeSide { extrusion, .. }) if extrusion == xkey(0)),
             "clicking a side wall should pick it, got {face:?}"
         );
+    }
+
+    /// #1173: looking into a hollowed cuboid at the inner back wall must pick that wall, not
+    /// the outer face of the same wall buried a thickness behind it along the pick ray.
+    #[test]
+    fn pick_sketch_face_prefers_shell_inner_wall_over_outer_behind_it() {
+        use crate::model::{
+            Body, BodySource, Primitive, PrimitiveFace, PrimitiveKind, ShellOperation,
+        };
+        // Real shell via OCCT — 40³ cuboid, open +Y side and top, 4 mm walls.
+        // Outer back wall at y = −20 (normal −Y); inner back wall at y = −16 (normal +Y).
+        let mut doc = Document::default();
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.width = "40".to_string();
+        shape.depth = "40".to_string();
+        shape.height = "40".to_string();
+        let pi = doc.primitives.insert(shape);
+        let input = doc.bodies.insert(Body {
+            source: BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: true,
+        });
+        let open_top = FaceId::PrimitiveFace {
+            primitive: pi,
+            face: PrimitiveFace::CuboidTop,
+        };
+        let open_side = FaceId::PrimitiveFace {
+            primitive: pi,
+            face: PrimitiveFace::CuboidSide { edge: 2 },
+        };
+        let op = doc.shell_ops.insert(ShellOperation {
+            targets: vec![input],
+            open_faces: vec![open_top, open_side],
+            thickness: "4".to_string(),
+            outputs: Vec::new(),
+            name: None,
+        });
+        let out = doc.bodies.insert(Body {
+            source: BodySource::Shelled {
+                op,
+                target: 0,
+                add: Vec::new(),
+                cut: Vec::new(),
+            },
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        doc.shell_ops[op].outputs = vec![out];
+        // Kernel must produce the hollow mesh for body face groups.
+        assert!(
+            crate::extrude::body_solid_mesh(&doc, out).is_some_and(|m| !m.triangles.is_empty()),
+            "shelled body must tessellate"
+        );
+
+        // Looking along −Y into the open side: screen is XZ.
+        let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.z));
+        let eye = Vec3::new(0.0, 100.0, 20.0);
+        // Cursor at the middle of the back wall.
+        let hit = pick_sketch_face(eframe::egui::pos2(0.0, 20.0), &project, &doc, eye)
+            .expect("inner back wall under cursor should pick a face");
+        let outer_back = FaceId::PrimitiveFace {
+            primitive: pi,
+            face: PrimitiveFace::CuboidSide { edge: 0 },
+        };
+        assert_ne!(
+            hit, outer_back,
+            "must not pick the outer back face behind the cavity wall"
+        );
+        // The front surface is the mesh inner wall: either BodyMeshFace near y = −16, or at
+        // least a face whose frame sits closer to the eye than the outer wall.
+        let frame = sketch_frame(&doc, hit.clone()).expect("picked face has a frame");
+        let outer_frame = sketch_frame(&doc, outer_back).expect("outer face frame");
+        let hit_depth = (frame.origin - eye).length();
+        let outer_depth = (outer_frame.origin - eye).length();
+        assert!(
+            hit_depth < outer_depth - 1.0,
+            "picked face origin {frame:?} should be closer to the eye than outer {outer_frame:?} \
+             (depths {hit_depth} vs {outer_depth})"
+        );
+        match hit {
+            FaceId::BodyMeshFace { body, .. } => {
+                assert_eq!(body, out, "mesh face belongs to the shelled body");
+            }
+            other => {
+                // Analytic is fine only if it is not the outer wall (e.g. a future inner id).
+                assert!(
+                    !matches!(
+                        other,
+                        FaceId::PrimitiveFace {
+                            face: PrimitiveFace::CuboidSide { edge: 0 },
+                            ..
+                        }
+                    ),
+                    "unexpected pick {other:?}"
+                );
+            }
+        }
     }
 
     /// #1103: a cuboid drawn by the Shape tool (a primitive, no sketch behind it) has the

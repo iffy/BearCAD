@@ -826,6 +826,8 @@ pub fn face_element(face: FaceId) -> SceneElement {
             op,
             instance,
         },
+        // A sketch on a mesh face depends on the body that owns the mesh (#1173).
+        FaceId::BodyMeshFace { body, .. } => SceneElement::Body(body),
     }
 }
 

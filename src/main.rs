@@ -20497,7 +20497,8 @@ fn pick_extrude_face(
         | FaceId::RevolveSide { .. }
         | FaceId::UnitFace { .. }
         | FaceId::PrimitiveFace { .. }
-        | FaceId::RepeatedFace { .. }) => {
+        | FaceId::RepeatedFace { .. }
+        | FaceId::BodyMeshFace { .. }) => {
             // A sketch drawn on this face may have ruled it into regions (#993) — lines across
             // a box's cap read as separate faces to anyone looking at them. Offer the one under
             // the cursor; with no such division there is nothing here but the face itself, and
@@ -22005,6 +22006,30 @@ fn draw_face_highlight(
         FaceId::RepeatedFace { .. } => {
             if let Some(poly) = extrude::face_boundary_loop_world(doc, &face) {
                 draw_polygon_face_highlight(painter, project, &poly, color);
+            }
+        }
+        // A live mesh face (#1173): fill from its coplanar triangles.
+        FaceId::BodyMeshFace {
+            body,
+            centroid,
+            normal,
+        } => {
+            if let Some(tris) = extrude::body_face_triangles(doc, body, centroid, normal) {
+                if let Some(poly) = extrude::face_boundary_loop_world(
+                    doc,
+                    &FaceId::BodyMeshFace {
+                        body,
+                        centroid,
+                        normal,
+                    },
+                ) {
+                    draw_polygon_face_highlight(painter, project, &poly, color);
+                } else {
+                    // Fall back to drawing each triangle if no boundary loop.
+                    for tri in &tris {
+                        draw_polygon_face_highlight(painter, project, tri, color);
+                    }
+                }
             }
         }
     }

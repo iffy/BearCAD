@@ -72,6 +72,16 @@ pub enum FaceId {
         #[serde(default)]
         instance: usize,
     },
+    /// A planar face of a body's **live solid mesh** (#1173): keyed like
+    /// [`crate::hierarchy::SceneElement::BodyFace`] (quantized centroid + normal). Hosts a
+    /// sketch on surfaces that have no analytic identity — a shell's inner wall, a boolean
+    /// face, an imported flat — so the face under the cursor wins over a parallel outer face
+    /// buried behind it along the pick ray.
+    BodyMeshFace {
+        body: BodyKey,
+        centroid: [i32; 3],
+        normal: [i32; 3],
+    },
 }
 
 /// Which flat face of a primitive shape a [`FaceId::PrimitiveFace`] names (#1103).
@@ -131,7 +141,8 @@ impl FaceId {
             | FaceId::RevolveSide { .. }
             | FaceId::UnitFace { .. }
             | FaceId::PrimitiveFace { .. }
-            | FaceId::RepeatedFace { .. } => None,
+            | FaceId::RepeatedFace { .. }
+            | FaceId::BodyMeshFace { .. } => None,
         }
     }
 
@@ -1804,6 +1815,7 @@ pub fn body_index_for_face(doc: &Document, face: &FaceId) -> Option<BodyKey> {
             let idx = instance.checked_sub(1)?;
             rep.outputs.get(idx).copied()
         }
+        FaceId::BodyMeshFace { body, .. } => Some(*body),
     }
 }
 
@@ -1840,6 +1852,7 @@ pub fn face_belongs_to_body(doc: &Document, face: &FaceId, body: BodyKey) -> boo
             _ => false,
         },
         FaceId::RepeatedFace { .. } => body_index_for_face(doc, face) == Some(body),
+        FaceId::BodyMeshFace { body: b, .. } => *b == body,
         FaceId::UnitFace { .. }
         | FaceId::ConstructionPlane(_)
         | FaceId::Circle(_)

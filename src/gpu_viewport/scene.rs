@@ -3247,8 +3247,12 @@ impl<'a> SceneMesh<'a> {
                     self.push_triangle(lift(quad[0]), lift(quad[2]), lift(quad[3]), fill);
                 }
             }
-            FaceId::RevolveCap { .. } | FaceId::RevolveSide { .. } | FaceId::UnitFace { .. }
-            | FaceId::PrimitiveFace { .. } | FaceId::RepeatedFace { .. } => {
+            FaceId::RevolveCap { .. }
+            | FaceId::RevolveSide { .. }
+            | FaceId::UnitFace { .. }
+            | FaceId::PrimitiveFace { .. }
+            | FaceId::RepeatedFace { .. }
+            | FaceId::BodyMeshFace { .. } => {
                 let poly = match face {
                     FaceId::RevolveCap {
                         revolution,
@@ -3271,7 +3275,7 @@ impl<'a> SceneMesh<'a> {
                             .get(primitive)
                             .and_then(|shape| crate::primitives::face_polygon(doc, shape, face))
                     }
-                    FaceId::RepeatedFace { .. } => {
+                    FaceId::RepeatedFace { .. } | FaceId::BodyMeshFace { .. } => {
                         crate::extrude::face_boundary_loop_world(doc, &face)
                     }
                     _ => None,
@@ -3508,8 +3512,12 @@ impl<'a> SceneMesh<'a> {
                     }
                 }
             }
-            FaceId::RevolveCap { .. } | FaceId::RevolveSide { .. } | FaceId::UnitFace { .. }
-            | FaceId::PrimitiveFace { .. } | FaceId::RepeatedFace { .. } => {
+            FaceId::RevolveCap { .. }
+            | FaceId::RevolveSide { .. }
+            | FaceId::UnitFace { .. }
+            | FaceId::PrimitiveFace { .. }
+            | FaceId::RepeatedFace { .. }
+            | FaceId::BodyMeshFace { .. } => {
                 let poly = match face {
                     FaceId::RevolveCap {
                         revolution,
@@ -3532,7 +3540,7 @@ impl<'a> SceneMesh<'a> {
                             .get(primitive)
                             .and_then(|shape| crate::primitives::face_polygon(doc, shape, face))
                     }
-                    FaceId::RepeatedFace { .. } => {
+                    FaceId::RepeatedFace { .. } | FaceId::BodyMeshFace { .. } => {
                         crate::extrude::face_boundary_loop_world(doc, &face)
                     }
                     _ => None,

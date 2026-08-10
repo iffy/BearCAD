@@ -7081,6 +7081,26 @@ pub fn face_boundary_loop_world(doc: &Document, face: &FaceId) -> Option<Vec<Vec
             let shape = doc.primitives.get(*primitive)?;
             crate::primitives::face_polygon(doc, shape, *face)
         }
+        FaceId::BodyMeshFace {
+            body,
+            centroid,
+            normal,
+        } => {
+            let tris = body_face_triangles(doc, *body, *centroid, *normal)?;
+            // Unique vertices in visit order — enough for a sketch frame / highlight.
+            let mut pts = Vec::new();
+            for t in &tris {
+                for &p in t {
+                    if pts
+                        .iter()
+                        .all(|q: &Vec3| (*q - p).length_squared() > 1e-8)
+                    {
+                        pts.push(p);
+                    }
+                }
+            }
+            (pts.len() >= 3).then_some(pts)
+        }
     }
 }
 

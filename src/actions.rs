@@ -6587,25 +6587,7 @@ fn shell_face_from_body_face(
     centroid: [i32; 3],
     normal: [i32; 3],
 ) -> Option<crate::model::FaceId> {
-    let q = crate::hierarchy::quantize_body_point;
-    for face in crate::face::analytic_faces_of_body(doc, body) {
-        let Some(frame) = crate::face::sketch_frame(doc, face.clone()) else {
-            continue;
-        };
-        // Prefer a true geometric centre when we have a boundary loop.
-        let c = crate::extrude::face_boundary_loop_world(doc, &face)
-            .map(|pts| pts.iter().copied().sum::<glam::Vec3>() / pts.len().max(1) as f32)
-            .unwrap_or(frame.origin);
-        let n = frame.normal.normalize_or_zero();
-        if q(c) == centroid && q(n) == normal {
-            return Some(face);
-        }
-        // Normal may flip depending on frame orientation — accept either direction.
-        if q(c) == centroid && q(-n) == normal {
-            return Some(face);
-        }
-    }
-    None
+    crate::face::analytic_face_from_mesh(doc, body, centroid, normal)
 }
 
 /// Shared validation for creating/editing a shell operation (#1156).

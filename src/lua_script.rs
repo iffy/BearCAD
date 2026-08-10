@@ -1799,6 +1799,7 @@ fn face_kind_name(face: &FaceId) -> &'static str {
         FaceId::UnitFace { .. } => "unit_face",
         FaceId::PrimitiveFace { .. } => "primitive_face",
         FaceId::RepeatedFace { .. } => "repeated_face",
+        FaceId::BodyMeshFace { .. } => "body_mesh_face",
     }
 }
 
