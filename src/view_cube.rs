@@ -749,15 +749,13 @@ struct ProjectedAxis {
     depth: f32,
 }
 
+/// Screen basis for the HUD bear: must match the main viewport's look-at axes so the
+/// bear's RGB triad lines up with the world origin axes (#1212). Using world-Z alone
+/// (the old path) diverged at true plan views after #1183 and ignored trackball roll
+/// baked into `view_up` (#1203).
 fn view_cube_basis(cam: &Camera) -> (Vec3, Vec3, Vec3) {
-    let forward = (cam.target - cam.eye()).normalize();
-    let mut right = forward.cross(Vec3::Z);
-    if right.length_squared() < 1e-8 {
-        right = Vec3::new(cam.yaw.cos(), cam.yaw.sin(), 0.0);
-    } else {
-        right = right.normalize();
-    }
-    let up = right.cross(forward).normalize();
+    let forward = (cam.target - cam.eye()).normalize_or_zero();
+    let (right, up) = cam.screen_axes(forward);
     (right, up, forward)
 }
 
@@ -1773,6 +1771,62 @@ mod tests {
         cam.yaw = yaw;
         cam.pitch = pitch;
         cam
+    }
+
+    /// #1212: bear HUD basis must match the main camera's screen axes so world origin
+    /// axes and the bear's RGB triad stay lined up (including true plan views and free
+    /// trackball roll past the poles).
+    fn assert_bear_matches_camera(cam: &Camera, label: &str) {
+        let forward = (cam.target - cam.eye()).normalize();
+        let (cam_right, cam_up) = cam.screen_axes(forward);
+        let (bear_right, bear_up, bear_forward) = view_cube_basis(cam);
+        assert!(
+            cam_right.dot(bear_right) > 0.999,
+            "{label}: bear right {bear_right:?} vs camera right {cam_right:?}"
+        );
+        assert!(
+            cam_up.dot(bear_up) > 0.999,
+            "{label}: bear up {bear_up:?} vs camera up {cam_up:?}"
+        );
+        assert!(
+            forward.dot(bear_forward) > 0.999,
+            "{label}: bear forward {bear_forward:?} vs camera forward {forward:?}"
+        );
+    }
+
+    #[test]
+    fn bear_basis_matches_camera_on_standard_views() {
+        for view in [
+            StandardView::Front,
+            StandardView::Back,
+            StandardView::Left,
+            StandardView::Right,
+            StandardView::Top,
+            StandardView::Bottom,
+        ] {
+            assert_bear_matches_camera(&cam_at_view(view), &format!("{view:?}"));
+        }
+    }
+
+    #[test]
+    fn bear_basis_matches_camera_after_trackball_over_pole() {
+        // Drag from top over the pole — yaw freezes while the eye tumbles; the bear must
+        // still use the trackball roll, not a world-Z singularity spin (#1212).
+        let mut cam = cam_at_view(StandardView::Top);
+        cam.orbit_trackball(egui::vec2(12.0, 140.0));
+        assert_bear_matches_camera(&cam, "active trackball past pole");
+        // Bake (as zoom-to-fit / release path does) and re-check.
+        cam.set_pose_instant(None, None, None, None);
+        assert_bear_matches_camera(&cam, "baked after trackball past pole");
+    }
+
+    #[test]
+    fn bear_basis_matches_camera_with_baked_view_up() {
+        let mut cam = Camera::default();
+        cam.set_view_up(Some(Vec3::new(0.2, 0.8, 0.3).normalize()));
+        cam.yaw = 1.1;
+        cam.pitch = 0.4;
+        assert_bear_matches_camera(&cam, "custom view_up");
     }
 
     fn face_center(face: &ProjectedFace) -> Pos2 {
