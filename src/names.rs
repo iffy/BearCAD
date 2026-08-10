@@ -456,6 +456,8 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
         // The synthetic root has no stored filename/title to draw on (#87) — `Document`
         // doesn't carry one — so it always gets this fixed label.
         HierarchyNode::Document => "Document".to_string(),
+        // Fixed section header for the collapsible drawings group (#1205).
+        HierarchyNode::Drawings => "Drawings".to_string(),
         HierarchyNode::Component(i) => format!("Component {}", i.index()),
         // The instance's own name (set at import from the file stem) lives in
         // `element_name`; this is only the fallback for an unnamed instance (#723).

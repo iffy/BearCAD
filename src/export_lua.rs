@@ -322,6 +322,7 @@ impl<'a> EmitCtx<'a> {
     fn emit_node(&mut self, node: HierarchyNode, out: &mut String) {
         match node {
             HierarchyNode::Document
+            | HierarchyNode::Drawings
             | HierarchyNode::Body(_)
             | HierarchyNode::UnitChild { .. }
             | HierarchyNode::DrawingDimension { .. }

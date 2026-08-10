@@ -3252,6 +3252,8 @@ struct App {
     /// Unit instances whose read-only contents are expanded in the Elements list (#723);
     /// UI-only state, default collapsed.
     expanded_units: std::collections::HashSet<model::UnitInstanceKey>,
+    /// Collapsed state of the Drawings section in the Elements list (#1205); default expanded.
+    drawings_section_collapsed: bool,
     /// Timeline rollback marker (#524): when set, everything created after this element is
     /// suppressed in the viewport and faded in the Elements pane, so the model reads as it did
     /// just after that element. UI-only session state (not persisted).
@@ -4379,6 +4381,7 @@ impl App {
             graph_layout: hierarchy::GraphLayout::default(),
             collapsed_components: std::collections::HashSet::new(),
             expanded_units: std::collections::HashSet::new(),
+            drawings_section_collapsed: false,
             rollback_marker: None,
             exploder: None,
             exploder_palette_request: false,
@@ -13457,6 +13460,7 @@ impl App {
                         &mut queue_set_rollback,
                         &mut self.collapsed_components,
                         &mut self.expanded_units,
+                        &mut self.drawings_section_collapsed,
                         &mut queue_add_component,
                         &mut queue_move_to_component,
                         self.state.active_component,

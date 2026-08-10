@@ -76,9 +76,15 @@ pub enum HierarchyNode {
     /// A loft (Loft tool): its output body nests under it, and its cross-section sketches feed
     /// it as graph inputs (#252). Display-only for now (no `SceneElement`).
     Loft(crate::model::LoftKey),
-    /// A technical drawing (#180). A display-only top-level leaf (no [`SceneElement`], like
+    /// Synthetic section under Document that holds every unassigned technical drawing
+    /// (#1205). Present only when the document has at least one drawing that isn't filed
+    /// into a component; collapsible in the List view so drawings sit together at the
+    /// bottom instead of interspersing with bodies. Display-only (no [`SceneElement`]).
+    Drawings,
+    /// A technical drawing (#180). A display-only leaf (no [`SceneElement`], like
     /// [`HierarchyNode::Document`]): it has its own icon and is right-clickable to edit
-    /// (opening the drawing pane), but isn't a selectable/hideable scene element.
+    /// (opening the drawing pane), but isn't a selectable/hideable scene element. Lives
+    /// under [`HierarchyNode::Drawings`] (or a component, if filed there).
     Drawing(crate::model::DrawingKey),
     /// A 3D edge chamfer/fillet applied to an extrusion (#77); `index` is into that
     /// extrusion's `edge_treatments`. A display-only leaf (like [`HierarchyNode::Document`]
@@ -490,8 +496,9 @@ pub fn dequantize_body_point(p: [i32; 3]) -> glam::Vec3 {
 /// has no independent selectable/hideable identity of its own.
 pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
     Some(match node {
-        // Display-only leaves with no independent selectable/hideable identity (#192/#180).
+        // Display-only leaves with no independent selectable/hideable identity (#192/#180/#1205).
         HierarchyNode::Document
+        | HierarchyNode::Drawings
         | HierarchyNode::EdgeTreatment { .. }
         | HierarchyNode::Drawing(_)
         | HierarchyNode::DrawingProjection { .. }
@@ -2332,7 +2339,27 @@ pub fn build_hierarchy(
     }
     // Components (#423): move member roots under their component's entry, then nest
     // component entries by their parent links. Unassigned roots stay at the top level.
-    let roots = group_roots_into_components(doc, roots);
+    let mut roots = group_roots_into_components(doc, roots);
+    // Drawings belong at the bottom of the document under a collapsible section (#1205),
+    // not interleaved with bodies/ops. Component-filed drawings stay under their component
+    // (group_roots_into_components already moved them); only unassigned ones land here.
+    let mut drawing_entries = Vec::new();
+    let mut i = 0;
+    while i < roots.len() {
+        if matches!(roots[i].node, HierarchyNode::Drawing(_)) {
+            drawing_entries.push(roots.remove(i));
+        } else {
+            i += 1;
+        }
+    }
+    if !drawing_entries.is_empty() {
+        // Stable kind-then-index order among drawings (same Ord as the flat list's tiebreak).
+        drawing_entries.sort_by_key(|e| e.node);
+        roots.push(HierarchyEntry {
+            node: HierarchyNode::Drawings,
+            children: drawing_entries,
+        });
+    }
     vec![HierarchyEntry {
         node: HierarchyNode::Document,
         children: roots,
@@ -2529,6 +2556,8 @@ impl ElementFilter {
     fn shows(&self, node: HierarchyNode) -> bool {
         match node {
             HierarchyNode::Document => true,
+            // The Drawings section exists only when drawings do (#1205); hide it with them.
+            HierarchyNode::Drawings => self.drawings,
             HierarchyNode::Component(_) => true,
             HierarchyNode::ConstructionPlane(_) => self.planes,
             HierarchyNode::Sketch(_) => self.sketches,
@@ -3521,6 +3550,8 @@ fn icon_tint_for_row_style(style: RowStyle) -> Color32 {
 fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId> {
     Some(match node {
         HierarchyNode::Document => return None,
+        // Section header reuses the drawing icon (#1205).
+        HierarchyNode::Drawings => IconId::Drawing,
         HierarchyNode::Component(_) => IconId::Component,
         HierarchyNode::ConstructionPlane(_) => IconId::Plane,
         HierarchyNode::Sketch(_) => IconId::Sketch,
@@ -4041,6 +4072,8 @@ pub fn show_pane(
     // Unit instances whose read-only contents are expanded in the List (#723); default
     // collapsed, so an instance reads as one row.
     expanded_units: &mut HashSet<crate::model::UnitInstanceKey>,
+    // The collapsible Drawings section at the bottom of the List (#1205); default expanded.
+    drawings_section_collapsed: &mut bool,
     on_add_component: &mut impl FnMut(Option<crate::model::ComponentKey>),
     on_move_to_component: &mut impl FnMut(SceneElement, Option<crate::model::ComponentKey>),
     active_component: Option<crate::model::ComponentKey>,
@@ -4149,7 +4182,12 @@ pub fn show_pane(
                 prune_shadow_bodies(&mut t, doc);
                 t
             };
-            let mut rows = component_list_rows(&tree, doc, collapsed_components);
+            let mut rows = component_list_rows(
+                &tree,
+                doc,
+                collapsed_components,
+                *drawings_section_collapsed,
+            );
             // A collapsed unit instance is one row (#723): its read-only contents only
             // appear while the row's triangle has expanded it.
             rows.retain(|(node, _)| {
@@ -4187,6 +4225,16 @@ pub fn show_pane(
                             on_export_component,
                             on_export_component_step,
                             on_add_to_drawing,
+                        );
+                        continue;
+                    }
+                    // Drawings section header (#1205): collapse triangle + label, no eye.
+                    if matches!(node, HierarchyNode::Drawings) {
+                        show_drawings_section_row(
+                            ui,
+                            doc,
+                            base_depth,
+                            drawings_section_collapsed,
                         );
                         continue;
                     }
@@ -4878,24 +4926,32 @@ fn truncate_label(label: &str, max_width: f32, painter: &egui::Painter) -> Strin
     format!("{truncated}…")
 }
 
-/// Flatten the tree into List-view rows with component nesting (#423): loose elements
-/// first (flat, topologically sorted, depth `base`), then each component row with its
-/// contents indented one level; collapsed components skip their contents.
+/// Flatten the tree into List-view rows with component nesting (#423) and a trailing
+/// Drawings section (#1205): loose elements first (flat, topologically sorted, depth
+/// `base`), then each component row with its contents indented one level, then the
+/// Drawings section at the bottom. Collapsed components / the drawings section skip
+/// their contents.
 fn component_list_rows(
     tree: &[HierarchyEntry],
     doc: &Document,
     collapsed: &HashSet<crate::model::ComponentKey>,
+    drawings_collapsed: bool,
 ) -> Vec<(HierarchyNode, usize)> {
     fn level(
         entries: &[HierarchyEntry],
         doc: &Document,
         collapsed: &HashSet<crate::model::ComponentKey>,
+        drawings_collapsed: bool,
         base: usize,
         out: &mut Vec<(HierarchyNode, usize)>,
     ) {
-        let (components, loose): (Vec<&HierarchyEntry>, Vec<&HierarchyEntry>) = entries
+        let (components, rest): (Vec<&HierarchyEntry>, Vec<&HierarchyEntry>) = entries
             .iter()
             .partition(|e| matches!(e.node, HierarchyNode::Component(_)));
+        // Drawings section is forced last so it never intersperses with model elements (#1205).
+        let (drawings_secs, loose): (Vec<&HierarchyEntry>, Vec<&HierarchyEntry>) = rest
+            .into_iter()
+            .partition(|e| matches!(e.node, HierarchyNode::Drawings));
         let loose_owned: Vec<HierarchyEntry> = loose.into_iter().cloned().collect();
         for node in element_list_from_tree(&loose_owned, doc) {
             out.push((node, base));
@@ -4904,16 +4960,91 @@ fn component_list_rows(
             let HierarchyNode::Component(ci) = entry.node else { unreachable!() };
             out.push((entry.node, base));
             if !collapsed.contains(&ci) {
-                level(&entry.children, doc, collapsed, base + 1, out);
+                level(
+                    &entry.children,
+                    doc,
+                    collapsed,
+                    drawings_collapsed,
+                    base + 1,
+                    out,
+                );
+            }
+        }
+        for entry in drawings_secs {
+            out.push((entry.node, base));
+            if !drawings_collapsed {
+                // Each drawing (and its projections/notes when the filter keeps them) sits
+                // one level under the section header.
+                for child in &entry.children {
+                    for node in element_list_from_tree(std::slice::from_ref(child), doc) {
+                        out.push((node, base + 1));
+                    }
+                }
             }
         }
     }
     let mut out = Vec::new();
     // The tree is the single synthetic Document root; its children are the real entries.
     for root in tree {
-        level(&root.children, doc, collapsed, 1, &mut out);
+        level(
+            &root.children,
+            doc,
+            collapsed,
+            drawings_collapsed,
+            1,
+            &mut out,
+        );
     }
     out
+}
+
+/// The collapsible "Drawings" section header in the List view (#1205): triangle + icon +
+/// label. Not selectable or hideable — it only groups drawing rows at the bottom.
+fn show_drawings_section_row(
+    ui: &mut egui::Ui,
+    doc: &Document,
+    depth: usize,
+    drawings_section_collapsed: &mut bool,
+) {
+    ui.horizontal(|ui| {
+        ui.add_space(depth as f32 * 18.0);
+        let collapsed = *drawings_section_collapsed;
+        let (tri_rect, tri_resp) =
+            ui.allocate_exact_size(egui::vec2(12.0, 14.0), egui::Sense::click());
+        let c = tri_rect.center();
+        let r = 4.0;
+        let pts = if collapsed {
+            vec![
+                egui::pos2(c.x - r * 0.5, c.y - r),
+                egui::pos2(c.x + r, c.y),
+                egui::pos2(c.x - r * 0.5, c.y + r),
+            ]
+        } else {
+            vec![
+                egui::pos2(c.x - r, c.y - r * 0.5),
+                egui::pos2(c.x + r, c.y - r * 0.5),
+                egui::pos2(c.x, c.y + r),
+            ]
+        };
+        ui.painter().add(egui::Shape::convex_polygon(
+            pts,
+            Color32::from_gray(170),
+            egui::Stroke::NONE,
+        ));
+        if tri_resp
+            .on_hover_text(if collapsed { "Expand" } else { "Collapse" })
+            .clicked()
+        {
+            *drawings_section_collapsed = !collapsed;
+        }
+        if let Some(icon) = icon_for_hierarchy_node(doc, HierarchyNode::Drawings) {
+            ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
+        }
+        let _ = ui.selectable_label(
+            false,
+            RichText::new(node_label(doc, HierarchyNode::Drawings)).strong(),
+        );
+    });
 }
 
 /// One component row in the List view (#423): collapse triangle, eye toggle, icon, name;
@@ -5150,6 +5281,21 @@ fn show_row(
     // and returns before any of the SceneElement-keyed lookups below. Every other row is
     // indented `depth` levels (List always passes 1, matching #87's original single level;
     // Tree passes the node's real depth in the nested hierarchy, #34).
+    // The Drawings section header is drawn by `show_drawings_section_row` in the List path;
+    // Graph falls through here with a plain label.
+    if matches!(node, HierarchyNode::Drawings) {
+        ui.horizontal(|ui| {
+            ui.add_space(depth as f32 * 18.0);
+            if let Some(icon) = icon_for_hierarchy_node(doc, node) {
+                ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
+            }
+            let _ = ui.selectable_label(
+                false,
+                RichText::new(node_label(doc, node)).strong(),
+            );
+        });
+        return;
+    }
     if matches!(node, HierarchyNode::Document) {
         let row = ui.horizontal(|ui| {
             if let Some(icon) = icon_for_hierarchy_node(doc, node) {
@@ -5456,7 +5602,9 @@ fn show_row(
         }
         // Clicks: double-click edits (where applicable), single-click selects.
         match node {
-            HierarchyNode::Document => unreachable!("handled by the early return above"),
+            HierarchyNode::Document | HierarchyNode::Drawings => {
+                unreachable!("handled by the early return above")
+            }
             HierarchyNode::Sketch(sketch) => {
                 let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
                 match sketch_row_action(row.double_clicked, row.clicked, additive) {
@@ -6212,7 +6360,7 @@ mod tests {
         );
 
         // List rows: the component at depth 1, its plane at depth 2; collapsing hides it.
-        let rows = component_list_rows(&tree, &doc, &HashSet::new());
+        let rows = component_list_rows(&tree, &doc, &HashSet::new(), false);
         let comp_row = rows.iter().find(|(n, _)| *n == HierarchyNode::Component(ckey(0))).unwrap();
         assert_eq!(comp_row.1, 1);
         let plane_row = rows
@@ -6221,7 +6369,7 @@ mod tests {
             .unwrap();
         assert_eq!(plane_row.1, 2, "component contents indent one level");
         let collapsed: HashSet<crate::model::ComponentKey> = [ckey(0)].into_iter().collect();
-        let rows = component_list_rows(&tree, &doc, &collapsed);
+        let rows = component_list_rows(&tree, &doc, &collapsed, false);
         assert!(
             !rows.iter().any(|(n, _)| *n == HierarchyNode::ConstructionPlane(plane)),
             "collapsed component hides its contents"
@@ -6380,8 +6528,13 @@ label_hidden: false,
         });
 
         let tree = build_hierarchy(&doc, None);
-        // Document -> Drawing(0) -> DrawingProjection { drawing: dkey(0), view: 0 }.
-        let drawing = tree[0]
+        // Document -> Drawings -> Drawing(0) -> DrawingProjection { drawing: dkey(0), view: 0 }.
+        let drawings = tree[0]
+            .children
+            .iter()
+            .find(|e| e.node == HierarchyNode::Drawings)
+            .expect("Drawings section present");
+        let drawing = drawings
             .children
             .iter()
             .find(|e| e.node == HierarchyNode::Drawing(dkey(0)))
@@ -6429,6 +6582,10 @@ label_hidden: false,
         let drawing = tree[0]
             .children
             .iter()
+            .find(|e| e.node == HierarchyNode::Drawings)
+            .expect("Drawings section")
+            .children
+            .iter()
             .find(|e| e.node == HierarchyNode::Drawing(dkey(0)))
             .expect("drawing node");
         let projection = drawing
@@ -6462,6 +6619,10 @@ label_hidden: false,
         let drawing = tree[0]
             .children
             .iter()
+            .find(|e| e.node == HierarchyNode::Drawings)
+            .expect("Drawings section")
+            .children
+            .iter()
             .find(|e| e.node == HierarchyNode::Drawing(dkey(0)))
             .expect("drawing node present");
         assert!(
@@ -6474,6 +6635,105 @@ label_hidden: false,
         assert_eq!(
             node_label(&doc, HierarchyNode::DrawingAnnotation { drawing: dkey(0), annotation: akey(0) }),
             "Text: Scale 1:2"
+        );
+    }
+
+    /// #1205: once a document has a drawing, unassigned drawings live under a collapsible
+    /// Drawings section at the bottom of Document — never interleaved with bodies/ops.
+    #[test]
+    fn drawings_section_groups_drawings_at_document_bottom() {
+        let mut doc = Document::default();
+        // A body that would otherwise appear after a mid-list drawing under the old order.
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
+            material: None,
+            name: Some("Part".to_string()),
+            shadow: false,
+        });
+        doc.drawings.insert(crate::model::Drawing::default());
+        doc.drawings.insert(crate::model::Drawing {
+            name: Some("Sheet".to_string()),
+            ..Default::default()
+        });
+
+        let tree = build_hierarchy(&doc, None);
+        let root_children: Vec<HierarchyNode> =
+            tree[0].children.iter().map(|c| c.node).collect();
+        assert!(
+            !root_children.iter().any(|n| matches!(n, HierarchyNode::Drawing(_))),
+            "drawings are not loose Document children: {root_children:?}"
+        );
+        let drawings_idx = root_children
+            .iter()
+            .position(|n| *n == HierarchyNode::Drawings)
+            .expect("Drawings section present");
+        assert_eq!(
+            drawings_idx,
+            root_children.len() - 1,
+            "Drawings section is the last Document child: {root_children:?}"
+        );
+        let section = &tree[0].children[drawings_idx];
+        assert_eq!(
+            section.children.iter().map(|c| c.node).collect::<Vec<_>>(),
+            vec![HierarchyNode::Drawing(dkey(0)), HierarchyNode::Drawing(dkey(1))],
+            "both drawings nest under the section in index order"
+        );
+        assert_eq!(node_label(&doc, HierarchyNode::Drawings), "Drawings");
+
+        // No drawings → no section.
+        let empty = build_hierarchy(&Document::default(), None);
+        assert!(
+            !empty[0]
+                .children
+                .iter()
+                .any(|c| c.node == HierarchyNode::Drawings),
+            "empty document has no Drawings section"
+        );
+
+        // List: section last; drawings one level under it; collapse hides them.
+        let rows = component_list_rows(&tree, &doc, &HashSet::new(), false);
+        let section_pos = rows
+            .iter()
+            .position(|(n, _)| *n == HierarchyNode::Drawings)
+            .expect("section row");
+        assert!(
+            section_pos == rows.len() - 1
+                || rows[section_pos + 1..]
+                    .iter()
+                    .all(|(n, _)| matches!(
+                        n,
+                        HierarchyNode::Drawing(_)
+                            | HierarchyNode::DrawingProjection { .. }
+                            | HierarchyNode::DrawingAnnotation { .. }
+                            | HierarchyNode::DrawingDimension { .. }
+                    )),
+            "nothing non-drawing follows the Drawings section: {rows:?}"
+        );
+        let body_pos = rows
+            .iter()
+            .position(|(n, _)| *n == HierarchyNode::Body(bkey(0)))
+            .expect("body row");
+        assert!(
+            body_pos < section_pos,
+            "body appears before the Drawings section: body={body_pos} section={section_pos}"
+        );
+        let d0 = rows
+            .iter()
+            .find(|(n, _)| *n == HierarchyNode::Drawing(dkey(0)))
+            .expect("drawing 0 row");
+        assert_eq!(d0.1, 2, "drawings indent under the section");
+        let collapsed_rows = component_list_rows(&tree, &doc, &HashSet::new(), true);
+        assert!(
+            !collapsed_rows
+                .iter()
+                .any(|(n, _)| matches!(n, HierarchyNode::Drawing(_))),
+            "collapsed section hides its drawings"
+        );
+        assert!(
+            collapsed_rows
+                .iter()
+                .any(|(n, _)| *n == HierarchyNode::Drawings),
+            "collapsed section still shows the header"
         );
     }
 
