@@ -863,9 +863,9 @@ impl ViewportGpuResources {
             cache: None,
         });
 
-        // Origin-axis pipeline (#1072): the scene pipeline's fragment shader, with a vertex
-        // shader that widens the quad in screen space so an axis holds its pixel width at
-        // any depth.
+        // Origin-axis + sketch-stroke pipeline (#1072 / #1157): `vs_axis` widens in screen
+        // space; `fs_axis` clips to a round-capped capsule so coincident joints don't show
+        // square-end overshoot (#1202).
         let axis_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("bearcad_viewport_axis_pipeline"),
             layout: Some(&scene_pipeline_layout),
@@ -881,7 +881,7 @@ impl ViewportGpuResources {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: Some("fs_main"),
+                entry_point: Some("fs_axis"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: target_format,
                     blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
@@ -1584,8 +1584,9 @@ impl ViewportGpuResources {
             }
             // Screen-space sketch strokes (#1157): after the opaque base so bodies occlude
             // them, before translucent fills so a stroke still reads under a plane wash.
-            // Corners sit on the endpoints; `vs_axis` widens in pixels so a face-sketched
-            // line stays painted on the face instead of a freestanding 3D ribbon.
+            // Depth sits on the endpoints; `vs_axis` widens in pixels so a face-sketched
+            // line stays painted on the face instead of a freestanding 3D ribbon. Round
+            // caps via `fs_axis` keep coincident joints from looking like overshoot (#1202).
             if !scene.stroke_indices.is_empty() {
                 pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                 pass.set_pipeline(&self.axis_pipeline);

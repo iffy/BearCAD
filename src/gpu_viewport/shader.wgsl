@@ -157,34 +157,86 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
 // are projected here and the corner steps sideways in screen space, which is the only place
 // a pixel means anything. Depth stays on the endpoints, so a face-sketched stroke paints on
 // the face rather than out of it.
+//
+// Ends are **round** (#1202): the quad extends past each geometric endpoint by half-width so
+// the round cap has coverage, and `fs_axis` clips every fragment to a capsule of that radius.
+// Square (butt) ends made coincident joints look like each line overshot the shared point.
+
+struct AxisVertexOutput {
+    @builtin(position) clip_position: vec4f,
+    @location(0) color: vec4f,
+    // Fragment position in true screen pixels (center origin, y-up), same space as a_px/b_px.
+    @location(1) pos_px: vec2f,
+    // Geometric segment endpoints in that space. Flat so the whole quad shares one segment.
+    @location(2) @interpolate(flat) a_px: vec2f,
+    @location(3) @interpolate(flat) b_px: vec2f,
+    @location(4) @interpolate(flat) half_px: f32,
+}
+
+/// Distance from `p` to the segment `a`→`b`, in the same units as the inputs.
+fn dist_to_segment(p: vec2f, a: vec2f, b: vec2f) -> f32 {
+    let ab = b - a;
+    let denom = dot(ab, ab);
+    var t = 0.0;
+    if (denom > 1e-12) {
+        t = clamp(dot(p - a, ab) / denom, 0.0, 1.0);
+    }
+    return length(p - (a + ab * t));
+}
 
 @vertex
-fn vs_axis(input: VertexInput) -> VertexOutput {
-    var out: VertexOutput;
+fn vs_axis(input: VertexInput) -> AxisVertexOutput {
+    var out: AxisVertexOutput;
     let own = uniforms.view_proj * vec4f(input.position, 1.0);
     let other = uniforms.view_proj * vec4f(input.normal.xyz, 1.0);
     let px = max(uniforms.viewport_px.xy, vec2f(1.0));
 
-    // Screen positions in pixels. `abs(w)` rather than `w` so a vertex that has crossed
-    // behind the camera still yields a usable direction instead of a mirrored one; the
-    // rasterizer clips what is actually off-screen.
-    let own_px = own.xy / max(abs(own.w), 1e-6) * px;
-    let other_px = other.xy / max(abs(other.w), 1e-6) * px;
+    // True screen pixels from the viewport centre (y-up, matching NDC). `ndc * 0.5 * px` so
+    // a 1-pixel move is length 1 — the old `ndc * px` space was 2 units per pixel and made a
+    // capsule SDF anisotropic. `abs(w)` keeps a behind-camera vertex's direction usable.
+    let own_px = own.xy / max(abs(own.w), 1e-6) * px * 0.5;
+    let other_px = other.xy / max(abs(other.w), 1e-6) * px * 0.5;
+
+    // Canonical order so every corner of the quad writes the same flat a_px/b_px.
+    if (own_px.x < other_px.x || (own_px.x == other_px.x && own_px.y <= other_px.y)) {
+        out.a_px = own_px;
+        out.b_px = other_px;
+    } else {
+        out.a_px = other_px;
+        out.b_px = own_px;
+    }
+
     var dir = other_px - own_px;
     if (length(dir) < 1e-6) {
         dir = vec2f(1.0, 0.0);
     }
     dir = normalize(dir);
-    let side = vec2f(-dir.y, dir.x) * input.normal.w;
+    let half = input.normal.w;
+    let half_abs = abs(half);
+    out.half_px = half_abs;
 
-    // Back to clip space. NDC spans 2 across the viewport, so a pixel is 2/px of NDC, and
-    // multiplying by w undoes the perspective divide the rasterizer is about to apply.
-    out.clip_position = vec4f(own.xy + side / px * 2.0 * own.w, own.z, own.w);
+    let side = vec2f(-dir.y, dir.x) * half;
+    // Extend past the geometric endpoint so the round cap has raster coverage (#1202).
+    let along = -dir * half_abs;
+    let offset = side + along;
+    out.pos_px = own_px + offset;
+
+    // Back to clip space. True-pixel offset → NDC is `offset / (0.5 * px)` = `offset * 2 / px`.
+    out.clip_position = vec4f(own.xy + offset / px * 2.0 * own.w, own.z, own.w);
     out.color = input.color;
-    out.normal = vec3f(0.0, 0.0, 1.0);
-    out.world_pos = input.position;
-    out.mode = MODE_UNLIT;
     return out;
+}
+
+@fragment
+fn fs_axis(input: AxisVertexOutput) -> @location(0) vec4f {
+    let d = dist_to_segment(input.pos_px, input.a_px, input.b_px);
+    // One-pixel AA ramp at the capsule boundary.
+    let alpha = 1.0 - smoothstep(input.half_px - 0.5, input.half_px + 0.5, d);
+    if (alpha <= 0.001) {
+        discard;
+    }
+    // Premultiplied, matching the rest of the viewport pipelines.
+    return vec4f(input.color.rgb * alpha, input.color.a * alpha);
 }
 
 // ---- Ground grid (#1073) ----

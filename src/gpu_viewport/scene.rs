@@ -319,13 +319,14 @@ pub struct ViewportScene {
     /// own world endpoint, `normal.xyz` the segment's other endpoint, and `normal.w` the
     /// signed half-width in **pixels** — the vertex shader projects both ends and steps
     /// sideways by that many pixels, so an axis is the same width however far away and
-    /// however steeply it recedes. Drawn with `vs_axis`/`fs_axis`.
+    /// however steeply it recedes. Drawn with `vs_axis`/`fs_axis` (round caps, #1202).
     pub axis_vertices: Vec<GpuVertex>,
     pub axis_indices: Vec<u32>,
     /// Depth-tested sketch / overlay strokes widened in **screen space** (#1157), same packing
     /// as [`Self::axis_vertices`]. A camera-facing world ribbon of constant thickness reads as
     /// a freestanding 3D rectangle when a body face is viewed at a grazing angle; these keep
-    /// their corners on the endpoints (on the face) and let `vs_axis` step sideways in pixels.
+    /// depth on the face endpoints and let `vs_axis` step sideways in pixels. `fs_axis` clips
+    /// each fragment to a round-capped capsule so coincident joints meet cleanly (#1202).
     /// Drawn after the opaque base so bodies occlude them correctly.
     pub stroke_vertices: Vec<GpuVertex>,
     pub stroke_indices: Vec<u32>,
@@ -5450,6 +5451,32 @@ pub fn dashed_world_segments(
     segments
 }
 
+/// Distance from `p` to the segment `a`→`b` (mirrors `dist_to_segment` in `shader.wgsl`).
+/// Used to pin the round-cap capsule math that `fs_axis` applies to sketch strokes (#1202).
+#[cfg(test)]
+fn dist_to_segment_2d(p: egui::Vec2, a: egui::Vec2, b: egui::Vec2) -> f32 {
+    let ab = b - a;
+    let denom = ab.dot(ab);
+    let t = if denom > 1e-12 {
+        ((p - a).dot(ab) / denom).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (p - (a + ab * t)).length()
+}
+
+/// Whether a screen-space point lies inside a round-capped stroke of half-width `half_px`
+/// along segment `a`→`b` — the coverage test `fs_axis` uses (#1202).
+#[cfg(test)]
+fn point_in_stroke_capsule(
+    p: egui::Vec2,
+    a: egui::Vec2,
+    b: egui::Vec2,
+    half_px: f32,
+) -> bool {
+    dist_to_segment_2d(p, a, b) <= half_px
+}
+
 /// Build a camera-facing line ribbon in world space for a given screen width.
 pub fn line_screen_quad(
     a: Vec3,
@@ -5716,7 +5743,7 @@ mod tests {
         // Every entry point the renderer names must exist.
         let entries: Vec<&str> = module.entry_points.iter().map(|e| e.name.as_str()).collect();
         for name in [
-            "vs_main", "fs_main", "vs_axis", "vs_grid", "fs_grid",
+            "vs_main", "fs_main", "vs_axis", "fs_axis", "vs_grid", "fs_grid",
             "vs_blit", "fs_blit", "fs_outline", "vs_text", "fs_text", "fs_image",
         ] {
             assert!(entries.contains(&name), "shader.wgsl has no `{name}`: {entries:?}");
@@ -8235,8 +8262,8 @@ mod tests {
 
     /// #1157: body-face sketch strokes must not be camera-facing world ribbons (those read as
     /// freestanding 3D rectangles when the face is viewed at a grazing angle). Pack like the
-    /// origin axes (#1072): corners sit on the endpoints and carry a pixel half-width so
-    /// `vs_axis` widens in screen space — the line paints on the face, not out of it.
+    /// origin axes (#1072): corners carry the endpoints and a pixel half-width so `vs_axis`
+    /// widens in screen space — the line paints on the face, not out of it.
     #[test]
     fn body_face_sketch_stroke_is_screen_space_not_world_ribbon() {
         use crate::actions::Action;
@@ -10308,6 +10335,48 @@ mod tests {
         .expect("visible segment");
         assert_ne!(quad[0], quad[1]);
         assert_ne!(quad[2], quad[3]);
+    }
+
+    /// #1202: round caps — a point past a shared endpoint is painted only within half-width
+    /// of the geometric vertex (outside the stroke bodies). Square (butt) ends left the
+    /// rectangle corners sticking out past the joint, which read as each line overshooting.
+    #[test]
+    fn stroke_capsule_meets_cleanly_at_shared_endpoint() {
+        let a = egui::vec2(0.0, 0.0);
+        let b = egui::vec2(100.0, 0.0);
+        let c = egui::vec2(50.0, 80.0);
+        let unit = |v: egui::Vec2| v / v.length();
+        // Two segments meeting at `b` (coincident line ends).
+        let half = 1.5_f32;
+        // On the geometric vertex: covered.
+        assert!(point_in_stroke_capsule(b, a, b, half));
+        assert!(point_in_stroke_capsule(b, b, c, half));
+        // Half-width past the free end of ab (beyond b, away from a): still covered (round cap).
+        let past_ab = b + unit(b - a) * half;
+        assert!(point_in_stroke_capsule(past_ab, a, b, half));
+        // Further than half-width past the free end: not covered — no overshoot past the cap.
+        let overshoot = b + unit(b - a) * (half + 0.25);
+        assert!(
+            !point_in_stroke_capsule(overshoot, a, b, half),
+            "capsule must not paint past half-width of the endpoint"
+        );
+        // Square-end corner of a thick stroke sits at the endpoint ± half perp and would also
+        // extend half past the end along the line direction — that corner is outside a
+        // capsule of radius half, so round caps hide the star-shaped joint overshoot.
+        let square_corner = b + egui::vec2(half, half); // along + perp for horizontal ab
+        assert!(
+            !point_in_stroke_capsule(square_corner, a, b, half),
+            "square-end corner at (half, half) past the end must be outside the capsule"
+        );
+        // Bisector of the two free-end outward directions, past half — outside both capsules.
+        let out1 = unit(b - a);
+        let out2 = unit(b - c);
+        let outside = b + unit(out1 + out2) * (half + 0.3);
+        assert!(
+            !point_in_stroke_capsule(outside, a, b, half)
+                && !point_in_stroke_capsule(outside, b, c, half),
+            "nothing past the joint's circular silhouette should paint"
+        );
     }
 }
 /// Manual perf probe for the selection aura (#145): `cargo test aura_perf_probe -- --ignored
