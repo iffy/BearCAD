@@ -913,14 +913,40 @@ impl ViewportScene {
                     .boolean_ops
                     .get(*op)
                     .is_some_and(|o| o.a.contains(&bi) || o.b.contains(&bi)),
-                Some(ViewportHoverHighlight::Element(SceneElement::SliceOp(op))) => input
-                    .doc
-                    .slice_ops
-                    .get(*op)
-                    .is_some_and(|o| o.targets.contains(&bi)),
+                // Slice targets occupy the same outer envelope as the fragment bodies
+                // (#1150): ghosting them on Slice-row hover coplanar-z-fights the pieces.
+                // Hovering/selecting the shadow body itself still shows it (above).
+                Some(ViewportHoverHighlight::Element(SceneElement::SliceOp(_))) => false,
                 _ => false,
             }
         };
+        // Bodies an Elements-pane op/component/joint row "lights" while hovered (#977):
+        // recolour them in the main pass like body hover (#455/#1150). Stacking a translucent
+        // coplanar copy of the same mesh z-fights the solid into a mottled checkerboard.
+        let derived_output_bodies: std::collections::HashSet<crate::model::BodyKey> =
+            match &input.hover_highlight {
+                Some(ViewportHoverHighlight::Element(
+                    el @ (SceneElement::BooleanOp(_)
+                    | SceneElement::MoveOp(_)
+                    | SceneElement::MirrorOp(_)
+                    | SceneElement::RepeatOp(_)
+                    | SceneElement::SketchRepeatOp(_)
+                    | SceneElement::SketchOffsetOp(_)
+                    | SceneElement::SketchMirrorOp(_)
+                    | SceneElement::SketchVertexTreatmentOp(_)
+                    | SceneElement::SketchSliceOp(_)
+                    | SceneElement::SliceOp(_)
+                    | SceneElement::EdgeTreatmentOp(_)
+                    | SceneElement::Revolution(_)
+                    | SceneElement::Shape(_)
+                    | SceneElement::SweepOp(_)
+                    | SceneElement::Joint(_)
+                    | SceneElement::Component(_)),
+                )) => crate::hierarchy::produced_bodies(input.doc, el)
+                    .into_iter()
+                    .collect(),
+                _ => Default::default(),
+            };
         let body_meshes: std::collections::HashMap<crate::model::BodyKey, Option<crate::extrude::SolidMesh>> = input
             .doc
             .bodies
@@ -1061,10 +1087,14 @@ impl ViewportScene {
                 .iter()
                 .find(|(t, _)| *t == bi)
                 .map(|(_, c)| *c);
+            let derived = derived_output_bodies.contains(&bi);
             let fill = if let Some(tint) = tint {
                 tint
             } else if selected && !outlining {
                 SOLID_FILL_SELECTED
+            } else if derived {
+                // #977/#1150: operation-row wash — main-pass recolour, not a coplanar overlay.
+                DERIVED_OUTPUT_HIGHLIGHT
             } else if hovered && !outlining {
                 SOLID_FILL_HOVERED
             } else if unit_instance.is_some() {
@@ -1076,6 +1106,8 @@ impl ViewportScene {
             };
             let line_color = if selected && !outlining {
                 BODY_SILHOUETTE_COLOR
+            } else if derived {
+                DERIVED_OUTPUT_HIGHLIGHT
             } else if hovered && !outlining {
                 SOLID_FILL_HOVERED
             } else {
@@ -3814,6 +3846,11 @@ impl<'a> SceneMesh<'a> {
             // (#977): an operation its output bodies, a component every body under it, a joint
             // the parts it joins. In a colour of their own — the plain hover colour would claim
             // those bodies are what the cursor is on, and it's on the row.
+            //
+            // Fill (and wireframe line colour) recolour in the main body pass (#1150), like
+            // body hover (#455). A translucent coplanar overlay of the same mesh used to
+            // z-fight the solid into a mottled checkerboard — especially bad for Slice, where
+            // the cut faces and outer walls sit on top of themselves.
             SceneElement::BooleanOp(_)
             | SceneElement::MoveOp(_)
             | SceneElement::MirrorOp(_)
@@ -3829,25 +3866,7 @@ impl<'a> SceneMesh<'a> {
             | SceneElement::Shape(_)
             | SceneElement::SweepOp(_)
             | SceneElement::Joint(_)
-            | SceneElement::Component(_) => {
-                for body in crate::hierarchy::produced_bodies(doc, &element) {
-                    if let Some(solid) = crate::extrude::body_solid_mesh(doc, body) {
-                        if matches!(cam.shading_mode(), crate::camera::ShadingMode::Wireframe) {
-                            let edges = crate::extrude::body_feature_edges(doc, body);
-                            self.push_solid_wireframe(
-                                &solid,
-                                Some(edges.as_ref()),
-                                DERIVED_OUTPUT_HIGHLIGHT,
-                                cam,
-                                viewport,
-                                view_proj,
-                            );
-                        } else {
-                            self.push_solid_translucent(&solid, DERIVED_OUTPUT_HIGHLIGHT, 0.45);
-                        }
-                    }
-                }
-            }
+            | SceneElement::Component(_) => {}
             // The origin and the sketch axes draw their own hover, where the sketch frame that
             // places them is in hand (see the origin marker in `build`).
             SceneElement::FaceEdge(_) | SceneElement::Origin => {}
@@ -6338,9 +6357,23 @@ mod tests {
             SceneElement::Sketch(sketch),
             SceneElement::ConstructionPlane(pkey(0)),
         ] {
-            // `Body` recolours in the main pass rather than as an overlay (#455), so it is the
-            // one that legitimately adds nothing here.
-            if matches!(element, SceneElement::Body(_)) {
+            // `Body` and ops that only light *produced* bodies recolour in the main pass
+            // rather than as an overlay (#455/#977/#1150), so they add nothing here.
+            if matches!(
+                element,
+                SceneElement::Body(_)
+                    | SceneElement::Component(_)
+                    | SceneElement::Joint(_)
+                    | SceneElement::BooleanOp(_)
+                    | SceneElement::MoveOp(_)
+                    | SceneElement::MirrorOp(_)
+                    | SceneElement::RepeatOp(_)
+                    | SceneElement::SliceOp(_)
+                    | SceneElement::EdgeTreatmentOp(_)
+                    | SceneElement::Revolution(_)
+                    | SceneElement::Shape(_)
+                    | SceneElement::SweepOp(_)
+            ) {
                 continue;
             }
             assert!(
@@ -6348,6 +6381,84 @@ mod tests {
                 "hovering {element:?} drew nothing — every pane row must light something"
             );
         }
+        // Main-pass recolour path for produced bodies (#1150): a Component holding a body
+        // must wash that body purple when its row is hovered.
+        let mut palette = ViewportPalette::default();
+        palette.body_highlight_method = crate::settings::BodyHighlightMethod::Shading;
+        let build = |hover: Option<ViewportHoverHighlight>| {
+            ViewportScene::build(&ViewportSceneInput {
+                doc: &state.doc,
+                cam: &state.cam,
+                viewport: test_viewport(),
+                palette,
+                sketch_session: None,
+                selection: &state.scene_selection,
+                cut_highlight_bodies: Vec::new(),
+                faded_bodies: Vec::new(),
+                sketch_repeat_ghost: Vec::new(),
+                sketch_ghost_lines: Vec::new(),
+                edit_preview_meshes: std::collections::HashMap::new(),
+                element_visibility: &state.element_visibility,
+                preview_rect: None,
+                preview_line: None,
+                preview_circle: None,
+                preview_extrusion: None,
+                preview_solid: None,
+                repeat_ghosts: Vec::new(),
+                cut_surface_ghosts: Vec::new(),
+                preview_cut_body: None,
+                preview_replacement: PreviewReplacement::default(),
+                highlighted_bezier_handles: Vec::new(),
+                editing_extrusion: None,
+                plane_preview: None,
+                active_sketch_face: None,
+                dimension_labels: &[],
+                dim_label_view: None,
+                plane_gizmo: None,
+                extrude_gizmo: None,
+                vertex_treatment_gizmo: None,
+                arrow_gizmos: Vec::new(),
+                move_rotation_gizmo: None,
+                revolve_arc_gizmo: None,
+                vertex_treatment_preview: None,
+                hover_highlight: hover,
+                extra_pick_highlights: Vec::new(),
+                colored_pick_highlights: Vec::new(),
+                colored_element_highlights: Vec::new(),
+                tinted_bodies: Vec::new(),
+                colored_segments: Vec::new(),
+                parameter_highlight_elements: Vec::new(),
+                hover_color: crate::construction::PICK_HOVER_RGBA,
+                document_health: &DocumentHealth::default(),
+                constraint_graphics: None,
+                constraint_connector_color: None,
+            })
+        };
+        let derived_tinted = |scene: &ViewportScene| {
+            scene
+                .vertices
+                .iter()
+                .filter(|v| {
+                    let [r, g, b, a] = v.color;
+                    a > 0.9 && b > r && r > g && b > 0.5
+                })
+                .count()
+        };
+        let base = build(None);
+        let component_hover = build(Some(ViewportHoverHighlight::Element(
+            SceneElement::Component(ckey(0)),
+        )));
+        let joint_hover = build(Some(ViewportHoverHighlight::Element(SceneElement::Joint(
+            jkey(0),
+        ))));
+        assert!(
+            derived_tinted(&component_hover) > derived_tinted(&base),
+            "hovering a Component must recolor the bodies it holds"
+        );
+        assert!(
+            derived_tinted(&joint_hover) > derived_tinted(&base),
+            "hovering a Joint must recolor the bodies it joins"
+        );
     }
 
     /// #974, the general form: **every** kind the crowd can offer must light up when its
@@ -8352,6 +8463,167 @@ mod tests {
         assert!(
             hover_tinted(&hovered) > hover_tinted(&base),
             "hovering a body must recolor its fill"
+        );
+    }
+
+    /// One extruded box sliced by a mid-height plane → two fragment bodies + a shadow input.
+    fn state_with_sliced_body() -> AppState {
+        use crate::actions::Action;
+        use crate::construction::{definition_from_reference, plane_from_definition, PlaneReference};
+        use crate::model::{ConstructionPlaneParent, ExtrudeFace};
+
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(pkey(0)),
+            viewport: None,
+        });
+        let sketch = state.sketch_session.unwrap().sketch;
+        let rect = crate::construction::add_line_rectangle(
+            &mut state.doc,
+            sketch,
+            0.0,
+            0.0,
+            10.0,
+            10.0,
+            [false; 4],
+        );
+        state.apply(Action::CreateExtrusion {
+            expression: None,
+            sketch,
+            faces: vec![ExtrudeFace::Polygon(rect.to_vec())],
+            distance: 10.0,
+            body: crate::actions::ExtrudeBodyChoice::New,
+            target: None,
+            symmetric: false,
+        });
+        let plane = plane_from_definition(
+            &definition_from_reference(
+                &PlaneReference::Face {
+                    origin: glam::Vec3::ZERO,
+                    normal: glam::Vec3::Z,
+                    label: "Ground".to_string(),
+                },
+                5.0,
+                0.0,
+            ),
+            ConstructionPlaneParent::Root,
+        );
+        state.doc.construction_planes.insert(plane);
+        let cutter = crate::model::SliceCutter::Face(FaceId::ConstructionPlane(
+            state.doc.construction_planes.keys().last().unwrap(),
+        ));
+        let result = state.apply(Action::CreateSliceOperation {
+            targets: vec![bkey(0)],
+            cutters: vec![cutter],
+            extend_infinite: true,
+        });
+        assert!(
+            matches!(result, crate::actions::ActionResult::Ok),
+            "slice should succeed: {result:?} / {}",
+            state.status
+        );
+        assert_eq!(state.doc.slice_ops.len(), 1);
+        assert!(
+            state
+                .doc
+                .slice_ops
+                .values()
+                .next()
+                .is_some_and(|op| op.outputs.len() >= 2),
+            "mid-plane cut should yield at least two fragments"
+        );
+        state
+    }
+
+    /// #1150: hovering a Slice row lights its fragment bodies by **recolouring the main
+    /// pass**, not by stacking a translucent coplanar copy of the same mesh (which
+    /// z-fought the solid into a mottled purple/body-colour checkerboard). The slice's
+    /// shadow input also stays hidden on op hover — it occupies the same outer envelope
+    /// as the pieces and would z-fight them the same way.
+    #[test]
+    fn slice_op_hover_recolors_fragments_without_coplanar_overlay() {
+        use crate::model::slice_op_key_for_slot as slckey;
+
+        let state = state_with_sliced_body();
+        let cam = state.cam.clone();
+        let viewport = test_viewport();
+        let mut palette = ViewportPalette::default();
+        // Shading recolour is what this test asserts; Outlining would mask instead.
+        palette.body_highlight_method = crate::settings::BodyHighlightMethod::Shading;
+        let build = |hover: Option<ViewportHoverHighlight>| {
+            ViewportScene::build(&ViewportSceneInput {
+                doc: &state.doc,
+                cam: &cam,
+                viewport,
+                palette,
+                sketch_session: None,
+                selection: &state.scene_selection,
+                cut_highlight_bodies: Vec::new(),
+                faded_bodies: Vec::new(),
+                sketch_repeat_ghost: Vec::new(),
+                sketch_ghost_lines: Vec::new(),
+                edit_preview_meshes: std::collections::HashMap::new(),
+                element_visibility: &state.element_visibility,
+                preview_rect: None,
+                preview_line: None,
+                preview_circle: None,
+                preview_extrusion: None,
+                preview_solid: None,
+                repeat_ghosts: Vec::new(),
+                cut_surface_ghosts: Vec::new(),
+                preview_cut_body: None,
+                preview_replacement: PreviewReplacement::default(),
+                highlighted_bezier_handles: Vec::new(),
+                editing_extrusion: None,
+                plane_preview: None,
+                active_sketch_face: None,
+                dimension_labels: &[],
+                dim_label_view: None,
+                plane_gizmo: None,
+                extrude_gizmo: None,
+                vertex_treatment_gizmo: None,
+                arrow_gizmos: Vec::new(),
+                move_rotation_gizmo: None,
+                revolve_arc_gizmo: None,
+                vertex_treatment_preview: None,
+                hover_highlight: hover,
+                extra_pick_highlights: Vec::new(),
+                colored_pick_highlights: Vec::new(),
+                colored_element_highlights: Vec::new(),
+                tinted_bodies: Vec::new(),
+                colored_segments: Vec::new(),
+                parameter_highlight_elements: Vec::new(),
+                hover_color: crate::construction::PICK_HOVER_RGBA,
+                document_health: &DocumentHealth::default(),
+                constraint_graphics: None,
+                constraint_connector_color: None,
+            })
+        };
+        let base = build(None);
+        let hovered = build(Some(ViewportHoverHighlight::Element(SceneElement::SliceOp(
+            slckey(0),
+        ))));
+
+        // The derived-output purple is b > r > g (170, 130, 240). A translucent overlay of
+        // the same mesh used to land in plane_fill; the main-pass recolour lives in `indices`.
+        let derived_tinted = |scene: &ViewportScene| {
+            scene
+                .vertices
+                .iter()
+                .filter(|v| {
+                    let [r, g, b, a] = v.color;
+                    a > 0.9 && b > r && r > g && b > 0.5
+                })
+                .count()
+        };
+        assert!(
+            derived_tinted(&hovered) > derived_tinted(&base),
+            "hovering a Slice op must recolor its fragment fills in the main pass"
+        );
+        assert_eq!(
+            hovered.plane_fill_indices.len(),
+            base.plane_fill_indices.len(),
+            "Slice op hover must not stack a translucent coplanar body overlay (z-fights)"
         );
     }
 
