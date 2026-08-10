@@ -355,7 +355,21 @@ impl Camera {
     }
 
     pub fn cancel_transition(&mut self) {
-        self.transition = None;
+        // Bake the currently displayed view-up before dropping the transition.
+        // Mid-sketch-entry (or mid-preset) cancel used to snap roll back to the
+        // pre-transition `view_up` / world Z, which made Zoom to Fit mid-entry
+        // spin the camera (#1203).
+        if let Some(t) = self.transition.take() {
+            if t.animate_view_up {
+                let u = smoothstep((t.elapsed / t.duration).min(1.0));
+                let up = slerp_direction(t.from_view_up, t.to_view_up, u);
+                if t.clear_view_up_on_complete && t.elapsed >= t.duration {
+                    self.view_up = None;
+                } else if up.length_squared() >= 1e-8 {
+                    self.view_up = Some(up);
+                }
+            }
+        }
     }
 
     /// Override the look-at up vector (`None` restores world Z).
@@ -849,9 +863,11 @@ impl Camera {
     /// Instantly frame an axis-aligned world bounding box (`bearcad.ui.zoom_fit()`, #108):
     /// center the target on the box and set the distance so every box corner fits both the
     /// vertical and (via `aspect`, width/height) horizontal field of view, with a small
-    /// margin. Orientation is left alone. The old largest-axis-extent heuristic overshot
-    /// badly from diagonal views (a box's screen-projected diagonal is larger than any
-    /// single axis extent), clipping the model.
+    /// margin. **Orientation is left alone** — look direction and roll (including trackball
+    /// roll and in-flight sketch `view_up`) are preserved (#1203); only target + distance
+    /// change. The old largest-axis-extent heuristic overshot badly from diagonal views
+    /// (a box's screen-projected diagonal is larger than any single axis extent), clipping
+    /// the model.
     ///
     /// Uses the same look-at up as rendering ([`Self::view_up_hint`]) so sketch-mode
     /// framing (custom `view_up`) doesn't under-estimate distance and clip corners (#1181).
@@ -1119,7 +1135,15 @@ impl Camera {
 
     fn resolve_orbit_state(&mut self) {
         if self.orbit_quat.is_some() {
+            // Bake trackball roll into `view_up` before dropping the quat. Yaw/pitch
+            // alone cannot represent that roll; without this, Zoom to Fit (and any
+            // other `set_pose_instant` / transition start) snapped the view sideways
+            // after orbiting in sketch mode (#1203, same class as #51).
+            let rolled_up = self.view_up_hint();
             self.apply_offset_yaw_pitch(self.eye() - self.target);
+            if rolled_up.length_squared() >= 1e-8 {
+                self.view_up = Some(rolled_up.normalize());
+            }
         }
         self.orbit_quat = None;
         self.orbit_base_offset = None;
@@ -2282,6 +2306,99 @@ mod tests {
                 "{name}: zoom-to-fit margin too tight: min inset {min_inset:.1}px, want ≥ {min_wanted:.1}px (#1181)"
             );
         }
+    }
+
+    /// #1203: Zoom to Fit must not rotate. Framing only moves target + distance; any
+    /// trackball roll (or in-flight sketch view-up) has to survive — previously
+    /// `set_pose_instant` → `resolve_orbit_state` dropped roll and the view snapped sideways
+    /// (especially after orbiting in sketch mode).
+    #[test]
+    fn frame_bounds_preserves_orientation_after_trackball_orbit() {
+        let mut cam = Camera::default();
+        // Sketch-style top view with a custom plane up.
+        cam.set_pose_instant(
+            Some(-std::f32::consts::FRAC_PI_2),
+            Some(1.0),
+            Some(300.0),
+            Some(Vec3::new(50.0, 50.0, 100.0)),
+        );
+        cam.set_view_up(Some(Vec3::Y));
+        // Orbit like a view-cube / right-drag: roll that yaw/pitch alone can't hold.
+        cam.orbit_trackball(egui::vec2(35.0, 22.0));
+        assert!(cam.has_orbit_trackball_state());
+
+        let look_before = (cam.target - cam.eye()).normalize();
+        let up_before = cam.view_up_hint();
+        let eye_offset_before = cam.eye() - cam.target;
+
+        cam.frame_bounds_instant(
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(100.0, 80.0, 50.0),
+            1.2,
+        );
+
+        let look_after = (cam.target - cam.eye()).normalize();
+        let up_after = cam.view_up_hint();
+        assert!(
+            look_before.dot(look_after) > 0.999,
+            "zoom-to-fit must keep look direction, got {look_before:?} -> {look_after:?}"
+        );
+        assert!(
+            (up_before - up_after).length() < 1e-3,
+            "zoom-to-fit must keep roll/view-up, got {up_before:?} -> {up_after:?}"
+        );
+        // Eye offset direction (not length) is the orientation.
+        let eye_offset_after = cam.eye() - cam.target;
+        assert!(
+            eye_offset_before.normalize().dot(eye_offset_after.normalize()) > 0.999,
+            "eye offset direction changed"
+        );
+        assert!(!cam.has_orbit_trackball_state(), "trackball should be baked, not left live");
+        // Target moved to the box center.
+        assert!((cam.target - Vec3::new(50.0, 40.0, 25.0)).length() < 0.5);
+    }
+
+    /// #1203: canceling an in-flight sketch view transition (e.g. Z mid-entry) must bake
+    /// the currently displayed view-up, not snap back to the pre-transition up.
+    #[test]
+    fn frame_bounds_preserves_in_flight_sketch_view_up() {
+        let mut cam = Camera::default();
+        cam.set_pose_instant(
+            Some(ISOMETRIC_YAW),
+            Some(ISOMETRIC_PITCH),
+            Some(400.0),
+            Some(Vec3::ZERO),
+        );
+        let from_up = cam.view_up_hint();
+        cam.start_sketch_view_transition(
+            Vec3::new(10.0, 20.0, 99.0),
+            Vec3::Z,
+            Some(200.0),
+            0.5,
+            Vec3::Y,
+        );
+        // Partway through the entry animation.
+        assert!(cam.tick_transition(0.15));
+        let up_mid = cam.view_up_hint();
+        assert!(
+            (up_mid - from_up).length() > 1e-3 && (up_mid - Vec3::Y).length() > 1e-3,
+            "precondition: mid-transition up should be between start and sketch up"
+        );
+        let look_mid = (cam.target - cam.eye()).normalize();
+
+        cam.frame_bounds_instant(Vec3::splat(-20.0), Vec3::splat(20.0), 1.5);
+
+        let up_after = cam.view_up_hint();
+        let look_after = (cam.target - cam.eye()).normalize();
+        assert!(
+            (up_mid - up_after).length() < 1e-3,
+            "mid-transition view-up must survive zoom-to-fit, got {up_mid:?} -> {up_after:?}"
+        );
+        assert!(
+            look_mid.dot(look_after) > 0.999,
+            "mid-transition look must survive zoom-to-fit"
+        );
+        assert!(!cam.is_transitioning());
     }
 
     #[test]
