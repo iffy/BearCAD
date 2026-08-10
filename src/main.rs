@@ -12924,7 +12924,9 @@ impl App {
         });
         // Erase the toolbar's top stroke under the selected filing tab so the baseline
         // break from the tab strip makes the active tab look continuous with this chrome (#1134).
-        // Use a foreground layer painter — the central ui's clip rect excludes the toolbar.
+        // Paint on the toolbar's own Middle-order layer (not Foreground): the central ui's
+        // clip rect excludes the toolbar, but Foreground is also where context menus live —
+        // drawing the cover there sliced a bar through the open tab menu (#1209).
         if let Some(Some(sel)) = ui.ctx().memory(|m| {
             m.data
                 .get_temp::<Option<egui::Rect>>(egui::Id::new("main_tab_sep_gap"))
@@ -12934,10 +12936,7 @@ impl App {
                 egui::pos2(sel.left(), top - 1.0),
                 egui::pos2(sel.right(), top + 2.0),
             );
-            let painter = ui.ctx().layer_painter(egui::LayerId::new(
-                egui::Order::Foreground,
-                egui::Id::new("main_tab_sep_cover"),
-            ));
+            let painter = ui.ctx().layer_painter(toolbar_resp.response.layer_id);
             painter.rect_filled(cover, 0.0, ui.visuals().panel_fill);
         }
 
