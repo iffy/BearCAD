@@ -148,6 +148,7 @@ pub fn document_diff(a: &Document, b: &Document) -> Vec<String> {
     count_diff!(mirror_ops, "mirror_ops");
     count_diff!(repeat_ops, "repeat_ops");
     count_diff!(slice_ops, "slice_ops");
+    count_diff!(shell_ops, "shell_ops");
     count_diff!(edge_treatment_ops, "edge_treatment_ops");
     count_diff!(sketch_repeat_ops, "sketch_repeat_ops");
     count_diff!(sketch_offset_ops, "sketch_offset_ops");
@@ -529,6 +530,31 @@ impl<'a> EmitCtx<'a> {
                         .as_lua_in(Some(self.doc)),
                     );
                     out.push('\n');
+                }
+            }
+            HierarchyNode::ShellOp(key) => {
+                self.close_sketch(out);
+                if let Some(op) = self.doc.shell_ops.get(key) {
+                    out.push_str(
+                        &Instruction::CreateShellOp {
+                            targets: body_ords(self.doc, &op.targets),
+                            open_faces: op.open_faces.clone(),
+                            thickness: op.thickness.clone(),
+                        }
+                        .as_lua_in(Some(self.doc)),
+                    );
+                    out.push('\n');
+                    if let Some(name) = &op.name {
+                        let ord = self
+                            .doc
+                            .shell_ops
+                            .keys()
+                            .position(|k| k == key)
+                            .unwrap_or(0);
+                        out.push_str(&format!(
+                            "bearcad.set_name({{ kind = \"shell_op\", index = {ord} }}, {name:?})\n"
+                        ));
+                    }
                 }
             }
             HierarchyNode::EdgeTreatmentOp(key) => {
@@ -1664,6 +1690,49 @@ mod tests {
         let script = document_to_lua(&state.doc);
         assert!(script.contains("bearcad.parameter"));
         assert!(!script.contains("bearcad.ui."));
+        let rebuilt = run_lua(&script);
+        let diffs = document_diff(&state.doc, &rebuilt.doc);
+        assert!(
+            diffs.is_empty(),
+            "round-trip diffs: {diffs:?}\n--- script ---\n{script}"
+        );
+    }
+
+    /// #1162: shell ops export as `bearcad.shell{...}` and round-trip.
+    #[test]
+    fn shell_op_exports_and_round_trips() {
+        // Circle profile so open-face refs use round-trippable `profile = "circle"`.
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.circle{ x = 0, y = 0, r = 10 }
+            bearcad.extrude{ circle = 0, distance = 20 }
+            bearcad.shell{
+                bodies = {0},
+                faces = {{ kind = "extrude_cap", extrusion = 0, profile = "circle", profile_index = 0, top = true }},
+                thickness = "1"
+            }
+            "#,
+        );
+        assert_eq!(state.doc.shell_ops.len(), 1);
+        let script = document_to_lua(&state.doc);
+        assert!(
+            !script.contains("bearcad.ui."),
+            "export must not use ui module:\n{script}"
+        );
+        assert!(
+            script.contains("bearcad.shell"),
+            "expected shell in export:\n{script}"
+        );
+        assert!(
+            script.contains("thickness"),
+            "expected thickness in export:\n{script}"
+        );
+        assert!(
+            script.contains("extrude_cap") || script.contains("faces"),
+            "expected open faces in export:\n{script}"
+        );
+
         let rebuilt = run_lua(&script);
         let diffs = document_diff(&state.doc, &rebuilt.doc);
         assert!(
