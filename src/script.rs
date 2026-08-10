@@ -912,8 +912,8 @@ impl Instruction {
             Instruction::Undo => "bearcad.undo()".to_string(),
             Instruction::Tool(tool) => format!("bearcad.ui.tool({:?})", tool_lua_name(*tool)),
             Instruction::BeginSketch { face } => {
-                let (kind, index) = face_lua_parts(face);
-                format!("bearcad.begin_sketch({kind:?}, {index})")
+                // Full face table so body faces (extrude caps/sides, etc.) round-trip (#1159).
+                format!("bearcad.begin_sketch({})", face_id_lua_ref(face, doc))
             }
             Instruction::OpenSketch { sketch } => format!("bearcad.open_sketch({sketch})"),
             Instruction::ExitSketch => "bearcad.exit_sketch()".to_string(),
@@ -3840,6 +3840,7 @@ fn tool_lua_name(tool: Tool) -> &'static str {
     }
 }
 
+#[allow(dead_code)] // kept for simple kind/index diagnostics; export uses face_id_lua_ref
 fn face_lua_parts(face: &FaceId) -> (&'static str, usize) {
     match face {
         FaceId::Circle(i) => ("circle", i.index() as usize),
@@ -4090,6 +4091,14 @@ pub fn revolve_axis_lua(axis: crate::model::RevolveAxis) -> String {
 /// Lua table literal for a `FaceId`, matching `lua_script::parse_face_id_table`'s shape.
 /// Cap/side profiles are limited to `rect`/`circle` (same limitation as `face_lua_parts` and
 /// `parse_face_id_table` — a polygon profile isn't a single index, #66).
+/// Public for document→Lua export (#1159).
+pub fn face_id_lua_ref_for_export(
+    face: &FaceId,
+    doc: &crate::model::Document,
+) -> String {
+    face_id_lua_ref(face, Some(doc))
+}
+
 fn face_id_lua_ref(face: &FaceId, doc: Option<&crate::model::Document>) -> String {
     // Every index below is an **ordinal** among the live elements of its kind when a document
     // was available to count them, and the arena slot otherwise (#1070).
@@ -4587,7 +4596,8 @@ impl ScriptRunner {
         }
     }
 
-    #[cfg(test)]
+    /// Load a Lua source string (tests + DEV verify export #1159).
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub fn from_lua_source(source: &str) -> Result<Self, ScriptError> {
         let lua = Lua::new();
         crate::lua_script::register_api(&lua).map_err(|e| ScriptError {
@@ -6777,7 +6787,7 @@ impl ScriptRunner {
                         }
                         PaletteOutcome::OpenFile | PaletteOutcome::SaveFile
                         | PaletteOutcome::SaveFileAs
-                        | PaletteOutcome::ExportSessionCommands
+                        | PaletteOutcome::ExportLua
                         | PaletteOutcome::DocumentJson
                         | PaletteOutcome::OpenExploder
                         | PaletteOutcome::ShowShortcuts

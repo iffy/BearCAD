@@ -15,6 +15,8 @@ pub enum MenuCommand {
     SaveAs,
     ExportStl,
     ExportStep,
+    /// Export the current document as a deterministic Lua script (#1159).
+    ExportLua,
     ImportStl,
     ImportImage,
     ImportStep,
@@ -22,10 +24,11 @@ pub enum MenuCommand {
     ImportUnit,
     /// Open the McMaster-Carr catalog window and import a part from it (#1022).
     ImportMcMaster,
-    ExportSessionCommands,
     /// Open the Document JSON dialog: the whole document as pasteable JSON text, for
     /// copying into (and loading back out of) bug reports.
     DocumentJson,
+    /// DEV only (#1159): export document as Lua, replay into a temp doc, report diffs.
+    VerifyLuaExport,
     /// Pick a `.lua` script and run it against the live document (File menu).
     LoadScript,
     Quit,
@@ -65,14 +68,15 @@ impl MenuCommand {
             // Needs a file-save dialog, handled in the app frame loop.
             MenuCommand::ExportStl
             | MenuCommand::ExportStep
+            | MenuCommand::ExportLua
             | MenuCommand::ImportStl
             | MenuCommand::ImportImage
             | MenuCommand::ImportStep
             | MenuCommand::ImportUnit
             | MenuCommand::ImportMcMaster
-            | MenuCommand::ExportSessionCommands
             | MenuCommand::DocumentJson
-            | MenuCommand::LoadScript => None,
+            | MenuCommand::LoadScript
+            | MenuCommand::VerifyLuaExport => None,
             MenuCommand::Quit => None,
             MenuCommand::UndoLast => Some(Action::UndoLast),
             MenuCommand::Clear => Some(Action::Clear),

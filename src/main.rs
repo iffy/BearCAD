@@ -26,6 +26,7 @@ mod camera;
 mod cli_install;
 mod command_log;
 mod command_palette;
+mod export_lua;
 mod constraints;
 mod constraint_viewport;
 mod geometric_constraints;
@@ -4843,32 +4844,72 @@ impl App {
         }
     }
 
-    /// Export everything done this session as a timestamped, replayable Lua script, chosen
-    /// via a save dialog (Help → Export Session Commands…, and the command palette). See #43.
+    /// Export the current document as a deterministic Lua script (File → Export → Lua Script…).
+    /// Walks the element graph; no `bearcad.ui` (#1159).
     #[cfg(not(target_arch = "wasm32"))]
-    fn export_session_commands(&mut self) {
+    fn export_document_lua(&mut self) {
         let timestamp = command_log::utc_timestamp();
-        let script = match &self.state.command_log {
-            Some(log) if !log.borrow().is_empty() => log.borrow().session_lua_script(&timestamp),
-            _ => {
-                self.state.status = "No session commands to export yet".to_string();
-                return;
-            }
-        };
+        let script = export_lua::document_to_lua(&self.state.doc);
         let picked = rfd::FileDialog::new()
             .add_filter("Lua script", &["lua"])
-            .set_file_name(format!("bearcad-session-{timestamp}.lua"))
+            .set_file_name(format!("bearcad-document-{timestamp}.lua"))
             .save_file();
         if let Some(path) = picked {
             match std::fs::write(&path, script) {
                 Ok(()) => {
                     self.state.status =
-                        format!("Exported session commands to {}", path.display());
+                        format!("Exported document Lua to {}", path.display());
                 }
                 Err(e) => {
-                    self.state.status = format!("Failed to export session commands: {e}");
+                    self.state.status = format!("Failed to export Lua: {e}");
                 }
             }
+        }
+    }
+
+    /// DEV (#1159): generate Lua for the live document, run it in a temporary document,
+    /// and report what differs.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn verify_lua_export(&mut self) {
+        let script = export_lua::document_to_lua(&self.state.doc);
+        let mut runner = match ScriptRunner::from_lua_source(&script) {
+            Ok(r) => r,
+            Err(e) => {
+                self.state.status =
+                    format!("Verify Lua export: could not load script: {}", e.message);
+                eprintln!(
+                    "Verify Lua export: could not load script: {}",
+                    e.message
+                );
+                return;
+            }
+        };
+        runner.verbose = false;
+        let mut temp = AppState::default();
+        // Carry over nothing from the live UI — pure model recreate.
+        let mut synthetic = script::SyntheticInput::default();
+        let ctx = egui::Context::default();
+        let vp = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0));
+        while !runner.done {
+            runner.tick(&mut temp, &mut synthetic, Some(vp), &ctx);
+        }
+        if let Some(err) = runner.error {
+            self.state.status = format!("Verify Lua export: script failed: {err}");
+            eprintln!("Verify Lua export: script failed:\n{err}\n--- script ---\n{script}");
+            return;
+        }
+        let diffs = export_lua::document_diff(&self.state.doc, &temp.doc);
+        if diffs.is_empty() {
+            self.state.status = "Verify Lua export: documents match".to_string();
+            eprintln!("Verify Lua export: documents match");
+        } else {
+            let summary = diffs.join("; ");
+            self.state.status = format!("Verify Lua export: mismatch — {summary}");
+            eprintln!("Verify Lua export: mismatches:");
+            for d in &diffs {
+                eprintln!("  - {d}");
+            }
+            eprintln!("--- script ---\n{script}");
         }
     }
 
@@ -5172,21 +5213,15 @@ impl App {
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn export_session_commands(&mut self) {
+    fn export_document_lua(&mut self) {
         let timestamp = command_log::utc_timestamp();
-        let script = match &self.state.command_log {
-            Some(log) if !log.borrow().is_empty() => log.borrow().session_lua_script(&timestamp),
-            _ => {
-                self.state.status = "No session commands to export yet".to_string();
-                return;
-            }
-        };
+        let script = export_lua::document_to_lua(&self.state.doc);
         self.web_save_bytes(
             "Lua script",
             &["lua"],
-            format!("bearcad-session-{timestamp}.lua"),
+            format!("bearcad-document-{timestamp}.lua"),
             script.into_bytes(),
-            "Exported session commands".to_string(),
+            "Exported document Lua".to_string(),
         );
     }
 
@@ -5247,7 +5282,13 @@ impl App {
             MenuCommand::ImportMcMaster => {
                 self.state.apply(Action::SetMcMasterWindow { open: Some(true), part: None });
             }
-            MenuCommand::ExportSessionCommands => self.export_session_commands(),
+            MenuCommand::ExportLua => self.export_document_lua(),
+            #[cfg(not(target_arch = "wasm32"))]
+            MenuCommand::VerifyLuaExport => self.verify_lua_export(),
+            #[cfg(target_arch = "wasm32")]
+            MenuCommand::VerifyLuaExport => {
+                self.state.status = "Verify Lua export is desktop-only".to_string();
+            }
             MenuCommand::DocumentJson => self.open_json_dialog(),
             MenuCommand::LoadScript => self.load_script(),
             MenuCommand::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
@@ -5343,7 +5384,7 @@ impl App {
             PaletteOutcome::OpenFile => self.open(),
             PaletteOutcome::SaveFile => self.save(),
             PaletteOutcome::SaveFileAs => self.save_as(),
-            PaletteOutcome::ExportSessionCommands => self.export_session_commands(),
+            PaletteOutcome::ExportLua => self.export_document_lua(),
             PaletteOutcome::DocumentJson => self.open_json_dialog(),
             // Trigger the exploder on the next viewport frame, at wherever the cursor then is — the
             // palette equivalent of pressing Space (#576).

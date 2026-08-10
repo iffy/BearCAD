@@ -8,9 +8,8 @@ use egui::Vec2;
 
 const EPS: f32 = 1e-4;
 
-/// Records interactive user actions as script instructions. Every emitted instruction is
-/// kept in `history` so the whole session can be exported as a Lua script (#43); it is also
-/// echoed to stdout when `print_stdout` is set (the `--show-commands` flag).
+/// Records interactive user actions as script instructions for `--show-commands` (stdout echo).
+/// History is retained for diagnostics; document recreate export is File → Export → Lua (#1159).
 #[derive(Clone, Debug, Default)]
 pub struct CommandLog {
     pending_orbit: Vec2,
@@ -44,11 +43,13 @@ impl CommandLog {
     }
 
     /// Whether any instruction has been recorded this session.
+    #[allow(dead_code)] // retained for --show-commands diagnostics / tests (#1159 removed export UI)
     pub fn is_empty(&self) -> bool {
         self.history.is_empty()
     }
 
     /// The recorded session as a replayable, timestamped Lua script.
+    #[allow(dead_code)] // session export UI removed (#1159); still used by unit tests
     pub fn session_lua_script(&self, timestamp: &str) -> String {
         let mut out = String::new();
         out.push_str("-- BearCAD session commands\n");

@@ -25,6 +25,7 @@ pub struct MenuIds {
     pub save_as: MenuId,
     pub export_stl: MenuId,
     pub export_step: MenuId,
+    pub export_lua: MenuId,
     pub import_stl: MenuId,
     /// File → Import → BearCAD File… (#721).
     pub import_unit: MenuId,
@@ -34,7 +35,6 @@ pub struct MenuIds {
     pub import_image: MenuId,
     pub import_step: MenuId,
     pub document_json: MenuId,
-    pub export_session_commands: MenuId,
     pub quit: MenuId,
     pub undo: MenuId,
     pub clear: MenuId,
@@ -53,6 +53,8 @@ pub struct MenuIds {
     pub help_mode: MenuId,
     /// DEV → Report issue (#627); the DEV menu only appears in debug builds.
     pub report_issue: MenuId,
+    /// DEV → Verify Lua export (#1159); debug builds only.
+    pub verify_lua_export: MenuId,
     pub pane_checks: Vec<(Pane, MenuId)>,
 }
 
@@ -108,6 +110,9 @@ pub fn command_for_id(
     if ids.export_step == id {
         return Some(MenuCommand::ExportStep);
     }
+    if ids.export_lua == id {
+        return Some(MenuCommand::ExportLua);
+    }
     if ids.import_image == id {
         return Some(MenuCommand::ImportImage);
     }
@@ -128,9 +133,6 @@ pub fn command_for_id(
     }
     if ids.document_json == id {
         return Some(MenuCommand::DocumentJson);
-    }
-    if ids.export_session_commands == id {
-        return Some(MenuCommand::ExportSessionCommands);
     }
     if ids.quit == id {
         return Some(MenuCommand::Quit);
@@ -173,6 +175,9 @@ pub fn command_for_id(
     }
     if ids.report_issue == id {
         return Some(MenuCommand::ReportIssue);
+    }
+    if ids.verify_lua_export == id {
+        return Some(MenuCommand::VerifyLuaExport);
     }
     for &(pane, ref check_id) in &ids.pane_checks {
         if check_id == id {
@@ -285,6 +290,7 @@ impl NativeMenu {
         // command dispatch still matches, only the visible labels drop the redundant verb.
         let export_stl = MenuItem::with_id("export_stl", "STL…", true, None);
         let export_step = MenuItem::with_id("export_step", "STEP…", true, None);
+        let export_lua = MenuItem::with_id("export_lua", "Lua Script…", true, None);
         let load_script = MenuItem::with_id("load_script", "Load Script…", true, None);
         let import_unit = MenuItem::with_id("import_unit", "BearCAD File…", true, None);
         let import_mcmaster =
@@ -337,9 +343,6 @@ impl NativeMenu {
             true,
             None,
         );
-        let export_session_commands =
-            MenuItem::with_id("export_session_commands", "Export Session Commands…", true, None);
-
         let mut pane_checks = Vec::new();
         let mut pane_ids = Vec::new();
         for &pane in Pane::ALL {
@@ -371,6 +374,7 @@ impl NativeMenu {
         let export_menu = Submenu::new("Export", true);
         export_menu.append(&export_stl)?;
         export_menu.append(&export_step)?;
+        export_menu.append(&export_lua)?;
         file_menu.append(&import_menu)?;
         file_menu.append(&export_menu)?;
         file_menu.append(&load_script)?;
@@ -403,7 +407,6 @@ impl NativeMenu {
         view_menu.append(&panes_menu)?;
         help_menu.append(&help_mode)?;
         help_menu.append(&shortcuts_help)?;
-        help_menu.append(&export_session_commands)?;
         help_menu.append(&install_cli)?;
         help_menu.append(&PredefinedMenuItem::separator())?;
         help_menu.append(&licenses)?;
@@ -411,12 +414,14 @@ impl NativeMenu {
 
         menu.append_items(&[&file_menu, &edit_menu, &cad_menu, &view_menu, &help_menu])?;
 
-        // DEV menu (#627), debug builds (`cargo run`) only: developer utilities like filing
-        // an issue straight into the repo's local todoer db.
+        // DEV menu (#627/#1159), debug builds (`cargo run`) only: developer utilities.
         let report_issue = MenuItem::with_id("report_issue", "Report issue…", true, None);
+        let verify_lua_export =
+            MenuItem::with_id("verify_lua_export", "Verify Lua export…", true, None);
         if cfg!(debug_assertions) {
             let dev_menu = Submenu::new("DEV", true);
             dev_menu.append(&report_issue)?;
+            dev_menu.append(&verify_lua_export)?;
             menu.append(&dev_menu)?;
         }
 
@@ -433,6 +438,7 @@ impl NativeMenu {
             save_as: save_as.id().clone(),
             export_stl: export_stl.id().clone(),
             export_step: export_step.id().clone(),
+            export_lua: export_lua.id().clone(),
             load_script: load_script.id().clone(),
             import_stl: import_stl.id().clone(),
             import_unit: import_unit.id().clone(),
@@ -440,7 +446,6 @@ impl NativeMenu {
             import_image: import_image.id().clone(),
             import_step: import_step.id().clone(),
             document_json: document_json.id().clone(),
-            export_session_commands: export_session_commands.id().clone(),
             quit: quit.id().clone(),
             undo: undo.id().clone(),
             clear: clear.id().clone(),
@@ -456,6 +461,7 @@ impl NativeMenu {
             settings: settings_item.id().clone(),
             help_mode: help_mode.id().clone(),
             report_issue: report_issue.id().clone(),
+            verify_lua_export: verify_lua_export.id().clone(),
             pane_checks: pane_ids,
         };
 
@@ -551,6 +557,7 @@ mod tests {
             save_as: MenuId::new("save_as"),
             export_stl: MenuId::new("export_stl"),
             export_step: MenuId::new("export_step"),
+            export_lua: MenuId::new("export_lua"),
             load_script: MenuId::new("load_script"),
             import_stl: MenuId::new("import_stl"),
             import_unit: MenuId::new("import_unit"),
@@ -558,7 +565,6 @@ mod tests {
             import_image: MenuId::new("import_image"),
             import_step: MenuId::new("import_step"),
             document_json: MenuId::new("document_json"),
-            export_session_commands: MenuId::new("export_session_commands"),
             quit: MenuId::new("quit"),
             undo: MenuId::new("undo"),
             clear: MenuId::new("clear"),
@@ -574,6 +580,7 @@ mod tests {
             settings: MenuId::new("settings"),
             help_mode: MenuId::new("help_mode"),
             report_issue: MenuId::new("report_issue"),
+            verify_lua_export: MenuId::new("verify_lua_export"),
             pane_checks: vec![(Pane::ViewCube, pane_menu_id.clone())],
         };
         (ids, pane_menu_id)
@@ -607,8 +614,12 @@ mod tests {
             Some(MenuCommand::Clear)
         );
         assert_eq!(
-            command_for_id(&ids.export_session_commands, &ids, |_| true),
-            Some(MenuCommand::ExportSessionCommands)
+            command_for_id(&ids.export_lua, &ids, |_| true),
+            Some(MenuCommand::ExportLua)
+        );
+        assert_eq!(
+            command_for_id(&ids.verify_lua_export, &ids, |_| true),
+            Some(MenuCommand::VerifyLuaExport)
         );
         assert_eq!(
             command_for_id(&ids.install_cli, &ids, |_| true),

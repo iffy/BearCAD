@@ -64,6 +64,10 @@ pub fn bar(ui: &mut egui::Ui, pane_visible: impl Fn(Pane) -> bool) -> Option<Men
                         picked = Some(MenuCommand::ExportStep);
                         ui.close();
                     }
+                    if ui.button("Lua Script…").clicked() {
+                        picked = Some(MenuCommand::ExportLua);
+                        ui.close();
+                    }
                 });
                 ui.separator();
                 if ui.button("Document JSON…").clicked() {
@@ -131,10 +135,6 @@ pub fn bar(ui: &mut egui::Ui, pane_visible: impl Fn(Pane) -> bool) -> Option<Men
                 }
                 if ui.button("Licenses").clicked() {
                     picked = Some(MenuCommand::Licenses);
-                    ui.close();
-                }
-                if ui.button("Export Session Commands…").clicked() {
-                    picked = Some(MenuCommand::ExportSessionCommands);
                     ui.close();
                 }
             });

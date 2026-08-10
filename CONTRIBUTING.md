@@ -18,7 +18,7 @@ Bug reports and feature requests from humans are very welcome, and they're the f
 whole experiment runs on:
 
 - **Bugs** — say what you did, what you expected, and what happened instead. Screenshots
-  help. If you can reproduce it with a Lua script (Help → Export Session Commands…),
+  help. If you can reproduce it with a Lua script (**File → Export → Lua Script…**),
   attach that. To share the exact document state, use **File → Document JSON…** and paste
   the copied JSON into the issue — anyone can paste it back into the same dialog and load
   your document.

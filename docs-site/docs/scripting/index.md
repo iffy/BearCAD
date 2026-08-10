@@ -61,8 +61,9 @@ in the desktop app.
 Other flags:
 
 - `--timeout <seconds>` — force-exit (non-zero) if the app hasn't closed in time.
-- `--show-commands` — echo GUI actions as `bearcad.*` calls on stdout. **Help → Export
-  Session Commands…** does the same into a replayable `.lua` file.
+- `--show-commands` — echo GUI actions as `bearcad.*` calls on stdout.
+- **File → Export → Lua Script…** — write a deterministic script that recreates the
+  current document (no `bearcad.ui`).
 - `--tutorial <name>` — start a tutorial on launch. The browser app takes it as a URL
   parameter: [`?tutorial=bracket`](pathname:///app/?tutorial=bracket).
 

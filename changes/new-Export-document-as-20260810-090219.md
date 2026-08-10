@@ -1,0 +1,1 @@
+Export document as Lua: File→Export→Lua Script… writes a deterministic no-ui recreate of the current document via the element graph; remove Help Export Session Commands; DEV→Verify Lua export round-trips and reports diffs (#1159)

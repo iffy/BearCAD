@@ -135,8 +135,8 @@ the document embeds its own copy, so it opens and builds with the source file ab
 bearcad.sync_unit(0)   -- update unit 0's embedded copy now
 ```
 
-## Turning a session into a script
+## Export as Lua
 
-**Help → Export Session Commands…** writes everything you've done this session as a
-replayable `.lua` script — the same calls the [scripting API](/docs/scripting) uses. Running
-the app with `--show-commands` echoes each GUI action as its `bearcad.*` call live.
+**File → Export → Lua Script…** writes a deterministic script that recreates the current
+document (no `bearcad.ui` steps) — see [Scripting](/docs/scripting). Running with
+`--show-commands` still echoes each GUI action as its `bearcad.*` call live.

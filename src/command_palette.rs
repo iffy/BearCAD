@@ -68,7 +68,7 @@ pub enum PaletteCommandId {
     ShowPaneViewCube,
     HidePaneViewCube,
     DeleteSelection,
-    ExportSessionCommands,
+    ExportLua,
     DocumentJson,
     ToggleFpsMode,
     ZoomToFit,
@@ -98,7 +98,7 @@ pub enum PaletteOutcome {
     OpenFile,
     SaveFile,
     SaveFileAs,
-    ExportSessionCommands,
+    ExportLua,
     DocumentJson,
     /// Open the Selection Exploder at the cursor (#576).
     OpenExploder,
@@ -270,7 +270,7 @@ impl PaletteCommand {
             PaletteCommandId::DeleteSelection => {
                 PaletteOutcome::Action(Action::DeleteSelection)
             }
-            PaletteCommandId::ExportSessionCommands => PaletteOutcome::ExportSessionCommands,
+            PaletteCommandId::ExportLua => PaletteOutcome::ExportLua,
             PaletteCommandId::DocumentJson => PaletteOutcome::DocumentJson,
         }
     }
@@ -480,9 +480,9 @@ const BASE_COMMANDS: &[PaletteCommand] = &[
     PaletteCommand::new(PaletteCommandId::Redo, "Redo", "redo repeat reapply"),
     PaletteCommand::new(PaletteCommandId::Clear, "Clear Document", "clear document delete all"),
     PaletteCommand::new(
-        PaletteCommandId::ExportSessionCommands,
-        "Export Session Commands…",
-        "export session commands lua script record steps replay history",
+        PaletteCommandId::ExportLua,
+        "Export Lua Script…",
+        "export lua script document recreate deterministic",
     ),
     PaletteCommand::new(
         PaletteCommandId::DocumentJson,
