@@ -12941,21 +12941,20 @@ impl App {
             painter.rect_filled(cover, 0.0, ui.visuals().panel_fill);
         }
 
-        if self.state.command_palette.open {
+        // Always allocate the command-palette bottom panel — even when closed, at height 0
+        // (#1211). Inserting it only while open shifts egui auto-id salts for every later
+        // panel (status, Elements, Context), so their widgets renumber between frames and
+        // flash red with "Widget rect … changed id between passes".
+        {
+            let open = self.state.command_palette.open;
             let commands = commands_for_state(&self.state);
             let matches = filter_commands(&self.state.command_palette.query, &commands);
             let mut outcome = None;
-            egui::Panel::bottom("command_palette")
-                .resizable(false)
-                .exact_size(280.0)
-                .frame(
-                    egui::Frame::default()
-                        .fill(theme::palette_console_fill())
-                        .inner_margin(egui::Margin::symmetric(12, 8)),
-                )
-                .show(ui, |ui| {
+            show_command_palette_panel(ui, open, |ui| {
+                if open {
                     outcome = show_palette(ui, &mut self.state.command_palette, &matches);
-                });
+                }
+            });
             if let Some(chosen) = outcome {
                 self.dispatch_palette_outcome(chosen);
             }
@@ -17308,6 +17307,44 @@ const DIM_INPUT_MIN_TEXT_WIDTH: f32 = 48.0;
 /// Approximate monospace glyph width at 13pt (used for layout sizing).
 const DIM_INPUT_CHAR_WIDTH: f32 = 7.8;
 
+/// Bottom-panel height of the open command palette console.
+const COMMAND_PALETTE_PANEL_HEIGHT: f32 = 280.0;
+
+/// Always-on bottom panel slot for the command palette (#1211).
+///
+/// egui panels take auto-id salts from allocation order on the root Ui. Allocating this
+/// panel only while open renumbers every later panel (status bar, Elements, Context), so
+/// their widgets flash red with "changed id between passes". Keep the slot always, height
+/// 0 when closed.
+fn show_command_palette_panel(
+    ui: &mut egui::Ui,
+    open: bool,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    let height = if open {
+        COMMAND_PALETTE_PANEL_HEIGHT
+    } else {
+        0.0
+    };
+    let frame = if open {
+        egui::Frame::default()
+            .fill(theme::palette_console_fill())
+            .inner_margin(egui::Margin::symmetric(12, 8))
+    } else {
+        egui::Frame::NONE
+    };
+    egui::Panel::bottom("command_palette")
+        .resizable(false)
+        .exact_size(height)
+        .show_separator_line(open)
+        .frame(frame)
+        .show(ui, |ui| {
+            if open {
+                add_contents(ui);
+            }
+        });
+}
+
 /// Container for a side pane: a docked side `Panel` normally, a closable floating
 /// window over the viewport in the compact (phone) layout. Returns false when the
 /// window's close button dismissed it, so the caller can hide the pane.
@@ -17321,6 +17358,9 @@ fn show_pane_shell(
     add_contents: impl FnOnce(&mut egui::Ui),
 ) -> bool {
     let ctx = &ui.ctx().clone();
+    // Explicit content id: side-panel widgets stay stable even if a sibling panel's
+    // auto-id salt shifts (command palette open/close, #1211 / egui multipass).
+    let content_id = egui::Id::new(("pane_contents", id));
     if touch::compact(ctx) {
         let mut open = true;
         let screen = ctx.content_rect();
@@ -17339,7 +17379,9 @@ fn show_pane_shell(
             .max_height(screen.height() * 0.7)
             .vscroll(true)
             .show(ctx, |ui| {
-                add_contents(ui);
+                ui.scope_builder(egui::UiBuilder::new().id(content_id), |ui| {
+                    add_contents(ui);
+                });
                 content_bottom = Some(ui.cursor().min.y);
             });
         remember_pane_rect(
@@ -17363,7 +17405,9 @@ fn show_pane_shell(
         }
         let mut content_bottom = None;
         let response = panel.show(ui, |ui| {
-            add_contents(ui);
+            ui.scope_builder(egui::UiBuilder::new().id(content_id), |ui| {
+                add_contents(ui);
+            });
             content_bottom = Some(ui.cursor().min.y);
         });
         let rect = trim_to_content(response.response.rect, content_bottom);
@@ -34391,6 +34435,75 @@ mod tests {
         assert_eq!(swap.kind, DisplayKind::Group);
         assert_eq!(swap.swap_to, Some(1), "swaps into the other group (parent node 1)");
         assert_eq!(swap.leaves, vec![2, 3], "shows group 1's members");
+    }
+
+    /// #1211: opening the command palette (⌘P) must not renumber side-pane widget ids.
+    ///
+    /// egui panels take auto-id salts from root allocation order. A bottom panel that appears
+    /// only while open shifts every later panel's salt — Elements and Context flash red with
+    /// "Widget rect … changed id between passes". [`show_command_palette_panel`] always
+    /// allocates the slot (height 0 when closed) so status/side-pane salts stay put.
+    #[test]
+    fn command_palette_panel_slot_keeps_side_pane_widget_ids_stable() {
+        fn probe(open: bool) -> egui::Id {
+            let ctx = egui::Context::default();
+            let mut captured = None;
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                super::show_command_palette_panel(ui, open, |ui| {
+                    ui.label("palette");
+                });
+                egui::Panel::bottom("status").show(ui, |ui| {
+                    ui.label("status");
+                });
+                egui::Panel::left("hierarchy").show(ui, |ui| {
+                    // Same explicit content id the side-pane shell uses.
+                    ui.scope_builder(
+                        egui::UiBuilder::new().id(egui::Id::new(("pane_contents", "hierarchy"))),
+                        |ui| {
+                            captured = Some(ui.button("Elements").id);
+                        },
+                    );
+                });
+            });
+            captured.expect("side-pane button id")
+        }
+        assert_eq!(
+            probe(false),
+            probe(true),
+            "toggling the command palette must not renumber Elements-pane widget ids"
+        );
+    }
+
+    /// #1211: the pre-fix pattern — allocate the palette panel only while open — *does*
+    /// renumber later panels. Guards against "fixing" the regression by deleting the
+    /// always-on slot without noticing the id shift.
+    #[test]
+    fn conditional_palette_panel_would_renumber_side_pane_ids() {
+        fn probe(open: bool) -> egui::Id {
+            let ctx = egui::Context::default();
+            let mut captured = None;
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                if open {
+                    egui::Panel::bottom("command_palette")
+                        .exact_size(super::COMMAND_PALETTE_PANEL_HEIGHT)
+                        .show(ui, |ui| {
+                            ui.label("palette");
+                        });
+                }
+                egui::Panel::bottom("status").show(ui, |ui| {
+                    ui.label("status");
+                });
+                egui::Panel::left("hierarchy").show(ui, |ui| {
+                    captured = Some(ui.button("Elements").id);
+                });
+            });
+            captured.expect("side-pane button id")
+        }
+        assert_ne!(
+            probe(false),
+            probe(true),
+            "sanity: the broken conditional allocation really does renumber ids"
+        );
     }
 }
 /// The region of a sketch drawn on `host` that the cursor is inside (#993).
