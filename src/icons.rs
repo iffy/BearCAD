@@ -88,8 +88,6 @@ pub enum IconId {
     GroundSolid,
     ViewList,
     ViewGraph,
-    /// Graph-view force-layout toggle (#525): nodes repelling outward.
-    GraphForce,
     /// Extrude body-mode picker icons (#35).
     NewBody,
     AddToBody,
@@ -137,7 +135,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 93] = [
+    pub const ALL: [Self; 92] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -230,7 +228,6 @@ impl IconId {
         Self::Image,
         Self::SketchComponents,
         Self::DrawingComponents,
-        Self::GraphForce,
     ];
 
     pub fn svg_source(self) -> &'static str {
@@ -304,7 +301,6 @@ impl IconId {
             Self::GroundSolid => include_str!("assets/icons/ground_solid.svg"),
             Self::ViewList => include_str!("assets/icons/view_list.svg"),
             Self::ViewGraph => include_str!("assets/icons/view_graph.svg"),
-            Self::GraphForce => include_str!("assets/icons/graph_force.svg"),
             Self::NewBody => include_str!("assets/icons/new_body.svg"),
             Self::AddToBody => include_str!("assets/icons/add_to_body.svg"),
             Self::CutBody => include_str!("assets/icons/cut_body.svg"),
@@ -404,7 +400,6 @@ impl IconId {
             Self::GroundSolid => "Solid ground",
             Self::ViewList => "List view",
             Self::ViewGraph => "Graph view",
-            Self::GraphForce => "Force layout",
             Self::NewBody => "New body",
             Self::AddToBody => "Add to body",
             Self::CutBody => "Cut body",

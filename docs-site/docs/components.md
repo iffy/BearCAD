@@ -36,11 +36,8 @@ In the Elements pane's graph view, components draw as smooth, lightly shaded are
 encompassing their member nodes rather than as nodes themselves.
 
 The nodes lay themselves out with a force simulation that repels overlaps and spaces
-things apart. A **force-layout toggle** (the button beside the List/Graph buttons, shown
-in graph mode) turns that on or off: leave it on to let a busy graph untangle itself, or
-turn it off to freeze the layout so it holds still while you read it or drag nodes into
-place. The **type filter** at the bottom of the pane applies to both the list and the
-graph, so hiding a category (say, sketches) thins out either view the same way.
+things apart. The **type filter** at the bottom of the pane applies to both the list and
+the graph, so hiding a category (say, sketches) thins out either view the same way.
 
 **Right-click any node** for the same context menu its list row offers — edit the
 element, add it to a drawing, export a body, move it to a component, roll back to it, or

@@ -1335,12 +1335,13 @@ pub struct GraphLayout {
     /// as authoritative, pushing *other* nodes out of the way instead of snapping it back.
     active_drag: Option<HierarchyNode>,
     /// Whether the simulation has come to rest (#661). A settled layout **stops stepping**
-    /// until something actually disturbs it — a node appearing or leaving, a drag, or the
-    /// force toggle coming back on. Without this the sim advanced on every repaint the pane
-    /// happened to get, so merely clicking a node (which repaints for selection, hover, and
-    /// the tooltip) walked the whole graph to a new position.
+    /// until something actually disturbs it — a node appearing or leaving, or a drag.
+    /// Without this the sim advanced on every repaint the pane happened to get, so merely
+    /// clicking a node (which repaints for selection, hover, and the tooltip) walked the
+    /// whole graph to a new position.
     settled: bool,
-    /// Whether the force layout was running last frame, so switching it back on unsettles.
+    /// Whether physics was running last frame (`run_physics`); used to unsettle when the
+    /// sim is re-enabled after a freeze (tests / internal `sync_and_step` callers).
     was_running: bool,
 }
 
@@ -3981,7 +3982,6 @@ pub fn show_pane(
     health: &DocumentHealth,
     view_mode: &mut HierarchyViewMode,
     graph_layout: &mut GraphLayout,
-    graph_force: &mut bool,
     filter: &mut ElementFilter,
     filter_expanded: &mut bool,
     on_edit_sketch: &mut impl FnMut(SketchId),
@@ -4050,23 +4050,6 @@ pub fn show_pane(
                     ui.push_id(icon.label(), |ui| {
                         if selectable_icon_button(ui, icon, selected, tooltip).clicked() {
                             *view_mode = mode;
-                        }
-                    });
-                }
-                // Force-layout toggle (#525): only meaningful in the Graph view. When on, nodes
-                // repel and space themselves; when off, the layout freezes so a busy graph holds
-                // still to read and drag.
-                if *view_mode == HierarchyViewMode::Graph {
-                    ui.push_id("graph_force", |ui| {
-                        if selectable_icon_button(
-                            ui,
-                            IconId::GraphForce,
-                            *graph_force,
-                            "Force layout — auto-space nodes",
-                        )
-                        .clicked()
-                        {
-                            *graph_force = !*graph_force;
                         }
                     });
                 }
@@ -4274,7 +4257,6 @@ pub fn show_pane(
                 doc,
                 &tree,
                 graph_layout,
-                *graph_force,
                 selection,
                 health,
                 &context,
@@ -4457,7 +4439,6 @@ fn show_graph_view(
     doc: &Document,
     tree: &[HierarchyEntry],
     graph_layout: &mut GraphLayout,
-    force_enabled: bool,
     selection: &SceneSelection,
     health: &DocumentHealth,
     context: &HashSet<SceneElement>,
@@ -4519,10 +4500,9 @@ fn show_graph_view(
 
     let available_width = ui.available_width().max(2.0 * GRAPH_MARGIN + 1.0);
 
-    // Advance the physics, then keep animating until it settles. With the force layout off
-    // (#525) the nodes stay synced but frozen, so no repaint is scheduled.
-    let kinetic =
-        graph_layout.sync_and_step(&positions, available_width, SUBSTEPS, DT, force_enabled);
+    // Advance the physics, then keep animating until it settles. Force layout always runs
+    // in the Graph view (#1189 removed the toggle that could freeze it).
+    let kinetic = graph_layout.sync_and_step(&positions, available_width, SUBSTEPS, DT, true);
     if kinetic > SETTLE_KE {
         ui.ctx().request_repaint();
     } else {

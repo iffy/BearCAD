@@ -3243,9 +3243,6 @@ struct App {
     /// Persistent physics state for the Elements pane's force-directed Graph view (#94).
     /// Ephemeral view state (never persisted), like `AppState::hierarchy_view_mode`.
     graph_layout: hierarchy::GraphLayout,
-    /// Whether the Graph view runs its repel/space force simulation (#525). When off the
-    /// layout freezes so the user can read (and manually drag) a busy graph. Ephemeral.
-    graph_force: bool,
     /// Collapsed component rows in the Elements pane (#423); UI-only state.
     collapsed_components: std::collections::HashSet<model::ComponentKey>,
     /// Unit instances whose read-only contents are expanded in the Elements list (#723);
@@ -4376,7 +4373,6 @@ impl App {
             },
             gpu_view_cube: gpu_view_cube::install(cc),
             graph_layout: hierarchy::GraphLayout::default(),
-            graph_force: true,
             collapsed_components: std::collections::HashSet::new(),
             expanded_units: std::collections::HashSet::new(),
             rollback_marker: None,
@@ -13265,7 +13261,6 @@ impl App {
                         &self.state.document_health,
                         &mut self.state.hierarchy_view_mode,
                         &mut self.graph_layout,
-                        &mut self.graph_force,
                         &mut self.element_filter,
                         &mut self.element_filter_expanded,
                         &mut queue_edit_sketch,
