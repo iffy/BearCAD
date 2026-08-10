@@ -725,6 +725,31 @@ fn coincident_point_mobility(point: &ConstraintPoint) -> u8 {
     }
 }
 
+/// Like [`coincident_mover_and_anchor`], but projected line endpoints rank as fixed (#1185).
+pub fn coincident_mover_and_anchor_in_doc(
+    doc: &Document,
+    a: ConstraintPoint,
+    b: ConstraintPoint,
+) -> (ConstraintPoint, ConstraintPoint) {
+    let mobility = |p: &ConstraintPoint| -> u8 {
+        if let ConstraintPoint::LineEndpoint { line, .. } = p {
+            if doc.lines.get(*line).is_some_and(|l| l.projection.is_some()) {
+                return 0;
+            }
+        }
+        coincident_point_mobility(p)
+    };
+    let a_m = mobility(&a);
+    let b_m = mobility(&b);
+    if a_m > b_m {
+        (a, b)
+    } else if b_m > a_m {
+        (b, a)
+    } else {
+        (b, a)
+    }
+}
+
 /// Whether two sketch lines are parallel (within tolerance).
 pub fn lines_are_parallel(
     doc: &Document,
@@ -914,6 +939,11 @@ pub fn set_point_uv(
                 .lines
                 .get_mut(line)
                 .ok_or_else(|| format!("Line {} not found", line.index()))?;
+            // Projected lines are fixed by their 3D source (#140/#1185) — refuse writes the
+            // same way face vertices do, so a stray solve/drag can't rewrite them.
+            if entity.projection.is_some() {
+                return Err("Projected line endpoints are fixed and cannot be moved".to_string());
+            }
             match end {
                 LineEnd::Start => {
                     entity.x0 = u;

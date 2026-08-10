@@ -375,8 +375,10 @@ impl<'a> Builder<'a> {
         (e, pu, pv)
     }
 
-    /// The slvs entity for a sketch point: free (group 2) for line endpoints and circle
-    /// centers, fixed (group 1) for face vertices, which belong to solid geometry.
+    /// The slvs entity for a sketch point: free (group 2) for ordinary line endpoints and
+    /// circle centers; fixed (group 1) for face vertices and **projected** line endpoints
+    /// (#140/#1185), which belong to external 3D geometry and are rewritten by
+    /// `refresh_projections` after every solve.
     fn ensure_point(&mut self, point: &ConstraintPoint) -> Result<u32, String> {
         if let Some((e, _, _)) = self.points.get(point) {
             return Ok(*e);
@@ -385,17 +387,27 @@ impl<'a> Builder<'a> {
             return Ok(*e);
         }
         let (u, v) = point_uv(self.doc, self.sketch, point.clone())?;
-        match point {
-            ConstraintPoint::FaceVertex { .. } => {
-                let (e, _, _) = self.point2d(GROUP_FIXED, u as f64, v as f64);
-                self.fixed_points.insert(point.clone(), e);
-                Ok(e)
-            }
-            _ => {
-                let (e, pu, pv) = self.point2d(GROUP_SOLVE, u as f64, v as f64);
-                self.points.insert(point.clone(), (e, pu, pv));
-                Ok(e)
-            }
+        let fixed = match point {
+            ConstraintPoint::FaceVertex { .. } => true,
+            // Projected lines (#140) are associative references: their endpoints are driven
+            // by the source body/plane, not the sketch solver. Leaving them free let a
+            // coincident pull the projection to free geometry; the next refresh snapped the
+            // projection back and the free geometry never moved (#1185).
+            ConstraintPoint::LineEndpoint { line, .. } => self
+                .doc
+                .lines
+                .get(*line)
+                .is_some_and(|l| l.projection.is_some()),
+            _ => false,
+        };
+        if fixed {
+            let (e, _, _) = self.point2d(GROUP_FIXED, u as f64, v as f64);
+            self.fixed_points.insert(point.clone(), e);
+            Ok(e)
+        } else {
+            let (e, pu, pv) = self.point2d(GROUP_SOLVE, u as f64, v as f64);
+            self.points.insert(point.clone(), (e, pu, pv));
+            Ok(e)
         }
     }
 
@@ -451,13 +463,19 @@ impl<'a> Builder<'a> {
                 (origin, dir)
             }
         };
-        let group = if matches!(
-            line,
-            ConstraintLine::FaceEdge { .. } | ConstraintLine::OriginAxis(_)
-        ) {
-            GROUP_FIXED
-        } else {
-            GROUP_SOLVE
+        let group = match line {
+            ConstraintLine::FaceEdge { .. } | ConstraintLine::OriginAxis(_) => GROUP_FIXED,
+            // Projected sketch lines are fixed references (#140/#1185), same as face edges.
+            ConstraintLine::Line(index)
+                if self
+                    .doc
+                    .lines
+                    .get(*index)
+                    .is_some_and(|l| l.projection.is_some()) =>
+            {
+                GROUP_FIXED
+            }
+            _ => GROUP_SOLVE,
         };
         let e = self.entity(SlvsEntity {
             group,

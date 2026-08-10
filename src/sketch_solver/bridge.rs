@@ -99,7 +99,11 @@ impl SketchBridge {
             return Ok(());
         }
         let (u, v) = point_uv(doc, self.sketch, point.clone())?;
-        let (u_id, v_id) = self.system.add_point(u as f64, v as f64, false);
+        // Projected lines (#140/#1185) are fixed by their 3D source — treat endpoints like
+        // face vertices so DOF/drag analysis doesn't count them as free, and so a coincident
+        // against the projection moves free geometry rather than the projection.
+        let fixed = doc.lines.get(line).is_some_and(|l| l.projection.is_some());
+        let (u_id, v_id) = self.system.add_point(u as f64, v as f64, fixed);
         self.point_vars.insert(point, (u_id, v_id));
         Ok(())
     }
@@ -466,8 +470,8 @@ impl SketchBridge {
     ) -> Result<(), String> {
         match (a, b) {
             (ConstraintEntity::Point(pa), ConstraintEntity::Point(pb)) => {
-                use crate::geometric_constraints::coincident_mover_and_anchor;
-                let (_mover, anchor) = coincident_mover_and_anchor(pa.clone(), pb.clone());
+                use crate::geometric_constraints::coincident_mover_and_anchor_in_doc;
+                let (_mover, anchor) = coincident_mover_and_anchor_in_doc(doc, pa.clone(), pb.clone());
                 self.hold_point(doc, anchor)?;
                 let (au, av) = self.point_vars(doc, pa)?;
                 let (bu, bv) = self.point_vars(doc, pb)?;
@@ -1396,5 +1400,185 @@ mod tests {
         let l3 = &doc.lines[lkey(3)];
         let angle = (l3.y1 - l3.y0).atan2(l3.x1 - l3.x0).to_degrees();
         assert!((angle - 120.0).abs() < 0.05, "bend angle {angle}");
+    }
+
+    /// #1185: projected lines are fixed by their 3D source. A coincident that references one
+    /// must move free sketch geometry onto the projection — not nudge the projection (which
+    /// `refresh_projections` would snap back, leaving free geometry unmoved).
+    #[test]
+    fn coincident_point_on_projected_line_moves_free_geometry() {
+        use crate::model::{ConstraintEntity, ConstraintLine, ConstraintPoint, LineEnd, ProjectionSource};
+
+        let (mut doc, sketch) = sketch_doc();
+        // Vertical projected reference at x = 0.
+        let mut projected = Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 100.0);
+        projected.construction = true;
+        projected.projection = Some(ProjectionSource::Plane {
+            plane: pkey(1), // XZ — any source tag; solve only cares that projection is set
+        });
+        doc.lines.insert(projected);
+        // Free horizontal line whose start sits 40 mm off the projection.
+        doc.lines
+            .insert(Line::from_local_endpoints(sketch, 40.0, 50.0, 90.0, 50.0));
+
+        doc.constraints.insert(Constraint {
+            sketch,
+            kind: ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                    line: lkey(1),
+                    end: LineEnd::Start,
+                }),
+                b: ConstraintEntity::Line(ConstraintLine::Line(lkey(0))),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+        });
+
+        solve_document_sketches(&mut doc, &[]).expect("solve");
+
+        let proj = &doc.lines[lkey(0)];
+        assert!(
+            proj.x0.abs() < EPS && proj.x1.abs() < EPS,
+            "projected line must stay put, got ({},{})-({},{})",
+            proj.x0,
+            proj.y0,
+            proj.x1,
+            proj.y1
+        );
+        let free = &doc.lines[lkey(1)];
+        assert!(
+            free.x0.abs() < 0.5,
+            "free endpoint should land on the projected line, x0={}",
+            free.x0
+        );
+    }
+
+    /// #1185: point-point coincidence with a projected endpoint must pull free geometry.
+    #[test]
+    fn coincident_with_projected_endpoint_moves_free_geometry() {
+        use crate::model::{ConstraintEntity, ConstraintPoint, LineEnd, ProjectionSource};
+
+        let (mut doc, sketch) = sketch_doc();
+        let mut projected = Line::from_local_endpoints(sketch, 10.0, 20.0, 10.0, 80.0);
+        projected.construction = true;
+        projected.projection = Some(ProjectionSource::Plane { plane: pkey(1) });
+        doc.lines.insert(projected);
+        doc.lines
+            .insert(Line::from_local_endpoints(sketch, 55.0, 20.0, 100.0, 20.0));
+
+        doc.constraints.insert(Constraint {
+            sketch,
+            kind: ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                    line: lkey(1),
+                    end: LineEnd::Start,
+                }),
+                b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                    line: lkey(0),
+                    end: LineEnd::Start,
+                }),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+        });
+
+        solve_document_sketches(&mut doc, &[]).expect("solve");
+
+        let proj = &doc.lines[lkey(0)];
+        assert!(
+            (proj.x0 - 10.0).abs() < EPS && (proj.y0 - 20.0).abs() < EPS,
+            "projected endpoint must stay put, got ({}, {})",
+            proj.x0,
+            proj.y0
+        );
+        let free = &doc.lines[lkey(1)];
+        assert!(
+            (free.x0 - 10.0).abs() < 0.5 && (free.y0 - 20.0).abs() < 0.5,
+            "free endpoint should meet the projected endpoint, got ({}, {})",
+            free.x0,
+            free.y0
+        );
+    }
+
+    /// #1185 fixture: floating rectangle constrained to projected stud edges must re-seat
+    /// after a deliberate offset — projections stay put, free corners snap back.
+    #[test]
+    fn issue_1185_coincident_to_projected_stud_moves_rectangle() {
+        use crate::model::{ConstraintEntity, ConstraintLine, ConstraintPoint, LineEnd};
+
+        let bytes = include_bytes!("../../tests/fixtures/issue_1185.json");
+        let mut doc = crate::storage::from_json_bytes(bytes).expect("load issue_1185");
+        let sketch = crate::model::sketch_key_for_slot(3);
+
+        // Snapshot projected line positions (they must not drift under the solve).
+        let projected_before: Vec<_> = doc
+            .lines
+            .iter()
+            .filter(|(_, l)| l.sketch == sketch && l.projection.is_some())
+            .map(|(k, l)| (k, l.x0, l.y0, l.x1, l.y1))
+            .collect();
+        assert!(!projected_before.is_empty(), "fixture must include projected lines");
+
+        // Nudge the free rectangle away from the projections so the solve has work to do.
+        for (_, line) in doc.lines.iter_mut() {
+            if line.sketch == sketch && line.projection.is_none() && !line.construction {
+                line.x0 += 30.0;
+                line.x1 += 30.0;
+                line.y0 += 20.0;
+                line.y1 += 20.0;
+            }
+        }
+
+        // Ensure the key constraints from the report are present (point-on projected line +
+        // corner to projected endpoint). If already in the fixture this is a no-op check.
+        let has_point_on_proj = doc.constraints.values().any(|c| {
+            c.sketch == sketch
+                && matches!(
+                    &c.kind,
+                    ConstraintKind::Coincident {
+                        a: ConstraintEntity::Point(_),
+                        b: ConstraintEntity::Line(ConstraintLine::Line(li))
+                    } | ConstraintKind::Coincident {
+                        a: ConstraintEntity::Line(ConstraintLine::Line(li)),
+                        b: ConstraintEntity::Point(_)
+                    } if doc.lines.get(*li).is_some_and(|l| l.projection.is_some())
+                )
+        });
+        assert!(
+            has_point_on_proj,
+            "fixture should constrain free geometry to a projected line"
+        );
+
+        solve_document_sketches(&mut doc, &[]).expect("solve");
+
+        for (k, x0, y0, x1, y1) in &projected_before {
+            let l = &doc.lines[*k];
+            assert!(
+                (l.x0 - x0).abs() < 0.5
+                    && (l.y0 - y0).abs() < 0.5
+                    && (l.x1 - x1).abs() < 0.5
+                    && (l.y1 - y1).abs() < 0.5,
+                "projected line {k:?} drifted under solve"
+            );
+        }
+
+        // Constraint 30: line 13 start on projected line 8 (vertical at the projected x).
+        let free_pt = ConstraintPoint::LineEndpoint {
+            line: lkey(13),
+            end: LineEnd::Start,
+        };
+        let (pu, pv) = point_uv(&doc, sketch, free_pt).expect("free corner");
+        let proj = &doc.lines[lkey(8)];
+        // Infinite-line distance from free corner to projected line 8.
+        let dx = proj.x1 - proj.x0;
+        let dy = proj.y1 - proj.y0;
+        let len = (dx * dx + dy * dy).sqrt().max(1e-6);
+        let dist = ((pu - proj.x0) * dy - (pv - proj.y0) * dx).abs() / len;
+        assert!(
+            dist < 1.0,
+            "free rectangle corner should return onto projected line 8, dist={dist} at ({pu},{pv})"
+        );
     }
 }
