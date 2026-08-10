@@ -1504,16 +1504,13 @@ impl ViewportScene {
                 !sketch_circle_is_active(input.doc, s, ci, circle.sketch)
             });
             let element = SceneElement::Circle(ci);
-            // Body-coplanar rings (#1140): a circle sketched on a solid's face shares that
-            // face's depth with the body mesh. The overlay bias alone leaves a mottled
-            // gold/cyan ring when the circle is highlighted — same coplanar fight #1139
-            // fixed for face fills. Depth-disable those strokes (construction-plane
-            // sketches keep the ordinary overlay path).
-            let body_coplanar = sketch_is_body_coplanar(input.doc, circle.sketch);
-            let restore = mesh.index_layer;
-            if body_coplanar {
-                mesh.set_index_layer(MeshIndexLayer::Wireframe);
-            }
+            // Committed circle strokes depth-test like body-face lines (#1157 / #1174):
+            // screen-space width + STROKE_DEPTH_BIAS so they sit on the face without
+            // freestanding ribbons, and the solid occludes them when the host face is
+            // behind the body. #1140 put body-coplanar rings on the always-on wireframe
+            // layer to dodge z-fighting with gold selection — that made the ring show
+            // through the cube. Selection/hover still use Wireframe (see push_selection
+            // / face hover); only the ordinary committed stroke is depth-tested.
             mesh.push_circle_strokes(
                 input.doc,
                 circle,
@@ -1536,9 +1533,6 @@ impl ViewportScene {
                     input.document_health.element_status(element),
                 ),
             );
-            if body_coplanar {
-                mesh.set_index_layer(restore);
-            }
         }
 
         // Origin marker (#189): a distinct dot at the active sketch's own origin so it's
@@ -5268,8 +5262,9 @@ fn construction_geometry_visible(
 }
 
 /// Whether a sketch sits on a solid's face (extrude cap/side, etc.) rather than a datum
-/// plane. Geometry on those faces is coplanar with the body mesh and needs the
-/// depth-disabled stroke path (#1140), matching body-coplanar face fills (#1139).
+/// plane. Used for stroke colour contrast (#1149/#1167). Committed strokes on those faces
+/// depth-test like plane sketches (#1174); hover/selection fills still use the depth-
+/// disabled wireframe layer (#1139/#1140).
 fn sketch_is_body_coplanar(doc: &Document, sketch: crate::model::SketchId) -> bool {
     match doc.sketch_face(sketch) {
         Some(FaceId::ConstructionPlane(_)) | None => false,
@@ -6854,12 +6849,10 @@ mod tests {
         );
     }
 
-    /// #1140: a circle on a body face (e.g. Extrude's profile hover/selection on a side cap)
-    /// sits coplanar with the solid. Its highlight ring used to share the depth-tested overlay
-    /// with the committed circle stroke — the two (and the body) alternate who wins, and the
-    /// ring reads as gold speckled with body blue / stroke cyan. Same fix as #1139: body-coplanar
-    /// circle highlights (and the committed stroke on a body face) land on the depth-disabled
-    /// wireframe layer. No world-space bias offsets.
+    /// #1140 / #1174: a circle on a body face (e.g. Extrude's profile hover/selection on a side
+    /// cap) sits coplanar with the solid. Hover/selection rings stay on the depth-disabled
+    /// wireframe layer so they don't z-fight the body. The committed stroke uses depth-tested
+    /// screen-space strokes so the solid occludes the ring when the face is not visible (#1174).
     fn state_with_circle_on_body_face() -> (AppState, crate::model::CircleKey) {
         use crate::actions::Action;
         use crate::model::ExtrudeFace;
@@ -6988,14 +6981,13 @@ mod tests {
         );
     }
 
+    /// #1174: a committed circle on a body face must depth-test like body-face lines (#1157),
+    /// so the solid occludes the ring when that face is behind the camera-facing surface.
+    /// The always-on wireframe path from #1140 made the circle show through the cube.
+    /// Selection/hover rings stay depth-disabled (see tests above) — only the ordinary stroke.
     #[test]
-    fn body_coplanar_committed_circle_stroke_draws_depth_test_disabled() {
-        // The committed ring on a body face is itself coplanar with the solid (#1140). Leaving
-        // it on the depth-tested overlay makes the gold highlight (also coplanar) z-fight the
-        // stroke into a mottled gold/cyan ring even when the highlight is depth-disabled.
+    fn body_coplanar_committed_circle_stroke_is_depth_tested() {
         let (state, _ci) = state_with_circle_on_body_face();
-        // Baseline: same scene with the circle's sketch moved onto a construction plane so the
-        // stroke is *not* body-coplanar.
         let mut plane_state = state_with_one_body();
         {
             use crate::actions::Action;
@@ -7015,24 +7007,22 @@ mod tests {
         let on_body = build_circle_scene(&state, None, &state.scene_selection);
         let on_plane = build_circle_scene(&plane_state, None, &plane_state.scene_selection);
         assert!(
-            !on_body.wireframe_indices.is_empty(),
-            "a circle stroke on a body face must use the depth-disabled layer"
+            !on_body.stroke_indices.is_empty(),
+            "body-face circle stroke must use depth-tested screen-space strokes (#1174)"
         );
-        // Plane-sketched circles use depth-tested screen-space strokes (#1157) — only
-        // body-coplanar circles need the always-on (wireframe) path (#1140).
         assert!(
-            on_plane.wireframe_indices.is_empty()
-                || on_plane.wireframe_indices.len() < on_body.wireframe_indices.len(),
-            "a circle on a construction plane should not need the body-coplanar wireframe stroke path"
+            on_body.wireframe_indices.is_empty(),
+            "committed body-face circle must not use the always-on wireframe layer (shows through solids)"
         );
         assert!(
             !on_plane.stroke_indices.is_empty(),
             "a plane-sketched circle should use screen-space strokes"
         );
-        assert!(
-            on_body.stroke_indices.len() < on_plane.stroke_indices.len()
-                || on_body.stroke_indices.is_empty(),
-            "body-face circle stroke should not use the depth-tested screen-space stroke path"
+        // Same path as a plane circle — both depth-tested; body-coplanar is not special here.
+        assert_eq!(
+            on_body.stroke_indices.len(),
+            on_plane.stroke_indices.len(),
+            "body-face and plane-face committed circles should emit the same stroke topology"
         );
     }
 
