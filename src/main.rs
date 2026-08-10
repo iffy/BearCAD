@@ -16425,6 +16425,8 @@ pub(crate) mod col {
     pub const Z_AXIS: Color32 = Color32::from_rgb(80, 140, 230);
     /// Shared stroke color for all solid sketch shape edges (lines, rect edges, circles).
     pub const RECT_LINE: Color32 = Color32::from_rgb(120, 170, 240);
+    /// Solid sketch strokes on a body face (#1149): near-black for contrast on faint body fills.
+    pub const RECT_LINE_ON_BODY: Color32 = Color32::from_rgb(18, 18, 22);
     pub const PREVIEW: Color32 = Color32::from_rgb(240, 200, 120);
     /// Bright yellow for the Shape tool's step highlights (#1094–#1098): anchor dots,
     /// radius and height lines. Deliberately more saturated than `PREVIEW`'s tan so the
@@ -18660,6 +18662,7 @@ fn build_viewport_scene_input<'a>(
             y_axis: col::Y_AXIS,
             z_axis: col::Z_AXIS,
             rect_line: col::RECT_LINE,
+            rect_line_on_body: col::RECT_LINE_ON_BODY,
             rect_line_constrained: col::RECT_LINE_CONSTRAINED,
             preview: col::PREVIEW,
             construction: col::CONSTRUCTION,
@@ -29761,6 +29764,14 @@ mod tests {
     #[test]
     fn shape_edge_stroke_color_is_shared() {
         assert_eq!(col::RECT_LINE, Color32::from_rgb(120, 170, 240));
+    }
+
+    /// #1149: sketch strokes on body faces use a near-black colour so they read on the
+    /// default faint-blue body (and any other mid-tone material).
+    #[test]
+    fn body_face_sketch_stroke_is_near_black() {
+        assert_eq!(col::RECT_LINE_ON_BODY, Color32::from_rgb(18, 18, 22));
+        assert_ne!(col::RECT_LINE_ON_BODY, col::RECT_LINE);
     }
 
     /// #262: the revolve arc handle sits at `angle` around the axis, and a cursor at that

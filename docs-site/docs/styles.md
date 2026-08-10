@@ -12,11 +12,13 @@ What the colors in the 3D viewport mean, for every kind of geometry and state.
 ## Lines
 
 Solid sketch lines change color with their constraint state; construction and projected
-geometry draw dashed in their own colors.
+geometry draw dashed in their own colors. On a body face, unconstrained strokes are
+near-black so they stay readable on the solid.
 
 | Kind | Normal | Hovered | Selected |
 |---|---|---|---|
-| **Unconstrained** — can still move | ![](/img/screenshots/styles/line-normal.png) | ![](/img/screenshots/styles/line-normal-hovered.png) | ![](/img/screenshots/styles/line-normal-selected.png) |
+| **Unconstrained** — can still move (construction planes) | ![](/img/screenshots/styles/line-normal.png) | ![](/img/screenshots/styles/line-normal-hovered.png) | ![](/img/screenshots/styles/line-normal-selected.png) |
+| **On a body face** — unconstrained, thin near-black | ![](/img/screenshots/styles/line-on-body.png) | ![](/img/screenshots/styles/line-on-body-hovered.png) | ![](/img/screenshots/styles/line-on-body-selected.png) |
 | **Fully constrained** — dimensioned and immobile | ![](/img/screenshots/styles/line-constrained.png) | ![](/img/screenshots/styles/line-constrained-hovered.png) | ![](/img/screenshots/styles/line-constrained-selected.png) |
 | **Construction** — reference geometry, never part of the solid; shows only inside its own sketch | ![](/img/screenshots/styles/line-construction.png) | ![](/img/screenshots/styles/line-construction-hovered.png) | ![](/img/screenshots/styles/line-construction-selected.png) |
 | **Projected** — traced from outside the sketch (press `Y`); follows its source | ![](/img/screenshots/styles/line-projected.png) | ![](/img/screenshots/styles/line-projected-hovered.png) | ![](/img/screenshots/styles/line-projected-selected.png) |
