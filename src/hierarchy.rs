@@ -3959,8 +3959,10 @@ pub fn show_pane(
     on_delete_element: &mut impl FnMut(SceneElement),
     // `active_drawing`: the open drawing (Drawing workbench) enabling the row "Add to
     // drawing" action (#274); `on_add_to_drawing` receives the body index.
+    // `on_create_drawing_of_body`: Elements-pane body right-click → new drawing of that body (#1158).
     active_drawing: Option<crate::model::DrawingKey>,
     on_add_to_drawing: &mut impl FnMut(SceneElement),
+    on_create_drawing_of_body: &mut impl FnMut(crate::model::BodyKey),
     highlight_elements: &HashSet<SceneElement>,
     // The armed element picker (#965), if any: a row it can take wears the pick affordance on
     // hover, so the pane says what the next click would feed. A row it refuses still hovers
@@ -4182,6 +4184,7 @@ pub fn show_pane(
                         on_delete_element,
                         active_drawing,
                         on_add_to_drawing,
+                        on_create_drawing_of_body,
                         highlight_elements,
                         armed,
                         rolled_back,
@@ -4230,6 +4233,7 @@ pub fn show_pane(
                 on_edit_operation,
                 on_joint_rest,
                 on_add_to_drawing,
+                on_create_drawing_of_body,
                 on_export_body,
                 on_export_body_step,
                 on_move_to_component,
@@ -4413,6 +4417,7 @@ fn show_graph_view(
     on_edit_operation: &mut impl FnMut(SceneElement),
     on_joint_rest: &mut impl FnMut(JointRestCommand),
     on_add_to_drawing: &mut impl FnMut(SceneElement),
+    on_create_drawing_of_body: &mut impl FnMut(crate::model::BodyKey),
     on_export_body: &mut impl FnMut(crate::model::BodyKey),
     on_export_body_step: &mut impl FnMut(crate::model::BodyKey),
     on_move_to_component: &mut impl FnMut(SceneElement, Option<crate::model::ComponentKey>),
@@ -4720,6 +4725,7 @@ fn show_graph_view(
                             on_edit_operation,
                             on_joint_rest,
                             on_add_to_drawing,
+                            on_create_drawing_of_body,
                             on_export_body,
                             on_export_body_step,
                             on_move_to_component,
@@ -5048,6 +5054,7 @@ fn show_row(
     on_delete_element: &mut impl FnMut(SceneElement),
     active_drawing: Option<crate::model::DrawingKey>,
     on_add_to_drawing: &mut impl FnMut(SceneElement),
+    on_create_drawing_of_body: &mut impl FnMut(crate::model::BodyKey),
     highlight_elements: &HashSet<SceneElement>,
     armed: Option<&crate::element_picker::ElementPicker>,
     rolled_back: &HashSet<SceneElement>,
@@ -5426,6 +5433,7 @@ fn show_row(
                 on_edit_operation,
                 on_joint_rest,
                 on_add_to_drawing,
+                on_create_drawing_of_body,
                 on_export_body,
                 on_export_body_step,
                 on_move_to_component,
@@ -5487,6 +5495,7 @@ fn element_context_menu(
     on_edit_operation: &mut impl FnMut(SceneElement),
     on_joint_rest: &mut impl FnMut(JointRestCommand),
     on_add_to_drawing: &mut impl FnMut(SceneElement),
+    on_create_drawing_of_body: &mut impl FnMut(crate::model::BodyKey),
     on_export_body: &mut impl FnMut(crate::model::BodyKey),
     on_export_body_step: &mut impl FnMut(crate::model::BodyKey),
     on_move_to_component: &mut impl FnMut(SceneElement, Option<crate::model::ComponentKey>),
@@ -5532,6 +5541,12 @@ fn element_context_menu(
             }
         }
         HierarchyNode::Body(index) => {
+            // Immediately create a new drawing of this body (#1158) — same paths as CAD →
+            // New Drawing + Add to drawing, without needing a drawing open first.
+            if ui.button("Create drawing").clicked() {
+                on_create_drawing_of_body(index);
+                ui.close();
+            }
             // In the Drawing workbench, add this body as a view of the open drawing (#274).
             if active_drawing.is_some() && ui.button("Add to drawing").clicked() {
                 on_add_to_drawing(SceneElement::Body(index));

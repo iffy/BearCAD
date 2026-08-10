@@ -13,8 +13,9 @@ collecting **views** — a body shown from a chosen direction.
 
 ![A drawing page with front and top views of a plate, dimensions shown](/img/screenshots/drawing.png)
 
-**CAD → New Drawing** creates a drawing and opens the drawing pane. Its toolbar holds the
-[drawing tools](/docs/drawing-tools); **Back** returns to the 3D model.
+**CAD → New Drawing** creates a drawing and opens the drawing pane. Right-click a **body**
+in the Elements pane → **Create drawing** makes a drawing of that body in one step. The
+toolbar holds the [drawing tools](/docs/drawing-tools); **Back** returns to the 3D model.
 
 ## Removing views and elements
 

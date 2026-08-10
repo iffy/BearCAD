@@ -2222,6 +2222,9 @@ pub enum Action {
     CommitLoft,
     /// Create a new technical drawing (#180) and open it in the drawing pane.
     CreateDrawing { name: Option<String> },
+    /// Create a new technical drawing of a body and open it with a default view (#1158).
+    /// Reuses [`Action::CreateDrawing`] + [`Action::AddDrawingView`].
+    CreateDrawingOfBody { body: crate::model::BodyKey },
     /// Rename a technical drawing (#255): empty clears back to the default label.
     RenameDrawing { drawing: crate::model::DrawingKey, name: String },
     /// Set a drawing's page size and margin, in millimetres (#273). `None` keeps the
@@ -10691,6 +10694,39 @@ impl AppState {
                 self.editing_drawing = Some(key);
                 self.status = format!("Added drawing {index}");
                 ActionResult::Ok
+            }
+            // #1158: Elements-pane body right-click → create a drawing of that body. Same paths
+            // as CAD → New Drawing + Add to drawing, composed so one undo reverts both.
+            Action::CreateDrawingOfBody { body } => {
+                if !self.doc.bodies.contains(body) {
+                    let e = format!("No body {}", body.index());
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let name = self.doc.bodies[body].name.clone();
+                let created = self.apply(Action::CreateDrawing { name });
+                if !matches!(created, ActionResult::Ok) {
+                    return created;
+                }
+                let Some(drawing) = self.editing_drawing else {
+                    let e = "CreateDrawing did not open a drawing".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                let orientation = crate::model::DrawingOrientation::default();
+                let added = self.apply(Action::AddDrawingView {
+                    drawing,
+                    body,
+                    orientation,
+                });
+                if matches!(added, ActionResult::Ok) {
+                    self.status = format!(
+                        "Created drawing of body {} with {} view",
+                        body.index(),
+                        orientation.label()
+                    );
+                }
+                added
             }
             Action::RenameDrawing { drawing, name } => {
                 let Some(d) = self.doc.drawings.get_mut(drawing) else {
@@ -27409,6 +27445,42 @@ mod tests {
         // An unnamed drawing falls back to a "Drawing N" title.
         state.apply(Action::CreateDrawing { name: None });
         assert_eq!(state.doc.drawings[dkey(1)].annotations[akey(0)].text, "Drawing 1");
+    }
+
+    /// #1158: create a drawing of a body in one step (Elements-pane body context menu): a new
+    /// drawing opens with a default-orientation view of that body. Named bodies seed the
+    /// drawing's name; missing bodies are rejected.
+    #[test]
+    fn create_drawing_of_body_opens_with_a_view() {
+        use crate::model::DrawingOrientation;
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        state.doc.bodies[bkey(0)].name = Some("Plate".to_string());
+
+        assert_eq!(
+            state.apply(Action::CreateDrawingOfBody { body: bkey(0) }),
+            ActionResult::Ok
+        );
+        assert_eq!(state.doc.drawings.len(), 1);
+        assert_eq!(state.editing_drawing, Some(dkey(0)), "opens the new drawing");
+        let drawing = &state.doc.drawings[dkey(0)];
+        assert_eq!(drawing.name.as_deref(), Some("Plate"));
+        assert_eq!(drawing.views.len(), 1, "one view of the body");
+        assert_eq!(drawing.views[0].body, bkey(0));
+        assert_eq!(drawing.views[0].orientation, DrawingOrientation::default());
+
+        // Unnamed body → default "Drawing N" title, still with a view.
+        assert_eq!(
+            state.apply(Action::CreateDrawingOfBody { body: bkey(1) }),
+            ActionResult::Ok
+        );
+        assert_eq!(state.doc.drawings[dkey(1)].name, None);
+        assert_eq!(state.doc.drawings[dkey(1)].views[0].body, bkey(1));
+
+        assert!(matches!(
+            state.apply(Action::CreateDrawingOfBody { body: bkey(99) }),
+            ActionResult::Err(_)
+        ));
     }
 
     #[test]

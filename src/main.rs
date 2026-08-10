@@ -12649,6 +12649,7 @@ impl App {
             let mut click_element: Option<(SceneElement, bool)> = None;
             let mut delete_element: Option<SceneElement> = None;
             let mut add_to_drawing: Option<SceneElement> = None;
+            let mut create_drawing_of_body: Option<model::BodyKey> = None;
             let mut rename_drawing: Option<(model::DrawingKey, String)> = None;
             let mut pane_hovered_element: Option<SceneElement> = None;
             let mut add_component: Option<Option<model::ComponentKey>> = None;
@@ -12718,6 +12719,9 @@ impl App {
                     };
                     let mut queue_add_to_drawing = |element: SceneElement| {
                         add_to_drawing = Some(element);
+                    };
+                    let mut queue_create_drawing_of_body = |body: model::BodyKey| {
+                        create_drawing_of_body = Some(body);
                     };
                     let mut queue_delete = |element: SceneElement| {
                         delete_element = Some(element);
@@ -12829,6 +12833,7 @@ impl App {
                         &mut queue_delete,
                         self.state.editing_drawing,
                         &mut queue_add_to_drawing,
+                        &mut queue_create_drawing_of_body,
                         &highlight_elements,
                         // The armed picker (#965), so a row it can take reads as pickable.
                         // A frame behind — the pane draws before the context pane rebuilds
@@ -12891,6 +12896,10 @@ impl App {
                     }
                     _ => {}
                 }
+            }
+            // Elements-pane body right-click → create a drawing of that body (#1158).
+            if let Some(body) = create_drawing_of_body {
+                self.state.apply(Action::CreateDrawingOfBody { body });
             }
             if let Some((drawing, name)) = rename_drawing {
                 self.state.apply(Action::RenameDrawing { drawing, name });
