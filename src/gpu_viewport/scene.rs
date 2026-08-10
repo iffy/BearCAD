@@ -438,10 +438,13 @@ pub struct ViewportPalette {
     pub z_axis: Color32,
     /// Shared stroke color for all solid sketch shape edges (lines, rect edges, circles).
     pub rect_line: Color32,
-    /// Solid sketch strokes on a **body face** (#1149/#1153): dark blue-grey so they contrast
-    /// on the default faint-blue body (and other mid-tone materials). Plane sketches keep
-    /// [`Self::rect_line`].
+    /// Solid sketch strokes on a **body face** outside sketch mode (#1149/#1153/#1167): dark
+    /// blue-grey so they contrast on light body materials. Plane sketches keep [`Self::rect_line`].
     pub rect_line_on_body: Color32,
+    /// Body-face strokes while a sketch is open (#1167): light blue-grey. Sketch mode dims
+    /// bodies, so the dark on-body stroke vanishes; this stays readable. Also used outside
+    /// sketch when the face material is dark (adaptive contrast).
+    pub rect_line_on_body_in_sketch: Color32,
     /// Fully-constrained solid lines (#172): no remaining degrees of freedom.
     pub rect_line_constrained: Color32,
     pub preview: Color32,
@@ -464,6 +467,7 @@ impl Default for ViewportPalette {
             z_axis: Color32::from_rgb(80, 140, 230),
             rect_line: Color32::from_rgb(120, 170, 240),
             rect_line_on_body: Color32::from_rgb(50, 60, 78),
+            rect_line_on_body_in_sketch: Color32::from_rgb(170, 190, 225),
             rect_line_constrained: Color32::from_rgb(225, 228, 235),
             preview: Color32::from_rgb(240, 200, 120),
             construction: CONSTRUCTION_RGBA,
@@ -1306,8 +1310,14 @@ impl ViewportScene {
             } else if constrained_lines.contains(&li) {
                 sketch_color(input.palette.rect_line_constrained, dim)
             } else {
-                // #1149/#1153: body-face strokes use solid dark blue-grey on faint body fills.
-                solid_sketch_stroke_color(&input.palette, input.doc, line.sketch, dim)
+                // #1149/#1153/#1167: body-face strokes contrast the face (and brighten in sketch).
+                solid_sketch_stroke_color(
+                    &input.palette,
+                    input.doc,
+                    line.sketch,
+                    dim,
+                    input.sketch_session,
+                )
             };
             let color = health_tint_color(base, input.document_health.element_status(element));
             if let Some(points) = line_world_polyline(input.doc, line) {
@@ -1353,7 +1363,13 @@ impl ViewportScene {
             let color = if selected {
                 input.palette.rect_line_constrained
             } else {
-                solid_sketch_stroke_color(&input.palette, input.doc, text.sketch, dim)
+                solid_sketch_stroke_color(
+                    &input.palette,
+                    input.doc,
+                    text.sketch,
+                    dim,
+                    input.sketch_session,
+                )
             };
             let (sin, cos) = text.rotation.sin_cos();
             for contour in &text.contours {
@@ -1506,7 +1522,13 @@ impl ViewportScene {
                 input.viewport,
                 &vp,
                 health_tint_color(
-                    solid_sketch_stroke_color(&input.palette, input.doc, circle.sketch, dim),
+                    solid_sketch_stroke_color(
+                        &input.palette,
+                        input.doc,
+                        circle.sketch,
+                        dim,
+                        input.sketch_session,
+                    ),
                     input.document_health.element_status(element.clone()),
                 ),
                 health_tint_color(
@@ -5247,21 +5269,65 @@ fn sketch_is_body_coplanar(doc: &Document, sketch: crate::model::SketchId) -> bo
     }
 }
 
-/// Stroke colour for unconstrained solid sketch geometry (#1149/#1153): blue on construction
-/// planes (where it reads against the dark viewport / yellow plane fill), solid dark blue-grey
-/// on body faces so it contrasts on the default faint-blue body and other mid-tone materials.
+/// Stroke colour for unconstrained solid sketch geometry (#1149/#1153/#1167):
+/// - construction-plane sketches: plane blue ([`ViewportPalette::rect_line`])
+/// - body-face sketches **while a sketch is open**: bright blue-grey — sketch mode dims
+///   bodies (#433), so the dark stroke vanishes on the dimmed face
+/// - body-face sketches **outside** sketch mode: dark or bright so the stroke contrasts
+///   the undimmed face material (dark on light fills, light on dark fills)
 fn solid_sketch_stroke_color(
     palette: &ViewportPalette,
     doc: &Document,
     sketch: crate::model::SketchId,
     dim: bool,
+    sketch_session: Option<SketchSession>,
 ) -> Color32 {
     let base = if sketch_is_body_coplanar(doc, sketch) {
-        palette.rect_line_on_body
+        on_body_sketch_stroke(palette, doc, sketch, sketch_session.is_some())
     } else {
         palette.rect_line
     };
     sketch_color(base, dim)
+}
+
+/// Body-face fill colour for stroke contrast (#1167): the owning body's material, or the
+/// default solid fill when the sketch's face has no body.
+fn sketch_body_fill(doc: &Document, sketch: crate::model::SketchId) -> Color32 {
+    doc.sketch_face(sketch)
+        .and_then(|face| crate::model::body_index_for_face(doc, &face))
+        .and_then(|bi| doc.bodies.get(bi))
+        .map(|body| body_material_fill(doc, body))
+        .unwrap_or(SOLID_FILL)
+}
+
+/// Rec. 709 relative luminance of an sRGB colour (channels as authored, 0–1).
+fn srgb_relative_luminance(color: Color32) -> f32 {
+    let r = color.r() as f32 / 255.0;
+    let g = color.g() as f32 / 255.0;
+    let b = color.b() as f32 / 255.0;
+    0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+/// Pick the body-face stroke that stays readable (#1167).
+///
+/// - Sketch open: always the bright stroke (bodies are dimmed).
+/// - Sketch closed: dark on light materials, bright on dark materials.
+fn on_body_sketch_stroke(
+    palette: &ViewportPalette,
+    doc: &Document,
+    sketch: crate::model::SketchId,
+    sketch_open: bool,
+) -> Color32 {
+    if sketch_open {
+        return palette.rect_line_on_body_in_sketch;
+    }
+    let face = sketch_body_fill(doc, sketch);
+    // Match the seeded-material "light enough to shade" threshold in model materials.
+    if srgb_relative_luminance(face) > 0.35 {
+        palette.rect_line_on_body
+    } else {
+        palette.rect_line_on_body_in_sketch
+    }
 }
 
 fn sketch_circle_is_active(
@@ -7963,8 +8029,8 @@ mod tests {
         );
     }
 
-    /// #1149/#1153: blue sketch strokes vanish on the default (faint-blue) body material.
-    /// Lines on a body face use a solid dark blue-grey stroke so they stay readable.
+    /// #1149/#1153/#1167: outside sketch mode, lines on a light body face use the dark
+    /// on-body stroke so they stay readable on the undimmed face.
     #[test]
     fn solid_line_on_body_face_uses_high_contrast_stroke() {
         use crate::actions::Action;
@@ -7992,14 +8058,16 @@ mod tests {
         let palette = ViewportPalette::default();
         let scene = build_scene_for_doc(&state);
         let on_body = count_opaque_stroke_vertices(&scene, palette.rect_line_on_body);
+        let bright = count_opaque_stroke_vertices(&scene, palette.rect_line_on_body_in_sketch);
         let plane_blue = count_opaque_stroke_vertices(&scene, palette.rect_line);
         assert!(
             on_body > 0,
-            "a solid line on a body face should use the high-contrast on-body stroke color"
+            "outside sketch, a solid line on a light body face should use the dark on-body stroke"
         );
-        // The body's own profile edges may still contribute plane-blue strokes from the
-        // construction-plane sketch that made the extrusion — that's fine. The body-face
-        // line itself must not be blue.
+        assert_eq!(
+            bright, 0,
+            "outside sketch on a light face, the bright in-sketch stroke must not be used"
+        );
         assert_ne!(
             palette.rect_line_on_body, palette.rect_line,
             "on-body stroke must differ from the plane sketch blue"
@@ -8008,13 +8076,152 @@ mod tests {
             plane_blue < on_body || palette.rect_line != palette.rect_line_on_body,
             "body-face line should not be the plane-sketch blue"
         );
-        // Solid dark blue-grey (#1153): dark enough for contrast, blue-leaning (B > G > R),
-        // not pure black (which read as thin/wispy under AA).
         let c = palette.rect_line_on_body;
         assert!(
             c.b() > c.g() && c.g() > c.r() && c.b() < 100 && c.r() > 30,
             "on-body stroke should be a solid dark blue-grey, got {:?}",
             c
+        );
+    }
+
+    /// #1167: while a sketch is open, bodies are dimmed and the dark on-body stroke vanishes.
+    /// Body-face lines must use the bright stroke so they stay editable.
+    #[test]
+    fn solid_line_on_body_face_is_bright_while_sketch_is_open() {
+        use crate::actions::Action;
+        use crate::model::ExtrudeFace;
+
+        let mut state = state_with_one_body();
+        state.apply(Action::BeginSketch {
+            face: FaceId::ExtrudeCap {
+                extrusion: xkey(0),
+                profile: ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)]),
+                top: true,
+            },
+            viewport: None,
+        });
+        state.apply(Action::CreateLineSegment {
+            x0: 1.0,
+            y0: 1.0,
+            x1: 8.0,
+            y1: 3.0,
+            bezier: None,
+            dimension: None,
+        });
+        let session = state.sketch_session.expect("test needs an open sketch session");
+
+        let palette = ViewportPalette::default();
+        let cam = state.cam.clone();
+        // `build_scene_for_doc` always clears the session (most helpers leave one open);
+        // build with the real session so we exercise the in-sketch stroke path.
+        let scene = ViewportScene::build(&ViewportSceneInput {
+            doc: &state.doc,
+            cam: &cam,
+            viewport: test_viewport(),
+            palette: ViewportPalette::default(),
+            sketch_session: Some(session),
+            selection: &state.scene_selection,
+            cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
+            sketch_repeat_ghost: Vec::new(),
+            sketch_ghost_lines: Vec::new(),
+            edit_preview_meshes: std::collections::HashMap::new(),
+            element_visibility: &state.element_visibility,
+            preview_rect: None,
+            preview_line: None,
+            preview_circle: None,
+            preview_extrusion: None,
+            preview_solid: None,
+            repeat_ghosts: Vec::new(),
+            cut_surface_ghosts: Vec::new(),
+            preview_cut_body: None,
+            preview_replacement: PreviewReplacement::default(),
+            highlighted_bezier_handles: Vec::new(),
+            editing_extrusion: None,
+            plane_preview: None,
+            active_sketch_face: None,
+            dimension_labels: &[],
+            dim_label_view: None,
+            plane_gizmo: None,
+            extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
+            arrow_gizmos: Vec::new(),
+            move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
+            vertex_treatment_preview: None,
+            hover_highlight: None,
+            extra_pick_highlights: Vec::new(),
+            colored_pick_highlights: Vec::new(),
+            colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
+            colored_segments: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
+            hover_color: Color32::WHITE,
+            document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
+        });
+        let bright = count_opaque_stroke_vertices(&scene, palette.rect_line_on_body_in_sketch);
+        let dark = count_opaque_stroke_vertices(&scene, palette.rect_line_on_body);
+        assert!(
+            bright > 0,
+            "with a sketch open, body-face lines should use the bright in-sketch stroke"
+        );
+        assert_eq!(
+            dark, 0,
+            "with a sketch open, body-face lines must not use the dark out-of-sketch stroke"
+        );
+        assert!(
+            palette.rect_line_on_body_in_sketch.r() > palette.rect_line_on_body.r(),
+            "in-sketch stroke must be brighter than the out-of-sketch dark stroke"
+        );
+    }
+
+    /// #1167: outside sketch mode, a dark body material gets the bright on-body stroke so
+    /// the line still contrasts the face.
+    #[test]
+    fn solid_line_on_dark_body_face_uses_bright_stroke_outside_sketch() {
+        use crate::actions::Action;
+        use crate::model::ExtrudeFace;
+
+        let mut state = state_with_one_body();
+        // Paint the body a dark colour (below the 0.35 luminance threshold).
+        let mat = state.doc.materials.insert(crate::model::Material {
+            name: "Dark".into(),
+            color: [30, 30, 35],
+        });
+        let body = state.doc.bodies.keys().next().expect("one body");
+        state.doc.bodies.get_mut(body).expect("body").material = Some(mat);
+
+        state.apply(Action::BeginSketch {
+            face: FaceId::ExtrudeCap {
+                extrusion: xkey(0),
+                profile: ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)]),
+                top: true,
+            },
+            viewport: None,
+        });
+        state.apply(Action::CreateLineSegment {
+            x0: 1.0,
+            y0: 1.0,
+            x1: 8.0,
+            y1: 3.0,
+            bezier: None,
+            dimension: None,
+        });
+        state.sketch_session = None;
+
+        let palette = ViewportPalette::default();
+        let scene = build_scene_for_doc(&state);
+        let bright = count_opaque_stroke_vertices(&scene, palette.rect_line_on_body_in_sketch);
+        let dark = count_opaque_stroke_vertices(&scene, palette.rect_line_on_body);
+        assert!(
+            bright > 0,
+            "on a dark body face outside sketch, lines should use the bright contrasting stroke"
+        );
+        assert_eq!(
+            dark, 0,
+            "dark stroke would vanish on a dark face"
         );
     }
 

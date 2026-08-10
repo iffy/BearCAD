@@ -16872,9 +16872,13 @@ pub(crate) mod col {
     pub const Z_AXIS: Color32 = Color32::from_rgb(80, 140, 230);
     /// Shared stroke color for all solid sketch shape edges (lines, rect edges, circles).
     pub const RECT_LINE: Color32 = Color32::from_rgb(120, 170, 240);
-    /// Solid sketch strokes on a body face (#1149/#1153): dark blue-grey for contrast on faint
-    /// body fills without the wispy look of pure black under AA.
+    /// Solid sketch strokes on a body face **outside** sketch mode (#1149/#1153/#1167): dark
+    /// blue-grey so they contrast on the default faint body fill (and other light materials).
     pub const RECT_LINE_ON_BODY: Color32 = Color32::from_rgb(50, 60, 78);
+    /// Body-face sketch strokes **while a sketch is open** (#1167): light blue-grey. Sketch
+    /// mode dims bodies, so the dark on-body stroke vanishes; this stays readable for editing.
+    /// Also used outside sketch when the face material is dark (adaptive contrast).
+    pub const RECT_LINE_ON_BODY_IN_SKETCH: Color32 = Color32::from_rgb(170, 190, 225);
     pub const PREVIEW: Color32 = Color32::from_rgb(240, 200, 120);
     /// Bright yellow for the Shape tool's step highlights (#1094–#1098): anchor dots,
     /// radius and height lines. Deliberately more saturated than `PREVIEW`'s tan so the
@@ -19111,6 +19115,7 @@ fn build_viewport_scene_input<'a>(
             z_axis: col::Z_AXIS,
             rect_line: col::RECT_LINE,
             rect_line_on_body: col::RECT_LINE_ON_BODY,
+            rect_line_on_body_in_sketch: col::RECT_LINE_ON_BODY_IN_SKETCH,
             rect_line_constrained: col::RECT_LINE_CONSTRAINED,
             preview: col::PREVIEW,
             construction: col::CONSTRUCTION,
@@ -30361,16 +30366,23 @@ mod tests {
         assert_eq!(col::RECT_LINE, Color32::from_rgb(120, 170, 240));
     }
 
-    /// #1149/#1153: sketch strokes on body faces use a solid dark blue-grey so they read on
-    /// the default faint-blue body (and other mid-tone materials) without looking wispy.
+    /// #1149/#1153/#1167: body-face strokes are dark outside sketch mode (contrast on light
+    /// fills) and bright while a sketch is open (bodies dim in sketch mode).
     #[test]
-    fn body_face_sketch_stroke_is_dark_blue_grey() {
+    fn body_face_sketch_stroke_colors_cover_sketch_and_view() {
         assert_eq!(col::RECT_LINE_ON_BODY, Color32::from_rgb(50, 60, 78));
+        assert_eq!(col::RECT_LINE_ON_BODY_IN_SKETCH, Color32::from_rgb(170, 190, 225));
         assert_ne!(col::RECT_LINE_ON_BODY, col::RECT_LINE);
-        // Blue-grey: B > G > R, and dark enough to contrast on faint body fills.
+        assert_ne!(col::RECT_LINE_ON_BODY, col::RECT_LINE_ON_BODY_IN_SKETCH);
+        // Dark on-body: blue-grey, dark enough for light body fills.
         assert!(col::RECT_LINE_ON_BODY.b() > col::RECT_LINE_ON_BODY.g());
         assert!(col::RECT_LINE_ON_BODY.g() > col::RECT_LINE_ON_BODY.r());
         assert!(col::RECT_LINE_ON_BODY.b() < 100);
+        // In-sketch on-body: brighter than the dark stroke so it reads on dimmed bodies.
+        let dark = col::RECT_LINE_ON_BODY;
+        let bright = col::RECT_LINE_ON_BODY_IN_SKETCH;
+        assert!(bright.r() > dark.r() && bright.g() > dark.g() && bright.b() > dark.b());
+        assert!(bright.b() > bright.g() && bright.g() > bright.r());
     }
 
     /// #262: the revolve arc handle sits at `angle` around the axis, and a cursor at that
