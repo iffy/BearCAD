@@ -8151,6 +8151,35 @@ mod tests {
         assert_eq!(live.source.extrusion_indices(), [xkey(0), xkey(1)]);
     }
 
+    /// #1170/#1171: `bearcad.shell{ thickness = "name=value" }` defines the parameter and
+    /// stores the bare name — same as typing it into the Shell thickness field.
+    #[test]
+    fn lua_shell_thickness_defines_inline_parameter() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 40, depth = 30, height = 20 }
+            bearcad.shell{
+                bodies = {0},
+                thickness = "foo=2mm"
+            }
+            "#,
+        );
+        assert_eq!(state.doc.shell_ops.len(), 1);
+        assert_eq!(
+            state.doc.shell_ops.values().next().unwrap().thickness,
+            "foo",
+            "stored thickness should be the bare parameter name"
+        );
+        let foo = state
+            .doc
+            .parameters
+            .values()
+            .find(|p| p.name == "foo")
+            .expect("foo parameter defined");
+        assert_eq!(foo.expression, "2mm");
+    }
+
     /// #1168: extruding off a face of a *shelled* body must merge into the hollow solid,
     /// not re-grow a solid cuboid from the shadow primitive (which fills the cavity and
     /// makes the shell look "gone").

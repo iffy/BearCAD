@@ -13207,8 +13207,14 @@ label_hidden: false,
             Action::CreateShellOperation {
                 targets,
                 open_faces,
-                thickness,
+                mut thickness,
             } => {
+                // `name=value` (with optional unit) defines a parameter and stores the bare
+                // name — same as Extrude/Move/Repeat ValueInputs (#1170/#1171).
+                if let Err(e) = commit_inline_parameter_defs(&mut self.doc, [&mut thickness]) {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
                 if let Err(e) = validate_shell_inputs(&self.doc, &targets, &open_faces, &thickness, None)
                 {
                     self.status = e.clone();
@@ -13288,10 +13294,15 @@ label_hidden: false,
                 op,
                 targets,
                 open_faces,
-                thickness,
+                mut thickness,
             } => {
                 if self.doc.shell_ops.get(op).is_none() {
                     let e = format!("Shell operation {op:?} not found");
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                // Inline `name=value` thickness defines/redefines a parameter (#1170/#1171).
+                if let Err(e) = commit_inline_parameter_defs(&mut self.doc, [&mut thickness]) {
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
@@ -24214,6 +24225,85 @@ mod tests {
         assert_eq!(state.doc.shell_ops[op].thickness, "2");
         assert_eq!(state.doc.shell_ops[op].outputs, vec![out]);
         assert!(state.doc.bodies[bkey(0)].shadow);
+    }
+
+    /// #1170/#1171: thickness typed as `name=value` (with or without a unit) defines a
+    /// parameter and shells with that value; the stored thickness is the bare name so it
+    /// stays parametric — same contract as Extrude/Move/Repeat ValueInputs.
+    #[test]
+    fn shell_thickness_input_defines_inline_parameter() {
+        let mut state = two_box_state(false);
+        let result = state.apply(Action::CreateShellOperation {
+            targets: vec![bkey(0)],
+            open_faces: Vec::new(),
+            thickness: "foo=12".to_string(),
+        });
+        assert!(
+            matches!(result, ActionResult::Ok),
+            "foo=12 refused: {result:?} status={}",
+            state.status
+        );
+        assert!(
+            state.doc.parameters.values().any(|p| p.name == "foo" && p.expression == "12"),
+            "should define foo=12, got {:?}",
+            state
+                .doc
+                .parameters
+                .values()
+                .map(|p| (&p.name, &p.expression))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            state.doc.shell_ops.values().nth(0).unwrap().thickness,
+            "foo",
+            "stored thickness should be the bare parameter name"
+        );
+
+        // With a unit suffix (#1170).
+        let mut state = two_box_state(false);
+        let result = state.apply(Action::CreateShellOperation {
+            targets: vec![bkey(1)],
+            open_faces: Vec::new(),
+            thickness: "bar=2mm".to_string(),
+        });
+        assert!(
+            matches!(result, ActionResult::Ok),
+            "bar=2mm refused: {result:?} status={}",
+            state.status
+        );
+        assert!(
+            state
+                .doc
+                .parameters
+                .values()
+                .any(|p| p.name == "bar" && p.expression == "2mm"),
+            "should define bar=2mm"
+        );
+        assert_eq!(state.doc.shell_ops.values().nth(0).unwrap().thickness, "bar");
+
+        // UI commit path: typed thickness field → CommitShell.
+        let mut state = two_box_state(false);
+        state.apply(Action::SetTool(Tool::Shell));
+        {
+            let cs = state.creating_shell.as_mut().unwrap();
+            cs.targets = vec![bkey(0)];
+            cs.thickness_text = "wall=1.5mm".to_string();
+            cs.user_edited = true;
+        }
+        assert!(
+            matches!(state.apply(Action::CommitShell), ActionResult::Ok),
+            "CommitShell wall=1.5mm refused: {}",
+            state.status
+        );
+        assert!(
+            state
+                .doc
+                .parameters
+                .values()
+                .any(|p| p.name == "wall" && p.expression == "1.5mm"),
+            "CommitShell should define wall=1.5mm"
+        );
+        assert_eq!(state.doc.shell_ops.values().nth(0).unwrap().thickness, "wall");
     }
 
     /// #1164: the Shell tool exposes a thickness push/pull gizmo once a body is targeted;

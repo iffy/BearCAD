@@ -15410,8 +15410,10 @@ impl App {
                             .get_or_insert_with(actions::CreatingShell::default);
                         cs.thickness_text = text.clone();
                         cs.user_edited = true;
+                        // Preview `name=value` (and units) via the shared RHS evaluator
+                        // so the gizmo tracks while typing an inline definition (#1170).
                         if let Some(v) =
-                            crate::value::eval_length_mm_in_doc(&text, &self.state.doc)
+                            crate::value::computed_length_in_doc(&text, &self.state.doc)
                         {
                             cs.thickness_live = v;
                         }

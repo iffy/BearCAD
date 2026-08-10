@@ -2227,7 +2227,12 @@ mod tests {
             name: None,
         });
         let out = doc.bodies.insert(Body {
-            source: BodySource::Shelled { op, target: 0 },
+            source: BodySource::Shelled {
+                op,
+                target: 0,
+                add: Vec::new(),
+                cut: Vec::new(),
+            },
             material: None,
             name: None,
             shadow: false,
