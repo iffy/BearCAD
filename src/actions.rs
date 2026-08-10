@@ -5761,6 +5761,71 @@ fn extrude_merge_candidate(doc: &Document, sketch: SketchId) -> Option<crate::mo
     }
 }
 
+/// UV polygon of the body face that hosts `sketch`, in the sketch's own geometry frame.
+/// `None` when the sketch is on a construction plane (or the host has no boundary).
+fn host_face_uv_loop(doc: &Document, sketch: SketchId) -> Option<Vec<(f32, f32)>> {
+    let host = doc.sketch_face(sketch)?;
+    if matches!(host, FaceId::ConstructionPlane(_)) {
+        return None;
+    }
+    let frame = crate::face::sketch_geometry_frame(doc, sketch)?;
+    let world = crate::extrude::face_boundary_loop_world(doc, &host)?;
+    if world.len() < 3 {
+        return None;
+    }
+    Some(
+        world
+            .iter()
+            .map(|p| crate::face::world_to_local(&frame, *p))
+            .collect(),
+    )
+}
+
+/// True when any of `faces` sits on the sketch's host body face (nonzero UV overlap) (#1204).
+/// A profile that is merely coplanar with a body-hosted sketch plane — floating off the
+/// face — is **not** on the body; auto-merge / auto-cut must not treat it as if it were.
+fn extrude_faces_on_host_body(
+    doc: &Document,
+    sketch: SketchId,
+    faces: &[ExtrudeFace],
+) -> bool {
+    let Some(host_loop) = host_face_uv_loop(doc, sketch) else {
+        return false;
+    };
+    for face in faces {
+        let Some(profile) = crate::extrude::extrude_face_uv_loop(doc, sketch, face) else {
+            continue;
+        };
+        // `face_boolean` Intersection yields `Some` only for genuine nonzero-area overlap.
+        if crate::polygon_boolean::face_boolean(
+            &profile,
+            &host_loop,
+            crate::model::BooleanOp::Intersection,
+        )
+        .is_some()
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Default Output mode when starting an extrude: **Add** only when a profile actually sits
+/// on the host body face; floating coplanar profiles default to **New body** (#1204).
+fn default_extrude_body_mode(
+    doc: &Document,
+    sketch: SketchId,
+    faces: &[ExtrudeFace],
+    merge_candidate: Option<crate::model::BodyKey>,
+) -> ExtrudeBodyMode {
+    match merge_candidate {
+        Some(bi) if extrude_faces_on_host_body(doc, sketch, faces) => {
+            ExtrudeBodyMode::MergeInto(bi)
+        }
+        _ => ExtrudeBodyMode::NewBody,
+    }
+}
+
 /// Corner index (0–3) of `rect` nearest to local point `(u, v)`.
 /// Nearest rectangle corner (0=BL, 1=BR, 2=TR, 3=TL, matching `add_line_rectangle`) to a
 /// local point, used to map a snapped placement onto the shared line endpoint at that corner.
@@ -10497,6 +10562,12 @@ impl AppState {
                         let faces = vec![face];
                         let distance =
                             initial_extrude_distance(&self.doc, &faces, self.cam.eye());
+                        let body_mode = default_extrude_body_mode(
+                            &self.doc,
+                            sketch,
+                            &faces,
+                            merge_candidate,
+                        );
                         self.creating_extrusion = Some(CreatingExtrusion {
                             sketch,
                             faces,
@@ -10509,9 +10580,7 @@ impl AppState {
                             pending_focus: true,
                             target: None,
                             edit_index: None,
-                            body_mode: merge_candidate
-                                .map(ExtrudeBodyMode::MergeInto)
-                                .unwrap_or(ExtrudeBodyMode::NewBody),
+                            body_mode,
                             merge_candidate,
                             symmetric: self.pending_extrude_symmetric,
                         });
@@ -10577,6 +10646,8 @@ impl AppState {
                 let merge_candidate = extrude_merge_candidate(&self.doc, sketch);
                 let faces = vec![face];
                 let distance = initial_extrude_distance(&self.doc, &faces, self.cam.eye());
+                let body_mode =
+                    default_extrude_body_mode(&self.doc, sketch, &faces, merge_candidate);
                 self.creating_extrusion = Some(CreatingExtrusion {
                     sketch,
                     faces,
@@ -10589,9 +10660,7 @@ impl AppState {
                     pending_focus: true,
                     target: None,
                     edit_index: None,
-                    body_mode: merge_candidate
-                        .map(ExtrudeBodyMode::MergeInto)
-                        .unwrap_or(ExtrudeBodyMode::NewBody),
+                    body_mode,
                     merge_candidate,
                     symmetric: self.pending_extrude_symmetric,
                 });
@@ -10629,16 +10698,24 @@ impl AppState {
                             crate::model::effective_length_unit(&self.doc, ce.sketch),
                         );
                     }
-                    // #141: the sketch sits on a face of `merge_candidate`, whose body lies on
-                    // the negative-normal side. Extruding backward (negative distance) drives
-                    // the profile into that body, so auto-switch to a cut; pulling forward
-                    // again reverts to adding. Leaves an explicit `NewBody` choice untouched
-                    // on forward drags — only the cut toggle is automatic.
+                    // #141/#1204: auto-cut only when a profile actually sits on the host body
+                    // face (UV overlap) *and* the drag goes into the body (negative distance).
+                    // A floating coplanar profile on a body-hosted sketch must not guess Cut —
+                    // there's nothing to cut into. On forward drag, only the cut toggle
+                    // reverts (an explicit New body choice is left alone).
                     if let Some(bi) = ce.merge_candidate {
+                        let on_host =
+                            extrude_faces_on_host_body(&self.doc, ce.sketch, &ce.faces);
                         if distance < 0.0 {
-                            ce.body_mode = ExtrudeBodyMode::Cut(bi);
+                            if on_host {
+                                ce.body_mode = ExtrudeBodyMode::Cut(bi);
+                            }
                         } else if ce.body_mode == ExtrudeBodyMode::Cut(bi) {
-                            ce.body_mode = ExtrudeBodyMode::MergeInto(bi);
+                            ce.body_mode = if on_host {
+                                ExtrudeBodyMode::MergeInto(bi)
+                            } else {
+                                ExtrudeBodyMode::NewBody
+                            };
                         }
                     }
                 }
@@ -26010,6 +26087,141 @@ mod tests {
         assert_eq!(
             state.creating_extrusion.as_ref().unwrap().body_mode,
             ExtrudeBodyMode::MergeInto(bi)
+        );
+    }
+
+    /// #1204 helper: a cuboid body with a free sketch on its top face and a rectangle drawn
+    /// *outside* that face (same plane, floating in space).
+    fn cuboid_sketch_with_floating_rect() -> (AppState, SketchId, ExtrudeFace) {
+        use crate::model::{Body, BodySource, Primitive, PrimitiveFace, PrimitiveKind};
+        let mut state = AppState::default();
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.width = "20".to_string();
+        shape.depth = "20".to_string();
+        shape.height = "10".to_string();
+        let pi = state.doc.primitives.insert(shape);
+        state.doc.bodies.insert(Body {
+            source: BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let face_id = FaceId::PrimitiveFace {
+            primitive: pi,
+            face: PrimitiveFace::CuboidTop,
+        };
+        state.apply(Action::BeginSketch {
+            face: face_id,
+            viewport: None,
+        });
+        let sketch = state.sketch_session.unwrap().sketch;
+        // Host top face spans ~[0,20]×[0,20] in sketch UV; park the rect far outside.
+        let rect_lines = crate::construction::add_line_rectangle(
+            &mut state.doc,
+            sketch,
+            80.0,
+            80.0,
+            20.0,
+            20.0,
+            [false; 4],
+        );
+        let face = ExtrudeFace::Polygon(rect_lines.to_vec());
+        (state, sketch, face)
+    }
+
+    /// #1204: a floating rectangle on a body-hosted sketch defaults to **New body**, not
+    /// Add/Cut — the profile is coplanar with a body face but not *on* it.
+    #[test]
+    fn floating_profile_on_body_sketch_defaults_to_new_body() {
+        let (mut state, _sketch, face) = cuboid_sketch_with_floating_rect();
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace { face });
+        let ce = state
+            .creating_extrusion
+            .as_ref()
+            .expect("extrusion in progress");
+        assert!(
+            ce.merge_candidate.is_some(),
+            "sketch still offers the host body for manual Add/Cut"
+        );
+        assert_eq!(
+            ce.body_mode,
+            ExtrudeBodyMode::NewBody,
+            "floating profile must not default to merge/cut"
+        );
+    }
+
+    /// #1204: dragging a floating (off-body) profile "into" the host body direction must
+    /// not auto-guess Cut — there's nothing to cut into. Stays New body.
+    #[test]
+    fn floating_profile_backward_drag_does_not_auto_cut() {
+        let (mut state, _sketch, face) = cuboid_sketch_with_floating_rect();
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace { face });
+        assert_eq!(
+            state.creating_extrusion.as_ref().unwrap().body_mode,
+            ExtrudeBodyMode::NewBody
+        );
+        state.apply(Action::SetExtrudeDistance { distance: -12.0 });
+        assert_eq!(
+            state.creating_extrusion.as_ref().unwrap().body_mode,
+            ExtrudeBodyMode::NewBody,
+            "negative distance must not flip a floating profile to Cut"
+        );
+        // Forward again still New body (never became Cut).
+        state.apply(Action::SetExtrudeDistance { distance: 12.0 });
+        assert_eq!(
+            state.creating_extrusion.as_ref().unwrap().body_mode,
+            ExtrudeBodyMode::NewBody
+        );
+    }
+
+    /// #1204/#141: a profile that *does* sit on the host face still auto-cuts on backward
+    /// drag (regression guard for the floating-profile fix).
+    #[test]
+    fn profile_on_host_face_still_auto_cuts_when_extruding_into_body() {
+        use crate::model::{Body, BodySource, Primitive, PrimitiveFace, PrimitiveKind};
+        let mut state = AppState::default();
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.width = "20".to_string();
+        shape.depth = "20".to_string();
+        shape.height = "10".to_string();
+        let pi = state.doc.primitives.insert(shape);
+        let bi = state.doc.bodies.insert(Body {
+            source: BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let face_id = FaceId::PrimitiveFace {
+            primitive: pi,
+            face: PrimitiveFace::CuboidTop,
+        };
+        state.apply(Action::BeginSketch {
+            face: face_id,
+            viewport: None,
+        });
+        let sketch = state.sketch_session.unwrap().sketch;
+        // Rectangle inside the cuboid top (UV ~[0,20]×[0,20]).
+        let rect_lines = crate::construction::add_line_rectangle(
+            &mut state.doc,
+            sketch,
+            2.0,
+            2.0,
+            8.0,
+            8.0,
+            [false; 4],
+        );
+        let face = ExtrudeFace::Polygon(rect_lines.to_vec());
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace { face });
+        let ce = state.creating_extrusion.as_ref().unwrap();
+        assert_eq!(ce.merge_candidate, Some(bi));
+        assert_eq!(ce.body_mode, ExtrudeBodyMode::MergeInto(bi));
+        state.apply(Action::SetExtrudeDistance { distance: -5.0 });
+        assert_eq!(
+            state.creating_extrusion.as_ref().unwrap().body_mode,
+            ExtrudeBodyMode::Cut(bi)
         );
     }
 

@@ -723,9 +723,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     which it previously did not — so neither pick mode was reachable from a script at all.
   - **Body target (#32/#35)**: a `Body`'s source is one or more extrusions (`BodySource::Extrusion`
     for one, `BodySource::Extrusions` for several; `BodySource::Solid { add, cut }` once some of
-    its extrusions are subtracted rather than added — see §3.3). Extruding from a sketch on an
-    existing body's face (a cap or side face) defaults to joining that body instead of creating a
-    new one; the context pane shows three (icon-labelled) choices whenever the **Extrude tool** is
+    its extrusions are subtracted rather than added — see §3.3). Extruding a profile that sits on an
+    existing body's face (a cap or side face) defaults to joining that body; a floating
+    coplanar profile on the same sketch defaults to a **New body** (#1204); the context pane shows three (icon-labelled) choices whenever the **Extrude tool** is
     active — including *before* a face is picked (#587), defaulting to **New body** with Add/Cut
     disabled until a host body is known — **New body**, **Add to `<body>`**, and **Cut `<body>`** — to
     override the choice
@@ -742,12 +742,14 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     **auto-flipped inward** (the commit-time analogue of the backward-drag auto-cut) with a
     status note; one that can't remove material in either direction commits as given with a
     **status warning**. Target-driven or expression-bound depths are never flipped, only
-    warned. **Auto-cut on backward drag (#141):** when the sketch sits on a
-    face of a body, that body lies on the negative-normal side, so dragging the extrude gizmo
-    *backward* (negative distance) drives the profile into it — the mode auto-switches to **Cut**
-    of that body; pulling forward again reverts to **Add to**. This only flips the cut toggle
-    (an explicit **New body** choice is left alone on forward drags) and, like the manual Cut
-    option, only engages when the OCCT kernel is present. **Combine/merge shadows the host
+    warned. **Auto-cut on backward drag (#141/#1204):** only when a profile **actually sits on**
+    the host body face (nonzero UV overlap) — not merely coplanar on a sketch started from a
+    body face. That body lies on the negative-normal side, so dragging the extrude gizmo
+    *backward* (negative distance) drives an on-face profile into it — the mode auto-switches
+    to **Cut** of that body; pulling forward again reverts to **Add to**. A floating coplanar
+    profile defaults to **New body** and is never auto-cut (nothing to cut into). This only
+    flips the cut toggle (an explicit **New body** choice is left alone on forward drags) and,
+    like the manual Cut option, only engages when the OCCT kernel is present. **Combine/merge shadows the host
     (#1106/#1107):** committing **Add to** leaves the host as a shadow body (like Move/Boolean)
     and creates a new live solid whose source is the host fused with the extrusion; that solid
     nests under the extrusion as its graph output, and the host feeds the extrusion as a
