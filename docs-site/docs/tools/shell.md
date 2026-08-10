@@ -13,10 +13,10 @@ Hollow a solid to a wall thickness. Optionally open faces so the inside is acces
 
 1. Pick the **Shell** tool and click one or more bodies (**Bodies**).
 2. After the first body, focus moves to **Open faces** — pick faces on the selected bodies to remove (leave wall thickness around them). Adjacent open faces also remove the shared wall.
-3. Set **Thickness** (mm expression) in the context pane.
+3. Set **Thickness** (mm expression) in the context pane, or drag the push/pull handle on a face (first open face, else a body face). Clicking the handle focuses Thickness for overwrite typing.
 4. Press **Enter**.
 
-While you pick, the hollowed result previews semi-transparent on the target bodies.
+While you pick, the hollowed result (what remains) previews semi-transparent on the target bodies.
 
 ## What you get
 

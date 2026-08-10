@@ -754,6 +754,8 @@ pub struct ShellControl {
     pub thickness_text: String,
     /// Live evaluated thickness (mm) for the computed preview.
     pub thickness_live: f32,
+    /// Focus + select-all the thickness field (gizmo grab, #1164).
+    pub pending_focus: bool,
     pub editing: bool,
     pub can_commit: bool,
 }
@@ -762,6 +764,8 @@ pub struct ShellControl {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ShellEdit {
     Thickness(String),
+    /// Thickness field absorbed the pending focus request (clears `pending_focus`).
+    FocusConsumed,
     Commit,
 }
 
@@ -6872,12 +6876,31 @@ pub fn show_pane(
         labeled_row(ui, "Thickness", |ui| {
             ui.add_enabled_ui(controls_enabled, |ui| {
                 let mut text = control.thickness_text.clone();
-                let resp = crate::expression_input::ValueInput::new(
-                    "shell_thickness",
+                let id = egui::Id::new("shell_thickness");
+                let resp = crate::expression_input::ValueInput::from_id(
+                    id,
                     crate::expression_input::ValueKind::Length,
                 )
                 .width(90.0)
                 .show(ui, &mut text, doc);
+                // Gizmo grab focuses the field with the value selected so typing overwrites
+                // (#1161/#1164).
+                if control.pending_focus && !resp.has_focus() {
+                    resp.request_focus();
+                }
+                if control.pending_focus && resp.gained_focus() {
+                    let len = text.chars().count();
+                    if let Some(mut state) =
+                        egui::widgets::text_edit::TextEditState::load(ui.ctx(), id)
+                    {
+                        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                            egui::text::CCursor::default(),
+                            egui::text::CCursor::new(len),
+                        )));
+                        state.store(ui.ctx(), id);
+                    }
+                    on_shell_edit(ShellEdit::FocusConsumed);
+                }
                 if resp.changed() {
                     on_shell_edit(ShellEdit::Thickness(text));
                 }

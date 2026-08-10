@@ -998,6 +998,14 @@ fn sketch_shadows(hosts: &[(FaceId, f32)], candidate: &FaceId, dist: f32) -> boo
     })
 }
 
+/// Whether `face` was cut away as an open face of a committed shell (#1165). Those faces no
+/// longer exist on the hollowed result and must not win sketch-face hover/pick.
+fn is_shell_open_face(doc: &Document, face: &FaceId) -> bool {
+    doc.shell_ops
+        .iter()
+        .any(|(_, op)| op.open_faces.iter().any(|f| f == face))
+}
+
 fn centroid(points: &[Vec3]) -> Vec3 {
     if points.is_empty() {
         return Vec3::ZERO;
@@ -1131,7 +1139,9 @@ pub fn pick_sketch_face(
                         profile: profile.clone(),
                         top,
                     };
-                    if !sketch_shadows(&shadowed_hosts, &candidate, dist) {
+                    if !is_shell_open_face(doc, &candidate)
+                        && !sketch_shadows(&shadowed_hosts, &candidate, dist)
+                    {
                         consider_face_pick_sized(
                         &mut best,
                         FacePick { face: candidate, dist, depth: depth(c), area: f32::INFINITY },
@@ -1149,7 +1159,9 @@ pub fn pick_sketch_face(
                         profile: profile.clone(),
                         edge: edge as u8,
                     };
-                    if !sketch_shadows(&shadowed_hosts, &candidate, dist) {
+                    if !is_shell_open_face(doc, &candidate)
+                        && !sketch_shadows(&shadowed_hosts, &candidate, dist)
+                    {
                         consider_face_pick_sized(
                         &mut best,
                         FacePick { face: candidate, dist, depth: depth(c), area: f32::INFINITY },
@@ -1178,7 +1190,9 @@ pub fn pick_sketch_face(
                         profile: profile.clone(),
                         end,
                     };
-                    if !sketch_shadows(&shadowed_hosts, &candidate, dist) {
+                    if !is_shell_open_face(doc, &candidate)
+                        && !sketch_shadows(&shadowed_hosts, &candidate, dist)
+                    {
                         consider_face_pick_sized(
                         &mut best,
                         FacePick { face: candidate, dist, depth: depth(c), area: f32::INFINITY },
@@ -1197,7 +1211,9 @@ pub fn pick_sketch_face(
                         profile: profile.clone(),
                         edge: edge as u8,
                     };
-                    if !sketch_shadows(&shadowed_hosts, &candidate, dist) {
+                    if !is_shell_open_face(doc, &candidate)
+                        && !sketch_shadows(&shadowed_hosts, &candidate, dist)
+                    {
                         consider_face_pick_sized(
                         &mut best,
                         FacePick { face: candidate, dist, depth: depth(c), area: f32::INFINITY },
@@ -1247,7 +1263,9 @@ pub fn pick_sketch_face(
                 continue;
             };
             let candidate = FaceId::PrimitiveFace { primitive: pi, face };
-            if !sketch_shadows(&shadowed_hosts, &candidate, dist) {
+            if !is_shell_open_face(doc, &candidate)
+                && !sketch_shadows(&shadowed_hosts, &candidate, dist)
+            {
                 consider_face_pick_sized(
                     &mut best,
                     FacePick { face: candidate, dist, depth: depth(c), area: f32::INFINITY },
@@ -1365,7 +1383,8 @@ pub fn sketch_faces_near(
 ) -> Vec<(FaceId, Vec3, f32)> {
     let mut out: Vec<(FaceId, Vec3, f32)> = Vec::new();
     let mut push = |face: FaceId, centroid: Vec3, dist: f32| {
-        if dist <= radius {
+        // Shell open faces no longer exist on the hollowed body (#1165).
+        if dist <= radius && !is_shell_open_face(doc, &face) {
             out.push((face, centroid, dist));
         }
     };
@@ -2177,6 +2196,75 @@ mod tests {
     }
 
     /// #1103: a cuboid drawn by the Shape tool (a primitive, no sketch behind it) has the
+    /// #1165: faces removed by a committed shell (open faces) must not win sketch-face hover
+    /// or pick — the hole is gone, so the original analytic face is not a valid target.
+    #[test]
+    fn pick_sketch_face_skips_shell_open_faces() {
+        use crate::model::{
+            Body, BodySource, Primitive, PrimitiveFace, PrimitiveKind, ShellOperation,
+        };
+        let mut doc = Document::default();
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.width = "20".to_string();
+        shape.depth = "20".to_string();
+        shape.height = "10".to_string();
+        let pi = doc.primitives.insert(shape);
+        let input = doc.bodies.insert(Body {
+            source: BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: true, // consumed by the shell
+        });
+        let open = FaceId::PrimitiveFace {
+            primitive: pi,
+            face: PrimitiveFace::CuboidTop,
+        };
+        let op = doc.shell_ops.insert(ShellOperation {
+            targets: vec![input],
+            open_faces: vec![open.clone()],
+            thickness: "1".to_string(),
+            outputs: Vec::new(),
+            name: None,
+        });
+        let out = doc.bodies.insert(Body {
+            source: BodySource::Shelled { op, target: 0 },
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        doc.shell_ops[op].outputs = vec![out];
+
+        // Top-down over the (removed) top face — must not resolve to that open face.
+        let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.y));
+        let hit = pick_sketch_face(
+            eframe::egui::pos2(0.0, 0.0),
+            &project,
+            &doc,
+            Vec3::new(0.0, 0.0, 100.0),
+        );
+        assert!(
+            hit.as_ref() != Some(&open),
+            "open face of a shell must not be pickable, got {hit:?}"
+        );
+        // A remaining face (the bottom) is still sketchable.
+        let bottom = FaceId::PrimitiveFace {
+            primitive: pi,
+            face: PrimitiveFace::CuboidBottom,
+        };
+        // Eye below the box looking up — bottom face is nearest.
+        let from_below = pick_sketch_face(
+            eframe::egui::pos2(0.0, 0.0),
+            &project,
+            &doc,
+            Vec3::new(0.0, 0.0, -100.0),
+        );
+        assert_eq!(
+            from_below,
+            Some(bottom),
+            "remaining non-open faces stay pickable, got {from_below:?}"
+        );
+    }
+
     /// same sketchable analytic faces as an extruded box — its top cap and side walls can
     /// be picked to sketch on, just like an extrusion's.
     #[test]

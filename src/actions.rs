@@ -1132,6 +1132,11 @@ pub struct CreatingShell {
     pub thickness_text: String,
     /// Live evaluated thickness while typing / default.
     pub thickness_live: f32,
+    /// `true` once the user has typed into the thickness field (gizmo drags leave the text
+    /// alone so a half-typed expression isn't clobbered — same contract as Extrude).
+    pub user_edited: bool,
+    /// Request focus + select-all on the thickness field (gizmo grab, #1161/#1164).
+    pub pending_focus: bool,
     /// `Some(op)` while re-editing a committed operation.
     pub editing: Option<crate::model::ShellOpKey>,
 }
@@ -1144,6 +1149,8 @@ impl Default for CreatingShell {
             picking_faces: false,
             thickness_text: "1".to_string(),
             thickness_live: 1.0,
+            user_edited: false,
+            pending_focus: false,
             editing: None,
         }
     }
@@ -17028,6 +17035,16 @@ pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
     if let Some(cp) = &state.creating_plane {
         gizmos.push(GizmoInfo { kind: "offset", name: "offset", value: cp.offset_live });
     }
+    // Shell tool (#1164): wall-thickness push/pull once at least one body is targeted.
+    if let Some(cs) = &state.creating_shell {
+        if !cs.targets.is_empty() {
+            gizmos.push(GizmoInfo {
+                kind: "push_pull",
+                name: "shell",
+                value: cs.thickness_live,
+            });
+        }
+    }
     // Move tool (#185): the translation components (mm) — the values the Move drag gizmos
     // control, exposed so the tool is scriptable/testable ahead of the viewport handles.
     if let Some(cm) = &state.creating_move {
@@ -17129,6 +17146,21 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
                 cr.angle_live = value.to_degrees().clamp(1.0, 360.0);
                 cr.user_edited = false;
                 cr.text = format!("{:.0}", cr.angle_live);
+                true
+            } else {
+                false
+            }
+        }
+        "shell" => {
+            if let Some(cs) = state.creating_shell.as_mut() {
+                if cs.targets.is_empty() {
+                    return false;
+                }
+                let amount = value.max(1e-3);
+                cs.thickness_live = amount;
+                cs.user_edited = false;
+                cs.thickness_text =
+                    crate::value::format_length_display_in(amount, state.doc.default_length_unit);
                 true
             } else {
                 false
@@ -24156,6 +24188,45 @@ mod tests {
         assert_eq!(state.doc.shell_ops[op].thickness, "2");
         assert_eq!(state.doc.shell_ops[op].outputs, vec![out]);
         assert!(state.doc.bodies[bkey(0)].shadow);
+    }
+
+    /// #1164: the Shell tool exposes a thickness push/pull gizmo once a body is targeted;
+    /// `set_gizmo("shell", …)` drives the live wall thickness.
+    #[test]
+    fn gizmos_expose_and_drive_the_shell_thickness() {
+        let mut state = two_box_state(false);
+        state.apply(Action::SetTool(Tool::Shell));
+        // No gizmo until a body is in the target set.
+        assert!(
+            available_gizmos(&state)
+                .iter()
+                .all(|g| g.name != "shell"),
+            "shell gizmo should wait for a target body"
+        );
+        assert!(apply_pick(
+            &mut state,
+            crate::context::PickerTarget::ShellTargets,
+            &crate::hierarchy::SceneElement::Body(bkey(0)),
+        ));
+        let gizmos = available_gizmos(&state);
+        let shell = gizmos
+            .iter()
+            .find(|g| g.name == "shell")
+            .expect("shell thickness gizmo after a body pick");
+        assert_eq!(shell.kind, "push_pull");
+        assert_eq!(
+            gizmo_value(&state, "shell"),
+            Some(state.creating_shell.as_ref().unwrap().thickness_live)
+        );
+
+        assert!(set_gizmo(&mut state, "shell", 3.5));
+        let cs = state.creating_shell.as_ref().unwrap();
+        assert!((cs.thickness_live - 3.5).abs() < 1e-4, "live={}", cs.thickness_live);
+        // Gizmo-set thickness is authoritative — typed text resyncs to the dragged value.
+        assert!(!cs.user_edited);
+        let cur = gizmo_value(&state, "shell").unwrap();
+        assert!(set_gizmo(&mut state, "shell", cur + 1.0));
+        assert!((state.creating_shell.as_ref().unwrap().thickness_live - 4.5).abs() < 1e-4);
     }
 
     /// #1126: a sketch line on the top face of a box laser-cuts through the body, splitting

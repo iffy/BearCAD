@@ -708,6 +708,48 @@ mod tests {
         );
     }
 
+    /// #1163: a closed shell (no open faces) is the wall remainder — outer solid minus the
+    /// inset cavity — not the cavity solid alone. Volume, bounds, and triangle count must
+    /// match a hollow box, not the hole that was cut out.
+    #[test]
+    fn shell_closed_cube_is_the_wall_remainder_not_the_cavity() {
+        let cube = Shape::prism(&square(0.0, 0.0, 10.0, 10.0), Vec3::new(0.0, 0.0, 10.0)).unwrap();
+        let shelled = cube.shell(&[], 1.0).expect("closed shell built");
+        let v = shelled.volume().expect("volume");
+        // Outer 10³ − inner 8³ = 488 (walls). The cavity alone is 512 — the bug.
+        let expected_walls = 1000.0 - 8.0 * 8.0 * 8.0;
+        assert!(
+            (v - expected_walls).abs() < 1.0,
+            "closed shell volume {v}, expected walls ~{expected_walls} (not the 512 cavity)"
+        );
+        let tris = shelled.tessellate(0.2);
+        // Outer 6 faces + inner 6 faces → more than a single solid box's 12 tris.
+        assert!(
+            tris.len() >= 24,
+            "hollow shell should tessellate both outer and inner faces, got {} tris",
+            tris.len()
+        );
+        let mut min = glam::Vec3::splat(f32::MAX);
+        let mut max = glam::Vec3::splat(f32::MIN);
+        for tri in &tris {
+            for p in tri {
+                min = min.min(*p);
+                max = max.max(*p);
+            }
+        }
+        // Outer bounds stay the original cube; a cavity-only solid would be inset to 1..9.
+        assert!(
+            min.x <= 1e-3 && min.y <= 1e-3 && min.z <= 1e-3,
+            "walls must reach the outer surface, min={min:?}"
+        );
+        assert!(
+            (max.x - 10.0).abs() <= 1e-3
+                && (max.y - 10.0).abs() <= 1e-3
+                && (max.z - 10.0).abs() <= 1e-3,
+            "walls must reach the outer surface, max={max:?}"
+        );
+    }
+
     #[test]
     fn shell_rejects_non_positive_thickness() {
         let cube = Shape::prism(&square(0.0, 0.0, 1.0, 1.0), Vec3::new(0.0, 0.0, 1.0)).unwrap();

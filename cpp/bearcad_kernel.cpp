@@ -844,9 +844,25 @@ extern "C" BearcadShape* bearcad_shape_shell(const BearcadShape* s, const double
         if (!maker.IsDone()) {
             return nullptr;
         }
-        TopoDS_Shape result = maker.Shape();
-        if (result.IsNull()) {
+        TopoDS_Shape thick = maker.Shape();
+        if (thick.IsNull()) {
             return nullptr;
+        }
+        // Empty closing list: MakeThickSolidByJoin returns the *cavity* (inward offset of
+        // every face) rather than the wall remainder. Subtract that cavity from the
+        // original solid so the preview/result is what remains (#1163).
+        TopoDS_Shape result;
+        if (n_faces == 0) {
+            BRepAlgoAPI_Cut cut(s->shape, thick);
+            if (!cut.IsDone()) {
+                return nullptr;
+            }
+            result = cut.Shape();
+            if (result.IsNull()) {
+                return nullptr;
+            }
+        } else {
+            result = thick;
         }
         return new BearcadShape{result};
     } catch (const Standard_Failure&) {

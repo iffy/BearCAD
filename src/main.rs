@@ -3160,6 +3160,8 @@ struct App {
     /// Grab state for the Repeat tool's distance gizmo (#644): the same click-to-grab handle
     /// the Extrude tool uses, dragged along the repeat axis to set the fill distance.
     repeat_gizmo_drag: Option<ExtrudeGizmoDrag>,
+    /// Grab state for the Shell tool's wall-thickness push/pull gizmo (#1164).
+    shell_gizmo_drag: Option<ExtrudeGizmoDrag>,
     /// Object the extrude gizmo is currently snapped to (applied on release).
     pending_extrude_target: Option<model::ExtrudeTarget>,
     /// The end-point-B candidate under the cursor (#670), so the click path takes exactly the
@@ -4319,6 +4321,7 @@ impl App {
             angle_gizmo_drag: None,
             extrude_gizmo_drag: None,
             repeat_gizmo_drag: None,
+            shell_gizmo_drag: None,
             pending_extrude_target: None,
             joint_select_drag: None,
             joint_select_grab: None,
@@ -8994,6 +8997,8 @@ impl App {
                         picking_faces: false,
                         thickness_text: existing.thickness,
                         thickness_live,
+                        user_edited: true, // keep the committed expression text
+                        pending_focus: false,
                         editing: Some(op),
                     });
                     self.state.apply(Action::SetTool(Tool::Shell));
@@ -10647,7 +10652,7 @@ impl App {
     }
 
     /// Shell tool (#1156): pick bodies, then open faces on those bodies; thickness in the
-    /// context pane. Enter commits.
+    /// context pane. Enter commits. Thickness push/pull gizmo (#1164).
     #[allow(clippy::too_many_arguments)]
     fn handle_shell_tool(
         &mut self,
@@ -10660,6 +10665,9 @@ impl App {
         pick_occlusion: Option<&construction::PickOcclusion>,
         tool_pickers: &[context::ToolPickerView],
     ) {
+        if self.state.creating_shell.is_none() {
+            self.shell_gizmo_drag = None;
+        }
         if ui.input(|i| i.key_pressed(egui::Key::Enter))
             && self
                 .state
@@ -10668,10 +10676,85 @@ impl App {
                 .is_some_and(|c| !c.targets.is_empty())
             && !ui.ctx().egui_wants_keyboard_input()
         {
+            self.shell_gizmo_drag = None;
             self.state.apply(Action::CommitShell);
             return;
         }
-        if !ui.input(|i| i.pointer.primary_pressed()) {
+
+        let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+        let following = self.shell_gizmo_drag.is_some();
+        let gizmo_pointer = if self.exploder.is_some() {
+            None
+        } else {
+            pointer_screen
+        };
+
+        // Click-to-grab thickness handle: one click grabs, next click releases (#1164/#1161).
+        if let Some(cs) = self.state.creating_shell.as_ref() {
+            if !cs.targets.is_empty() {
+                if let Some((origin, normal)) =
+                    shell_thickness_gizmo_geom(&self.state.doc, cs)
+                {
+                    let thickness = cs.thickness_live.max(1e-3);
+                    let handle_offset = extrude_gizmo_display_offset(thickness);
+                    let hovered = gizmo_pointer.is_some_and(|pp| {
+                        construction::offset_gizmo_hit(pp, project, origin, normal, handle_offset)
+                    });
+                    if !following && primary_pressed && hovered {
+                        if let Some(pp) = gizmo_pointer {
+                            self.shell_gizmo_drag = Some(ExtrudeGizmoDrag {
+                                start_screen: pp,
+                                start_distance: thickness,
+                            });
+                            if let Some(cs) = self.state.creating_shell.as_mut() {
+                                prepare_gizmo_value_field_focus(
+                                    &mut cs.user_edited,
+                                    &mut cs.pending_focus,
+                                );
+                            }
+                            ui.ctx().memory_mut(|m| {
+                                m.request_focus(egui::Id::new(SHELL_THICKNESS_FIELD_ID))
+                            });
+                        }
+                    }
+                    if let Some(drag) = self.shell_gizmo_drag {
+                        if let Some(pp) = gizmo_pointer {
+                            let new_t = construction::offset_from_normal_drag(
+                                origin,
+                                normal,
+                                project,
+                                drag.start_distance,
+                                drag.start_screen,
+                                pp,
+                            )
+                            .max(1e-3);
+                            if let Some(cs) = self.state.creating_shell.as_mut() {
+                                cs.thickness_live = new_t;
+                                if !cs.user_edited {
+                                    cs.thickness_text = crate::value::format_length_display_in(
+                                        new_t,
+                                        self.state.doc.default_length_unit,
+                                    );
+                                }
+                            }
+                        }
+                        // Second click releases the handle (touch: release).
+                        let release = if touch::active() {
+                            ui.input(|i| i.pointer.primary_released())
+                        } else {
+                            primary_pressed && following
+                        };
+                        if release {
+                            self.shell_gizmo_drag = None;
+                        }
+                        // While the gizmo is active, don't also feed picks into the pickers.
+                        return;
+                    }
+                }
+            }
+        }
+
+        if !primary_pressed {
             return;
         }
         let Some(pp) = pointer_screen else {
@@ -12162,6 +12245,7 @@ impl App {
         self.viewport_context_menu = None;
         self.extrude_gizmo_drag = None;
         self.repeat_gizmo_drag = None;
+        self.shell_gizmo_drag = None;
         self.pending_extrude_target = None;
         self.move_b_hover = None;
         self.joint_select_drag = None;
@@ -14119,6 +14203,7 @@ impl App {
                         .map(|c| c.thickness_text.clone())
                         .unwrap_or_else(|| "1".to_string()),
                     thickness_live: cs.map(|c| c.thickness_live).unwrap_or(1.0),
+                    pending_focus: cs.map(|c| c.pending_focus).unwrap_or(false),
                     editing: cs.map(|c| c.editing.is_some()).unwrap_or(false),
                     can_commit: cs.map(|c| !c.targets.is_empty()).unwrap_or(false),
                 }
@@ -15313,12 +15398,18 @@ impl App {
                     context::ShellEdit::Commit => {
                         self.state.apply(Action::CommitShell);
                     }
+                    context::ShellEdit::FocusConsumed => {
+                        if let Some(cs) = self.state.creating_shell.as_mut() {
+                            cs.pending_focus = false;
+                        }
+                    }
                     context::ShellEdit::Thickness(text) => {
                         let cs = self
                             .state
                             .creating_shell
                             .get_or_insert_with(actions::CreatingShell::default);
                         cs.thickness_text = text.clone();
+                        cs.user_edited = true;
                         if let Some(v) =
                             crate::value::eval_length_mm_in_doc(&text, &self.state.doc)
                         {
@@ -20564,6 +20655,9 @@ const REVOLVE_ARC_HANDLE_PICK_PX: f32 = 12.0;
 /// egui id of the floating extrude-distance text field.
 const REVOLVE_ANGLE_FIELD_ID: &str = "revolve_angle_field";
 const EXTRUDE_DISTANCE_FIELD_ID: &str = "extrude_distance_input";
+/// Context-pane thickness ValueInput id for the Shell tool (#1164) — matching
+/// `ValueInput::new("shell_thickness", …)` so a gizmo grab can focus it for overwrite typing.
+const SHELL_THICKNESS_FIELD_ID: &str = "shell_thickness";
 
 /// egui id of the floating chamfer/fillet amount text field.
 const VERTEX_TREATMENT_AMOUNT_FIELD_ID: &str = "vertex_treatment_amount_input";
@@ -20670,6 +20764,43 @@ fn sketch_offset_gizmo_world(
 fn extrude_gizmo_display_offset(distance: f32) -> f32 {
     let dir = if distance < 0.0 { -1.0 } else { 1.0 };
     distance + dir * EXTRUDE_GIZMO_LIFT
+}
+
+/// Anchor for the Shell tool's thickness push/pull gizmo (#1164): face centre + **inward**
+/// normal (thickness grows into the solid). Prefers the first open face; otherwise the first
+/// analytic face of the first target body; else the body centroid toward +Z.
+fn shell_thickness_gizmo_geom(
+    doc: &model::Document,
+    cs: &actions::CreatingShell,
+) -> Option<(glam::Vec3, glam::Vec3)> {
+    let face_anchor = |face: &FaceId| -> Option<(glam::Vec3, glam::Vec3)> {
+        let frame = face::sketch_frame(doc, face.clone())?;
+        let origin = extrude::face_boundary_loop_world(doc, face)
+            .map(|pts| pts.iter().copied().sum::<glam::Vec3>() / pts.len().max(1) as f32)
+            .unwrap_or(frame.origin);
+        let outward = frame.normal.normalize_or_zero();
+        if outward.length_squared() < 1e-12 {
+            return None;
+        }
+        // Inward: pulling the handle into the body grows the wall thickness.
+        Some((origin, -outward))
+    };
+    if let Some(face) = cs.open_faces.first() {
+        if let Some(a) = face_anchor(face) {
+            return Some(a);
+        }
+    }
+    for &bi in &cs.targets {
+        if let Some(face) = face::analytic_faces_of_body(doc, bi).into_iter().next() {
+            if let Some(a) = face_anchor(&face) {
+                return Some(a);
+            }
+        }
+        if let Some((min, max)) = extrude::body_solid_mesh(doc, bi).and_then(|m| m.bounds()) {
+            return Some(((min + max) * 0.5, glam::Vec3::Z));
+        }
+    }
+    None
 }
 
 /// The extrude "Up to" target a face stands for (#584), or `None` when that face can't be one.
@@ -26441,6 +26572,35 @@ impl App {
                     color: col::PREVIEW,
                     hovered,
                 });
+            }
+        }
+        // Shell tool (#1164): wall-thickness push/pull along an open face (or first body face)
+        // inward normal — same arrow mesh as Extrude.
+        if self.state.tool == Tool::Shell {
+            if let Some(cs) = self.state.creating_shell.as_ref() {
+                if !cs.targets.is_empty() {
+                    if let Some((origin, normal)) = shell_thickness_gizmo_geom(doc, cs) {
+                        let handle_offset =
+                            extrude_gizmo_display_offset(cs.thickness_live.max(1e-3));
+                        let hovered = self.shell_gizmo_drag.is_some()
+                            || pointer_screen.is_some_and(|pp| {
+                                construction::offset_gizmo_hit(
+                                    pp,
+                                    &project,
+                                    origin,
+                                    normal,
+                                    handle_offset,
+                                )
+                            });
+                        extrude_gizmo = Some(gpu_viewport::ViewportExtrudeGizmo {
+                            origin,
+                            normal,
+                            offset: handle_offset,
+                            color: col::PREVIEW,
+                            hovered,
+                        });
+                    }
+                }
             }
         }
         // Mirror tool (#604/#605): outside a sketch, hover-highlight exactly what a click would
