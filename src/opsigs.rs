@@ -656,6 +656,9 @@ impl Operation for Slice {
         ElementType::Body,
         ElementType::Face,
         ElementType::ConstructionPlane,
+        // Laser-path cutters (#1126): the sketch lines, and the sketch that owns them (#1151).
+        ElementType::Line,
+        ElementType::Sketch,
     ];
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[ElementType::Body];

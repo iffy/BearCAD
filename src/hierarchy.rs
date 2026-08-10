@@ -1044,9 +1044,11 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
             edges.push((input, HierarchyNode::Joint(ji)));
         }
     }
-    // A slice's cutters feed it (#449/#1126): construction planes and sketch lines have nodes;
-    // body faces don't.
+    // A slice's cutters feed it (#449/#1126/#1151): construction planes and sketch lines have
+    // nodes; body faces don't. Laser-line cutters also take their **sketch** as an input so
+    // the defining sketch shows as a dependency of the slice (and sketch edits cascade).
     for (oi, op) in doc.slice_ops.iter() {
+        let mut seen_sketches = std::collections::HashSet::new();
         for cutter in &op.cutters {
             match cutter {
                 crate::model::SliceCutter::Face(FaceId::ConstructionPlane(pi)) => {
@@ -1054,6 +1056,14 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
                 }
                 crate::model::SliceCutter::Line { line } => {
                     edges.push((HierarchyNode::Line(*line), HierarchyNode::SliceOp(oi)));
+                    if let Some(line) = doc.lines.get(*line) {
+                        if seen_sketches.insert(line.sketch) {
+                            edges.push((
+                                HierarchyNode::Sketch(line.sketch),
+                                HierarchyNode::SliceOp(oi),
+                            ));
+                        }
+                    }
                 }
                 crate::model::SliceCutter::Face(_) => {}
             }
@@ -7516,6 +7526,63 @@ label_hidden: false,
         assert!(deps.contains(&(HierarchyNode::Sketch(sketch), HierarchyNode::SweepOp(sweep))));
         assert!(deps.contains(&(HierarchyNode::Line(lkey(0)), HierarchyNode::SweepOp(sweep))));
         assert!(deps.contains(&(HierarchyNode::Line(lkey(1)), HierarchyNode::SweepOp(sweep))));
+    }
+
+    /// #1151: a 3D slice that laser-cuts with sketch lines takes the defining sketch (and
+    /// each line) as graph inputs — so Sketch 0 feeds Slice 0 in the Elements graph, not
+    /// only the body being cut.
+    #[test]
+    fn slice_with_laser_lines_has_sketch_as_graph_input() {
+        use crate::model::{Body, BodySource, Line, SliceCutter, SliceOperation};
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
+        let a = doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
+        let b = doc.lines.insert(Line::from_local_endpoints(sketch, 5.0, 0.0, 5.0, 10.0));
+        doc.bodies.insert(Body {
+            source: BodySource::Imported(crate::arena::Key::from_bits(0)),
+            material: None,
+            name: None,
+            shadow: true,
+        });
+        let op = doc.slice_ops.insert(SliceOperation {
+            targets: vec![bkey(0)],
+            cutters: vec![
+                SliceCutter::Line { line: a },
+                SliceCutter::Line { line: b },
+            ],
+            extend_infinite: true,
+            outputs: vec![bkey(1), bkey(2)],
+            name: None,
+        });
+        for piece in 0..2 {
+            doc.bodies.insert(Body {
+                source: BodySource::Sliced {
+                    op,
+                    target: 0,
+                    piece,
+                },
+                material: None,
+                name: None,
+                shadow: false,
+            });
+        }
+
+        let deps = graph_dependency_edges(&doc);
+        assert!(
+            deps.contains(&(HierarchyNode::Sketch(sketch), HierarchyNode::SliceOp(op))),
+            "the sketch that defined the laser path feeds the slice (#1151)"
+        );
+        assert!(deps.contains(&(HierarchyNode::Line(a), HierarchyNode::SliceOp(op))));
+        assert!(deps.contains(&(HierarchyNode::Line(b), HierarchyNode::SliceOp(op))));
+        assert!(deps.contains(&(HierarchyNode::Body(bkey(0)), HierarchyNode::SliceOp(op))));
+        // One sketch edge, not one per line.
+        let sketch_edges = deps
+            .iter()
+            .filter(|(s, c)| {
+                *s == HierarchyNode::Sketch(sketch) && *c == HierarchyNode::SliceOp(op)
+            })
+            .count();
+        assert_eq!(sketch_edges, 1, "dedupe sketch→slice edges across lines on the same sketch");
     }
 
     /// #909: a shape is a top-level element with its body nested under it, named by kind.

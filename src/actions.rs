@@ -24107,6 +24107,116 @@ mod tests {
         );
     }
 
+    /// #1151: editing the defining sketch after a laser slice (moving a cutter line)
+    /// regenerates the fragment bodies — the cut is parametric on the sketch geometry.
+    #[test]
+    fn slice_regenerates_when_laser_sketch_line_moves() {
+        let mut state = box_extrusion_state();
+        let top = {
+            let ext = &state.doc.extrusions[xkey(0)];
+            match &ext.faces[0] {
+                ExtrudeFace::Polygon(lines) => FaceId::ExtrudeCap {
+                    extrusion: xkey(0),
+                    profile: ExtrudeFace::Polygon(lines.clone()),
+                    top: true,
+                },
+                _ => panic!("box profile"),
+            }
+        };
+        let sketch = state.doc.add_sketch(top);
+        // Midline y=5 splits the 10×10×5 box into two equal 250 mm³ halves.
+        let line = state.doc.lines.insert(crate::model::Line::from_local_endpoints(
+            sketch, 0.0, 5.0, 10.0, 5.0,
+        ));
+        let result = state.apply(Action::CreateSliceOperation {
+            targets: vec![bkey(0)],
+            cutters: vec![crate::model::SliceCutter::Line { line }],
+            extend_infinite: true,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        let op_key = state.doc.slice_ops.keys().next().unwrap();
+        let outputs = state.doc.slice_ops[op_key].outputs.clone();
+        assert_eq!(outputs.len(), 2);
+        let vols_before: Vec<f32> = outputs
+            .iter()
+            .map(|&bi| {
+                let mesh = crate::extrude::body_solid_mesh(&state.doc, bi).expect("fragment");
+                crate::extrude::mesh_signed_volume(&mesh).abs()
+            })
+            .collect();
+        assert!(
+            vols_before.iter().all(|v| (*v - 250.0).abs() < 5.0),
+            "equal halves before edit: {vols_before:?}"
+        );
+
+        // Move the cut line toward y=2 — one piece gets ~20% of the box, the other ~80%.
+        state.doc.lines[line].y0 = 2.0;
+        state.doc.lines[line].y1 = 2.0;
+        state.doc.bump_mesh_rev();
+        let vols_after: Vec<f32> = outputs
+            .iter()
+            .map(|&bi| {
+                let mesh = crate::extrude::body_solid_mesh(&state.doc, bi).expect("fragment");
+                crate::extrude::mesh_signed_volume(&mesh).abs()
+            })
+            .collect();
+        let (lo, hi) = (
+            vols_after[0].min(vols_after[1]),
+            vols_after[0].max(vols_after[1]),
+        );
+        assert!(
+            (lo - 100.0).abs() < 10.0 && (hi - 400.0).abs() < 10.0,
+            "after moving the laser to y=2, expect ~100 and ~400 mm³, got {vols_after:?}"
+        );
+        assert!(
+            (lo - vols_before[0].min(vols_before[1])).abs() > 50.0,
+            "fragment volumes must change when the sketch line moves"
+        );
+    }
+
+    /// #1151: an off-center laser path (not through the body centroid) must cut at the
+    /// drawn line — previously the straight half-space was projected onto the body
+    /// centre, so every straight laser cut bisected the solid.
+    #[test]
+    fn slice_off_center_laser_line_cuts_at_the_path() {
+        let mut state = box_extrusion_state();
+        let top = {
+            let ext = &state.doc.extrusions[xkey(0)];
+            match &ext.faces[0] {
+                ExtrudeFace::Polygon(lines) => FaceId::ExtrudeCap {
+                    extrusion: xkey(0),
+                    profile: ExtrudeFace::Polygon(lines.clone()),
+                    top: true,
+                },
+                _ => panic!("box profile"),
+            }
+        };
+        let sketch = state.doc.add_sketch(top);
+        let line = state.doc.lines.insert(crate::model::Line::from_local_endpoints(
+            sketch, 0.0, 2.0, 10.0, 2.0,
+        ));
+        let result = state.apply(Action::CreateSliceOperation {
+            targets: vec![bkey(0)],
+            cutters: vec![crate::model::SliceCutter::Line { line }],
+            extend_infinite: true,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        let outputs = state.doc.slice_ops.values().next().unwrap().outputs.clone();
+        assert_eq!(outputs.len(), 2);
+        let mut vols: Vec<f32> = outputs
+            .iter()
+            .map(|&bi| {
+                let mesh = crate::extrude::body_solid_mesh(&state.doc, bi).expect("fragment");
+                crate::extrude::mesh_signed_volume(&mesh).abs()
+            })
+            .collect();
+        vols.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!(
+            (vols[0] - 100.0).abs() < 10.0 && (vols[1] - 400.0).abs() < 10.0,
+            "off-center cut at y=2 of a 10×10×5 box → ~100 and ~400, got {vols:?}"
+        );
+    }
+
     /// Combining two *disjoint* boxes keeps them as one operation with (kernel builds) two
     /// output solids — and the outputs render as real meshes.
     #[test]

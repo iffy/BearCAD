@@ -3022,7 +3022,11 @@ fn occt_slice_line_path_halfspace(
         let v = n;
         let centroid = (min + max) * 0.5;
         let mid = (path[0] + *path.last().unwrap()) * 0.5;
-        let center = mid - plane_n * (mid - centroid).dot(plane_n);
+        // Cutting plane through the laser path (#1151). Project the body centroid onto
+        // that plane so the oversized profile still covers the solid — do **not** project
+        // the path onto a plane through the centroid (that forced every straight laser
+        // cut through the body centre, ignoring sketch edits).
+        let center = centroid - plane_n * (centroid - mid).dot(plane_n);
         let half_u = if extend_infinite {
             reach
         } else {

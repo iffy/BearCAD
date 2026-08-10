@@ -45,8 +45,8 @@ Construction planes are always infinite.
 ## What you get
 
 Each fragment is a new body nested under the slice element. The input body lives on as a
-**shadow body** — hidden until you hover or select it. A cutter that misses a body leaves
-it whole.
+**shadow body** — hidden until you hover or select it. A laser cut also takes its sketch as
+an input: moving the path updates the fragments. A cutter that misses a body leaves it whole.
 
 **Edit slice** re-opens the pickers; deleting the slice restores the input body.
 

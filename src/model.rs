@@ -3229,12 +3229,14 @@ impl From<FaceId> for SliceCutter {
     }
 }
 
-/// A slice operation (Slice tool, #181/#1126): cuts whole bodies with planar cutters
+/// A slice operation (Slice tool, #181/#1126/#1151): cuts whole bodies with planar cutters
 /// (construction planes or planar body faces) and/or sketch lines used as laser-style
 /// path cutters, splitting each target into the fragments that fall on either side. Each
 /// input body becomes a **shadow** body; every fragment is a fresh [`Body`] with a
 /// [`BodySource::Sliced`] source, and the operation itself is an editable pane element —
-/// fragments depend on the operation, the operation depends on every target and cutter.
+/// fragments depend on the operation, the operation depends on every target, cutter, and
+/// (for laser lines) the **sketch** that owns those lines. Sketch edits re-evaluate the
+/// cut parametrically.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SliceOperation {
     /// Input bodies (the A side); each is sliced independently.
