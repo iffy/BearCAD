@@ -63,14 +63,18 @@ bearcad.ui.wait(5)
 assert(#picker("Bodies").items == before + 1,
   "the next click should gather a body, got " .. #picker("Bodies").items)
 
--- Slice: which set a click feeds is the armed picker's business.
+-- Slice: which set a click feeds is the armed picker's business. The first target then
+-- hands focus to Cutters (#1154), matching Mirror's "plane then bodies" step-through.
 bearcad.ui.tool("slice")
 bearcad.ui.wait(5)
+assert(picker("Targets").focused, "Targets is armed first")
 bearcad.ui.click_ground(15, 10)
 bearcad.ui.wait(5)
 assert(#picker("Targets").items == 1,
   "Targets is armed first, so the body lands there, got " .. #picker("Targets").items)
 assert(#picker("Cutters").items == 0, "and not in Cutters")
+assert(picker("Cutters").focused,
+  "after the first target, Cutters should take focus")
 
 print("ok: one click path gathers for Combine, Mirror and Slice")
 bearcad.quit()

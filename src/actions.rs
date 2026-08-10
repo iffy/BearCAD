@@ -16455,7 +16455,18 @@ pub fn toggle_body_in_active_tool(state: &mut AppState, bi: crate::model::BodyKe
             true
         }
         Tool::Slice => {
-            crate::element_picker::toggle_picked(&mut state.creating_slice.get_or_insert_with(CreatingSlice::default).targets, bi);
+            // #1154: the first target hands focus to Cutters so the next click can pick a
+            // plane/face/line without a manual re-arm. A later target (multi-body slice) keeps
+            // Targets armed — the user re-focused it deliberately to keep filling that set.
+            let cs = state
+                .creating_slice
+                .get_or_insert_with(CreatingSlice::default);
+            let was_empty = cs.targets.is_empty();
+            let already = cs.targets.iter().any(|t| *t == bi);
+            crate::element_picker::toggle_picked(&mut cs.targets, bi);
+            if was_empty && !already && cs.targets.len() == 1 {
+                cs.picking_cutter = true;
+            }
             true
         }
         Tool::Combine => {
@@ -23416,6 +23427,82 @@ mod tests {
         crate::model::SliceCutter::Face(FaceId::ConstructionPlane(
             state.doc.construction_planes.keys().last().unwrap(),
         ))
+    }
+
+    /// #1154: Slice 3D auto-arms Cutters after the first target lands; further targets keep
+    /// focus on Targets so multi-body slices don't bounce away from the picker you're filling.
+    #[test]
+    fn slice_first_target_arms_cutters_further_targets_keep_targets() {
+        use crate::hierarchy::SceneElement;
+        let mut state = two_box_state(false);
+        state.apply(Action::SetTool(Tool::Slice));
+        assert!(
+            !state.creating_slice.as_ref().unwrap().picking_cutter,
+            "Targets is armed first"
+        );
+
+        // First target: focus walks to Cutters.
+        assert!(apply_pick(
+            &mut state,
+            crate::context::PickerTarget::SliceTargets,
+            &SceneElement::Body(bkey(0)),
+        ));
+        let cs = state.creating_slice.as_ref().unwrap();
+        assert_eq!(cs.targets, vec![bkey(0)]);
+        assert!(
+            cs.picking_cutter,
+            "after the first target, Cutters should take focus"
+        );
+
+        // User re-arms Targets to add another body.
+        focus_tool_picker(&mut state, crate::context::PickerTarget::SliceTargets);
+        assert!(!state.creating_slice.as_ref().unwrap().picking_cutter);
+        assert!(apply_pick(
+            &mut state,
+            crate::context::PickerTarget::SliceTargets,
+            &SceneElement::Body(bkey(1)),
+        ));
+        let cs = state.creating_slice.as_ref().unwrap();
+        assert_eq!(cs.targets, vec![bkey(0), bkey(1)]);
+        assert!(
+            !cs.picking_cutter,
+            "a second target must leave focus on Targets"
+        );
+
+        // Toggle the first body off then back on while Targets already holds another:
+        // still not "the first" target (set was non-empty), so stay on Targets.
+        assert!(apply_pick(
+            &mut state,
+            crate::context::PickerTarget::SliceTargets,
+            &SceneElement::Body(bkey(0)),
+        ));
+        assert_eq!(state.creating_slice.as_ref().unwrap().targets, vec![bkey(1)]);
+        assert!(!state.creating_slice.as_ref().unwrap().picking_cutter);
+        assert!(apply_pick(
+            &mut state,
+            crate::context::PickerTarget::SliceTargets,
+            &SceneElement::Body(bkey(0)),
+        ));
+        assert_eq!(
+            state.creating_slice.as_ref().unwrap().targets,
+            vec![bkey(1), bkey(0)]
+        );
+        assert!(
+            !state.creating_slice.as_ref().unwrap().picking_cutter,
+            "re-adding while another target remains is not the first pick"
+        );
+
+        // Clear and pick one again: once more the first target, so Cutters arms.
+        state.creating_slice.as_mut().unwrap().targets.clear();
+        assert!(apply_pick(
+            &mut state,
+            crate::context::PickerTarget::SliceTargets,
+            &SceneElement::Body(bkey(0)),
+        ));
+        assert!(
+            state.creating_slice.as_ref().unwrap().picking_cutter,
+            "an empty Targets set + one pick is again the first target"
+        );
     }
 
     /// Slice: a plane through the middle of a box splits it into two fragment bodies, the
