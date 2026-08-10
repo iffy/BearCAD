@@ -288,8 +288,8 @@ pub struct CreatingShape {
     /// A cuboid's first clicked corner, in world mm: the base centre and the width/depth
     /// follow from it and the opposite corner (#912).
     pub first_corner: Option<Vec3>,
-    /// Screen position of the click that started the current phase, so a height drag
-    /// measures from where it began.
+    /// Screen position of the click that started the current phase (kept for placement
+    /// bookkeeping; height now tracks the pointer absolutely — see #1196).
     pub phase_screen: Option<egui::Pos2>,
     /// Dimensions the user typed: a typed one stops following the cursor (#912).
     pub typed: [bool; 4],

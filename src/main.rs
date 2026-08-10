@@ -11267,20 +11267,22 @@ impl App {
                     }
                 }
             }
-            // The height: measured along the anchor normal from where the phase began.
+            // The height: absolute free-cursor offset along the anchor normal so the tip
+            // (yellow top point) stays even with the pointer (#1196). A screen-delta from
+            // phase_screen under-reads under perspective / off-centre base clicks.
             (ShapePhase::Height, _) => {
                 if next.follows_cursor(D::Height) {
                     let origin = Vec3::from_array(next.shape.origin);
-                    let start = creating.phase_screen.unwrap_or(pp);
-                    let offset = construction::offset_from_normal_drag(
+                    if let Some(offset) = construction::offset_along_normal_from_cursor(
                         origin,
                         anchor_normal,
-                        project,
-                        0.0,
-                        start,
+                        cam,
                         pp,
-                    );
-                    next.shape.height = fmt(offset);
+                        viewport,
+                        vp,
+                    ) {
+                        next.shape.height = fmt(offset);
+                    }
                 }
                 if pressed {
                     next.phase = ShapePhase::Done;

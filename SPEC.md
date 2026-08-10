@@ -2104,7 +2104,8 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   hovered), so the pane's rows stay the ones taking the keyboard, and each mirror is pushed
   away from the cursor as it moves. **Enter**
   in a shape field creates it, like the sketch Rectangle's typed dimensions; the height is
-  otherwise dragged along the normal (`offset_from_normal_drag`).
+  otherwise the free-cursor offset along the normal (`offset_along_normal_from_cursor`) so the
+  tip stays even with the pointer.
   **Snapping (#913/#931):** the tool joins the sticky **Snapping** toggle (`AppState::snapping_enabled`,
   shared with the drawing tools, `bearcad.ui.snapping(bool)`). While it's on, the anchor and
   base clicks land on the nearest body **corner** or edge **midpoint** inside the pick radius

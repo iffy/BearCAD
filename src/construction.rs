@@ -1063,6 +1063,38 @@ pub fn offset_from_normal_drag(
     start_offset + delta_px / len
 }
 
+/// Free-cursor offset along `normal` so the tip at `origin + normal * offset` sits even
+/// with the pointer (#1196).
+///
+/// Intersects the mouse ray with a camera-facing plane through the height axis. Unlike
+/// [`offset_from_normal_drag`] (screen-delta along a linearised normal, measured from a
+/// drag start), this is absolute: where the pointer aims is the tip height, so perspective
+/// and an off-centre phase start no longer leave the tip lagging below the mouse.
+pub fn offset_along_normal_from_cursor(
+    origin: Vec3,
+    normal: Vec3,
+    cam: &crate::camera::Camera,
+    screen: egui::Pos2,
+    viewport: egui::Rect,
+    vp: &glam::Mat4,
+) -> Option<f32> {
+    let normal = normal.normalize_or_zero();
+    if normal.length_squared() < 0.5 {
+        return None;
+    }
+    // Plane contains the height axis and faces the camera: its normal is the component of
+    // (eye − origin) perpendicular to `normal`. Looking straight along the axis makes the
+    // plane degenerate — free-cursor height is undefined from a plan view.
+    let to_cam = cam.eye() - origin;
+    let mut plane_n = to_cam - normal * to_cam.dot(normal);
+    if plane_n.length_squared() < 1e-8 {
+        return None;
+    }
+    plane_n = plane_n.normalize();
+    let hit = cam.ray_plane_hit(screen, viewport, vp, origin, plane_n)?;
+    Some((hit - origin).dot(normal))
+}
+
 /// Which axis gizmo handle is under the cursor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AxisGizmoHit {
@@ -4759,6 +4791,97 @@ mod tests {
             Pos2::new(0.0, -5.0),
         );
         assert!((offset + 5.0).abs() < 1e-3);
+    }
+
+    /// #1196: pointing at the tip of a prospective height should resolve that height, under
+    /// a perspective isometric camera — the Shape tool's free-cursor height path.
+    #[test]
+    fn offset_along_normal_from_cursor_matches_the_pointed_tip() {
+        let mut cam = crate::camera::Camera::default(); // perspective + isometric
+        cam.distance = 260.0;
+        cam.target = Vec3::ZERO;
+        let viewport = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let vp = cam.view_proj(viewport);
+        let origin = Vec3::ZERO;
+        let normal = Vec3::Z;
+        for want in [10.0_f32, 25.0, 40.0, 80.0] {
+            let tip = origin + normal * want;
+            let screen = cam
+                .project(tip, viewport, &vp)
+                .expect("tip should project");
+            let got = offset_along_normal_from_cursor(origin, normal, &cam, screen, viewport, &vp)
+                .expect("cursor on the tip should resolve a height");
+            assert!(
+                (got - want).abs() < 0.25,
+                "pointing at tip z={want} should yield ~{want}, got {got}"
+            );
+        }
+    }
+
+    /// #1196: the old screen-delta measurement from an off-centre base click leaves the tip
+    /// short of the pointer under perspective — documenting why free-cursor height cannot
+    /// use [`offset_from_normal_drag`] from `phase_screen`.
+    #[test]
+    fn offset_from_normal_drag_from_a_base_corner_lags_the_tip() {
+        let mut cam = crate::camera::Camera::default();
+        cam.distance = 260.0;
+        cam.target = Vec3::ZERO;
+        let viewport = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let vp = cam.view_proj(viewport);
+        let origin = Vec3::ZERO;
+        let normal = Vec3::Z;
+        let want = 50.0_f32;
+        let tip = origin + normal * want;
+        let tip_screen = cam.project(tip, viewport, &vp).unwrap();
+        // Base phase ends on an opposite corner, not the centre — that's the phase_screen.
+        let corner_screen = cam
+            .project(Vec3::new(20.0, 10.0, 0.0), viewport, &vp)
+            .unwrap();
+        let project = |w: Vec3| cam.project(w, viewport, &vp);
+        let lagged = offset_from_normal_drag(
+            origin,
+            normal,
+            &project,
+            0.0,
+            corner_screen,
+            tip_screen,
+        );
+        // Must disagree with the true tip height by a visible amount (the bug).
+        assert!(
+            (lagged - want).abs() > 2.0,
+            "expected the phase-screen relative drag to miss the tip (got {lagged}, want {want})"
+        );
+        // And the free-cursor helper must land on it.
+        let tracked =
+            offset_along_normal_from_cursor(origin, normal, &cam, tip_screen, viewport, &vp)
+                .unwrap();
+        assert!(
+            (tracked - want).abs() < 0.25,
+            "free-cursor height should track the tip, got {tracked}"
+        );
+    }
+
+    /// #1196: looking straight down the normal, free-cursor height is undefined.
+    #[test]
+    fn offset_along_normal_from_cursor_is_none_in_plan_view() {
+        let mut cam = crate::camera::Camera::default();
+        let (yaw, pitch) = crate::camera::StandardView::Top.yaw_pitch();
+        cam.yaw = yaw;
+        cam.pitch = pitch;
+        cam.distance = 260.0;
+        cam.target = Vec3::ZERO;
+        let viewport = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let vp = cam.view_proj(viewport);
+        let screen = cam.project(Vec3::new(10.0, 10.0, 0.0), viewport, &vp).unwrap();
+        assert!(offset_along_normal_from_cursor(
+            Vec3::ZERO,
+            Vec3::Z,
+            &cam,
+            screen,
+            viewport,
+            &vp
+        )
+        .is_none());
     }
 
     #[test]
