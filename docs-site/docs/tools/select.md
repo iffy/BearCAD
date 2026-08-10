@@ -60,9 +60,15 @@ dependency graph.
 ## Reviewing the selection
 
 The context pane's **element picker** summarizes the selection by kind (e.g.
-`2 ⟨line⟩ · 1 ⟨body⟩`); click it to list each element, remove any, or **Clear all**. Every
-tool that gathers elements uses this same control — see
-[Selecting things](/docs/selecting).
+`2 ⟨line⟩ · 1 ⟨body⟩`); click it to list each element, remove any, or **Clear all**.
+Every tool that gathers elements uses this same control. One picker is armed at a
+time; clicks go there. Tools step through their pickers for you, or click a picker
+to arm it.
+
+A picker only takes what it's for. What it turns down goes to the tool's first
+picker, so the main set stays reachable. Where a picker wants **edges** and you
+click a **face**, you get all of that face's edges. Switching tools keeps picks
+the new tool accepts and drops the rest.
 
 With nothing selected, the context pane holds the document's
 [**Default units**](/docs/parameters#display-units). **Delete** removes the selection;
