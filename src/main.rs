@@ -12927,10 +12927,18 @@ impl App {
                         self.drawing_pan = egui::Vec2::ZERO;
                     }
                     // Export (#348): one toolbar icon whose popup picks the format.
+                    // Same flush icon + popup as modeling-mode Import/Export (#475/#1208) —
+                    // `menu_image_button` was padded/framed and looked smaller than neighbors.
                     if let Some(dwg) = self.state.editing_drawing {
                         ui.separator();
-                        let tex = icons::sized_texture(ui.ctx(), icons::IconId::Export);
-                        ui.menu_image_button(tex, |ui| {
+                        let export_btn = icons::selectable_icon_button_at(
+                            ui,
+                            icons::IconId::Export,
+                            false,
+                            "Export the drawing (SVG or PDF)",
+                            TOOLBAR_ICON_SIZE,
+                        );
+                        egui::Popup::menu(&export_btn).show(|ui| {
                             if ui.button("Export SVG…").clicked() {
                                 self.export_drawing_svg(dwg);
                                 ui.close();
@@ -12939,9 +12947,7 @@ impl App {
                                 self.export_drawing_pdf(dwg);
                                 ui.close();
                             }
-                        })
-                        .response
-                        .on_hover_text("Export the drawing (SVG or PDF)");
+                        });
                     }
                     return;
                 }
