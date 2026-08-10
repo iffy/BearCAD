@@ -910,6 +910,8 @@ pub struct CreatingSketchOffset {
     pub construction: bool,
     /// `Some(op)` while re-editing a committed offset.
     pub editing: Option<crate::model::SketchOffsetOpKey>,
+    /// Request keyboard on the floating distance field (e.g. after a gizmo grab, #1161).
+    pub pending_focus: bool,
 }
 
 impl CreatingSketchOffset {
@@ -921,6 +923,7 @@ impl CreatingSketchOffset {
             distance: "5".to_string(),
             construction: false,
             editing: None,
+            pending_focus: false,
         }
     }
 
@@ -1194,6 +1197,9 @@ pub struct CreatingMove {
     pub pending_face_b: Option<crate::model::MateRef>,
     /// `Some(op)` while re-editing a committed operation.
     pub editing: Option<crate::model::MoveOpKey>,
+    /// Axis (0=X, 1=Y, 2=Z) whose floating translation field should take the keyboard after a
+    /// gizmo-arrow grab, with its value selected for overwrite (#1161).
+    pub pending_gizmo_focus_axis: Option<usize>,
 }
 
 /// In-progress joint (Joint tool, #894): the picked parts, the mate that places them
@@ -1361,6 +1367,7 @@ impl CreatingMove {
             pending_face_a: None,
             pending_face_b: None,
             editing: None,
+            pending_gizmo_focus_axis: None,
         }
     }
 }
@@ -18043,6 +18050,7 @@ mod tests {
             face_offset: String::new(),
             pending_face_a: None,
             pending_face_b: None,
+            pending_gizmo_focus_axis: None,
         });
         let names: Vec<&str> = available_gizmos(&state).iter().map(|g| g.name).collect();
         assert!(names.contains(&"move_x") && names.contains(&"move_y") && names.contains(&"move_z"));

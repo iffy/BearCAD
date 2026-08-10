@@ -6010,6 +6010,7 @@ impl ScriptRunner {
                     editing: None,
                     pending_face_a: None,
                     pending_face_b: None,
+                    pending_gizmo_focus_axis: None,
                 });
                 StepResult::Continue
             }

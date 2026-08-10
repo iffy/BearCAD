@@ -6263,15 +6263,17 @@ impl App {
                             start_screen: pp,
                             start_distance: *distance,
                         });
-                        // Grabbing the gizmo hands distance control back to it,
-                        // so the typed text resyncs to the dragged value.
+                        // Grabbing the gizmo hands distance control back to it (typed text
+                        // resyncs to the dragged value) and focuses the distance field with
+                        // its value selected so the next keystroke overwrites (#1161).
                         if let Some(ce) = self.state.creating_extrusion.as_mut() {
-                            ce.user_edited = false;
+                            prepare_gizmo_value_field_focus(
+                                &mut ce.user_edited,
+                                &mut ce.pending_focus,
+                            );
                         }
-                        // Release the distance field's keyboard focus so a subsequent
-                        // keystroke overwrites the dragged value rather than appending to it.
                         ui.ctx().memory_mut(|m| {
-                            m.surrender_focus(egui::Id::new(EXTRUDE_DISTANCE_FIELD_ID))
+                            m.request_focus(egui::Id::new(EXTRUDE_DISTANCE_FIELD_ID))
                         });
                     }
                 }
@@ -6644,11 +6646,15 @@ impl App {
                         start_screen: pp,
                         start_amount: amount,
                     });
+                    // Focus the amount field with its value selected so typing overwrites (#1161).
                     if let Some(cvt) = self.state.creating_vertex_treatment.as_mut() {
-                        cvt.user_edited = false;
+                        prepare_gizmo_value_field_focus(
+                            &mut cvt.user_edited,
+                            &mut cvt.pending_focus,
+                        );
                     }
                     ui.ctx().memory_mut(|m| {
-                        m.surrender_focus(egui::Id::new(VERTEX_TREATMENT_AMOUNT_FIELD_ID))
+                        m.request_focus(egui::Id::new(VERTEX_TREATMENT_AMOUNT_FIELD_ID))
                     });
                 }
             }
@@ -7112,6 +7118,13 @@ impl App {
             }
             if hovered && ui.input(|i| i.pointer.primary_pressed()) {
                 self.offset_gizmo_drag = true;
+                // Focus the distance field with its value selected so typing overwrites (#1161).
+                if let Some(c) = self.state.creating_sketch_offset.as_mut() {
+                    c.pending_focus = true;
+                }
+                ui.ctx().memory_mut(|m| {
+                    m.request_focus(egui::Id::new(SKETCH_OFFSET_DISTANCE_FIELD_ID))
+                });
             }
             if self.offset_gizmo_drag {
                 if !ui.input(|i| i.pointer.primary_down()) {
@@ -7293,6 +7306,12 @@ impl App {
         let ctx = ui.ctx();
         let mut edits: Vec<(usize, String)> = Vec::new();
         let mut feedback: Vec<SketchDimFieldResult> = Vec::new();
+        let focus_axis = self
+            .state
+            .creating_move
+            .as_ref()
+            .and_then(|cm| cm.pending_gizmo_focus_axis);
+        let mut focus_axis_after = focus_axis;
         for &(axis, id_source, dir, translation) in &axes {
             let handle = construction::offset_handle(
                 anchor,
@@ -7307,11 +7326,14 @@ impl App {
             }) else {
                 continue;
             };
-            // #885: the same field the line/dimension distance uses. These arrows have no
-            // focus hand-off of their own — a click on one starts a drag — so the field is
-            // never a focus target and keeps whatever the user has typed into it.
+            // #885 / #1161: the same field the line/dimension distance uses. Grabbing the
+            // matching arrow focuses this field with the value selected for overwrite.
             let mut result = SketchDimFieldResult::default();
-            let mut pending_focus = false;
+            let is_focus_target = focus_axis == Some(axis);
+            let mut pending_focus = is_focus_target;
+            // While the gizmo is driving the field, treat it as not user-edited so select-all
+            // stays armed until the first keystroke.
+            let user_edited = !is_focus_target;
             let doc = &mut self.state.doc;
             egui::Area::new(egui::Id::new((id_source, "value")))
                 .fixed_pos(pos)
@@ -7324,14 +7346,21 @@ impl App {
                         &mut text,
                         doc,
                         None,
-                        false,
+                        is_focus_target,
                         &mut pending_focus,
-                        true,
+                        user_edited,
                         false,
                     );
                 });
+            if is_focus_target && !pending_focus {
+                // Field landed focus; clear the pending axis so we don't keep re-selecting.
+                focus_axis_after = None;
+            }
             if result.changed {
                 edits.push((axis, text.clone()));
+                if is_focus_target {
+                    focus_axis_after = None;
+                }
             }
             feedback.push(result);
         }
@@ -7343,6 +7372,7 @@ impl App {
                     _ => cm.tz = text,
                 }
             }
+            cm.pending_gizmo_focus_axis = focus_axis_after;
         }
         for result in feedback {
             apply_dimension_field_feedback(&mut self.state, &result);
@@ -7415,19 +7445,27 @@ impl App {
             if !typed.is_empty() {
                 if let Some(co) = self.state.creating_sketch_offset.as_mut() {
                     co.distance = typed;
+                    co.pending_focus = true;
                 }
             }
         }
         let sketch = self.state.sketch_session.map(|s| s.sketch);
-        if let Some(mut text) = self
+        if let Some((mut text, mut want_focus)) = self
             .state
             .creating_sketch_offset
             .as_ref()
-            .map(|c| c.distance.clone())
+            .map(|c| (c.distance.clone(), c.pending_focus))
         {
-            // #886: the same field the line/dimension distance uses.
+            // Never steal the keyboard back from another field the user moved to (#506).
+            want_focus = should_request_pending_tool_focus(
+                want_focus,
+                ctx.memory(|m| m.focused().is_some_and(|f| f != id)),
+            );
+            // #886 / #1161: the same field the line/dimension distance uses; gizmo grab
+            // arms pending_focus so typing overwrites the dragged value. While focus is
+            // still pending, treat the buffer as not user-edited so select-all stays armed.
+            let user_edited = !want_focus;
             let mut result = SketchDimFieldResult::default();
-            let mut pending_focus = false;
             let doc = &mut self.state.doc;
             egui::Area::new(egui::Id::new("sketch_offset_distance_area"))
                 .fixed_pos(pos)
@@ -7440,9 +7478,9 @@ impl App {
                         &mut text,
                         doc,
                         sketch,
-                        false,
-                        &mut pending_focus,
                         true,
+                        &mut want_focus,
+                        user_edited,
                         false,
                     );
                 });
@@ -7453,6 +7491,7 @@ impl App {
             // the field reverted next frame (#517).
             if let Some(co) = self.state.creating_sketch_offset.as_mut() {
                 co.distance = text;
+                co.pending_focus = want_focus;
             }
             apply_dimension_field_feedback(&mut self.state, &result);
             if commit
@@ -7694,11 +7733,15 @@ impl App {
                 if project(handle).is_some_and(|hp| (hp - pp).length() <= touch::hit(REVOLVE_ARC_HANDLE_PICK_PX))
                 {
                     self.revolve_gizmo_drag = Some((pp, angle));
+                    // Focus the angle field with its value selected so typing overwrites (#1161).
                     if let Some(c) = self.state.creating_revolve.as_mut() {
-                        c.user_edited = false;
+                        prepare_gizmo_value_field_focus(
+                            &mut c.user_edited,
+                            &mut c.pending_focus,
+                        );
                     }
                     ui.ctx().memory_mut(|m| {
-                        m.surrender_focus(egui::Id::new(REVOLVE_ANGLE_FIELD_ID))
+                        m.request_focus(egui::Id::new(REVOLVE_ANGLE_FIELD_ID))
                     });
                     return;
                 }
@@ -8359,7 +8402,7 @@ impl App {
             }
             if ui.input(|i| i.pointer.primary_pressed()) {
                 if let Some(pp) = pointer_screen {
-                    for &(axis, _, dir, translation) in &axes {
+                    for &(axis, name, dir, translation) in &axes {
                         let handle_offset = extrude_gizmo_display_offset(translation);
                         if construction::offset_gizmo_hit(pp, project, anchor, dir, handle_offset) {
                             self.move_gizmo_drag = Some(MoveGizmoDrag {
@@ -8367,6 +8410,12 @@ impl App {
                                 start_translation: translation,
                                 start_screen: pp,
                             });
+                            // Focus that axis's floating field with its value selected so
+                            // typing overwrites (#1161).
+                            if let Some(cm) = self.state.creating_move.as_mut() {
+                                cm.pending_gizmo_focus_axis = Some(axis);
+                            }
+                            ui.ctx().memory_mut(|m| m.request_focus(egui::Id::new(name)));
                             return;
                         }
                     }
@@ -8856,6 +8905,7 @@ impl App {
                         face_offset: String::new(),
                         pending_face_a: None,
                         pending_face_b: None,
+                        pending_gizmo_focus_axis: None,
                     });
                     self.state.apply(Action::SetTool(Tool::Move));
                 }
@@ -9022,6 +9072,7 @@ impl App {
                         distance: existing.distance,
                         construction: existing.construction,
                         editing: Some(op),
+                        pending_focus: true,
                     });
                     self.state.apply(Action::SetTool(Tool::Offset));
                     if self.state.sketch_session.is_none() {
@@ -11743,11 +11794,15 @@ impl App {
                         start_screen: pp,
                         start_amount: amount,
                     });
+                    // Focus the amount field with its value selected so typing overwrites (#1161).
                     if let Some(cet) = self.state.creating_edge_treatment.as_mut() {
-                        cet.user_edited = false;
+                        prepare_gizmo_value_field_focus(
+                            &mut cet.user_edited,
+                            &mut cet.pending_focus,
+                        );
                     }
                     ui.ctx().memory_mut(|m| {
-                        m.surrender_focus(egui::Id::new(EDGE_TREATMENT_AMOUNT_FIELD_ID))
+                        m.request_focus(egui::Id::new(EDGE_TREATMENT_AMOUNT_FIELD_ID))
                     });
                 }
             }
@@ -19148,6 +19203,13 @@ fn should_select_all_rect_value(
         || (is_focus_target && has_focus && !user_edited)
 }
 
+/// Grabbing a tool gizmo hands the related value field the keyboard with its text selected
+/// for overwrite — the next keystroke replaces the dragged value (#1161).
+fn prepare_gizmo_value_field_focus(user_edited: &mut bool, pending_focus: &mut bool) {
+    *user_edited = false;
+    *pending_focus = true;
+}
+
 /// Unfocused type-to-edit for floating tool fields (extrude depth, etc.): only grab
 /// keystrokes when *no* other widget wants the keyboard (#506). Otherwise typing a
 /// parameter name steals into the tool field every character.
@@ -21496,6 +21558,10 @@ fn handle_angle_gizmo_drag(
                 *drag = Some(AngleGizmoDrag {
                     constraint_id: target,
                 });
+                // Focus the open dimension value so typing overwrites the dragged angle (#1161).
+                if let Some(edit) = state.editing_committed_dim.as_mut() {
+                    edit.pending_focus = true;
+                }
                 return true;
             }
         }
@@ -25972,8 +26038,31 @@ impl App {
                                         start_angle_deg: cp.axis_angle_deg,
                                         start_screen: pp,
                                     });
-                                    cp.user_edited_offset = false;
-                                    cp.user_edited_angle = false;
+                                    // Focus the field for the grabbed handle so typing overwrites (#1161).
+                                    match hit {
+                                        AxisGizmoHit::Offset => {
+                                            cp.focused = PlaneDim::Offset;
+                                            prepare_gizmo_value_field_focus(
+                                                &mut cp.user_edited_offset,
+                                                &mut cp.pending_focus,
+                                            );
+                                            cp.user_edited_angle = false;
+                                            ui.ctx().memory_mut(|m| {
+                                                m.request_focus(egui::Id::new("cp_offset"))
+                                            });
+                                        }
+                                        AxisGizmoHit::Angle => {
+                                            cp.focused = PlaneDim::Angle;
+                                            prepare_gizmo_value_field_focus(
+                                                &mut cp.user_edited_angle,
+                                                &mut cp.pending_focus,
+                                            );
+                                            cp.user_edited_offset = false;
+                                            ui.ctx().memory_mut(|m| {
+                                                m.request_focus(egui::Id::new("cp_angle"))
+                                            });
+                                        }
+                                    }
                                 }
                             }
                             PlaneReference::Face { origin, normal, .. } => {
@@ -25990,7 +26079,15 @@ impl App {
                                         start_angle_deg: 0.0,
                                         start_screen: pp,
                                     });
-                                    cp.user_edited_offset = false;
+                                    // Focus Offset with the value selected for overwrite (#1161).
+                                    cp.focused = PlaneDim::Offset;
+                                    prepare_gizmo_value_field_focus(
+                                        &mut cp.user_edited_offset,
+                                        &mut cp.pending_focus,
+                                    );
+                                    ui.ctx().memory_mut(|m| {
+                                        m.request_focus(egui::Id::new("cp_offset"))
+                                    });
                                 }
                             }
                         }
@@ -31027,6 +31124,26 @@ mod tests {
     #[test]
     fn select_all_while_focused_and_not_user_edited() {
         assert!(should_select_all_rect_value(false, true, true, false, false, false));
+    }
+
+    /// #1161: grabbing a gizmo clears the user-edited flag and arms pending focus so the
+    /// related value field takes the keyboard with its text selected for overwrite.
+    #[test]
+    fn gizmo_grab_prepares_value_field_for_overwrite() {
+        let mut user_edited = true;
+        let mut pending_focus = false;
+        prepare_gizmo_value_field_focus(&mut user_edited, &mut pending_focus);
+        assert!(!user_edited);
+        assert!(pending_focus);
+        // And that state is exactly what select-all needs once the field has focus.
+        assert!(should_select_all_rect_value(
+            false,
+            true,
+            true,
+            pending_focus,
+            user_edited,
+            false
+        ));
     }
 
     /// #506: typing into the parameter pane (or any other field) must not feed the
