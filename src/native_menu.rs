@@ -34,6 +34,8 @@ pub struct MenuIds {
     pub load_script: MenuId,
     pub import_image: MenuId,
     pub import_step: MenuId,
+    /// File → Import → Lua Script… (#1160).
+    pub import_lua: MenuId,
     pub document_json: MenuId,
     pub quit: MenuId,
     pub undo: MenuId,
@@ -130,6 +132,9 @@ pub fn command_for_id(
     }
     if ids.import_step == id {
         return Some(MenuCommand::ImportStep);
+    }
+    if ids.import_lua == id {
+        return Some(MenuCommand::ImportLua);
     }
     if ids.document_json == id {
         return Some(MenuCommand::DocumentJson);
@@ -298,6 +303,7 @@ impl NativeMenu {
         let import_stl = MenuItem::with_id("import_stl", "STL…", true, None);
         let import_image = MenuItem::with_id("import_image", "Image…", true, None);
         let import_step = MenuItem::with_id("import_step", "STEP…", true, None);
+        let import_lua = MenuItem::with_id("import_lua", "Lua Script…", true, None);
         let document_json = MenuItem::with_id("document_json", "Document JSON…", true, None);
         let quit = MenuItem::with_id(
             "quit",
@@ -371,6 +377,7 @@ impl NativeMenu {
         import_menu.append(&import_stl)?;
         import_menu.append(&import_step)?;
         import_menu.append(&import_image)?;
+        import_menu.append(&import_lua)?;
         let export_menu = Submenu::new("Export", true);
         export_menu.append(&export_stl)?;
         export_menu.append(&export_step)?;
@@ -445,6 +452,7 @@ impl NativeMenu {
             import_mcmaster: import_mcmaster.id().clone(),
             import_image: import_image.id().clone(),
             import_step: import_step.id().clone(),
+            import_lua: import_lua.id().clone(),
             document_json: document_json.id().clone(),
             quit: quit.id().clone(),
             undo: undo.id().clone(),
@@ -564,6 +572,7 @@ mod tests {
             import_mcmaster: MenuId::new("import_mcmaster"),
             import_image: MenuId::new("import_image"),
             import_step: MenuId::new("import_step"),
+            import_lua: MenuId::new("import_lua"),
             document_json: MenuId::new("document_json"),
             quit: MenuId::new("quit"),
             undo: MenuId::new("undo"),
@@ -616,6 +625,10 @@ mod tests {
         assert_eq!(
             command_for_id(&ids.export_lua, &ids, |_| true),
             Some(MenuCommand::ExportLua)
+        );
+        assert_eq!(
+            command_for_id(&ids.import_lua, &ids, |_| true),
+            Some(MenuCommand::ImportLua)
         );
         assert_eq!(
             command_for_id(&ids.verify_lua_export, &ids, |_| true),

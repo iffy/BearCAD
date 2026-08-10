@@ -279,7 +279,7 @@ pub fn scene_element_kind_name(
 pub fn positional_to_named(name: &str, args: &[Value]) -> Result<Value, String> {
     let keys: &[&str] = match name {
         "tool" => &["name"],
-        "open" | "import_stl" | "import_step" => &["path"],
+        "open" | "import_stl" | "import_step" | "import_lua" => &["path"],
         "save" => &["path"],
         "export_stl" | "export_step" => &["path", "body"],
         "open_sketch" => &["sketch"],
@@ -455,6 +455,16 @@ pub fn instruction_from_json(
         }),
         "import_stl" => Ok(Instruction::ImportStl { path: req_str(o, "path", "import_stl")? }),
         "import_step" => Ok(Instruction::ImportStep { path: req_str(o, "path", "import_step")? }),
+        "import_lua" => Ok(Instruction::ImportLua {
+            path: req_str(o, "path", "import_lua")?,
+            force: match o.get("force") {
+                None | Some(serde_json::Value::Null) => false,
+                Some(serde_json::Value::Bool(b)) => *b,
+                Some(other) => {
+                    return Err(format!("import_lua force must be a boolean, got {other}"));
+                }
+            },
+        }),
         "import_image" => Ok(Instruction::ImportImage {
             path: req_str(o, "path", "import_image")?,
             plane: opt_usize(o, "plane")?,

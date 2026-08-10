@@ -3332,6 +3332,13 @@ struct App {
     /// Unsaved-changes prompt while closing a tab that is the last view of a dirty document.
     /// Holds the tab id to close once the user chooses Save or Don't Save.
     showing_tab_close_prompt: Option<tabs::TabId>,
+    /// Import Lua confirm (#1160): path picked while the document is non-blank; modal asks
+    /// before replacing. Native only (web uses bytes pending).
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_import_lua: Option<std::path::PathBuf>,
+    /// Web: Lua bytes waiting on the non-blank confirm (#1160).
+    #[cfg(target_arch = "wasm32")]
+    pending_import_lua_bytes: Option<Vec<u8>>,
 }
 
 /// One completed async browser file-dialog interaction (web build): picked file bytes to
@@ -3344,6 +3351,8 @@ enum WebIoEvent {
     ImportStep { name: String, bytes: Vec<u8> },
     ImportImage { name: String, bytes: Vec<u8>, plane: Option<model::ConstructionPlaneKey> },
     RunScript { bytes: Vec<u8> },
+    /// Document Lua import (#1160); may open a non-blank confirm before running.
+    ImportLua { bytes: Vec<u8> },
     Status(String),
 }
 
@@ -4399,6 +4408,10 @@ impl App {
             showing_quit_prompt: false,
             allow_close: false,
             showing_tab_close_prompt: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_import_lua: None,
+            #[cfg(target_arch = "wasm32")]
+            pending_import_lua_bytes: None,
         }
     }
 
@@ -4946,6 +4959,14 @@ impl App {
                 WebIoEvent::RunScript { bytes } => {
                     self.run_web_script(ctx, &bytes);
                 }
+                WebIoEvent::ImportLua { bytes } => {
+                    if !export_lua::document_is_blank(&self.state.doc) {
+                        self.pending_import_lua_bytes = Some(bytes);
+                    } else {
+                        self.run_web_script(ctx, &bytes);
+                        self.state.status = "Imported Lua script".to_string();
+                    }
+                }
                 WebIoEvent::Status(message) => self.state.status = message,
             }
         }
@@ -5250,6 +5271,123 @@ impl App {
         }
     }
 
+    /// File → Import → Lua Script… (#1160): pick a document export and run it. Warns when
+    /// the current document is non-blank (exported scripts call `bearcad.new()`).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn import_lua(&mut self) {
+        if self.script.as_ref().is_some_and(|r| !r.done) {
+            self.state.status = "A script is already running".to_string();
+            return;
+        }
+        let picked = rfd::FileDialog::new()
+            .add_filter("Lua script", &["lua"])
+            .pick_file();
+        let Some(path) = picked else {
+            return;
+        };
+        if !export_lua::document_is_blank(&self.state.doc) {
+            self.pending_import_lua = Some(path);
+            return;
+        }
+        self.start_import_lua(path);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start_import_lua(&mut self, path: std::path::PathBuf) {
+        match ScriptRunner::from_file(&path) {
+            Ok(runner) => {
+                self.script = Some(runner);
+                self.state.status = format!("Importing Lua script: {}", path.display());
+            }
+            Err(e) => {
+                self.state.status = format!("Could not import Lua: {}", e.message);
+            }
+        }
+    }
+
+    /// Confirm modal when importing Lua into a non-blank document (#1160).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn handle_import_lua_prompt(&mut self, ctx: &egui::Context) {
+        let Some(path) = self.pending_import_lua.clone() else {
+            return;
+        };
+        let mut replace = false;
+        let mut cancel = false;
+        egui::Modal::new(egui::Id::new("import_lua_prompt")).show(ctx, |ui| {
+            ui.set_width(360.0);
+            ui.heading("Replace current document?");
+            ui.add_space(6.0);
+            ui.label(
+                "Importing a Lua script will replace the current document. \
+                 The current document is not blank.",
+            );
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Replace").clicked() {
+                    replace = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+        if replace {
+            self.pending_import_lua = None;
+            self.start_import_lua(path);
+        } else if cancel {
+            self.pending_import_lua = None;
+            self.state.status = "Import Lua cancelled".to_string();
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn handle_import_lua_prompt(&mut self, ctx: &egui::Context) {
+        let Some(bytes) = self.pending_import_lua_bytes.clone() else {
+            return;
+        };
+        let mut replace = false;
+        let mut cancel = false;
+        egui::Modal::new(egui::Id::new("import_lua_prompt")).show(ctx, |ui| {
+            ui.set_width(360.0);
+            ui.heading("Replace current document?");
+            ui.add_space(6.0);
+            ui.label(
+                "Importing a Lua script will replace the current document. \
+                 The current document is not blank.",
+            );
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Replace").clicked() {
+                    replace = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+        if replace {
+            self.pending_import_lua_bytes = None;
+            self.run_web_script(ctx, &bytes);
+            self.state.status = "Imported Lua script".to_string();
+        } else if cancel {
+            self.pending_import_lua_bytes = None;
+            self.state.status = "Import Lua cancelled".to_string();
+        }
+    }
+
+    /// Web: pick a `.lua` document export; warn if the live document is non-blank (#1160).
+    #[cfg(target_arch = "wasm32")]
+    fn import_lua(&mut self) {
+        if !web_lua::available() {
+            self.state.status =
+                "Lua scripting is unavailable — the interpreter module didn't load".to_string();
+            return;
+        }
+        self.web_pick_file("Lua script", &["lua"], |_name, bytes| {
+            WebIoEvent::ImportLua { bytes }
+        });
+    }
+
     /// Pick a `.lua` file and run it in the browser through the Lua interpreter module
     /// (todoer #179/#207). The picked bytes are queued and run in `drain_web_io`, where the
     /// egui context needed to drive instruction execution is in scope.
@@ -5283,6 +5421,7 @@ impl App {
                 self.state.apply(Action::SetMcMasterWindow { open: Some(true), part: None });
             }
             MenuCommand::ExportLua => self.export_document_lua(),
+            MenuCommand::ImportLua => self.import_lua(),
             #[cfg(not(target_arch = "wasm32"))]
             MenuCommand::VerifyLuaExport => self.verify_lua_export(),
             #[cfg(target_arch = "wasm32")]
@@ -5385,6 +5524,7 @@ impl App {
             PaletteOutcome::SaveFile => self.save(),
             PaletteOutcome::SaveFileAs => self.save_as(),
             PaletteOutcome::ExportLua => self.export_document_lua(),
+            PaletteOutcome::ImportLua => self.import_lua(),
             PaletteOutcome::DocumentJson => self.open_json_dialog(),
             // Trigger the exploder on the next viewport frame, at wherever the cursor then is — the
             // palette equivalent of pressing Space (#576).
@@ -12456,7 +12596,7 @@ impl App {
                     ui,
                     icons::IconId::Import,
                     false,
-                    "Import a BearCAD file, STL, STEP, an image, or a McMaster-Carr part",
+                    "Import a BearCAD file, STL, STEP, image, Lua script, or McMaster-Carr part",
                     TOOLBAR_ICON_SIZE,
                 );
                 egui::Popup::menu(&import_btn).show(|ui| {
@@ -12475,6 +12615,10 @@ impl App {
                     }
                     if ui.button("Import Image…").clicked() {
                         self.import_image();
+                        ui.close();
+                    }
+                    if ui.button("Import Lua Script…").clicked() {
+                        self.import_lua();
                         ui.close();
                     }
                     // The catalog, in a window (#1022): pick a part on McMaster's own site
@@ -16066,6 +16210,7 @@ impl eframe::App for App {
         }
 
         self.handle_tab_close_prompt(ctx);
+        self.handle_import_lua_prompt(ctx);
         self.draw_main_tab_bar(ui);
         self.render_detached_windows(ctx, frame);
 

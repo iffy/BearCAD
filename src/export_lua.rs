@@ -100,6 +100,15 @@ pub fn normalize_for_compare(doc: &mut Document) {
     }
 }
 
+/// True when `doc` has no user content beyond a fresh default (for import-Lua warning, #1160).
+pub fn document_is_blank(doc: &Document) -> bool {
+    let mut a = doc.clone();
+    let mut b = Document::default();
+    normalize_for_compare(&mut a);
+    normalize_for_compare(&mut b);
+    a == b
+}
+
 /// Human-readable differences between two documents. Empty means equal after normalize.
 pub fn document_diff(a: &Document, b: &Document) -> Vec<String> {
     let mut a = a.clone();
@@ -1661,5 +1670,118 @@ mod tests {
             diffs.is_empty(),
             "round-trip diffs: {diffs:?}\n--- script ---\n{script}"
         );
+    }
+
+    #[test]
+    fn blank_document_is_blank() {
+        assert!(document_is_blank(&Document::default()));
+    }
+
+    #[test]
+    fn geometry_makes_document_non_blank() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
+            "#,
+        );
+        assert!(!document_is_blank(&state.doc));
+    }
+
+    /// #1160: File → Import → Lua Script… (and `bearcad.import_lua`) replays an export.
+    #[test]
+    fn import_lua_into_blank_rebuilds_document() {
+        let exported = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 40, height = 20, x = 0, y = 0 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            "#,
+        );
+        let script = document_to_lua(&exported.doc);
+        let path = std::env::temp_dir().join(format!(
+            "bearcad_import_lua_blank_{}.lua",
+            std::process::id()
+        ));
+        std::fs::write(&path, &script).unwrap();
+        let path_str = path.to_string_lossy().replace('\\', "\\\\");
+        let imported = run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.import_lua("{path_str}")
+            "#
+        ));
+        let _ = std::fs::remove_file(&path);
+        let diffs = document_diff(&exported.doc, &imported.doc);
+        assert!(
+            diffs.is_empty(),
+            "import_lua into blank must match export: {diffs:?}\n--- script ---\n{script}"
+        );
+    }
+
+    #[test]
+    fn import_lua_refuses_non_blank_without_force() {
+        let path = std::env::temp_dir().join(format!(
+            "bearcad_import_lua_refuse_{}.lua",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "bearcad.new()\nbearcad.rect{ width = 10, height = 10 }\n",
+        )
+        .unwrap();
+        let path_str = path.to_string_lossy().replace('\\', "\\\\");
+        let mut runner = ScriptRunner::from_lua_source(&format!(
+            r#"
+            bearcad.new()
+            bearcad.line{{ x = 0, y = 0, x1 = 5, y1 = 0 }}
+            local ok, err = pcall(function() bearcad.import_lua("{path_str}") end)
+            assert(not ok, "import into non-blank without force must raise")
+            assert(tostring(err):find("not blank") or tostring(err):find("force"),
+                   "error should mention blank/force: " .. tostring(err))
+            assert(bearcad.count("line") == 1, "original geometry must remain")
+            "#
+        ))
+        .unwrap();
+        runner.verbose = false;
+        let mut state = AppState::default();
+        let mut synthetic = SyntheticInput::default();
+        let ctx = egui::Context::default();
+        let vp = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0));
+        while !runner.done {
+            runner.tick(&mut state, &mut synthetic, Some(vp), &ctx);
+        }
+        let _ = std::fs::remove_file(&path);
+        assert!(runner.error.is_none(), "script error: {:?}", runner.error);
+        assert_eq!(state.doc.lines.len(), 1);
+    }
+
+    #[test]
+    fn import_lua_force_replaces_non_blank() {
+        let exported = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.circle{ x = 0, y = 0, r = 5 }
+            "#,
+        );
+        let script = document_to_lua(&exported.doc);
+        let path = std::env::temp_dir().join(format!(
+            "bearcad_import_lua_force_{}.lua",
+            std::process::id()
+        ));
+        std::fs::write(&path, &script).unwrap();
+        let path_str = path.to_string_lossy().replace('\\', "\\\\");
+        let imported = run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.rect{{ width = 99, height = 99 }}
+            bearcad.import_lua{{ path = "{path_str}", force = true }}
+            "#
+        ));
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(imported.doc.circles.len(), 1);
+        assert!(imported.doc.lines.is_empty(), "force import replaces prior geometry");
+        let diffs = document_diff(&exported.doc, &imported.doc);
+        assert!(diffs.is_empty(), "force import must match export: {diffs:?}");
     }
 }

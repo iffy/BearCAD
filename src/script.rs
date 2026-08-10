@@ -148,6 +148,9 @@ pub enum Instruction {
     },
     /// Import a STEP file at `path` as a new body (#71).
     ImportStep { path: String },
+    /// Import a document Lua script (#1160): run the file against the live document.
+    /// Refuses a non-blank document unless `force` is true (GUI warns interactively).
+    ImportLua { path: String, force: bool },
     Clear,
     Undo,
     Tool(Tool),
@@ -908,6 +911,13 @@ impl Instruction {
                 a.0, a.1, b.0, b.1
             ),
             Instruction::ImportStep { path } => format!("bearcad.import_step({path:?})"),
+            Instruction::ImportLua { path, force } => {
+                if *force {
+                    format!("bearcad.import_lua{{ path = {path:?}, force = true }}")
+                } else {
+                    format!("bearcad.import_lua({path:?})")
+                }
+            }
             Instruction::Clear => "bearcad.clear()".to_string(),
             Instruction::Undo => "bearcad.undo()".to_string(),
             Instruction::Tool(tool) => format!("bearcad.ui.tool({:?})", tool_lua_name(*tool)),
@@ -5291,6 +5301,61 @@ impl ScriptRunner {
                 self.record_action_error(r);
                 StepResult::Continue
             }
+            Instruction::ImportLua { path, force } => {
+                // #1160: replay a document Lua export (File → Export → Lua Script…).
+                // Nested runner to completion so the next script line sees the result.
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    if !force && !crate::export_lua::document_is_blank(&state.doc) {
+                        self.last_action_error = Some(
+                            "import_lua: document is not blank; pass force = true to replace it"
+                                .to_string(),
+                        );
+                        return StepResult::Continue;
+                    }
+                    let p = std::path::Path::new(&path);
+                    if p.extension().and_then(|e| e.to_str()) != Some("lua") {
+                        self.last_action_error = Some(format!(
+                            "import_lua: scripts must use the .lua extension: {path}"
+                        ));
+                        return StepResult::Continue;
+                    }
+                    let source = match std::fs::read_to_string(p) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            self.last_action_error =
+                                Some(format!("import_lua: could not read {path}: {e}"));
+                            return StepResult::Continue;
+                        }
+                    };
+                    let mut nested = match ScriptRunner::from_lua_source(&source) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            self.last_action_error =
+                                Some(format!("import_lua: {}", e.message));
+                            return StepResult::Continue;
+                        }
+                    };
+                    nested.verbose = false;
+                    while !nested.done {
+                        nested.tick(state, synthetic, viewport, ctx);
+                    }
+                    if let Some(err) = nested.error {
+                        self.last_action_error = Some(format!("import_lua: {err}"));
+                    } else {
+                        state.status = format!("Imported Lua script: {path}");
+                    }
+                    self.rebind_active_document = true;
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let _ = (path, force);
+                    self.last_action_error = Some(
+                        "import_lua: no filesystem to read a path from".to_string(),
+                    );
+                }
+                StepResult::Continue
+            }
             Instruction::Clear => {
                 state.apply(Action::Clear);
                 StepResult::Continue
@@ -6788,6 +6853,7 @@ impl ScriptRunner {
                         PaletteOutcome::OpenFile | PaletteOutcome::SaveFile
                         | PaletteOutcome::SaveFileAs
                         | PaletteOutcome::ExportLua
+                        | PaletteOutcome::ImportLua
                         | PaletteOutcome::DocumentJson
                         | PaletteOutcome::OpenExploder
                         | PaletteOutcome::ShowShortcuts

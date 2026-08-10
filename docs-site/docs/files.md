@@ -39,6 +39,8 @@ titlebar next to the traffic lights.
   tessellated into a body.
 - **File → Import → Image…** — a PNG/JPEG to trace over; see
   [Tracing images](/docs/tools/tracing) for scale calibration.
+- **File → Import → Lua Script…** — a document export from
+  [Export as Lua](#export-as-lua); warns if the current document is not blank.
 - **File → Import → McMaster-Carr…** — the catalog in a window; see
   [McMaster-Carr parts](#mcmaster-carr-parts).
 
@@ -138,5 +140,7 @@ bearcad.sync_unit(0)   -- update unit 0's embedded copy now
 ## Export as Lua
 
 **File → Export → Lua Script…** writes a deterministic script that recreates the current
-document (no `bearcad.ui` steps) — see [Scripting](/docs/scripting). Running with
-`--show-commands` still echoes each GUI action as its `bearcad.*` call live.
+document (no `bearcad.ui` steps) — see [Scripting](/docs/scripting). **File → Import →
+Lua Script…** (or `bearcad.import_lua`) runs one; a non-blank document warns first
+(`force = true` in scripts). Running with `--show-commands` still echoes each GUI action as
+its `bearcad.*` call live.

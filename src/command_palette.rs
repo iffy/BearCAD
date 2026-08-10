@@ -69,6 +69,8 @@ pub enum PaletteCommandId {
     HidePaneViewCube,
     DeleteSelection,
     ExportLua,
+    /// Import a document Lua script (#1160).
+    ImportLua,
     DocumentJson,
     ToggleFpsMode,
     ZoomToFit,
@@ -99,6 +101,8 @@ pub enum PaletteOutcome {
     SaveFile,
     SaveFileAs,
     ExportLua,
+    /// Pick a document Lua script and import it (#1160).
+    ImportLua,
     DocumentJson,
     /// Open the Selection Exploder at the cursor (#576).
     OpenExploder,
@@ -271,6 +275,7 @@ impl PaletteCommand {
                 PaletteOutcome::Action(Action::DeleteSelection)
             }
             PaletteCommandId::ExportLua => PaletteOutcome::ExportLua,
+            PaletteCommandId::ImportLua => PaletteOutcome::ImportLua,
             PaletteCommandId::DocumentJson => PaletteOutcome::DocumentJson,
         }
     }
@@ -483,6 +488,11 @@ const BASE_COMMANDS: &[PaletteCommand] = &[
         PaletteCommandId::ExportLua,
         "Export Lua Script…",
         "export lua script document recreate deterministic",
+    ),
+    PaletteCommand::new(
+        PaletteCommandId::ImportLua,
+        "Import Lua Script…",
+        "import lua script document recreate load",
     ),
     PaletteCommand::new(
         PaletteCommandId::DocumentJson,

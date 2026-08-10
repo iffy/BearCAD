@@ -2221,6 +2221,31 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1160: import a document Lua script (File → Export → Lua Script…).
+    // `import_lua("part.lua")` or `import_lua{ path = "part.lua", force = true }`.
+    // Refuses a non-blank document unless `force` is true.
+    api.set(
+        "import_lua",
+        lua.create_function(|lua, value: Value| {
+            let (path, force) = match value {
+                Value::String(s) => (s.to_str()?.to_string(), false),
+                Value::Table(t) => {
+                    check_keys(&t, "import_lua", &["path", "force"])?;
+                    let path: String = t.get("path")?;
+                    let force: bool = t.get::<Option<bool>>("force")?.unwrap_or(false);
+                    (path, force)
+                }
+                _ => {
+                    return Err(mlua::Error::external(
+                        "import_lua takes a path string or { path =, force = }",
+                    ))
+                }
+            };
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::ImportLua { path, force }) }
+        })?,
+    )?;
+
     api.set(
         "clear",
         lua.create_function(|lua, ()| {
@@ -6985,7 +7010,7 @@ mod tests {
             -- declarative modeling stays at the top level
             for _, name in ipairs({ "rect", "line", "circle", "extrude", "new", "select",
                                     "add_constraint", "parameter", "export_stl", "export_step",
-                                    "import_stl", "import_step", "chamfer_vertex",
+                                    "import_stl", "import_step", "import_lua", "chamfer_vertex",
                                     "fillet_vertex", "chamfer_edge", "fillet_edge" }) do
                 assert(type(bearcad[name]) == "function", "bearcad." .. name .. " should stay top-level")
             end

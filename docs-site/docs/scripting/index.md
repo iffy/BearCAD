@@ -64,6 +64,8 @@ Other flags:
 - `--show-commands` — echo GUI actions as `bearcad.*` calls on stdout.
 - **File → Export → Lua Script…** — write a deterministic script that recreates the
   current document (no `bearcad.ui`).
+- **File → Import → Lua Script…** / `bearcad.import_lua(path)` — run such a script;
+  refuses a non-blank document unless `force = true`.
 - `--tutorial <name>` — start a tutorial on launch. The browser app takes it as a URL
   parameter: [`?tutorial=bracket`](pathname:///app/?tutorial=bracket).
 

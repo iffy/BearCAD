@@ -20,6 +20,8 @@ pub enum MenuCommand {
     ImportStl,
     ImportImage,
     ImportStep,
+    /// Import a document Lua script (#1160).
+    ImportLua,
     /// Import another BearCAD document as a unit (#721).
     ImportUnit,
     /// Open the McMaster-Carr catalog window and import a part from it (#1022).
@@ -72,6 +74,7 @@ impl MenuCommand {
             | MenuCommand::ImportStl
             | MenuCommand::ImportImage
             | MenuCommand::ImportStep
+            | MenuCommand::ImportLua
             | MenuCommand::ImportUnit
             | MenuCommand::ImportMcMaster
             | MenuCommand::DocumentJson
