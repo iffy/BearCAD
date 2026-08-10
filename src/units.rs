@@ -516,6 +516,9 @@ mod tests {
             name: "width".to_string(),
             expression: "10".to_string(),
             primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
             source: None,
         });
         let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
@@ -583,6 +586,9 @@ mod tests {
             name: "own".to_string(),
             expression: "1".to_string(),
             primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
             source: None,
         });
         let _ = evaluate_instance(&doc, uikey(0)).unwrap();
@@ -663,6 +669,9 @@ mod tests {
             name: "gap".to_string(),
             expression: "7".to_string(),
             primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
             source: None,
         });
         doc.unit_instances[uikey(0)].placement = crate::model::UnitPlacement {

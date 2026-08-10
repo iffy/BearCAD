@@ -1333,6 +1333,9 @@ mod tests {
                 name: name.to_string(),
                 expression: expression.to_string(),
                 primary: false,
+                minimum: None,
+                maximum: None,
+                step: None,
                 source: None,
             });
         }
@@ -1400,6 +1403,9 @@ mod tests {
             name: "x".to_string(),
             expression: "foo.width".to_string(),
             primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
             source: None,
         });
         doc.unit_instances[uikey(0)].parameter_overrides =
@@ -1586,6 +1592,9 @@ mod tests {
             name: "A".to_string(),
             expression: "10mm".to_string(),
             primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
             source: None,
         });
         assert!(shows_computed_length_in_doc("A", &doc));
@@ -1651,12 +1660,18 @@ mod tests {
             name: "width".to_string(),
             expression: "10mm".to_string(),
             primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
             source: None,
         });
         doc.parameters.insert(crate::model::Parameter {
             name: "corner".to_string(),
             expression: "45deg".to_string(),
             primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
             source: None,
         });
         assert_eq!(
@@ -1682,6 +1697,9 @@ mod tests {
             name: "foo".to_string(),
             expression: "20mm".to_string(),
             primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
             source: None,
         });
         assert_eq!(interpolate_text("Dim: {foo}", &doc), "Dim: 20.0 mm");
@@ -1707,6 +1725,9 @@ mod tests {
             name: "foo".to_string(),
             expression: "3in".to_string(),
             primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
             source: None,
         });
         doc.default_length_unit = LengthUnit::In;

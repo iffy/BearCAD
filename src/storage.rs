@@ -2492,12 +2492,18 @@ mod tests {
             name: "A".to_string(),
             expression: "B".to_string(),
             primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
             source: None,
         });
         doc.parameters.insert(Parameter {
             name: "B".to_string(),
             expression: "A".to_string(),
             primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
             source: None,
         });
         doc.shape_order.push(ShapeKind::Parameter);
@@ -2521,12 +2527,18 @@ mod tests {
             name: "A".to_string(),
             expression: "5mm".to_string(),
             primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
             source: None,
         });
         doc.parameters.insert(Parameter {
             name: "B".to_string(),
             expression: "A + 5in".to_string(),
             primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
             source: None,
         });
         doc.shape_order.push(ShapeKind::Parameter);
@@ -2558,6 +2570,9 @@ mod tests {
             name: "width".to_string(),
             expression: "10mm".to_string(),
             primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
             source: None,
         });
         doc.shape_order.push(ShapeKind::Parameter);
@@ -2565,6 +2580,9 @@ mod tests {
             name: "height".to_string(),
             expression: "20mm".to_string(),
             primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
             source: None,
         });
         doc.shape_order.push(ShapeKind::Parameter);
@@ -2737,6 +2755,9 @@ mod tests {
             name: param.to_string(),
             expression: "10".to_string(),
             primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
             source: None,
         });
         doc.shape_order.push(ShapeKind::Parameter);

@@ -214,9 +214,23 @@ pub struct Parameter {
     /// nothing is blocked either way. Existing documents load secondary (`default`); a
     /// newly created parameter is primary when its expression is a plain self-contained
     /// value and secondary when it references anything — computed once at creation
-    /// (see `new_parameter_primary_default`), never recomputed on edit.
+    /// (see `new_parameter_primary_default`), never recomputed on edit. Toggled via the
+    /// gear-options **Primary** checkbox (#1176), not an eyeball.
     #[serde(default)]
     pub primary: bool,
+    /// Optional minimum bound as an expression (#1176). Same unit kind as the default
+    /// value. Empty / missing means unbounded below. Importers' overrides must respect it.
+    #[serde(default)]
+    pub minimum: Option<String>,
+    /// Optional maximum bound as an expression (#1176). Same unit kind as the default
+    /// value. Empty / missing means unbounded above. With both min and max set, the
+    /// import UI offers a slider.
+    #[serde(default)]
+    pub maximum: Option<String>,
+    /// Optional step as an expression (#1176): override values snap to the closest
+    /// `minimum + n·step` (or `n·step` when no minimum). Empty / missing means free.
+    #[serde(default)]
+    pub step: Option<String>,
     /// When set, [`expression`] is synced from geometry and the value is read-only.
     #[serde(default)]
     pub source: Option<ParameterSource>,

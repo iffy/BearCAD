@@ -3897,6 +3897,50 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     }
                     Ok(Value::Nil)
                 }
+                // #1176: min / max / step bounds — expression string sets, omit/empty clears.
+                "min" | "minimum" | "max" | "maximum" | "step" => {
+                    let which = match action.as_str() {
+                        "min" | "minimum" => crate::parameters::ParameterBound::Minimum,
+                        "max" | "maximum" => crate::parameters::ParameterBound::Maximum,
+                        "step" => crate::parameters::ParameterBound::Step,
+                        _ => unreachable!(),
+                    };
+                    let index = match args.get(1) {
+                        Some(Value::Integer(i)) => *i as usize,
+                        Some(Value::Number(n)) => n.round() as usize,
+                        _ => {
+                            return Err(mlua::Error::external(format!(
+                                "parameter {} requires index",
+                                which.label()
+                            )))
+                        }
+                    };
+                    let expression = match args.get(2) {
+                        Some(Value::String(s)) => {
+                            let s = s.to_str()?.to_string();
+                            if s.trim().is_empty() {
+                                None
+                            } else {
+                                Some(s)
+                            }
+                        }
+                        Some(Value::Nil) | None => None,
+                        _ => {
+                            return Err(mlua::Error::external(format!(
+                                "parameter {} expression must be a string",
+                                which.label()
+                            )))
+                        }
+                    };
+                    unsafe {
+                        tick.exec(Instruction::SetParameterBound {
+                            index,
+                            which,
+                            expression,
+                        })?;
+                    }
+                    Ok(Value::Nil)
+                }
                 other => Err(mlua::Error::external(format!(
                     "unknown parameter action '{other}'"
                 ))),
@@ -10077,6 +10121,33 @@ mod tests {
         );
         assert!((state.doc.extrusions[xkey(0)].distance - 9.0).abs() < 1e-3);
         assert_eq!(state.doc.extrusions[xkey(0)].expression, "d");
+    }
+
+    /// #1176: parameter min/max/step and primary are scriptable.
+    #[test]
+    fn lua_parameter_bounds_and_primary() {
+        let state = run_lua(
+            r#"
+            bearcad.parameter("add", "width", "10mm")
+            bearcad.parameter("min", 0, "5mm")
+            bearcad.parameter("max", 0, "50mm")
+            bearcad.parameter("step", 0, "2.5mm")
+            bearcad.parameter("primary", 0, false)
+            "#,
+        );
+        let p = state.doc.parameters.values().next().unwrap();
+        assert_eq!(p.minimum.as_deref(), Some("5mm"));
+        assert_eq!(p.maximum.as_deref(), Some("50mm"));
+        assert_eq!(p.step.as_deref(), Some("2.5mm"));
+        assert!(!p.primary);
+        let state = run_lua(
+            r#"
+            bearcad.parameter("add", "width", "10mm")
+            bearcad.parameter("min", 0, "5mm")
+            bearcad.parameter("min", 0)  -- clear
+            "#,
+        );
+        assert!(state.doc.parameters.values().next().unwrap().minimum.is_none());
     }
 
     /// #107: `bearcad.parameter("get"/"get_expression", name)` reads a parameter back.

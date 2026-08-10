@@ -361,6 +361,82 @@ fn run_parameter(
                 },
             )
         }
+        "primary" => {
+            let index = a
+                .get(1)
+                .and_then(Value::as_u64)
+                .ok_or("parameter primary requires index")? as usize;
+            let primary = a
+                .get(2)
+                .and_then(Value::as_bool)
+                .ok_or("parameter primary requires true/false")?;
+            exec(
+                runner,
+                Instruction::SetParameterPrimary { index, primary },
+                state,
+                synthetic,
+                viewport,
+                ctx,
+            )?;
+            Ok(Value::Null)
+        }
+        "value" | "expression" => {
+            let index = a
+                .get(1)
+                .and_then(Value::as_u64)
+                .ok_or("parameter value requires index")? as usize;
+            let expression = a
+                .get(2)
+                .and_then(value_to_string)
+                .ok_or("parameter value requires expression")?;
+            exec(
+                runner,
+                Instruction::SetParameterExpression { index, expression },
+                state,
+                synthetic,
+                viewport,
+                ctx,
+            )?;
+            Ok(Value::Null)
+        }
+        "min" | "minimum" | "max" | "maximum" | "step" => {
+            let which = match action {
+                "min" | "minimum" => crate::parameters::ParameterBound::Minimum,
+                "max" | "maximum" => crate::parameters::ParameterBound::Maximum,
+                "step" => crate::parameters::ParameterBound::Step,
+                _ => unreachable!(),
+            };
+            let index = a
+                .get(1)
+                .and_then(Value::as_u64)
+                .ok_or_else(|| format!("parameter {} requires index", which.label()))?
+                as usize;
+            let expression = match a.get(2) {
+                None | Some(Value::Null) => None,
+                Some(v) => {
+                    let s = value_to_string(v)
+                        .ok_or_else(|| format!("parameter {} expression must be a string", which.label()))?;
+                    if s.trim().is_empty() {
+                        None
+                    } else {
+                        Some(s)
+                    }
+                }
+            };
+            exec(
+                runner,
+                Instruction::SetParameterBound {
+                    index,
+                    which,
+                    expression,
+                },
+                state,
+                synthetic,
+                viewport,
+                ctx,
+            )?;
+            Ok(Value::Null)
+        }
         other => Err(format!("unknown parameter action '{other}'")),
     }
 }

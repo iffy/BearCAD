@@ -32,6 +32,7 @@ pub fn document_to_lua(doc: &Document) -> String {
 
     // Free parameters first (derived ones need geometry that may not exist yet — emit after).
     let mut derived_params = Vec::new();
+    let mut free_ordinal = 0usize;
     for (_key, param) in doc.parameters.iter() {
         match &param.source {
             None => {
@@ -43,16 +44,37 @@ pub fn document_to_lua(doc: &Document) -> String {
                     .as_lua_in(Some(doc)),
                 );
                 out.push('\n');
-                if !param.primary {
-                    // New parameters default primary for plain values; force secondary when set.
-                    let index = doc
-                        .parameters
-                        .iter()
-                        .filter(|(_, p)| p.source.is_none())
-                        .position(|(_, p)| p.name == param.name && p.expression == param.expression)
-                        .unwrap_or(0);
-                    // Count free parameters emitted so far for a stable ordinal at replay.
-                    let _ = index;
+                let index = free_ordinal;
+                free_ordinal += 1;
+                // #1176: options (primary, min, max, step) after the add.
+                let default_primary =
+                    crate::parameters::new_parameter_primary_default(&param.expression);
+                if param.primary != default_primary {
+                    out.push_str(
+                        &Instruction::SetParameterPrimary {
+                            index,
+                            primary: param.primary,
+                        }
+                        .as_lua_in(Some(doc)),
+                    );
+                    out.push('\n');
+                }
+                for (which, bound) in [
+                    (crate::parameters::ParameterBound::Minimum, &param.minimum),
+                    (crate::parameters::ParameterBound::Maximum, &param.maximum),
+                    (crate::parameters::ParameterBound::Step, &param.step),
+                ] {
+                    if let Some(expression) = bound {
+                        out.push_str(
+                            &Instruction::SetParameterBound {
+                                index,
+                                which,
+                                expression: Some(expression.clone()),
+                            }
+                            .as_lua_in(Some(doc)),
+                        );
+                        out.push('\n');
+                    }
                 }
             }
             Some(source) => derived_params.push((param.name.clone(), source.clone())),

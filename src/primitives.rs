@@ -703,6 +703,9 @@ mod tests {
             name: "side".to_string(),
             expression: "12".to_string(),
             primary: true,
+            minimum: None,
+            maximum: None,
+            step: None,
             source: None,
         });
         let shape = sized(K::Cuboid, "side", "side", "side * 2", "");

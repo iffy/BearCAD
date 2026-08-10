@@ -2239,6 +2239,9 @@ label_hidden: false,
             name: "w".to_string(),
             expression: "40mm".to_string(),
             primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
             source: None,
         });
         doc.drawings[dkey(0)].views[0].label_text = Some("Width {w}".to_string());

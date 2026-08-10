@@ -1101,6 +1101,9 @@ mod tests {
                 name: name.to_string(),
                 expression: expression.to_string(),
                 primary,
+                minimum: None,
+                maximum: None,
+                step: None,
                 source: None,
             });
         }

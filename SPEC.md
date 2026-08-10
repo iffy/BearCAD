@@ -2655,16 +2655,24 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
 - Parameters are a first-class feature with their own pane in the GUI.
 - Parameters exist at **document** and **component** scope; component parameters may
   shadow document ones.
-- A parameter has: name, expression (text), evaluated value, unit, and optional
-  description.
+- A parameter has: name, expression (text), evaluated value, unit, optional
+  description, and optional **minimum** / **maximum** / **step** expressions (#1176).
 - Parameter changes are DAG nodes (§4.1).
-- **Primary/secondary (#727):** `Parameter.primary` marks a file's front-door knobs — what
-  someone importing the file is expected to change (secondary = internals; advisory only,
-  nothing blocked). Toggled by the pane's per-row eyeball (open = primary; hover-gold icon
-  button, help-mode text keyed on "Primary"), scripted as `bearcad.parameter("primary", i,
-  bool)`. Defaults: existing documents load **secondary** (`serde(default)`); a **new**
-  parameter is primary iff its expression is a plain self-contained value
-  (`new_parameter_primary_default`), computed once at creation and never on later edits.
+- **Primary/secondary (#727/#1176):** `Parameter.primary` marks a file's front-door knobs —
+  what someone importing the file is expected to change (secondary = internals; advisory
+  only, nothing blocked). Toggled by the **Primary** checkbox in the per-row gear-options
+  panel (not an eyeball), scripted as `bearcad.parameter("primary", i, bool)`. Defaults:
+  existing documents load **secondary** (`serde(default)`); a **new** parameter is primary
+  iff its expression is a plain self-contained value (`new_parameter_primary_default`),
+  computed once at creation and never on later edits.
+- **Bounds (#1176):** `Parameter.minimum` / `maximum` / `step` are optional expressions
+  (`Option<String>`, empty clears). Unit kind (length vs angle) follows the default
+  value's units. Scripted as `bearcad.parameter("min"|"max"|"step", i, expression?)`
+  (`Action::SetParameterBound`). The gear cog on each Parameters-pane row toggles that
+  row's options panel (multiple open at once). **Imported unit instances** cannot edit
+  these options; overrides (`SetUnitParameterOverride` / `unit_override`) are
+  clamp-and-snapped to min/max/step (`clamp_and_snap_override_expression`). With both min
+  and max resolved, the unit-parameters section shows a **slider** that snaps to step.
 - When a parameter's name or value field is focused in the Parameters pane, the Elements
   pane highlights every element that uses that parameter (the dimensions referencing it and
   the geometry they drive), dimming the rest.
@@ -3522,15 +3530,18 @@ isn't a plain identifier — including while an unterminated `` ` `` is being ty
 token scanner (`qualified_token_at_cursor`) extends across the prefix; `10.` still
 completes nothing.
 
-**Instance parameters in the pane (#728):** selecting a unit instance puts **its**
+**Instance parameters in the pane (#728/#1176):** selecting a unit instance puts **its**
 parameters at the top of the Parameters pane, headed by the instance name: the unit's
 primary parameters first, secondary ones behind an "Internals" eye toggle (off by
 default, ephemeral), the document's own parameters unmistakably below a separator. An
 edit writes that instance's `parameter_overrides` (`Action::SetUnitParameterOverride`,
 `bearcad.unit_override{ instance =, name =, value = }`; omitting `value` clears) — never
-the source file, never other instances. Overridden values render gold with a ✕ back to
-the unit's own value; help-mode text is keyed on "Unit parameters"/"Unit parameter"/
-"Override"/"Internals". Instances are also findable/selectable by name.
+the source file, never other instances. Overrides are clamp-and-snapped to the unit
+parameter's min/max/step; with both min and max set the row shows a **slider**. The
+importer cannot edit the unit's options (min/max/step/primary). Overridden values render
+gold with a ✕ back to the unit's own value; help-mode text is keyed on "Unit
+parameters"/"Unit parameter"/"Override"/"Internals". Instances are also
+findable/selectable by name.
 
 **Cut and combine (#726):** a unit builds a real kernel solid
 (`occt_unit_instance_shape`: the inner rebuilt document's bodies' shapes fused and

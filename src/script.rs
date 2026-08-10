@@ -782,6 +782,12 @@ pub enum Instruction {
     SetParameterExpression { index: usize, expression: String },
     /// Flip a parameter's primary flag (#727).
     SetParameterPrimary { index: usize, primary: bool },
+    /// Set or clear a parameter min/max/step bound (#1176).
+    SetParameterBound {
+        index: usize,
+        which: crate::parameters::ParameterBound,
+        expression: Option<String>,
+    },
     /// Override (or clear) one unit instance's parameter (#728).
     SetUnitParameterOverride {
         instance: usize,
@@ -1784,6 +1790,15 @@ impl Instruction {
             }
             Instruction::SetParameterPrimary { index, primary } => {
                 format!("bearcad.parameter(\"primary\", {index}, {primary})")
+            }
+            Instruction::SetParameterBound { index, which, expression } => {
+                let action = which.label();
+                match expression {
+                    Some(expression) => {
+                        format!("bearcad.parameter({action:?}, {index}, {expression:?})")
+                    }
+                    None => format!("bearcad.parameter({action:?}, {index})"),
+                }
             }
             Instruction::SyncUnit { unit } => format!("bearcad.sync_unit({unit})"),
             Instruction::AddUnitInstance { unit, name } => match name {
@@ -2922,6 +2937,13 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             Some(Instruction::SetParameterPrimary {
                 index: parameter_ordinal(doc, *index)?,
                 primary: *primary,
+            })
+        }
+        Action::SetParameterBound { index, which, expression } => {
+            Some(Instruction::SetParameterBound {
+                index: parameter_ordinal(doc, *index)?,
+                which: *which,
+                expression: expression.clone(),
             })
         }
         Action::SetUnitParameterOverride { instance, name, expression } => {
@@ -6920,6 +6942,19 @@ impl ScriptRunner {
                     return StepResult::Continue;
                 };
                 let r = state.apply(Action::SetParameterPrimary { index: key, primary });
+                self.record_action_error(r);
+                StepResult::Continue
+            }
+            Instruction::SetParameterBound { index, which, expression } => {
+                let Some(key) = parameter_key(&state.doc, index) else {
+                    self.last_action_error = Some(format!("Parameter {index} not found"));
+                    return StepResult::Continue;
+                };
+                let r = state.apply(Action::SetParameterBound {
+                    index: key,
+                    which,
+                    expression,
+                });
                 self.record_action_error(r);
                 StepResult::Continue
             }

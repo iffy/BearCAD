@@ -767,6 +767,9 @@ mod tests {
             name: "width".to_string(),
             expression: "1mm / 0".to_string(),
             primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
             source: None,
         });
         let health = recompute_document_health(&doc);

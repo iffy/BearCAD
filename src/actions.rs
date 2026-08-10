@@ -1993,10 +1993,20 @@ pub enum Action {
     SetMcMasterWindow { open: Option<bool>, part: Option<String> },
     AddParameter { name: String, expression: String },
     /// Flip a parameter's primary/secondary flag (#727): primary parameters are the
-    /// knobs an importing file is offered first; advisory only.
+    /// knobs an importing file is offered first; advisory only. UI: gear-options
+    /// **Primary** checkbox (#1176).
     SetParameterPrimary { index: crate::model::ParameterKey, primary: bool },
+    /// Set or clear a parameter's minimum / maximum / step expression (#1176).
+    /// `expression: None` (or empty) clears the bound.
+    SetParameterBound {
+        index: crate::model::ParameterKey,
+        which: crate::parameters::ParameterBound,
+        expression: Option<String>,
+    },
     /// Override (or with `None`, clear back to the unit's own value) one parameter of one
     /// unit **instance** (#728). Never touches the source file or other instances.
+    /// When the unit parameter has min/max/step, the override is clamped and snapped
+    /// (#1176).
     SetUnitParameterOverride {
         instance: crate::model::UnitInstanceKey,
         name: String,
@@ -9347,6 +9357,29 @@ impl AppState {
                 );
                 ActionResult::Ok
             }
+            Action::SetParameterBound { index, which, expression } => {
+                match crate::parameters::set_parameter_bound(
+                    &mut self.doc,
+                    index,
+                    which,
+                    expression,
+                ) {
+                    Ok(()) => {
+                        let name = self
+                            .doc
+                            .parameters
+                            .get(index)
+                            .map(|p| p.name.clone())
+                            .unwrap_or_default();
+                        self.status = format!("Updated {name} {}", which.label_status());
+                        ActionResult::Ok
+                    }
+                    Err(e) => {
+                        self.status = e.clone();
+                        ActionResult::Err(e)
+                    }
+                }
+            }
             Action::SetUnitLink { unit, link } => {
                 let Some(u) = self.doc.units.get_mut(unit) else {
                     self.status = format!("Unit {} not found", unit.index());
@@ -9406,15 +9439,35 @@ impl AppState {
                     self.status = format!("Unit instance {} not found", instance.index());
                     return ActionResult::Err(self.status.clone());
                 };
-                let unit_param_exists = self
-                    .doc
-                    .units
-                    .get(inst.unit)
-                    .is_some_and(|u| u.document.parameters.values().any(|p| p.name == name));
-                if !unit_param_exists {
+                let unit = match self.doc.units.get(inst.unit) {
+                    Some(u) => u,
+                    None => {
+                        self.status = format!("Unit {} not found", inst.unit.index());
+                        return ActionResult::Err(self.status.clone());
+                    }
+                };
+                let Some(unit_param) = unit.document.parameters.values().find(|p| p.name == name)
+                else {
                     self.status = format!("The unit has no parameter named '{name}'");
                     return ActionResult::Err(self.status.clone());
-                }
+                };
+                let expression = match expression {
+                    Some(expression) => {
+                        // #1176: overrides must adhere to the unit parameter's min/max/step.
+                        match crate::parameters::clamp_and_snap_override_expression(
+                            &unit.document,
+                            unit_param,
+                            &expression,
+                        ) {
+                            Ok(e) => Some(e),
+                            Err(e) => {
+                                self.status = e.clone();
+                                return ActionResult::Err(e);
+                            }
+                        }
+                    }
+                    None => None,
+                };
                 let overrides = &mut self.doc.unit_instances[instance].parameter_overrides;
                 match expression {
                     Some(expression) => {
@@ -18705,6 +18758,9 @@ mod tests {
             name: "width".to_string(),
             expression: "10".to_string(),
             primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
             source: None,
         });
         let path = std::env::temp_dir().join(name);
@@ -18879,6 +18935,9 @@ mod tests {
             name: "width".to_string(),
             expression: "10".to_string(),
             primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
             source: None,
         });
         let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
@@ -19249,6 +19308,9 @@ mod tests {
             name: "internal".to_string(),
             expression: "width * 2".to_string(),
             primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
             source: None,
         });
 
@@ -19284,6 +19346,64 @@ mod tests {
         });
         assert!((height(&state.doc, uikey(0)) - 10.0).abs() < 1e-2, "back to the unit's own value");
         assert!(state.doc.unit_instances[uikey(0)].parameter_overrides.is_empty());
+    }
+
+    /// #1176: unit overrides clamp to min/max and snap to step defined on the unit.
+    #[test]
+    fn unit_override_respects_parameter_bounds() {
+        let unit_path = write_solid_unit_file("bearcad_unit_bounds.bearcad");
+        let mut state = AppState::default();
+        state.path = Some(
+            std::env::temp_dir()
+                .join("bearcad_unit_bounds_host.bearcad")
+                .to_string_lossy()
+                .to_string(),
+        );
+        state.apply(Action::ImportUnit {
+            path: unit_path.to_string_lossy().to_string(),
+            link: None,
+            name: None,
+        });
+        let _ = std::fs::remove_file(&unit_path);
+        // width on the unit: min 0, max 20, step 5.
+        let p = state.doc.units[ukey(0)]
+            .document
+            .parameters
+            .values_mut()
+            .next()
+            .unwrap();
+        p.primary = true;
+        p.minimum = Some("0".into());
+        p.maximum = Some("20".into());
+        p.step = Some("5".into());
+
+        let r = state.apply(Action::SetUnitParameterOverride {
+            instance: uikey(0),
+            name: "width".to_string(),
+            expression: Some("12".to_string()),
+        });
+        assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
+        let stored = &state.doc.unit_instances[uikey(0)].parameter_overrides[0].1;
+        let v = crate::value::eval_length_mm(stored).unwrap();
+        assert!(
+            (v - 10.0).abs() < 1e-2,
+            "12 snaps to 10; stored {stored} ({v})"
+        );
+
+        let r = state.apply(Action::SetUnitParameterOverride {
+            instance: uikey(0),
+            name: "width".to_string(),
+            expression: Some("99".to_string()),
+        });
+        assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
+        let stored = &state.doc.unit_instances[uikey(0)].parameter_overrides[0].1;
+        let v = crate::value::eval_length_mm(stored).unwrap();
+        assert!((v - 20.0).abs() < 1e-2, "99 clamps to max 20; got {stored} ({v})");
+
+        // Slider-range rows expose min+max.
+        let rows = crate::parameters::unit_parameter_rows(&state.doc, uikey(0), false);
+        let width = rows.iter().find(|r| r.name == "width").unwrap();
+        assert!(width.limits.unwrap().min.is_some() && width.limits.unwrap().max.is_some());
     }
 
     /// #731: renaming an instance rewrites every reference to it — parameter
@@ -27807,6 +27927,9 @@ mod tests {
             name: "bad".to_string(),
             expression: "1mm / 0".to_string(),
             primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
             source: None,
         });
         state.doc.shape_order.push(ShapeKind::Parameter);

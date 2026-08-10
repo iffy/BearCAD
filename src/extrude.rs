@@ -9881,6 +9881,9 @@ mod tests {
             name: "gap".to_string(),
             expression: "10".to_string(),
             primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
             source: None,
         });
         doc.move_ops.insert(MoveOperation {

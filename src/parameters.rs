@@ -274,6 +274,14 @@ pub struct ParametersPaneState {
     pub unit_editing: Option<String>,
     pub unit_draft: String,
     pub unit_editing_focus: bool,
+    /// Parameters whose gear-options panel is open (#1176). Multiple may be open at once;
+    /// each gear toggles only its own row.
+    pub options_open: std::collections::HashSet<ParameterKey>,
+    /// Draft text for an options field being edited: (param, which bound, draft).
+    /// Primary is a checkbox and commits immediately.
+    pub options_editing: Option<(ParameterKey, ParameterBound)>,
+    pub options_draft: String,
+    pub options_editing_focus: bool,
 }
 
 /// Whether the new-parameter row has enough input to attempt a commit.
@@ -619,6 +627,9 @@ pub fn add_computed_parameter_from_line_length(
         name,
         expression: format_length_display_in(length, unit),
         primary: false,
+        minimum: None,
+        maximum: None,
+        step: None,
         source: Some(ParameterSource::LineLength(line_index)),
     });
     doc.shape_order.push(crate::model::ShapeKind::Parameter);
@@ -732,6 +743,9 @@ pub fn add_derived_parameter(
         name,
         expression,
         primary: false,
+        minimum: None,
+        maximum: None,
+        step: None,
         source: Some(source),
     });
     doc.shape_order.push(crate::model::ShapeKind::Parameter);
@@ -1218,6 +1232,9 @@ pub fn add_parameter(
         name,
         primary: new_parameter_primary_default(&expression),
         expression,
+        minimum: None,
+        maximum: None,
+        step: None,
         source: None,
     });
     doc.shape_order.push(crate::model::ShapeKind::Parameter);
@@ -1263,6 +1280,260 @@ pub fn set_parameter_expression(
     recompute_document_geometry(doc)
 }
 
+/// Set or clear a parameter bound option (`minimum` / `maximum` / `step`) (#1176).
+/// Empty / `None` clears the option. Non-empty expressions must evaluate to the same
+/// unit kind as the parameter's default value.
+pub fn set_parameter_bound(
+    doc: &mut Document,
+    index: ParameterKey,
+    which: ParameterBound,
+    expression: Option<String>,
+) -> Result<(), String> {
+    let param = doc
+        .parameters
+        .get(index)
+        .ok_or_else(|| format!("Parameter {index:?} not found"))?;
+    let cleared = expression
+        .as_ref()
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true);
+    if cleared {
+        let slot = bound_slot_mut(&mut doc.parameters[index], which);
+        *slot = None;
+        return Ok(());
+    }
+    let expression = expression.unwrap().trim().to_string();
+    let kind = parameter_value_kind(doc, &param.expression).ok_or_else(|| {
+        "Parameter default value must evaluate so bounds know length vs angle".to_string()
+    })?;
+    // Evaluate the bound against the document, but ignore the parameter itself as a
+    // binding so a bound can't circularly depend on the value it constrains.
+    let bindings: Vec<(String, String)> = doc
+        .parameters
+        .iter()
+        .filter(|(k, _)| *k != index)
+        .map(|(_, p)| (p.name.clone(), p.expression.clone()))
+        .collect();
+    let params: Vec<(&str, &str)> = bindings
+        .iter()
+        .map(|(n, e)| (n.as_str(), e.as_str()))
+        .collect();
+    let bound_kind = match kind {
+        ParameterValueKind::Length => {
+            crate::value::eval_length_mm_with_params(&expression, &params)
+                .map(|_| ParameterValueKind::Length)
+        }
+        ParameterValueKind::Angle => {
+            crate::value::eval_angle_rad_with_params(&expression, &params)
+                .map(|_| ParameterValueKind::Angle)
+        }
+    };
+    match bound_kind {
+        Some(k) if k == kind => {}
+        Some(_) => {
+            return Err(format!(
+                "Bound must be a {} expression",
+                kind.label()
+            ));
+        }
+        None => {
+            return Err(format!("Invalid {} expression '{expression}'", which.label()));
+        }
+    }
+    // Step must be positive.
+    if which == ParameterBound::Step {
+        let step_v = match kind {
+            ParameterValueKind::Length => {
+                crate::value::eval_length_mm_with_params(&expression, &params)
+            }
+            ParameterValueKind::Angle => {
+                crate::value::eval_angle_rad_with_params(&expression, &params)
+            }
+        };
+        if step_v.is_none_or(|v| v <= 0.0) {
+            return Err("Step must be a positive value".to_string());
+        }
+    }
+    let slot = bound_slot_mut(&mut doc.parameters[index], which);
+    *slot = Some(expression);
+    Ok(())
+}
+
+/// Which optional bound field on a parameter (#1176).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParameterBound {
+    Minimum,
+    Maximum,
+    Step,
+}
+
+impl ParameterBound {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Minimum => "minimum",
+            Self::Maximum => "maximum",
+            Self::Step => "step",
+        }
+    }
+
+    /// Status-bar noun for "Updated width minimum".
+    pub fn label_status(self) -> &'static str {
+        self.label()
+    }
+}
+
+fn bound_slot_mut(param: &mut Parameter, which: ParameterBound) -> &mut Option<String> {
+    match which {
+        ParameterBound::Minimum => &mut param.minimum,
+        ParameterBound::Maximum => &mut param.maximum,
+        ParameterBound::Step => &mut param.step,
+    }
+}
+
+/// Length vs angle, taken from a parameter's default expression (#1176).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParameterValueKind {
+    Length,
+    Angle,
+}
+
+impl ParameterValueKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Length => "length",
+            Self::Angle => "angle",
+        }
+    }
+}
+
+/// Unit kind of a parameter's default value expression, if it evaluates.
+pub fn parameter_value_kind(doc: &Document, expression: &str) -> Option<ParameterValueKind> {
+    match eval_parameter_in_doc(expression, doc) {
+        Some(EvaluatedParameter::LengthMm(_)) => Some(ParameterValueKind::Length),
+        Some(EvaluatedParameter::AngleRad(_)) => Some(ParameterValueKind::Angle),
+        None => None,
+    }
+}
+
+/// Resolved numeric bounds for a parameter in canonical units (mm or rad) (#1176).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParameterLimits {
+    pub kind: ParameterValueKind,
+    pub min: Option<f32>,
+    pub max: Option<f32>,
+    pub step: Option<f32>,
+}
+
+/// Evaluate a parameter's min/max/step against `doc` (the document that owns the
+/// parameter — for an import, the unit's embedded document).
+pub fn parameter_limits(doc: &Document, param: &Parameter) -> Option<ParameterLimits> {
+    let kind = parameter_value_kind(doc, &param.expression)?;
+    let eval = |expr: &Option<String>| -> Option<f32> {
+        let expr = expr.as_ref()?.trim();
+        if expr.is_empty() {
+            return None;
+        }
+        match kind {
+            ParameterValueKind::Length => crate::value::eval_length_mm_in_doc(expr, doc),
+            ParameterValueKind::Angle => crate::value::eval_angle_rad_in_doc(expr, doc),
+        }
+    };
+    Some(ParameterLimits {
+        kind,
+        min: eval(&param.minimum),
+        max: eval(&param.maximum),
+        step: eval(&param.step).filter(|s| *s > 0.0),
+    })
+}
+
+/// Snap `value` (canonical units) onto the parameter's step grid and clamp to min/max.
+///
+/// Step grid is `min + n·step` when min is defined, else `n·step` from zero. When both
+/// min and max are set the result stays inside `[min, max]`.
+pub fn clamp_and_snap_value(limits: &ParameterLimits, value: f32) -> f32 {
+    let mut v = value;
+    if let Some(min) = limits.min {
+        v = v.max(min);
+    }
+    if let Some(max) = limits.max {
+        v = v.min(max);
+    }
+    if let Some(step) = limits.step {
+        let origin = limits.min.unwrap_or(0.0);
+        let n = ((v - origin) / step).round();
+        v = origin + n * step;
+        // Re-clamp after snap so rounding past a bound lands on the bound's nearest step.
+        if let Some(min) = limits.min {
+            v = v.max(min);
+        }
+        if let Some(max) = limits.max {
+            v = v.min(max);
+            // If still past max after snap-up, step back once.
+            if v > max + 1e-6 {
+                v = origin + ((max - origin) / step).floor() * step;
+            }
+        }
+        if let Some(min) = limits.min {
+            if v < min - 1e-6 {
+                v = origin + ((min - origin) / step).ceil() * step;
+            }
+        }
+    }
+    v
+}
+
+/// Format a canonical (mm / rad) value as a parameter expression in the document's
+/// default unit (#1176).
+pub fn format_canonical_as_expression(
+    kind: ParameterValueKind,
+    value: f32,
+    doc: &Document,
+) -> String {
+    match kind {
+        ParameterValueKind::Length => {
+            format_length_display_in(value, doc.default_length_unit)
+        }
+        ParameterValueKind::Angle => {
+            format_angle_display_in(value, doc.default_angle_unit)
+        }
+    }
+}
+
+/// Clamp/snap an override expression against a parameter's limits, returning the
+/// (possibly adjusted) expression to store (#1176). Errors when the expression can't
+/// evaluate as the parameter's unit kind.
+pub fn clamp_and_snap_override_expression(
+    unit_doc: &Document,
+    param: &Parameter,
+    expression: &str,
+) -> Result<String, String> {
+    let expression = expression.trim();
+    if expression.is_empty() {
+        return Err("Override value is required".to_string());
+    }
+    let Some(limits) = parameter_limits(unit_doc, param) else {
+        // No evaluable default / bounds — accept the expression as typed if it parses.
+        return Ok(expression.to_string());
+    };
+    let raw = match limits.kind {
+        ParameterValueKind::Length => crate::value::eval_length_mm_in_doc(expression, unit_doc),
+        ParameterValueKind::Angle => crate::value::eval_angle_rad_in_doc(expression, unit_doc),
+    }
+    .ok_or_else(|| {
+        format!(
+            "Override must be a {} expression",
+            limits.kind.label()
+        )
+    })?;
+    let snapped = clamp_and_snap_value(&limits, raw);
+    // Keep the typed expression when it already matches (within float noise) so a
+    // carefully written `width/2` isn't replaced with a bare number.
+    if (snapped - raw).abs() < 1e-4 {
+        return Ok(expression.to_string());
+    }
+    Ok(format_canonical_as_expression(limits.kind, snapped, unit_doc))
+}
+
 pub fn delete_parameter(doc: &mut Document, index: ParameterKey) -> Result<(), String> {
     if !crate::document_lifecycle::delete_parameter(doc, index) {
         return Err(format!("Parameter {index:?} not found"));
@@ -1299,6 +1570,12 @@ pub struct UnitParamRow {
     pub expression: String,
     pub overridden: bool,
     pub primary: bool,
+    /// Resolved min/max/step from the unit's own parameter definition (#1176). The
+    /// importer cannot edit these — only override the value within them.
+    pub limits: Option<ParameterLimits>,
+    /// Current value in canonical units (mm / rad), evaluated in the unit document with
+    /// this instance's override applied — drives the import slider (#1176).
+    pub current_value: Option<f32>,
 }
 
 /// The selected unit instance's parameter rows (#728): the unit's primary parameters
@@ -1314,6 +1591,13 @@ pub fn unit_parameter_rows(
     let Some(unit) = doc.units.get(inst.unit) else {
         return Vec::new();
     };
+    // Scratch unit doc with this instance's overrides so current values read correctly.
+    let mut eval_doc = unit.document.clone();
+    for (name, expression) in &inst.parameter_overrides {
+        if let Some(p) = eval_doc.parameters.values_mut().find(|p| p.name == *name) {
+            p.expression = expression.clone();
+        }
+    }
     let mut rows: Vec<UnitParamRow> = unit
         .document
         .parameters
@@ -1321,13 +1605,28 @@ pub fn unit_parameter_rows(
         .filter(|p| p.primary || show_secondary)
         .map(|p| {
             let over = inst.parameter_overrides.iter().find(|(n, _)| *n == p.name);
+            let expression = over
+                .map(|(_, e)| e.clone())
+                .unwrap_or_else(|| p.expression.clone());
+            let limits = parameter_limits(&unit.document, p);
+            let current_value = match limits.map(|l| l.kind) {
+                Some(ParameterValueKind::Length) => {
+                    crate::value::eval_length_mm_in_doc(&expression, &eval_doc)
+                }
+                Some(ParameterValueKind::Angle) => {
+                    crate::value::eval_angle_rad_in_doc(&expression, &eval_doc)
+                }
+                None => eval_parameter_in_doc(&expression, &eval_doc).map(|v| match v {
+                    EvaluatedParameter::LengthMm(x) | EvaluatedParameter::AngleRad(x) => x,
+                }),
+            };
             UnitParamRow {
                 name: p.name.clone(),
-                expression: over
-                    .map(|(_, e)| e.clone())
-                    .unwrap_or_else(|| p.expression.clone()),
+                expression,
                 overridden: over.is_some(),
                 primary: p.primary,
+                limits,
+                current_value,
             }
         })
         .collect();
@@ -1337,6 +1636,8 @@ pub fn unit_parameter_rows(
 
 /// The selected unit's parameters at the top of the Parameters pane (#728): edits write
 /// that one instance's overrides — never the source file, never other instances.
+/// Min/max/step come from the unit and are not editable here; with both min and max the
+/// row offers a slider (#1176).
 fn show_unit_parameters_section(ui: &mut egui::Ui, app: &mut AppState) {
     use egui::TextEdit;
     let Some(crate::hierarchy::SceneElement::UnitInstance(instance)) =
@@ -1356,6 +1657,13 @@ fn show_unit_parameters_section(ui: &mut egui::Ui, app: &mut AppState) {
 
     let show_secondary = app.parameters_pane.show_unit_secondary;
     let rows = unit_parameter_rows(&app.doc, instance, show_secondary);
+    // The unit document supplies display units for slider formatting.
+    let unit_doc_defaults = app
+        .doc
+        .unit_instances
+        .get(instance)
+        .and_then(|inst| app.doc.units.get(inst.unit))
+        .map(|u| (u.document.default_length_unit, u.document.default_angle_unit));
     let enter = ui.input(|i| i.key_pressed(Key::Enter));
     let mut set_override: Option<(String, Option<String>)> = None;
     egui::Grid::new("unit_parameters_table")
@@ -1366,45 +1674,90 @@ fn show_unit_parameters_section(ui: &mut egui::Ui, app: &mut AppState) {
             for row in &rows {
                 let name_cell = ui.label(&row.name);
                 crate::context::note_help_rect(ui, "Unit parameter", name_cell.rect);
-                let editing =
-                    app.parameters_pane.unit_editing.as_deref() == Some(row.name.as_str());
-                if editing {
-                    let resp = ui.add(
-                        TextEdit::singleline(&mut app.parameters_pane.unit_draft)
-                            .desired_width(f32::INFINITY),
-                    );
-                    if app.parameters_pane.unit_editing_focus {
-                        resp.request_focus();
-                        app.parameters_pane.unit_editing_focus = false;
-                    }
-                    if parameter_edit_enter_pressed(enter, resp.has_focus(), resp.lost_focus()) {
-                        let draft = app.parameters_pane.unit_draft.trim().to_string();
-                        if !draft.is_empty() {
-                            set_override = Some((row.name.clone(), Some(draft)));
+
+                // Slider when both min and max resolve (#1176).
+                let slider_range = row.limits.and_then(|lim| {
+                    let min = lim.min?;
+                    let max = lim.max?;
+                    (max > min).then_some((lim, min, max))
+                });
+
+                ui.vertical(|ui| {
+                    if let Some((lim, min, max)) = slider_range {
+                        let current = row
+                            .current_value
+                            .unwrap_or(min)
+                            .clamp(min, max);
+                        let mut slider_v = current;
+                        ui.spacing_mut().slider_width = 100.0;
+                        let slider = ui.add(
+                            egui::Slider::new(&mut slider_v, min..=max).show_value(false),
+                        );
+                        if slider.changed() {
+                            let snapped = clamp_and_snap_value(&lim, slider_v);
+                            let (len_u, ang_u) = unit_doc_defaults.unwrap_or((
+                                app.doc.default_length_unit,
+                                app.doc.default_angle_unit,
+                            ));
+                            let expr = match lim.kind {
+                                ParameterValueKind::Length => {
+                                    format_length_display_in(snapped, len_u)
+                                }
+                                ParameterValueKind::Angle => {
+                                    format_angle_display_in(snapped, ang_u)
+                                }
+                            };
+                            set_override = Some((row.name.clone(), Some(expr)));
                         }
-                        app.parameters_pane.unit_editing = None;
-                    } else if resp.lost_focus() {
-                        app.parameters_pane.unit_editing = None;
                     }
-                } else {
-                    // An overridden value reads gold — this instance's own number, not
-                    // the unit's.
-                    let text = if row.overridden {
-                        RichText::new(format_parameter_value_display(&app.doc, &row.expression))
-                            .color(egui::Color32::from_rgb(255, 210, 90))
+
+                    let editing =
+                        app.parameters_pane.unit_editing.as_deref() == Some(row.name.as_str());
+                    if editing {
+                        let resp = ui.add(
+                            TextEdit::singleline(&mut app.parameters_pane.unit_draft)
+                                .desired_width(f32::INFINITY),
+                        );
+                        if app.parameters_pane.unit_editing_focus {
+                            resp.request_focus();
+                            app.parameters_pane.unit_editing_focus = false;
+                        }
+                        if parameter_edit_enter_pressed(enter, resp.has_focus(), resp.lost_focus())
+                        {
+                            let draft = app.parameters_pane.unit_draft.trim().to_string();
+                            if !draft.is_empty() {
+                                set_override = Some((row.name.clone(), Some(draft)));
+                            }
+                            app.parameters_pane.unit_editing = None;
+                        } else if resp.lost_focus() {
+                            app.parameters_pane.unit_editing = None;
+                        }
                     } else {
-                        RichText::new(format_parameter_value_display(&app.doc, &row.expression))
-                    };
-                    let resp = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
-                    if resp
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked()
-                    {
-                        app.parameters_pane.unit_editing = Some(row.name.clone());
-                        app.parameters_pane.unit_draft = row.expression.clone();
-                        app.parameters_pane.unit_editing_focus = true;
+                        // An overridden value reads gold — this instance's own number, not
+                        // the unit's.
+                        let text = if row.overridden {
+                            RichText::new(format_parameter_value_display(
+                                &app.doc,
+                                &row.expression,
+                            ))
+                            .color(egui::Color32::from_rgb(255, 210, 90))
+                        } else {
+                            RichText::new(format_parameter_value_display(
+                                &app.doc,
+                                &row.expression,
+                            ))
+                        };
+                        let resp = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+                        if resp
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
+                            app.parameters_pane.unit_editing = Some(row.name.clone());
+                            app.parameters_pane.unit_draft = row.expression.clone();
+                            app.parameters_pane.unit_editing_focus = true;
+                        }
                     }
-                }
+                });
                 ui.horizontal(|ui| {
                     if row.overridden {
                         let revert = icon_button(
@@ -1449,6 +1802,88 @@ fn show_unit_parameters_section(ui: &mut egui::Ui, app: &mut AppState) {
     }
 }
 
+/// Min / max / step fields plus the Primary checkbox for one parameter's gear-options
+/// panel (#1176). Commits queue into `set_primary` / `set_bound` so the caller can apply
+/// them after the grid borrow ends.
+fn show_parameter_options_fields(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    index: ParameterKey,
+    primary: bool,
+    minimum: &Option<String>,
+    maximum: &Option<String>,
+    step: &Option<String>,
+    enter: bool,
+    set_primary: &mut Option<(ParameterKey, bool)>,
+    set_bound: &mut Option<(ParameterKey, ParameterBound, Option<String>)>,
+) {
+    use egui::TextEdit;
+
+    let mut primary_flag = primary;
+    let resp = ui.checkbox(&mut primary_flag, "Primary");
+    crate::context::note_help_rect(ui, "Primary", resp.rect);
+    if resp.changed() {
+        *set_primary = Some((index, primary_flag));
+    }
+    resp.on_hover_text(
+        "Offered first when this file is imported. Unchecked = internal (secondary).",
+    );
+
+    for (which, current, label) in [
+        (ParameterBound::Minimum, minimum, "Minimum"),
+        (ParameterBound::Maximum, maximum, "Maximum"),
+        (ParameterBound::Step, step, "Step"),
+    ] {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(label).size(11.0));
+            let editing = app.parameters_pane.options_editing == Some((index, which));
+            if editing {
+                let resp = ui.add(
+                    TextEdit::singleline(&mut app.parameters_pane.options_draft)
+                        .desired_width(120.0)
+                        .hint_text("expression"),
+                );
+                if app.parameters_pane.options_editing_focus {
+                    resp.request_focus();
+                    app.parameters_pane.options_editing_focus = false;
+                }
+                if parameter_edit_enter_pressed(enter, resp.has_focus(), resp.lost_focus()) {
+                    let draft = app.parameters_pane.options_draft.trim().to_string();
+                    *set_bound = Some((
+                        index,
+                        which,
+                        if draft.is_empty() {
+                            None
+                        } else {
+                            Some(draft)
+                        },
+                    ));
+                    app.parameters_pane.options_editing = None;
+                    app.parameters_pane.options_draft.clear();
+                } else if resp.lost_focus() {
+                    app.parameters_pane.options_editing = None;
+                    app.parameters_pane.options_draft.clear();
+                }
+            } else {
+                let display = current.as_deref().filter(|s| !s.is_empty()).unwrap_or("—");
+                let resp = ui.add(
+                    egui::Label::new(RichText::new(display).size(11.0)).sense(egui::Sense::click()),
+                );
+                if resp
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text(format!("{label} (optional expression)"))
+                    .clicked()
+                {
+                    app.parameters_pane.options_editing = Some((index, which));
+                    app.parameters_pane.options_draft =
+                        current.clone().unwrap_or_default();
+                    app.parameters_pane.options_editing_focus = true;
+                }
+            }
+        });
+    }
+}
+
 pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
     use crate::expression_input::ParameterExpressionContext;
     use egui::{Grid, ScrollArea, TextEdit};
@@ -1462,8 +1897,10 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
     // Row-hover tracking (#620): re-derived every frame; queued here (like `delete_index`)
     // so the row loop keeps its borrow of `app`.
     let mut hovered_name: Option<String> = None;
-    // The eyeball toggle's flip (#727), applied after the grid like the delete.
-    let mut toggle_primary: Option<(ParameterKey, bool)> = None;
+    // Gear-options commits (#1176), applied after the grid like the delete.
+    let mut set_primary: Option<(ParameterKey, bool)> = None;
+    let mut set_bound: Option<(ParameterKey, ParameterBound, Option<String>)> = None;
+    let mut toggle_options: Option<ParameterKey> = None;
 
     ScrollArea::vertical().show(ui, |ui| {
         // Selected unit instance (#728): its parameters lead the pane, unmistakably its
@@ -1483,7 +1920,18 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
 
                 let rows: Vec<ParameterKey> = app.doc.parameters.keys().collect();
                 for index in rows {
-                    let (param_name, param_expression, param_display, param_status, value_readonly, source_description) = {
+                    let (
+                        param_name,
+                        param_expression,
+                        param_display,
+                        param_status,
+                        value_readonly,
+                        source_description,
+                        param_primary,
+                        param_minimum,
+                        param_maximum,
+                        param_step,
+                    ) = {
                         let param = &app.doc.parameters[index];
                         (
                             param.name.clone(),
@@ -1492,6 +1940,10 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                             app.document_health.parameter_status(index),
                             parameter_value_is_readonly(param),
                             parameter_source_description(&app.doc, param),
+                            param.primary,
+                            param.minimum.clone(),
+                            param.maximum.clone(),
+                            param.step.clone(),
                         )
                     };
                     let param_frozen = param_status.is_frozen();
@@ -1637,24 +2089,22 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                             );
                         }
                     });
+                    let options_open = app.parameters_pane.options_open.contains(&index);
                     let extras_cell = ui.horizontal(|ui| {
-                        // Primary/secondary eyeball (#727): eye open = primary (a knob an
-                        // importing file is offered first), eye closed = secondary
-                        // (internal). Advisory only. Queued like the delete below so the
-                        // loop keeps its borrow of `app`.
-                        let primary = app.doc.parameters[index].primary;
-                        let eye = crate::icons::icon_button_hover_gold(
+                        // Gear cog toggles this parameter's options panel (#1176). Multiple
+                        // can be open at once; each gear only affects its own row.
+                        let gear = crate::icons::icon_button_hover_gold(
                             ui,
-                            crate::icons::icon_for_visibility(primary),
-                            if primary {
-                                "Primary — offered first when this file is imported"
+                            IconId::Gear,
+                            if options_open {
+                                "Hide parameter options"
                             } else {
-                                "Secondary — an internal value"
+                                "Parameter options (min, max, step, primary)"
                             },
                         );
-                        crate::context::note_help_rect(ui, "Primary", eye.rect);
-                        if eye.clicked() {
-                            toggle_primary = Some((index, !primary));
+                        crate::context::note_help_rect(ui, "Parameter options", gear.rect);
+                        if gear.clicked() {
+                            toggle_options = Some(index);
                         }
                         // Delete button (#270): a muted-red ✕ that removes the parameter.
                         let remove = ui.add(
@@ -1694,6 +2144,32 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                         hovered_name = Some(param_name.clone());
                     }
                     ui.end_row();
+
+                    // Expanded options below this parameter (#1176): min, max, step, Primary.
+                    if options_open {
+                        ui.label("");
+                        let options_cell = ui.vertical(|ui| {
+                            ui.add_space(2.0);
+                            show_parameter_options_fields(
+                                ui,
+                                app,
+                                index,
+                                param_primary,
+                                &param_minimum,
+                                &param_maximum,
+                                &param_step,
+                                enter,
+                                &mut set_primary,
+                                &mut set_bound,
+                            );
+                            ui.add_space(4.0);
+                        });
+                        ui.label("");
+                        if options_cell.response.contains_pointer() {
+                            hovered_name = Some(param_name.clone());
+                        }
+                        ui.end_row();
+                    }
                 }
 
                 let name_response = ui.add(
@@ -1802,8 +2278,25 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
     if let Some(index) = delete_index {
         apply_parameter_action(app, Action::DeleteParameter { index });
     }
-    if let Some((index, primary)) = toggle_primary {
+    if let Some(index) = toggle_options {
+        if !app.parameters_pane.options_open.insert(index) {
+            app.parameters_pane.options_open.remove(&index);
+            // Drop any in-flight options edit for this parameter.
+            if app
+                .parameters_pane
+                .options_editing
+                .is_some_and(|(k, _)| k == index)
+            {
+                app.parameters_pane.options_editing = None;
+                app.parameters_pane.options_draft.clear();
+            }
+        }
+    }
+    if let Some((index, primary)) = set_primary {
         apply_parameter_action(app, Action::SetParameterPrimary { index, primary });
+    }
+    if let Some((index, which, expression)) = set_bound {
+        apply_parameter_action(app, Action::SetParameterBound { index, which, expression });
     }
     app.parameters_pane.hovered_name = hovered_name;
 
@@ -1854,6 +2347,109 @@ mod tests {
             !doc.parameters[derived].primary,
             "an expression referencing another parameter is internal"
         );
+    }
+
+    /// #1176: min/max/step round-trip through save/load; empty clears; step must be positive;
+    /// bounds share the default value's unit kind.
+    #[test]
+    fn parameter_bounds_round_trip_and_validate() {
+        let mut doc = Document::default();
+        let width = add_parameter(&mut doc, "width".to_string(), "10mm".to_string()).unwrap();
+        set_parameter_bound(&mut doc, width, ParameterBound::Minimum, Some("5mm".into())).unwrap();
+        set_parameter_bound(&mut doc, width, ParameterBound::Maximum, Some("50mm".into())).unwrap();
+        set_parameter_bound(&mut doc, width, ParameterBound::Step, Some("2.5mm".into())).unwrap();
+        assert_eq!(doc.parameters[width].minimum.as_deref(), Some("5mm"));
+        assert_eq!(doc.parameters[width].maximum.as_deref(), Some("50mm"));
+        assert_eq!(doc.parameters[width].step.as_deref(), Some("2.5mm"));
+
+        let limits = parameter_limits(&doc, &doc.parameters[width]).unwrap();
+        assert_eq!(limits.kind, ParameterValueKind::Length);
+        assert!((limits.min.unwrap() - 5.0).abs() < 1e-4);
+        assert!((limits.max.unwrap() - 50.0).abs() < 1e-4);
+        assert!((limits.step.unwrap() - 2.5).abs() < 1e-4);
+
+        // Angle bound on a length parameter is refused.
+        let err = set_parameter_bound(&mut doc, width, ParameterBound::Minimum, Some("45deg".into()))
+            .unwrap_err();
+        assert!(err.contains("length") || err.contains("Invalid"), "{err}");
+        // Non-positive step refused.
+        assert!(
+            set_parameter_bound(&mut doc, width, ParameterBound::Step, Some("0".into())).is_err()
+        );
+        // Clear.
+        set_parameter_bound(&mut doc, width, ParameterBound::Step, None).unwrap();
+        assert!(doc.parameters[width].step.is_none());
+
+        let path = std::env::temp_dir().join("bearcad_param_bounds_roundtrip.bearcad");
+        let _ = std::fs::remove_file(&path);
+        crate::storage::save(&path.to_string_lossy(), &doc).unwrap();
+        let loaded = crate::storage::open(&path.to_string_lossy()).unwrap();
+        let p = loaded.parameters.values().next().unwrap();
+        assert_eq!(p.minimum.as_deref(), Some("5mm"));
+        assert_eq!(p.maximum.as_deref(), Some("50mm"));
+        assert!(p.step.is_none());
+        let _ = std::fs::remove_file(&path);
+
+        // Legacy JSON without the fields loads as None.
+        let mut value = serde_json::to_value(&doc).unwrap();
+        let entry = value["parameters"]["entries"][0][2].as_object_mut().unwrap();
+        entry.remove("minimum");
+        entry.remove("maximum");
+        entry.remove("step");
+        let legacy = crate::storage::from_json_bytes(&serde_json::to_vec(&value).unwrap()).unwrap();
+        let lp = legacy.parameters.values().next().unwrap();
+        assert!(lp.minimum.is_none() && lp.maximum.is_none() && lp.step.is_none());
+    }
+
+    /// #1176: override values clamp to min/max and snap to the nearest step.
+    #[test]
+    fn override_clamp_and_snap_to_step() {
+        let mut doc = Document::default();
+        let width = add_parameter(&mut doc, "width".to_string(), "10mm".to_string()).unwrap();
+        set_parameter_bound(&mut doc, width, ParameterBound::Minimum, Some("0mm".into())).unwrap();
+        set_parameter_bound(&mut doc, width, ParameterBound::Maximum, Some("20mm".into())).unwrap();
+        set_parameter_bound(&mut doc, width, ParameterBound::Step, Some("5mm".into())).unwrap();
+        let param = &doc.parameters[width];
+
+        // Below min → min.
+        let out = clamp_and_snap_override_expression(&doc, param, "-3mm").unwrap();
+        let v = crate::value::eval_length_mm_in_doc(&out, &doc).unwrap();
+        assert!((v - 0.0).abs() < 1e-3, "got {out} ({v})");
+        // Above max → max (or nearest step under max).
+        let out = clamp_and_snap_override_expression(&doc, param, "99mm").unwrap();
+        let v = crate::value::eval_length_mm_in_doc(&out, &doc).unwrap();
+        assert!((v - 20.0).abs() < 1e-3, "got {out} ({v})");
+        // Off-step snaps to closest: 12 → 10 or 15; closer is 10.
+        let out = clamp_and_snap_override_expression(&doc, param, "12mm").unwrap();
+        let v = crate::value::eval_length_mm_in_doc(&out, &doc).unwrap();
+        assert!((v - 10.0).abs() < 1e-3, "got {out} ({v})");
+        // Exactly on a step is kept as typed when numerically equal.
+        let out = clamp_and_snap_override_expression(&doc, param, "15mm").unwrap();
+        assert_eq!(out, "15mm");
+    }
+
+    /// #1176: numeric clamp/snap helper — mid-step, bounds, no-min origin.
+    #[test]
+    fn clamp_and_snap_value_math() {
+        let with_min = ParameterLimits {
+            kind: ParameterValueKind::Length,
+            min: Some(2.0),
+            max: Some(10.0),
+            step: Some(2.0),
+        };
+        assert!((clamp_and_snap_value(&with_min, 5.0) - 6.0).abs() < 1e-4); // 2+2n: 4 or 6, closer 6? 5-4=1, 6-5=1 — round half...
+        // 5.0 - 2.0 = 3.0 / 2.0 = 1.5 → rounds to 2 → 2+4=6. Yes.
+        assert!((clamp_and_snap_value(&with_min, 0.0) - 2.0).abs() < 1e-4);
+        assert!((clamp_and_snap_value(&with_min, 100.0) - 10.0).abs() < 1e-4);
+
+        let no_min = ParameterLimits {
+            kind: ParameterValueKind::Length,
+            min: None,
+            max: Some(10.0),
+            step: Some(3.0),
+        };
+        assert!((clamp_and_snap_value(&no_min, 4.0) - 3.0).abs() < 1e-4);
+        assert!((clamp_and_snap_value(&no_min, 11.0) - 9.0).abs() < 1e-4); // max 10, nearest step ≤10 is 9
     }
 
     /// #727: the flag round-trips through save/load; a document saved without the field
@@ -1910,7 +2506,7 @@ mod tests {
                 glam::Vec3::new(0.0, 40.0, 0.0),
             ]],
             source_name: "tri".to_string(),
-                    step_bytes: None,
+            step_bytes: None,
         });
         doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
