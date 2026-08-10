@@ -432,8 +432,9 @@ pub struct ViewportPalette {
     pub z_axis: Color32,
     /// Shared stroke color for all solid sketch shape edges (lines, rect edges, circles).
     pub rect_line: Color32,
-    /// Solid sketch strokes on a **body face** (#1149): near-black so they contrast on the
-    /// default faint-blue body (and other mid-tone materials). Plane sketches keep [`Self::rect_line`].
+    /// Solid sketch strokes on a **body face** (#1149/#1153): dark blue-grey so they contrast
+    /// on the default faint-blue body (and other mid-tone materials). Plane sketches keep
+    /// [`Self::rect_line`].
     pub rect_line_on_body: Color32,
     /// Fully-constrained solid lines (#172): no remaining degrees of freedom.
     pub rect_line_constrained: Color32,
@@ -462,7 +463,7 @@ impl Default for ViewportPalette {
             y_axis: Color32::from_rgb(70, 190, 90),
             z_axis: Color32::from_rgb(80, 140, 230),
             rect_line: Color32::from_rgb(120, 170, 240),
-            rect_line_on_body: Color32::from_rgb(18, 18, 22),
+            rect_line_on_body: Color32::from_rgb(50, 60, 78),
             rect_line_constrained: Color32::from_rgb(225, 228, 235),
             preview: Color32::from_rgb(240, 200, 120),
             construction: CONSTRUCTION_RGBA,
@@ -1308,22 +1309,19 @@ impl ViewportScene {
             } else if constrained_lines.contains(&li) {
                 sketch_color(input.palette.rect_line_constrained, dim)
             } else {
-                // #1149: body-face strokes use near-black so they read on faint body fills.
+                // #1149/#1153: body-face strokes use solid dark blue-grey on faint body fills.
                 solid_sketch_stroke_color(&input.palette, input.doc, line.sketch, dim)
             };
             let color = health_tint_color(base, input.document_health.element_status(element));
             if let Some(points) = line_world_polyline(input.doc, line) {
-                // Slightly thinner on body faces so the dark stroke doesn't overpower the solid.
-                let width = if sketch_is_body_coplanar(input.doc, line.sketch) {
-                    1.5
-                } else {
-                    2.0
-                };
+                // Same solid 2px width on body faces and planes (#1153): the thinner dark stroke
+                // from #1149 read as wispy/non-solid under AA.
+                const STROKE_WIDTH: f32 = 2.0;
                 if line.construction {
                     mesh.push_dashed_polyline_segment(
                         &points,
                         color,
-                        width,
+                        STROKE_WIDTH,
                         input.cam,
                         input.viewport,
                         &vp,
@@ -1332,7 +1330,7 @@ impl ViewportScene {
                     mesh.push_polyline_segment(
                         &points,
                         color,
-                        width,
+                        STROKE_WIDTH,
                         input.cam,
                         input.viewport,
                         &vp,
@@ -5206,9 +5204,9 @@ fn sketch_is_body_coplanar(doc: &Document, sketch: crate::model::SketchId) -> bo
     }
 }
 
-/// Stroke colour for unconstrained solid sketch geometry (#1149): blue on construction
-/// planes (where it reads against the dark viewport / yellow plane fill), near-black on
-/// body faces so it contrasts on the default faint-blue body and other mid-tone materials.
+/// Stroke colour for unconstrained solid sketch geometry (#1149/#1153): blue on construction
+/// planes (where it reads against the dark viewport / yellow plane fill), solid dark blue-grey
+/// on body faces so it contrasts on the default faint-blue body and other mid-tone materials.
 fn solid_sketch_stroke_color(
     palette: &ViewportPalette,
     doc: &Document,
@@ -7915,8 +7913,8 @@ mod tests {
         );
     }
 
-    /// #1149: blue sketch strokes vanish on the default (faint-blue) body material. Lines drawn
-    /// on a body face use a near-black stroke so they stay readable on any body colour.
+    /// #1149/#1153: blue sketch strokes vanish on the default (faint-blue) body material.
+    /// Lines on a body face use a solid dark blue-grey stroke so they stay readable.
     #[test]
     fn solid_line_on_body_face_uses_high_contrast_stroke() {
         use crate::actions::Action;
@@ -7960,12 +7958,13 @@ mod tests {
             plane_blue < on_body || palette.rect_line != palette.rect_line_on_body,
             "body-face line should not be the plane-sketch blue"
         );
-        // Near-black: each channel well below mid-grey so it contrasts on light body fills.
+        // Solid dark blue-grey (#1153): dark enough for contrast, blue-leaning (B > G > R),
+        // not pure black (which read as thin/wispy under AA).
+        let c = palette.rect_line_on_body;
         assert!(
-            palette.rect_line_on_body.r() < 40
-                && palette.rect_line_on_body.g() < 40
-                && palette.rect_line_on_body.b() < 40,
-            "on-body stroke should be near-black for contrast on faint body fills"
+            c.b() > c.g() && c.g() > c.r() && c.b() < 100 && c.r() > 30,
+            "on-body stroke should be a solid dark blue-grey, got {:?}",
+            c
         );
     }
 

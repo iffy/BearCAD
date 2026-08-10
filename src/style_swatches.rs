@@ -227,7 +227,7 @@ pub fn generate(dir: &std::path::Path) {
     std::fs::create_dir_all(dir).expect("create swatch dir");
     let palette = crate::gpu_viewport::ViewportPalette::default();
 
-    // Lines: 5 kinds x 3 states. On-body (#1149) is near-black for contrast on body faces.
+    // Lines: 5 kinds x 3 states. On-body (#1149/#1153) is solid dark blue-grey on body faces.
     let kinds: [(&str, Color32, bool); 5] = [
         ("line-normal", palette.rect_line, false),
         ("line-on-body", palette.rect_line_on_body, false),
