@@ -3140,6 +3140,9 @@ pub struct EditingCommittedDim {
     pub target: DimEditTarget,
     pub text: String,
     pub pending_focus: bool,
+    /// False until the user types (or unfocused type-to-edit overwrites the buffer).
+    /// Select-all on focus only while the buffer is still the measured default (#1201).
+    pub user_edited: bool,
     /// Arc radius (screen px) chosen while placing a *new* angle dimension, applied to the
     /// constraint's `dim_offset` on commit so the placed arc keeps the size the preview
     /// showed (#188). `None` for distance dims and edits of existing dimensions.
@@ -6880,6 +6883,7 @@ impl AppState {
             target: edit_target,
             text,
             pending_focus: true,
+            user_edited: false,
             dim_offset: None,
         });
         self.status = format!(
@@ -8862,6 +8866,7 @@ impl AppState {
                     target: DimEditTarget::Constraint(target),
                     text,
                     pending_focus: true,
+                    user_edited: false,
                     dim_offset: None,
                 });
                 self.status = "Edit dimension • Enter to commit • Esc to cancel".to_string();
@@ -27469,6 +27474,7 @@ mod tests {
             target: DimEditTarget::Constraint(nkey(0)),
             text: "90deg".to_string(),
             pending_focus: true,
+            user_edited: false,
             dim_offset: None,
         });
         assert_eq!(
@@ -27483,6 +27489,7 @@ mod tests {
             }),
             text: "45deg".to_string(),
             pending_focus: true,
+            user_edited: false,
             dim_offset: None,
         });
         assert_eq!(

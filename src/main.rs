@@ -15555,6 +15555,7 @@ impl App {
                 Some(context::DimensionEditEdit::SetText(text)) => {
                     if let Some(edit) = self.state.editing_committed_dim.as_mut() {
                         edit.text = text;
+                        edit.user_edited = true;
                     }
                 }
                 Some(context::DimensionEditEdit::Commit) => {
@@ -19695,6 +19696,11 @@ fn should_commit_sketch_on_click(
 }
 
 /// Whether the dimension field should keep its entire value selected for overwrite typing.
+///
+/// Once the user has typed (`user_edited`), do not re-select on a still-pending focus
+/// request — that would wipe multi-char input that arrived via unfocused type-to-edit
+/// before the field held the keyboard (#1201). `pending_focus` still arms select-all
+/// while the buffer is the measured default.
 fn should_select_all_rect_value(
     gained_focus: bool,
     has_focus: bool,
@@ -19703,12 +19709,11 @@ fn should_select_all_rect_value(
     user_edited: bool,
     changed_this_frame: bool,
 ) -> bool {
+    let _ = pending_focus;
     if changed_this_frame {
         return false;
     }
-    gained_focus
-        || (is_focus_target && pending_focus && has_focus)
-        || (is_focus_target && has_focus && !user_edited)
+    gained_focus || (is_focus_target && has_focus && !user_edited)
 }
 
 /// Grabbing a tool gizmo hands the related value field the keyboard with its text selected
@@ -19816,12 +19821,16 @@ fn show_sketch_dimension_field(
         None,
     );
     let resp = &out.response;
+    // Memory focus, not `Response::has_focus` — that also demands the OS window be
+    // focused, and a scripted (background) window still routes typing into the field
+    // that holds keyboard focus (#1201, same rationale as Enter below).
+    let memory_focused = ctx.memory(|m| m.focused()) == Some(id);
     if is_focus_target && *pending_focus {
         resp.request_focus();
     }
     if should_select_all_rect_value(
         resp.gained_focus(),
-        resp.has_focus(),
+        memory_focused || resp.has_focus(),
         is_focus_target,
         *pending_focus,
         user_edited,
@@ -19835,14 +19844,14 @@ fn show_sketch_dimension_field(
         )));
         state.store(ctx, id);
     }
-    if is_focus_target && resp.has_focus() {
+    if is_focus_target && memory_focused {
         *pending_focus = false;
     }
     // Enter belongs to whichever field holds the keyboard, which is not the same as
     // `Response::has_focus` — that also demands the OS window be focused, and a background
     // window's open field is still where Enter lands.
     let enter_commit =
-        sketch_dimension_enter_pressed(ui) && ctx.memory(|m| m.focused()) == Some(id);
+        sketch_dimension_enter_pressed(ui) && memory_focused;
     if enter_commit {
         consume_sketch_dimension_enter(ui);
     }
@@ -22450,6 +22459,10 @@ impl App {
 
         if self.state.editing_committed_dim.is_some() && tab_pressed {
             ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
+            // Re-arm the value field so Tab after place/click still focuses it (#1201).
+            if let Some(edit) = self.state.editing_committed_dim.as_mut() {
+                edit.pending_focus = true;
+            }
         }
     }
 
@@ -28558,31 +28571,70 @@ impl App {
                         input_layout.rect,
                     );
                     let ctx = ui.ctx();
-                    let id = egui::Id::new(("committed_dim", format!("{:?}", edit.target)));
+                    // Stable id so place → type frames share one focus target (#1201).
+                    let id = egui::Id::new("committed_dim_value");
+                    // Typing while the field is unfocused grabs the keyboard — same as
+                    // extrude depth (#196/#1201). Without this, scripted type-after-place
+                    // never lands (Enter alone commits the measured default). First
+                    // keystroke overwrites the measured default; further unfocused
+                    // keystrokes append so multi-char expressions still build if focus
+                    // is slow to land.
+                    let field_focused = ctx.memory(|m| m.has_focus(id));
+                    let other_wants_kb = ctx.egui_wants_keyboard_input() && !field_focused;
+                    if should_grab_unfocused_tool_typing(field_focused, other_wants_kb) {
+                        let typed: String = ctx.input(|i| {
+                            i.events
+                                .iter()
+                                .filter_map(|e| match e {
+                                    egui::Event::Text(t) => Some(t.as_str()),
+                                    _ => None,
+                                })
+                                .collect()
+                        });
+                        let typed: String = typed
+                            .chars()
+                            .filter(|c| c.is_ascii_alphanumeric() || "._-+*/()= ".contains(*c))
+                            .collect();
+                        if !typed.is_empty() {
+                            if edit.user_edited {
+                                edit.text.push_str(&typed);
+                            } else {
+                                edit.text = typed;
+                            }
+                            edit.user_edited = true;
+                            edit.pending_focus = true;
+                        }
+                    }
+                    let mut want_focus = should_request_pending_tool_focus(
+                        edit.pending_focus,
+                        ctx.memory(|m| m.focused().is_some_and(|f| f != id)),
+                    );
                     let mut commit_dim = false;
                     let mut dim_field_result = SketchDimFieldResult::default();
+                    let user_edited = edit.user_edited;
                     let doc = &mut self.state.doc;
-                    egui::Area::new(egui::Id::new((
-                        "committed_dim_area",
-                        format!("{:?}", edit.target),
-                    )))
-                    .fixed_pos(input_layout.pos)
-                    .order(egui::Order::Foreground)
-                    .show(ctx, |ui| {
-                        dim_field_result = show_sketch_dimension_field(
-                            ui,
-                            ctx,
-                            id,
-                            &mut edit.text,
-                            doc,
-                            Some(active_sketch),
-                            true,
-                            &mut edit.pending_focus,
-                            true,
-                            is_angle,
-                        );
-                        commit_dim = dim_field_result.enter_commit;
-                    });
+                    egui::Area::new(egui::Id::new("committed_dim_area"))
+                        .fixed_pos(input_layout.pos)
+                        .order(egui::Order::Foreground)
+                        .show(ctx, |ui| {
+                            dim_field_result = show_sketch_dimension_field(
+                                ui,
+                                ctx,
+                                id,
+                                &mut edit.text,
+                                doc,
+                                Some(active_sketch),
+                                true,
+                                &mut want_focus,
+                                user_edited,
+                                is_angle,
+                            );
+                            commit_dim = dim_field_result.enter_commit;
+                        });
+                    if dim_field_result.changed {
+                        edit.user_edited = true;
+                    }
+                    edit.pending_focus = want_focus;
                     inline_parameter_field_results.push(dim_field_result);
                     let dim_focused = ctx.memory(|m| m.focused()) == Some(id);
                     if edit.pending_focus {
@@ -31922,14 +31974,20 @@ mod tests {
     }
 
     #[test]
-    fn select_all_on_focus_gain_or_pending_focus() {
+    fn select_all_on_focus_gain_or_unedited_focus() {
+        // Gained focus always selects (even if the buffer was already typed into).
         assert!(should_select_all_rect_value(true, true, true, false, true, false));
-        assert!(should_select_all_rect_value(false, true, true, true, true, false));
+        // Unedited buffer while focused: select for overwrite (pending or not).
+        assert!(should_select_all_rect_value(false, true, true, true, false, false));
+        assert!(should_select_all_rect_value(false, true, true, false, false, false));
     }
 
     #[test]
     fn no_select_all_after_user_edited_without_focus_change() {
         assert!(!should_select_all_rect_value(false, true, true, false, true, false));
+        // #1201: pending focus must not re-select after unfocused type-to-edit already
+        // wrote into the buffer — that would wipe the next keystroke.
+        assert!(!should_select_all_rect_value(false, true, true, true, true, false));
     }
 
     #[test]
