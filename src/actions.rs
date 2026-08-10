@@ -1940,9 +1940,6 @@ pub enum Action {
     SetHelpMode(Option<bool>),
     /// Show/hide/toggle the Settings window (#720/#737).
     SetSettingsWindow { open: Option<bool> },
-    /// Pick how selected/hovered bodies highlight (#1110): recolour the fill, or draw a
-    /// screen-space outline around the silhouette.
-    SetBodyHighlightMethod(crate::settings::BodyHighlightMethod),
     /// Open/close the McMaster-Carr catalog window (#1022), optionally at a part number.
     SetMcMasterWindow { open: Option<bool>, part: Option<String> },
     AddParameter { name: String, expression: String },
@@ -2797,7 +2794,6 @@ impl Action {
                     | Action::SetPaneVisible { .. }
                     | Action::SetMcMasterWindow { .. }
                     | Action::SetSettingsWindow { .. }
-                    | Action::SetBodyHighlightMethod(_)
                     | Action::SetElementsViewMode { .. }
                     | Action::SetHomeView
             )
@@ -3276,10 +3272,6 @@ pub struct AppState {
     /// The app-settings library directory (#720), mirrored here by the frame loop so
     /// [`Action::ImportUnit`] can classify sources without reaching into `App`.
     pub library_directory: Option<std::path::PathBuf>,
-    /// The app-settings body-highlight method (#1110), mirrored here by the frame loop
-    /// so the viewport's scene builder picks the selection/hover look without reaching
-    /// into `App`. See [`crate::settings::BodyHighlightMethod`].
-    pub body_highlight_method: crate::settings::BodyHighlightMethod,
     /// Unsaved-changes tracking (#522): a snapshot of the document as of the last
     /// save/open/new, and a cached flag for whether the live document now differs from it.
     /// `dirty` drives the window title's `*` marker and the quit-save prompt; it is
@@ -3562,7 +3554,6 @@ impl Default for AppState {
             doc: Document::default(),
             path: None,
             library_directory: None,
-            body_highlight_method: crate::settings::BodyHighlightMethod::default(),
             saved_snapshot: Document::default(),
             dirty: false,
             tool: Tool::default(),
@@ -9163,17 +9154,6 @@ impl AppState {
                 } else {
                     "Settings closed".to_string()
                 };
-                ActionResult::Ok
-            }
-            Action::SetBodyHighlightMethod(method) => {
-                self.body_highlight_method = method;
-                self.status = format!(
-                    "Body highlight: {}",
-                    match method {
-                        crate::settings::BodyHighlightMethod::Shading => "shading",
-                        crate::settings::BodyHighlightMethod::Outlining => "outlining",
-                    },
-                );
                 ActionResult::Ok
             }
             Action::SetHelpMode(on) => {

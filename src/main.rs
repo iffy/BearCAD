@@ -78,9 +78,8 @@ mod release_artifacts;
 #[cfg(not(target_arch = "wasm32"))]
 mod updater;
 mod script;
-// Always compiled: `BodyHighlightMethod` (and friends) are used by the action layer,
-// viewport, and script path on every target. Persistence (`AppSettings::load`/`save`) is
-// still only wired up on native; on wasm the module just supplies the types.
+// Always compiled: `AppSettings` types are shared with the action/script path. Persistence
+// (`AppSettings::load`/`save`) is still only wired up on native.
 mod settings;
 // The JSON command dispatcher (todoer #179) is the web build's scripting hook: on wasm it
 // backs `web_lua`'s bearcad_call dispatch; on native it's exercised by its own tests.
@@ -4262,7 +4261,6 @@ impl App {
         #[cfg(not(target_arch = "wasm32"))]
         {
             state.library_directory = settings.library_directory.clone();
-            state.body_highlight_method = settings.body_highlight_method;
         }
         if let Some(path) = document_path {
             match state.apply(Action::Open { path }) {
@@ -4472,9 +4470,6 @@ impl App {
         if !self.state.settings_open {
             return;
         }
-        // Scripts can change the live body-highlight method without touching the settings
-        // file (#1110); show what the viewport is actually using so the combo matches.
-        self.settings.body_highlight_method = self.state.body_highlight_method;
         // Help notes (#672) for this pane's rows: a self-contained collect-and-draw cycle.
         if self.state.help_mode {
             context::begin_help_notes(ctx, None);
@@ -4512,44 +4507,13 @@ impl App {
                     }
                 }
             });
-            // How selected/hovered bodies highlight (#1110): recolour the fill, or draw a
-            // screen-space silhouette outline.
-            context::labeled_row(ui, "Body highlight", |ui| {
-                let current = self.settings.body_highlight_method;
-                let combo = egui::ComboBox::from_id_salt("body_highlight_combo").selected_text(
-                    match current {
-                        settings::BodyHighlightMethod::Shading => "Solid-body shading",
-                        settings::BodyHighlightMethod::Outlining => "Outlining",
-                    },
-                );
-                let resp = combo.show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut self.settings.body_highlight_method,
-                        settings::BodyHighlightMethod::Shading,
-                        "Solid-body shading",
-                    );
-                    ui.selectable_value(
-                        &mut self.settings.body_highlight_method,
-                        settings::BodyHighlightMethod::Outlining,
-                        "Outlining",
-                    );
-                });
-                resp.response.on_hover_text(
-                    "Outlining draws a screen-space outline around the body's silhouette \
-                     (blue when selected, yellow when hovered) instead of recolouring it.",
-                );
-                if self.settings.body_highlight_method != current {
-                    changed = true;
-                }
-            });
         });
         if self.state.help_mode {
             context::end_help_notes(ctx);
         }
         if changed {
-            // Keep the action layer's mirrors in step (#721/#1110) before persisting.
+            // Keep the action layer's library mirror in step (#721) before persisting.
             self.state.library_directory = self.settings.library_directory.clone();
-            self.state.body_highlight_method = self.settings.body_highlight_method;
             if let Err(err) = self.settings.save() {
                 self.state.status = format!("Could not save settings: {err}");
             }
@@ -18687,7 +18651,6 @@ fn build_viewport_scene_input<'a>(
             dim_edge_highlight: col::DIM_EDGE_HIGHLIGHT,
             construction_plane_fill: construction::PLANE_FILL_RGBA,
             construction_plane_opacity: gpu_viewport::DEFAULT_CONSTRUCTION_PLANE_OPACITY,
-            body_highlight_method: crate::settings::BodyHighlightMethod::default(),
         },
         sketch_session,
         selection,
@@ -27077,9 +27040,6 @@ impl App {
             sketch_ghost_lines,
             edit_preview_meshes,
         );
-        // Body-highlight method (#1110): mirrored from app settings into the palette so the
-        // scene builder can pick shading vs. outlining without reaching into `App`.
-        scene_input.palette.body_highlight_method = self.state.body_highlight_method;
         // The rotation sphere rides the ghost-solid slot (#920) — nothing else uses it
         // while the Move tool is up.
         if let Some(sphere) = move_surface_solid {

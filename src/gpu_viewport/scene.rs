@@ -305,11 +305,10 @@ pub struct ViewportScene {
     /// Body edge-wireframe overlay (#33). Drawn depth-test-disabled, same as gizmos, so
     /// edges stay visible "through" a solid body in solid+wireframe shading mode.
     pub wireframe_indices: Vec<u32>,
-    /// The selection/hover outline mask (#1110): the triangles of selected and hovered
+    /// The selection/hover outline mask (#1110/#1155): triangles of selected and hovered
     /// bodies, drawn flat into an offscreen mask (R = selected, G = hovered). A later
-    /// fullscreen pass dilates the mask in screen space and strokes the silhouette band
-    /// — blue for selected, yellow for hovered — so the highlight is an outline rather
-    /// than a fill recolour. Only populated when body-highlight is set to Outlining.
+    /// fullscreen pass dilates the mask and strokes the silhouette band (blue selected,
+    /// yellow hovered) **on top of** the fill recolour — both effects always apply.
     pub mask_indices: Vec<u32>,
     pub text_vertices: Vec<GpuTextVertex>,
     pub text_indices: Vec<u32>,
@@ -445,12 +444,6 @@ pub struct ViewportPalette {
     pub dim_edge_highlight: Color32,
     pub construction_plane_fill: Color32,
     pub construction_plane_opacity: f32,
-    /// How selected/hovered bodies highlight (#1110): recolour the fill (`Shading`), or
-    /// draw a screen-space silhouette outline (`Outlining`, the default). Lives on the
-    /// palette — which already carries the viewport's rendering config — so the scene
-    /// builder reads it without a separate input field, and tests get the default for free
-    /// through [`ViewportPalette::default`].
-    pub body_highlight_method: crate::settings::BodyHighlightMethod,
 }
 
 impl Default for ViewportPalette {
@@ -471,7 +464,6 @@ impl Default for ViewportPalette {
             dim_edge_highlight: Color32::from_rgb(255, 205, 88),
             construction_plane_fill: PLANE_FILL_RGBA,
             construction_plane_opacity: DEFAULT_CONSTRUCTION_PLANE_OPACITY,
-            body_highlight_method: crate::settings::BodyHighlightMethod::default(),
         }
     }
 }
@@ -1077,12 +1069,10 @@ impl ViewportScene {
             let selected = input.selection.is_selected(SceneElement::Body(bi))
                 || unit_instance
                     .is_some_and(|i| input.selection.is_selected(SceneElement::UnitInstance(i)));
-            // #1110: in Outlining mode the body itself keeps its material colour — the
-            // selection/hover signal is a screen-space silhouette outline drawn from a
-            // separate mask pass, not a fill recolour. (`tint` still wins for fill: it's an
-            // explicit override, e.g. the joint-mobile green, not a highlight.)
-            let outlining = input.palette.body_highlight_method
-                == crate::settings::BodyHighlightMethod::Outlining;
+            // #1110/#1155: selected/hovered bodies always get **both** solid-body shading
+            // (fill + wire recolour) and a screen-space silhouette outline from the mask
+            // pass. (`tint` still wins for fill: it's an explicit override, e.g. the
+            // joint-mobile green, not a highlight.)
             let tint = input
                 .tinted_bodies
                 .iter()
@@ -1091,12 +1081,12 @@ impl ViewportScene {
             let derived = derived_output_bodies.contains(&bi);
             let fill = if let Some(tint) = tint {
                 tint
-            } else if selected && !outlining {
+            } else if selected {
                 SOLID_FILL_SELECTED
             } else if derived {
                 // #977/#1150: operation-row wash — main-pass recolour, not a coplanar overlay.
                 DERIVED_OUTPUT_HIGHLIGHT
-            } else if hovered && !outlining {
+            } else if hovered {
                 SOLID_FILL_HOVERED
             } else if unit_instance.is_some() {
                 UNIT_SOLID_FILL
@@ -1105,20 +1095,19 @@ impl ViewportScene {
                 // default look.
                 body_material_fill(input.doc, body)
             };
-            let line_color = if selected && !outlining {
+            let line_color = if selected {
                 BODY_SILHOUETTE_COLOR
             } else if derived {
                 DERIVED_OUTPUT_HIGHLIGHT
-            } else if hovered && !outlining {
+            } else if hovered {
                 SOLID_FILL_HOVERED
             } else {
                 WIREFRAME_LINE_COLOR
             };
-            // #1110: feed the outline mask with this body's flattened (depth-free) triangles
-            // — R for selected, G for hovered (selected wins when both). The mask pass
-            // renders them unlit into an offscreen texture a later fullscreen pass dilates
-            // into the silhouette band, so the highlight is an outline rather than a fill.
-            if outlining && (selected || hovered) {
+            // Outline mask: R for selected, G for hovered (selected wins when both). The
+            // mask pass draws them unlit into an offscreen texture; a later fullscreen pass
+            // dilates that into the silhouette band over the already-recoloured fill.
+            if selected || hovered {
                 let mask_color = if selected {
                     Color32::from_rgb(255, 0, 0)
                 } else {
@@ -6381,8 +6370,7 @@ mod tests {
         }
         // Main-pass recolour path for produced bodies (#1150): a Component holding a body
         // must wash that body purple when its row is hovered.
-        let mut palette = ViewportPalette::default();
-        palette.body_highlight_method = crate::settings::BodyHighlightMethod::Shading;
+        let palette = ViewportPalette::default();
         let build = |hover: Option<ViewportHoverHighlight>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
@@ -8390,10 +8378,8 @@ mod tests {
         let state = state_with_one_body();
         let cam = state.cam.clone();
         let viewport = test_viewport();
-        // Shading mode: this test asserts fill recolour on hover (#455). Outlining is the
-        // default and uses a mask pass instead.
-        let mut palette = ViewportPalette::default();
-        palette.body_highlight_method = crate::settings::BodyHighlightMethod::Shading;
+        // Fill recolour on hover (#455); outline mask is layered on top (#1155).
+        let palette = ViewportPalette::default();
         let build = |hover: Option<ViewportHoverHighlight>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
@@ -8546,9 +8532,7 @@ mod tests {
         let state = state_with_sliced_body();
         let cam = state.cam.clone();
         let viewport = test_viewport();
-        let mut palette = ViewportPalette::default();
-        // Shading recolour is what this test asserts; Outlining would mask instead.
-        palette.body_highlight_method = crate::settings::BodyHighlightMethod::Shading;
+        let palette = ViewportPalette::default();
         let build = |hover: Option<ViewportHoverHighlight>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
@@ -8635,10 +8619,8 @@ mod tests {
         let state = state_with_one_body();
         let cam = state.cam.clone();
         let viewport = test_viewport();
-        // Shading mode: this test asserts fill recolour on hover (#985). Outlining is the
-        // default and uses a mask pass instead.
-        let mut palette = ViewportPalette::default();
-        palette.body_highlight_method = crate::settings::BodyHighlightMethod::Shading;
+        // Fill recolour on hover (#985); outline mask layers on top (#1155).
+        let palette = ViewportPalette::default();
         let build = |hover: Option<ViewportHoverHighlight>,
                      extra: Vec<crate::construction::PickTargetKind>| {
             ViewportScene::build(&ViewportSceneInput {
@@ -8846,10 +8828,8 @@ mod tests {
         );
         let cam = state.cam.clone();
         let viewport = test_viewport();
-        // Force shading mode: this test is about fill recolouring, and outlining is the
-        // default highlight now.
-        let mut palette = ViewportPalette::default();
-        palette.body_highlight_method = crate::settings::BodyHighlightMethod::Shading;
+        // Fill recolour (tint vs selection) — outline still applies but doesn't affect fills.
+        let palette = ViewportPalette::default();
         let build = |tint: Vec<(crate::model::BodyKey, Color32)>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
@@ -8952,9 +8932,7 @@ mod tests {
         };
         let cam = state.cam.clone();
         let viewport = test_viewport();
-        // Force shading: outlining is the default, and this test is about fill recolour.
-        let mut palette = ViewportPalette::default();
-        palette.body_highlight_method = crate::settings::BodyHighlightMethod::Shading;
+        let palette = ViewportPalette::default();
         let build = |sel: &SceneSelection| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
@@ -9010,10 +8988,10 @@ mod tests {
         assert!(has_selected_hue(&with_selection), "selected body must use the saturated blue");
     }
 
-    /// #1110: Outlining mode keeps the body's material fill and puts its triangles into
-    /// `mask_indices` (R channel) so the GPU outline pass can stroke the silhouette.
+    /// #1110/#1155: selected bodies always get solid-body shading (fill recolour) **and**
+    /// outline-mask triangles so the GPU can stroke the silhouette.
     #[test]
-    fn outlining_mode_feeds_mask_without_recolouring_fill() {
+    fn selected_body_highlights_with_shading_and_outline() {
         let state = state_with_one_body();
         let mut selected = SceneSelection::default();
         crate::selection::click_scene_selection(
@@ -9031,7 +9009,6 @@ mod tests {
         };
         let cam = state.cam.clone();
         let viewport = test_viewport();
-        // Default is Outlining; leave it so this test covers the shipping path.
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             cam: &cam,
@@ -9080,8 +9057,8 @@ mod tests {
             constraint_connector_color: None,
         });
         assert!(
-            !has_selected_hue(&scene),
-            "outlining must not recolour the body fill"
+            has_selected_hue(&scene),
+            "selected body must recolour its fill (solid-body shading)"
         );
         assert!(
             !scene.mask_indices.is_empty(),

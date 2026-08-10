@@ -3971,31 +3971,6 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // #1110: pick how selected/hovered bodies highlight — recolour the fill ("shading") or
-    // draw a screen-space silhouette outline ("outlining"). With no argument, returns the
-    // current method's script name without changing it.
-    api.set(
-        "body_highlight",
-        lua.create_function(|lua, method: Option<String>| {
-            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            unsafe {
-                if let Some(name) = method {
-                    let Some(parsed) = crate::settings::BodyHighlightMethod::from_name(&name)
-                    else {
-                        return Err(mlua::Error::external(format!(
-                            "body_highlight expects \"shading\"/\"outlining\", got {name:?}"
-                        )));
-                    };
-                    tick.exec(Instruction::SetBodyHighlightMethod { method: parsed })?;
-                }
-                // Always report the method now in effect: a no-arg call reads, and a set
-                // call confirms what it set (so a script can echo it back).
-                let current = tick.state().body_highlight_method;
-                Ok(current.script_name().to_string())
-            }
-        })?,
-    )?;
-
     // #1022: drive the McMaster-Carr catalog window, with an optional part number to open
     // it at — docs captures need it open, and a script needs to be able to say which part.
     api.set(
@@ -6142,7 +6117,6 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         bearcad.ui = {}
         local ui_funcs = {
             "tool", "tool_mode", "help", "focus_name", "focus_dim", "pane", "palette", "settings",
-            "body_highlight",
             "mcmaster",
             "new_tab", "close_tab", "tab", "tab_count", "window_count", "tabs", "reorder_tab", "detach_tab",
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading", "ground",

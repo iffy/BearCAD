@@ -1599,10 +1599,10 @@ impl ViewportGpuResources {
             }
         }
 
-        // Body-highlight outline (#1110): when the scene built a mask of selected/hovered
-        // body silhouettes, paint it into the offscreen R/G target and stroke the dilated
-        // band over the resolved scene colour. Two extra passes — only when outlining is
-        // live, so shading mode pays nothing.
+        // Body-highlight outline (#1110/#1155): when the scene built a mask of selected/
+        // hovered body silhouettes, paint it into the offscreen R/G target and stroke the
+        // dilated band over the resolved scene colour (which already has the fill recolour).
+        // Two extra passes — only when any body is selected/hovered.
         if mask_index_count > 0 {
             if let (Some(mask_view), Some(color_view), Some(outline_bind_group)) = (
                 self.mask_view.as_ref(),

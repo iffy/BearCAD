@@ -3222,14 +3222,15 @@ ordinal too.
   re-picks) keep the plain fade.
 - **Selected-body fill (#174):** a selected body's solid also fills in a **more saturated
   blue** than the neutral body grey (in every shading mode), so selection reads on the body itself (#455).
-- **Selected/hovered-body highlight (#455, replacing the #145/#148 aura):** selection and
-  hover recolor the **body itself** — no outline. In shaded modes the fill changes
-  (`SOLID_FILL_SELECTED` saturated blue; `SOLID_FILL_HOVERED` warm gold-grey); in
-  wireframe mode the **lines** recolor instead. Selecting or hovering an **Extrude**
-  element recolors only that extrusion's own solid within its (possibly merged) body
-  (`push_sub_body_recolor`: a translucent overlay on the toward-camera-biased Overlay
-  layer in shaded modes, its feature edges in wireframe). Destructive (cut-picker) bodies
-  keep their red translucent fill (#264), likewise without an outline.
+- **Selected/hovered-body highlight (#455/#1110/#1155, replacing the #145/#148 aura):**
+  selection and hover always apply **both** solid-body shading and a screen-space silhouette
+  outline. In shaded modes the fill changes (`SOLID_FILL_SELECTED` saturated blue;
+  `SOLID_FILL_HOVERED` warm gold-grey); in wireframe mode the **lines** recolor instead; and
+  a mask pass always strokes a blue (selected) or yellow (hovered) outline around the body's
+  silhouette. Selecting or hovering an **Extrude** element recolors only that extrusion's own
+  solid within its (possibly merged) body (`push_sub_body_recolor`: a translucent overlay on
+  the toward-camera-biased Overlay layer in shaded modes, its feature edges in wireframe).
+  Destructive (cut-picker) bodies keep their red translucent fill (#264).
 - **Context pane:** While the constraint tool is active, the context pane lists geometric
   constraint types as buttons (text labels for now; icons later), and below them shows the
   unified **element picker** (§7, #213) for the geometry being constrained. The constraint
