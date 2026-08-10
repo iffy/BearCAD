@@ -317,21 +317,22 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   which prunes to what the focused picker takes, can never offer a datum plane, world
   axis, or body that a click would refuse. Outside geometry enters a sketch only through
   the Projection tool (#140/#1193).
-- **Projections (#140/#1193):** **`Tool::Project`** (shown as **Projection** since #753 —
-  the verb read as a noun; Lua `"project"`; shortcut **Y** in sketch mode) is a toolbar
-  tool that appears only while a sketch is open. With it active, outside body edges/faces
-  and crossing planes hover-glow and **clicks select** them (Shift multi-selects); **Enter**
-  projects the selection onto the sketch plane along the plane normal through
-  `Action::ProjectSelection` → `Action::ProjectSources`. A face or vertex projects the
-  whole body's edges; a body does the same. Selecting external 3D geometry before opening
-  the sketch, then activating Project (**Y**) and pressing Enter, works the same — the
-  tool's picker keeps projectable items across the handoff. Palette "Project Selection into
-  Sketch" still runs `Action::ProjectSelection` directly. Each projected edge becomes a
-  construction-style line drawn **solid cyan** (#1186; distinct from dashed construction)
-  and usable like construction geometry (snapping, constraints). While the host sketch is
-  open, **all of that sketch's lines** — solid, construction, and projected — **show through
-  bodies** (depth-disabled; #1192/#1200) so a body between the camera and the sketch plane
-  does not hide the profile. Closed sketches keep depth-tested strokes. In the Elements pane,
+- **Projections (#140/#1193/#1197/#1199):** **`Tool::Project`** (shown as **Projection**
+  since #753 — the verb read as a noun; Lua `"project"`; shortcut **P** in sketch mode) is
+  a toolbar tool that appears only while a sketch is open. With it active, outside body
+  edges/faces and crossing planes hover-glow and **clicks select** them (Shift multi-
+  selects); **Enter** or the Context pane's blue commit button projects the selection onto
+  the sketch plane along the plane normal through `Action::ProjectSelection` →
+  `Action::ProjectSources`. A face or vertex projects the whole body's edges; a body does
+  the same. Selecting external 3D geometry before opening the sketch, then activating
+  Project (**P**) and pressing Enter, works the same — the tool's picker keeps projectable
+  items across the handoff. Palette "Project Selection into Sketch" still runs
+  `Action::ProjectSelection` directly. Each projected edge becomes a construction-style
+  line drawn **solid cyan** (#1186; distinct from dashed construction) and usable like
+  construction geometry (snapping, constraints). While the host sketch is open, **all of
+  that sketch's lines** — solid, construction, and projected — **show through bodies**
+  (depth-disabled; #1192/#1200) so a body between the camera and the sketch plane does not
+  hide the profile. Closed sketches keep depth-tested strokes. In the Elements pane,
   projected lines wear the **Projection** (projector) icon, not the plain line glyph (#1193).
   **Un-project (#1193):** when the selection is **only** already-projected lines of the
   open sketch, Enter (or Project Selection) **un-projects** them (removes the references).

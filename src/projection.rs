@@ -1,7 +1,8 @@
 //! Associative projections of external 3D geometry into sketches (#140).
 //!
-//! Pressing **Y** with body edges selected (or a whole body/extrusion) while a sketch is
-//! open creates one construction-style [`Line`](crate::model::Line) per source edge, carrying
+//! Pressing **P** (or using the Projection tool + Enter / the commit button) with body
+//! edges selected (or a whole body/extrusion) while a sketch is open creates one
+//! construction-style [`Line`](crate::model::Line) per source edge, carrying
 //! a [`ProjectionSource`](crate::model::ProjectionSource) and drawn solid cyan (#1186).
 //! Every geometry recompute calls [`refresh_projections`], which re-resolves each source
 //! edge and rewrites the projected line's endpoints — so projections follow their source

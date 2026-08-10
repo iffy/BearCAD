@@ -5728,11 +5728,11 @@ impl App {
             return;
         }
 
-        // Y activates the Projection tool inside a sketch (#1193): select outside
+        // P activates the Projection tool inside a sketch (#1193/#1197): select outside
         // geometry, Enter projects; Enter on only projected lines un-projects.
         if self.state.sketch_session.is_some()
             && !keyboard_shortcuts_suppressed(ctx)
-            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Y))
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::P))
         {
             if self.state.tool != Tool::Project {
                 self.state.apply(Action::SetTool(Tool::Project));
@@ -14116,6 +14116,12 @@ impl App {
                     can_commit: has_t && has_c,
                 }
             }),
+            // Projection tool commit (#1199): blue Do button when the selection can project
+            // or un-project. Selection non-empty is enough — ProjectSelection validates.
+            project: (self.state.tool == Tool::Project && self.state.sketch_session.is_some())
+                .then(|| context::ProjectControl {
+                    can_commit: !self.state.scene_selection.is_empty(),
+                }),
             sketch_text: {
                 // A single selected sketch text opens its editor (#286).
                 self.single_selected_sketch_text()
@@ -14468,6 +14474,7 @@ impl App {
             let mut sketch_offset_edit: Option<context::SketchOffsetEdit> = None;
             let mut sketch_mirror_edit: Option<context::SketchMirrorEdit> = None;
             let mut sketch_slice_edit: Option<context::SketchSliceEdit> = None;
+            let mut project_edit: Option<context::ProjectEdit> = None;
             let mut sketch_text_edit: Option<context::SketchTextEdit> = None;
             let mut drawing_view_edit: Option<context::DrawingViewEdit> = None;
             let mut drawing_annotation_edit: Option<context::DrawingAnnotationEdit> = None;
@@ -14540,6 +14547,7 @@ impl App {
                         &mut |edit| sketch_offset_edit = Some(edit),
                         &mut |edit| sketch_mirror_edit = Some(edit),
                         &mut |edit| sketch_slice_edit = Some(edit),
+                        &mut |edit| project_edit = Some(edit),
                         &mut |edit| sketch_text_edit = Some(edit),
                         &mut |edit| drawing_view_edit = Some(edit),
                         &mut |edit| drawing_annotation_edit = Some(edit),
@@ -15246,6 +15254,10 @@ impl App {
                         }
                     }
                 }
+            }
+            if let Some(context::ProjectEdit::Commit) = project_edit {
+                // Same path as Enter on the Projection tool (#1199).
+                self.state.apply(Action::ProjectSelection);
             }
             if let Some(context::SketchSliceEdit::Commit) = sketch_slice_edit {
                         if let Some(cs) = self

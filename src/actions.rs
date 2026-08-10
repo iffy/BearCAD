@@ -9268,18 +9268,27 @@ impl AppState {
                 }
                 // A single selected element projects through ProjectElement so that action
                 // stays on the live path (tests/scripts use it too); multi-select batches
-                // via ProjectSources.
+                // via ProjectSources. Clear the selection on success so a dual Enter path
+                // (Context pane primary button + viewport handler, #1199) cannot project twice.
                 let ordered = self.scene_selection.ordered();
                 if ordered.len() == 1 {
-                    return self.apply_inner(Action::ProjectElement {
+                    let result = self.apply_inner(Action::ProjectElement {
                         element: ordered[0].clone(),
                     });
+                    if matches!(result, ActionResult::Ok) {
+                        self.scene_selection.clear();
+                    }
+                    return result;
                 }
                 let sources = crate::projection::projection_sources_from_selection(
                     &self.doc,
                     &self.scene_selection,
                 );
-                return self.apply_inner(Action::ProjectSources { sources });
+                let result = self.apply_inner(Action::ProjectSources { sources });
+                if matches!(result, ActionResult::Ok) {
+                    self.scene_selection.clear();
+                }
+                return result;
             }
             Action::ProjectSources { sources } => {
                 let Some(session) = self.sketch_session else {
@@ -26077,7 +26086,7 @@ mod tests {
         assert!(matches!(ce.faces[0], ExtrudeFace::Polygon(_)));
     }
 
-    /// #140: pressing Y with a body edge selected projects it into the open sketch as an
+    /// #140/#1197: pressing P with a body edge selected projects it into the open sketch as an
     /// associative construction-style line, and editing the source geometry re-resolves it.
     #[test]
     fn project_element_projects_a_clicked_body() {

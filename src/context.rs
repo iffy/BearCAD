@@ -119,6 +119,8 @@ pub struct ContextInput<'a> {
     pub sketch_mirror_edit_start: Option<crate::model::SketchMirrorOpKey>,
     /// In-sketch Slice tool control (#238).
     pub sketch_slice: Option<SketchSliceControl>,
+    /// Projection tool commit control (#1199): `Some` while Project is active in a sketch.
+    pub project: Option<ProjectControl>,
     /// Selected sketch-text editor (#286).
     pub sketch_text: Option<SketchTextControl>,
     /// Selected drawing-projection editor (#289).
@@ -789,6 +791,20 @@ pub enum SketchSliceEdit {
     Commit,
 }
 
+/// Projection tool commit control (#1199): the blue primary button under the Selection
+/// picker. Enabled once anything projectable (or only already-projected lines) is selected.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectControl {
+    pub can_commit: bool,
+}
+
+/// One edit from the Projection tool's context section (#1199).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProjectEdit {
+    /// Enter / the blue commit button — project (or un-project) the selection.
+    Commit,
+}
+
 /// Editor for a selected sketch text (#282/#286): the string, font, size, style, and rotation.
 /// Editor for the selected drawing projection (#289): shown while a view card is selected on
 /// the open drawing page (or right after the Add-view tool places one).
@@ -1078,6 +1094,8 @@ pub struct ContextPaneContent {
     pub sketch_mirror_edit_start: Option<crate::model::SketchMirrorOpKey>,
     /// In-sketch Slice tool control (#238).
     pub sketch_slice: Option<SketchSliceControl>,
+    /// Projection tool commit control (#1199).
+    pub project: Option<ProjectControl>,
     /// Selected sketch-text editor (#286).
     pub sketch_text: Option<SketchTextControl>,
     /// Selected drawing-projection editor (#289).
@@ -3006,6 +3024,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let sketch_mirror = input.sketch_mirror.clone();
     let sketch_mirror_edit_start = input.sketch_mirror_edit_start;
     let sketch_slice = input.sketch_slice.clone();
+    let project = input.project.clone();
     let sketch_text = input.sketch_text.clone();
     // With the Text tool active, the pane belongs to placing/editing text — a projection that
     // happens to still be selected must not show its editor here (#329). The Dimension/Select
@@ -3084,6 +3103,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             sketch_mirror: sketch_mirror.clone(),
             sketch_mirror_edit_start,
             sketch_slice: sketch_slice.clone(),
+            project: project.clone(),
             sketch_text: sketch_text.clone(),
             drawing_view: drawing_view.clone(),
             drawing_annotation: drawing_annotation.clone(),
@@ -3148,6 +3168,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             sketch_mirror: sketch_mirror.clone(),
             sketch_mirror_edit_start,
             sketch_slice: sketch_slice.clone(),
+            project: project.clone(),
             sketch_text: sketch_text.clone(),
             drawing_view: drawing_view.clone(),
             drawing_annotation: drawing_annotation.clone(),
@@ -3214,6 +3235,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             sketch_mirror: sketch_mirror.clone(),
             sketch_mirror_edit_start,
             sketch_slice: sketch_slice.clone(),
+            project: project.clone(),
             sketch_text: sketch_text.clone(),
             drawing_view: drawing_view.clone(),
             drawing_annotation: drawing_annotation.clone(),
@@ -3296,6 +3318,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         sketch_mirror,
         sketch_mirror_edit_start,
         sketch_slice,
+        project,
         sketch_text,
         drawing_view,
         drawing_annotation,
@@ -4122,7 +4145,8 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         (Some(Tool::Project), "Selection") => Some(
             "The outside geometry to pull onto this sketch plane — select body edges, \
              a face or corner for a whole body, or a plane for its crossing line, then \
-             press Enter. Select only projected lines and press Enter to un-project them.",
+             press Enter or the blue commit button. Select only projected lines and \
+             press Enter to un-project them.",
         ),
         (Some(Tool::Sketch), "Selection") => Some(
             "The face the new sketch opens on — a construction plane, a flat body face, \
@@ -4552,6 +4576,7 @@ pub fn show_pane(
     on_sketch_offset_edit: &mut impl FnMut(SketchOffsetEdit),
     on_sketch_mirror_edit: &mut impl FnMut(SketchMirrorEdit),
     on_sketch_slice_edit: &mut impl FnMut(SketchSliceEdit),
+    on_project_edit: &mut impl FnMut(ProjectEdit),
     on_sketch_text_edit: &mut impl FnMut(SketchTextEdit),
     on_drawing_view_edit: &mut impl FnMut(DrawingViewEdit),
     on_drawing_annotation_edit: &mut impl FnMut(DrawingAnnotationEdit),
@@ -6941,6 +6966,20 @@ pub fn show_pane(
         }
     }
 
+    // Projection tool (#1199): the Selection picker is above; the blue commit button
+    // projects (or un-projects) the selection — same as Enter.
+    if let Some(control) = &content.project {
+        any_control = true;
+        ui.add_space(2.0);
+        if primary_button(
+            ui,
+            control.can_commit && controls_enabled,
+            "Project",
+        ) {
+            on_project_edit(ProjectEdit::Commit);
+        }
+    }
+
     // Sketch-text editor (#286): edit the selected text's string, font, size, style, rotation.
     if let Some(control) = &content.sketch_text {
         any_control = true;
@@ -8091,6 +8130,7 @@ mod tests {
             sketch_mirror: None,
             sketch_mirror_edit_start: None,
             sketch_slice: None,
+            project: None,
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
@@ -8111,6 +8151,53 @@ mod tests {
             dimension_edit: None,
             treatment: None,
         }
+    }
+
+    /// #1199: the Projection tool exposes a commit control (blue Do button) while a sketch
+    /// is open — enabled only when something is selected to project or un-project.
+    #[test]
+    fn projection_tool_shows_commit_control() {
+        use crate::hierarchy::SceneElement;
+
+        let doc = Document::default();
+        let empty = SceneSelection::default();
+        let mut selected = SceneSelection::default();
+        selected.insert(SceneElement::ConstructionPlane(pkey(1)));
+
+        let off = context_pane_content(&ContextInput {
+            tool: Tool::Project,
+            project: Some(ProjectControl { can_commit: false }),
+            in_sketch: true,
+            open_sketch: Some(skey(0)),
+            ..input(&doc, &empty)
+        });
+        assert_eq!(
+            off.project,
+            Some(ProjectControl { can_commit: false }),
+            "empty selection keeps the button disabled"
+        );
+
+        let on = context_pane_content(&ContextInput {
+            tool: Tool::Project,
+            project: Some(ProjectControl { can_commit: true }),
+            in_sketch: true,
+            open_sketch: Some(skey(0)),
+            ..input(&doc, &selected)
+        });
+        assert_eq!(
+            on.project,
+            Some(ProjectControl { can_commit: true }),
+            "non-empty selection enables the commit button"
+        );
+
+        let other = context_pane_content(&ContextInput {
+            tool: Tool::Select,
+            project: None,
+            in_sketch: true,
+            open_sketch: Some(skey(0)),
+            ..input(&doc, &selected)
+        });
+        assert!(other.project.is_none(), "other tools have no Projection commit control");
     }
 
     /// #635: the Circle tool's Anchor row (centre+radius vs edge-to-edge) survives the
@@ -8455,6 +8542,7 @@ mod tests {
             sketch_mirror: None,
             sketch_mirror_edit_start: None,
             sketch_slice: None,
+            project: None,
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
@@ -9472,6 +9560,7 @@ mod tests {
             sketch_mirror: None,
             sketch_mirror_edit_start: None,
             sketch_slice: None,
+            project: None,
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
@@ -9552,6 +9641,7 @@ mod tests {
             sketch_mirror: None,
             sketch_mirror_edit_start: None,
             sketch_slice: None,
+            project: None,
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
@@ -9626,6 +9716,7 @@ mod tests {
             sketch_mirror: None,
             sketch_mirror_edit_start: None,
             sketch_slice: None,
+            project: None,
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
@@ -9706,6 +9797,7 @@ mod tests {
             sketch_mirror: None,
             sketch_mirror_edit_start: None,
             sketch_slice: None,
+            project: None,
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
@@ -9840,6 +9932,7 @@ mod tests {
             sketch_mirror: None,
             sketch_mirror_edit_start: None,
             sketch_slice: None,
+            project: None,
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
@@ -9968,6 +10061,7 @@ mod tests {
             sketch_mirror: None,
             sketch_mirror_edit_start: None,
             sketch_slice: None,
+            project: None,
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
@@ -10048,6 +10142,7 @@ mod tests {
             sketch_mirror: None,
             sketch_mirror_edit_start: None,
             sketch_slice: None,
+            project: None,
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
@@ -10132,6 +10227,7 @@ mod tests {
             sketch_mirror: None,
             sketch_mirror_edit_start: None,
             sketch_slice: None,
+            project: None,
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
@@ -10203,6 +10299,7 @@ mod tests {
             sketch_mirror: None,
             sketch_mirror_edit_start: None,
             sketch_slice: None,
+            project: None,
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
