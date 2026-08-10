@@ -8180,6 +8180,103 @@ mod tests {
         assert_eq!(foo.expression, "2mm");
     }
 
+    /// #1172: shelling a Shape-tool cuboid with open faces must actually open those faces.
+    /// After commit, `body_index_for_face` prefers the live shell output over the shadowed
+    /// input primitive — matching open faces against that live body used to drop every face
+    /// and leave a closed (looks solid from outside) hollow.
+    #[test]
+    fn lua_shell_cuboid_open_top_actually_opens() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 40, depth = 30, height = 20 }
+            bearcad.shell{
+                bodies = {0},
+                faces = {{ kind = "primitive_face", primitive = 0, face = "top" }},
+                thickness = "2"
+            }
+            "#,
+        );
+        assert_eq!(state.doc.shell_ops.len(), 1);
+        let op = state.doc.shell_ops.values().next().unwrap();
+        assert_eq!(op.open_faces.len(), 1, "open face must be recorded on the op");
+        assert_eq!(op.outputs.len(), 1);
+        let out = op.outputs[0];
+        assert!(!state.doc.bodies[out].shadow);
+        let shape = crate::extrude::occt_body_shape(&state.doc, out)
+            .expect("shelled cuboid must build a kernel solid");
+        let v = shape.volume().expect("volume");
+        // Open top, 2 mm walls: outer 40×30×20 minus cavity 36×26×18 = 7152.
+        // Closed shell would be outer − 36×26×16 = 9024 — the bug volume.
+        let open_expected = 40.0 * 30.0 * 20.0 - 36.0 * 26.0 * 18.0;
+        let closed_walls = 40.0 * 30.0 * 20.0 - 36.0 * 26.0 * 16.0;
+        assert!(
+            (v - open_expected).abs() < 2.0,
+            "open-top shell volume {v}, expected ~{open_expected} (closed walls would be {closed_walls})"
+        );
+        assert!(
+            (v - closed_walls).abs() > 100.0,
+            "volume {v} must not be the closed-shell {closed_walls} — open faces were dropped"
+        );
+    }
+
+    /// #1172: report repro — open top *and* a side on a cuboid must hollow with openings
+    /// (closed walls look solid from outside; openings are what the user sees).
+    #[test]
+    fn lua_shell_cuboid_open_top_and_side_is_hollow_with_openings() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 50, depth = 60, height = 90 }
+            bearcad.shell{
+                bodies = {0},
+                faces = {
+                    { kind = "primitive_face", primitive = 0, face = "top" },
+                    { kind = "primitive_face", primitive = 0, face = "side", edge = 2 },
+                },
+                thickness = "5"
+            }
+            "#,
+        );
+        assert_eq!(state.doc.shell_ops.len(), 1);
+        let op = state.doc.shell_ops.values().next().unwrap();
+        assert_eq!(op.open_faces.len(), 2);
+        let out = op.outputs[0];
+        let shape = crate::extrude::occt_body_shape(&state.doc, out)
+            .expect("shelled cuboid with two open faces");
+        let v = shape.volume().expect("volume");
+        let solid = 50.0 * 60.0 * 90.0;
+        // Closed 5 mm walls: outer − 40×50×80 = 270000 − 160000 = 110000.
+        let closed_walls = solid - 40.0 * 50.0 * 80.0;
+        assert!(
+            v > 1000.0 && v < solid,
+            "volume {v} should be a hollow under solid {solid}"
+        );
+        assert!(
+            v < closed_walls - 1000.0,
+            "volume {v} must be well under closed-shell {closed_walls} (open faces applied)"
+        );
+        // Re-edit thickness still accepts the primitive open faces (#1172 validate path).
+        let edited = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 50, depth = 60, height = 90 }
+            bearcad.shell{
+                bodies = {0},
+                faces = {{ kind = "primitive_face", primitive = 0, face = "top" }},
+                thickness = "5"
+            }
+            bearcad.edit_shell{
+                index = 0,
+                bodies = {0},
+                faces = {{ kind = "primitive_face", primitive = 0, face = "top" }},
+                thickness = "4"
+            }
+            "#,
+        );
+        assert_eq!(edited.doc.shell_ops.values().next().unwrap().thickness, "4");
+    }
+
     /// #1168: extruding off a face of a *shelled* body must merge into the hollow solid,
     /// not re-grow a solid cuboid from the shadow primitive (which fills the cavity and
     /// makes the shell look "gone").

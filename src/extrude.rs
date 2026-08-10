@@ -3448,12 +3448,12 @@ fn occt_shelled_output_shape(
         return None;
     }
     // Open faces belonging to this target: convert FaceId → (point, outward normal).
+    // Match against the *input* body via source ownership, not body_index_for_face —
+    // after the shell exists that prefers the live shelled output and would drop every
+    // open face on a primitive target (#1172).
     let mut open: Vec<(glam::Vec3, glam::Vec3)> = Vec::new();
     for face in &op.open_faces {
-        let Some(owner) = crate::model::body_index_for_face(doc, face) else {
-            continue;
-        };
-        if owner != input {
+        if !crate::model::face_belongs_to_body(doc, face, input) {
             continue;
         }
         let Some(frame) = crate::face::sketch_frame(doc, face.clone()) else {
@@ -3491,10 +3491,8 @@ pub fn preview_shell_meshes(
         };
         let mut open: Vec<(glam::Vec3, glam::Vec3)> = Vec::new();
         for face in open_faces {
-            let Some(owner) = crate::model::body_index_for_face(doc, face) else {
-                continue;
-            };
-            if owner != bi {
+            // Same ownership check as occt_shelled_output_shape (#1172).
+            if !crate::model::face_belongs_to_body(doc, face, bi) {
                 continue;
             }
             let Some(frame) = crate::face::sketch_frame(doc, face.clone()) else {

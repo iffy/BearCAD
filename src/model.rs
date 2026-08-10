@@ -1807,6 +1807,46 @@ pub fn body_index_for_face(doc: &Document, face: &FaceId) -> Option<BodyKey> {
     }
 }
 
+/// Whether `face` is a face of **this specific** body's geometry (#1172).
+///
+/// Unlike [`body_index_for_face`], this does **not** prefer a live shell/fuse output over a
+/// shadowed input. Shell open-face matching must ask "does this face belong to target body
+/// B?" — after a shell commits, `body_index_for_face` returns the shelled output for
+/// primitive faces (live preference), which would drop every open face on the input.
+pub fn face_belongs_to_body(doc: &Document, face: &FaceId, body: BodyKey) -> bool {
+    let Some(b) = doc.bodies.get(body) else {
+        return false;
+    };
+    match face {
+        FaceId::ExtrudeCap { extrusion, .. } | FaceId::ExtrudeSide { extrusion, .. } => {
+            b.source.owns_extrusion(*extrusion)
+        }
+        FaceId::RevolveCap { revolution, .. } | FaceId::RevolveSide { revolution, .. } => {
+            matches!(b.source, BodySource::Revolve(r) if r == *revolution)
+        }
+        FaceId::PrimitiveFace { primitive, .. } => match &b.source {
+            // Pure primitive or solid-with-that-base: the face lives here.
+            BodySource::Primitive(p) => *p == *primitive,
+            BodySource::Solid {
+                base: Some(p), ..
+            } => *p == *primitive,
+            // Shelling a shell (or further shell): primitive faces still name the original
+            // shape — walk the input chain.
+            BodySource::Shelled { op, target, .. } => doc
+                .shell_ops
+                .get(*op)
+                .and_then(|o| o.targets.get(*target).copied())
+                .is_some_and(|input| face_belongs_to_body(doc, face, input)),
+            _ => false,
+        },
+        FaceId::RepeatedFace { .. } => body_index_for_face(doc, face) == Some(body),
+        FaceId::UnitFace { .. }
+        | FaceId::ConstructionPlane(_)
+        | FaceId::Circle(_)
+        | FaceId::Polygon(_) => false,
+    }
+}
+
 /// Whether this body source ultimately derives from Shape-tool primitive `primitive`
 /// (#1168): pure primitive, solid-with-that-base, or a shell (or further shell) of such.
 fn source_derives_from_primitive(
@@ -5454,6 +5494,22 @@ mod tests {
             body_index_for_primitive(&doc, pi),
             Some(out),
             "live shelled body owns the cuboid's faces, not the shadow input"
+        );
+
+        // #1172: shell open-face matching must still attribute the face to the *input*
+        // target, even though body_index_for_face prefers the live shell output.
+        let top = FaceId::PrimitiveFace {
+            primitive: pi,
+            face: PrimitiveFace::CuboidTop,
+        };
+        assert!(
+            face_belongs_to_body(&doc, &top, input),
+            "primitive open face still belongs to the shell input body"
+        );
+        assert_eq!(
+            body_index_for_face(&doc, &top),
+            Some(out),
+            "live preference for picking still points at the shell output"
         );
 
         let mut src = BodySource::Shelled {

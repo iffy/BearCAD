@@ -6642,10 +6642,17 @@ fn validate_shell_inputs(
         }
     }
     for face in open_faces {
-        let Some(owner) = crate::model::body_index_for_face(doc, face) else {
-            return Err("An open face does not belong to a body".to_string());
-        };
-        if !targets.contains(&owner) {
+        // Source-level ownership of a *target* body (#1172): body_index_for_face prefers
+        // the live shell output after commit, which is not in `targets` when re-editing.
+        let on_target = targets
+            .iter()
+            .any(|&bi| crate::model::face_belongs_to_body(doc, face, bi));
+        if !on_target {
+            // Still try the live-preferring owner for a clearer error when the face is
+            // simply unrelated to any picked body.
+            if crate::model::body_index_for_face(doc, face).is_none() {
+                return Err("An open face does not belong to a body".to_string());
+            }
             return Err("Open faces must belong to a selected body".to_string());
         }
         // Analytic planar frame must resolve so the kernel can match the face.
