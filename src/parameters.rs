@@ -3,6 +3,7 @@
 use crate::actions::{Action, ActionResult, AppState};
 use crate::constraints::{
     find_distance_constraint, propagate_parameter_rename_to_constraints, solve_document_constraints,
+    solve_document_constraints_with_pins,
 };
 use crate::icons::{icon_button, IconId};
 use crate::document_health::HealthStatus;
@@ -475,6 +476,11 @@ pub fn derived_source_value(doc: &Document, source: &ParameterSource) -> Option<
 /// The live world endpoints of a body feature edge identified by its quantized key (#647) —
 /// the same identity `SceneElement::BodyEdge` carries, matched against the body's current
 /// edge chains (either endpoint order). `None` once the mesh no longer has that edge.
+///
+/// When the body is a **transformed derivative** (repeat/move/mirror instance) and the
+/// stored world keys no longer hit — the instance slid when a parameter changed — the edge
+/// is re-found on the source body in source-local space and re-posed with the current
+/// transform (#1188). Exact match still wins when the keys are current.
 pub fn body_edge_world_segment(
     doc: &Document,
     body: crate::model::BodyKey,
@@ -488,7 +494,25 @@ pub fn body_edge_world_segment(
     // fresh build when resolving from inside the cache's own borrow. Un-posed on purpose —
     // Move snap points and joint frames are body-local references.
     let solid = crate::extrude::body_solid_mesh_unposed(doc, body)?;
-    for chain in crate::gpu_viewport::solid_mesh_edge_chains(&solid) {
+    if let Some(seg) = match_edge_keys_on_mesh(&solid, a, b) {
+        return Some(seg);
+    }
+    // Keys went stale after a parametric transform of this body — recover via source.
+    if let Some(seg) = resolve_derived_body_edge(doc, body, a, b) {
+        return Some(seg);
+    }
+    // Body rebuilt/translated under the same topology (e.g. a seed stud whose host face
+    // slid when a length parameter grew): re-find the edge by rigid-translation consistency.
+    match_edge_rigid_translate(&solid, a, b)
+}
+
+/// Exact quantized-key match of `(a, b)` against a solid mesh's feature edges.
+fn match_edge_keys_on_mesh(
+    solid: &crate::extrude::SolidMesh,
+    a: [i32; 3],
+    b: [i32; 3],
+) -> Option<(glam::Vec3, glam::Vec3)> {
+    for chain in crate::gpu_viewport::solid_mesh_edge_chains(solid) {
         let (ca, cb) = crate::gpu_viewport::chain_canonical_segment(&chain);
         let (ka, kb) = (
             crate::hierarchy::quantize_body_point(ca),
@@ -499,6 +523,156 @@ pub fn body_edge_world_segment(
         }
     }
     None
+}
+
+/// Re-find a body edge after a Repeat/Move/Mirror transform moved it off its stored
+/// world keys (#1188). Maps the stored endpoints into the source body's space with the
+/// **current** inverse transform (wrong by the old→new delta along a pure translation,
+/// so scoring ignores the component along the motion) and re-poses the match.
+fn resolve_derived_body_edge(
+    doc: &Document,
+    body: crate::model::BodyKey,
+    a: [i32; 3],
+    b: [i32; 3],
+) -> Option<(glam::Vec3, glam::Vec3)> {
+    let source_body = doc.bodies.get(body)?;
+    let (source, transform, free_dir) = match source_body.source {
+        crate::model::BodySource::Repeated {
+            op,
+            target,
+            instance,
+        } => {
+            let rp = doc.repeat_ops.get(op)?;
+            let &input = rp.targets.get(target)?;
+            if input == body {
+                return None;
+            }
+            let m = crate::extrude::repeat_instance_transform(doc, rp, instance)?;
+            // Linear slides free the along-axis component; turns free nothing special
+            // (rotation changes more than a translation, so fall through to rigid match).
+            let free = if !rp.around_axis {
+                crate::extrude::axis_world(doc, rp.axis).map(|(_, d)| d)
+            } else {
+                None
+            };
+            (input, m, free)
+        }
+        crate::model::BodySource::Moved { op, target } => {
+            let mv = doc.move_ops.get(op)?;
+            let &input = mv.targets.get(target)?;
+            if input == body {
+                return None;
+            }
+            let m = crate::extrude::move_op_transform(doc, mv)?;
+            (input, m, None)
+        }
+        crate::model::BodySource::Mirrored { op, target } => {
+            let mr = doc.mirror_ops.get(op)?;
+            let &input = mr.targets.get(target)?;
+            if input == body {
+                return None;
+            }
+            let m = crate::extrude::mirror_op_transform(doc, mr)?;
+            (input, m, None)
+        }
+        _ => return None,
+    };
+    let inv = transform.inverse();
+    let a_w = crate::hierarchy::dequantize_body_point(a);
+    let b_w = crate::hierarchy::dequantize_body_point(b);
+    let a_s = inv.transform_point3(a_w);
+    let b_s = inv.transform_point3(b_w);
+    let src_mesh = crate::extrude::body_solid_mesh_unposed(doc, source)?;
+    let (ea, eb) = match_edge_in_source_space(&src_mesh, a_s, b_s, free_dir)?;
+    Some((
+        transform.transform_point3(ea),
+        transform.transform_point3(eb),
+    ))
+}
+
+/// Pick the source-mesh edge closest to the (possibly along-axis-shifted) query segment.
+fn match_edge_in_source_space(
+    solid: &crate::extrude::SolidMesh,
+    a: glam::Vec3,
+    b: glam::Vec3,
+    free_dir: Option<glam::Vec3>,
+) -> Option<(glam::Vec3, glam::Vec3)> {
+    let free = free_dir
+        .map(|d| d.normalize_or_zero())
+        .filter(|d| d.length_squared() > 1e-8);
+    let strip = |p: glam::Vec3| match free {
+        Some(d) => p - d * p.dot(d),
+        None => p,
+    };
+    let qa = strip(a);
+    let qb = strip(b);
+    let q_len = (a - b).length();
+    let q_dir = (b - a).normalize_or_zero();
+    let mut best: Option<(f32, glam::Vec3, glam::Vec3)> = None;
+    for (ea, eb) in crate::gpu_viewport::solid_mesh_unique_edges(solid) {
+        let e_len = (ea - eb).length();
+        if (e_len - q_len).abs() > (0.5_f32).max(0.05 * q_len) {
+            continue;
+        }
+        let e_dir = (eb - ea).normalize_or_zero();
+        if q_dir.length_squared() > 1e-8 && e_dir.length_squared() > 1e-8 {
+            if e_dir.dot(q_dir).abs() < 0.95 {
+                continue;
+            }
+        }
+        let sa = strip(ea);
+        let sb = strip(eb);
+        // Either endpoint order.
+        let d1 = (sa - qa).length() + (sb - qb).length();
+        let d2 = (sa - qb).length() + (sb - qa).length();
+        let d = d1.min(d2);
+        if best.map(|(bd, _, _)| d < bd).unwrap_or(true) {
+            best = Some((d, ea, eb));
+        }
+    }
+    // Accept only a tight perpendicular match so a deleted edge stays unresolved.
+    best.filter(|(d, _, _)| *d < 2.0).map(|(_, ea, eb)| (ea, eb))
+}
+
+/// Re-find an edge after a **rigid translation** of the whole body (#1188): the correct
+/// edge is the one whose two endpoints imply the same translation from the stored keys
+/// (`(ea−a) ≈ (eb−b)`). Parallel same-length wrong edges score the inter-edge separation
+/// and lose. `None` when nothing is consistent enough (edge truly gone).
+fn match_edge_rigid_translate(
+    solid: &crate::extrude::SolidMesh,
+    a_key: [i32; 3],
+    b_key: [i32; 3],
+) -> Option<(glam::Vec3, glam::Vec3)> {
+    let a = crate::hierarchy::dequantize_body_point(a_key);
+    let b = crate::hierarchy::dequantize_body_point(b_key);
+    let q_len = (a - b).length();
+    let q_dir = (b - a).normalize_or_zero();
+    if q_len < 1e-6 {
+        return None;
+    }
+    let mut best: Option<(f32, glam::Vec3, glam::Vec3)> = None;
+    for (ea, eb) in crate::gpu_viewport::solid_mesh_unique_edges(solid) {
+        let e_len = (ea - eb).length();
+        if (e_len - q_len).abs() > (0.5_f32).max(0.05 * q_len) {
+            continue;
+        }
+        let e_dir = (eb - ea).normalize_or_zero();
+        if e_dir.dot(q_dir).abs() < 0.95 {
+            continue;
+        }
+        // Both endpoint orderings: the stored key order may not match the mesh walk.
+        for (pa, pb) in [(ea, eb), (eb, ea)] {
+            let da = pa - a;
+            let db = pb - b;
+            let score = (da - db).length();
+            if best.map(|(bs, _, _)| score < bs).unwrap_or(true) {
+                best = Some((score, pa, pb));
+            }
+        }
+    }
+    // Tight threshold: a true match under pure translation scores ~0; a parallel neighbour
+    // scores about the separation between the two edges.
+    best.filter(|(s, _, _)| *s < 1.0).map(|(_, ea, eb)| (ea, eb))
 }
 
 /// The live world position of a body mesh corner identified by its quantized key (#647).
@@ -900,8 +1074,9 @@ pub fn propagate_instance_rename(doc: &mut Document, unit: crate::model::UnitKey
 pub fn recompute_document_geometry(doc: &mut Document) -> Result<(), String> {
     // Texts re-bake first so anchor constraints solve against current contours (#408).
     rebake_sketch_texts(doc);
+    // First solve: sketches whose dimensions/constraints reference parameters (base plates,
+    // seed profiles) settle so extrusions and body-edge axes see current geometry.
     let result = solve_document_constraints(doc);
-    crate::projection::refresh_projections(doc);
     rebake_extrusion_distances(doc);
     // Offset outputs track their sources and distance expressions.
     crate::actions::rebuild_sketch_offsets(doc);
@@ -909,7 +1084,55 @@ pub fn recompute_document_geometry(doc: &mut Document) -> Result<(), String> {
     crate::actions::rebuild_sketch_mirrors(doc);
     // Chamfer/fillet trimmed copies + bridges track the shadow sources and parametric amount (#538).
     crate::actions::rebuild_sketch_vertex_treatments(doc);
-    result
+    // In-sketch repeats follow count/spacing/length expressions (#1187).
+    crate::actions::rebuild_sketch_repeats(doc);
+    // Body repeats resize instance lists when count/spacing/length expressions change (#1187).
+    // Must run after seed bodies have re-baked so extent-along-axis is current.
+    crate::actions::rebuild_body_repeats(doc);
+    // Projections of body edges re-resolve against the (possibly moved) source mesh (#140/#1188).
+    crate::projection::refresh_projections(doc);
+    // Second solve: sketches constrained to projections (e.g. a top plate snapped to the end
+    // stud of a length-driven repeat) follow the refreshed reference lines (#1188). Projected
+    // endpoints are pinned so the solver cannot drag the associative references away.
+    let pins = projection_endpoint_pins(doc);
+    let result2 = solve_document_constraints_with_pins(doc, &pins);
+    // Projections again: a host-face sketch that moved during the second solve needs its
+    // references rewritten in the new frame; free geometry already sits on the pins.
+    crate::projection::refresh_projections(doc);
+    rebake_extrusion_distances(doc);
+    crate::actions::rebuild_sketch_offsets(doc);
+    crate::actions::rebuild_sketch_mirrors(doc);
+    crate::actions::rebuild_sketch_vertex_treatments(doc);
+    result.and(result2)
+}
+
+/// Every projected line endpoint as a solver pin (#1188): associative references are fixed
+/// by their 3D source, not free sketch geometry.
+fn projection_endpoint_pins(
+    doc: &Document,
+) -> Vec<(crate::model::ConstraintPoint, (f32, f32))> {
+    use crate::model::{ConstraintPoint, LineEnd};
+    let mut pins = Vec::new();
+    for (li, line) in doc.lines.iter() {
+        if line.projection.is_none() {
+            continue;
+        }
+        pins.push((
+            ConstraintPoint::LineEndpoint {
+                line: li,
+                end: LineEnd::Start,
+            },
+            (line.x0, line.y0),
+        ));
+        pins.push((
+            ConstraintPoint::LineEndpoint {
+                line: li,
+                end: LineEnd::End,
+            },
+            (line.x1, line.y1),
+        ));
+    }
+    pins
 }
 
 /// Re-bake sketch-text glyph outlines from their raw templates (#338), so `{expr}` fields and

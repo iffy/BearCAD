@@ -11627,9 +11627,7 @@ label_hidden: false,
                     entry.length = length;
                     entry.length_target = length_target;
                 }
-                let Some(offsets) =
-                    crate::extrude::repeat_offsets(&self.doc, &self.doc.repeat_ops[op])
-                else {
+                if crate::extrude::repeat_offsets(&self.doc, &self.doc.repeat_ops[op]).is_none() {
                     self.doc.repeat_ops[op] = old;
                     let e =
                         "Repeat doesn't evaluate (check count/spacing/length and the axis)"
@@ -11637,89 +11635,14 @@ label_hidden: false,
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 };
-                // Resize body outputs to instance-count × targets (drop extras, grow new).
-                let want = offsets.len() * targets.len();
-                let have = self.doc.repeat_ops[op].outputs.len();
-                if want > have {
-                    let mut outputs = self.doc.repeat_ops[op].outputs.clone();
-                    for slot in have..want {
-                        let instance = slot / targets.len() + 1;
-                        let ti = slot % targets.len();
-                        outputs.push(self.doc.bodies.insert(crate::model::Body {
-                            source: crate::model::BodySource::Repeated {
-                                op,
-                                target: ti,
-                                instance,
-                            },
-                            material: None,
-                            name: None,
-                            shadow: false,
-                        }));
-                        self.doc.shape_order.push(ShapeKind::Body);
-                        self.doc.undo_groups.push(1);
-                    }
-                    self.doc.repeat_ops[op].outputs = outputs;
-                } else if want < have {
-                    let extras = self.doc.repeat_ops[op].outputs.split_off(want);
-                    for out in extras {
-                        self.doc.bodies.remove(out);
-                    }
+                if !rebuild_body_repeat(&mut self.doc, op) {
+                    self.doc.repeat_ops[op] = old;
+                    let e =
+                        "Repeat doesn't evaluate (check count/spacing/length and the axis)"
+                            .to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
                 }
-                // Re-point surviving outputs at the (possibly reordered) target list.
-                let outputs = self.doc.repeat_ops[op].outputs.clone();
-                for (slot, &out) in outputs.iter().enumerate() {
-                    let instance = slot / targets.len() + 1;
-                    let ti = slot % targets.len();
-                    if let Some(body) = self.doc.bodies.get_mut(out) {
-                        body.source = crate::model::BodySource::Repeated {
-                            op,
-                            target: ti,
-                            instance,
-                        };
-                    }
-                }
-                // Same resize/re-point for the generated plane instances (#221).
-                let want_p = offsets.len() * plane_targets.len();
-                let have_p = self.doc.repeat_ops[op].plane_outputs.len();
-                if want_p > have_p {
-                    let mut plane_outputs = self.doc.repeat_ops[op].plane_outputs.clone();
-                    for slot in have_p..want_p {
-                        let instance = slot / plane_targets.len() + 1;
-                        let ti = slot % plane_targets.len();
-                        let src = plane_targets[ti];
-                        let mut plane = self.doc.construction_planes[src].clone();
-                        plane.repeat_instance = Some(crate::model::RepeatPlaneInstance {
-                            op,
-                            target: ti,
-                            instance,
-                        });
-                        plane.parent = crate::model::ConstructionPlaneParent::Root;
-                        plane.name = None;
-                        plane_outputs.push(self.doc.construction_planes.insert(plane));
-                        self.doc.shape_order.push(ShapeKind::ConstructionPlane);
-                        self.doc.undo_groups.push(1);
-                    }
-                    self.doc.repeat_ops[op].plane_outputs = plane_outputs;
-                } else if want_p < have_p {
-                    let extras = self.doc.repeat_ops[op].plane_outputs.split_off(want_p);
-                    for out in extras {
-                        self.doc.construction_planes.remove(out);
-                    }
-                }
-                let plane_outputs = self.doc.repeat_ops[op].plane_outputs.clone();
-                for (slot, &out) in plane_outputs.iter().enumerate() {
-                    let instance = slot / plane_targets.len() + 1;
-                    let ti = slot % plane_targets.len();
-                    if let Some(plane) = self.doc.construction_planes.get_mut(out) {
-                        plane.repeat_instance = Some(crate::model::RepeatPlaneInstance {
-                            op,
-                            target: ti,
-                            instance,
-                        });
-                    }
-                }
-                recompute_repeated_planes(&mut self.doc);
-                rebuild_repeated_sketches(&mut self.doc, op);
                 self.refresh_document_health();
                 self.status = "Edited repeat".to_string();
                 ActionResult::Ok
@@ -15644,6 +15567,131 @@ fn slice_face_loop(
 /// two output lists to `instances × targets` and refreshing every surviving copy's geometry from
 /// its source shifted along the (normalized) direction. Returns `false` (leaving the op's outputs
 /// untouched) when the configuration doesn't evaluate to at least one extra instance.
+/// Resize one body-repeat op's outputs (bodies + plane instances + repeated sketches) to
+/// match its currently-evaluated offsets (#1187). Returns `false` when the op is gone or
+/// its expressions no longer evaluate — leaves the previous outputs in place so a bad
+/// intermediate parameter value doesn't wipe the model.
+pub fn rebuild_body_repeat(
+    doc: &mut crate::model::Document,
+    op: crate::model::RepeatOpKey,
+) -> bool {
+    let Some(entry) = doc.repeat_ops.get(op).cloned() else {
+        return false;
+    };
+    let Some(offsets) = crate::extrude::repeat_offsets(doc, &entry) else {
+        return false;
+    };
+    let targets = entry.targets.clone();
+    let plane_targets = entry.plane_targets.clone();
+    // Resize body outputs to instance-count × targets (drop extras, grow new).
+    let want = offsets.len() * targets.len();
+    let have = doc.repeat_ops[op].outputs.len();
+    if want > have {
+        let mut outputs = doc.repeat_ops[op].outputs.clone();
+        for slot in have..want {
+            let instance = slot / targets.len().max(1) + 1;
+            let ti = if targets.is_empty() {
+                0
+            } else {
+                slot % targets.len()
+            };
+            outputs.push(doc.bodies.insert(crate::model::Body {
+                source: crate::model::BodySource::Repeated {
+                    op,
+                    target: ti,
+                    instance,
+                },
+                material: None,
+                name: None,
+                shadow: false,
+            }));
+            doc.shape_order.push(crate::model::ShapeKind::Body);
+            doc.undo_groups.push(1);
+        }
+        doc.repeat_ops[op].outputs = outputs;
+    } else if want < have {
+        let extras = doc.repeat_ops[op].outputs.split_off(want);
+        for out in extras {
+            doc.bodies.remove(out);
+        }
+    }
+    // Re-point surviving outputs at the (possibly reordered) target list.
+    if !targets.is_empty() {
+        let outputs = doc.repeat_ops[op].outputs.clone();
+        for (slot, &out) in outputs.iter().enumerate() {
+            let instance = slot / targets.len() + 1;
+            let ti = slot % targets.len();
+            if let Some(body) = doc.bodies.get_mut(out) {
+                body.source = crate::model::BodySource::Repeated {
+                    op,
+                    target: ti,
+                    instance,
+                };
+            }
+        }
+    }
+    // Same resize/re-point for generated plane instances (#221).
+    let want_p = offsets.len() * plane_targets.len();
+    let have_p = doc.repeat_ops[op].plane_outputs.len();
+    if want_p > have_p && !plane_targets.is_empty() {
+        let mut plane_outputs = doc.repeat_ops[op].plane_outputs.clone();
+        for slot in have_p..want_p {
+            let instance = slot / plane_targets.len() + 1;
+            let ti = slot % plane_targets.len();
+            let src = plane_targets[ti];
+            let mut plane = doc.construction_planes[src].clone();
+            plane.repeat_instance = Some(crate::model::RepeatPlaneInstance {
+                op,
+                target: ti,
+                instance,
+            });
+            plane.parent = crate::model::ConstructionPlaneParent::Root;
+            plane.name = None;
+            plane_outputs.push(doc.construction_planes.insert(plane));
+            doc.shape_order.push(crate::model::ShapeKind::ConstructionPlane);
+            doc.undo_groups.push(1);
+        }
+        doc.repeat_ops[op].plane_outputs = plane_outputs;
+    } else if want_p < have_p {
+        let extras = doc.repeat_ops[op].plane_outputs.split_off(want_p);
+        for out in extras {
+            doc.construction_planes.remove(out);
+        }
+    }
+    if !plane_targets.is_empty() {
+        let plane_outputs = doc.repeat_ops[op].plane_outputs.clone();
+        for (slot, &out) in plane_outputs.iter().enumerate() {
+            let instance = slot / plane_targets.len() + 1;
+            let ti = slot % plane_targets.len();
+            if let Some(plane) = doc.construction_planes.get_mut(out) {
+                plane.repeat_instance = Some(crate::model::RepeatPlaneInstance {
+                    op,
+                    target: ti,
+                    instance,
+                });
+            }
+        }
+    }
+    recompute_repeated_planes(doc);
+    rebuild_repeated_sketches(doc, op);
+    true
+}
+
+/// Re-evaluate every body-repeat op after a parameter change (#1187): instance counts and
+/// positions follow count/spacing/length expressions without re-opening the Repeat tool.
+pub fn rebuild_body_repeats(doc: &mut crate::model::Document) {
+    for op in doc.repeat_ops.keys().collect::<Vec<_>>() {
+        let _ = rebuild_body_repeat(doc, op);
+    }
+}
+
+/// Re-evaluate every in-sketch repeat after a parameter change (#1187).
+pub fn rebuild_sketch_repeats(doc: &mut crate::model::Document) {
+    for op in doc.sketch_repeat_ops.keys().collect::<Vec<_>>() {
+        let _ = rebuild_sketch_repeat(doc, op);
+    }
+}
+
 fn rebuild_sketch_repeat(doc: &mut crate::model::Document, op_index: crate::model::SketchRepeatOpKey) -> bool {
     let Some(op) = doc.sketch_repeat_ops.get(op_index).cloned() else {
         return false;
@@ -22801,6 +22849,235 @@ mod tests {
         assert_eq!(op.outputs.len(), 3);
         let offsets = crate::extrude::repeat_offsets(&state.doc, &op).unwrap();
         assert_eq!(offsets.len(), 3);
+    }
+
+    /// #1187: changing a parameter that drives a fill-pitch repeat's length must resize the
+    /// instance list — offsets alone are not enough; the output bodies have to grow/shrink.
+    #[test]
+    fn repeat_fill_length_parameter_resizes_outputs() {
+        let mut state = two_box_state(false);
+        state.apply(Action::AddParameter {
+            name: "L".to_string(),
+            expression: "40".to_string(),
+        });
+        // Seed body is 10 wide along X; fill_pitch with pitch 10 over L=40 → instances at
+        // 10,20,30,40 (4 extras). L=100 → many more.
+        state.apply(Action::CreateRepeatOperation {
+            targets: vec![bkey(0)],
+            plane_targets: Vec::new(),
+            extrusion_targets: Vec::new(),
+            sketch_targets: Vec::new(),
+            axis: crate::model::RevolveAxis::X,
+            path_circle: None,
+            around_axis: false,
+            flip: false,
+            mode: crate::model::RepeatMode::FillPitch,
+            count: String::new(),
+            spacing: "10".to_string(),
+            length: "L".to_string(),
+            length_target: None,
+        });
+        let op_key = state.doc.repeat_ops.keys().next().expect("repeat");
+        let n_short = state.doc.repeat_ops[op_key].outputs.len();
+        assert!(n_short >= 2, "short fill produces several copies, got {n_short}");
+
+        let pi = state
+            .doc
+            .parameters
+            .iter()
+            .find(|(_, p)| p.name == "L")
+            .map(|(i, _)| i)
+            .expect("L");
+        crate::parameters::set_parameter_expression(&mut state.doc, pi, "100".to_string())
+            .expect("set L");
+        let n_long = state.doc.repeat_ops[op_key].outputs.len();
+        assert!(
+            n_long > n_short,
+            "lengthening L must add instances: was {n_short}, now {n_long}"
+        );
+        let want = crate::extrude::repeat_offsets(&state.doc, &state.doc.repeat_ops[op_key])
+            .expect("offsets")
+            .len();
+        assert_eq!(n_long, want, "outputs must match live offsets");
+    }
+
+    /// #1187: a parameter-driven count recompute must resize outputs (not only when the
+    /// Repeat tool re-commits).
+    #[test]
+    fn repeat_count_parameter_change_resizes_outputs() {
+        let mut state = two_box_state(false);
+        state.apply(Action::AddParameter {
+            name: "n".to_string(),
+            expression: "3".to_string(),
+        });
+        state.apply(Action::CreateRepeatOperation {
+            targets: vec![bkey(0)],
+            plane_targets: Vec::new(),
+            extrusion_targets: Vec::new(),
+            sketch_targets: Vec::new(),
+            axis: crate::model::RevolveAxis::X,
+            path_circle: None,
+            around_axis: false,
+            flip: false,
+            mode: crate::model::RepeatMode::CountGap,
+            count: "n".to_string(),
+            spacing: "5".to_string(),
+            length: String::new(),
+            length_target: None,
+        });
+        let op_key = state.doc.repeat_ops.keys().next().expect("repeat");
+        assert_eq!(state.doc.repeat_ops[op_key].outputs.len(), 2);
+        let pi = state
+            .doc
+            .parameters
+            .iter()
+            .find(|(_, p)| p.name == "n")
+            .map(|(i, _)| i)
+            .expect("n");
+        crate::parameters::set_parameter_expression(&mut state.doc, pi, "6".to_string())
+            .expect("set n");
+        assert_eq!(
+            state.doc.repeat_ops[op_key].outputs.len(),
+            5,
+            "n=6 → 5 extra instances after recompute"
+        );
+    }
+
+    /// #1187/#1188 fixture: wall framing document was saved after length went 4ft→8ft with
+    /// stale fill-pitch instance counts and a TopPlate still spanning the old 4ft. Recompute
+    /// must grow the intermediate studs and stretch the plate to the end stud.
+    #[test]
+    fn issue_1187_wall_recompute_grows_fill_pitch_instances() {
+        let bytes = include_bytes!("../tests/fixtures/issue_1187_wall.json");
+        let mut state = AppState::default();
+        state.doc = crate::storage::from_json_bytes(bytes).expect("load wall fixture");
+        let op0 = state
+            .doc
+            .repeat_ops
+            .iter()
+            .find(|(_, op)| matches!(op.mode, crate::model::RepeatMode::FillPitch))
+            .map(|(k, _)| k)
+            .expect("fill_pitch repeat");
+        let before = state.doc.repeat_ops[op0].outputs.len();
+        assert_eq!(before, 2, "fixture captured the stale 4ft-era instance list");
+        // TopPlate long edges (lines 10/12 in the fixture) still span ~4ft.
+        let plate_before = {
+            let l = &state.doc.lines[lkey(10)];
+            (l.x1 - l.x0).abs()
+        };
+        assert!(
+            (plate_before - 1219.2).abs() < 1.0,
+            "fixture TopPlate still at ~4ft, got {plate_before}"
+        );
+
+        crate::parameters::recompute_document_geometry(&mut state.doc).expect("recompute");
+
+        let after = state.doc.repeat_ops[op0].outputs.len();
+        let want = crate::extrude::repeat_offsets(&state.doc, &state.doc.repeat_ops[op0])
+            .expect("offsets")
+            .len();
+        assert_eq!(after, want, "outputs match live fill-pitch offsets at length=8ft");
+        assert!(
+            after > before,
+            "recompute must add the missing intermediate studs: was {before}, now {after}"
+        );
+
+        // #1188: projections of the end stud re-resolve and the TopPlate solves to the new span.
+        let plate_after = {
+            let l = &state.doc.lines[lkey(10)];
+            (l.x1 - l.x0).abs()
+        };
+        assert!(
+            plate_after > plate_before + 500.0,
+            "TopPlate must grow toward the 8ft end stud: was {plate_before}, now {plate_after}"
+        );
+    }
+
+    /// #1188: a projection of a repeated instance's edge must follow when the repeat's
+    /// length parameter moves that instance (TopPlate-style snap to the end stud).
+    #[test]
+    fn projection_of_repeated_body_follows_length_parameter() {
+        use crate::hierarchy::{quantize_body_point, SceneElement};
+
+        let mut state = two_box_state(false);
+        state.apply(Action::AddParameter {
+            name: "L".to_string(),
+            expression: "40".to_string(),
+        });
+        // count_fit_ends with 2 copies: instance 1 lands at the far end of L.
+        state.apply(Action::CreateRepeatOperation {
+            targets: vec![bkey(0)],
+            plane_targets: Vec::new(),
+            extrusion_targets: Vec::new(),
+            sketch_targets: Vec::new(),
+            axis: crate::model::RevolveAxis::X,
+            path_circle: None,
+            around_axis: false,
+            flip: false,
+            mode: crate::model::RepeatMode::CountFitEnds,
+            count: "2".to_string(),
+            spacing: String::new(),
+            length: "L".to_string(),
+            length_target: None,
+        });
+        let op_key = state.doc.repeat_ops.keys().next().expect("repeat");
+        let instance_body = state.doc.repeat_ops[op_key].outputs[0];
+        let mesh = crate::extrude::body_solid_mesh(&state.doc, instance_body).expect("mesh");
+        // Top face edge parallel to Y (not edge-on to the ground sketch's Z normal).
+        let (ea, eb) = crate::gpu_viewport::solid_mesh_unique_edges(&mesh)
+            .into_iter()
+            .find(|(a, b)| {
+                let d = *b - *a;
+                d.z.abs() < 1e-3 && d.x.abs() < 1e-3 && d.length() > 1.0
+            })
+            .expect("horizontal Y-edge on the instance");
+        let mid_short = (ea + eb) * 0.5;
+
+        state.apply(Action::BeginSketch {
+            face: crate::model::FaceId::ConstructionPlane(pkey(0)),
+            viewport: None,
+        });
+        let result = state.apply(Action::ProjectElement {
+            element: SceneElement::BodyEdge {
+                body: instance_body,
+                a: quantize_body_point(ea),
+                b: quantize_body_point(eb),
+            },
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}: {}", state.status);
+        let proj = state
+            .doc
+            .lines
+            .iter()
+            .find(|(_, l)| l.projection.is_some())
+            .map(|(k, _)| k)
+            .expect("projected line");
+        let x_short = (state.doc.lines[proj].x0 + state.doc.lines[proj].x1) * 0.5;
+
+        let pi = state
+            .doc
+            .parameters
+            .iter()
+            .find(|(_, p)| p.name == "L")
+            .map(|(i, _)| i)
+            .expect("L");
+        crate::parameters::set_parameter_expression(&mut state.doc, pi, "100".to_string())
+            .expect("set L");
+
+        let mesh2 = crate::extrude::body_solid_mesh(&state.doc, instance_body).expect("mesh");
+        // Instance should have translated along +X.
+        let bounds = mesh2.bounds().expect("bounds");
+        let mid_long = (bounds.0 + bounds.1) * 0.5;
+        assert!(
+            mid_long.x > mid_short.x + 20.0,
+            "end instance must move when L grows: short mid {mid_short:?}, long mid {mid_long:?}"
+        );
+
+        let x_long = (state.doc.lines[proj].x0 + state.doc.lines[proj].x1) * 0.5;
+        assert!(
+            x_long > x_short + 20.0,
+            "projected edge must follow the moved instance: was {x_short}, now {x_long}"
+        );
     }
 
     /// #233: slicing a curved (bezier) line by a crossing cutter splits it into two curved

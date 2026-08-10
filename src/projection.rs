@@ -22,16 +22,10 @@ pub fn resolve_projection_source(
     source: &ProjectionSource,
 ) -> Option<(Vec3, Vec3)> {
     match source {
+        // Shared with derived-parameter edge length (#647/#1188): exact key match, then
+        // transform-aware re-find for Repeat/Move/Mirror instances whose world keys slid.
         ProjectionSource::BodyEdge { body, a, b } => {
-            let mesh = crate::extrude::body_solid_mesh(doc, *body)?;
-            let q = crate::hierarchy::quantize_body_point;
-            for (ea, eb) in crate::gpu_viewport::solid_mesh_unique_edges(&mesh) {
-                let (qa, qb) = (q(ea), q(eb));
-                if (qa == *a && qb == *b) || (qa == *b && qb == *a) {
-                    return Some((ea, eb));
-                }
-            }
-            None
+            crate::parameters::body_edge_world_segment(doc, *body, *a, *b)
         }
         // A unit face's boundary edge (#725): analytic, so it re-resolves after the
         // instance's overrides change instead of going stale like a quantized key.
@@ -93,8 +87,17 @@ pub fn project_world_point_into_sketch(
 /// Re-resolve every projected line's source and rewrite its endpoints (#140). Called from
 /// `recompute_document_geometry` so projections track their sources through any edit.
 /// Unresolvable sources leave the line untouched (static fallback).
+///
+/// When a [`ProjectionSource::BodyEdge`] re-resolves (including via the transform-aware
+/// fallback for moved repeat instances, #1188), the stored quantized keys are rewritten to
+/// the live endpoints so the next recompute hits exact match.
 pub fn refresh_projections(doc: &mut Document) {
-    let updates: Vec<(crate::model::LineKey, (f32, f32), (f32, f32))> = doc
+    let updates: Vec<(
+        crate::model::LineKey,
+        (f32, f32),
+        (f32, f32),
+        Option<([i32; 3], [i32; 3])>,
+    )> = doc
         .lines
         .iter()
         .filter_map(|(li, line)| {
@@ -102,15 +105,30 @@ pub fn refresh_projections(doc: &mut Document) {
             let (wa, wb) = resolve_projection_source(doc, line.sketch, source)?;
             let a = project_world_point_into_sketch(doc, line.sketch, wa)?;
             let b = project_world_point_into_sketch(doc, line.sketch, wb)?;
-            Some((li, a, b))
+            let new_keys = matches!(source, ProjectionSource::BodyEdge { .. }).then(|| {
+                let q = crate::hierarchy::quantize_body_point;
+                let (ka, kb) = (q(wa), q(wb));
+                if ka <= kb {
+                    (ka, kb)
+                } else {
+                    (kb, ka)
+                }
+            });
+            Some((li, a, b, new_keys))
         })
         .collect();
-    for (li, (x0, y0), (x1, y1)) in updates {
+    for (li, (x0, y0), (x1, y1), new_keys) in updates {
         let line = &mut doc.lines[li];
         line.x0 = x0;
         line.y0 = y0;
         line.x1 = x1;
         line.y1 = y1;
+        if let (Some((ka, kb)), Some(ProjectionSource::BodyEdge { a, b, .. })) =
+            (new_keys, line.projection.as_mut())
+        {
+            *a = ka;
+            *b = kb;
+        }
     }
 }
 
