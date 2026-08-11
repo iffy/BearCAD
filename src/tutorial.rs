@@ -2666,7 +2666,8 @@ static BRACKET_STEPS: &[Step] = &[
         only_on_phone: false,
     },
     Step {
-        narration: "You built it! Export via File \u{2192} Export \u{2192} STL or STEP. \
+        // ASCII `->` not U+2192: Ubuntu Light (UI font) lacks that glyph (#1265).
+        narration: "You built it! Export via File -> Export -> STL or STEP. \
                     That's the whole loop: sketch, constrain, dimension, extrude, refine \u{2014} \
                     and parameters drive everything. See you around the viewport!",
         anchor: StepAnchor::None,
@@ -3262,9 +3263,10 @@ static SHAPES_STEPS: &[Step] = &[
         },
         Some(TypeHint::Fixed("10")),
     ),
+    // ASCII `->` not U+2192: Ubuntu Light (UI font) lacks that glyph (#1265).
     plain_step(
-        "Three solids, no sketches. Press `B` any time to cycle cuboid \u{2192} cylinder \
-         \u{2192} sphere. See you around the viewport!",
+        "Three solids, no sketches. Press `B` any time to cycle cuboid -> cylinder \
+         -> sphere. See you around the viewport!",
         StepAnchor::None,
         None,
     ),
@@ -3614,6 +3616,29 @@ mod tests {
                 "step {step} needs the keyboard and should offer a button: {}",
                 BRACKET_STEPS[step].narration
             );
+        }
+    }
+
+    /// #1265: the UI proportional font (Ubuntu Light) has no U+2192 (→); the tutorial bubble
+    /// rendered tofu boxes for "cuboid → cylinder → sphere". Narrations must use ASCII `->`.
+    #[test]
+    fn tutorial_narration_avoids_arrow_glyph_missing_from_ui_font() {
+        for t in TUTORIALS {
+            for step in t.steps {
+                assert!(
+                    !step.narration.contains('\u{2192}'),
+                    "{}: narration uses → (missing from UI font): {}",
+                    t.name,
+                    step.narration
+                );
+                if let Some(p) = step.phone_narration {
+                    assert!(
+                        !p.contains('\u{2192}'),
+                        "{}: phone narration uses → (missing from UI font): {p}",
+                        t.name
+                    );
+                }
+            }
         }
     }
 
