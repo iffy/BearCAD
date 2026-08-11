@@ -17347,6 +17347,31 @@ impl eframe::App for App {
             }
         }
 
+        // Yellow cursor overlay while DEV → Report issue is open (#1283): OS cursors are
+        // not captured in screenshots, so paint a yellow arrow at the (sticky) pointer
+        // position on the main window, above every other layer.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(window) = self.report_issue.as_mut() {
+            let hover = ctx.input(|i| i.pointer.hover_pos());
+            // Seed from latest_pos on the first frame so the icon appears as soon as the
+            // report window opens, even before the next main-window hover event.
+            let incoming = hover.or_else(|| {
+                window
+                    .cursor_pos
+                    .is_none()
+                    .then(|| ctx.pointer_latest_pos())
+                    .flatten()
+            });
+            window.cursor_pos = sticky_report_cursor_pos(window.cursor_pos, incoming);
+            if let Some(pos) = window.cursor_pos {
+                let painter = ctx.layer_painter(egui::LayerId::new(
+                    egui::Order::Debug,
+                    egui::Id::new("report_issue_cursor"),
+                ));
+                draw_report_issue_cursor(&painter, pos);
+            }
+        }
+
         // macOS ImageIO SIGBUS guard (#533): the private resize cursors winit sets for a
         // pane-resize hover are decoded through ImageIO, which bus-errors on some macOS setups
         // (the same corruption `app_icon` sidesteps for the window icon). Remap them to the
@@ -17396,6 +17421,10 @@ struct ReportIssueWindow {
     /// A submitted report waiting for the main window's screenshot to arrive.
     pending: Option<PendingIssueReport>,
     last_result: Option<String>,
+    /// Last pointer position on the main window (#1283): painted as a yellow cursor so
+    /// screenshots show where the user was pointing. Sticky across focus moves into the
+    /// report dialog itself (OS cursors are not captured).
+    cursor_pos: Option<egui::Pos2>,
 }
 
 impl ReportIssueWindow {
@@ -17407,6 +17436,7 @@ impl ReportIssueWindow {
             focus: true,
             pending: None,
             last_result: None,
+            cursor_pos: None,
         }
     }
 }
@@ -17545,6 +17575,46 @@ fn draw_fps_crosshair(painter: &egui::Painter, viewport: egui::Rect) {
             stroke,
         );
     }
+}
+
+/// Sticky pointer for the DEV report-issue yellow cursor (#1283): prefer a fresh hover on
+/// the main window; otherwise keep the last known position so the icon stays put when the
+/// user moves into the report dialog (where screenshots are triggered).
+fn sticky_report_cursor_pos(
+    stored: Option<egui::Pos2>,
+    hover: Option<egui::Pos2>,
+) -> Option<egui::Pos2> {
+    hover.or(stored)
+}
+
+/// Classic arrow-pointer silhouette for the report-issue screenshot cursor (#1283).
+/// Tip (hot-spot) is the first vertex; the body extends down-right.
+fn report_cursor_polygon(tip: egui::Pos2) -> Vec<egui::Pos2> {
+    // ~20px OS-style arrow (screen coords: +y down).
+    const PTS: [[f32; 2]; 7] = [
+        [0.0, 0.0],
+        [0.0, 17.0],
+        [4.0, 13.0],
+        [7.5, 20.0],
+        [10.5, 18.5],
+        [7.0, 11.5],
+        [12.0, 11.5],
+    ];
+    PTS.iter()
+        .map(|[x, y]| tip + egui::vec2(*x, *y))
+        .collect()
+}
+
+/// Paint the yellow report-issue cursor on top of everything (#1283).
+fn draw_report_issue_cursor(painter: &egui::Painter, tip: egui::Pos2) {
+    let poly = report_cursor_polygon(tip);
+    let fill = egui::Color32::from_rgb(255, 220, 0);
+    let outline = egui::Color32::from_rgb(40, 30, 0);
+    painter.add(egui::Shape::convex_polygon(
+        poly,
+        fill,
+        egui::Stroke::new(1.25, outline),
+    ));
 }
 
 fn next_rect_focus_axis(focused: usize) -> RectAxis {
@@ -31771,6 +31841,45 @@ mod tests {
             Some(ScreenshotRecipient::Script)
         );
         assert_eq!(screenshot_recipient(false, false), None);
+    }
+
+    /// #1283: sticky pointer for the report-issue yellow cursor — keep last hover when the
+    /// pointer leaves the main window (e.g. into the report dialog itself).
+    #[test]
+    fn report_issue_cursor_pos_sticks_when_pointer_leaves() {
+        let start = egui::pos2(120.0, 80.0);
+        assert_eq!(
+            sticky_report_cursor_pos(None, Some(start)),
+            Some(start),
+            "first hover seeds the cursor"
+        );
+        assert_eq!(
+            sticky_report_cursor_pos(Some(start), None),
+            Some(start),
+            "leaving the window keeps the last position for the screenshot"
+        );
+        let moved = egui::pos2(200.0, 150.0);
+        assert_eq!(
+            sticky_report_cursor_pos(Some(start), Some(moved)),
+            Some(moved),
+            "hovering the main window again updates the cursor"
+        );
+        assert_eq!(sticky_report_cursor_pos(None, None), None);
+    }
+
+    /// #1283: the painted arrow is a classic pointer silhouette, tip at the hot-spot.
+    #[test]
+    fn report_issue_cursor_polygon_tip_is_hotspot() {
+        let tip = egui::pos2(50.0, 60.0);
+        let poly = report_cursor_polygon(tip);
+        assert!(poly.len() >= 3, "needs a filled silhouette");
+        assert_eq!(poly[0], tip, "first vertex is the tip (hot-spot)");
+        for p in &poly[1..] {
+            assert!(
+                p.x >= tip.x - 0.01 && p.y >= tip.y - 0.01,
+                "body extends down-right from the tip: {p:?} vs tip {tip:?}"
+            );
+        }
     }
 
     /// #1177: report-issue capture retries, then gives up instead of hanging forever.
