@@ -52,6 +52,8 @@ fi
 sed "s/__BEARCAD_BUILD__/${BUILD_STAMP}/g" web/index.html > web/dist/index.html
 echo "==> build stamp ${BUILD_STAMP}"
 cp web/favicon.ico web/dist/ 2>/dev/null || true
+# PWA installability (Chromebook / Chrome "Install app"): manifest, SW, icons (#1213).
+cp web/manifest.webmanifest web/sw.js web/icon-192.png web/icon-512.png web/dist/
 cp web/kernel/kernel.js web/kernel/kernel.wasm web/dist/
 cp web/lua/lua.js web/lua/lua.wasm web/dist/
 

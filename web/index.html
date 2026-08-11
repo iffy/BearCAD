@@ -3,8 +3,12 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#1b1b1f" />
+  <meta name="description" content="BearCAD — local-first, parametric CAD. Installable on Chromebooks." />
   <title>BearCAD</title>
   <link rel="icon" href="favicon.ico" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <link rel="manifest" href="manifest.webmanifest" />
   <style>
     html, body {
       margin: 0;
@@ -56,6 +60,13 @@
     }
     // Double-tap zoom, likewise.
     document.addEventListener("dblclick", (e) => e.preventDefault(), { passive: false });
+    // Chrome / ChromeOS installability: a controlling service worker is required.
+    // Scope is this directory (/app/ when hosted), so the SW stays under the app root.
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("./sw.js").catch((err) => {
+        console.warn("BearCAD: service worker registration failed:", err);
+      });
+    }
   </script>
   <script type="module">
     // Every asset carries the build it belongs to. wasm-bindgen mangles each imported JS

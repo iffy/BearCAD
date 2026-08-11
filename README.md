@@ -22,6 +22,7 @@ Or skip the download: **[run BearCAD in your browser](https://bearcad.com/app/)*
 | macOS (Apple Silicon) | [bearcad.dmg](https://github.com/iffy/BearCAD/releases/latest/download/bearcad.dmg) |
 | Windows (x86_64) | [bearcad.exe](https://github.com/iffy/BearCAD/releases/latest/download/bearcad.exe) |
 | Linux (x86_64) | [bearcad-linux-x86_64.tar.gz](https://github.com/iffy/BearCAD/releases/latest/download/bearcad-linux-x86_64.tar.gz) |
+| Chromebook (ChromeOS) | [Install as app](https://bearcad.com/app/) — open in Chrome, then **Install BearCAD** / **Install app** |
 
 ## Run
 

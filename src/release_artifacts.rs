@@ -8,6 +8,10 @@ pub const WINDOWS_ARTIFACT: &str = "bearcad.exe";
 
 pub const RELEASES_BASE: &str = "https://github.com/iffy/BearCAD/releases/latest/download";
 
+/// Hosted web app (wasm). Chromebooks install this as a PWA; desktop browsers run it in-tab.
+#[cfg_attr(not(test), allow(dead_code))]
+pub const WEB_APP_URL: &str = "https://bearcad.com/app/";
+
 pub fn download_url(artifact: &str) -> String {
     format!("{RELEASES_BASE}/{artifact}")
 }
@@ -143,6 +147,95 @@ mod tests {
             assert!(
                 readme.contains(&url),
                 "README should link directly to {url}"
+            );
+        }
+    }
+
+    /// #1213: Chromebook installs the hosted web app as a PWA — list it with the
+    /// other platform downloads on the README and landing page.
+    #[test]
+    fn readme_offers_chromebook_install_next_to_downloads() {
+        let readme = include_str!("../README.md");
+        assert!(
+            readme.contains("Chromebook"),
+            "README download table should name Chromebook"
+        );
+        assert!(
+            readme.contains(WEB_APP_URL),
+            "README should link Chromebook install to {WEB_APP_URL}"
+        );
+    }
+
+    #[test]
+    fn homepage_offers_chromebook_install_next_to_downloads() {
+        let home = include_str!("../docs-site/src/pages/index.js");
+        assert!(
+            home.contains("Chromebook"),
+            "landing page download row should name Chromebook"
+        );
+        // Same relative /app/ path the "Run in your browser" CTA already uses.
+        assert!(
+            home.contains("pathname:///app/") || home.contains(WEB_APP_URL),
+            "landing page Chromebook install should point at the hosted web app"
+        );
+        // Must sit with the platform download buttons, not only the primary CTA.
+        assert!(
+            home.contains("Install Chromebook") || home.contains("Download Chromebook"),
+            "landing page should expose an Install/Download Chromebook control"
+        );
+    }
+
+    /// #1213: ChromeOS installs the web app when it is a proper PWA (manifest + SW).
+    #[test]
+    fn web_app_is_installable_pwa() {
+        let index = include_str!("../web/index.html");
+        assert!(
+            index.contains("manifest.webmanifest") || index.contains("manifest.json"),
+            "web/index.html should link a web app manifest"
+        );
+        assert!(
+            index.contains("serviceWorker") || index.contains("service-worker"),
+            "web/index.html should register a service worker"
+        );
+
+        let manifest = include_str!("../web/manifest.webmanifest");
+        for needle in [
+            "\"name\"",
+            "\"short_name\"",
+            "\"start_url\"",
+            "\"display\"",
+            "\"icons\"",
+            "icon-192",
+            "icon-512",
+        ] {
+            assert!(
+                manifest.contains(needle),
+                "manifest.webmanifest should include {needle}"
+            );
+        }
+        assert!(
+            manifest.contains("standalone")
+                || manifest.contains("fullscreen")
+                || manifest.contains("minimal-ui"),
+            "manifest display must be installable (standalone/fullscreen/minimal-ui)"
+        );
+
+        let sw = include_str!("../web/sw.js");
+        assert!(
+            sw.contains("fetch"),
+            "service worker needs a fetch handler for Chrome installability"
+        );
+
+        let build = include_str!("../scripts/build-web.sh");
+        for asset in [
+            "manifest.webmanifest",
+            "sw.js",
+            "icon-192.png",
+            "icon-512.png",
+        ] {
+            assert!(
+                build.contains(asset),
+                "build-web.sh should ship {asset} into web/dist/"
             );
         }
     }

@@ -10,13 +10,15 @@ import styles from './index.module.css';
 
 // Latest-release asset URLs — same names as src/release_artifacts.rs and the repo README.
 const RELEASES_BASE = 'https://github.com/iffy/BearCAD/releases/latest/download';
+// The hosted web build (wasm), deployed alongside the docs by CI. Chromebooks
+// install this as a PWA (Install app in Chrome); same path as "Run in browser".
+const WEB_APP_PATH = 'pathname:///app/';
 const DOWNLOADS = [
   {label: 'Download macOS', href: `${RELEASES_BASE}/bearcad.dmg`},
   {label: 'Download Windows', href: `${RELEASES_BASE}/bearcad.exe`},
   {label: 'Download Linux', href: `${RELEASES_BASE}/bearcad-linux-x86_64.tar.gz`},
+  {label: 'Install Chromebook', href: WEB_APP_PATH},
 ];
-// The hosted web build (wasm), deployed alongside the docs by CI.
-const WEB_APP_PATH = 'pathname:///app/';
 
 function HomepageHeader() {
   const {siteConfig} = useDocusaurusContext();
