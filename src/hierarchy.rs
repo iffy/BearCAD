@@ -683,10 +683,20 @@ impl ElementVisibility {
             // plane's *own* flag is skipped, not what it inherits — a plane anchored to a
             // hidden sketch is still gone, and so is anything sketched on it. A body face is
             // different again: hide the body and the face isn't there, so its sketches go too.
+            // Shadow bodies count as gone too (#1219/#1221): a sketch on a consumed cuboid /
+            // fuse solid must not steal picks from the live cut pieces that replaced it.
             SceneElement::Sketch(sketch) => doc.sketch_face(sketch).is_some_and(|face| {
                 match face {
                     FaceId::ConstructionPlane(i) => self.plane_inherited_visible(doc, i),
-                    other => self.effective_visible(doc, face_element(other)),
+                    other => {
+                        if let Some(bi) = crate::model::body_index_for_face(doc, &other) {
+                            if doc.bodies.get(bi).is_some_and(|b| b.shadow) {
+                                return false;
+                            }
+                            return self.effective_visible(doc, SceneElement::Body(bi));
+                        }
+                        self.effective_visible(doc, face_element(other))
+                    }
                 }
             }),
             SceneElement::Line(index) => doc.lines.get(index).is_some_and(|line| {

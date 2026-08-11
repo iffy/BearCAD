@@ -3278,6 +3278,103 @@ pub fn coplanar_face_boundary(triangles: &[[Vec3; 3]]) -> Vec<(Vec3, Vec3)> {
         .collect()
 }
 
+/// Ordered outline loop of a coplanar face group (#1219/#1220): the same edges as
+/// [`coplanar_face_boundary`], chained into a closed polyline so a highlight border (and a
+/// fan-fill) follows the real outline rather than the mesh's triangle-visit order — which
+/// drew diagonals and crossing lines across cut/boolean faces.
+///
+/// When the face has holes or several disconnected outline components, returns the longest
+/// component (the outer boundary for typical CAD faces). Empty when the group is degenerate.
+pub fn coplanar_face_boundary_loop(triangles: &[[Vec3; 3]]) -> Vec<Vec3> {
+    let boundary = coplanar_face_boundary(triangles);
+    if boundary.is_empty() {
+        return Vec::new();
+    }
+    // Adjacency: each quantized endpoint → neighbours (world points).
+    type Q = (i64, i64, i64);
+    let quant = |v: Vec3| -> Q {
+        (
+            (v.x * 1000.0).round() as i64,
+            (v.y * 1000.0).round() as i64,
+            (v.z * 1000.0).round() as i64,
+        )
+    };
+    let mut adj: std::collections::HashMap<Q, Vec<Vec3>> = std::collections::HashMap::new();
+    let mut world: std::collections::HashMap<Q, Vec3> = std::collections::HashMap::new();
+    for &(a, b) in &boundary {
+        let (ka, kb) = (quant(a), quant(b));
+        world.entry(ka).or_insert(a);
+        world.entry(kb).or_insert(b);
+        adj.entry(ka).or_default().push(b);
+        adj.entry(kb).or_default().push(a);
+    }
+    // Walk every unused edge; keep the longest **closed** walk (outer loop). An open
+    // chain must not be treated as a loop — closing it invents a diagonal.
+    let mut used: std::collections::HashSet<(Q, Q)> = std::collections::HashSet::new();
+    let edge_key = |a: Q, b: Q| if a <= b { (a, b) } else { (b, a) };
+    let mut best: Vec<Vec3> = Vec::new();
+    for &start_q in world.keys() {
+        let Some(neighbours) = adj.get(&start_q) else {
+            continue;
+        };
+        for &first in neighbours {
+            let first_q = quant(first);
+            let start_edge = edge_key(start_q, first_q);
+            if used.contains(&start_edge) {
+                continue;
+            }
+            let mut walk_used: Vec<(Q, Q)> = Vec::new();
+            let mut loop_pts = vec![world[&start_q], first];
+            walk_used.push(start_edge);
+            let mut prev = start_q;
+            let mut cur = first_q;
+            let mut closed = false;
+            for _ in 0..boundary.len() + 2 {
+                if cur == start_q {
+                    closed = true;
+                    break;
+                }
+                let Some(ns) = adj.get(&cur) else {
+                    break;
+                };
+                let next = ns.iter().find_map(|&n| {
+                    let nq = quant(n);
+                    let ek = edge_key(cur, nq);
+                    if nq != prev && !used.contains(&ek) && !walk_used.contains(&ek) {
+                        Some((n, nq, ek))
+                    } else {
+                        None
+                    }
+                });
+                let Some((n, nq, ek)) = next else {
+                    break;
+                };
+                walk_used.push(ek);
+                loop_pts.push(n);
+                prev = cur;
+                cur = nq;
+            }
+            if !closed {
+                continue;
+            }
+            // Drop the duplicate close vertex.
+            if loop_pts.len() >= 2 && quant(loop_pts[0]) == quant(*loop_pts.last().unwrap()) {
+                loop_pts.pop();
+            }
+            if loop_pts.len() < 3 {
+                continue;
+            }
+            for ek in walk_used {
+                used.insert(ek);
+            }
+            if loop_pts.len() > best.len() {
+                best = loop_pts;
+            }
+        }
+    }
+    best
+}
+
 /// Nearest currently-treatable analytic extrusion edge (#77): the chamfer/fillet tool's own
 /// picking path when no sketch is open, used instead of the generic [`nearest_body_edge`]
 /// (mesh-feature-edge) picking above since it needs the structured `ExtrusionEdgeRef`, not just
@@ -4131,6 +4228,83 @@ mod tests {
         ];
         assert_eq!(coplanar_face_boundary(&triangles).len(), 4);
     }
+
+    #[test]
+    fn coplanar_face_boundary_loop_orders_a_split_quad() {
+        // Same split-quad as the boundary test; the loop must be 4 corners, every edge on boundary.
+        let triangles = [
+            [
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(1.0, 1.0, 0.0),
+            ],
+            [
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 1.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+            ],
+        ];
+        let loop_pts = coplanar_face_boundary_loop(&triangles);
+        assert_eq!(loop_pts.len(), 4, "quad outline has 4 corners, got {loop_pts:?}");
+        let boundary = coplanar_face_boundary(&triangles);
+        let quant = |v: Vec3| {
+            (
+                (v.x * 1000.0).round() as i64,
+                (v.y * 1000.0).round() as i64,
+                (v.z * 1000.0).round() as i64,
+            )
+        };
+        let bset: std::collections::HashSet<_> = boundary
+            .iter()
+            .map(|(a, b)| {
+                let (ka, kb) = (quant(*a), quant(*b));
+                if ka <= kb { (ka, kb) } else { (kb, ka) }
+            })
+            .collect();
+        for i in 0..4 {
+            let a = loop_pts[i];
+            let b = loop_pts[(i + 1) % 4];
+            let (ka, kb) = (quant(a), quant(b));
+            let key = if ka <= kb { (ka, kb) } else { (kb, ka) };
+            assert!(bset.contains(&key), "loop edge missing from boundary");
+        }
+    }
+
+    #[test]
+    fn coplanar_face_boundary_loop_handles_occt_style_diagonal() {
+        // OCCT often triangulates A-B-D + B-C-D (diagonal B-D), not A-B-C + A-C-D.
+        let a = Vec3::new(0.0, 0.0, 0.0);
+        let b = Vec3::new(2.0, 0.0, 0.0);
+        let c = Vec3::new(2.0, 1.0, 0.0);
+        let d = Vec3::new(0.0, 1.0, 0.0);
+        let triangles = [[a, b, d], [b, c, d]];
+        let loop_pts = coplanar_face_boundary_loop(&triangles);
+        assert_eq!(loop_pts.len(), 4);
+        let boundary = coplanar_face_boundary(&triangles);
+        assert_eq!(boundary.len(), 4);
+        let quant = |v: Vec3| {
+            (
+                (v.x * 1000.0).round() as i64,
+                (v.y * 1000.0).round() as i64,
+                (v.z * 1000.0).round() as i64,
+            )
+        };
+        let bset: std::collections::HashSet<_> = boundary
+            .iter()
+            .map(|(a, b)| {
+                let (ka, kb) = (quant(*a), quant(*b));
+                if ka <= kb { (ka, kb) } else { (kb, ka) }
+            })
+            .collect();
+        for i in 0..loop_pts.len() {
+            let p = loop_pts[i];
+            let q = loop_pts[(i + 1) % loop_pts.len()];
+            let (ka, kb) = (quant(p), quant(q));
+            let key = if ka <= kb { (ka, kb) } else { (kb, ka) };
+            assert!(bset.contains(&key), "bad edge {p:?}-{q:?}");
+        }
+    }
+
 
     fn doc_with_imported_triangle_body() -> Document {
         let mut doc = Document::default();

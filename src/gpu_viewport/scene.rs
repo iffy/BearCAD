@@ -3305,12 +3305,32 @@ impl<'a> SceneMesh<'a> {
                     self.push_triangle(lift(quad[0]), lift(quad[2]), lift(quad[3]), fill);
                 }
             }
+            FaceId::BodyMeshFace {
+                body,
+                centroid,
+                normal,
+            } => {
+                // Fill from the mesh triangles themselves (#1219/#1220): a fan of the
+                // outline loop mis-fills concave cut faces, and the old visit-order loop
+                // painted diagonals. The border is drawn separately from the true outline.
+                if let Some(tris) =
+                    crate::extrude::body_face_triangles(doc, body, centroid, normal)
+                {
+                    let n = (tris[0][1] - tris[0][0])
+                        .cross(tris[0][2] - tris[0][0])
+                        .normalize_or_zero();
+                    let lift =
+                        |p: Vec3| offset_toward_camera(p, n, eye, HOVER_FILL_DEPTH_BIAS);
+                    for tri in &tris {
+                        self.push_triangle(lift(tri[0]), lift(tri[1]), lift(tri[2]), fill);
+                    }
+                }
+            }
             FaceId::RevolveCap { .. }
             | FaceId::RevolveSide { .. }
             | FaceId::UnitFace { .. }
             | FaceId::PrimitiveFace { .. }
-            | FaceId::RepeatedFace { .. }
-            | FaceId::BodyMeshFace { .. } => {
+            | FaceId::RepeatedFace { .. } => {
                 let poly = match face {
                     FaceId::RevolveCap {
                         revolution,
@@ -3333,7 +3353,7 @@ impl<'a> SceneMesh<'a> {
                             .get(primitive)
                             .and_then(|shape| crate::primitives::face_polygon(doc, shape, face))
                     }
-                    FaceId::RepeatedFace { .. } | FaceId::BodyMeshFace { .. } => {
+                    FaceId::RepeatedFace { .. } => {
                         crate::extrude::face_boundary_loop_world(doc, &face)
                     }
                     _ => None,

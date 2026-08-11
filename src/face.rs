@@ -1056,6 +1056,44 @@ fn is_shell_open_face(doc: &Document, face: &FaceId) -> bool {
         .any(|(_, op)| op.open_faces.iter().any(|f| f == face))
 }
 
+/// Whether a sketchable face still belongs to **live** geometry (#1219): analytic faces of
+/// a shadow body (consumed by fuse/slice/boolean) must not highlight or accept a new sketch
+/// — the live cut/merge result is what the user sees. Construction planes are always live.
+/// Sketch profiles (circle/polygon) follow the host face they were drawn on.
+fn sketch_face_is_live(doc: &Document, face: &FaceId) -> bool {
+    match face {
+        FaceId::ConstructionPlane(_) => true,
+        FaceId::Circle(ci) => {
+            let Some(circle) = doc.circles.get(*ci) else {
+                return false;
+            };
+            if circle.shadow {
+                return false;
+            }
+            doc.sketch_face(circle.sketch)
+                .is_some_and(|host| sketch_face_is_live(doc, &host))
+        }
+        FaceId::Polygon(lines) => {
+            let Some(&first) = lines.first() else {
+                return false;
+            };
+            let Some(line) = doc.lines.get(first) else {
+                return false;
+            };
+            if line.shadow {
+                return false;
+            }
+            doc.sketch_face(line.sketch)
+                .is_some_and(|host| sketch_face_is_live(doc, &host))
+        }
+        other => match crate::model::body_index_for_face(doc, other) {
+            // No owning body (shouldn't reach here for the arms above) — keep it.
+            None => true,
+            Some(bi) => doc.bodies.get(bi).is_some_and(|b| !b.shadow),
+        },
+    }
+}
+
 /// Map a mesh face key (quantized centroid + normal) to an analytic [`FaceId`] on that body
 /// when one matches (#1156/#1173). Outer shell walls map back to their primitive/extrude
 /// faces; inner walls (and other non-analytic flats) return `None`.
@@ -1247,6 +1285,9 @@ pub fn pick_sketch_face(
     for (i, circle) in doc.circles.iter().collect::<Vec<_>>().into_iter().rev() {
         if let Some((dist, c)) = circle_face_pick_distance(screen, doc, circle, project) {
             let face = FaceId::Circle(i);
+            if !sketch_face_is_live(doc, &face) {
+                continue;
+            }
             note_host(&face, dist, doc);
             consider_face_pick_sized(
                 &mut best,
@@ -1269,6 +1310,9 @@ pub fn pick_sketch_face(
             ) {
                 if let Some((dist, c)) = polygon_face_pick_distance(screen, project, &poly) {
                     let face = FaceId::Polygon(lines);
+                    if !sketch_face_is_live(doc, &face) {
+                        continue;
+                    }
                     note_host(&face, dist, doc);
                     consider_face_pick_sized(
                         &mut best,
@@ -1298,6 +1342,7 @@ pub fn pick_sketch_face(
                         top,
                     };
                     if !is_shell_open_face(doc, &candidate)
+                        && sketch_face_is_live(doc, &candidate)
                         && !sketch_shadows(&shadowed_hosts, &candidate, dist)
                     {
                         consider_face_pick_sized(
@@ -1318,6 +1363,7 @@ pub fn pick_sketch_face(
                         edge: edge as u8,
                     };
                     if !is_shell_open_face(doc, &candidate)
+                        && sketch_face_is_live(doc, &candidate)
                         && !sketch_shadows(&shadowed_hosts, &candidate, dist)
                     {
                         consider_face_pick_sized(
@@ -1349,6 +1395,7 @@ pub fn pick_sketch_face(
                         end,
                     };
                     if !is_shell_open_face(doc, &candidate)
+                        && sketch_face_is_live(doc, &candidate)
                         && !sketch_shadows(&shadowed_hosts, &candidate, dist)
                     {
                         consider_face_pick_sized(
@@ -1370,6 +1417,7 @@ pub fn pick_sketch_face(
                         edge: edge as u8,
                     };
                     if !is_shell_open_face(doc, &candidate)
+                        && sketch_face_is_live(doc, &candidate)
                         && !sketch_shadows(&shadowed_hosts, &candidate, dist)
                     {
                         consider_face_pick_sized(
@@ -1398,7 +1446,9 @@ pub fn pick_sketch_face(
                     instance,
                     face: Box::new(inner_face),
                 };
-                if !sketch_shadows(&shadowed_hosts, &candidate, dist) {
+                if sketch_face_is_live(doc, &candidate)
+                    && !sketch_shadows(&shadowed_hosts, &candidate, dist)
+                {
                     consider_face_pick_sized(
                         &mut best,
                         FacePick { face: candidate, dist, depth: depth(c), area: f32::INFINITY },
@@ -1422,6 +1472,7 @@ pub fn pick_sketch_face(
             };
             let candidate = FaceId::PrimitiveFace { primitive: pi, face };
             if !is_shell_open_face(doc, &candidate)
+                && sketch_face_is_live(doc, &candidate)
                 && !sketch_shadows(&shadowed_hosts, &candidate, dist)
             {
                 consider_face_pick_sized(
@@ -1494,7 +1545,9 @@ pub fn pick_sketch_face(
                         op: op_index,
                         instance,
                     };
-                    if !sketch_shadows(&shadowed_hosts, &candidate, dist) {
+                    if sketch_face_is_live(doc, &candidate)
+                        && !sketch_shadows(&shadowed_hosts, &candidate, dist)
+                    {
                         consider_face_pick_sized(
                             &mut best,
                             FacePick {
@@ -1558,6 +1611,9 @@ pub fn pick_sketch_face(
             let Some(candidate) = sketch_face_id_for_mesh_group(doc, bi, triangles) else {
                 continue;
             };
+            if !sketch_face_is_live(doc, &candidate) {
+                continue;
+            }
             if sketch_shadows(&shadowed_hosts, &candidate, dist) {
                 continue;
             }
@@ -1590,7 +1646,8 @@ pub fn sketch_faces_near(
     let mut out: Vec<(FaceId, Vec3, f32)> = Vec::new();
     let mut push = |face: FaceId, centroid: Vec3, dist: f32| {
         // Shell open faces no longer exist on the hollowed body (#1165).
-        if dist <= radius && !is_shell_open_face(doc, &face) {
+        // Shadow-body analytic faces are not live sketch targets (#1219).
+        if dist <= radius && !is_shell_open_face(doc, &face) && sketch_face_is_live(doc, &face) {
             out.push((face, centroid, dist));
         }
     };
@@ -3176,4 +3233,262 @@ mod tests {
         );
         let _ = sketch;
     }
+
+
+
+    /// #1219: analytic faces of a shadow body must not win sketch-face picks over the
+    /// live cut pieces that replaced it.
+    #[test]
+    fn issue_1219_shadow_primitive_face_is_not_sketchable() {
+        use crate::camera::Camera;
+        use eframe::egui::{Pos2, Rect};
+
+        let bytes = include_bytes!("../tests/fixtures/issue_1219.json");
+        let doc = crate::storage::from_json_bytes(bytes).expect("load");
+        // Body 0 is the pure cuboid primitive and is a shadow (consumed by the solid).
+        assert!(doc.bodies.values().nth(0).unwrap().shadow);
+        let b5 = doc.bodies.keys().nth(5).unwrap();
+        let mesh5 = crate::extrude::body_solid_mesh(&doc, b5).expect("body 5 mesh");
+        let (min, max) = mesh5.bounds().unwrap();
+        let center = (min + max) * 0.5;
+
+        let mut cam = Camera::default();
+        cam.target = center;
+        cam.distance = 400.0;
+        cam.yaw = 0.3;
+        cam.pitch = -1.1;
+        let viewport = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let vp = cam.view_proj(viewport);
+        let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
+
+        // Sample a triangle of body 5 that currently resolves as the shadow cuboid's analytic face.
+        let mut saw_body5 = false;
+        for tri in mesh5.triangles.iter().step_by(15) {
+            let p = (tri[0] + tri[1] + tri[2]) / 3.0;
+            let Some(sp) = project(p) else { continue };
+            let Some(face) = pick_sketch_face(sp, &project, &doc, cam.eye()) else {
+                continue;
+            };
+            match face {
+                FaceId::PrimitiveFace { primitive, .. } => {
+                    let body = crate::model::body_index_for_primitive(&doc, primitive);
+                    let shadow = body
+                        .and_then(|bi| doc.bodies.get(bi))
+                        .is_some_and(|b| b.shadow);
+                    assert!(
+                        !shadow,
+                        "sketch pick must not land on a shadow body's primitive face: {face:?}"
+                    );
+                }
+                FaceId::ExtrudeCap { extrusion, .. } | FaceId::ExtrudeSide { extrusion, .. } => {
+                    let body = crate::model::body_index_for_extrusion(&doc, extrusion);
+                    let shadow = body
+                        .and_then(|bi| doc.bodies.get(bi))
+                        .is_some_and(|b| b.shadow);
+                    assert!(
+                        !shadow,
+                        "sketch pick must not land on a shadow extrusion face: {face:?}"
+                    );
+                }
+                FaceId::BodyMeshFace { body, .. } if body == b5 => saw_body5 = true,
+                _ => {}
+            }
+        }
+        assert!(
+            saw_body5,
+            "at least one sample over body 5 should pick a live mesh face of body 5"
+        );
+    }
+
+
+    /// #1220: a mesh face's highlight border is the true outline, not the triangulation
+    /// visit order (which draws diagonals / crossing lines).
+    #[test]
+    fn issue_1220_body_mesh_face_boundary_is_true_outline() {
+        let bytes = include_bytes!("../tests/fixtures/issue_1219.json");
+        let doc = crate::storage::from_json_bytes(bytes).expect("load");
+        let quant = |v: glam::Vec3| {
+            (
+                (v.x * 1000.0).round() as i64,
+                (v.y * 1000.0).round() as i64,
+                (v.z * 1000.0).round() as i64,
+            )
+        };
+        let mut checked = 0usize;
+        for (bi, body) in doc.bodies.iter() {
+            if body.shadow {
+                continue;
+            }
+            let Some(mesh) = crate::extrude::body_solid_mesh(&doc, bi) else {
+                continue;
+            };
+            for tris in crate::gpu_viewport::solid_mesh_coplanar_faces(&mesh) {
+                if tris.len() < 2 {
+                    continue;
+                }
+                if crate::extrude::fit_cylinder(&tris).is_some() {
+                    continue;
+                }
+                let true_boundary = crate::construction::coplanar_face_boundary(&tris);
+                if true_boundary.len() < 3 {
+                    continue;
+                }
+                let loop_pts = crate::construction::coplanar_face_boundary_loop(&tris);
+                if loop_pts.len() < 3 {
+                    // Degenerate / non-manifold outline — skip; highlight falls back to edges.
+                    continue;
+                }
+                let bset: std::collections::HashSet<_> = true_boundary
+                    .iter()
+                    .map(|(a, b)| {
+                        let (ka, kb) = (quant(*a), quant(*b));
+                        if ka <= kb {
+                            (ka, kb)
+                        } else {
+                            (kb, ka)
+                        }
+                    })
+                    .collect();
+                let n = loop_pts.len();
+                let mut bad = 0usize;
+                for i in 0..n {
+                    let a = loop_pts[i];
+                    let b = loop_pts[(i + 1) % n];
+                    let (ka, kb) = (quant(a), quant(b));
+                    let key = if ka <= kb { (ka, kb) } else { (kb, ka) };
+                    if !bset.contains(&key) {
+                        bad += 1;
+                    }
+                }
+                assert_eq!(
+                    bad, 0,
+                    "body {:?} tris={} boundary={} loop={} has {bad} non-boundary edges",
+                    bi,
+                    tris.len(),
+                    true_boundary.len(),
+                    n
+                );
+                // face_boundary_loop_world must agree (this is what the highlight uses).
+                let centroid = crate::extrude::face_group_center(&tris);
+                let normal = (tris[0][1] - tris[0][0])
+                    .cross(tris[0][2] - tris[0][0])
+                    .normalize_or_zero();
+                let q = crate::hierarchy::quantize_body_point;
+                let face = FaceId::BodyMeshFace {
+                    body: bi,
+                    centroid: q(centroid),
+                    normal: q(normal),
+                };
+                if let Some(via) = crate::extrude::face_boundary_loop_world(&doc, &face) {
+                    assert!(
+                        via.len() >= 3,
+                        "face_boundary_loop_world returned too-short loop for body {:?}",
+                        bi
+                    );
+                    let mut via_bad = 0usize;
+                    for i in 0..via.len() {
+                        let a = via[i];
+                        let b = via[(i + 1) % via.len()];
+                        let (ka, kb) = (quant(a), quant(b));
+                        let key = if ka <= kb { (ka, kb) } else { (kb, ka) };
+                        if !bset.contains(&key) {
+                            via_bad += 1;
+                        }
+                    }
+                    assert_eq!(
+                        via_bad, 0,
+                        "face_boundary_loop_world has crossing edges on body {:?}",
+                        bi
+                    );
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked >= 5, "expected several multi-triangle faces, got {checked}");
+    }
+
+    /// #1221: Select-tool pick over a live cut body prefers that body, not a datum plane.
+    #[test]
+    fn issue_1221_cut_body_beats_construction_plane() {
+        use crate::camera::Camera;
+        use eframe::egui::{Pos2, Rect};
+
+        let bytes = include_bytes!("../tests/fixtures/issue_1221.json");
+        let doc = crate::storage::from_json_bytes(bytes).expect("load");
+        let b5 = doc.bodies.keys().nth(5).unwrap();
+        assert!(!doc.bodies[b5].shadow, "body 5 is the live cut piece");
+        let mesh5 = crate::extrude::body_solid_mesh(&doc, b5).expect("body 5 mesh");
+        let (min, max) = mesh5.bounds().unwrap();
+        let center = (min + max) * 0.5;
+
+        let mut cam = Camera::default();
+        cam.target = center;
+        cam.distance = 350.0;
+        cam.yaw = 0.4;
+        cam.pitch = -0.9;
+        let viewport = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let vp = cam.view_proj(viewport);
+        let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
+        let visibility = crate::hierarchy::ElementVisibility::default();
+        let occ = crate::construction::PickOcclusion::new(&doc, &visibility, cam.eye());
+
+        let mut body_wins = 0usize;
+        let mut plane_wins = 0usize;
+        for tri in mesh5.triangles.iter().step_by(20) {
+            let p = (tri[0] + tri[1] + tri[2]) / 3.0;
+            let Some(sp) = project(p) else { continue };
+            // Only sample where a body face is actually under the cursor.
+            let Some(face_kind) = pick_body_face(sp, &project, &doc, cam.eye()) else {
+                continue;
+            };
+            let crate::construction::PickTargetKind::BodyFace { body, .. } = face_kind else {
+                continue;
+            };
+            if body != b5 {
+                continue;
+            }
+            let gp = cam.ground_point(sp, viewport, &vp);
+            let Some(t) = crate::construction::resolve_pick_target(
+                sp,
+                &project,
+                gp,
+                &doc,
+                Some(&occ),
+            ) else {
+                continue;
+            };
+            match &t.kind {
+                crate::construction::PickTargetKind::ConstructionPlane(_) => plane_wins += 1,
+                crate::construction::PickTargetKind::BodyFace { body, .. } if *body == b5 => {
+                    body_wins += 1;
+                }
+                crate::construction::PickTargetKind::BodyEdge { body, .. }
+                | crate::construction::PickTargetKind::BodyVertex { body, .. }
+                    if *body == b5 =>
+                {
+                    body_wins += 1;
+                }
+                // Sketch lines floating on consumed geometry can still rank above a face —
+                // they are a separate problem; for this test we only care that the plane loses.
+                other => {
+                    assert!(
+                        !matches!(other, crate::construction::PickTargetKind::ConstructionPlane(_)),
+                        "plane must not win over body 5, got {other:?}"
+                    );
+                    body_wins += 1; // edge/vertex/line still not the plane
+                }
+            }
+        }
+        assert!(
+            body_wins > 0,
+            "expected samples over body 5 where a body pick wins, plane_wins={plane_wins}"
+        );
+        assert_eq!(
+            plane_wins, 0,
+            "construction plane must not beat body 5 under the body's own surface"
+        );
+    }
+
+
+
 }
