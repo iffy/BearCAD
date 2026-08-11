@@ -2421,14 +2421,23 @@ impl Primitive {
 
 /// A revolved solid: one or more coplanar closed profiles swept around an axis. Parametric
 /// like everything else — the solid is rebuilt from the live profiles on every recompute.
+/// A non-zero [`Self::pitch_mm`] makes the sweep helical (springs, #1242): the profile
+/// advances that far along the axis per full 360° turn.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Revolution {
     pub sketch: SketchId,
     /// Closed profiles to sweep, same shape as [`Extrusion::faces`].
     pub faces: Vec<ExtrudeFace>,
     pub axis: RevolveAxis,
-    /// Sweep angle in degrees (default 360 = a full solid of revolution).
+    /// Sweep angle in degrees (default 360 = a full solid of revolution). Signed and
+    /// multi-turn are allowed (#1242): negative reverses the turn, and values past ±360
+    /// keep winding when [`Self::pitch_mm`] is non-zero.
     pub angle_deg: f32,
+    /// Axial travel per full 360° revolution in millimetres (#1242). Zero is a pure revolve;
+    /// non-zero makes a helix so successive coils of a spring sit this far apart
+    /// start-to-start. Signed: negative advances the other way along the axis.
+    #[serde(default)]
+    pub pitch_mm: f32,
     /// Sweep `angle_deg/2` to each side of the profile plane instead of one way.
     #[serde(default)]
     pub symmetric: bool,

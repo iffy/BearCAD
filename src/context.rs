@@ -177,6 +177,14 @@ pub struct RevolveControl {
     /// Which picker shows the focus ring (#304): exactly one at a time — Profile until a
     /// face is picked, then Axis until the axis is set, then back to Profile.
     pub axis_focused: bool,
+    /// Angle field text (degrees) or revolutions, matching `angle_is_revolutions` (#1242).
+    pub angle_text: String,
+    /// When true the angle field is **Revolutions**; when false it's **Angle** (#1242).
+    pub angle_is_revolutions: bool,
+    /// Gap/Offset field text (#1242).
+    pub gap_text: String,
+    /// When true the field is **Offset** (pitch); when false it's **Gap** (#1242).
+    pub gap_is_offset: bool,
     pub symmetric: bool,
     pub body_choice: crate::actions::RevolveBodyChoice,
     /// In Cut mode, the picked bodies to cut (rendered through the unified element picker, #213).
@@ -935,10 +943,18 @@ pub enum BooleanEdit {
 }
 
 /// One edit from the Revolve context section.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum RevolveEdit {
     Symmetric(bool),
     BodyChoice(crate::actions::RevolveBodyChoice),
+    /// Angle/Revolutions field text (#1242).
+    Angle(String),
+    /// Toggle the angle field between degrees and revolutions (#1242).
+    ToggleAngleMode,
+    /// Gap/Offset field text (#1242).
+    Gap(String),
+    /// Toggle Gap ↔ Offset measure (#1242).
+    ToggleGapOffset,
     /// The blue primary button / Enter — commit the revolve (#586).
     Commit,
 }
@@ -4036,6 +4052,21 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "The line the profile turns about — a straight sketch line or one of the global \
              axes. The angle is dragged in the 3D view.",
         ),
+        (Some(Tool::Revolve), "Angle") => Some(
+            "How far the profile turns, in degrees. Click the label to switch to Revolutions.",
+        ),
+        (Some(Tool::Revolve), "Revolutions") => Some(
+            "How many full turns the profile makes (decimals allowed). Click the label to \
+             switch back to Angle.",
+        ),
+        (Some(Tool::Revolve), "Offset") => Some(
+            "How far the start face advances along the axis after one full turn — the coil \
+             pitch for a spring. Click the icon for Gap (clear space between coils).",
+        ),
+        (Some(Tool::Revolve), "Gap") => Some(
+            "Clear space between successive coils of a spring. Click the icon for Offset \
+             (start-to-start pitch).",
+        ),
         (Some(Tool::Revolve), "Symmetric") => {
             Some("Sweeps the same angle either side of the profile instead of one way.")
         }
@@ -5117,6 +5148,82 @@ pub fn show_pane(
         any_control = true;
         // Profile and Axis are real `ToolPickerView`s now (#955), rendered with every other
         // tool picker above; only the parameters and the commit button live here.
+        // Angle/Revolutions and Gap/Offset toggle rows (#1242) — same icon+label toggle
+        // pattern as the Repeat tool's Gap/Offset field.
+        let mut pending_revolve: Option<RevolveEdit> = None;
+        {
+            const FIELD_W: f32 = 110.0;
+            let angle_label = if control.angle_is_revolutions {
+                "Revolutions"
+            } else {
+                "Angle"
+            };
+            let angle_row = ui.horizontal(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(FIELD_LABEL_W, 18.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
+                        const TIP: &str = "Click to toggle between Angle and Revolutions";
+                        if clickable_label(ui, angle_label, TIP).clicked() {
+                            pending_revolve = Some(RevolveEdit::ToggleAngleMode);
+                        }
+                    },
+                );
+                let mut text = control.angle_text.clone();
+                let kind = if control.angle_is_revolutions {
+                    crate::expression_input::ValueKind::Count
+                } else {
+                    crate::expression_input::ValueKind::Angle
+                };
+                let resp = crate::expression_input::ValueInput::from_id(
+                    egui::Id::new("revolve_angle_field"),
+                    kind,
+                )
+                .width(FIELD_W)
+                .show(ui, &mut text, doc);
+                if resp.changed() {
+                    pending_revolve = Some(RevolveEdit::Angle(text));
+                }
+            });
+            note_help(ui, angle_label, angle_row.response.rect);
+
+            let gap_label = if control.gap_is_offset { "Offset" } else { "Gap" };
+            let gap_icon = if control.gap_is_offset {
+                crate::icons::IconId::RepeatGapOffset
+            } else {
+                crate::icons::IconId::RepeatGapBetween
+            };
+            let gap_row = ui.horizontal(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(FIELD_LABEL_W, 18.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
+                        const TIP: &str = "Click to toggle how this is measured";
+                        if crate::icons::icon_button_hover_gold(ui, gap_icon, TIP).clicked()
+                            || clickable_label(ui, gap_label, TIP).clicked()
+                        {
+                            pending_revolve = Some(RevolveEdit::ToggleGapOffset);
+                        }
+                    },
+                );
+                let mut text = control.gap_text.clone();
+                let resp = crate::expression_input::ValueInput::from_id(
+                    egui::Id::new("revolve_gap_field"),
+                    crate::expression_input::ValueKind::Length,
+                )
+                .width(FIELD_W)
+                .show(ui, &mut text, doc);
+                if resp.changed() {
+                    pending_revolve = Some(RevolveEdit::Gap(text));
+                }
+            });
+            note_help(ui, gap_label, gap_row.response.rect);
+        }
+        if let Some(edit) = pending_revolve {
+            on_revolve_edit(edit);
+        }
         let mut symmetric = control.symmetric;
         if checkbox_row(ui, "Symmetric", &mut symmetric, None) {
             on_revolve_edit(RevolveEdit::Symmetric(symmetric));
@@ -8649,6 +8756,10 @@ mod tests {
                 faces: vec![crate::model::ExtrudeFace::Circle(rkey(0))],
                 axis: Some(crate::model::RevolveAxis::Y),
                 axis_focused: false,
+                angle_text: "360".to_string(),
+                angle_is_revolutions: false,
+                gap_text: "0".to_string(),
+                gap_is_offset: true,
                 symmetric: false,
                 body_choice: crate::actions::RevolveBodyChoice::Cut,
                 cut_bodies: vec![bkey(2), bkey(5)],
@@ -8686,6 +8797,10 @@ mod tests {
                 faces: vec![crate::model::ExtrudeFace::Circle(rkey(0))],
                 axis: None,
                 axis_focused: false,
+                angle_text: "360".to_string(),
+                angle_is_revolutions: false,
+                gap_text: "0".to_string(),
+                gap_is_offset: true,
                 symmetric: false,
                 cut_bodies: vec![],
             }),
@@ -9253,6 +9368,10 @@ mod tests {
                         faces: vec![crate::model::ExtrudeFace::Circle(rkey(0))],
                         axis: None,
                         axis_focused: true,
+                angle_text: "360".to_string(),
+                angle_is_revolutions: false,
+                gap_text: "0".to_string(),
+                gap_is_offset: true,
                         symmetric: false,
                         body_choice: crate::actions::RevolveBodyChoice::Cut,
                         cut_bodies: vec![bkey(2)],
@@ -9410,6 +9529,10 @@ mod tests {
                 faces: vec![crate::model::ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)])],
                 axis: Some(crate::model::RevolveAxis::Z),
                 axis_focused: false,
+                angle_text: "360".to_string(),
+                angle_is_revolutions: false,
+                gap_text: "0".to_string(),
+                gap_is_offset: true,
                 symmetric: false,
                 body_choice: crate::actions::RevolveBodyChoice::NewBody,
                 cut_bodies: Vec::new(),

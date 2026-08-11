@@ -130,47 +130,108 @@ extern "C" BearcadShape* bearcad_shape_prism(const double* xyz, unsigned long n_
 // Revolve a closed planar profile (world-space points, first point not repeated) around
 // the axis through (ox,oy,oz) with direction (ax,ay,az) by `angle_rad`. When `symmetric`
 // is nonzero the profile is pre-rotated by -angle/2 so the sweep straddles its plane.
+// Non-zero `pitch` (axial travel per full 2π turn) makes a helix for springs (#1242):
+// intermediate profile sections are lofted with ThruSections. Signed `angle_rad` is
+// allowed (negative reverses the turn).
 extern "C" BearcadShape* bearcad_shape_revolve(const double* xyz, unsigned long n_pts,
                                                double ox, double oy, double oz, double ax,
                                                double ay, double az, double angle_rad,
-                                               int symmetric) {
-    if (xyz == nullptr || n_pts < 3 || angle_rad <= 0.0) {
+                                               int symmetric, double pitch) {
+    if (xyz == nullptr || n_pts < 3 || std::fabs(angle_rad) < 1e-12) {
         return nullptr;
     }
     try {
-        BRepBuilderAPI_MakePolygon poly;
-        for (unsigned long i = 0; i < n_pts; ++i) {
-            poly.Add(gp_Pnt(xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]));
+        gp_Pnt origin(ox, oy, oz);
+        gp_Dir dir(ax, ay, az);
+        // Negative angle: flip the axis so MakeRevol (which wants a positive angle) and
+        // the helix sections still wind the right way.
+        double signed_angle = angle_rad;
+        if (signed_angle < 0.0) {
+            dir.Reverse();
+            signed_angle = -signed_angle;
+            pitch = -pitch;
         }
-        poly.Close();
-        if (!poly.IsDone()) {
-            return nullptr;
-        }
-        BRepBuilderAPI_MakeFace face(poly.Wire());
-        if (!face.IsDone()) {
-            return nullptr;
-        }
-        gp_Ax1 axis(gp_Pnt(ox, oy, oz), gp_Dir(ax, ay, az));
-        TopoDS_Shape profile = face.Face();
-        if (symmetric != 0) {
-            gp_Trsf pre;
-            pre.SetRotation(axis, -angle_rad / 2.0);
-            profile = BRepBuilderAPI_Transform(profile, pre, true).Shape();
-        }
-        // A full revolution must use the no-angle constructor: MakeRevol normalizes the
-        // angle modulo 2*pi, so a float angle a hair over 2*pi builds a degenerate sliver.
-        if (angle_rad >= 2.0 * M_PI - 1e-6) {
-            BRepPrimAPI_MakeRevol revol(profile, axis);
+        gp_Ax1 axis(origin, dir);
+
+        // Pure revolve path (no pitch): BRepPrimAPI_MakeRevol.
+        if (std::fabs(pitch) < 1e-12) {
+            BRepBuilderAPI_MakePolygon poly;
+            for (unsigned long i = 0; i < n_pts; ++i) {
+                poly.Add(gp_Pnt(xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]));
+            }
+            poly.Close();
+            if (!poly.IsDone()) {
+                return nullptr;
+            }
+            BRepBuilderAPI_MakeFace face(poly.Wire());
+            if (!face.IsDone()) {
+                return nullptr;
+            }
+            TopoDS_Shape profile = face.Face();
+            if (symmetric != 0) {
+                gp_Trsf pre;
+                pre.SetRotation(axis, -signed_angle / 2.0);
+                profile = BRepBuilderAPI_Transform(profile, pre, true).Shape();
+            }
+            // A full revolution must use the no-angle constructor: MakeRevol normalizes the
+            // angle modulo 2*pi, so a float angle a hair over 2*pi builds a degenerate sliver.
+            if (signed_angle >= 2.0 * M_PI - 1e-6) {
+                BRepPrimAPI_MakeRevol revol(profile, axis);
+                if (!revol.IsDone()) {
+                    return nullptr;
+                }
+                return new BearcadShape{revol.Shape()};
+            }
+            BRepPrimAPI_MakeRevol revol(profile, axis, signed_angle);
             if (!revol.IsDone()) {
                 return nullptr;
             }
             return new BearcadShape{revol.Shape()};
         }
-        BRepPrimAPI_MakeRevol revol(profile, axis, angle_rad);
-        if (!revol.IsDone()) {
+
+        // Helical revolve (#1242): loft intermediate wires of the profile rotated and
+        // translated along the axis. pitch is axial travel per full 2π turn.
+        const double start =
+            (symmetric != 0) ? -signed_angle / 2.0 : 0.0;
+        const double end =
+            (symmetric != 0) ? signed_angle / 2.0 : signed_angle;
+        // At least 16 sections per turn so multi-turn springs stay smooth.
+        const double turns = std::fabs(signed_angle) / (2.0 * M_PI);
+        int n_sections = static_cast<int>(std::ceil(turns * 16.0));
+        if (n_sections < 8) {
+            n_sections = 8;
+        }
+        if (n_sections > 256) {
+            n_sections = 256;
+        }
+
+        BRepOffsetAPI_ThruSections gen(/*isSolid=*/true, /*ruled=*/false);
+        for (int s = 0; s <= n_sections; ++s) {
+            const double t = static_cast<double>(s) / static_cast<double>(n_sections);
+            const double a = start + t * (end - start);
+            const double axial = pitch * (a / (2.0 * M_PI));
+            gp_Trsf tr;
+            tr.SetRotation(axis, a);
+            gp_Trsf tr_axial;
+            tr_axial.SetTranslation(gp_Vec(dir) * axial);
+            tr = tr_axial * tr;
+            BRepBuilderAPI_MakePolygon poly;
+            for (unsigned long i = 0; i < n_pts; ++i) {
+                gp_Pnt p(xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]);
+                p.Transform(tr);
+                poly.Add(p);
+            }
+            poly.Close();
+            if (!poly.IsDone()) {
+                return nullptr;
+            }
+            gen.AddWire(poly.Wire());
+        }
+        gen.Build();
+        if (!gen.IsDone()) {
             return nullptr;
         }
-        return new BearcadShape{revol.Shape()};
+        return new BearcadShape{gen.Shape()};
     } catch (const Standard_Failure&) {
         return nullptr;
     } catch (...) {

@@ -493,7 +493,18 @@ pub fn instruction_from_json(
                 }
                 Some(v) => revolve_axis_from_value(doc, v)?,
             };
-            let angle_deg = opt_f32(o, "angle")?.unwrap_or(360.0);
+            // Angle (degrees) or revolutions (turns × 360); revolutions wins if both given (#1242).
+            let angle_deg = if let Some(turns) = opt_f32(o, "revolutions")? {
+                turns * 360.0
+            } else {
+                opt_f32(o, "angle")?.unwrap_or(360.0)
+            };
+            // Helical pitch: `pitch`/`offset` is start-to-start; `gap` is clear gap (no axial
+            // extent correction here — scripts use pitch/offset for the stored value) (#1242).
+            let pitch_mm = opt_f32(o, "pitch")?
+                .or(opt_f32(o, "offset")?)
+                .or(opt_f32(o, "gap")?)
+                .unwrap_or(0.0);
             let symmetric = opt_bool(o, "symmetric")?.unwrap_or(false);
             let bodies = usize_list(o, "bodies")?;
             // Same mapping as the closure: "add"→AddTouching, "cut"→Cut, else NewBody.
@@ -502,7 +513,15 @@ pub fn instruction_from_json(
                 Some("cut") => RevolveBodyChoice::Cut,
                 _ => RevolveBodyChoice::NewBody,
             };
-            Ok(Instruction::Revolve { faces, axis, angle_deg, symmetric, body, bodies })
+            Ok(Instruction::Revolve {
+                faces,
+                axis,
+                angle_deg,
+                pitch_mm,
+                symmetric,
+                body,
+                bodies,
+            })
         }
         "loft" => {
             let faces = collect_profile_faces(doc, o, true)?;
@@ -2727,6 +2746,7 @@ mod tests {
                 faces: vec![ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)])],
                 axis: RevolveAxis::Y,
                 angle_deg: 360.0,
+                pitch_mm: 0.0,
                 symmetric: false,
                 body: RevolveBodyChoice::NewBody,
                 bodies: vec![],
@@ -2742,9 +2762,27 @@ mod tests {
                 faces: vec![ExtrudeFace::Circle(rkey(0))],
                 axis: RevolveAxis::Line(lkey(3)),
                 angle_deg: 90.0,
+                pitch_mm: 0.0,
                 symmetric: true,
                 body: RevolveBodyChoice::Cut,
                 bodies: vec![1, 2],
+            })
+        );
+        // #1242: revolutions and pitch for springs.
+        assert_eq!(
+            instruction_from_json(
+                &doc,
+                "revolve",
+                &json!({ "polygon": [0, 1, 2, 3], "axis": "y", "revolutions": 2.5, "pitch": 5.0 })
+            ),
+            Ok(Instruction::Revolve {
+                faces: vec![ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)])],
+                axis: RevolveAxis::Y,
+                angle_deg: 900.0,
+                pitch_mm: 5.0,
+                symmetric: false,
+                body: RevolveBodyChoice::NewBody,
+                bodies: vec![],
             })
         );
         assert!(instruction_from_json(&doc, "revolve", &json!({ "circle": 0 })).is_err());

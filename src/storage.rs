@@ -1802,6 +1802,7 @@ mod tests {
             faces: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             angle_deg: angle,
+            pitch_mm: 0.0,
             symmetric: false,
             mode: crate::model::RevolveMode::NewBody,
             name: None,

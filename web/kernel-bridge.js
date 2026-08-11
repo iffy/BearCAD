@@ -79,12 +79,12 @@ export function kernel_loft(bottom, top) {
   return h;
 }
 
-export function kernel_revolve(xyz, ox, oy, oz, ax, ay, az, angleRad, symmetric) {
+export function kernel_revolve(xyz, ox, oy, oz, ax, ay, az, angleRad, symmetric, pitch) {
   const m = M();
   if (!m) return 0;
   const ptr = copyF64In(m, xyz);
   const h = m._bearcad_shape_revolve(ptr, xyz.length / 3, ox, oy, oz, ax, ay, az, angleRad,
-                                     symmetric ? 1 : 0);
+                                     symmetric ? 1 : 0, pitch ?? 0);
   m._free(ptr);
   return h;
 }

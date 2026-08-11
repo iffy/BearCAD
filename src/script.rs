@@ -375,10 +375,12 @@ pub enum Instruction {
         shape: crate::model::Primitive,
     },
     /// Revolve profiles around an axis (SPEC §3.5 Revolve). Sketch inferred per face.
+    /// `pitch_mm` is helical pitch (mm per full turn); 0 is a pure revolve (#1242).
     Revolve {
         faces: Vec<crate::model::ExtrudeFace>,
         axis: crate::model::RevolveAxis,
         angle_deg: f32,
+        pitch_mm: f32,
         symmetric: bool,
         body: crate::actions::RevolveBodyChoice,
         bodies: Vec<usize>,
@@ -1344,6 +1346,7 @@ impl Instruction {
                 faces,
                 axis,
                 angle_deg,
+                pitch_mm,
                 symmetric,
                 body,
                 bodies,
@@ -1374,6 +1377,9 @@ impl Instruction {
                 }
                 parts.push(format!("axis = {}", revolve_axis_lua(*axis)));
                 parts.push(format!("angle = {angle_deg}"));
+                if pitch_mm.abs() > 1e-9 {
+                    parts.push(format!("pitch = {pitch_mm}"));
+                }
                 if *symmetric {
                     parts.push("symmetric = true".to_string());
                 }
@@ -3372,6 +3378,7 @@ pub fn instruction_for_new_revolution(doc: &crate::model::Document) -> Option<In
         faces: rev.faces.clone(),
         axis: rev.axis,
         angle_deg: rev.angle_deg,
+        pitch_mm: rev.pitch_mm,
         symmetric: rev.symmetric,
         body,
         bodies: body_ordinals(doc, &bodies)?,
@@ -6214,6 +6221,7 @@ impl ScriptRunner {
                 faces,
                 axis,
                 angle_deg,
+                pitch_mm,
                 symmetric,
                 body,
                 bodies,
@@ -6233,6 +6241,7 @@ impl ScriptRunner {
                     faces,
                     axis,
                     angle_deg,
+                    pitch_mm,
                     symmetric,
                     body,
                     bodies,

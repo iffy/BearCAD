@@ -2202,7 +2202,7 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   (resolved at commit by mesh-bounds intersection), or **cut from picked bodies** — chosen
   with a segmented icon button group (New body / Add to touching / Cut, the same icons the
   Extrude "into" picker uses) (#261); cut targets are clicked in the viewport and listed in
-  the context pane's generic selection picker. Data model: `Revolution { sketch, faces, axis, angle_deg, symmetric, mode }` in
+  the context pane's generic selection picker. Data model: `Revolution { sketch, faces, axis, angle_deg, pitch_mm, symmetric, mode }` in
   `Document::revolutions`, an `arena::Arena` (#1055), with
   `RevolveMode::{NewBody, AddTo(bodies), Cut(bodies)}`; a revolve is named by a
   `RevolutionKey` — by `BodySource::Revolve`, by `FaceId::RevolveCap`/`RevolveSide` for a
@@ -2213,13 +2213,17 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   `ShapeKind::Revolution` undo marker covers the feature and its body. Kernel builds use
   `BRepPrimAPI_MakeRevol` (full revolutions via the no-angle constructor — the angle
   constructor normalizes mod 2π and would build a sliver from a float 2π) with symmetric
-  sweeps pre-rotating the profile; the no-kernel fallback lathes rotated profile rings
-  with sweep-end caps, oriented against the rotated profile centroid (correct for
-  washer profiles that don't contain the axis). Scriptable as
-  `bearcad.revolve{ polygon|circles =, axis = "x"|"y"|"z"|{line = i}, angle =,
-  symmetric =, body = "new"|"add"|"cut", bodies = {..} }`, and interactive revolves
-  replay to the command log as the same call. Limitation: the profile must not cross its
-  axis.
+  sweeps pre-rotating the profile; non-zero `pitch_mm` (axial travel per full turn, #1242)
+  lofts intermediate helical sections via ThruSections for springs. The no-kernel fallback
+  lathes rotated (and axially advanced) profile rings with sweep-end caps, oriented against
+  the rotated profile centroid (correct for washer profiles that don't contain the axis).
+  The context pane's **Angle** field toggles to **Revolutions** (turns, decimals allowed;
+  both signed), and a **Gap/Offset** field (same icons as Repeat) sets the helical pitch —
+  Offset is start-to-start after 360°, Gap is clear space between coils. Scriptable as
+  `bearcad.revolve{ polygon|circles =, axis = "x"|"y"|"z"|{line = i}, angle = |
+  revolutions =, pitch|offset|gap =, symmetric =, body = "new"|"add"|"cut", bodies = {..} }`,
+  and interactive revolves replay to the command log as the same call. Limitation: the
+  profile must not cross its axis.
 - **Loft** *(implemented)* — blend a solid through two or more closed cross-section
   profiles (circles or line loops) on different planes. The **Loft** toolbar tool collects
   sections by clicking profiles in the viewport (a click on a loop's line picks the whole

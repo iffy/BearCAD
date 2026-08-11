@@ -46,6 +46,7 @@ mod ffi {
             az: f64,
             angle_rad: f64,
             symmetric: c_int,
+            pitch: f64,
         ) -> *mut BearcadShape;
         pub fn bearcad_shape_loft(
             bottom_xyz: *const f64,
@@ -323,15 +324,18 @@ impl Shape {
 
     /// Revolve a closed planar profile around `axis` (through `origin`) by `angle_rad`
     /// (#revolve). `symmetric` sweeps half the angle to each side of the profile plane.
-    /// `None` on a degenerate profile/axis or kernel failure.
+    /// Non-zero `pitch` (axial travel per full 2π turn) makes a helix for springs (#1242).
+    /// Signed `angle_rad` is allowed (negative reverses the turn). `None` on a degenerate
+    /// profile/axis or kernel failure.
     pub fn revolve(
         profile: &[glam::Vec3],
         origin: glam::Vec3,
         axis: glam::Vec3,
         angle_rad: f64,
         symmetric: bool,
+        pitch: f64,
     ) -> Option<Shape> {
-        if profile.len() < 3 || axis.length_squared() < 1e-12 || angle_rad <= 0.0 {
+        if profile.len() < 3 || axis.length_squared() < 1e-12 || angle_rad.abs() < 1e-12 {
             return None;
         }
         let mut xyz = Vec::with_capacity(profile.len() * 3);
@@ -352,6 +356,7 @@ impl Shape {
                 axis.z as f64,
                 angle_rad,
                 symmetric as std::os::raw::c_int,
+                pitch,
             )
         };
         (!raw.is_null()).then_some(Shape { raw })

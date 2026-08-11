@@ -37,6 +37,7 @@ extern "C" {
         az: f64,
         angle_rad: f64,
         symmetric: bool,
+        pitch: f64,
     ) -> u32;
     fn kernel_sweep(profile: &[f64], path: &[f64], smooth: bool) -> u32;
     fn kernel_boolean(a: u32, b: u32, op: i32) -> u32;
@@ -190,8 +191,13 @@ impl Shape {
         axis: glam::Vec3,
         angle_rad: f64,
         symmetric: bool,
+        pitch: f64,
     ) -> Option<Shape> {
-        if profile.len() < 3 || axis.length_squared() < 1e-12 || angle_rad <= 0.0 || !kernel_available() {
+        if profile.len() < 3
+            || axis.length_squared() < 1e-12
+            || angle_rad.abs() < 1e-12
+            || !kernel_available()
+        {
             return None;
         }
         Self::from_handle(kernel_revolve(
@@ -204,6 +210,7 @@ impl Shape {
             axis.z as f64,
             angle_rad,
             symmetric,
+            pitch,
         ))
     }
 

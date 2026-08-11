@@ -1551,6 +1551,19 @@ pub struct CreatingRevolve {
     pub text: String,
     pub user_edited: bool,
     pub pending_focus: bool,
+    /// When true the angle field is shown as revolutions (`angle_deg / 360`), not degrees
+    /// (#1242). Typing `2.5` then means two and a half turns.
+    pub angle_is_revolutions: bool,
+    /// Live helical pitch in millimetres (axial travel per full turn). Gizmo-free; driven by
+    /// the Gap/Offset field (#1242).
+    pub pitch_live: f32,
+    /// Gap/Offset field text. In Offset mode this is the pitch; in Gap mode it's the clear
+    /// space between successive coils (pitch minus the profile's axial height).
+    pub gap_text: String,
+    pub gap_user_edited: bool,
+    /// When true the field is **Offset** (start-to-start pitch); when false it's **Gap**
+    /// (clear space between coils) — same toggle icons as the Repeat tool (#1242).
+    pub gap_is_offset: bool,
     pub symmetric: bool,
     pub body_choice: RevolveBodyChoice,
     /// Bodies picked for Cut mode.
@@ -1569,6 +1582,11 @@ impl Default for CreatingRevolve {
             text: "360".to_string(),
             user_edited: false,
             pending_focus: false,
+            angle_is_revolutions: false,
+            pitch_live: 0.0,
+            gap_text: "0".to_string(),
+            gap_user_edited: false,
+            gap_is_offset: true,
             symmetric: false,
             body_choice: RevolveBodyChoice::default(),
             cut_bodies: Vec::new(),
@@ -1578,17 +1596,111 @@ impl Default for CreatingRevolve {
 }
 
 impl CreatingRevolve {
-    /// The effective sweep angle in degrees: the typed expression when edited (bare
-    /// numbers are degrees; `rad`/`deg` suffixes and parameters work), else the live
-    /// gizmo angle.
+    /// The effective sweep angle in degrees: the typed expression when edited, else the live
+    /// gizmo angle. In revolutions mode a bare number is turns × 360 (#1242).
     pub fn evaluated_angle_deg(&self, doc: &Document) -> f32 {
         if self.user_edited {
-            crate::value::eval_angle_rad_in_doc(&self.text, doc)
-                .map(|r| r.to_degrees())
-                .unwrap_or(self.angle_live)
+            if self.angle_is_revolutions {
+                crate::value::eval_length_mm_in_doc(&self.text, doc)
+                    .map(|turns| turns * 360.0)
+                    .unwrap_or(self.angle_live)
+            } else {
+                crate::value::eval_angle_rad_in_doc(&self.text, doc)
+                    .map(|r| r.to_degrees())
+                    .unwrap_or(self.angle_live)
+            }
         } else {
             self.angle_live
         }
+    }
+
+    /// The helical pitch in millimetres (axial travel per full 360°). `pitch_live` always
+    /// holds the true pitch; when the user edits the field, Offset mode takes the typed
+    /// value as pitch and Gap mode adds the profile's axial extent so a typed gap is the
+    /// clear space between coils (#1242).
+    pub fn evaluated_pitch_mm(&self, doc: &Document) -> f32 {
+        if !self.gap_user_edited {
+            return self.pitch_live;
+        }
+        let raw =
+            crate::value::eval_length_mm_in_doc(&self.gap_text, doc).unwrap_or(self.pitch_live);
+        if self.gap_is_offset {
+            raw
+        } else {
+            raw + self.profile_axial_extent(doc)
+        }
+    }
+
+    /// Axial span of the picked profiles along the revolve axis (for Gap ↔ Offset conversion).
+    pub fn profile_axial_extent(&self, doc: &Document) -> f32 {
+        let (Some(axis), Some(sketch)) = (self.axis, self.sketch) else {
+            return 0.0;
+        };
+        let probe = crate::model::Revolution {
+            sketch,
+            faces: self.faces.clone(),
+            axis,
+            angle_deg: 360.0,
+            pitch_mm: 0.0,
+            symmetric: false,
+            mode: crate::model::RevolveMode::NewBody,
+            name: None,
+        };
+        crate::extrude::revolve_profile_axial_extent(doc, &probe).unwrap_or(0.0)
+    }
+
+    /// Sync the angle field text from `angle_live` for the current Angle/Revolutions mode.
+    pub fn refresh_angle_text_from_live(&mut self) {
+        if self.user_edited {
+            return;
+        }
+        if self.angle_is_revolutions {
+            let turns = self.angle_live / 360.0;
+            self.text = format_compact_number(turns);
+        } else {
+            self.text = format!("{:.0}", self.angle_live);
+        }
+    }
+
+    /// Sync the gap field text from `pitch_live` for the current Gap/Offset mode.
+    pub fn refresh_gap_text_from_live(&mut self, doc: &Document) {
+        if self.gap_user_edited {
+            return;
+        }
+        let shown = if self.gap_is_offset {
+            self.pitch_live
+        } else {
+            self.pitch_live - self.profile_axial_extent(doc)
+        };
+        self.gap_text = format_compact_number(shown);
+    }
+
+    /// Flip Angle ↔ Revolutions, converting the typed value so the solid doesn't jump (#1242).
+    pub fn toggle_angle_mode(&mut self, doc: &Document) {
+        let angle = self.evaluated_angle_deg(doc);
+        self.angle_live = angle;
+        self.angle_is_revolutions = !self.angle_is_revolutions;
+        self.user_edited = false;
+        self.refresh_angle_text_from_live();
+    }
+
+    /// Flip Gap ↔ Offset, converting the typed value so the pitch stays the same (#1242).
+    pub fn toggle_gap_mode(&mut self, doc: &Document) {
+        let pitch = self.evaluated_pitch_mm(doc);
+        self.pitch_live = pitch;
+        self.gap_is_offset = !self.gap_is_offset;
+        self.gap_user_edited = false;
+        self.refresh_gap_text_from_live(doc);
+    }
+}
+
+/// A short decimal without trailing zeros — for revolution counts and pitch display.
+fn format_compact_number(v: f32) -> String {
+    if (v - v.round()).abs() < 1e-4 {
+        format!("{}", v.round() as i64)
+    } else {
+        let s = format!("{v:.4}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
     }
 }
 
@@ -2464,6 +2576,8 @@ pub enum Action {
         faces: Vec<ExtrudeFace>,
         axis: crate::model::RevolveAxis,
         angle_deg: f32,
+        /// Helical pitch (mm per full turn); 0 = pure revolve (#1242).
+        pitch_mm: f32,
         symmetric: bool,
         body: RevolveBodyChoice,
         bodies: Vec<crate::model::BodyKey>,
@@ -5363,6 +5477,7 @@ impl AppState {
                     faces: faces.to_vec(),
                     axis,
                     angle_deg,
+                    pitch_mm: 0.0,
                     symmetric,
                     mode: crate::model::RevolveMode::NewBody,
                     name: None,
@@ -5471,6 +5586,7 @@ impl AppState {
         faces: Vec<ExtrudeFace>,
         axis: crate::model::RevolveAxis,
         angle_deg: f32,
+        pitch_mm: f32,
         symmetric: bool,
         mode: crate::model::RevolveMode,
     ) -> ActionResult {
@@ -5479,6 +5595,7 @@ impl AppState {
             faces,
             axis,
             angle_deg,
+            pitch_mm,
             symmetric,
             mode: mode.clone(),
             name: None,
@@ -5525,6 +5642,7 @@ impl AppState {
         faces: Vec<ExtrudeFace>,
         axis: crate::model::RevolveAxis,
         angle_deg: f32,
+        pitch_mm: f32,
         symmetric: bool,
         mode: crate::model::RevolveMode,
     ) -> ActionResult {
@@ -5536,6 +5654,7 @@ impl AppState {
             faces,
             axis,
             angle_deg,
+            pitch_mm,
             symmetric,
             mode: mode.clone(),
             name: existing.name.clone(),
@@ -6466,6 +6585,7 @@ fn operation_preview_world_bounds(state: &AppState) -> Option<(Vec3, Vec3)> {
                     faces: cr.faces.clone(),
                     axis,
                     angle_deg: cr.evaluated_angle_deg(doc),
+                    pitch_mm: cr.evaluated_pitch_mm(doc),
                     symmetric: cr.symmetric,
                     mode: crate::model::RevolveMode::NewBody,
                     name: None,
@@ -14057,7 +14177,9 @@ op,
                 let Some(mut cr) = self.creating_revolve.take() else {
                     return ActionResult::Err("No revolve in progress".to_string());
                 };
-                if let Err(e) = commit_inline_parameter_defs(&mut self.doc, [&mut cr.text]) {
+                if let Err(e) =
+                    commit_inline_parameter_defs(&mut self.doc, [&mut cr.text, &mut cr.gap_text])
+                {
                     self.status = e.clone();
                     self.creating_revolve = Some(cr);
                     return ActionResult::Err(e);
@@ -14075,12 +14197,14 @@ op,
                     return ActionResult::Err(e);
                 };
                 let angle = cr.evaluated_angle_deg(&self.doc);
-                if !(angle > 0.0) {
+                // #1242: signed multi-turn angles are allowed (negative reverses the turn).
+                if angle.abs() < 1e-6 {
                     self.creating_revolve = Some(cr);
-                    let e = "Revolve angle must be positive".to_string();
+                    let e = "Revolve angle must be non-zero".to_string();
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
+                let pitch_mm = cr.evaluated_pitch_mm(&self.doc);
                 let mode = match self.resolve_revolve_mode(
                     sketch,
                     &cr.faces,
@@ -14104,6 +14228,7 @@ op,
                         cr.faces.clone(),
                         axis,
                         angle,
+                        pitch_mm,
                         cr.symmetric,
                         mode,
                     ),
@@ -14112,6 +14237,7 @@ op,
                         cr.faces.clone(),
                         axis,
                         angle,
+                        pitch_mm,
                         cr.symmetric,
                         mode,
                     ),
@@ -14237,6 +14363,7 @@ op,
                 faces,
                 axis,
                 angle_deg,
+                pitch_mm,
                 symmetric,
                 body,
                 bodies,
@@ -14250,7 +14377,7 @@ op,
                         return ActionResult::Err(e);
                     }
                 };
-                self.create_revolution(sketch, faces, axis, angle_deg, symmetric, mode)
+                self.create_revolution(sketch, faces, axis, angle_deg, pitch_mm, symmetric, mode)
             }
             Action::SetSnapping(enabled) => {
                 self.snapping_enabled = enabled;

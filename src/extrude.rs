@@ -3917,9 +3917,71 @@ pub fn revolve_axis_world(
     axis_world(doc, rev.axis)
 }
 
-/// Effective sweep angle in degrees, clamped to a sane range (360 = full revolution).
+/// Effective sweep angle in degrees for building the solid.
+///
+/// Pure revolve (`pitch_mm ≈ 0`): magnitude is clamped to (0.1, 360] — multi-turn without
+/// pitch collapses onto one full turn. Helical revolve keeps the signed multi-turn angle
+/// so springs can wind more than once (#1242). Zero is nudged to a tiny positive so the
+/// mesh still builds something pickable.
 pub fn revolve_effective_angle(rev: &crate::model::Revolution) -> f32 {
-    rev.angle_deg.clamp(0.1, 360.0)
+    let a = rev.angle_deg;
+    if rev.pitch_mm.abs() < 1e-9 {
+        let mag = a.abs().clamp(0.1, 360.0);
+        if a < 0.0 {
+            -mag
+        } else {
+            mag
+        }
+    } else if a.abs() < 0.1 {
+        if a < 0.0 {
+            -0.1
+        } else {
+            0.1
+        }
+    } else {
+        a
+    }
+}
+
+/// Whether the revolve has distinct start/end profile caps (not closed on itself).
+/// A pure full turn closes; a helix always has ends (#1242).
+pub fn revolve_has_caps(rev: &crate::model::Revolution) -> bool {
+    rev.pitch_mm.abs() > 1e-6 || revolve_effective_angle(rev).abs() < 359.99
+}
+
+/// Axial span of the revolve profiles along the axis (max − min of points projected onto
+/// the axis direction). Used to convert Gap ↔ Offset for helical pitch (#1242).
+pub fn revolve_profile_axial_extent(
+    doc: &Document,
+    rev: &crate::model::Revolution,
+) -> Option<f32> {
+    let (origin, dir) = revolve_axis_world(doc, rev)?;
+    let dir = dir.normalize_or_zero();
+    if dir.length_squared() < 1e-8 {
+        return None;
+    }
+    let mut min_t = f32::INFINITY;
+    let mut max_t = f32::NEG_INFINITY;
+    for face in &rev.faces {
+        let (pts, _) = face_profile_world(doc, face)?;
+        for p in pts {
+            let t = (p - origin).dot(dir);
+            min_t = min_t.min(t);
+            max_t = max_t.max(t);
+        }
+    }
+    if !min_t.is_finite() {
+        return None;
+    }
+    Some((max_t - min_t).max(0.0))
+}
+
+/// Helical transform: rotate `p` around `axis` (through `origin`) by `angle_deg` and
+/// translate along the axis by `pitch_mm * angle_deg / 360` (#1242).
+fn helical_point(origin: Vec3, dir: Vec3, pitch_mm: f32, angle_deg: f32, p: Vec3) -> Vec3 {
+    let q = glam::Quat::from_axis_angle(dir, angle_deg.to_radians());
+    let axial = pitch_mm * (angle_deg / 360.0);
+    origin + q * (p - origin) + dir * axial
 }
 
 /// World polygon of a partial revolve's flat start/end side (#621): the profile rotated
@@ -3936,23 +3998,28 @@ pub fn revolve_cap_polygon_world(
     if !rev.faces.contains(profile) {
         return None;
     }
-    let (origin, dir) = revolve_axis_world(doc, rev)?;
-    let angle = revolve_effective_angle(rev);
-    if angle >= 359.99 {
+    if !revolve_has_caps(rev) {
         return None;
     }
+    let (origin, dir) = revolve_axis_world(doc, rev)?;
+    let angle = revolve_effective_angle(rev);
     let start = if rev.symmetric { -angle / 2.0 } else { 0.0 };
     let cap_angle = if end { start + angle } else { start };
-    let q = glam::Quat::from_axis_angle(dir, cap_angle.to_radians());
     let (pts, _) = face_profile_world(doc, profile)?;
     if pts.len() < 3 {
         return None;
     }
-    let poly: Vec<Vec3> = pts.iter().map(|p| origin + q * (*p - origin)).collect();
+    let poly: Vec<Vec3> = pts
+        .iter()
+        .map(|p| helical_point(origin, dir, rev.pitch_mm, cap_angle, *p))
+        .collect();
     // Sweep tangent at the rotated centroid (direction of increasing angle, right-hand
-    // rule about `dir`): the end cap faces along it, the start cap opposite.
+    // rule about `dir`): the end cap faces along it, the start cap opposite. With pitch
+    // the path is helical, so the outward also has a small axial component; for picking
+    // the circumferential tangent is still the useful normal of a flat-ish cap.
     let centroid = poly.iter().copied().sum::<Vec3>() / poly.len() as f32;
-    let tangent = dir.cross(centroid - origin).normalize_or_zero();
+    let radial = centroid - (origin + dir * (centroid - origin).dot(dir));
+    let tangent = dir.cross(radial).normalize_or_zero();
     if tangent.length_squared() < 1e-8 {
         return None;
     }
@@ -3988,6 +4055,10 @@ pub fn revolve_side_geom(
     if !rev.faces.contains(profile) {
         return None;
     }
+    // Helical sides are not flat — only pure revolves expose flat washer faces (#1242).
+    if rev.pitch_mm.abs() > 1e-6 {
+        return None;
+    }
     let (origin, dir) = revolve_axis_world(doc, rev)?;
     let (pts, _) = face_profile_world(doc, profile)?;
     let n = pts.len();
@@ -4021,8 +4092,8 @@ pub fn revolve_side_geom(
     };
     let angle = revolve_effective_angle(rev);
     let start = if rev.symmetric { -angle / 2.0 } else { 0.0 };
-    let full = angle >= 359.99;
-    let steps = (((CIRCLE_SEGMENTS as f32) * angle / 360.0).ceil() as usize).max(8);
+    let full = !revolve_has_caps(rev);
+    let steps = (((CIRCLE_SEGMENTS as f32) * angle.abs() / 360.0).ceil() as usize).max(8);
     let arc = |p: Vec3, reverse: bool| -> Vec<Vec3> {
         (0..=steps)
             .map(|i| {
@@ -4056,7 +4127,8 @@ pub fn revolve_side_annulus(
     edge: usize,
 ) -> Option<(f32, f32)> {
     let rev = doc.revolutions.get(revolution)?;
-    if revolve_effective_angle(rev) < 359.99 {
+    // Full pure washer only — a helix has no closed annulus (#1242).
+    if revolve_has_caps(rev) {
         return None;
     }
     let (origin, dir) = revolve_axis_world(doc, rev)?;
@@ -4075,24 +4147,28 @@ pub fn revolve_side_annulus(
 /// Hand-rolled lathe mesh for a revolution (the no-kernel fallback and the live ghost
 /// preview): each profile is swept around the axis in angular steps, walls stitched
 /// between consecutive rotated rings, with the start/end profile faces capped for a
-/// partial sweep (a full 360-degree sweep closes on itself and needs no caps).
+/// partial sweep (a full 360-degree pure revolve closes on itself and needs no caps).
+/// Non-zero pitch advances each ring along the axis for a helical spring coil (#1242).
 pub fn revolve_mesh(doc: &Document, rev: &crate::model::Revolution) -> Option<SolidMesh> {
     let (origin, dir) = revolve_axis_world(doc, rev)?;
     let angle = revolve_effective_angle(rev);
-    let full = angle >= 359.99;
+    let full = !revolve_has_caps(rev);
     let start = if rev.symmetric { -angle / 2.0 } else { 0.0 };
+    let pitch = rev.pitch_mm;
     let mut mesh = SolidMesh::default();
     for face in &rev.faces {
         let (profile, _normal) = face_profile_world(doc, face)?;
         if profile.len() < 3 {
             return None;
         }
-        let steps = (((CIRCLE_SEGMENTS as f32) * angle / 360.0).ceil() as usize).max(8);
+        let steps = (((CIRCLE_SEGMENTS as f32) * angle.abs() / 360.0).ceil() as usize).max(8);
         let rings: Vec<Vec<Vec3>> = (0..=steps)
             .map(|i| {
-                let a = (start + angle * i as f32 / steps as f32).to_radians();
-                let q = glam::Quat::from_axis_angle(dir, a);
-                profile.iter().map(|p| origin + q * (*p - origin)).collect()
+                let a = start + angle * i as f32 / steps as f32;
+                profile
+                    .iter()
+                    .map(|p| helical_point(origin, dir, pitch, a, *p))
+                    .collect()
             })
             .collect();
         // Orientation reference: the *rotated profile centroid* at each sweep step — a
@@ -4101,8 +4177,8 @@ pub fn revolve_mesh(doc: &Document, rev: &crate::model::Revolution) -> Option<So
         let centroid = profile.iter().copied().sum::<Vec3>() / profile.len() as f32;
         let centroids: Vec<Vec3> = (0..=steps)
             .map(|i| {
-                let a = (start + angle * i as f32 / steps as f32).to_radians();
-                origin + glam::Quat::from_axis_angle(dir, a) * (centroid - origin)
+                let a = start + angle * i as f32 / steps as f32;
+                helical_point(origin, dir, pitch, a, centroid)
             })
             .collect();
         let n = profile.len();
@@ -4129,17 +4205,20 @@ pub fn revolve_mesh(doc: &Document, rev: &crate::model::Revolution) -> Option<So
 }
 
 /// Real BREP solid of revolution via the kernel: each profile revolved with
-/// `BRepPrimAPI_MakeRevol`, multiple profiles fused. `None` when any face/axis is
-/// degenerate or the kernel can't build it (callers fall back to [`revolve_mesh`]).
+/// `BRepPrimAPI_MakeRevol` (or a helical ThruSections when pitch is non-zero), multiple
+/// profiles fused. `None` when any face/axis is degenerate or the kernel can't build it
+/// (callers fall back to [`revolve_mesh`]).
 pub fn occt_revolution_shape(
     doc: &Document,
     rev: &crate::model::Revolution,
 ) -> Option<crate::kernel::Shape> {
     let (origin, dir) = revolve_axis_world(doc, rev)?;
     let angle_rad = revolve_effective_angle(rev).to_radians() as f64;
+    let pitch = rev.pitch_mm as f64;
     let mut fused: Option<crate::kernel::Shape> = None;
     for face in &rev.faces {
-        let shape = occt_face_revolve_solid(doc, face, origin, dir, angle_rad, rev.symmetric)?;
+        let shape =
+            occt_face_revolve_solid(doc, face, origin, dir, angle_rad, rev.symmetric, pitch)?;
         fused = Some(match fused {
             None => shape,
             Some(acc) => acc.boolean(&shape, crate::kernel::BoolOp::Fuse)?,
@@ -4151,7 +4230,7 @@ pub fn occt_revolution_shape(
 /// BREP solid for revolving a single face about an axis (#263), mirroring [`occt_face_solid`]:
 /// a `Boolean` face revolves each operand and applies the same boolean to the swept solids, so a
 /// concentric-ring (annulus) profile revolves into a hollow solid of revolution. Leaf faces
-/// revolve their single boundary loop directly.
+/// revolve their single boundary loop directly. Non-zero `pitch` makes a helix (#1242).
 fn occt_face_revolve_solid(
     doc: &Document,
     face: &ExtrudeFace,
@@ -4159,10 +4238,11 @@ fn occt_face_revolve_solid(
     dir: Vec3,
     angle_rad: f64,
     symmetric: bool,
+    pitch: f64,
 ) -> Option<crate::kernel::Shape> {
     if let ExtrudeFace::Boolean { op, a, b } = face {
-        let sa = occt_face_revolve_solid(doc, a, origin, dir, angle_rad, symmetric)?;
-        let sb = occt_face_revolve_solid(doc, b, origin, dir, angle_rad, symmetric)?;
+        let sa = occt_face_revolve_solid(doc, a, origin, dir, angle_rad, symmetric, pitch)?;
+        let sb = occt_face_revolve_solid(doc, b, origin, dir, angle_rad, symmetric, pitch)?;
         let boolop = match op {
             crate::model::BooleanOp::Difference => crate::kernel::BoolOp::Cut,
             crate::model::BooleanOp::Intersection => crate::kernel::BoolOp::Common,
@@ -4173,7 +4253,7 @@ fn occt_face_revolve_solid(
     if profile.len() < 3 {
         return None;
     }
-    crate::kernel::Shape::revolve(&profile, origin, dir, angle_rad, symmetric)
+    crate::kernel::Shape::revolve(&profile, origin, dir, angle_rad, symmetric, pitch)
 }
 
 /// The revolutions fusing into (`false`) or cutting (`true`) `body_index`.
@@ -10243,6 +10323,7 @@ mod tests {
             faces,
             axis: crate::model::RevolveAxis::Y,
             angle_deg: angle,
+            pitch_mm: 0.0,
             symmetric,
             mode,
             name: None,
@@ -10391,6 +10472,99 @@ mod tests {
         );
     }
 
+    /// #1242: a non-zero pitch advances the profile along the axis — after one full turn
+    /// the end cap sits `pitch` past the start, so the solid's axial span grows by pitch
+    /// (on top of the profile's own height). That's a spring coil.
+    #[test]
+    fn revolve_with_pitch_advances_along_the_axis() {
+        let (mut doc, sketch) = sketch_doc();
+        // Profile at x 10..20, y 0..5 — axial height 5 along Y.
+        let profile = rect_profile(&mut doc, sketch, 10.0, 0.0, 10.0, 5.0);
+        let mut rev = test_revolution(
+            sketch,
+            vec![profile],
+            360.0,
+            false,
+            crate::model::RevolveMode::NewBody,
+        );
+        rev.pitch_mm = 20.0;
+        let mesh = revolve_mesh(&doc, &rev).expect("helical mesh");
+        let (min, max) = mesh.bounds().expect("bounds");
+        // Pure revolve would span y 0..5; with pitch 20 the end sits at y 20..25.
+        assert!(
+            (min.y - 0.0).abs() < 0.5,
+            "start of helix near y=0, got min.y={}",
+            min.y
+        );
+        assert!(
+            (max.y - 25.0).abs() < 1.0,
+            "end of helix near y=25 (5 profile + 20 pitch), got max.y={}",
+            max.y
+        );
+        // Multi-turn: 2.5 revolutions with pitch 10 → axial travel 25.
+        rev.angle_deg = 900.0; // 2.5 turns
+        rev.pitch_mm = 10.0;
+        let mesh2 = revolve_mesh(&doc, &rev).expect("multi-turn helix");
+        let (min2, max2) = mesh2.bounds().expect("bounds");
+        let span = max2.y - min2.y;
+        // profile height 5 + 2.5 * 10 pitch = 30
+        assert!(
+            (span - 30.0).abs() < 2.0,
+            "2.5 turns × pitch 10 + height 5 ≈ 30, got span {span}"
+        );
+    }
+
+    /// #1242: Gap mode stores pitch = gap + profile height; Offset mode stores pitch as-is.
+    #[test]
+    fn revolve_gap_offset_converts_through_profile_height() {
+        let mut state = crate::actions::AppState::default();
+        let sketch = state
+            .doc
+            .add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
+        let lines = crate::construction::add_line_rectangle(
+            &mut state.doc,
+            sketch,
+            10.0,
+            0.0,
+            10.0,
+            10.0,
+            [false; 4],
+        );
+        let mut cr = crate::actions::CreatingRevolve {
+            sketch: Some(sketch),
+            faces: vec![ExtrudeFace::Polygon(lines.to_vec())],
+            axis: Some(crate::model::RevolveAxis::Y),
+            gap_is_offset: true,
+            pitch_live: 15.0,
+            gap_text: "15".to_string(),
+            gap_user_edited: true,
+            ..crate::actions::CreatingRevolve::default()
+        };
+        assert!((cr.evaluated_pitch_mm(&state.doc) - 15.0).abs() < 1e-3);
+        // Flip to Gap: shown value becomes pitch − height = 15 − 10 = 5.
+        cr.toggle_gap_mode(&state.doc);
+        assert!(!cr.gap_is_offset);
+        assert!(
+            (cr.evaluated_pitch_mm(&state.doc) - 15.0).abs() < 1e-3,
+            "pitch preserved"
+        );
+        // Type a clear gap of 2 → pitch becomes 12.
+        cr.gap_text = "2".to_string();
+        cr.gap_user_edited = true;
+        assert!((cr.evaluated_pitch_mm(&state.doc) - 12.0).abs() < 1e-3);
+        // Angle ↔ Revolutions: 720° ↔ 2 turns.
+        cr.angle_live = 720.0;
+        cr.user_edited = false;
+        cr.angle_is_revolutions = false;
+        cr.refresh_angle_text_from_live();
+        cr.toggle_angle_mode(&state.doc);
+        assert!(cr.angle_is_revolutions);
+        assert!((cr.evaluated_angle_deg(&state.doc) - 720.0).abs() < 1e-3);
+        cr.text = "1.5".to_string();
+        cr.user_edited = true;
+        assert!((cr.evaluated_angle_deg(&state.doc) - 540.0).abs() < 1e-3);
+    }
+
     /// A 90-degree sweep is a quarter of the ring, symmetric or not.
     #[test]
     fn revolve_partial_sweep_is_proportional_and_symmetric_matches() {
@@ -10441,6 +10615,7 @@ mod tests {
             faces: vec![tube],
             axis: crate::model::RevolveAxis::X,
             angle_deg: 360.0,
+            pitch_mm: 0.0,
             symmetric: false,
             mode: crate::model::RevolveMode::Cut(vec![bkey(0)]),
             name: None,

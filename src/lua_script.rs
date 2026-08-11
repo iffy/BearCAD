@@ -5709,7 +5709,18 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 ));
             }
             let axis = parse_revolve_axis(lua, opts.get::<mlua::Value>("axis")?, "revolve")?;
-            let angle_deg: f32 = opts.get::<Option<f32>>("angle")?.unwrap_or(360.0);
+            // #1242: `revolutions` (turns) wins over `angle` (degrees) when both are set.
+            let angle_deg: f32 = if let Some(turns) = opts.get::<Option<f32>>("revolutions")? {
+                turns * 360.0
+            } else {
+                opts.get::<Option<f32>>("angle")?.unwrap_or(360.0)
+            };
+            // Helical pitch (mm per full turn): `pitch` / `offset` preferred; `gap` as alias.
+            let pitch_mm: f32 = opts
+                .get::<Option<f32>>("pitch")?
+                .or(opts.get::<Option<f32>>("offset")?)
+                .or(opts.get::<Option<f32>>("gap")?)
+                .unwrap_or(0.0);
             let symmetric: bool = opts.get::<Option<bool>>("symmetric")?.unwrap_or(false);
             let bodies: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
             let body = match opts.get::<Option<String>>("body")?.as_deref() {
@@ -5722,6 +5733,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     faces,
                     axis,
                     angle_deg,
+                    pitch_mm,
                     symmetric,
                     body,
                     bodies,
@@ -10947,6 +10959,38 @@ mod tests {
         assert!(
             (vol - expected).abs() < expected * 0.02,
             "expected ~{expected}, got {vol}"
+        );
+    }
+
+    /// #1242: `revolutions` and `pitch` wind a helical spring — multi-turn advances
+    /// along the axis by pitch × turns.
+    #[test]
+    fn lua_revolve_pitch_and_revolutions_make_a_spring() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ x = 10, y = 0, width = 5, height = 4 }
+            bearcad.exit_sketch()
+            bearcad.revolve{
+                polygon = {0,1,2,3},
+                axis = "y",
+                revolutions = 3,
+                pitch = 10,
+                name = "Spring"
+            }
+        "#,
+        );
+        assert_eq!(state.doc.revolutions.len(), 1);
+        let rev = state.doc.revolutions.keys().next().expect("the revolve");
+        assert!((state.doc.revolutions[rev].angle_deg - 1080.0).abs() < 1e-3);
+        assert!((state.doc.revolutions[rev].pitch_mm - 10.0).abs() < 1e-3);
+        let bi = state.doc.bodies.keys().last().unwrap();
+        let mesh = crate::extrude::body_solid_mesh(&state.doc, bi).expect("spring mesh");
+        let (min, max) = mesh.bounds().expect("bounds");
+        let span = max.y - min.y;
+        // profile height 4 + 3 turns × pitch 10 = 34
+        assert!(
+            (span - 34.0).abs() < 3.0,
+            "spring axial span ~34, got {span}"
         );
     }
 

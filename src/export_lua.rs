@@ -1559,6 +1559,7 @@ fn instruction_for_revolution(
         faces: rev.faces.clone(),
         axis: rev.axis,
         angle_deg: rev.angle_deg,
+        pitch_mm: rev.pitch_mm,
         symmetric: rev.symmetric,
         body,
         bodies: body_ords(doc, &bodies),

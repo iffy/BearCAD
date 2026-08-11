@@ -7832,6 +7832,7 @@ impl App {
             faces: cr.faces.clone(),
             axis,
             angle_deg: 360.0,
+            pitch_mm: 0.0,
             symmetric: false,
             mode: model::RevolveMode::NewBody,
             name: None,
@@ -7904,9 +7905,7 @@ impl App {
                 {
                     if let Some(cr) = self.state.creating_revolve.as_mut() {
                         cr.angle_live = angle;
-                        if !cr.user_edited {
-                            cr.text = format!("{angle:.0}");
-                        }
+                        cr.refresh_angle_text_from_live();
                     }
                 }
             }
@@ -9340,6 +9339,21 @@ impl App {
                         text: format!("{:.0}", existing.angle_deg),
                         user_edited: true,
                         pending_focus: false,
+                        angle_is_revolutions: false,
+                        pitch_live: existing.pitch_mm,
+                        gap_text: {
+                            let v = existing.pitch_mm;
+                            if (v - v.round()).abs() < 1e-4 {
+                                format!("{}", v.round() as i64)
+                            } else {
+                                format!("{v:.4}")
+                                    .trim_end_matches('0')
+                                    .trim_end_matches('.')
+                                    .to_string()
+                            }
+                        },
+                        gap_user_edited: true,
+                        gap_is_offset: true,
                         symmetric: existing.symmetric,
                         body_choice,
                         cut_bodies,
@@ -11329,11 +11343,18 @@ impl App {
         };
         let ctx = ui.ctx();
         let mut commit = false;
-        if let Some((mut text, mut want_focus, user_edited)) = self
+        if let Some((mut text, mut want_focus, user_edited, as_revolutions)) = self
             .state
             .creating_revolve
             .as_ref()
-            .map(|cr| (cr.text.clone(), cr.pending_focus, cr.user_edited))
+            .map(|cr| {
+                (
+                    cr.text.clone(),
+                    cr.pending_focus,
+                    cr.user_edited,
+                    cr.angle_is_revolutions,
+                )
+            })
         {
             let revolve_id = egui::Id::new(REVOLVE_ANGLE_FIELD_ID);
             // Never steal the keyboard back from another field the user moved to (#506).
@@ -11341,8 +11362,8 @@ impl App {
                 want_focus,
                 ctx.memory(|m| m.focused().is_some_and(|f| f != revolve_id)),
             );
-            // #887: the same field the line/dimension distance uses, in its angle flavour —
-            // which already spells the unit out under the box, so no "deg" label beside it.
+            // #887: angle flavour spells the unit out under the box. Revolutions mode (#1242)
+            // is unitless, so it uses the length field's bare-number path.
             let mut result = SketchDimFieldResult::default();
             let doc = &mut self.state.doc;
             egui::Area::new(egui::Id::new("revolve_angle_input"))
@@ -11359,16 +11380,18 @@ impl App {
                         true,
                         &mut want_focus,
                         user_edited,
-                        true,
+                        !as_revolutions,
                     );
                 });
             commit |= result.enter_commit;
-            if let Some(cr) = self.state.creating_revolve.as_mut() {
+            if let Some(mut cr) = self.state.creating_revolve.take() {
                 cr.text = text;
                 if result.changed {
                     cr.user_edited = true;
+                    cr.angle_live = cr.evaluated_angle_deg(&self.state.doc);
                 }
                 cr.pending_focus = want_focus;
+                self.state.creating_revolve = Some(cr);
             }
             apply_dimension_field_feedback(&mut self.state, &result);
         }
@@ -14809,6 +14832,10 @@ impl App {
                     // profile is picked but no axis yet, Profile otherwise.
                     axis_focused: cr
                         .is_some_and(|c| !c.faces.is_empty() && c.axis.is_none()),
+                    angle_text: cr.map(|c| c.text.clone()).unwrap_or_else(|| "360".to_string()),
+                    angle_is_revolutions: cr.map(|c| c.angle_is_revolutions).unwrap_or(false),
+                    gap_text: cr.map(|c| c.gap_text.clone()).unwrap_or_else(|| "0".to_string()),
+                    gap_is_offset: cr.map(|c| c.gap_is_offset).unwrap_or(true),
                     symmetric: cr.map(|c| c.symmetric).unwrap_or(false),
                     body_choice: cr.map(|c| c.body_choice).unwrap_or_default(),
                     cut_bodies: cr.map(|c| c.cut_bodies.clone()).unwrap_or_default(),
@@ -15017,16 +15044,59 @@ impl App {
                     context::RevolveEdit::Commit => {
                         self.state.apply(Action::CommitRevolve);
                     }
-                    other => {
-                        let cr = self
+                    context::RevolveEdit::Symmetric(v) => {
+                        self.state
+                            .creating_revolve
+                            .get_or_insert_with(actions::CreatingRevolve::default)
+                            .symmetric = v;
+                    }
+                    context::RevolveEdit::BodyChoice(choice) => {
+                        self.state
+                            .creating_revolve
+                            .get_or_insert_with(actions::CreatingRevolve::default)
+                            .body_choice = choice;
+                    }
+                    context::RevolveEdit::Angle(text) => {
+                        // Take the in-progress state so we can evaluate against `doc`
+                        // without double-borrowing `self.state`.
+                        let mut cr = self
                             .state
                             .creating_revolve
-                            .get_or_insert_with(actions::CreatingRevolve::default);
-                        match other {
-                            context::RevolveEdit::Symmetric(v) => cr.symmetric = v,
-                            context::RevolveEdit::BodyChoice(choice) => cr.body_choice = choice,
-                            context::RevolveEdit::Commit => unreachable!(),
-                        }
+                            .take()
+                            .unwrap_or_default();
+                        cr.text = text;
+                        cr.user_edited = true;
+                        cr.angle_live = cr.evaluated_angle_deg(&self.state.doc);
+                        self.state.creating_revolve = Some(cr);
+                    }
+                    context::RevolveEdit::ToggleAngleMode => {
+                        let mut cr = self
+                            .state
+                            .creating_revolve
+                            .take()
+                            .unwrap_or_default();
+                        cr.toggle_angle_mode(&self.state.doc);
+                        self.state.creating_revolve = Some(cr);
+                    }
+                    context::RevolveEdit::Gap(text) => {
+                        let mut cr = self
+                            .state
+                            .creating_revolve
+                            .take()
+                            .unwrap_or_default();
+                        cr.gap_text = text;
+                        cr.gap_user_edited = true;
+                        cr.pitch_live = cr.evaluated_pitch_mm(&self.state.doc);
+                        self.state.creating_revolve = Some(cr);
+                    }
+                    context::RevolveEdit::ToggleGapOffset => {
+                        let mut cr = self
+                            .state
+                            .creating_revolve
+                            .take()
+                            .unwrap_or_default();
+                        cr.toggle_gap_mode(&self.state.doc);
+                        self.state.creating_revolve = Some(cr);
                     }
                 }
             }
@@ -19434,6 +19504,7 @@ fn build_viewport_scene_input<'a>(
             faces: cr.faces.clone(),
             axis,
             angle_deg: cr.evaluated_angle_deg(doc),
+            pitch_mm: cr.evaluated_pitch_mm(doc),
             symmetric: cr.symmetric,
             mode: model::RevolveMode::NewBody,
             name: None,
