@@ -22732,7 +22732,6 @@ impl App {
     /// view renders its body as an orthographic/isometric wireframe (feature edges), laid out
     /// in a grid; views are added and removed from the controls at the top.
     fn draw_drawing_pane(&mut self, ui: &mut egui::Ui, drawing: model::DrawingKey) {
-        use crate::model::DrawingOrientation;
         // The editor is white-on-black to match the app's dark-mode aesthetic (#254); export
         // (see `drawing.rs`) stays the opposite — black ink on a white sheet.
         const INK: egui::Color32 = egui::Color32::from_gray(228);
@@ -22904,6 +22903,9 @@ impl App {
         }
 
         let mut remove_view: Option<usize> = None;
+        // #1225: right-click → "Create aligned view" arms the Aligned-view tool with this
+        // card as the base (instead of dumping every orientation into the menu).
+        let mut create_aligned_from: Option<usize> = None;
         let mut toggle_dim: Option<(usize, [i32; 3], [i32; 3])> = None;
         let mut toggle_circle_dim: Option<(usize, [i32; 3])> = None;
         let mut toggle_angle: Option<(usize, model::DrawingEdgeKey, model::DrawingEdgeKey)> = None;
@@ -22938,7 +22940,6 @@ impl App {
             .unwrap_or_default();
         // Each view is a draggable card positioned on the page at its `pos` fraction (#274).
         let mut move_view: Option<(usize, f32, f32)> = None;
-        let mut set_orientation: Option<(usize, DrawingOrientation)> = None;
         // True when the Aligned-view tool picked its parent this frame (#296), so the same
         // click doesn't also commit the child.
         let mut align_parent_set_this_frame = false;
@@ -23136,18 +23137,19 @@ impl App {
                         }
                     }
                 }
+                // #1225: don't dump every orientation — the context pane's navigation bear
+                // handles that. Offer Create aligned view (when this card can be a base) and
+                // Remove.
                 drag.context_menu(|ui| {
-                    ui.label("View");
-                    for o in DrawingOrientation::ALL {
-                        if ui.selectable_label(view.orientation == *o, o.label()).clicked() {
-                            set_orientation = Some((vi, *o));
+                    for action in crate::drawing::projection_card_context_actions(view.orientation) {
+                        if ui.button(action).clicked() {
+                            match action {
+                                "Create aligned view" => create_aligned_from = Some(vi),
+                                "Remove" => remove_view = Some(vi),
+                                _ => {}
+                            }
                             ui.close();
                         }
-                    }
-                    ui.separator();
-                    if ui.button("Remove").clicked() {
-                        remove_view = Some(vi);
-                        ui.close();
                     }
                 });
                 // Selected / hovered cards get a border (#289/#316); idle cards stay bare (#1229).
@@ -24177,6 +24179,17 @@ impl App {
             }
         }
 
+        // #1225: right-click → "Create aligned view" selects this card and arms the
+        // Aligned-view tool with it as the base (same as Select tool + Aligned view, but
+        // one click). Applied before the tool block so the ghost is ready this frame.
+        if let Some(vi) = create_aligned_from {
+            self.state
+                .select_drawing_only(drawing, context::DrawingElementRef::Projection(vi));
+            self.state.apply(Action::SetTool(Tool::DrawingAlign));
+            self.drawing_align_parent = Some(vi);
+            align_parent_set_this_frame = true;
+        }
+
         // Aligned-view tool (#296): once a parent projection is chosen, the mouse's direction
         // from it picks the child orientation (down/up/left/right); a ghost previews it lined
         // up with the parent, and a click commits it.
@@ -24436,10 +24449,6 @@ impl App {
             if !pan_suppressed_by_card && delta != egui::Vec2::ZERO {
                 self.drawing_pan += delta;
             }
-        }
-        if let Some((view, orientation)) = set_orientation {
-            self.state
-                .apply(Action::SetDrawingViewOrientation { drawing, view, orientation });
         }
         if let Some((view, a, b)) = toggle_dim {
             self.state

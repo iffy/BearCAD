@@ -2290,7 +2290,10 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   tool name `drawing_align`/`aligned_view`) derives an orthographic child from an existing
   projection. It picks a **base view** to align to: a single selected projection is used
   automatically on entering the tool, otherwise it's chosen from the tool's **Base view** element
-  picker in the context pane or by clicking a projection on the page (#365). Then move the mouse —
+  picker in the context pane or by clicking a projection on the page (#365). Right-clicking a
+  projection card offers **Create aligned view** (#1225) — selects that card and switches to
+  this tool with it as the base — instead of dumping every orientation into the menu
+  (orientation stays on the context-pane navigation bear). Then move the mouse —
   the direction from the base picks the child
   (down → Bottom, up → Top, right → Right, left → Left for a Front parent, by glass-box
   unfolding: `drawing::aligned_child_orientation`), previewed as a ghost card with the derived

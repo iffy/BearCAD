@@ -20,8 +20,10 @@ toolbar holds the [drawing tools](/docs/drawing-tools); **Back** returns to the 
 
 ## Removing views and elements
 
-Remove a view with the **×** on its card, or select any element and press **Delete**.
-Reopen a drawing from its Elements pane row.
+Remove a view with the **×** on its card, right-click → **Remove**, or select any element
+and press **Delete**. Right-click an orthographic card → **Create aligned view** arms
+the Aligned-view tool with that card as the base. Reopen a drawing from its Elements
+pane row.
 
 ## Resizing cards
 

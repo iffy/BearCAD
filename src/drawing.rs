@@ -75,9 +75,8 @@ pub fn aligned_child_orientation(
     dir: crate::model::AlignDir,
 ) -> Option<DrawingOrientation> {
     use crate::model::AlignDir;
-    use DrawingOrientation as O;
     // Only the six straight-on views unfold into aligned children; iso/edge/corner parents don't.
-    if !matches!(parent, O::Front | O::Back | O::Left | O::Right | O::Top | O::Bottom) {
+    if !can_be_aligned_base(parent) {
         return None;
     }
     let (r, u) = view_axes(parent);
@@ -93,6 +92,33 @@ pub fn aligned_child_orientation(
     // `resolved_view_axes`; here we just pick the nearest face by view direction for its label, so
     // all four directions are offerable rather than only the ones that happen to stay canonical.
     orientation_from_axes(cr, cu).or_else(|| nearest_face_by_view_dir(cr.cross(cu)))
+}
+
+/// Whether a projection can be the base of an aligned child (#296/#1225): only the six
+/// straight-on faces unfold into orthographic neighbours; iso/edge/corner/free cannot.
+pub fn can_be_aligned_base(orientation: DrawingOrientation) -> bool {
+    matches!(
+        orientation,
+        DrawingOrientation::Front
+            | DrawingOrientation::Back
+            | DrawingOrientation::Left
+            | DrawingOrientation::Right
+            | DrawingOrientation::Top
+            | DrawingOrientation::Bottom
+    )
+}
+
+/// Labels on a projection card's right-click menu (#1225). Orientation is changed in the
+/// context pane (navigation bear), not from a long dump of every view here. Orthographic
+/// cards offer **Create aligned view** (arms the Aligned-view tool with this card as base);
+/// every card can still be Removed.
+pub fn projection_card_context_actions(orientation: DrawingOrientation) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if can_be_aligned_base(orientation) {
+        out.push("Create aligned view");
+    }
+    out.push("Remove");
+    out
 }
 
 /// The orthographic orientations an aligned child may take while staying **in line** with its
@@ -2428,6 +2454,49 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
                 );
             }
             other => panic!("45° edge view of a flat circle should be EdgeOn, got {other:?}"),
+        }
+    }
+
+    /// #1225: a projection card's right-click menu no longer dumps every orientation — it offers
+    /// **Create aligned view** (when the card can be a base) and **Remove**. Orientation is
+    /// edited in the context pane.
+    #[test]
+    fn projection_card_context_menu_offers_aligned_view_not_every_orientation() {
+        use DrawingOrientation as O;
+        assert_eq!(
+            projection_card_context_actions(O::Front),
+            ["Create aligned view", "Remove"]
+        );
+        for o in [O::Back, O::Left, O::Right, O::Top, O::Bottom] {
+            assert!(
+                projection_card_context_actions(o).contains(&"Create aligned view"),
+                "{o:?} should offer Create aligned view"
+            );
+        }
+        // Iso / edge / corner / free cannot parent an aligned child — only Remove.
+        for o in [
+            O::Isometric,
+            O::Edge(crate::model::EdgeView::FrontRight),
+            O::Corner(crate::model::CornerView::FrontRightTop),
+            O::Free {
+                right: [1.0, 0.0, 0.0],
+                up: [0.0, 0.0, 1.0],
+            },
+        ] {
+            assert_eq!(
+                projection_card_context_actions(o),
+                ["Remove"],
+                "{o:?} should not offer Create aligned view"
+            );
+        }
+        // And the old dump of every orientation is gone.
+        let labels = projection_card_context_actions(O::Front);
+        for o in O::ALL {
+            assert!(
+                !labels.contains(&o.label()),
+                "menu must not list orientation {}",
+                o.label()
+            );
         }
     }
 
