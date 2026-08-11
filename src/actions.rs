@@ -17504,13 +17504,26 @@ pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
             });
         }
     }
-    // Move tool (#185): the translation components (mm) — the values the Move drag gizmos
-    // control, exposed so the tool is scriptable/testable ahead of the viewport handles.
+    // Move tool (#185/#1234): Free-mode translation (mm) and rotation (radians about the
+    // selection centre) — the values the viewport drag gizmos control.
     if let Some(cm) = &state.creating_move {
         let mm = |s: &str| crate::value::eval_length_mm_in_doc(s, &state.doc).unwrap_or(0.0);
+        let rad = |s: &str| {
+            if s.trim().is_empty() {
+                0.0
+            } else {
+                crate::value::eval_angle_rad_in_doc(s, &state.doc).unwrap_or(0.0)
+            }
+        };
         gizmos.push(GizmoInfo { kind: "offset", name: "move_x", value: mm(&cm.tx) });
         gizmos.push(GizmoInfo { kind: "offset", name: "move_y", value: mm(&cm.ty) });
         gizmos.push(GizmoInfo { kind: "offset", name: "move_z", value: mm(&cm.tz) });
+        // Rotation rings only apply in Free mode (#1234); snap modes turn via point pairs.
+        if cm.translate_mode == crate::model::MoveTranslateMode::Free {
+            gizmos.push(GizmoInfo { kind: "rotate", name: "move_rx", value: rad(&cm.rx) });
+            gizmos.push(GizmoInfo { kind: "rotate", name: "move_ry", value: rad(&cm.ry) });
+            gizmos.push(GizmoInfo { kind: "rotate", name: "move_rz", value: rad(&cm.rz) });
+        }
     }
     // A selected wrapped text exposes its box width (#409) — the value the edge drag
     // handles control.
@@ -17641,6 +17654,24 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
                     "move_x" => cm.tx = text,
                     "move_y" => cm.ty = text,
                     _ => cm.tz = text,
+                }
+                true
+            } else {
+                false
+            }
+        }
+        // Free-mode rotation rings (#1234): value is radians, stored as degree expressions.
+        "move_rx" | "move_ry" | "move_rz" => {
+            if let Some(cm) = state.creating_move.as_mut() {
+                if cm.translate_mode != crate::model::MoveTranslateMode::Free {
+                    return false;
+                }
+                let deg = value.to_degrees();
+                let text = format!("{deg}");
+                match name {
+                    "move_rx" => cm.rx = text,
+                    "move_ry" => cm.ry = text,
+                    _ => cm.rz = text,
                 }
                 true
             } else {
@@ -18909,13 +18940,12 @@ mod tests {
         assert!((gizmo_value(&state, "offset").unwrap() - 12.0).abs() < 1e-3);
     }
 
-    /// #185: the Move tool's translation (mm) and rotation (radians, only with an axis) are
-    /// exposed and driven through the gizmo registry.
+    /// #185/#1234: Free Move exposes translation (mm) and per-axis rotation (radians).
     #[test]
     fn gizmos_cover_move_translation_and_rotation() {
         let mut state = AppState::default();
         state.creating_move = Some(CreatingMove {
-            translate_mode: Default::default(),
+            translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
             end_point_a: None,
             start_point_b: None,
@@ -18932,7 +18962,7 @@ mod tests {
             editing: None,
             rx: String::new(),
             ry: String::new(),
-            rz: String::new(),
+            rz: "90".to_string(),
             face_flip: false,
             face_spin: String::new(),
             roll_angle: String::new(),
@@ -18943,11 +18973,24 @@ mod tests {
         });
         let names: Vec<&str> = available_gizmos(&state).iter().map(|g| g.name).collect();
         assert!(names.contains(&"move_x") && names.contains(&"move_y") && names.contains(&"move_z"));
-        // Moves translate only (#663), so there's no rotation gizmo.
+        assert!(names.contains(&"move_rx") && names.contains(&"move_ry") && names.contains(&"move_rz"));
         assert!(!names.contains(&"move_angle"));
         assert!((gizmo_value(&state, "move_x").unwrap() - 5.0).abs() < 1e-4);
         assert!(set_gizmo(&mut state, "move_y", 8.0));
         assert!((gizmo_value(&state, "move_y").unwrap() - 8.0).abs() < 1e-4);
+        // rz was 90°; gizmo value is radians.
+        assert!((gizmo_value(&state, "move_rz").unwrap() - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
+        assert!(set_gizmo(&mut state, "move_rx", std::f32::consts::FRAC_PI_2));
+        assert!((gizmo_value(&state, "move_rx").unwrap() - std::f32::consts::FRAC_PI_2).abs() < 1e-3);
+        assert_eq!(state.creating_move.as_ref().unwrap().rx, "90");
+
+        // Point Snap has translation gizmos but no free-rotation rings.
+        state.creating_move.as_mut().unwrap().translate_mode =
+            crate::model::MoveTranslateMode::PointSnap;
+        let snap_names: Vec<&str> = available_gizmos(&state).iter().map(|g| g.name).collect();
+        assert!(snap_names.contains(&"move_x"));
+        assert!(!snap_names.contains(&"move_rx"));
+        assert!(!set_gizmo(&mut state, "move_rz", 1.0));
     }
     use crate::face::SketchFrame;
 

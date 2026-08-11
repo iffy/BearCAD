@@ -10056,6 +10056,34 @@ mod tests {
         );
     }
 
+    /// #1234: Free Move's rotation rings are scriptable as `move_rx` / `move_ry` / `move_rz`
+    /// (radians), matching the viewport drag gizmos.
+    #[test]
+    fn lua_free_move_rotation_gizmos() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.begin_move{ bodies = {0} }
+            bearcad.ui.tool_mode("free")
+            local names = {}
+            for _, g in ipairs(bearcad.gizmos()) do names[g.name] = g.value end
+            assert(names.move_x ~= nil, "translation gizmos present")
+            assert(names.move_rx ~= nil and names.move_ry ~= nil and names.move_rz ~= nil,
+                   "rotation gizmos present")
+            bearcad.set_gizmo{ name = "move_rz", value = math.pi / 2 }
+            local rz
+            for _, g in ipairs(bearcad.gizmos()) do
+                if g.name == "move_rz" then rz = g.value end
+            end
+            assert(math.abs(rz - math.pi / 2) < 1e-3)
+            "#,
+        );
+        let cm = state.creating_move.as_ref().expect("move armed");
+        assert_eq!(cm.translate_mode, crate::model::MoveTranslateMode::Free);
+        assert_eq!(cm.rz, "90");
+    }
+
     /// #1076: Free mode's turns are scriptable alongside its amounts, and `set_mode` names all
     /// the modes the Move tool has — but not In place, which is the Joint tool's.
     #[test]

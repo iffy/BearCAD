@@ -5633,16 +5633,20 @@ pub fn show_pane(
         }
         drop(picker_row);
         {
+            // `id_salt` must be unique across Free's translation and rotation rows — both use
+            // labels X/Y/Z, and a shared salt collides egui widget ids (#1233).
             let mut field = |ui: &mut egui::Ui,
                              label: &str,
+                             id_salt: &str,
                              value: &str,
                              kind: crate::expression_input::ValueKind,
                              make: &dyn Fn(String) -> MoveEdit| {
                 labeled_row(ui, label, |ui| {
                     let mut text = value.to_string();
-                    let resp = crate::expression_input::ValueInput::new(("move_field", label), kind)
-                        .width(90.0)
-                        .show(ui, &mut text, doc);
+                    let resp =
+                        crate::expression_input::ValueInput::new(("move_field", id_salt), kind)
+                            .width(90.0)
+                            .show(ui, &mut text, doc);
                     if resp.changed() {
                         pending = Some(make(text));
                     }
@@ -5656,18 +5660,25 @@ pub fn show_pane(
             if control.translate_mode == crate::model::MoveTranslateMode::PointSnap
                 && control.end_c.is_none()
             {
-                field(ui, "Roll", &control.roll_angle, ValueKind::Angle, &MoveEdit::RollAngle);
+                field(
+                    ui,
+                    "Roll",
+                    "roll",
+                    &control.roll_angle,
+                    ValueKind::Angle,
+                    &MoveEdit::RollAngle,
+                );
             }
             if control.translate_mode == crate::model::MoveTranslateMode::Free {
-                field(ui, "X", &control.tx, ValueKind::Length, &MoveEdit::Tx);
-                field(ui, "Y", &control.ty, ValueKind::Length, &MoveEdit::Ty);
-                field(ui, "Z", &control.tz, ValueKind::Length, &MoveEdit::Tz);
+                field(ui, "X", "tx", &control.tx, ValueKind::Length, &MoveEdit::Tx);
+                field(ui, "Y", "ty", &control.ty, ValueKind::Length, &MoveEdit::Ty);
+                field(ui, "Z", "tz", &control.tz, ValueKind::Length, &MoveEdit::Tz);
                 // Free turns too (#1076), about the part's own centre — so Free is a whole
                 // placement in its own right and not only a slide.
                 section_label(ui, "Rotation");
-                field(ui, "X", &control.rx, ValueKind::Angle, &MoveEdit::Rx);
-                field(ui, "Y", &control.ry, ValueKind::Angle, &MoveEdit::Ry);
-                field(ui, "Z", &control.rz, ValueKind::Angle, &MoveEdit::Rz);
+                field(ui, "X", "rx", &control.rx, ValueKind::Angle, &MoveEdit::Rx);
+                field(ui, "Y", "ry", &control.ry, ValueKind::Angle, &MoveEdit::Ry);
+                field(ui, "Z", "rz", &control.rz, ValueKind::Angle, &MoveEdit::Rz);
             }
         }
         if let Some(edit) = pending.or(face_edit) {

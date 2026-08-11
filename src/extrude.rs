@@ -1581,10 +1581,20 @@ fn move_op_free_rotation(
 /// The centre of what a move operation moves (#1076) — the pivot Free mode's typed turns act
 /// about. `None` when nothing it moves has world extent.
 fn move_targets_center(doc: &Document, op: &crate::model::MoveOperation) -> Option<Vec3> {
+    free_move_targets_bounds(doc, &op.targets, &op.plane_targets).map(|(lo, hi)| (lo + hi) * 0.5)
+}
+
+/// Axis-aligned bounds of Free-move targets (#1233): body solid meshes plus plane origins.
+/// `None` when nothing contributes world extent.
+pub fn free_move_targets_bounds(
+    doc: &Document,
+    bodies: &[crate::model::BodyKey],
+    planes: &[crate::model::ConstructionPlaneKey],
+) -> Option<(Vec3, Vec3)> {
     let mut lo = Vec3::splat(f32::MAX);
     let mut hi = Vec3::splat(f32::MIN);
     let mut any = false;
-    for &body in &op.targets {
+    for &body in bodies {
         // Un-posed, for the same reason `move_point_face_normal` is.
         if let Some((a, b)) = body_solid_mesh_uncached_pub(doc, body).and_then(|m| m.bounds()) {
             lo = lo.min(a);
@@ -1592,14 +1602,102 @@ fn move_targets_center(doc: &Document, op: &crate::model::MoveOperation) -> Opti
             any = true;
         }
     }
-    for &plane in &op.plane_targets {
+    for &plane in planes {
         if let Some(p) = doc.construction_planes.get(plane) {
             lo = lo.min(p.origin);
             hi = hi.max(p.origin);
             any = true;
         }
     }
-    any.then(|| (lo + hi) * 0.5)
+    any.then_some((lo, hi))
+}
+
+/// One Free-mode translation handle (#1233): sits on a face of the selection's tight AABB.
+///
+/// `axis` is 0/1/2 for world X/Y/Z (the component it drives). `origin` is the face centre;
+/// `outward` is the face normal pointing out of the cuboid. Dragging projects onto the
+/// positive world axis for that component so both faces of a pair update the same way.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FreeMoveTranslationHandle {
+    pub axis: usize,
+    pub origin: Vec3,
+    pub outward: Vec3,
+}
+
+/// Translation handles on all six faces of the tight AABB around the Free-move selection
+/// (#1233). Order: +X, −X, +Y, −Y, +Z, −Z.
+pub fn free_move_translation_handles(min: Vec3, max: Vec3) -> [FreeMoveTranslationHandle; 6] {
+    let c = (min + max) * 0.5;
+    [
+        FreeMoveTranslationHandle {
+            axis: 0,
+            origin: Vec3::new(max.x, c.y, c.z),
+            outward: Vec3::X,
+        },
+        FreeMoveTranslationHandle {
+            axis: 0,
+            origin: Vec3::new(min.x, c.y, c.z),
+            outward: -Vec3::X,
+        },
+        FreeMoveTranslationHandle {
+            axis: 1,
+            origin: Vec3::new(c.x, max.y, c.z),
+            outward: Vec3::Y,
+        },
+        FreeMoveTranslationHandle {
+            axis: 1,
+            origin: Vec3::new(c.x, min.y, c.z),
+            outward: -Vec3::Y,
+        },
+        FreeMoveTranslationHandle {
+            axis: 2,
+            origin: Vec3::new(c.x, c.y, max.z),
+            outward: Vec3::Z,
+        },
+        FreeMoveTranslationHandle {
+            axis: 2,
+            origin: Vec3::new(c.x, c.y, min.z),
+            outward: -Vec3::Z,
+        },
+    ]
+}
+
+/// Free-mode rotation rings (#1234): centre (AABB centre) and a radius that sits just outside
+/// the tight bounding cuboid so the three axis rings clear the selection.
+pub fn free_move_rotation_ring(min: Vec3, max: Vec3) -> (Vec3, f32) {
+    let c = (min + max) * 0.5;
+    let half = (max - min) * 0.5;
+    // Half-diagonal keeps the ring outside every corner; floor so a degenerate box still
+    // offers a grab.
+    let radius = half.length().max(5.0) * 1.1;
+    (c, radius)
+}
+
+/// World-axis unit vector for Free-move axis index 0/1/2.
+pub fn free_move_axis_dir(axis: usize) -> Vec3 {
+    match axis {
+        0 => Vec3::X,
+        1 => Vec3::Y,
+        _ => Vec3::Z,
+    }
+}
+
+/// Gizmo script names for Free-move translation axes.
+pub fn free_move_translation_gizmo_name(axis: usize) -> &'static str {
+    match axis {
+        0 => "move_x",
+        1 => "move_y",
+        _ => "move_z",
+    }
+}
+
+/// Gizmo script names for Free-move rotation axes (#1234).
+pub fn free_move_rotation_gizmo_name(axis: usize) -> &'static str {
+    match axis {
+        0 => "move_rx",
+        1 => "move_ry",
+        _ => "move_rz",
+    }
 }
 
 /// Resolve a rotation/revolve axis to world origin + unit direction.
@@ -11525,6 +11623,47 @@ mod tests {
             roll_angle: String::new(),
             face_offset: String::new(),
         };
+
+        // #1233: Free-move translation handles sit on all six faces of the tight AABB.
+        {
+            let min = Vec3::new(0.0, 0.0, 0.0);
+            let max = Vec3::new(10.0, 20.0, 30.0);
+            let handles = free_move_translation_handles(min, max);
+            assert_eq!(handles.len(), 6);
+            // One pair per axis, on opposite faces, both pointing outward.
+            for axis in 0..3 {
+                let pair: Vec<_> = handles.iter().filter(|h| h.axis == axis).collect();
+                assert_eq!(pair.len(), 2, "axis {axis}");
+                assert!(
+                    (pair[0].outward + pair[1].outward).length() < 1e-5,
+                    "opposite outward normals on axis {axis}"
+                );
+                let dir = free_move_axis_dir(axis);
+                // Face centres sit on the AABB faces, not at the box centre.
+                for h in &pair {
+                    let along = (h.origin - (min + max) * 0.5).dot(h.outward);
+                    assert!(along > 0.0, "handle outside centre along outward: {h:?}");
+                    assert!(
+                        (h.outward.dot(dir)).abs() > 0.99,
+                        "outward is ±axis for {h:?}"
+                    );
+                }
+            }
+            // +X face centre is at max.x, mid y/z.
+            let plus_x = handles.iter().find(|h| h.outward == Vec3::X).unwrap();
+            assert!((plus_x.origin - Vec3::new(10.0, 10.0, 15.0)).length() < 1e-4);
+            let minus_z = handles.iter().find(|h| h.outward == -Vec3::Z).unwrap();
+            assert!((minus_z.origin - Vec3::new(5.0, 10.0, 0.0)).length() < 1e-4);
+        }
+        // #1234: rotation ring is centred on the AABB and clears its corners.
+        {
+            let min = Vec3::new(0.0, 0.0, 0.0);
+            let max = Vec3::new(10.0, 20.0, 30.0);
+            let (center, radius) = free_move_rotation_ring(min, max);
+            assert!((center - Vec3::new(5.0, 10.0, 15.0)).length() < 1e-4);
+            let half_diag = ((max - min) * 0.5).length();
+            assert!(radius > half_diag, "ring clears the corners: {radius} vs {half_diag}");
+        }
 
         // No turn typed: a plain translation, exactly as before (#648).
         let plain = move_op_transform(&doc, &op(MoveTranslateMode::Free, "", "10")).unwrap();

@@ -934,14 +934,26 @@ fn drawing_view_should_relocate(tool: Tool, dim_label_drag_active: bool) -> bool
     tool == Tool::Select && !dim_label_drag_active
 }
 
-/// A drag on one of the Move tool's translation arrows (#215): which axis (0=X, 1=Y, 2=Z), and
-/// the translation + cursor position when the grab started. Follows the cursor along that world
-/// axis and writes the result through the `move_{x,y,z}` gizmo setter.
+/// A drag on one of the Free Move tool's face-centred translation arrows (#215/#1233): which
+/// axis (0=X, 1=Y, 2=Z), the face origin used for screen projection, and the translation +
+/// cursor when the grab started. Follows the cursor along the positive world axis and writes
+/// through the `move_{x,y,z}` gizmo setter.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct MoveGizmoDrag {
     axis: usize,
+    origin: Vec3,
     start_translation: f32,
     start_screen: egui::Pos2,
+}
+
+/// A drag on one of Free Move's three world-axis rotation rings (#1234).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FreeMoveRotationDrag {
+    /// 0=X, 1=Y, 2=Z.
+    axis: usize,
+    start_cursor_angle: f32,
+    /// Angle in degrees when the grab started.
+    start_angle_deg: f32,
 }
 
 /// A construction plane being resized by one of its corner grips (#833). The plane's extent
@@ -3205,6 +3217,8 @@ struct App {
     revolve_gizmo_drag: Option<(egui::Pos2, f32)>,
     /// In-flight Move translation-arrow drag (#215).
     move_gizmo_drag: Option<MoveGizmoDrag>,
+    /// In-flight Free Move rotation-ring drag (#1234).
+    free_move_rotation_drag: Option<FreeMoveRotationDrag>,
     /// In-flight construction-plane corner resize under the Select tool (#833).
     plane_resize_drag: Option<PlaneResizeDrag>,
     /// In-flight sketch-text rotation drag on the Move tool's ring (#286).
@@ -4361,6 +4375,7 @@ impl App {
             edge_treatment_gizmo_drag: None,
             revolve_gizmo_drag: None,
             move_gizmo_drag: None,
+            free_move_rotation_drag: None,
             plane_resize_drag: None,
             text_rotation_drag: None,
             face_spin_drag: None,
@@ -7389,15 +7404,17 @@ impl App {
     /// Floating distance field next to the offset push-pull gizmo (#493), like extrude.
     /// A value input floating beside each Free-translate arrow (#648), so the X/Y/Z components
     /// can be typed right where they're being dragged instead of only in the pane. Nothing
-    /// renders in Snap mode, where the arrows are gone too.
+    /// renders in Snap mode, where the arrows are gone too. One field per axis, next to the
+    /// positive-face handle (#1233).
     fn show_move_translation_inputs(
         &mut self,
         ui: &egui::Ui,
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     ) {
-        let Some((anchor, axes)) = self.move_gizmo_arrows() else {
+        let Some(handles) = self.move_gizmo_arrows() else {
             return;
         };
+        let display_offset = Self::free_move_handle_display_offset();
         let ctx = ui.ctx();
         let mut edits: Vec<(usize, String)> = Vec::new();
         let mut feedback: Vec<SketchDimFieldResult> = Vec::new();
@@ -7407,13 +7424,20 @@ impl App {
             .as_ref()
             .and_then(|cm| cm.pending_gizmo_focus_axis);
         let mut focus_axis_after = focus_axis;
-        for &(axis, id_source, dir, translation) in &axes {
-            let handle = construction::offset_handle(
-                anchor,
-                dir,
-                extrude_gizmo_display_offset(translation),
-            );
-            let Some(pos) = project(handle).map(|p| p + egui::vec2(14.0, -12.0)) else {
+        // One floating field per axis, anchored to the +face handle so we don't double up.
+        let mut shown_axis = [false; 3];
+        for &(handle, id_source, _translation) in &handles {
+            let axis = handle.axis;
+            if shown_axis[axis] {
+                continue;
+            }
+            // Prefer the outward-positive face (+X / +Y / +Z).
+            if handle.outward.dot(extrude::free_move_axis_dir(axis)) < 0.0 {
+                continue;
+            }
+            shown_axis[axis] = true;
+            let tip = construction::offset_handle(handle.origin, handle.outward, display_offset);
+            let Some(pos) = project(tip).map(|p| p + egui::vec2(14.0, -12.0)) else {
                 continue;
             };
             let Some(mut text) = self.state.creating_move.as_ref().map(|cm| {
@@ -8094,37 +8118,55 @@ impl App {
     /// Move tool (#176/#183): click bodies to toggle them into the move set; clicking a
     /// line picks it as the rotation axis. Enter commits.
     #[allow(clippy::too_many_arguments)]
-    /// The Move tool's translation-arrow gizmo geometry (#215): the anchor (picked targets'
-    /// bounding-box centre) and, per world axis, `(axis_index, gizmo name, world direction,
-    /// current translation mm)`. `None` when nothing is picked (nothing to anchor to).
-    fn move_gizmo_arrows(&self) -> Option<(Vec3, [(usize, &'static str, Vec3, f32); 3])> {
+    /// Free Move translation-arrow geometry (#215/#1233): one handle on each face of the
+    /// selection's tight AABB. Each entry is `(handle, gizmo name, current translation mm
+    /// along the positive world axis)`. `None` when nothing is picked.
+    fn move_gizmo_arrows(
+        &self,
+    ) -> Option<[(extrude::FreeMoveTranslationHandle, &'static str, f32); 6]> {
         let cm = self.state.creating_move.as_ref()?;
         // Only Free translation has X/Y/Z to drag (#648); a snap's offset comes from its
         // two picked points.
-        if cm.targets.is_empty() || cm.translate_mode != crate::model::MoveTranslateMode::Free {
+        if cm.targets.is_empty() && cm.plane_targets.is_empty() {
+            return None;
+        }
+        if cm.translate_mode != crate::model::MoveTranslateMode::Free {
             return None;
         }
         let doc = &self.state.doc;
-        let mut min = Vec3::splat(f32::INFINITY);
-        let mut max = Vec3::splat(f32::NEG_INFINITY);
-        for &bi in &cm.targets {
-            if let Some((lo, hi)) = extrude::body_solid_mesh(doc, bi).and_then(|m| m.bounds()) {
-                min = min.min(lo);
-                max = max.max(hi);
-            }
-        }
-        if !min.is_finite() || !max.is_finite() {
+        let (min, max) = extrude::free_move_targets_bounds(doc, &cm.targets, &cm.plane_targets)?;
+        let mm = |s: &str| crate::value::eval_length_mm_in_doc(s, doc).unwrap_or(0.0);
+        let translations = [mm(&cm.tx), mm(&cm.ty), mm(&cm.tz)];
+        let handles = extrude::free_move_translation_handles(min, max);
+        Some(std::array::from_fn(|i| {
+            let h = handles[i];
+            (
+                h,
+                extrude::free_move_translation_gizmo_name(h.axis),
+                translations[h.axis],
+            )
+        }))
+    }
+
+    /// Free Move rotation-ring geometry (#1234): centre, radius, and the three world axes.
+    /// `None` outside Free mode or with no extent.
+    fn free_move_rotation_geom(&self) -> Option<(Vec3, f32)> {
+        let cm = self.state.creating_move.as_ref()?;
+        if cm.translate_mode != crate::model::MoveTranslateMode::Free {
             return None;
         }
-        let mm = |s: &str| crate::value::eval_length_mm_in_doc(s, doc).unwrap_or(0.0);
-        Some((
-            (min + max) * 0.5,
-            [
-                (0, "move_x", Vec3::X, mm(&cm.tx)),
-                (1, "move_y", Vec3::Y, mm(&cm.ty)),
-                (2, "move_z", Vec3::Z, mm(&cm.tz)),
-            ],
-        ))
+        if cm.targets.is_empty() && cm.plane_targets.is_empty() {
+            return None;
+        }
+        let (min, max) =
+            extrude::free_move_targets_bounds(&self.state.doc, &cm.targets, &cm.plane_targets)?;
+        Some(extrude::free_move_rotation_ring(min, max))
+    }
+
+    /// Small outward display offset so Free Move face handles sit just outside the AABB
+    /// (#1233), independent of the live translation amount.
+    fn free_move_handle_display_offset() -> f32 {
+        construction::gizmo_display_offset(0.0)
     }
 
     /// The whole body a viewport pick refers to (#218), for the body-set tools: a body edge,
@@ -8472,16 +8514,87 @@ impl App {
             return;
         }
 
-        // Translation-arrow gizmo (#215): follow an in-flight drag, or grab a handle on press.
+        // Free-move rotation rings (#1234): drag before translation so a ring grab isn't
+        // stolen by a nearby face handle.
+        if let Some((center, radius)) = self.free_move_rotation_geom() {
+            let cursor_angle =
+                |pp: egui::Pos2| project(center).map(|c| (pp.y - c.y).atan2(pp.x - c.x));
+            if let Some(drag) = self.free_move_rotation_drag {
+                if ui.input(|i| i.pointer.primary_down()) {
+                    if let Some(angle) = pointer_screen.and_then(cursor_angle) {
+                        let axis_dir = extrude::free_move_axis_dir(drag.axis);
+                        let sign = if axis_dir.dot(cam.eye() - center) > 0.0 {
+                            -1.0
+                        } else {
+                            1.0
+                        };
+                        let deg = drag.start_angle_deg
+                            + sign * (angle - drag.start_cursor_angle).to_degrees();
+                        let name = extrude::free_move_rotation_gizmo_name(drag.axis);
+                        crate::actions::set_gizmo(&mut self.state, name, deg.to_radians());
+                    }
+                } else {
+                    self.free_move_rotation_drag = None;
+                }
+                return;
+            }
+            if ui.input(|i| i.pointer.primary_pressed()) {
+                if let Some(pp) = pointer_screen {
+                    // Prefer the ring whose plane faces the camera (axis · view largest).
+                    let view = (cam.eye() - center).normalize_or_zero();
+                    let mut best: Option<(usize, f32)> = None;
+                    for axis in 0..3 {
+                        let dir = extrude::free_move_axis_dir(axis);
+                        if !rotation_ring_hit(pp, project, center, dir, radius) {
+                            continue;
+                        }
+                        let face_on = dir.dot(view).abs();
+                        if best.is_none_or(|(_, s)| face_on > s) {
+                            best = Some((axis, face_on));
+                        }
+                    }
+                    if let Some((axis, _)) = best {
+                        if let Some(angle) = cursor_angle(pp) {
+                            let start = self
+                                .state
+                                .creating_move
+                                .as_ref()
+                                .map(|cm| {
+                                    let expr = [&cm.rx, &cm.ry, &cm.rz][axis].as_str();
+                                    if expr.trim().is_empty() {
+                                        0.0
+                                    } else {
+                                        crate::value::eval_angle_rad_in_doc(expr, &self.state.doc)
+                                            .unwrap_or(0.0)
+                                            .to_degrees()
+                                    }
+                                })
+                                .unwrap_or(0.0);
+                            self.free_move_rotation_drag = Some(FreeMoveRotationDrag {
+                                axis,
+                                start_cursor_angle: angle,
+                                start_angle_deg: start,
+                            });
+                            return;
+                        }
+                    }
+                }
+            }
+        } else if self.free_move_rotation_drag.is_some() {
+            self.free_move_rotation_drag = None;
+        }
+
+        // Translation-arrow gizmo (#215/#1233): face-centred handles on the selection AABB.
         // Runs before the body-pick path so grabbing an arrow doesn't also toggle a target.
-        if let Some((anchor, axes)) = self.move_gizmo_arrows() {
+        let display_offset = Self::free_move_handle_display_offset();
+        if let Some(handles) = self.move_gizmo_arrows() {
             if let Some(drag) = self.move_gizmo_drag {
                 if ui.input(|i| i.pointer.primary_down()) {
-                    if let (Some(pp), Some(&(_, name, dir, _))) =
-                        (pointer_screen, axes.get(drag.axis))
-                    {
+                    if let Some(pp) = pointer_screen {
+                        let name = extrude::free_move_translation_gizmo_name(drag.axis);
+                        let dir = extrude::free_move_axis_dir(drag.axis);
                         let value = construction::offset_from_normal_drag(
-                            anchor,
+                            drag.origin,
                             dir,
                             project,
                             drag.start_translation,
@@ -8497,18 +8610,24 @@ impl App {
             }
             if ui.input(|i| i.pointer.primary_pressed()) {
                 if let Some(pp) = pointer_screen {
-                    for &(axis, name, dir, translation) in &axes {
-                        let handle_offset = extrude_gizmo_display_offset(translation);
-                        if construction::offset_gizmo_hit(pp, project, anchor, dir, handle_offset) {
+                    for &(handle, name, translation) in &handles {
+                        if construction::offset_gizmo_hit(
+                            pp,
+                            project,
+                            handle.origin,
+                            handle.outward,
+                            display_offset,
+                        ) {
                             self.move_gizmo_drag = Some(MoveGizmoDrag {
-                                axis,
+                                axis: handle.axis,
+                                origin: handle.origin,
                                 start_translation: translation,
                                 start_screen: pp,
                             });
                             // Focus that axis's floating field with its value selected so
                             // typing overwrites (#1161).
                             if let Some(cm) = self.state.creating_move.as_mut() {
-                                cm.pending_gizmo_focus_axis = Some(axis);
+                                cm.pending_gizmo_focus_axis = Some(handle.axis);
                             }
                             ui.ctx().memory_mut(|m| m.request_focus(egui::Id::new(name)));
                             return;
@@ -12341,6 +12460,7 @@ impl App {
         self.edge_treatment_gizmo_drag = None;
         self.revolve_gizmo_drag = None;
         self.move_gizmo_drag = None;
+        self.free_move_rotation_drag = None;
         self.plane_resize_drag = None;
         self.text_rotation_drag = None;
         self.face_spin_drag = None;
@@ -19061,7 +19181,7 @@ fn build_viewport_scene_input<'a>(
     extrude_gizmo: Option<gpu_viewport::ViewportExtrudeGizmo>,
     vertex_treatment_gizmo: Option<gpu_viewport::ViewportExtrudeGizmo>,
     arrow_gizmos: Vec<gpu_viewport::ViewportExtrudeGizmo>,
-    move_rotation_gizmo: Option<gpu_viewport::MoveRotationGizmo>,
+    move_rotation_gizmos: Vec<gpu_viewport::MoveRotationGizmo>,
     revolve_arc_gizmo: Option<gpu_viewport::RevolveArcGizmo>,
     vertex_treatment_preview: Option<Vec<Vec3>>,
     hover_highlight: Option<gpu_viewport::ViewportHoverHighlight>,
@@ -19564,7 +19684,7 @@ fn build_viewport_scene_input<'a>(
         extrude_gizmo,
         vertex_treatment_gizmo,
         arrow_gizmos,
-        move_rotation_gizmo,
+        move_rotation_gizmos,
         revolve_arc_gizmo,
         vertex_treatment_preview: vertex_treatment_preview
             .map(|points| gpu_viewport::VertexTreatmentPreviewGeom { points }),
@@ -28432,28 +28552,32 @@ impl App {
         // Slice tool (#1142/#1144): target bodies are drawn cyan semi-transparent via
         // `preview_replacement` below (like an extrude cut) — not the dim faded style.
 
-        // Move tool (#215): a translation arrow per world axis at the picked targets' centroid.
+        // Free Move (#215/#1233): a translation arrow on each face of the selection AABB.
+        let display_offset = Self::free_move_handle_display_offset();
         let mut arrow_gizmos = if self.state.tool == Tool::Move {
             self.move_gizmo_arrows()
-                .map(|(anchor, axes)| {
-                    axes.iter()
-                        .map(|&(axis, _, dir, translation)| {
-                            let hovered = self.move_gizmo_drag.map(|d| d.axis) == Some(axis)
+                .map(|handles| {
+                    handles
+                        .iter()
+                        .map(|&(handle, _, _)| {
+                            let hovered = self
+                                .move_gizmo_drag
+                                .is_some_and(|d| d.axis == handle.axis)
                                 || (self.move_gizmo_drag.is_none()
                                     && pointer_screen.is_some_and(|pp| {
                                         construction::offset_gizmo_hit(
                                             pp,
                                             &project,
-                                            anchor,
-                                            dir,
-                                            extrude_gizmo_display_offset(translation),
+                                            handle.origin,
+                                            handle.outward,
+                                            display_offset,
                                         )
                                     }));
                             gpu_viewport::ViewportExtrudeGizmo {
-                                origin: anchor,
-                                normal: dir,
-                                offset: extrude_gizmo_display_offset(translation),
-                                color: [col::X_AXIS, col::Y_AXIS, col::Z_AXIS][axis],
+                                origin: handle.origin,
+                                normal: handle.outward,
+                                offset: display_offset,
+                                color: [col::X_AXIS, col::Y_AXIS, col::Z_AXIS][handle.axis],
                                 hovered,
                             }
                         })
@@ -28478,43 +28602,52 @@ impl App {
                 });
             }
         }
-        // Rotation-ring gizmo (#216/#286): a selected sketch text turns about its origin, and
-        // Face Snap's spin turns the moving face about the target's normal (#1077). The
-        // body-rotation ring is gone with the Move tool's rotation half (#663).
-        let move_rotation_gizmo = None
-            .or_else(|| {
-                self.face_spin_ring_geom().map(|(center, axis, radius)| {
-                    let hovered = self.face_spin_drag.is_some()
-                        || pointer_screen.is_some_and(|pp| {
-                            rotation_ring_hit(pp, &project, center, axis, radius)
-                        });
-                    gpu_viewport::MoveRotationGizmo {
-                        center,
-                        axis,
-                        radius,
-                        color: col::PREVIEW,
-                        hovered,
-                    }
-                })
-            })
-            .or_else(|| {
-                (self.state.tool == Tool::Move)
-                    .then(|| self.text_rotation_geom())
-                    .flatten()
-                    .map(|(_, center, axis, radius)| {
-                        let hovered = self.text_rotation_drag.is_some()
-                            || pointer_screen.is_some_and(|pp| {
-                                rotation_ring_hit(pp, &project, center, axis, radius)
-                            });
-                        gpu_viewport::MoveRotationGizmo {
-                            center,
-                            axis,
-                            radius,
-                            color: col::PREVIEW,
-                            hovered,
-                        }
-                    })
+        // Rotation rings: Free Move's three world-axis rings (#1234), Face Snap's spin
+        // (#1077), and a selected sketch text's turn about its origin (#216/#286).
+        let mut move_rotation_gizmos: Vec<gpu_viewport::MoveRotationGizmo> = Vec::new();
+        if let Some((center, radius)) = self.free_move_rotation_geom() {
+            for axis in 0..3 {
+                let dir = extrude::free_move_axis_dir(axis);
+                let hovered = self.free_move_rotation_drag.is_some_and(|d| d.axis == axis)
+                    || (self.free_move_rotation_drag.is_none()
+                        && pointer_screen.is_some_and(|pp| {
+                            rotation_ring_hit(pp, &project, center, dir, radius)
+                        }));
+                move_rotation_gizmos.push(gpu_viewport::MoveRotationGizmo {
+                    center,
+                    axis: dir,
+                    radius,
+                    color: [col::X_AXIS, col::Y_AXIS, col::Z_AXIS][axis],
+                    hovered,
+                });
+            }
+        } else if let Some((center, axis, radius)) = self.face_spin_ring_geom() {
+            let hovered = self.face_spin_drag.is_some()
+                || pointer_screen.is_some_and(|pp| {
+                    rotation_ring_hit(pp, &project, center, axis, radius)
+                });
+            move_rotation_gizmos.push(gpu_viewport::MoveRotationGizmo {
+                center,
+                axis,
+                radius,
+                color: col::PREVIEW,
+                hovered,
             });
+        } else if self.state.tool == Tool::Move {
+            if let Some((_, center, axis, radius)) = self.text_rotation_geom() {
+                let hovered = self.text_rotation_drag.is_some()
+                    || pointer_screen.is_some_and(|pp| {
+                        rotation_ring_hit(pp, &project, center, axis, radius)
+                    });
+                move_rotation_gizmos.push(gpu_viewport::MoveRotationGizmo {
+                    center,
+                    axis,
+                    radius,
+                    color: col::PREVIEW,
+                    hovered,
+                });
+            }
+        }
         // Live ghost of the in-progress in-sketch repeat's duplicates (#232): dashed copies of
         // the picked lines/circles at every computed offset, so the result previews before commit.
         let sketch_repeat_ghost = self.sketch_repeat_ghost_segments();
@@ -28732,7 +28865,7 @@ impl App {
             extrude_gizmo,
             vertex_treatment_gizmo,
             arrow_gizmos,
-            move_rotation_gizmo,
+            move_rotation_gizmos,
             revolve_arc_gizmo,
             vertex_treatment_preview,
             hover_highlight,
@@ -31939,7 +32072,7 @@ mod tests {
             None,
             None,
             Vec::new(),
-            None,
+            Vec::new(),
             None,
             None,
             None,
@@ -32031,7 +32164,7 @@ mod tests {
             None,
             None,
             Vec::new(),
-            None,
+            Vec::new(),
             None,
             None,
             None,
@@ -32092,7 +32225,8 @@ mod tests {
             state.creating_repeat.as_ref(),
             None, None, None, None, None, None, None, None, None,
             Vec::new(),
-            None, None, None, None,
+            Vec::new(),
+            None, None, None,
             Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(),
             Vec::new(),
             &[],
@@ -32165,7 +32299,7 @@ mod tests {
                 None,
                 None,
                 Vec::new(),
-                None,
+                Vec::new(),
                 None,
                 None,
                 None,
@@ -32418,7 +32552,7 @@ mod tests {
                 None,
                 None,
                 Vec::new(),
-                None,
+                Vec::new(),
                 None,
                 None,
                 None,
@@ -32523,7 +32657,7 @@ mod tests {
             None,
             None,
             Vec::new(),
-            None,
+            Vec::new(),
             None,
             None,
             None,
