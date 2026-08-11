@@ -35,6 +35,10 @@ pub enum UiAnchor {
     DimensionValue,
     /// The extrude tool's floating **distance** field (#816).
     ExtrudeDistance,
+    /// In-progress rectangle **width** field (#1258).
+    RectWidth,
+    /// In-progress rectangle **height** field (#1258).
+    RectHeight,
     /// A status-bar pane toggle (phone layout only, #828): Elements / Context / Params.
     PaneButton(crate::actions::Pane),
 }
@@ -265,6 +269,52 @@ const fn assisted_step(
         anchor,
         done,
         on_enter: None,
+        assist: Some(assist),
+        needs_shift: None,
+        drag_hint: None,
+        key_hint: None,
+        marks: None,
+        type_hint,
+        phone_narration: None,
+        only_on_phone: false,
+    }
+}
+
+const fn plain_step_enter(
+    narration: &'static str,
+    anchor: StepAnchor,
+    done: Option<fn(&AppState) -> bool>,
+    on_enter: fn(&mut AppState),
+) -> Step {
+    Step {
+        narration,
+        anchor,
+        done,
+        on_enter: Some(on_enter),
+        assist: None,
+        needs_shift: None,
+        drag_hint: None,
+        key_hint: None,
+        marks: None,
+        type_hint: None,
+        phone_narration: None,
+        only_on_phone: false,
+    }
+}
+
+const fn assisted_step_enter(
+    narration: &'static str,
+    anchor: StepAnchor,
+    done: Option<fn(&AppState) -> bool>,
+    assist: StepAssist,
+    type_hint: Option<TypeHint>,
+    on_enter: fn(&mut AppState),
+) -> Step {
+    Step {
+        narration,
+        anchor,
+        done,
+        on_enter: Some(on_enter),
         assist: Some(assist),
         needs_shift: None,
         drag_hint: None,
@@ -2707,13 +2757,115 @@ fn has_closed_rectangle(app: &AppState) -> bool {
     lines >= 4 && dims >= 2
 }
 
+/// Four non-construction lines — a click-placed rectangle without typed dimensions (#1259).
+fn has_rectangle_outline(app: &AppState) -> bool {
+    app.doc.lines.values().filter(|l| !l.construction).count() >= 4
+        || has_closed_rectangle(app)
+}
+
 fn has_extrusion(app: &AppState) -> bool {
     !app.doc.extrusions.is_empty()
 }
 
 /// First corner clicked (rectangle in progress) or the square is already done.
 fn rect_first_corner_placed(app: &AppState) -> bool {
-    app.creating_rect.is_some() || has_closed_rectangle(app)
+    app.creating_rect.is_some() || has_rectangle_outline(app)
+}
+
+/// A spot on the ground plane (or open sketch plane) in local mm — click targets for
+/// rectangle / shape placement steps (#1257/#1262).
+fn ground_local(app: &AppState, u: f32, v: f32) -> Option<glam::Vec3> {
+    if let Some(session) = app.sketch_session {
+        let frame = crate::face::sketch_geometry_frame(&app.doc, session.sketch)?;
+        return Some(crate::face::local_to_world(&frame, u, v));
+    }
+    let ground = app.doc.ground_plane()?;
+    let frame = crate::face::sketch_frame(
+        &app.doc,
+        crate::model::FaceId::ConstructionPlane(ground),
+    )?;
+    Some(crate::face::local_to_world(&frame, u, v))
+}
+
+fn rect_first_corner_guide(app: &AppState) -> Option<glam::Vec3> {
+    ground_local(app, 20.0, 20.0)
+}
+
+fn rect_opposite_corner_guide(app: &AppState) -> Option<glam::Vec3> {
+    if let Some(cr) = app.creating_rect.as_ref() {
+        if let Some(session) = app.sketch_session {
+            let frame = crate::face::sketch_geometry_frame(&app.doc, session.sketch)?;
+            let (ou, ov) = crate::face::world_to_local(&frame, cr.origin);
+            return Some(crate::face::local_to_world(&frame, ou + 40.0, ov + 40.0));
+        }
+    }
+    ground_local(app, 60.0, 60.0)
+}
+
+/// Centre of the placed rectangle's outline — where Extrude wants a face click.
+fn rectangle_face_guide(app: &AppState) -> Option<glam::Vec3> {
+    let mut sum = glam::Vec3::ZERO;
+    let mut n = 0u32;
+    for line in app.doc.lines.values().filter(|l| !l.construction) {
+        if let Some(poly) = crate::face::line_world_polyline(&app.doc, line) {
+            for p in poly {
+                sum += p;
+                n += 1;
+            }
+        }
+    }
+    if n == 0 {
+        ground_local(app, 40.0, 40.0)
+    } else {
+        Some(sum / n as f32)
+    }
+}
+
+/// Open a ground sketch so the next click is the first rectangle corner (#1257).
+fn ensure_rect_sketch_for_tutorial(app: &mut AppState) {
+    if app.tool != Tool::Rectangle {
+        app.apply(Action::SetTool(Tool::Rectangle));
+    }
+    ensure_ground_sketch(app);
+}
+
+fn focus_rect_width_field(app: &mut AppState) {
+    let _ = app.apply(Action::FocusRectDimension {
+        axis: crate::actions::RectAxis::Width,
+    });
+}
+
+fn focus_rect_height_field(app: &mut AppState) {
+    let _ = app.apply(Action::FocusRectDimension {
+        axis: crate::actions::RectAxis::Height,
+    });
+}
+
+fn ground_anchor_a(app: &AppState) -> Option<glam::Vec3> {
+    ground_local(app, 15.0, 15.0)
+}
+
+fn ground_anchor_b(app: &AppState) -> Option<glam::Vec3> {
+    if let Some(c) = app.creating_shape.as_ref() {
+        if let Some(corner) = c.first_corner {
+            let u = glam::Vec3::from_array(c.shape.u_axis).normalize_or_zero();
+            let n = glam::Vec3::from_array(c.shape.normal).normalize_or_zero();
+            let v = n.cross(u).normalize_or_zero();
+            return Some(corner + u * 40.0 + v * 40.0);
+        }
+        let origin = glam::Vec3::from_array(c.shape.origin);
+        let u = glam::Vec3::from_array(c.shape.u_axis).normalize_or_zero();
+        return Some(origin + u * 30.0);
+    }
+    ground_local(app, 55.0, 55.0)
+}
+
+fn ground_anchor_c(app: &AppState) -> Option<glam::Vec3> {
+    ground_local(app, 40.0, 0.0)
+}
+
+fn ground_anchor_d(app: &AppState) -> Option<glam::Vec3> {
+    ground_local(app, 80.0, 0.0)
 }
 
 /// Width field typed to `target` mm while drawing, or the rectangle is already committed.
@@ -2738,14 +2890,6 @@ fn rect_height_typed(app: &AppState, target: f32) -> bool {
             && crate::value::eval_length_mm(&cr.texts[1])
                 .is_some_and(|v| (v - target).abs() < 0.51)
     })
-}
-
-fn rect_width_20(app: &AppState) -> bool {
-    rect_width_typed(app, 20.0)
-}
-
-fn rect_height_20(app: &AppState) -> bool {
-    rect_height_typed(app, 20.0)
 }
 
 fn rect_width_10(app: &AppState) -> bool {
@@ -3097,76 +3241,52 @@ fn sphere_kind_ready(app: &AppState) -> bool {
         || (shape_tool_active(app) && app.shape_kind == crate::model::PrimitiveKind::Sphere)
 }
 
-/// #1238: draw a rectangle and extrude it into a cube.
-/// Steps are one action each (#1253): every click and every typed value is its own step.
+/// #1238 / #1256–#1259 / #1262: first walkthrough — click a square, extrude it.
+/// No numbers, no parameters: pure click joy. One action per step (#1253).
 static CUBE_STEPS: &[Step] = &[
+    plain_step("Hi! Let's make a cube.", StepAnchor::None, None),
     plain_step(
-        "Hi! Let's make a cube the classic way: draw a square on the ground, then \
-         extrude it up the same distance. I've opened a fresh document.",
-        StepAnchor::None,
-        None,
-    ),
-    plain_step(
-        "Grab the Rectangle tool \u{2014} the glowing button, or press `R`.",
+        "Click the Rectangle tool.",
         StepAnchor::Ui(UiAnchor::Tool(Tool::Rectangle)),
         Some(rectangle_tool_active),
     ),
-    plain_step(
-        "Click the first corner on the ground.",
-        StepAnchor::Ui(UiAnchor::Tool(Tool::Rectangle)),
+    plain_step_enter(
+        "Click a corner on the ground.",
+        StepAnchor::World(rect_first_corner_guide),
         Some(rect_first_corner_placed),
+        ensure_rect_sketch_for_tutorial,
     ),
     assisted_step(
-        "Type the width: `20`, then Tab.",
-        StepAnchor::Ui(UiAnchor::Tool(Tool::Rectangle)),
-        Some(rect_width_20),
+        "Click the opposite corner.",
+        StepAnchor::World(rect_opposite_corner_guide),
+        Some(has_rectangle_outline),
         StepAssist {
             label: "Draw it for me",
             run: assist_draw_square,
         },
-        Some(TypeHint::Fixed("20")),
-    ),
-    assisted_step(
-        "Type the height: `20`.",
-        StepAnchor::Ui(UiAnchor::Tool(Tool::Rectangle)),
-        Some(rect_height_20),
-        StepAssist {
-            label: "Draw it for me",
-            run: assist_draw_square,
-        },
-        Some(TypeHint::Fixed("20")),
+        None,
     ),
     plain_step(
-        "Press Enter \u{2014} or click \u{2014} to place the square.",
-        StepAnchor::Ui(UiAnchor::Tool(Tool::Rectangle)),
-        Some(has_closed_rectangle),
-    ),
-    plain_step(
-        "Now the Extrude tool \u{2014} the glowing button, or press `E`.",
+        "Click the Extrude tool.",
         StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude)),
         Some(extrude_tool_active),
     ),
     plain_step(
-        "Click the square's face.",
-        StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude)),
+        "Click the square.",
+        StepAnchor::World(rectangle_face_guide),
         Some(extrude_face_picked),
     ),
     assisted_step(
-        "Type the same size as a side (`20`), then press Enter. A cube!",
-        StepAnchor::Ui(UiAnchor::ExtrudeDistance),
+        "Press Enter. A cube!",
+        StepAnchor::None,
         Some(has_extrusion),
         StepAssist {
             label: "Extrude it for me",
             run: assist_extrude_to_cube,
         },
-        Some(TypeHint::Fixed("20")),
-    ),
-    plain_step(
-        "That's a solid from a sketch: rectangle, extrude, done. Try changing a side \
-         dimension next \u{2014} or pick another tutorial from the Tutorials button.",
-        StepAnchor::None,
         None,
     ),
+    plain_step("You made a solid. Nice!", StepAnchor::None, None),
 ];
 
 /// #1239: place a cuboid, cylinder, and sphere with the Shape tool (tool cycle order).
@@ -3185,12 +3305,12 @@ static SHAPES_STEPS: &[Step] = &[
     ),
     plain_step(
         "Click a ground corner to anchor the cuboid.",
-        StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        StepAnchor::World(ground_anchor_a),
         Some(cuboid_anchored),
     ),
     plain_step(
         "Click the opposite corner of the base.",
-        StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        StepAnchor::World(ground_anchor_b),
         Some(cuboid_base_set),
     ),
     assisted_step(
@@ -3215,7 +3335,7 @@ static SHAPES_STEPS: &[Step] = &[
     ),
     plain_step(
         "Click the centre of the cylinder's base.",
-        StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        StepAnchor::World(ground_anchor_c),
         Some(cylinder_anchored),
     ),
     assisted_step(
@@ -3250,7 +3370,7 @@ static SHAPES_STEPS: &[Step] = &[
     ),
     plain_step(
         "Click where the sphere should rest.",
-        StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        StepAnchor::World(ground_anchor_d),
         Some(sphere_anchored),
     ),
     assisted_step(
@@ -3286,34 +3406,37 @@ static DIMENSIONED_BOX_STEPS: &[Step] = &[
         StepAnchor::Ui(UiAnchor::Tool(Tool::Rectangle)),
         Some(rectangle_tool_active),
     ),
-    plain_step(
+    plain_step_enter(
         "Click the first corner on the ground.",
-        StepAnchor::Ui(UiAnchor::Tool(Tool::Rectangle)),
+        StepAnchor::World(rect_first_corner_guide),
         Some(rect_first_corner_placed),
+        ensure_rect_sketch_for_tutorial,
     ),
-    assisted_step(
+    assisted_step_enter(
         "Type the width: `10`, then Tab.",
-        StepAnchor::Ui(UiAnchor::Tool(Tool::Rectangle)),
+        StepAnchor::Ui(UiAnchor::RectWidth),
         Some(rect_width_10),
         StepAssist {
             label: "Draw 10×10 for me",
             run: assist_draw_10mm_square,
         },
         Some(TypeHint::Fixed("10")),
+        focus_rect_width_field,
     ),
-    assisted_step(
+    assisted_step_enter(
         "Type the height: `10`.",
-        StepAnchor::Ui(UiAnchor::Tool(Tool::Rectangle)),
+        StepAnchor::Ui(UiAnchor::RectHeight),
         Some(rect_height_10),
         StepAssist {
             label: "Draw 10×10 for me",
             run: assist_draw_10mm_square,
         },
         Some(TypeHint::Fixed("10")),
+        focus_rect_height_field,
     ),
     plain_step(
         "Press Enter \u{2014} or click \u{2014} to place the square.",
-        StepAnchor::Ui(UiAnchor::Tool(Tool::Rectangle)),
+        StepAnchor::Ui(UiAnchor::RectHeight),
         Some(rect_dims_are_10),
     ),
     plain_step(
@@ -3323,7 +3446,7 @@ static DIMENSIONED_BOX_STEPS: &[Step] = &[
     ),
     plain_step(
         "Click the face.",
-        StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude)),
+        StepAnchor::World(rectangle_face_guide),
         Some(extrude_face_picked),
     ),
     assisted_step(
@@ -3904,9 +4027,121 @@ mod tests {
     fn cube_tutorial_assists_build_a_solid() {
         let mut app = AppState::default();
         assist_extrude_to_cube(&mut app);
-        assert!(has_closed_rectangle(&app));
+        assert!(has_closed_rectangle(&app) || has_rectangle_outline(&app));
         assert!(has_extrusion(&app));
         assert!(!app.doc.bodies.is_empty());
+    }
+
+    /// #1256/#1259: first tutorial is short, beginner-facing, and never asks for numbers.
+    #[test]
+    fn cube_tutorial_is_short_and_typeless() {
+        let cube = &TUTORIALS[tutorial_index("cube").unwrap()];
+        assert!(
+            cube.steps[0].narration.starts_with("Hi! Let's make a cube"),
+            "welcome should be short: {}",
+            cube.steps[0].narration
+        );
+        assert!(
+            !cube.steps[0].narration.to_ascii_lowercase().contains("classic"),
+            "no CAD jargon in the welcome"
+        );
+        for step in cube.steps {
+            let n = step.narration.to_ascii_lowercase();
+            assert!(
+                !n.contains("type ") && !n.contains("type:") && !n.contains("type the"),
+                "cube step asks to type: {}",
+                step.narration
+            );
+            assert!(
+                step.type_hint.is_none(),
+                "cube step has a type hint: {}",
+                step.narration
+            );
+        }
+    }
+
+    /// #1257/#1262: after the tool is selected, click steps point at the ground/face.
+    #[test]
+    fn cube_and_shapes_click_steps_point_at_world_not_selected_tool() {
+        let cube = &TUTORIALS[tutorial_index("cube").unwrap()];
+        for step in cube.steps {
+            let n = step.narration.to_ascii_lowercase();
+            let is_placement = n.contains("ground")
+                || n.contains("opposite corner")
+                || n.contains("the square");
+            if is_placement {
+                assert!(
+                    matches!(step.anchor, StepAnchor::World(_)),
+                    "placement step should use a world anchor: {}",
+                    step.narration
+                );
+            }
+        }
+        let shapes = &TUTORIALS[tutorial_index("shapes").unwrap()];
+        for step in shapes.steps {
+            let n = step.narration.to_ascii_lowercase();
+            let is_placement = n.contains("ground")
+                || n.contains("opposite corner")
+                || n.contains("centre of the cylinder")
+                || n.contains("sphere should rest");
+            if is_placement {
+                assert!(
+                    matches!(step.anchor, StepAnchor::World(_)),
+                    "shapes placement should use a world anchor: {}",
+                    step.narration
+                );
+            }
+        }
+    }
+
+    /// #1257: ground / face guides resolve once a sketch (or ground plane) exists.
+    #[test]
+    fn cube_world_guides_resolve_on_ground() {
+        let mut app = AppState::default();
+        assert!(rect_first_corner_guide(&app).is_some());
+        assert!(ground_anchor_a(&app).is_some());
+        ensure_rect_sketch_for_tutorial(&mut app);
+        assert!(app.sketch_session.is_some());
+        assert_eq!(app.tool, Tool::Rectangle);
+        assert!(rect_first_corner_guide(&app).is_some());
+        // Simulate a first corner so the opposite guide follows it.
+        app.creating_rect = Some(crate::actions::CreatingRect {
+            origin: glam::Vec3::new(10.0, 10.0, 0.0),
+            texts: ["20".into(), "20".into()],
+            focused: 0,
+            last_mouse: glam::Vec3::new(30.0, 30.0, 0.0),
+            user_edited: [false, false],
+            pending_focus: true,
+            construction: false,
+            anchor: crate::actions::RectAnchor::Corner,
+        });
+        let opp = rect_opposite_corner_guide(&app).expect("opposite corner guide");
+        assert!(opp.x > 10.0 && opp.y > 10.0);
+    }
+
+    /// #1258: typing steps focus the rect dim fields (dimensioned_box still types).
+    #[test]
+    fn dimensioned_box_typing_steps_target_rect_fields() {
+        let box_tut = &TUTORIALS[tutorial_index("dimensioned_box").unwrap()];
+        let typing: Vec<_> = box_tut
+            .steps
+            .iter()
+            .filter(|s| {
+                let n = s.narration.to_ascii_lowercase();
+                n.contains("type the width") || n.contains("type the height")
+            })
+            .collect();
+        assert_eq!(typing.len(), 2);
+        assert!(matches!(
+            typing[0].anchor,
+            StepAnchor::Ui(UiAnchor::RectWidth)
+        ));
+        assert!(matches!(
+            typing[1].anchor,
+            StepAnchor::Ui(UiAnchor::RectHeight)
+        ));
+        assert!(typing[0].on_enter.is_some());
+        assert!(typing[1].on_enter.is_some());
     }
 
     /// #1239: shapes tutorial assists place all three primitives.

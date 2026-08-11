@@ -4997,6 +4997,11 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   typing is its own step — never combine a click with typing (or two clicks / two typed
   values) in one step. The long bracket walkthrough predates this rule and is left alone;
   every newer tutorial follows it. See the module docs on `tutorial`.
+- **First tutorial (`cube`)** (#1256–#1259/#1262): ultra-short beginner copy, no typing and
+  no parameters — click a rectangle on the ground, extrude, Enter. After a tool is selected,
+  placement steps use **world** orbs on the ground/face (not the toolbar button again).
+  Tutorials that still type (e.g. `dimensioned_box`) point at the floating dim fields
+  (`UiAnchor::RectWidth` / `RectHeight`) and arm focus so typing lands.
 - Each tutorial is a list of **steps**: Bear's narration in a cartoon **speech
   bubble** tucked under the view cube (with a tail pointing at Bear), a **pulsing
   gold ring** on what to click next (toolbar buttons, the Parameters `+`, or a projected

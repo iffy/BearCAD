@@ -30140,6 +30140,37 @@ impl App {
                 let mut commit_rect = false;
                 let mut width_field_result = SketchDimFieldResult::default();
                 let mut height_field_result = SketchDimFieldResult::default();
+                // #1258: type into the focused rect dim even when egui hasn't landed focus yet
+                // (tutorial orb still on the tool, floating field not yet keyboard-owner).
+                let field_focused_w = ctx.memory(|m| m.has_focus(id_w));
+                let field_focused_h = ctx.memory(|m| m.has_focus(id_h));
+                let any_rect_dim_focused = field_focused_w || field_focused_h;
+                let other_wants_kb = ctx.egui_wants_keyboard_input() && !any_rect_dim_focused;
+                if should_grab_unfocused_tool_typing(any_rect_dim_focused, other_wants_kb) {
+                    let typed: String = ctx.input(|i| {
+                        i.events
+                            .iter()
+                            .filter_map(|e| match e {
+                                egui::Event::Text(t) => Some(t.as_str()),
+                                _ => None,
+                            })
+                            .collect()
+                    });
+                    let typed: String = typed
+                        .chars()
+                        .filter(|c| c.is_ascii_alphanumeric() || "._-+*/()= ".contains(*c))
+                        .collect();
+                    if !typed.is_empty() {
+                        let idx = cr.focused.min(1);
+                        if cr.user_edited[idx] {
+                            cr.texts[idx].push_str(&typed);
+                        } else {
+                            cr.texts[idx] = typed;
+                        }
+                        cr.user_edited[idx] = true;
+                        cr.pending_focus = true;
+                    }
+                }
                 let doc = &mut self.state.doc;
                 egui::Area::new(egui::Id::new("cr_width_area"))
                     .fixed_pos(width_layout.pos)
@@ -30164,6 +30195,7 @@ impl App {
                             commit_rect = true;
                         }
                     });
+                let width_anchor = width_field_result.rect;
                 inline_parameter_field_results.push(width_field_result);
 
                 let doc = &mut self.state.doc;
@@ -30190,6 +30222,7 @@ impl App {
                             commit_rect = true;
                         }
                     });
+                let height_anchor = height_field_result.rect;
                 inline_parameter_field_results.push(height_field_result);
 
                 let current = ctx.memory(|m| m.focused());
@@ -30213,6 +30246,20 @@ impl App {
                         consume_sketch_dimension_enter(ui);
                     }
                     self.state.apply(Action::CommitRectangle);
+                } else {
+                    // Register after the creating_rect borrow ends would be cleaner, but
+                    // apply() above may drop creating_rect — so stash anchors only when
+                    // the rect is still live (this branch).
+                    if let Some(rect) = width_anchor {
+                        self.state
+                            .tutorial_anchor_rects
+                            .insert(tutorial::UiAnchor::RectWidth, rect);
+                    }
+                    if let Some(rect) = height_anchor {
+                        self.state
+                            .tutorial_anchor_rects
+                            .insert(tutorial::UiAnchor::RectHeight, rect);
+                    }
                 }
 
                 if let Some(edge) = current
