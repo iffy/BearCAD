@@ -462,7 +462,6 @@ impl Camera {
         self.pitch = back.z.clamp(-1.0, 1.0).asin().clamp(-PITCH_LIMIT, PITCH_LIMIT);
     }
 
-    #[cfg(test)]
     pub fn has_orbit_trackball_state(&self) -> bool {
         self.orbit_quat.is_some()
     }
@@ -638,7 +637,7 @@ impl Camera {
         });
     }
 
-    #[cfg(test)]
+    /// The stored Home view pose (View → Home / house button target).
     pub fn home_view(&self) -> HomeView {
         self.home
     }

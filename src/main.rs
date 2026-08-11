@@ -3939,6 +3939,13 @@ impl App {
                 tutorial::UiAnchor::ShapeKind(kind) => context::shape_kind_rect(ctx, kind),
                 // Elements-pane sketch row (#1279).
                 tutorial::UiAnchor::ElementsSketch => hierarchy::elements_sketch_row_rect(ctx),
+                // View-cube bear + home button live in the viewport's top-right (#1269).
+                tutorial::UiAnchor::ViewCube => Some(view_cube::cube_rect_in_viewport(viewport)),
+                tutorial::UiAnchor::ViewHome => {
+                    let pad = view_cube::cube_rect_in_viewport(viewport)
+                        .expand(view_cube::HUD_PANEL_PAD);
+                    Some(view_cube::view_home_toggle_rect(pad))
+                }
                 other => self.state.tutorial_anchor_rects.get(&other).copied(),
             }
         };

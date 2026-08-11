@@ -5002,6 +5002,10 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   placement steps use **world** orbs on the ground/face (not the toolbar button again).
   Tutorials that still type (e.g. `dimensioned_box`) point at the floating dim fields
   (`UiAnchor::RectWidth` / `RectHeight`) and arm focus so typing lands.
+- **Second tutorial (`navigate`)** (#1269): pan / orbit / zoom, the view-bear HUD (snap a
+  view + Home), and the Selection Exploder (Space). Starts with a few cubes already in the
+  document; camera steps auto-advance on motion (with "…for me" assists), the exploder step
+  is Next with a Space key hint. Orbs can point at `UiAnchor::ViewCube` / `ViewHome`.
 - Each tutorial is a list of **steps**: Bear's narration in a cartoon **speech
   bubble** tucked under the view cube (with a tail pointing at Bear), a **pulsing
   gold ring** on what to click next (toolbar buttons, the Parameters `+`, or a projected

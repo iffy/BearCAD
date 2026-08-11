@@ -1291,7 +1291,8 @@ fn view_preset_toggle_rect(pad_rect: Rect) -> Rect {
     )
 }
 
-fn view_home_toggle_rect(pad_rect: Rect) -> Rect {
+/// House (Home view) button rect under the view cube, given the HUD panel rect.
+pub fn view_home_toggle_rect(pad_rect: Rect) -> Rect {
     Rect::from_min_size(
         Pos2::new(
             pad_rect.max.x - PRESET_TOGGLE_SIZE - PRESET_TOGGLE_MARGIN,

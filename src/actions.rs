@@ -12647,6 +12647,10 @@ impl AppState {
                 self.tutorial_pane_open = false;
                 self.tutorial =
                     Some(crate::tutorial::TutorialRun { tutorial: index, step: 0, hold: false });
+                // Step 0's on_enter seeds the document (e.g. navigate starts with cubes, #1269).
+                if let Some(enter) = tut.steps.first().and_then(|s| s.on_enter) {
+                    enter(self);
+                }
                 self.status = format!("Tutorial started: {}", tut.title);
                 ActionResult::Ok
             }

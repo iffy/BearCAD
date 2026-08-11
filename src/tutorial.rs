@@ -47,6 +47,10 @@ pub enum UiAnchor {
     ShapeKind(crate::model::PrimitiveKind),
     /// The sketch row in the Elements pane (#1279) — double-click to reopen for edit.
     ElementsSketch,
+    /// The view-cube bear HUD (#1269).
+    ViewCube,
+    /// The house (Home view) button under the view cube (#1269).
+    ViewHome,
     /// A status-bar pane toggle (phone layout only, #828): Elements / Context / Params.
     PaneButton(crate::actions::Pane),
 }
@@ -220,6 +224,12 @@ pub static TUTORIALS: &[Tutorial] = &[
         name: "cube",
         title: "Rectangle to cube",
         steps: CUBE_STEPS,
+    },
+    // Second walkthrough (#1269): camera + exploder, with cubes already in the document.
+    Tutorial {
+        name: "navigate",
+        title: "Pan, orbit, zoom & pick",
+        steps: NAVIGATE_STEPS,
     },
     Tutorial {
         name: "shapes",
@@ -3290,6 +3300,228 @@ fn sphere_kind_ready(app: &AppState) -> bool {
         || (shape_tool_active(app) && app.shape_kind == crate::model::PrimitiveKind::Sphere)
 }
 
+// --- Navigate tutorial (#1269) -----------------------------------------------------
+
+/// Seed a few overlapping cuboids so the walkthrough starts with geometry to orbit and
+/// something crowded enough for the Selection Exploder.
+fn seed_nav_cubes(app: &mut AppState) {
+    if app.doc.primitives.len() >= 2 {
+        return;
+    }
+    // Two on the ground sharing a corner, one stacked on top — a pile under the cursor.
+    let placements = [
+        ([0.0, 0.0, 0.0], "20"),
+        ([12.0, 12.0, 0.0], "20"),
+        ([6.0, 6.0, 20.0], "18"),
+    ];
+    for (origin, size) in placements {
+        let mut shape = crate::model::Primitive::new(crate::model::PrimitiveKind::Cuboid);
+        shape.origin = origin;
+        shape.width = size.into();
+        shape.depth = size.into();
+        shape.height = size.into();
+        app.apply(Action::CreateShape { shape });
+    }
+}
+
+/// Centre of the seeded pile — orb target for camera drag steps.
+fn nav_cubes_guide(app: &AppState) -> Option<glam::Vec3> {
+    if app.doc.primitives.is_empty() {
+        return Some(glam::Vec3::new(10.0, 10.0, 15.0));
+    }
+    let mut sum = glam::Vec3::ZERO;
+    let mut n = 0.0;
+    for p in app.doc.primitives.values() {
+        sum += glam::Vec3::from_array(p.origin);
+        n += 1.0;
+    }
+    Some(sum / n + glam::Vec3::new(0.0, 0.0, 12.0))
+}
+
+fn camera_has_orbited(app: &AppState) -> bool {
+    let home = app.cam.home_view();
+    (app.cam.yaw - home.yaw).abs() > 0.2 || (app.cam.pitch - home.pitch).abs() > 0.15
+}
+
+fn camera_has_panned(app: &AppState) -> bool {
+    let home = app.cam.home_view();
+    (app.cam.target - home.target).length() > 8.0
+}
+
+fn camera_has_zoomed(app: &AppState) -> bool {
+    let home = app.cam.home_view();
+    (app.cam.distance - home.distance).abs() > 25.0
+}
+
+fn camera_on_standard_view(app: &AppState) -> bool {
+    use crate::camera::StandardView::*;
+    for view in [Front, Back, Left, Right, Top, Bottom] {
+        let (y, p) = view.yaw_pitch();
+        if (app.cam.yaw - y).abs() < 0.08 && (app.cam.pitch - p).abs() < 0.08 {
+            return true;
+        }
+    }
+    // Dragging the bear leaves trackball state too.
+    app.cam.has_orbit_trackball_state()
+}
+
+fn camera_at_home(app: &AppState) -> bool {
+    let home = app.cam.home_view();
+    (app.cam.target - home.target).length() < 2.0
+        && (app.cam.yaw - home.yaw).abs() < 0.08
+        && (app.cam.pitch - home.pitch).abs() < 0.08
+        && (app.cam.distance - home.distance).abs() < 8.0
+        && !app.cam.has_orbit_trackball_state()
+}
+
+fn assist_nav_orbit(app: &mut AppState) {
+    // Land clear of every StandardView so the later bear-snap step still has work to do.
+    let home = app.cam.home_view();
+    app.cam.yaw = home.yaw + 0.55;
+    app.cam.pitch = (home.pitch + 0.2).clamp(-1.4, 1.4);
+}
+
+fn assist_nav_pan(app: &mut AppState) {
+    app.cam.target += glam::Vec3::new(40.0, 20.0, 0.0);
+}
+
+fn assist_nav_zoom(app: &mut AppState) {
+    let home_d = app.cam.home_view().distance;
+    app.cam.distance = (home_d * 0.45).max(40.0);
+}
+
+fn assist_nav_bear_snap(app: &mut AppState) {
+    let (yaw, pitch) = crate::camera::StandardView::Front.yaw_pitch();
+    app.cam.yaw = yaw;
+    app.cam.pitch = pitch;
+    // Clear any trackball residue so the pose is a clean face snap.
+    app.cam.leave_sketch_mode();
+}
+
+fn assist_nav_home(app: &mut AppState) {
+    let home = app.cam.home_view();
+    app.cam.yaw = home.yaw;
+    app.cam.pitch = home.pitch;
+    app.cam.target = home.target;
+    app.cam.distance = home.distance;
+    app.cam.set_view_up(home.view_up);
+    app.cam.leave_sketch_mode();
+}
+
+const fn nav_drag_step(
+    narration: &'static str,
+    done: fn(&AppState) -> bool,
+    drag_hint: &'static str,
+    assist: StepAssist,
+    phone_narration: Option<&'static str>,
+) -> Step {
+    Step {
+        narration,
+        anchor: StepAnchor::World(nav_cubes_guide),
+        done: Some(done),
+        on_enter: None,
+        assist: Some(assist),
+        needs_shift: None,
+        drag_hint: Some(drag_hint),
+        key_hint: None,
+        marks: None,
+        type_hint: None,
+        phone_narration,
+        only_on_phone: false,
+    }
+}
+
+/// #1269: second walkthrough — pan, orbit, zoom, bear HUD, home, Selection Exploder.
+/// Starts with cubes already in the document. One action per step (#1253).
+static NAVIGATE_STEPS: &[Step] = &[
+    plain_step_enter(
+        "Here are a few cubes. Let's learn to move around them.",
+        StepAnchor::None,
+        None,
+        seed_nav_cubes,
+    ),
+    nav_drag_step(
+        "Right-drag to orbit around the model.",
+        camera_has_orbited,
+        "Right button",
+        StepAssist {
+            label: "Orbit for me",
+            run: assist_nav_orbit,
+        },
+        Some("Drag with three fingers to orbit around the model."),
+    ),
+    nav_drag_step(
+        "Middle-drag, or Shift + right-drag, to pan.",
+        camera_has_panned,
+        "Middle button",
+        StepAssist {
+            label: "Pan for me",
+            run: assist_nav_pan,
+        },
+        Some("Drag with two fingers to pan."),
+    ),
+    Step {
+        narration: "Scroll the mouse wheel to zoom in and out.",
+        anchor: StepAnchor::World(nav_cubes_guide),
+        done: Some(camera_has_zoomed),
+        on_enter: None,
+        assist: Some(StepAssist {
+            label: "Zoom for me",
+            run: assist_nav_zoom,
+        }),
+        needs_shift: None,
+        drag_hint: None,
+        key_hint: None,
+        marks: None,
+        type_hint: None,
+        phone_narration: Some("Pinch to zoom in and out."),
+        only_on_phone: false,
+    },
+    assisted_step(
+        "The bear in the corner is your view cube. Click a face, edge, or corner to snap \
+         a view \u{2014} or drag the bear to orbit.",
+        StepAnchor::Ui(UiAnchor::ViewCube),
+        Some(camera_on_standard_view),
+        StepAssist {
+            label: "Snap a view for me",
+            run: assist_nav_bear_snap,
+        },
+        None,
+    ),
+    assisted_step(
+        "Click the house under the bear to go to the Home view.",
+        StepAnchor::Ui(UiAnchor::ViewHome),
+        Some(camera_at_home),
+        StepAssist {
+            label: "Go home for me",
+            run: assist_nav_home,
+        },
+        None,
+    ),
+    Step {
+        narration: "When things stack under the cursor, press Space \u{2014} the Selection \
+                    Exploder fans them into loupes. Click a loupe to pick just that face or edge \
+                    (plain Select takes the whole body).",
+        anchor: StepAnchor::World(nav_cubes_guide),
+        done: None,
+        on_enter: None,
+        assist: None,
+        needs_shift: None,
+        drag_hint: None,
+        key_hint: Some(("Space", "Press space over the cubes to fan them out")),
+        marks: None,
+        type_hint: None,
+        phone_narration: None,
+        only_on_phone: false,
+    },
+    plain_step(
+        "That's the view: orbit, pan, zoom, the bear, Home, and Space for crowded picks. \
+         Nice!",
+        StepAnchor::None,
+        None,
+    ),
+];
+
 /// #1238 / #1256–#1259 / #1262: first walkthrough — click a square, extrude it.
 /// No numbers, no parameters: pure click joy. One action per step (#1253).
 static CUBE_STEPS: &[Step] = &[
@@ -3965,13 +4197,14 @@ mod tests {
     #[test]
     fn tutorial_registry_lookup_by_name() {
         assert_eq!(tutorial_index("cube"), Some(0));
-        assert_eq!(tutorial_index("shapes"), Some(1));
-        assert_eq!(tutorial_index("dimensioned_box"), Some(2));
-        assert_eq!(tutorial_index("bracket"), Some(3));
+        assert_eq!(tutorial_index("navigate"), Some(1), "#1269: navigate is second");
+        assert_eq!(tutorial_index("shapes"), Some(2));
+        assert_eq!(tutorial_index("dimensioned_box"), Some(3));
+        assert_eq!(tutorial_index("bracket"), Some(4));
         assert_eq!(tutorial_index("nope"), None);
         assert_eq!(TUTORIALS.last().unwrap().name, "bracket", "#1251: bracket is last");
         assert!(TUTORIALS[bracket_index()].steps.len() >= 10);
-        assert!(TUTORIALS.len() >= 4, "pane lists every walkthrough");
+        assert!(TUTORIALS.len() >= 5, "pane lists every walkthrough");
     }
 
     /// #1253: short tutorials never combine a click with typing in one step's narration.
@@ -4461,5 +4694,123 @@ mod tests {
         assert!(rect_dims_are_10(&app) || one_sketch_dim_is_20(&app));
         assert!(extrusion_is_10(&app) || has_extrusion(&app));
         assert!(one_sketch_dim_is_20(&app));
+    }
+
+    /// #1269: navigate tutorial sits after cube, seeds cubes, and teaches camera + exploder.
+    #[test]
+    fn navigate_tutorial_is_second_and_seeds_cubes() {
+        let nav = &TUTORIALS[tutorial_index("navigate").unwrap()];
+        assert_eq!(nav.name, "navigate");
+        assert_eq!(tutorial_index("navigate"), Some(1));
+        assert!(
+            nav.title.to_ascii_lowercase().contains("orbit")
+                || nav.title.to_ascii_lowercase().contains("pan")
+                || nav.title.to_ascii_lowercase().contains("zoom"),
+            "title should name the camera skills: {}",
+            nav.title
+        );
+
+        let mut app = AppState::default();
+        app.apply(Action::StartTutorial {
+            index: tutorial_index("navigate").unwrap(),
+        });
+        assert!(
+            app.doc.primitives.len() >= 2,
+            "start with cubes already in the document, got {}",
+            app.doc.primitives.len()
+        );
+        assert!(app.doc.bodies.len() >= 2 || app.doc.primitives.len() >= 2);
+        assert!(app.tutorial.is_some());
+    }
+
+    /// #1269: covers orbit, pan, zoom, bear HUD, home, and the Selection Exploder.
+    #[test]
+    fn navigate_tutorial_covers_camera_bear_and_exploder() {
+        let nav = &TUTORIALS[tutorial_index("navigate").unwrap()];
+        let joined: String = nav
+            .steps
+            .iter()
+            .map(|s| s.narration.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join(" ");
+        for needle in [
+            "orbit",
+            "pan",
+            "zoom",
+            "bear",
+            "home",
+            "space",
+            "exploder",
+        ] {
+            assert!(
+                joined.contains(needle),
+                "navigate tutorial should mention {needle}"
+            );
+        }
+        assert!(
+            nav.steps.iter().any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::ViewCube))),
+            "should point at the view bear"
+        );
+        assert!(
+            nav.steps.iter().any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::ViewHome))),
+            "should point at the home button"
+        );
+        assert!(
+            nav.steps.iter().any(|s| s.key_hint.is_some_and(|(k, _)| k.eq_ignore_ascii_case("Space"))),
+            "should introduce Space / Selection Exploder"
+        );
+    }
+
+    /// #1269: assists drive camera steps; Next covers the exploder teaching step.
+    #[test]
+    fn navigate_tutorial_walks_with_assists() {
+        let mut app = AppState::default();
+        app.apply(Action::StartTutorial {
+            index: tutorial_index("navigate").unwrap(),
+        });
+        assert!(app.doc.primitives.len() >= 2);
+
+        let mut guard = 0;
+        while app.tutorial.is_some() {
+            guard += 1;
+            assert!(guard < 40, "navigate tutorial should finish");
+            let run = app.tutorial.unwrap();
+            let step = &TUTORIALS[run.tutorial].steps[run.step];
+            if step.assist.is_some() {
+                app.apply(Action::TutorialAssist);
+                // Assist should satisfy the step; if not (edge case), fall through to Next.
+                if app.tutorial.map(|r| r.step) == Some(run.step) && step.done.is_some() {
+                    // Force-advance stuck auto-step for the test.
+                    app.apply(Action::TutorialNext);
+                }
+            } else {
+                app.apply(Action::TutorialNext);
+            }
+        }
+        assert!(app.tutorial_completed("navigate"));
+    }
+
+    #[test]
+    fn navigate_camera_predicates_respond_to_assists() {
+        let mut app = AppState::default();
+        assert!(!camera_has_orbited(&app));
+        assist_nav_orbit(&mut app);
+        assert!(camera_has_orbited(&app));
+
+        assert!(!camera_has_panned(&app));
+        assist_nav_pan(&mut app);
+        assert!(camera_has_panned(&app));
+
+        assert!(!camera_has_zoomed(&app));
+        assist_nav_zoom(&mut app);
+        assert!(camera_has_zoomed(&app));
+
+        assert!(!camera_on_standard_view(&app));
+        assist_nav_bear_snap(&mut app);
+        assert!(camera_on_standard_view(&app));
+        assert!(!camera_at_home(&app));
+
+        assist_nav_home(&mut app);
+        assert!(camera_at_home(&app));
     }
 }
