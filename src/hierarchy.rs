@@ -4089,6 +4089,10 @@ pub fn show_pane(
     on_click_element: &mut impl FnMut(SceneElement, bool),
     on_hover_element: &mut impl FnMut(SceneElement),
     on_delete_element: &mut impl FnMut(SceneElement),
+    clipboard_has_items: bool,
+    clipboard_has_linkable: bool,
+    on_copy: &mut impl FnMut(),
+    on_paste: &mut impl FnMut(bool),
     // `active_drawing`: the open drawing (Drawing workbench) enabling the row "Add to
     // drawing" action (#274); `on_add_to_drawing` receives the body index.
     // `on_create_drawing_of_body`: Elements-pane body right-click → new drawing of that body (#1158).
@@ -4256,6 +4260,10 @@ pub fn show_pane(
                             on_toggle_visibility,
                             on_click_element,
                             on_delete_element,
+                            clipboard_has_items,
+                            clipboard_has_linkable,
+                            on_copy,
+                            on_paste,
                             on_add_component,
                             on_move_to_component,
                             on_export_component,
@@ -4331,6 +4339,10 @@ pub fn show_pane(
                         on_click_element,
                         on_hover_element,
                         on_delete_element,
+                        clipboard_has_items,
+                        clipboard_has_linkable,
+                        on_copy,
+                        on_paste,
                         active_drawing,
                         on_add_to_drawing,
                         on_create_drawing_of_body,
@@ -4368,6 +4380,10 @@ pub fn show_pane(
                 on_click_element,
                 on_hover_element,
                 on_delete_element,
+                clipboard_has_items,
+                clipboard_has_linkable,
+                on_copy,
+                on_paste,
                 highlight_elements,
                 armed,
                 rolled_back,
@@ -4551,6 +4567,10 @@ fn show_graph_view(
     on_click_element: &mut impl FnMut(SceneElement, bool),
     on_hover_element: &mut impl FnMut(SceneElement),
     on_delete_element: &mut impl FnMut(SceneElement),
+    clipboard_has_items: bool,
+    clipboard_has_linkable: bool,
+    on_copy: &mut impl FnMut(),
+    on_paste: &mut impl FnMut(bool),
     highlight_elements: &HashSet<SceneElement>,
     armed: Option<&crate::element_picker::ElementPicker>,
     rolled_back: &HashSet<SceneElement>,
@@ -4880,6 +4900,11 @@ fn show_graph_view(
                             on_move_to_component,
                             on_set_rollback,
                             on_delete_element,
+                            clipboard_has_items,
+                            clipboard_has_linkable,
+                            crate::copy_paste::copyable_element(&element).is_some(),
+                            on_copy,
+                            on_paste,
                         );
                     });
                 } else {
@@ -5121,6 +5146,10 @@ fn show_component_row(
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
     on_click_element: &mut impl FnMut(SceneElement, bool),
     on_delete_element: &mut impl FnMut(SceneElement),
+    clipboard_has_items: bool,
+    clipboard_has_linkable: bool,
+    on_copy: &mut impl FnMut(),
+    on_paste: &mut impl FnMut(bool),
     on_add_component: &mut impl FnMut(Option<crate::model::ComponentKey>),
     on_move_to_component: &mut impl FnMut(SceneElement, Option<crate::model::ComponentKey>),
     on_export_component: &mut impl FnMut(crate::model::ComponentKey),
@@ -5227,6 +5256,19 @@ fn show_component_row(
                 on_move_to_component(element.clone(), None);
                 ui.close();
             }
+            // Copy / Paste (#1236).
+            if ui.button("Copy").clicked() {
+                on_copy();
+                ui.close();
+            }
+            if clipboard_has_items && ui.button("Paste").clicked() {
+                on_paste(false);
+                ui.close();
+            }
+            if clipboard_has_linkable && ui.button("Paste Linked").clicked() {
+                on_paste(true);
+                ui.close();
+            }
             if ui.button("Delete").clicked() {
                 on_delete_element(element.clone());
                 ui.close();
@@ -5292,6 +5334,10 @@ fn show_row(
     on_click_element: &mut impl FnMut(SceneElement, bool),
     on_hover_element: &mut impl FnMut(SceneElement),
     on_delete_element: &mut impl FnMut(SceneElement),
+    clipboard_has_items: bool,
+    clipboard_has_linkable: bool,
+    on_copy: &mut impl FnMut(),
+    on_paste: &mut impl FnMut(bool),
     active_drawing: Option<crate::model::DrawingKey>,
     on_add_to_drawing: &mut impl FnMut(SceneElement),
     on_create_drawing_of_body: &mut impl FnMut(crate::model::BodyKey),
@@ -5682,6 +5728,11 @@ fn show_row(
                 on_move_to_component,
                 on_set_rollback,
                 on_delete_element,
+                clipboard_has_items,
+                clipboard_has_linkable,
+                crate::copy_paste::copyable_element(&element).is_some(),
+                on_copy,
+                on_paste,
             );
         });
     });
@@ -5746,6 +5797,12 @@ pub(crate) fn element_context_menu(
     on_move_to_component: &mut impl FnMut(SceneElement, Option<crate::model::ComponentKey>),
     on_set_rollback: &mut impl FnMut(Option<RollbackMarker>),
     on_delete_element: &mut impl FnMut(SceneElement),
+    // Copy / Paste / Paste Linked (#1236).
+    clipboard_has_items: bool,
+    clipboard_has_linkable: bool,
+    element_is_copyable: bool,
+    on_copy: &mut impl FnMut(),
+    on_paste: &mut impl FnMut(bool),
 ) {
     match node {
         HierarchyNode::Sketch(sketch) => {
@@ -5894,6 +5951,19 @@ pub(crate) fn element_context_menu(
                 ui.close();
             }
         });
+    }
+    // Copy / Paste / Paste Linked (#1236).
+    if element_is_copyable && ui.button("Copy").clicked() {
+        on_copy();
+        ui.close();
+    }
+    if clipboard_has_items && ui.button("Paste").clicked() {
+        on_paste(false);
+        ui.close();
+    }
+    if clipboard_has_linkable && ui.button("Paste Linked").clicked() {
+        on_paste(true);
+        ui.close();
     }
     if ui.button("Delete").clicked() {
         on_delete_element(element.clone());

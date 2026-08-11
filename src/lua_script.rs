@@ -2292,6 +2292,32 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Copy / Paste (#1236): `bearcad.copy()` then `bearcad.paste{ x = 40 }` (or
+    // `linked = true` for Paste Linked on bodies/components).
+    api.set(
+        "copy",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::CopySelection) }
+        })?,
+    )?;
+    api.set(
+        "paste",
+        lua.create_function(|lua, opts: Option<Table>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let (linked, x, y, z) = if let Some(opts) = opts {
+                let linked: bool = opts.get("linked").unwrap_or(false);
+                let x: f32 = opts.get("x").unwrap_or(0.0);
+                let y: f32 = opts.get("y").unwrap_or(0.0);
+                let z: f32 = opts.get("z").unwrap_or(0.0);
+                (linked, x, y, z)
+            } else {
+                (false, 0.0, 0.0, 0.0)
+            };
+            unsafe { tick.exec(Instruction::PasteAt { linked, x, y, z }) }
+        })?,
+    )?;
+
     api.set(
         "quit",
         lua.create_function(|lua, ()| {
@@ -8678,6 +8704,60 @@ mod tests {
         );
         // Pure shell (no boss) is still less than solid cuboid.
         assert!(v < 40.0 * 30.0 * 20.0 + 10.0 * 10.0 * 15.0 * 0.5 + 500.0);
+    }
+
+    /// #1236: `bearcad.copy` + `bearcad.paste` create an independent body; `linked = true`
+    /// creates a dependent copy without shadowing the source.
+    #[test]
+    fn lua_copy_paste_independent_and_linked() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 20, depth = 20, height = 10 }
+            bearcad.select{ kind = "body", index = 0 }
+            bearcad.copy()
+            bearcad.paste{ x = 50 }
+            "#,
+        );
+        assert_eq!(state.doc.bodies.len(), 2, "independent paste adds a body");
+        assert!(
+            state
+                .doc
+                .bodies
+                .values()
+                .any(|b| matches!(b.source, crate::model::BodySource::Imported(_))),
+            "independent paste is an imported mesh body"
+        );
+        assert!(!state.doc.bodies.values().next().unwrap().shadow);
+
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 20, depth = 20, height = 10 }
+            bearcad.select{ kind = "body", index = 0 }
+            bearcad.copy()
+            bearcad.paste{ linked = true, z = 40 }
+            "#,
+        );
+        assert_eq!(state.doc.bodies.len(), 2);
+        assert!(!state.doc.bodies.values().next().unwrap().shadow, "source stays live");
+        assert!(
+            state.doc.move_ops.values().next().unwrap().keep_inputs,
+            "Paste Linked keeps inputs"
+        );
+        assert!(
+            state
+                .doc
+                .bodies
+                .values()
+                .any(|b| matches!(b.source, crate::model::BodySource::Moved { .. })),
+            "linked paste is a Moved body"
+        );
+        assert_eq!(state.tool, crate::actions::Tool::Move);
+        assert_eq!(
+            state.move_translate_mode,
+            crate::model::MoveTranslateMode::Free
+        );
     }
 
     /// #1104/#1106: extruding from a Shape-tool cuboid face with `body = "merge"` shadows

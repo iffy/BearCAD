@@ -155,6 +155,15 @@ pub enum Instruction {
     ImportLua { path: String, force: bool },
     Clear,
     Undo,
+    /// Copy the selection onto the session clipboard (#1236).
+    CopySelection,
+    /// Paste clipboard contents at an explicit offset (#1236). `linked` is Paste Linked.
+    PasteAt {
+        linked: bool,
+        x: f32,
+        y: f32,
+        z: f32,
+    },
     Tool(Tool),
     BeginSketch { face: FaceId },
     OpenSketch { sketch: usize },
@@ -980,6 +989,14 @@ impl Instruction {
             }
             Instruction::Clear => "bearcad.clear()".to_string(),
             Instruction::Undo => "bearcad.undo()".to_string(),
+            Instruction::CopySelection => "bearcad.copy()".to_string(),
+            Instruction::PasteAt { linked, x, y, z } => {
+                if *linked {
+                    format!("bearcad.paste{{ linked = true, x = {x}, y = {y}, z = {z} }}")
+                } else {
+                    format!("bearcad.paste{{ x = {x}, y = {y}, z = {z} }}")
+                }
+            }
             Instruction::Tool(tool) => format!("bearcad.ui.tool({:?})", tool_lua_name(*tool)),
             Instruction::BeginSketch { face } => {
                 // Full face table so body faces (extrude caps/sides, etc.) round-trip (#1159).
@@ -2890,6 +2907,13 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         Action::ToggleFpsMode => Some(Instruction::FpsMode { on: None }),
         Action::Clear => Some(Instruction::Clear),
         Action::UndoLast => Some(Instruction::Undo),
+        Action::CopySelection => Some(Instruction::CopySelection),
+        Action::PasteAt { linked, offset } => Some(Instruction::PasteAt {
+            linked: *linked,
+            x: offset.x,
+            y: offset.y,
+            z: offset.z,
+        }),
         Action::SetTool(tool) => Some(Instruction::Tool(*tool)),
         // The interactive draw tools commit straight to `doc` without going through the
         // declarative Create*/Extrude actions (#59); replay them as the equivalent call
@@ -5619,6 +5643,19 @@ impl ScriptRunner {
                 state.apply(Action::Clear);
                 StepResult::Continue
             }
+            Instruction::CopySelection => {
+                let result = state.apply(Action::CopySelection);
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::PasteAt { linked, x, y, z } => {
+                let result = state.apply(Action::PasteAt {
+                    linked,
+                    offset: glam::Vec3::new(x, y, z),
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
             Instruction::Undo => {
                 state.apply(Action::UndoLast);
                 StepResult::Continue
@@ -6302,6 +6339,7 @@ impl ScriptRunner {
                     face_flip,
                     face_spin,
                     face_offset,
+                    keep_inputs: false,
                 });
                 self.record_action_error(result);
                 StepResult::Continue

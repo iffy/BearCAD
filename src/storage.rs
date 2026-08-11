@@ -1024,6 +1024,7 @@ mod tests {
             uv: [325, -750],
         };
         let op = doc.move_ops.insert(crate::model::MoveOperation {
+            keep_inputs: false,
             targets: vec![body],
             plane_targets: Vec::new(),
             image_targets: Vec::new(),
@@ -1670,6 +1671,7 @@ mod tests {
         let output = doc.bodies.insert(body("output"));
         assert!(doc.bodies.remove(doomed).is_some());
         doc.move_ops.insert(crate::model::MoveOperation {
+            keep_inputs: false,
             targets: vec![input],
             outputs: vec![output],
             translate_mode: Default::default(),

@@ -84,6 +84,20 @@ pub fn bar(ui: &mut egui::Ui, pane_visible: impl Fn(Pane) -> bool) -> Option<Men
                     picked = Some(MenuCommand::UndoLast);
                     ui.close();
                 }
+                ui.separator();
+                if ui.button("Copy").clicked() {
+                    picked = Some(MenuCommand::Copy);
+                    ui.close();
+                }
+                if ui.button("Paste").clicked() {
+                    picked = Some(MenuCommand::Paste);
+                    ui.close();
+                }
+                if ui.button("Paste Linked").clicked() {
+                    picked = Some(MenuCommand::PasteLinked);
+                    ui.close();
+                }
+                ui.separator();
                 if ui.button("Clear document").clicked() {
                     picked = Some(MenuCommand::Clear);
                     ui.close();

@@ -127,6 +127,26 @@ Lengths are in millimetres, angles in radians. Gizmos today: `"extrude"`,
 `"move_x"`/`"move_y"`/`"move_z"` and `"move_rx"`/`"move_ry"`/`"move_rz"`, and
 `"text_width"` (a selected wrapped text's box width).
 
+## Copy and paste
+
+`bearcad.copy()` then `bearcad.paste{ x = 40 }` (or `y`/`z`). Interactive paste in the
+app previews a cyan ghost constrained to the six axis directions from the original, and
+commits on click or Enter; the script form places immediately.
+
+- **Paste** (`linked` omitted/false) — independent copy (bodies bake to a mesh snapshot).
+- **Paste Linked** (`linked = true`) — bodies/components only; the copy updates when the
+  original changes. Other element types only support independent paste.
+
+After paste, the app switches to the Move tool (free mode) with the new copy selected.
+
+```lua
+bearcad.cuboid{ width = 20, depth = 20, height = 10 }
+bearcad.select{ kind = "body", index = 0 }
+bearcad.copy()
+bearcad.paste{ x = 50 }                 -- independent
+bearcad.paste{ linked = true, z = 40 }  -- linked
+```
+
 ## Where to go next
 
 - **[Declarative modeling](/docs/scripting/declarative-modeling)** — worked examples:

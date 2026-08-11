@@ -1763,7 +1763,8 @@ pub fn body_shadowed_by_other_ops_ex(
     doc.boolean_ops.iter().any(|(oi, o)| {
         skip_boolean != Some(oi) && (o.a.contains(&body) || (!o.keep_b && o.b.contains(&body)))
     }) || doc.move_ops.iter().any(|(oi, o)| {
-        skip_move != Some(oi) && o.targets.contains(&body)
+        // Paste Linked (#1236) keeps its inputs live — it does not consume them.
+        skip_move != Some(oi) && !o.keep_inputs && o.targets.contains(&body)
     }) || doc.slice_ops.iter().any(|(oi, o)| {
         skip_slice != Some(oi) && o.targets.contains(&body)
     }) || doc.edge_treatment_ops.iter().any(|(oi, o)| {
@@ -2718,9 +2719,12 @@ impl MovePointRef {
 }
 
 /// A move operation (Move tool, #176/#183): a rigid **translation** applied to whole bodies.
-/// Inputs become **shadow** bodies; each input gets a moved output body (`BodySource::Moved`),
-/// and the operation itself is an editable pane element. The translation components are
-/// expressions, so moves are parameter-driven like dimensions.
+/// By default inputs become **shadow** bodies; each input gets a moved output body
+/// (`BodySource::Moved`), and the operation itself is an editable pane element. The
+/// translation components are expressions, so moves are parameter-driven like dimensions.
+///
+/// With [`keep_inputs`](Self::keep_inputs) set (Paste Linked, #1236), inputs stay live and
+/// the outputs remain dependent copies that update when the originals change.
 ///
 /// `Default` is the empty move — no targets, no picks, no amounts — which places nothing.
 /// That is what a joint holds until its mate is set (#1079).
@@ -2728,6 +2732,10 @@ impl MovePointRef {
 pub struct MoveOperation {
     /// Input bodies, one output per entry (same order).
     pub targets: Vec<BodyKey>,
+    /// When true, input bodies stay live (not shadowed) — Paste Linked (#1236). Outputs still
+    /// update when the sources change. Default false: ordinary Move consumes its inputs.
+    #[serde(default)]
+    pub keep_inputs: bool,
     /// How the translation is specified (#648).
     #[serde(default)]
     pub translate_mode: MoveTranslateMode,

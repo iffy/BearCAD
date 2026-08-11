@@ -1300,6 +1300,7 @@ impl CreatingMove {
     /// joint keeps its placement, and the shape `extrude::move_op_transform` resolves.
     pub fn as_op(&self) -> crate::model::MoveOperation {
         crate::model::MoveOperation {
+            keep_inputs: false,
             targets: self.targets.clone(),
             translate_mode: self.translate_mode,
             start_point_a: self.start_point_a,
@@ -2555,6 +2556,8 @@ pub enum Action {
         face_flip: bool,
         face_spin: String,
         face_offset: String,
+        /// Paste Linked (#1236): leave input bodies live so outputs stay dependent copies.
+        keep_inputs: bool,
     },
     /// Re-point an existing move operation.
     EditMoveOperation {
@@ -2854,6 +2857,25 @@ pub enum Action {
     },
     /// Redo the last undone action (#193): the inverse of [`Action::UndoLast`].
     RedoLast,
+    /// Copy the current selection onto the session clipboard (#1236).
+    CopySelection,
+    /// Begin interactive paste placement (#1236). `linked` is Paste Linked (bodies/
+    /// components only). Shows a cyan 6-axis-constrained preview until CommitPaste.
+    BeginPaste { linked: bool },
+    /// Update the in-progress paste preview's offset (#1236).
+    SetPasteOffset { offset: glam::Vec3 },
+    /// Commit the in-progress paste at its current offset (#1236). Also used scripted with
+    /// a direct offset via BeginPaste + SetPasteOffset + CommitPaste, or [`Action::PasteAt`].
+    CommitPaste,
+    /// Cancel interactive paste preview (#1236).
+    CancelPaste,
+    /// Scripted one-shot paste at an explicit offset (#1236): copy-from-clipboard (or
+    /// current selection if clipboard empty is not allowed — clipboard must already be
+    /// filled by CopySelection). Creates the copies and arms Move free mode.
+    PasteAt {
+        linked: bool,
+        offset: glam::Vec3,
+    },
 }
 
 /// Maximum number of document snapshots the undo stack retains (#194). Old snapshots past
@@ -2881,6 +2903,10 @@ impl Action {
                     | Action::SetTool(_)
                     | Action::ClickSceneElement { .. }
                     | Action::ClearSceneSelection
+                    | Action::CopySelection
+                    | Action::BeginPaste { .. }
+                    | Action::SetPasteOffset { .. }
+                    | Action::CancelPaste
                     | Action::SetElementVisible { .. }
                     | Action::ToggleElementVisibility(_)
                     | Action::ApplySelectionVisibility { .. }
@@ -3515,6 +3541,10 @@ pub struct AppState {
     pub boolean_job: Option<BooleanJob>,
     /// In-progress move operation (Move tool).
     pub creating_move: Option<CreatingMove>,
+    /// Session clipboard for Copy/Paste (#1236). Not persisted.
+    pub clipboard: crate::copy_paste::Clipboard,
+    /// Interactive paste placement preview (#1236).
+    pub creating_paste: Option<crate::copy_paste::CreatingPaste>,
     /// In-progress joint (Joint tool, #894).
     pub creating_joint: Option<CreatingJoint>,
     /// In-progress mirror operation (Mirror tool, #523).
@@ -3744,6 +3774,8 @@ impl Default for AppState {
             creating_boolean: None,
             boolean_job: None,
             creating_move: None,
+            clipboard: crate::copy_paste::Clipboard::default(),
+            creating_paste: None,
             creating_joint: None,
             creating_mirror: None,
             creating_sketch_mirror: None,
@@ -4370,6 +4402,303 @@ impl AppState {
         });
         self.doc.shape_order.push(ShapeKind::Body);
         key
+    }
+
+    /// Copy the selection onto the session clipboard (#1236).
+    fn copy_selection(&mut self) -> ActionResult {
+        let Some(clip) = crate::copy_paste::clipboard_from_selection(
+            &self.doc,
+            &self.scene_selection,
+            |ci| self.component_body_indices(ci),
+        ) else {
+            let e = "Nothing copyable in the selection".to_string();
+            self.status = e.clone();
+            return ActionResult::Err(e);
+        };
+        let n = clip.items.len();
+        self.clipboard = clip;
+        self.status = format!(
+            "Copied {n} item{}",
+            if n == 1 { "" } else { "s" }
+        );
+        ActionResult::Ok
+    }
+
+    /// Start interactive paste placement (#1236).
+    fn begin_paste(&mut self, linked: bool) -> ActionResult {
+        if self.clipboard.is_empty() {
+            let e = "Clipboard is empty — copy something first".to_string();
+            self.status = e.clone();
+            return ActionResult::Err(e);
+        }
+        if linked && !self.clipboard.has_linkable() {
+            let e = "Paste Linked only works for bodies and components".to_string();
+            self.status = e.clone();
+            return ActionResult::Err(e);
+        }
+        self.creating_paste = Some(crate::copy_paste::CreatingPaste::new(linked));
+        self.status = if linked {
+            "Paste Linked: click or Enter to place (6-axis from original)".to_string()
+        } else {
+            "Paste: click or Enter to place (6-axis from original)".to_string()
+        };
+        ActionResult::Ok
+    }
+
+    /// Commit the in-progress paste at its current offset (#1236). Creates independent
+    /// mesh bodies (or linked Move outputs), optional component wrapping, then arms the
+    /// Move tool in free mode with the new copies selected.
+    fn commit_paste(&mut self) -> ActionResult {
+        let Some(cp) = self.creating_paste.take() else {
+            let e = "No paste in progress".to_string();
+            self.status = e.clone();
+            return ActionResult::Err(e);
+        };
+        let offset = cp.offset;
+        let linked = cp.linked;
+        let clip = self.clipboard.clone();
+        if clip.is_empty() {
+            let e = "Clipboard is empty".to_string();
+            self.status = e.clone();
+            return ActionResult::Err(e);
+        }
+
+        let mut new_bodies: Vec<crate::model::BodyKey> = Vec::new();
+        let mut new_planes: Vec<crate::model::ConstructionPlaneKey> = Vec::new();
+        let mut linkable_sources: Vec<crate::model::BodyKey> = Vec::new();
+        // Component groupings: list of body indices into new_bodies or linkable for later wrap.
+        let mut component_groups: Vec<(Option<String>, Vec<usize>)> = Vec::new();
+
+        for item in &clip.items {
+            match item {
+                crate::copy_paste::ClipboardItem::Body {
+                    source,
+                    mesh,
+                    name,
+                    ..
+                } => {
+                    if linked {
+                        if self.doc.bodies.get(*source).is_none() {
+                            let e = "Paste Linked source body was deleted".to_string();
+                            self.status = e.clone();
+                            return ActionResult::Err(e);
+                        }
+                        linkable_sources.push(*source);
+                    } else {
+                        let bi = self.insert_independent_body_copy(mesh, name.as_deref(), offset);
+                        new_bodies.push(bi);
+                    }
+                }
+                crate::copy_paste::ClipboardItem::Component {
+                    name,
+                    bodies,
+                    source: _,
+                } => {
+                    let mut group_idxs = Vec::new();
+                    if linked {
+                        for b in bodies {
+                            if self.doc.bodies.get(b.source).is_none() {
+                                let e = "Paste Linked source body was deleted".to_string();
+                                self.status = e.clone();
+                                return ActionResult::Err(e);
+                            }
+                            let idx = linkable_sources.len();
+                            linkable_sources.push(b.source);
+                            group_idxs.push(idx);
+                        }
+                        // Mark as linked component group via high bit? We'll re-map after
+                        // creating linked outputs. Store as (name, source indices into
+                        // linkable_sources).
+                        component_groups.push((name.clone(), group_idxs));
+                    } else {
+                        let start = new_bodies.len();
+                        for b in bodies {
+                            let bi = self.insert_independent_body_copy(
+                                &b.mesh,
+                                b.name.as_deref(),
+                                offset,
+                            );
+                            new_bodies.push(bi);
+                        }
+                        let idxs: Vec<usize> = (start..new_bodies.len()).collect();
+                        component_groups.push((name.clone(), idxs));
+                    }
+                }
+                crate::copy_paste::ClipboardItem::Plane {
+                    origin,
+                    normal,
+                    u_axis,
+                    v_axis,
+                    extent,
+                    name,
+                    ..
+                } => {
+                    // Planes always paste independent (no Paste Linked for planes).
+                    let plane = crate::model::ConstructionPlane {
+                        origin: *origin + offset,
+                        normal: *normal,
+                        u_axis: *u_axis,
+                        v_axis: *v_axis,
+                        parent: crate::model::ConstructionPlaneParent::Root,
+                        definition: crate::model::PlaneDefinition {
+                            anchor: crate::model::PlaneAnchor::Face {
+                                origin: *origin + offset,
+                                normal: *normal,
+                                label: String::new(),
+                            },
+                            offset_mm: 0.0,
+                            angle_deg: 0.0,
+                        },
+                        repeat_instance: None,
+                        name: name.clone(),
+                        extent: *extent,
+                    };
+                    let pi = self.doc.construction_planes.insert(plane);
+                    self.doc.shape_order.push(ShapeKind::ConstructionPlane);
+                    new_planes.push(pi);
+                }
+            }
+        }
+
+        // Linked body copies: one free Move with keep_inputs, then map outputs.
+        let mut linked_outputs: Vec<crate::model::BodyKey> = Vec::new();
+        if !linkable_sources.is_empty() {
+            let mm = |v: f32| {
+                if v.abs() < 1e-9 {
+                    String::new()
+                } else {
+                    format!("{v}")
+                }
+            };
+            let before = self.doc.bodies.keys().collect::<std::collections::HashSet<_>>();
+            // Nested apply_inner so the paste is one undo step (not a nested snapshot).
+            let result = self.apply_inner(Action::CreateMoveOperation {
+                translate_mode: crate::model::MoveTranslateMode::Free,
+                start_point_a: None,
+                end_point_a: None,
+                start_point_b: None,
+                end_point_b: None,
+                start_point_c: None,
+                end_point_c: None,
+                targets: linkable_sources.clone(),
+                plane_targets: Vec::new(),
+                image_targets: Vec::new(),
+                instance_targets: Vec::new(),
+                tx: mm(offset.x),
+                ty: mm(offset.y),
+                tz: mm(offset.z),
+                rx: String::new(),
+                ry: String::new(),
+                rz: String::new(),
+                roll_angle: String::new(),
+                face_flip: false,
+                face_spin: String::new(),
+                face_offset: String::new(),
+                keep_inputs: true,
+            });
+            if matches!(result, ActionResult::Err(_)) {
+                return result;
+            }
+            let _ = before; // used only to document the pre-move set
+            if let Some(op) = self.doc.move_ops.keys().last() {
+                linked_outputs = self.doc.move_ops[op].outputs.clone();
+            }
+            new_bodies.extend(linked_outputs.iter().copied());
+        }
+
+        // Wrap component groups.
+        if linked {
+            // group_idxs index into linkable_sources / linked_outputs.
+            for (name, idxs) in component_groups {
+                let ci = self.doc.components.insert(crate::model::Component {
+                    name,
+                    parent: None,
+                    length_unit: None,
+                    angle_unit: None,
+                });
+                for i in idxs {
+                    if let Some(&bi) = linked_outputs.get(i) {
+                        self.doc.set_component_member(
+                            crate::model::ComponentMember::Body(bi),
+                            Some(ci),
+                        );
+                    }
+                }
+            }
+        } else {
+            for (name, idxs) in component_groups {
+                let ci = self.doc.components.insert(crate::model::Component {
+                    name,
+                    parent: None,
+                    length_unit: None,
+                    angle_unit: None,
+                });
+                for i in idxs {
+                    if let Some(&bi) = new_bodies.get(i) {
+                        self.doc.set_component_member(
+                            crate::model::ComponentMember::Body(bi),
+                            Some(ci),
+                        );
+                    }
+                }
+            }
+        }
+
+        // Select the new bodies (and planes) and arm Move free mode on bodies.
+        self.scene_selection.clear();
+        for &bi in &new_bodies {
+            self.scene_selection
+                .insert(crate::hierarchy::SceneElement::Body(bi));
+        }
+        for &pi in &new_planes {
+            self.scene_selection
+                .insert(crate::hierarchy::SceneElement::ConstructionPlane(pi));
+        }
+
+        self.move_translate_mode = crate::model::MoveTranslateMode::Free;
+        if !new_bodies.is_empty() {
+            self.creating_move = Some(CreatingMove {
+                targets: new_bodies.clone(),
+                translate_mode: crate::model::MoveTranslateMode::Free,
+                ..CreatingMove::default()
+            });
+            self.tool = Tool::Move;
+        } else {
+            self.tool = Tool::Select;
+        }
+
+        self.refresh_document_health();
+        let n = new_bodies.len() + new_planes.len();
+        self.status = format!(
+            "Pasted {n} item{}{}",
+            if n == 1 { "" } else { "s" },
+            if linked { " (linked)" } else { "" }
+        );
+        ActionResult::Ok
+    }
+
+    /// Insert an independent body from a mesh snapshot offset by `offset` (#1236).
+    fn insert_independent_body_copy(
+        &mut self,
+        mesh: &crate::extrude::SolidMesh,
+        name: Option<&str>,
+        offset: glam::Vec3,
+    ) -> crate::model::BodyKey {
+        let moved = crate::copy_paste::translate_mesh(mesh, offset);
+        let source_name = name.unwrap_or("Copy").to_string();
+        let mesh_key = self.doc.imported_meshes.insert(crate::model::ImportedMesh {
+            triangles: moved.triangles,
+            source_name: source_name.clone(),
+            step_bytes: None,
+        });
+        let bi = self.doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Imported(mesh_key),
+            material: None,
+            name: Some(source_name),
+            shadow: false,
+        });
+        self.doc.shape_order.push(ShapeKind::Body);
+        bi
     }
 
     /// Add `triangles` from an imported file as a new body named after `path`'s file stem
@@ -6074,6 +6403,7 @@ fn operation_preview_world_bounds(state: &AppState) -> Option<(Vec3, Vec3)> {
     if let Some(cm) = state.creating_move.as_ref() {
         if !cm.targets.is_empty() {
             let probe = crate::model::MoveOperation {
+                keep_inputs: false,
                 targets: cm.targets.clone(),
                 translate_mode: cm.translate_mode,
                 start_point_a: cm.start_point_a,
@@ -8416,6 +8746,8 @@ impl AppState {
                         self.creating_sketch_offset.as_ref().unwrap().sketch,
                     ));
                     self.status = "Cancelled offset".to_string();
+                } else if self.creating_paste.is_some() {
+                    let _ = self.apply_inner(Action::CancelPaste);
                 } else if self.creating_move.as_ref().is_some_and(|c| {
                     !c.targets.is_empty()
                         || !c.plane_targets.is_empty()
@@ -12568,7 +12900,7 @@ impl AppState {
                 }
                 let result = match cm.editing {
                     Some(op) => self.apply(Action::EditMoveOperation {
-                        op,
+op,
                         translate_mode: cm.translate_mode,
                         start_point_a: cm.start_point_a,
                         end_point_a: cm.end_point_a,
@@ -12600,7 +12932,7 @@ impl AppState {
                         {
                             Some((op, (tx, ty, tz))) => {
                                 self.apply(Action::EditMoveOperation {
-                                    op,
+op,
                                     // Coalescing only ever folds free translations (see
                                     // `coalescible_move_op`), so the folded op is free too.
                                     translate_mode: crate::model::MoveTranslateMode::Free,
@@ -12629,6 +12961,7 @@ impl AppState {
                                 })
                             }
                             None => self.apply(Action::CreateMoveOperation {
+                                keep_inputs: false,
                                 translate_mode: cm.translate_mode,
                                 start_point_a: cm.start_point_a,
                                 end_point_a: cm.end_point_a,
@@ -12664,7 +12997,7 @@ impl AppState {
                 }
                 result
             }
-            Action::CreateMoveOperation { translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, targets, plane_targets, image_targets, instance_targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset } => {
+            Action::CreateMoveOperation { translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, targets, plane_targets, image_targets, instance_targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, keep_inputs } => {
                 if targets.is_empty()
                     && plane_targets.is_empty()
                     && image_targets.is_empty()
@@ -12681,6 +13014,7 @@ impl AppState {
                     }
                 }
                 let op_index = self.doc.move_ops.insert(crate::model::MoveOperation {
+                    keep_inputs,
                     targets: targets.clone(),
                     translate_mode,
                     start_point_a,
@@ -12703,7 +13037,11 @@ impl AppState {
                     face_spin,
                     face_offset,
                     outputs: Vec::new(),
-                    name: None,
+                    name: if keep_inputs {
+                        Some("Linked copy".to_string())
+                    } else {
+                        None
+                    },
                 });
                 if crate::extrude::move_op_transform(&self.doc, &self.doc.move_ops[op_index])
                     .is_none()
@@ -12728,9 +13066,12 @@ impl AppState {
                     self.doc.shape_order.push(ShapeKind::Body);
                 }
                 self.doc.move_ops[op_index].outputs = outputs;
-                for &input in &targets {
-                    if let Some(body) = self.doc.bodies.get_mut(input) {
-                        body.shadow = true;
+                // Ordinary Move consumes its inputs; Paste Linked keeps them live (#1236).
+                if !keep_inputs {
+                    for &input in &targets {
+                        if let Some(body) = self.doc.bodies.get_mut(input) {
+                            body.shadow = true;
+                        }
                     }
                 }
                 recompute_moved_planes(&mut self.doc);
@@ -12784,9 +13125,11 @@ impl AppState {
                 }
                 if crate::extrude::move_op_transform(&self.doc, &self.doc.move_ops[op]).is_none() {
                     self.doc.move_ops[op] = old.clone();
-                    for &input in &old.targets {
-                        if let Some(body) = self.doc.bodies.get_mut(input) {
-                            body.shadow = true;
+                    if !old.keep_inputs {
+                        for &input in &old.targets {
+                            if let Some(body) = self.doc.bodies.get_mut(input) {
+                                body.shadow = true;
+                            }
                         }
                     }
                     let e = "Move amounts don't evaluate (check expressions and axis)".to_string();
@@ -12796,9 +13139,13 @@ impl AppState {
                 // The edit may change how many outputs the op *should* have; keep the
                 // committed output count (extra targets reuse the last output's slot is
                 // not possible for moves — instead cap targets to outputs, or grow).
-                for &input in &targets {
-                    if let Some(body) = self.doc.bodies.get_mut(input) {
-                        body.shadow = true;
+                // Preserve keep_inputs from the existing op (Paste Linked vs ordinary Move).
+                let keep_inputs = self.doc.move_ops[op].keep_inputs;
+                if !keep_inputs {
+                    for &input in &targets {
+                        if let Some(body) = self.doc.bodies.get_mut(input) {
+                            body.shadow = true;
+                        }
                     }
                 }
                 for &input in old.targets.iter() {
@@ -14162,6 +14509,44 @@ impl AppState {
             Action::ClearSceneSelection => {
                 self.scene_selection.clear();
                 ActionResult::Ok
+            }
+            Action::CopySelection => self.copy_selection(),
+            Action::BeginPaste { linked } => self.begin_paste(linked),
+            Action::SetPasteOffset { offset } => {
+                if let Some(cp) = self.creating_paste.as_mut() {
+                    cp.offset = offset;
+                    ActionResult::Ok
+                } else {
+                    let e = "No paste in progress".to_string();
+                    self.status = e.clone();
+                    ActionResult::Err(e)
+                }
+            }
+            Action::CommitPaste => self.commit_paste(),
+            Action::CancelPaste => {
+                if self.creating_paste.take().is_some() {
+                    self.status = "Cancelled paste".to_string();
+                    ActionResult::Ok
+                } else {
+                    ActionResult::Ok
+                }
+            }
+            Action::PasteAt { linked, offset } => {
+                if self.clipboard.is_empty() {
+                    let e = "Clipboard is empty — copy something first".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                if linked && !self.clipboard.has_linkable() {
+                    let e = "Paste Linked only works for bodies and components".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                self.creating_paste = Some(crate::copy_paste::CreatingPaste {
+                    linked,
+                    offset,
+                });
+                self.commit_paste()
             }
             Action::SetShapeConstruction {
                 element,
@@ -18520,6 +18905,7 @@ mod tests {
         let mut state = AppState::default();
         let base = state.doc.construction_planes[pkey(0)].origin;
         let result = state.apply(Action::CreateMoveOperation {
+            keep_inputs: false,
             translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
             end_point_a: None,
@@ -18553,7 +18939,7 @@ mod tests {
         // Editing the op back to zero returns the plane home.
         let op = state.doc.move_ops.keys().last().unwrap();
         state.apply(Action::EditMoveOperation {
-            translate_mode: crate::model::MoveTranslateMode::Free,
+translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
             end_point_a: None,
             start_point_b: None,
@@ -18638,6 +19024,7 @@ mod tests {
         // Plane 0 is the XY ground (u = X, v = Y), so a +25 world-X move lands +25 in the
         // image's plane-local x, and a world-Z move (out of plane) doesn't touch the origin.
         let result = state.apply(Action::CreateMoveOperation {
+            keep_inputs: false,
             translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
             end_point_a: None,
@@ -18672,7 +19059,7 @@ mod tests {
         let op = state.doc.move_ops.keys().last().unwrap();
         // Editing the op back to zero returns the image home (still targeted, base kept).
         state.apply(Action::EditMoveOperation {
-            translate_mode: crate::model::MoveTranslateMode::Free,
+translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
             end_point_a: None,
             start_point_b: None,
@@ -18699,7 +19086,7 @@ mod tests {
 
         // Dropping the image from the op restores its authored base and forgets it.
         state.apply(Action::EditMoveOperation {
-            translate_mode: crate::model::MoveTranslateMode::Free,
+translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
             end_point_a: None,
             start_point_b: None,
@@ -20057,6 +20444,117 @@ mod tests {
         assert_eq!(creating.phase, ShapePhase::Anchor);
     }
 
+    /// #1236: copy then paste creates an independent body (mesh snapshot) offset along an axis.
+    #[test]
+    fn copy_paste_body_independent() {
+        let mut state = AppState::default();
+        state.apply(Action::SetTool(Tool::Shape));
+        state.apply(Action::SetShapeDimension {
+            field: ShapeDimension::Width,
+            text: "20".to_string(),
+        });
+        state.apply(Action::SetShapeDimension {
+            field: ShapeDimension::Depth,
+            text: "20".to_string(),
+        });
+        state.apply(Action::SetShapeDimension {
+            field: ShapeDimension::Height,
+            text: "10".to_string(),
+        });
+        state.apply(Action::CommitShape);
+        assert_eq!(state.doc.bodies.len(), 1);
+
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Body(bkey(0)),
+            additive: false,
+        });
+        let r = state.apply(Action::CopySelection);
+        assert!(matches!(r, ActionResult::Ok), "{}", state.status);
+        assert!(!state.clipboard.is_empty());
+
+        let r = state.apply(Action::PasteAt {
+            linked: false,
+            offset: glam::Vec3::new(50.0, 0.0, 0.0),
+        });
+        assert!(matches!(r, ActionResult::Ok), "{}", state.status);
+        assert_eq!(state.doc.bodies.len(), 2, "independent paste adds a body");
+        // Independent paste is a mesh snapshot — not a linked Moved body.
+        let copy = state.doc.bodies.values().nth(1).unwrap();
+        assert!(
+            matches!(copy.source, crate::model::BodySource::Imported(_)),
+            "independent paste bakes to an imported mesh"
+        );
+        assert!(!state.doc.bodies[bkey(0)].shadow, "source stays live");
+        assert_eq!(state.tool, Tool::Move, "after paste: Move tool");
+        assert_eq!(
+            state.move_translate_mode,
+            crate::model::MoveTranslateMode::Free
+        );
+        assert!(
+            state
+                .creating_move
+                .as_ref()
+                .is_some_and(|cm| cm.targets.len() == 1),
+            "new copy is the Move target"
+        );
+    }
+
+    /// #1236: Paste Linked creates a dependent Moved body without shadowing the source.
+    #[test]
+    fn paste_linked_body_keeps_source_and_depends() {
+        let mut state = AppState::default();
+        state.apply(Action::SetTool(Tool::Shape));
+        state.apply(Action::SetShapeDimension {
+            field: ShapeDimension::Width,
+            text: "20".to_string(),
+        });
+        state.apply(Action::SetShapeDimension {
+            field: ShapeDimension::Depth,
+            text: "20".to_string(),
+        });
+        state.apply(Action::SetShapeDimension {
+            field: ShapeDimension::Height,
+            text: "10".to_string(),
+        });
+        state.apply(Action::CommitShape);
+
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Body(bkey(0)),
+            additive: false,
+        });
+        state.apply(Action::CopySelection);
+        let r = state.apply(Action::PasteAt {
+            linked: true,
+            offset: glam::Vec3::new(0.0, 0.0, 40.0),
+        });
+        assert!(matches!(r, ActionResult::Ok), "{}", state.status);
+        assert_eq!(state.doc.bodies.len(), 2);
+        assert!(!state.doc.bodies[bkey(0)].shadow, "source not consumed");
+        let copy = state.doc.bodies.values().nth(1).unwrap();
+        assert!(
+            matches!(copy.source, crate::model::BodySource::Moved { .. }),
+            "linked paste is a Moved body"
+        );
+        let op = state.doc.move_ops.values().next().unwrap();
+        assert!(op.keep_inputs, "Paste Linked sets keep_inputs");
+        assert!(
+            op.tz.contains('4') || op.tz == "40" || op.tz == "40mm",
+            "offset applied: tz={}",
+            op.tz
+        );
+    }
+
+    /// #1236: six-axis helper used by the interactive paste preview.
+    #[test]
+    fn six_axis_offset_is_axis_aligned() {
+        use crate::copy_paste::six_axis_offset;
+        let o = glam::Vec3::ZERO;
+        assert_eq!(
+            six_axis_offset(o, glam::Vec3::new(3.0, 1.0, 0.5)),
+            glam::Vec3::new(3.0, 0.0, 0.0)
+        );
+    }
+
     /// #911: leaving the tool drops the in-progress shape, and Esc clears it without
     /// leaving the tool.
     #[test]
@@ -20274,6 +20772,7 @@ mod tests {
             .bounds()
             .unwrap();
         let r = state.apply(Action::CreateMoveOperation {
+            keep_inputs: false,
             translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
             end_point_a: None,
@@ -23081,6 +23580,7 @@ mod tests {
     fn move_commit_creates_outputs_and_shadows_inputs() {
         let mut state = two_box_state(false);
         let result = state.apply(Action::CreateMoveOperation {
+            keep_inputs: false,
             translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
             end_point_a: None,
@@ -23132,6 +23632,7 @@ mod tests {
     fn move_edit_repoints_and_resizes_outputs() {
         let mut state = two_box_state(false);
         state.apply(Action::CreateMoveOperation {
+            keep_inputs: false,
             translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
             end_point_a: None,
@@ -23156,7 +23657,7 @@ mod tests {
         });
         assert_eq!(state.doc.move_ops.values().nth(0).unwrap().outputs.len(), 1);
         let result = state.apply(Action::EditMoveOperation {
-            translate_mode: crate::model::MoveTranslateMode::Free,
+translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
             end_point_a: None,
             start_point_b: None,
@@ -23193,6 +23694,7 @@ mod tests {
             expression: "30".to_string(),
         });
         let result = state.apply(Action::CreateMoveOperation {
+            keep_inputs: false,
             translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
             end_point_a: None,
@@ -24629,6 +25131,7 @@ mod tests {
         assert!((state.doc.construction_planes[inst_idx].origin.x - 10.0).abs() < 1e-3);
         // Move the source plane +5 along X; the instance should sit at 5 + 10 = 15.
         let result = state.apply(Action::CreateMoveOperation {
+            keep_inputs: false,
             translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
             end_point_a: None,

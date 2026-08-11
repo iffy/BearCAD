@@ -40,6 +40,9 @@ pub struct MenuIds {
     pub quit: MenuId,
     pub undo: MenuId,
     pub clear: MenuId,
+    pub copy: MenuId,
+    pub paste: MenuId,
+    pub paste_linked: MenuId,
     pub new_drawing: MenuId,
     pub about: MenuId,
     pub licenses: MenuId,
@@ -147,6 +150,15 @@ pub fn command_for_id(
     }
     if ids.clear == id {
         return Some(MenuCommand::Clear);
+    }
+    if ids.copy == id {
+        return Some(MenuCommand::Copy);
+    }
+    if ids.paste == id {
+        return Some(MenuCommand::Paste);
+    }
+    if ids.paste_linked == id {
+        return Some(MenuCommand::PasteLinked);
     }
     if id == &ids.new_drawing {
         return Some(MenuCommand::NewDrawing);
@@ -317,6 +329,10 @@ impl NativeMenu {
             true,
             Some(Accelerator::new(Some(primary), Code::KeyZ)),
         );
+        // Accelerators also handled in the egui key layer (one path with/without muda).
+        let copy = MenuItem::with_id("copy", "Copy", true, None);
+        let paste = MenuItem::with_id("paste", "Paste", true, None);
+        let paste_linked = MenuItem::with_id("paste_linked", "Paste Linked", true, None);
         let clear = MenuItem::with_id("clear", "Clear", true, None);
         let new_drawing = MenuItem::with_id("new_drawing", "New Drawing", true, None);
         let command_palette = MenuItem::with_id(
@@ -397,6 +413,10 @@ impl NativeMenu {
 
         edit_menu.append(&undo)?;
         edit_menu.append(&PredefinedMenuItem::separator())?;
+        edit_menu.append(&copy)?;
+        edit_menu.append(&paste)?;
+        edit_menu.append(&paste_linked)?;
+        edit_menu.append(&PredefinedMenuItem::separator())?;
         edit_menu.append(&clear)?;
 
         cad_menu.append(&new_drawing)?;
@@ -457,6 +477,9 @@ impl NativeMenu {
             quit: quit.id().clone(),
             undo: undo.id().clone(),
             clear: clear.id().clone(),
+            copy: copy.id().clone(),
+            paste: paste.id().clone(),
+            paste_linked: paste_linked.id().clone(),
             new_drawing: new_drawing.id().clone(),
             about: about.id().clone(),
             licenses: licenses.id().clone(),
@@ -577,6 +600,9 @@ mod tests {
             quit: MenuId::new("quit"),
             undo: MenuId::new("undo"),
             clear: MenuId::new("clear"),
+            copy: MenuId::new("copy"),
+            paste: MenuId::new("paste"),
+            paste_linked: MenuId::new("paste_linked"),
             new_drawing: MenuId::new("new_drawing"),
             about: MenuId::new("about"),
             licenses: MenuId::new("licenses"),

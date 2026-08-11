@@ -26,6 +26,7 @@ mod camera;
 mod cli_install;
 mod command_log;
 mod command_palette;
+mod copy_paste;
 mod export_lua;
 mod constraints;
 mod constraint_viewport;
@@ -5837,6 +5838,33 @@ impl App {
         // toggling. The modifier disambiguates it from ordinary typing.
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::B)) {
             self.state.apply(Action::ToggleCurveMode);
+        }
+
+        // Copy / Paste / Paste Linked (#1236). Work even with a text field focused so they
+        // match OS convention; when a free-text field has focus egui may also consume these
+        // for the system clipboard, which is fine — we only act when our selection is CAD.
+        if !keyboard_shortcuts_suppressed(ctx)
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::C))
+        {
+            self.state.apply(Action::CopySelection);
+        }
+        if !keyboard_shortcuts_suppressed(ctx)
+            && ctx.input_mut(|i| {
+                i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::V)
+            })
+        {
+            self.state.apply(Action::BeginPaste { linked: true });
+        } else if !keyboard_shortcuts_suppressed(ctx)
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::V))
+        {
+            self.state.apply(Action::BeginPaste { linked: false });
+        }
+        // Enter commits an interactive paste placement (#1236).
+        if self.state.creating_paste.is_some()
+            && !keyboard_shortcuts_suppressed(ctx)
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
+        {
+            self.state.apply(Action::CommitPaste);
         }
 
         // Cmd/Ctrl+comma toggles the Settings window (#720) — the OS-conventional
@@ -13500,6 +13528,8 @@ impl App {
             // Timeline rollback marker set/cleared from the pane (#524), applied after it closes.
             let mut set_rollback: Option<Option<hierarchy::RollbackMarker>> = None;
             let mut joint_rest: Option<hierarchy::JointRestCommand> = None;
+            let mut do_copy = false;
+            let mut do_paste: Option<bool> = None;
             let pane_kept_open = show_pane_shell(ui, "tree", "Elements", false, 220.0, None, |ui| {
                     let mut queue_edit_sketch = |sketch: SketchId| {
                         edit_sketch = Some(sketch);
@@ -13676,6 +13706,14 @@ impl App {
                         &mut queue_click,
                         &mut queue_hover,
                         &mut queue_delete,
+                        !self.state.clipboard.is_empty(),
+                        self.state.clipboard.has_linkable(),
+                        &mut || {
+                            do_copy = true;
+                        },
+                        &mut |linked| {
+                            do_paste = Some(linked);
+                        },
                         self.state.editing_drawing,
                         &mut queue_add_to_drawing,
                         &mut queue_create_drawing_of_body,
@@ -13709,6 +13747,12 @@ impl App {
             }
             if let Some(marker) = set_rollback {
                 self.rollback_marker = marker;
+            }
+            if do_copy {
+                self.state.apply(Action::CopySelection);
+            }
+            if let Some(linked) = do_paste {
+                self.state.apply(Action::BeginPaste { linked });
             }
             // Rest-pose commands from a joint row's context menu (#898).
             if let Some(command) = joint_rest {
@@ -18094,6 +18138,7 @@ fn move_ghost_target_transform(
     cm: &actions::CreatingMove,
 ) -> Option<glam::Mat4> {
     let probe = model::MoveOperation {
+        keep_inputs: false,
         targets: cm.targets.clone(),
         translate_mode: cm.translate_mode,
         start_point_a: cm.start_point_a,
@@ -18425,6 +18470,7 @@ impl SnapPreviewPoints {
     /// (`move_op_translation`, `move_snap_rotation_axis_angle`) both tools share.
     fn probe(&self) -> model::MoveOperation {
         model::MoveOperation {
+            keep_inputs: false,
             targets: Vec::new(),
             translate_mode: model::MoveTranslateMode::default(),
             start_point_a: self.start_a,
@@ -25649,6 +25695,20 @@ impl App {
             || touch_navigating;
         // Mutable so the Selection Exploder (#551) can redirect it to a chosen handle's thing.
         let mut pointer_screen = viewport_pointer_pos(&response, viewport_owns_pointer);
+        // Paste placement preview (#1236): 6-axis offset from the clipboard origin follows
+        // the pointer on the ground plane; click commits.
+        if self.state.creating_paste.is_some() {
+            if let Some(pp) = pointer_screen {
+                if let Some(world) = cam.ground_point(pp, viewport, &vp) {
+                    let origin = self.state.clipboard.origin;
+                    let offset = crate::copy_paste::six_axis_offset(origin, world);
+                    self.state.apply(Action::SetPasteOffset { offset });
+                }
+            }
+            if response.clicked_by(egui::PointerButton::Primary) {
+                self.state.apply(Action::CommitPaste);
+            }
+        }
         let layouts_slice = committed_dim_layouts.as_deref().unwrap_or(&[]);
         let angle_gizmo_constraint = angle_gizmo_constraint_for_edit(
             self.state.editing_committed_dim.as_ref(),
@@ -26223,6 +26283,8 @@ impl App {
             let mut move_to_component: Option<(SceneElement, Option<model::ComponentKey>)> = None;
             let mut set_rollback: Option<Option<hierarchy::RollbackMarker>> = None;
             let mut delete_element: Option<SceneElement> = None;
+            let mut do_copy = false;
+            let mut do_paste: Option<bool> = None;
             let mut bezier_acted = false;
 
             response.context_menu(|ui| match self.viewport_context_menu.clone() {
@@ -26271,11 +26333,26 @@ impl App {
                             &mut |el, component| move_to_component = Some((el, component)),
                             &mut |marker| set_rollback = Some(marker),
                             &mut |el| delete_element = Some(el),
+                            !self.state.clipboard.is_empty(),
+                            self.state.clipboard.has_linkable(),
+                            crate::copy_paste::copyable_element(&element).is_some(),
+                            &mut || {
+                                do_copy = true;
+                            },
+                            &mut |linked| {
+                                do_paste = Some(linked);
+                            },
                         );
                     }
                 }
                 None => {}
             });
+            if do_copy {
+                self.state.apply(Action::CopySelection);
+            }
+            if let Some(linked) = do_paste {
+                self.state.apply(Action::BeginPaste { linked });
+            }
             let element_acted = edit_sketch.is_some()
                 || edit_plane.is_some()
                 || import_image_on_plane.is_some()
@@ -28992,6 +29069,29 @@ impl App {
             sketch_ghost_lines,
             edit_preview_meshes,
         );
+        // Paste preview (#1236): cyan semi-transparent ghosts of the clipboard at the
+        // 6-axis-constrained offset, same path as Repeat/Mirror instance ghosts.
+        if let Some(cp) = self.state.creating_paste.as_ref() {
+            for item in &self.state.clipboard.items {
+                match item {
+                    crate::copy_paste::ClipboardItem::Body { mesh, .. } => {
+                        scene_input.repeat_ghosts.push(crate::copy_paste::translate_mesh(
+                            mesh,
+                            cp.offset,
+                        ));
+                    }
+                    crate::copy_paste::ClipboardItem::Component { bodies, .. } => {
+                        for b in bodies {
+                            scene_input.repeat_ghosts.push(crate::copy_paste::translate_mesh(
+                                &b.mesh,
+                                cp.offset,
+                            ));
+                        }
+                    }
+                    crate::copy_paste::ClipboardItem::Plane { .. } => {}
+                }
+            }
+        }
         // The rotation sphere rides the ghost-solid slot (#920) — nothing else uses it
         // while the Move tool is up.
         if let Some(sphere) = move_surface_solid {

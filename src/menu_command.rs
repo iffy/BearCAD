@@ -36,6 +36,12 @@ pub enum MenuCommand {
     Quit,
     UndoLast,
     Clear,
+    /// Copy the selection (#1236).
+    Copy,
+    /// Paste an independent copy (#1236).
+    Paste,
+    /// Paste a linked (dependent) copy of bodies/components (#1236).
+    PasteLinked,
     /// Create a new technical drawing (CAD menu, #210).
     NewDrawing,
     About,
@@ -83,6 +89,9 @@ impl MenuCommand {
             MenuCommand::Quit => None,
             MenuCommand::UndoLast => Some(Action::UndoLast),
             MenuCommand::Clear => Some(Action::Clear),
+            MenuCommand::Copy => Some(Action::CopySelection),
+            MenuCommand::Paste => Some(Action::BeginPaste { linked: false }),
+            MenuCommand::PasteLinked => Some(Action::BeginPaste { linked: true }),
             MenuCommand::NewDrawing => Some(Action::CreateDrawing { name: None }),
             MenuCommand::About => None,
             // Opens a URL in the browser, handled in the app frame loop.

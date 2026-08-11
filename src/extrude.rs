@@ -8456,6 +8456,7 @@ mod tests {
         // Start A = origin, end A = origin: no translation, so the rotation stands alone.
         // Start B = +10X; end B = +10Y is exactly 10 from the pivot, so it's reachable.
         let op = MoveOperation {
+            keep_inputs: false,
             targets: vec![bkey(0)],
             translate_mode: MoveTranslateMode::PointSnap,
             start_point_a: vertex(o),
@@ -8550,6 +8551,7 @@ mod tests {
         // A holds the origin still and B keeps +10X where it is, so B's turn is the identity
         // and the bodies are free to spin about the X axis — exactly the ambiguity C fixes.
         let base = MoveOperation {
+            keep_inputs: false,
             targets: vec![bkey(0)],
             translate_mode: MoveTranslateMode::PointSnap,
             start_point_a: vertex(o),
@@ -8709,6 +8711,7 @@ mod tests {
             shadow: false,
         });
         let op = MoveOperation {
+            keep_inputs: false,
             targets: vec![bkey(0)],
             translate_mode: MoveTranslateMode::PointSnap,
             start_point_a: Some(MovePointRef::Vertex { body: bkey(0), p: q(Vec3::ZERO) }),
@@ -8793,6 +8796,7 @@ mod tests {
         use crate::model::{MovePointRef, MoveOperation, MoveTranslateMode};
         let doc = Document::default();
         let base = MoveOperation {
+            keep_inputs: false,
             targets: Vec::new(),
             translate_mode: MoveTranslateMode::PointSnap,
             start_point_a: None,
@@ -8913,6 +8917,7 @@ mod tests {
             shadow: false,
         });
         let op = MoveOperation {
+            keep_inputs: false,
             targets: vec![bkey(0)],
             translate_mode: MoveTranslateMode::PointSnap,
             start_point_a: Some(MovePointRef::Vertex { body: bkey(0), p: q(corner) }),
@@ -9035,6 +9040,7 @@ mod tests {
             name: None,
         });
         doc.move_ops.insert(crate::model::MoveOperation {
+            keep_inputs: false,
             translate_mode: Default::default(),
             start_point_a: None,
             end_point_a: None,
@@ -9397,6 +9403,7 @@ mod tests {
             shadow: false,
         });
         doc.move_ops.insert(crate::model::MoveOperation {
+            keep_inputs: false,
             translate_mode: Default::default(),
             start_point_a: None,
             end_point_a: None,
@@ -9993,6 +10000,7 @@ mod tests {
             source: None,
         });
         doc.move_ops.insert(MoveOperation {
+            keep_inputs: false,
             translate_mode: Default::default(),
             start_point_a: None,
             end_point_a: None,
@@ -11523,6 +11531,7 @@ mod tests {
             }
         };
         let op = |flip: bool, spin: &str| MoveOperation {
+            keep_inputs: false,
             targets: vec![bkey(0)],
             translate_mode: MoveTranslateMode::FaceSnap,
             // A's top cap (+Z) onto B's left wall (-X), so the turn is a real quarter turn.
@@ -11599,6 +11608,7 @@ mod tests {
             shadow: false,
         });
         let op = |mode: MoveTranslateMode, rz: &str, tx: &str| MoveOperation {
+            keep_inputs: false,
             targets: vec![bkey(0)],
             translate_mode: mode,
             start_point_a: None,

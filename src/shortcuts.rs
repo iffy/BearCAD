@@ -233,6 +233,16 @@ pub fn all_shortcuts() -> Vec<ShortcutSection> {
             (format!("{cmd},"), "Settings (again closes)".to_string()),
             (format!("{cmd}/"), "Help mode (again turns it off)".to_string()),
             (format!("{cmd}Z"), "Undo".to_string()),
+            (format!("{cmd}C"), "Copy".to_string()),
+            (format!("{cmd}V"), "Paste".to_string()),
+            (
+                if cfg!(target_os = "macos") {
+                    format!("{cmd}⇧V")
+                } else {
+                    format!("{cmd}Shift+V")
+                },
+                "Paste Linked (bodies/components)".to_string(),
+            ),
             (format!("{cmd}T"), "New tab".to_string()),
             (format!("{cmd}W"), "Close tab".to_string()),
             // #1130: switch to the Nth tab (1-based); no-op when that tab does not exist.
