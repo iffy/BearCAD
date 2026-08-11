@@ -685,6 +685,75 @@ pub fn corner_view_direction(id: CubeCornerId) -> Vec3 {
     combine_normals(&def.normals)
 }
 
+/// Outward view direction (from target toward the eye) for a standard face view.
+pub fn face_view_direction(view: StandardView) -> Vec3 {
+    match view {
+        StandardView::Front => Vec3::NEG_Y,
+        StandardView::Back => Vec3::Y,
+        StandardView::Right => Vec3::X,
+        StandardView::Left => Vec3::NEG_X,
+        StandardView::Top => Vec3::Z,
+        StandardView::Bottom => Vec3::NEG_Z,
+    }
+}
+
+/// Outward view direction for any cube pick (face / edge / corner).
+pub fn cube_pick_view_direction(pick: CubePick) -> Vec3 {
+    match pick {
+        CubePick::Face(view) => face_view_direction(view),
+        CubePick::Edge(id) => edge_view_direction(id),
+        CubePick::Corner(id) => corner_view_direction(id),
+    }
+}
+
+/// All discrete cube picks: 6 faces + 12 edges + 8 corners.
+fn all_cube_picks() -> impl Iterator<Item = CubePick> {
+    FACES
+        .iter()
+        .map(|f| CubePick::Face(f.view))
+        .chain(EDGES.iter().map(|e| CubePick::Edge(e.id)))
+        .chain(CORNERS.iter().map(|c| CubePick::Corner(c.id)))
+}
+
+/// Nearest discrete face/edge/corner to `direction` (outward from target).
+/// When `allowed` is `Some`, only those picks compete — used by aligned drawing views (#370).
+pub fn nearest_cube_pick_for_direction(
+    direction: Vec3,
+    allowed: Option<&[CubePick]>,
+) -> Option<CubePick> {
+    let dir = direction.normalize_or_zero();
+    if dir.length_squared() < 1e-12 {
+        return None;
+    }
+    let mut best: Option<(CubePick, f32)> = None;
+    let consider = |pick: CubePick, best: &mut Option<(CubePick, f32)>| {
+        let score = cube_pick_view_direction(pick).dot(dir);
+        match best {
+            Some((_, s)) if *s >= score => {}
+            _ => *best = Some((pick, score)),
+        }
+    };
+    if let Some(ring) = allowed {
+        for &pick in ring {
+            consider(pick, &mut best);
+        }
+    } else {
+        for pick in all_cube_picks() {
+            consider(pick, &mut best);
+        }
+    }
+    best.map(|(p, _)| p)
+}
+
+/// Nearest discrete cube pick for the camera's current outward eye direction (#1226).
+pub fn nearest_cube_pick(cam: &Camera, allowed: Option<&[CubePick]>) -> Option<CubePick> {
+    let offset = cam.eye() - cam.target;
+    if offset.length_squared() < 1e-12 {
+        return None;
+    }
+    nearest_cube_pick_for_direction(offset, allowed)
+}
+
 impl CubeEdgeId {
     pub fn from_name(name: &str) -> Option<Self> {
         match name.to_ascii_lowercase().as_str() {
@@ -1447,10 +1516,11 @@ pub enum OrientationPick {
 }
 
 /// A standalone **bear** orientation picker (#315) for the drawing view editor: reuses the HUD
-/// bear's rendering and face/edge/corner picking. Drag to spin a local camera; click a face for
-/// that straight-on view, or an edge/corner for the isometric view; focus it and press
-/// 4/5/6/8/2/0 for left/front/right/top/bottom/back. `current` seeds the bear's pose. Returns
-/// the chosen view when the user picks one this frame.
+/// bear's rendering and face/edge/corner picking. Drag to spin a local camera; the nearest
+/// discrete face/edge/corner snaps the selection while the bear moves smoothly (#1226). Click a
+/// face for that straight-on view, or an edge/corner for that diagonal/three-quarter view; focus
+/// it and press 4/5/6/8/2/0 for left/front/right/top/bottom/back. `current` seeds the bear's
+/// pose. Returns the chosen view when the user picks or snaps one this frame.
 /// The projection `(right, up)` basis for the widget camera's current angle (#345). The bear's
 /// screen basis has the opposite handedness to a drawing's `view_axes` (its `right×up = -forward`),
 /// so `right` is negated — this makes a spun Front pose reproduce the Front projection exactly.
@@ -1525,6 +1595,19 @@ pub fn show_orientation_picker(
         if free {
             let (right, up) = free_basis(&cam);
             picked = Some(OrientationPick::Free { right, up });
+        } else {
+            // Preset mode (#1226): bear spins smoothly; the selected discrete view snaps once
+            // the camera is closer to another face/edge/corner than the current one. Blue
+            // highlight follows via the caller's `selected` (driven by the drawing orientation).
+            if let Some(pick) = nearest_cube_pick(&cam, allowed).filter(|p| allow(*p)) {
+                if selected != Some(pick) {
+                    picked = Some(match pick {
+                        CubePick::Face(v) => OrientationPick::Standard(v),
+                        CubePick::Edge(id) => OrientationPick::Edge(id),
+                        CubePick::Corner(id) => OrientationPick::Corner(id),
+                    });
+                }
+            }
         }
     }
     let hover_pick = response
@@ -2262,4 +2345,115 @@ mod tests {
         );
     }
 
+    /// #1226: nearest discrete view from the camera's outward direction — face, edge, or corner.
+    #[test]
+    fn nearest_cube_pick_matches_standard_views() {
+        for view in [
+            StandardView::Front,
+            StandardView::Back,
+            StandardView::Left,
+            StandardView::Right,
+            StandardView::Top,
+            StandardView::Bottom,
+        ] {
+            let cam = cam_at_view(view);
+            assert_eq!(
+                nearest_cube_pick(&cam, None),
+                Some(CubePick::Face(view)),
+                "{view:?} camera should snap to that face"
+            );
+        }
+    }
+
+    /// #1226: dragging Front → Right crosses the Front-Right edge before landing on Right.
+    #[test]
+    fn nearest_cube_pick_front_to_right_snaps_through_edge() {
+        let front = face_view_direction(StandardView::Front);
+        let right = face_view_direction(StandardView::Right);
+        let edge = edge_view_direction(CubeEdgeId::FrontRight);
+
+        assert_eq!(
+            nearest_cube_pick_for_direction(front, None),
+            Some(CubePick::Face(StandardView::Front))
+        );
+        assert_eq!(
+            nearest_cube_pick_for_direction(edge, None),
+            Some(CubePick::Edge(CubeEdgeId::FrontRight))
+        );
+        assert_eq!(
+            nearest_cube_pick_for_direction(right, None),
+            Some(CubePick::Face(StandardView::Right))
+        );
+
+        // Midway front→edge is still closer to Front than to the edge.
+        let toward_edge = (front * 0.75 + edge * 0.25).normalize();
+        assert_eq!(
+            nearest_cube_pick_for_direction(toward_edge, None),
+            Some(CubePick::Face(StandardView::Front))
+        );
+        // Past the midpoint: closer to the edge than to Front.
+        let past_mid = (front * 0.25 + edge * 0.75).normalize();
+        assert_eq!(
+            nearest_cube_pick_for_direction(past_mid, None),
+            Some(CubePick::Edge(CubeEdgeId::FrontRight))
+        );
+        // Past edge→right midpoint: Right wins.
+        let past_edge = (edge * 0.25 + right * 0.75).normalize();
+        assert_eq!(
+            nearest_cube_pick_for_direction(past_edge, None),
+            Some(CubePick::Face(StandardView::Right))
+        );
+    }
+
+    /// #1226: an aligned child's ring only snaps among allowed picks.
+    #[test]
+    fn nearest_cube_pick_respects_allowed_ring() {
+        let allowed = [
+            CubePick::Face(StandardView::Front),
+            CubePick::Edge(CubeEdgeId::FrontRight),
+            CubePick::Face(StandardView::Right),
+        ];
+        let topish = face_view_direction(StandardView::Top);
+        // Top is outside the ring; nearest of the allowed set should still be one of them.
+        let pick = nearest_cube_pick_for_direction(topish, Some(&allowed)).expect("pick");
+        assert!(allowed.contains(&pick), "got {pick:?}");
+        // Pure front still lands on Front.
+        assert_eq!(
+            nearest_cube_pick_for_direction(face_view_direction(StandardView::Front), Some(&allowed)),
+            Some(CubePick::Face(StandardView::Front))
+        );
+    }
+
+    /// #1226: live camera after trackball orbit reports the nearest discrete view.
+    #[test]
+    fn nearest_cube_pick_follows_trackball_from_front_toward_right() {
+        let mut cam = cam_at_view(StandardView::Front);
+        assert_eq!(
+            nearest_cube_pick(&cam, None),
+            Some(CubePick::Face(StandardView::Front))
+        );
+        // Horizontal drag rotates about world Z; from Front (−Y) toward Right (+X).
+        // Sensitivity is small per pixel — a large delta is needed to cross the edge.
+        let mut saw_edge = false;
+        let mut saw_right = false;
+        for _ in 0..40 {
+            cam.orbit_trackball(egui::vec2(-20.0, 0.0));
+            match nearest_cube_pick(&cam, None) {
+                Some(CubePick::Edge(CubeEdgeId::FrontRight)) => saw_edge = true,
+                Some(CubePick::Face(StandardView::Right)) => {
+                    saw_right = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            saw_edge,
+            "orbit from Front toward Right should pass through FrontRight edge"
+        );
+        assert!(
+            saw_right,
+            "continued orbit should land on the Right face"
+        );
+    }
 }

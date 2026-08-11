@@ -22790,7 +22790,10 @@ impl App {
         // Pan is applied after the card loop, once we know whether a card was grabbed. Use the
         // raw pointer delta (not `bg.drag_delta()`) so it's correct even when egui hands the drag
         // to a card on top instead of the background.
-        let bg_pan_delta = (bg.dragged() || (primary_down && press_origin.is_some()))
+        // Only pan when the press began on this sheet (#1226): dragging the orientation bear
+        // (or any other pane) must not scroll the paper.
+        let press_on_sheet = press_origin.is_some_and(|o| area.contains(o));
+        let bg_pan_delta = (bg.dragged() || (primary_down && press_on_sheet))
             .then_some(pointer_delta);
         let mut pan_suppressed_by_card =
             self.drawing_view_drag.is_some() || self.drawing_view_resize_drag.is_some();

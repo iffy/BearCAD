@@ -2362,16 +2362,20 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   accent border while a compatible drag hovers), selected and ready to configure — the same
   result as the Projection tool. The row's **name and its type icon** are both grab handles
   (#368). Plain clicks on those rows still select as usual.
-- **Orientation bear (#315):** a selected view's orientation is chosen with an **interactive
+- **Orientation bear (#315/#1226):** a selected view's orientation is chosen with an **interactive
   navigation bear** in the context pane (the same widget as the viewport's HUD bear, replacing
   the dropdown; `view_cube::show_orientation_picker`): drag it to spin, click a face for that
   straight-on view or a corner/edge for the isometric, and — when the widget has focus — the
   numpad picks views (**4** left, **5** front, **6** right, **8** top, **2** bottom, **0**
-  back). It drives a local camera and maps the picked `StandardView` to a `DrawingOrientation`.
-  Adding a view now selects it, so the bear appears immediately. The **currently-selected view is
-  highlighted in blue** on the bear (#323/#340) — a face fill for the six straight-on views, a dot
-  on the top-front-right **corner** for Isometric, or the matching **edge** for a diagonal edge
-  view (`drawing_orientation_to_cube_pick` → `view_cube::CubePick`). The highlight is drawn
+  back). Dragging spins the bear **smoothly** on a local camera; the **drawing view snaps** to the
+  nearest discrete face/edge/corner once that pose is closer than the current one
+  (`view_cube::nearest_cube_pick`) — so Front → Front-Right → Right as you drag, while the blue
+  highlight jumps in snaps. Dragging the bear must **not** pan the paper sheet. It maps the
+  picked pose to a `DrawingOrientation`. Adding a view now selects it, so the bear appears
+  immediately. The **currently-selected view is highlighted in blue** on the bear (#323/#340) —
+  a face fill for the six straight-on views, a dot on the top-front-right **corner** for
+  Isometric, or the matching **edge** for a diagonal edge view
+  (`drawing_orientation_to_cube_pick` → `view_cube::CubePick`). The highlight is drawn
   **unculled** (`draw_selected_pose`), so the chosen face/edge/corner still shows even when it's on
   the far side of the bear, and a glance always tells which way the view looks while spinning.
 - **Arbitrary angle — "Use this view" (#345/#366):** the view editor has a **Use this view** button
