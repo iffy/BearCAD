@@ -8650,12 +8650,21 @@ impl AppState {
                         }
                     }
                     // If the segment's end latched onto an existing vertex (or the origin),
-                    // the polyline is closing/joining, so we stop chaining (#20).
-                    let end_on_vertex = matches!(
-                        self.line_end_snap,
-                        Some(crate::snapping::SnapTarget::Vertex(_))
-                            | Some(crate::snapping::SnapTarget::Origin)
-                    );
+                    // the polyline is closing/joining, so we stop chaining (#20). Projected
+                    // endpoints are external reference anchors, not loop closures — keep
+                    // drawing after connecting to one (#1214).
+                    let end_on_vertex = match &self.line_end_snap {
+                        Some(crate::snapping::SnapTarget::Origin) => true,
+                        Some(crate::snapping::SnapTarget::Vertex(
+                            ConstraintPoint::LineEndpoint { line, .. },
+                        )) => !self
+                            .doc
+                            .lines
+                            .get(*line)
+                            .is_some_and(|l| l.projection.is_some()),
+                        Some(crate::snapping::SnapTarget::Vertex(_)) => true,
+                        _ => false,
+                    };
                     // Pin endpoints that were left on a snap target.
                     if let Some(target) = self.line_start_snap.take() {
                         let _ = self.add_snap_constraint(
@@ -27599,6 +27608,55 @@ mod tests {
         assert!(
             state.creating_line.is_none(),
             "closing onto a vertex finishes the polyline"
+        );
+    }
+
+    /// #1214: projected-line endpoints are reference anchors, not polyline closures — snapping
+    /// onto one must keep the chain open so the next segment starts from that connection.
+    #[test]
+    fn line_tool_keeps_chaining_when_connecting_to_a_projected_endpoint() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state.tool = Tool::Line;
+        let mut projected = Line::from_local_endpoints(sketch, 10.0, 0.0, 20.0, 0.0);
+        projected.construction = true;
+        projected.projection = Some(crate::model::ProjectionSource::Plane { plane: pkey(1) });
+        state.doc.lines.insert(projected);
+        state.doc.shape_order.push(ShapeKind::Line);
+
+        state.creating_line = Some(CreatingLine {
+            origin: Vec3::ZERO,
+            text: "10".to_string(),
+            last_mouse: Vec3::new(10.0, 0.0, 0.0),
+            user_edited: true,
+            pending_focus: false,
+            construction: false,
+            curve_mode: false,
+            tangent_constraint: true,
+            chained_from: None,
+            chained_from_bezier: None,
+        });
+        state.line_end_snap = Some(crate::snapping::SnapTarget::Vertex(
+            ConstraintPoint::LineEndpoint {
+                line: lkey(0),
+                end: LineEnd::Start,
+            },
+        ));
+        state.apply(Action::CommitLine);
+
+        assert_eq!(state.doc.lines.len(), 2);
+        assert!(
+            state.creating_line.is_some(),
+            "connecting to a projected endpoint should keep the polyline open"
+        );
+        // End-of-segment coincidence with the projected vertex is still recorded.
+        assert!(
+            state
+                .doc
+                .constraints
+                .values()
+                .any(|c| matches!(c.kind, crate::model::ConstraintKind::Coincident { .. })),
+            "snap constraint should still pin the connection"
         );
     }
 
