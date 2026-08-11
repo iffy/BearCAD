@@ -3,6 +3,16 @@
 /// Side-panel title shown in the UI.
 pub const PANE_TITLE: &str = "Elements";
 
+/// Egui-memory key for the first sketch row drawn in Elements this frame (#1279).
+fn elements_sketch_row_rect_id() -> egui::Id {
+    egui::Id::new("elements_sketch_row_rect")
+}
+
+/// Where the Elements pane drew a sketch row this frame (#1279) — tutorial orb target.
+pub fn elements_sketch_row_rect(ctx: &egui::Context) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<egui::Rect>(elements_sketch_row_rect_id()))
+}
+
 use crate::actions::SketchSession;
 use crate::icons::{
     icon_button, icon_for_constraint_kind, icon_for_visibility, selectable_icon_button,
@@ -5630,6 +5640,19 @@ fn show_row(
             .as_ref()
             .map(|icon| RowClick::of(icon, ui))
             .unwrap_or_default());
+        let row_rect = match icon_response.as_ref() {
+            Some(icon) => icon.rect.union(response.rect),
+            None => response.rect,
+        };
+        // Tutorial orb: first sketch row in Elements (#1279).
+        if matches!(node, HierarchyNode::Sketch(_)) {
+            ui.ctx().data_mut(|d| {
+                let id = elements_sketch_row_rect_id();
+                if d.get_temp::<egui::Rect>(id).is_none() {
+                    d.insert_temp(id, row_rect);
+                }
+            });
+        }
         // Pane-hover → viewport highlight (#161): the 3D view shows what this row is.
         if row.hovered {
             on_hover_element(element.clone());
@@ -5640,10 +5663,7 @@ fn show_row(
             armed,
             &element,
             row.hovered,
-            match icon_response.as_ref() {
-                Some(icon) => icon.rect.union(response.rect),
-                None => response.rect,
-            },
+            row_rect,
         );
         // With a drawing open, body, sketch, and component rows drag onto the page (#290/#1190):
         // the drop places a projection at the pointer. Both the name label and the type icon

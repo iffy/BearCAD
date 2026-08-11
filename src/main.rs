@@ -3935,6 +3935,10 @@ impl App {
                 tutorial::UiAnchor::ShapeRadius => {
                     context::shape_field_rect(ctx, actions::ShapeDimension::Radius)
                 }
+                // Shape kind buttons (Cuboid / Cylinder / Sphere) in the Context pane (#1272).
+                tutorial::UiAnchor::ShapeKind(kind) => context::shape_kind_rect(ctx, kind),
+                // Elements-pane sketch row (#1279).
+                tutorial::UiAnchor::ElementsSketch => hierarchy::elements_sketch_row_rect(ctx),
                 other => self.state.tutorial_anchor_rects.get(&other).copied(),
             }
         };

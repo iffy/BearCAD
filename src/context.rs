@@ -4629,6 +4629,19 @@ pub fn shape_field_rect(
     ctx.data(|d| d.get_temp::<egui::Rect>(shape_field_rect_id(field)))
 }
 
+/// Egui-memory key for a Create Shape kind button (Cuboid / Cylinder / Sphere) this frame.
+fn shape_kind_rect_id(kind: crate::model::PrimitiveKind) -> egui::Id {
+    egui::Id::new(("shape_kind_rect", kind.script_name()))
+}
+
+/// Where the Context pane drew a Create Shape kind button this frame (#1272).
+pub fn shape_kind_rect(
+    ctx: &egui::Context,
+    kind: crate::model::PrimitiveKind,
+) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<egui::Rect>(shape_kind_rect_id(kind)))
+}
+
 pub fn show_pane(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
@@ -5921,10 +5934,12 @@ pub fn show_pane(
                 (K::Cylinder, crate::icons::IconId::ShapeCylinder, "Cylinder (B cycles)"),
                 (K::Sphere, crate::icons::IconId::ShapeSphere, "Sphere (B cycles)"),
             ] {
-                if crate::icons::selectable_icon_button(ui, icon, control.kind == value, tooltip)
-                    .clicked()
-                    && control.kind != value
-                {
+                let resp =
+                    crate::icons::selectable_icon_button(ui, icon, control.kind == value, tooltip);
+                // Tutorial orb target for kind-pick steps (#1272).
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(shape_kind_rect_id(value), resp.rect));
+                if resp.clicked() && control.kind != value {
                     pending = Some(ShapeEdit::Kind(value));
                 }
             }

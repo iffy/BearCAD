@@ -2361,7 +2361,7 @@ pub enum RevolveMode {
 
 /// Which primitive a [`Primitive`] is (#909): the shapes the Create Shape tool places
 /// directly in 3D, without a sketch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PrimitiveKind {
     Cuboid,

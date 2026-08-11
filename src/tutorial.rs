@@ -43,6 +43,10 @@ pub enum UiAnchor {
     ShapeHeight,
     /// Shape tool **Radius** field in the Context pane (#1264).
     ShapeRadius,
+    /// Shape tool **kind** button in the Context pane (#1272): Cuboid / Cylinder / Sphere.
+    ShapeKind(crate::model::PrimitiveKind),
+    /// The sketch row in the Elements pane (#1279) — double-click to reopen for edit.
+    ElementsSketch,
     /// A status-bar pane toggle (phone layout only, #828): Elements / Context / Params.
     PaneButton(crate::actions::Pane),
 }
@@ -2881,8 +2885,17 @@ fn ground_anchor_b(app: &AppState) -> Option<glam::Vec3> {
     ground_local(app, 55.0, 55.0)
 }
 
-fn ground_anchor_c(app: &AppState) -> Option<glam::Vec3> {
-    ground_local(app, 40.0, 0.0)
+/// Centre of the cylinder's base on the **XZ wall** construction plane (#1273) — not on the
+/// ground next to a cuboid corner.
+fn wall_plane_cylinder_anchor(app: &AppState) -> Option<glam::Vec3> {
+    // Datum planes: 0 = XY (ground), 1 = XZ, 2 = YZ.
+    let plane = app.doc.construction_planes.keys().nth(1)?;
+    let frame = crate::face::sketch_frame(
+        &app.doc,
+        crate::model::FaceId::ConstructionPlane(plane),
+    )?;
+    // Mid-quadrant of the wall: clear of the ground cuboid and origin edges.
+    Some(crate::face::local_to_world(&frame, 50.0, 40.0))
 }
 
 fn ground_anchor_d(app: &AppState) -> Option<glam::Vec3> {
@@ -3232,13 +3245,28 @@ fn place_shape(app: &mut AppState, kind: crate::model::PrimitiveKind, origin: [f
     app.apply(Action::CreateShape { shape });
 }
 
+/// Place a cylinder on the XZ wall plane (#1273) — same spot the step's orb points at.
+fn place_cylinder_on_wall(app: &mut AppState) {
+    if has_cylinder(app) {
+        return;
+    }
+    let mut shape = crate::model::Primitive::new(crate::model::PrimitiveKind::Cylinder);
+    // Match `wall_plane_cylinder_anchor`: local (50, 40) on XZ → world (50, 0, 40).
+    shape.origin = [50.0, 0.0, 40.0];
+    shape.normal = [0.0, 1.0, 0.0];
+    shape.u_axis = [1.0, 0.0, 0.0];
+    shape.radius = "10".into();
+    shape.height = "20".into();
+    app.apply(Action::CreateShape { shape });
+}
+
 fn assist_place_cuboid(app: &mut AppState) {
     place_shape(app, crate::model::PrimitiveKind::Cuboid, [0.0, 0.0, 0.0]);
 }
 
 fn assist_place_cylinder(app: &mut AppState) {
     assist_place_cuboid(app);
-    place_shape(app, crate::model::PrimitiveKind::Cylinder, [40.0, 0.0, 0.0]);
+    place_cylinder_on_wall(app);
 }
 
 fn assist_place_sphere(app: &mut AppState) {
@@ -3313,9 +3341,9 @@ static CUBE_STEPS: &[Step] = &[
 /// #1239: place a cuboid, cylinder, and sphere with the Shape tool (tool cycle order).
 /// One action per step (#1253).
 static SHAPES_STEPS: &[Step] = &[
+    // #1270: short intro — Next only.
     plain_step(
-        "Hi! The Shape tool drops solids straight into 3D \u{2014} no sketch needed. \
-         We'll place a cuboid, a cylinder, and a sphere. Fresh document ready.",
+        "The Shape tool makes solids right in 3D",
         StepAnchor::None,
         None,
     ),
@@ -3350,14 +3378,16 @@ static SHAPES_STEPS: &[Step] = &[
         StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
         Some(shape_tool_active_or_past_cuboid),
     ),
+    // #1272: orb on the Context Cylinder button (not the toolbar).
     plain_step(
-        "Press `B` again to cycle to a cylinder (toolbar icon updates).",
-        StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        "Click Cylinder in the Context pane (or press `B`).",
+        StepAnchor::Ui(UiAnchor::ShapeKind(crate::model::PrimitiveKind::Cylinder)),
         Some(cylinder_kind_ready),
     ),
+    // #1273: base on a wall construction plane, not a cuboid corner.
     plain_step(
         "Click the centre of the cylinder's base.",
-        StepAnchor::World(ground_anchor_c),
+        StepAnchor::World(wall_plane_cylinder_anchor),
         Some(cylinder_anchored),
     ),
     assisted_step(
@@ -3387,8 +3417,8 @@ static SHAPES_STEPS: &[Step] = &[
         Some(shape_tool_active_or_past_cylinder),
     ),
     plain_step(
-        "Press `B` again to cycle to a sphere.",
-        StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        "Click Sphere in the Context pane (or press `B`).",
+        StepAnchor::Ui(UiAnchor::ShapeKind(crate::model::PrimitiveKind::Sphere)),
         Some(sphere_kind_ready),
     ),
     plain_step(
@@ -3481,9 +3511,10 @@ static DIMENSIONED_BOX_STEPS: &[Step] = &[
         },
         Some(TypeHint::Fixed("10")),
     ),
+    // #1279: orb on the sketch row in Elements.
     plain_step(
         "Reopen the sketch \u{2014} double-click it in Elements, or the sketch in the viewport.",
-        StepAnchor::None,
+        StepAnchor::Ui(UiAnchor::ElementsSketch),
         Some(sketch_reopened_for_edit),
     ),
     assisted_step(
@@ -4296,6 +4327,130 @@ mod tests {
         assert!(has_sphere(&app));
         assert!(has_cylinder(&app));
         assert_eq!(app.doc.primitives.len(), 3);
+    }
+
+    /// #1270: shapes intro is short — one line, Next advances (no auto-done).
+    #[test]
+    fn shapes_intro_is_short() {
+        let shapes = &TUTORIALS[tutorial_index("shapes").unwrap()];
+        let intro = &shapes.steps[0];
+        assert_eq!(
+            intro.narration,
+            "The Shape tool makes solids right in 3D"
+        );
+        assert!(intro.done.is_none(), "intro waits for Next");
+        assert!(matches!(intro.anchor, StepAnchor::None));
+    }
+
+    /// #1272: after Shape is armed, kind-pick steps point at Context Shape buttons.
+    #[test]
+    fn shapes_kind_steps_target_context_shape_buttons() {
+        use crate::model::PrimitiveKind as K;
+        let shapes = &TUTORIALS[tutorial_index("shapes").unwrap()];
+        let cylinder = shapes
+            .steps
+            .iter()
+            .find(|s| {
+                let n = s.narration.to_ascii_lowercase();
+                n.contains("cylinder")
+                    && (n.contains("cycle") || n.contains("click") || n.contains("context"))
+                    && !n.contains("centre")
+                    && !n.contains("center")
+                    && !n.contains("radius")
+                    && !n.contains("height")
+            })
+            .expect("cylinder kind-pick step");
+        assert!(
+            matches!(
+                cylinder.anchor,
+                StepAnchor::Ui(UiAnchor::ShapeKind(K::Cylinder))
+            ),
+            "cylinder kind should point at Context Cylinder button: {}",
+            cylinder.narration
+        );
+        let sphere = shapes
+            .steps
+            .iter()
+            .find(|s| {
+                let n = s.narration.to_ascii_lowercase();
+                n.contains("sphere")
+                    && (n.contains("cycle") || n.contains("click") || n.contains("context"))
+                    && !n.contains("rest")
+                    && !n.contains("radius")
+            })
+            .expect("sphere kind-pick step");
+        assert!(
+            matches!(sphere.anchor, StepAnchor::Ui(UiAnchor::ShapeKind(K::Sphere))),
+            "sphere kind should point at Context Sphere button: {}",
+            sphere.narration
+        );
+    }
+
+    /// #1273: cylinder base guide sits on a wall construction plane, not the ground/cuboid.
+    #[test]
+    fn shapes_cylinder_anchor_is_on_a_wall_plane() {
+        let app = AppState::default();
+        let p = wall_plane_cylinder_anchor(&app).expect("wall plane guide");
+        // XZ wall: y ≈ 0, z raised off the ground plane origin edge.
+        assert!(
+            p.y.abs() < 0.1,
+            "XZ wall has y=0, got {p:?}"
+        );
+        assert!(
+            p.z > 10.0,
+            "should sit up the wall, not on the ground edge: {p:?}"
+        );
+        // Not coplanar with a ground cuboid corner (z≈0).
+        assert!(
+            p.z.abs() > 1.0 || p.y.abs() > 1.0,
+            "must leave the ground plane: {p:?}"
+        );
+
+        let shapes = &TUTORIALS[tutorial_index("shapes").unwrap()];
+        let base = shapes
+            .steps
+            .iter()
+            .find(|s| s.narration.to_ascii_lowercase().contains("cylinder's base"))
+            .expect("cylinder base click step");
+        assert!(
+            matches!(base.anchor, StepAnchor::World(_)),
+            "base click uses a world guide"
+        );
+        // Assist places the cylinder on the wall (normal along +Y for XZ).
+        let mut app = AppState::default();
+        assist_place_cylinder(&mut app);
+        let cyl = app
+            .doc
+            .primitives
+            .values()
+            .find(|p| p.kind == crate::model::PrimitiveKind::Cylinder)
+            .expect("cylinder");
+        let n = glam::Vec3::from_array(cyl.normal);
+        assert!(
+            n.dot(glam::Vec3::Y).abs() > 0.9,
+            "cylinder should rest on XZ wall (normal ≈ Y), got {n:?}"
+        );
+        let o = glam::Vec3::from_array(cyl.origin);
+        assert!(
+            o.z > 10.0,
+            "cylinder origin should be up the wall: {o:?}"
+        );
+    }
+
+    /// #1279: reopen-sketch step points at the sketch row in Elements.
+    #[test]
+    fn dimensioned_box_reopen_sketch_targets_elements_row() {
+        let box_tut = &TUTORIALS[tutorial_index("dimensioned_box").unwrap()];
+        let reopen = box_tut
+            .steps
+            .iter()
+            .find(|s| s.narration.to_ascii_lowercase().contains("reopen the sketch"))
+            .expect("reopen sketch step");
+        assert!(
+            matches!(reopen.anchor, StepAnchor::Ui(UiAnchor::ElementsSketch)),
+            "reopen step should orb the Elements sketch row: {}",
+            reopen.narration
+        );
     }
 
     /// #1240: dimensioned box assist draws 10×10, extrudes 10, then edits to 20.
