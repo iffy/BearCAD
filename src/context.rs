@@ -4044,6 +4044,13 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "A plane, face, or vertex to stop at instead of a fixed depth; the extrusion then \
              follows it if it moves. Setting one clears Distance.",
         ),
+        (Some(Tool::Extrude), "Taper Width") => Some(
+            "How much wider (or narrower) the free end is than the start, per side. Click the \
+             icon (or label) to switch to Taper Angle.",
+        ),
+        (Some(Tool::Extrude), "Taper Angle") => Some(
+            "Draft angle of the side walls. Click the icon (or label) to switch to Taper Width.",
+        ),
         (Some(Tool::Extrude), "Output") => Some(
             "Whether this becomes a new body, fuses into the body it grows from, or cuts into \
              it. Profiles that don't touch make a body each; Join puts them in one.",
@@ -7673,7 +7680,7 @@ pub fn show_pane(
                 } else {
                     crate::icons::IconId::TaperDistance
                 };
-                let label = if is_angle { "Angle" } else { "Taper" };
+                let label = if is_angle { "Taper Angle" } else { "Taper Width" };
                 let tip = "Click to toggle taper by distance or angle";
                 let row = ui.horizontal(|ui| {
                     ui.allocate_ui_with_layout(
@@ -7705,7 +7712,7 @@ pub fn show_pane(
                         }
                     });
                 });
-                note_help(ui, "Taper", row.response.rect);
+                note_help(ui, label, row.response.rect);
             }
         }
     }

@@ -3400,8 +3400,7 @@ static SHAPES_STEPS: &[Step] = &[
 /// One action per step (#1253).
 static DIMENSIONED_BOX_STEPS: &[Step] = &[
     plain_step(
-        "Hi! We'll build a 10 mm cube with typed dimensions, then edit the original sketch \
-         so one side becomes 20 mm \u{2014} the solid rebuilds with it.",
+        "Hi! We'll make a cube, then change it using parameters.",
         StepAnchor::None,
         None,
     ),
