@@ -58,7 +58,6 @@ function HomepageHeader() {
             Read the docs
           </Link>
         </div>
-        <span className={styles.ctaHint}>Nothing to install — it runs right in the tab.</span>
       </div>
     </header>
   );
