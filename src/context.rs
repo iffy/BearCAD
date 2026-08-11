@@ -396,8 +396,10 @@ pub struct ShapeControl {
     pub depth: String,
     pub height: String,
     pub radius: String,
-    /// Per-field typed flags (Width/Depth/Height/Radius slots) — select-all stops once the
-    /// user has typed into that field (#1271).
+    /// Per-field typed flags (Width/Depth/Height/Radius slots). While `!typed`, the field is
+    /// still cursor-driven: select-all re-arms every frame so a cursor rewrite after focus
+    /// cannot leave a stale selection length (e.g. `"32.5"` range on `"33.913"` + type `"10"`
+    /// → `"1013"`) (#1271/#1275).
     pub typed: [bool; 4],
     /// Arm a one-shot focus request (phase just advanced); cleared once the target lands.
     pub pending_focus: bool,
@@ -5917,9 +5919,14 @@ pub fn show_pane(
                 });
                 // The phase's own field takes the keyboard (#912). While the mouse still
                 // drives the value, keep focus + select-all so typing overwrites the live
-                // number (#1271). Never steal from another field the user clicked (#1274).
+                // number — including when the cursor rewrites a longer value after focus
+                // landed on a shorter one (#1271/#1275 / CI shape_place_cuboid). Never steal
+                // from another field the user clicked (#1274).
                 let is_focus_target = control.focus_field == Some(field);
                 let user_edited = control.typed[field.slot()];
+                // Memory focus, not `Response::has_focus` alone — that also demands the OS
+                // window be focused, and scripted (background) windows still route typing
+                // into the field that holds keyboard focus (#1201).
                 let memory_focused = ui.ctx().memory(|m| m.focused()) == Some(id);
                 let other_widget_focused =
                     ui.ctx().memory(|m| m.focused().is_some_and(|f| f != id));

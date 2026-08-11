@@ -7309,16 +7309,27 @@ impl App {
         pick_occlusion: Option<&construction::PickOcclusion>,
         session: SketchSession,
     ) {
+        // Enter commits when nothing *else* holds the keyboard. The floating distance
+        // field itself may report `egui_wants_keyboard_input` with a fragile Area focus
+        // that is already gone by the time that field's own enter_commit runs — so treat
+        // our field id as non-blocking (#1275 / CI sketch_offset_gizmo_*).
         if ui.input(|i| i.key_pressed(egui::Key::Enter))
-            && !ui.ctx().egui_wants_keyboard_input()
             && self
                 .state
                 .creating_sketch_offset
                 .as_ref()
                 .is_some_and(|c| c.has_targets())
         {
-            self.commit_sketch_offset();
-            return;
+            let offset_field = egui::Id::new(SKETCH_OFFSET_DISTANCE_FIELD_ID);
+            let focused = ui.ctx().memory(|m| m.focused());
+            if offset_enter_commits_despite_keyboard(
+                ui.ctx().egui_wants_keyboard_input(),
+                focused,
+                offset_field,
+            ) {
+                self.commit_sketch_offset();
+                return;
+            }
         }
         let Some(frame) = sketch_geometry_frame(&self.state.doc, session.sketch) else {
             return;
@@ -20471,6 +20482,25 @@ fn should_commit_sketch_on_enter(
     enter_pressed: bool,
 ) -> bool {
     field_enter_commit || (enter_pressed && !dim_field_focused)
+}
+
+/// Whether the Offset tool's Enter handler should commit despite `egui_wants_keyboard_input`.
+///
+/// The floating distance field's Area focus is fragile: memory can still name that field
+/// (so `wants_keyboard` is true) while the field's own `enter_commit` already sees no focus
+/// and never fires. Treat our field — and a wants-keyboard with no focused id — as non-blocking.
+fn offset_enter_commits_despite_keyboard(
+    wants_keyboard: bool,
+    focused: Option<egui::Id>,
+    offset_field: egui::Id,
+) -> bool {
+    if !wants_keyboard {
+        return true;
+    }
+    match focused {
+        None => true,
+        Some(id) => id == offset_field,
+    }
 }
 
 /// Show a sketch dimension field; selects all text when it gains focus so typing replaces
@@ -33812,6 +33842,27 @@ mod tests {
         assert!(should_commit_sketch_on_enter(false, false, true));
         assert!(!should_commit_sketch_on_enter(false, true, true));
         assert!(!should_commit_sketch_on_enter(false, false, false));
+    }
+
+    /// #1275: Offset Enter commits even when the floating distance field is why
+    /// `egui_wants_keyboard_input` is true (or when that flag is stale with no focus).
+    #[test]
+    fn offset_enter_commits_despite_own_distance_field_keyboard() {
+        use super::offset_enter_commits_despite_keyboard;
+        let field = egui::Id::new("sketch_offset_distance_input");
+        let other = egui::Id::new("parameters_name");
+        assert!(offset_enter_commits_despite_keyboard(false, None, field));
+        assert!(offset_enter_commits_despite_keyboard(true, None, field));
+        assert!(offset_enter_commits_despite_keyboard(
+            true,
+            Some(field),
+            field
+        ));
+        assert!(!offset_enter_commits_despite_keyboard(
+            true,
+            Some(other),
+            field
+        ));
     }
 
     #[test]
