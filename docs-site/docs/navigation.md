@@ -35,7 +35,8 @@ keypad** — digits, units, operators, and your parameter names as one-tap chips
 **long press** opens the same menus a right-click does.
 
 **Zoom to fit** (in the command palette and the View menu) frames your selection — or the
-whole model — in one step.
+whole model — with the same short glide as Home. Settings → **Animate zoom to fit** turns
+the glide off if you prefer an instant snap.
 
 **Auto-zoom** (the toggle next to Zoom to fit in the toolbar) keeps your geometry
 framed: type rectangle dimensions bigger than the view, or drag an extrusion past the

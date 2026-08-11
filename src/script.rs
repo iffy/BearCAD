@@ -705,6 +705,8 @@ pub enum Instruction {
     SetMoveAngleSnap { degrees: f32 },
     /// Toggle the joint preview's animation (#906).
     SetJointAnimation { on: bool },
+    /// Toggle Zoom to Fit's glide (#1276). Off snaps instantly.
+    SetAnimateZoomToFit { on: bool },
     /// Force touch mode on/off (auto-detected from real touches otherwise).
     SetTouchMode { on: bool },
     /// Start / advance / end an interactive tutorial.
@@ -1661,6 +1663,9 @@ impl Instruction {
             }
             Instruction::SetJointAnimation { on } => {
                 format!("bearcad.ui.animate_joints({on})")
+            }
+            Instruction::SetAnimateZoomToFit { on } => {
+                format!("bearcad.ui.animate_zoom_to_fit({on})")
             }
             Instruction::SetTouchMode { on } => {
                 format!("bearcad.ui.touch({on})")
@@ -6821,6 +6826,10 @@ impl ScriptRunner {
                 state.animate_joints = on;
                 StepResult::Continue
             }
+            Instruction::SetAnimateZoomToFit { on } => {
+                state.animate_zoom_to_fit = on;
+                StepResult::Continue
+            }
             Instruction::SetTouchMode { on } => {
                 crate::touch::set_active(on);
                 StepResult::Continue
@@ -7220,8 +7229,14 @@ impl ScriptRunner {
                     state.viewport_aspect = (vp.width() / vp.height().max(1.0)).max(0.01);
                 }
                 // Same path as the Z key / menu: includes in-progress operation previews (#1114).
+                // When animation is on (#1276), wait out the glide like ViewHome does.
                 state.apply(Action::ZoomToFit);
-                StepResult::Continue
+                if state.cam.is_transitioning() {
+                    self.waiting_view_transition = true;
+                    StepResult::Wait
+                } else {
+                    StepResult::Continue
+                }
             }
             Instruction::SetElementsView { mode } => {
                 state.apply(Action::SetElementsViewMode { mode });

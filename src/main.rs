@@ -4417,6 +4417,7 @@ impl App {
         {
             state.library_directory = settings.library_directory.clone();
             state.completed_tutorials = settings.completed_tutorials.clone();
+            state.animate_zoom_to_fit = settings.animate_zoom_to_fit;
         }
         if let Some(path) = document_path {
             match state.apply(Action::Open { path }) {
@@ -4669,6 +4670,15 @@ impl App {
                     }
                 }
             });
+            // #1276: same glide as Home; off snaps Zoom to Fit instantly.
+            context::labeled_row(ui, "Animate zoom to fit", |ui| {
+                if ui
+                    .checkbox(&mut self.settings.animate_zoom_to_fit, "")
+                    .changed()
+                {
+                    changed = true;
+                }
+            });
         });
         if self.state.help_mode {
             context::end_help_notes(ctx);
@@ -4676,6 +4686,7 @@ impl App {
         if changed {
             // Keep the action layer's library mirror in step (#721) before persisting.
             self.state.library_directory = self.settings.library_directory.clone();
+            self.state.animate_zoom_to_fit = self.settings.animate_zoom_to_fit;
             if let Err(err) = self.settings.save() {
                 self.state.status = format!("Could not save settings: {err}");
             }

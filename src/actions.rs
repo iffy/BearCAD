@@ -3641,6 +3641,10 @@ pub struct AppState {
     /// through the joint's range. One app-wide switch — turning it off on any joint's pane
     /// turns it off for every joint — on to begin with. UI-only state, never persisted.
     pub animate_joints: bool,
+    /// Zoom to Fit animation (#1276): when true (default), frames over
+    /// [`VIEW_TRANSITION_DURATION`] like Home view; when false, snaps. Mirrored from
+    /// [`crate::settings::AppSettings`] and scriptable via `bearcad.ui.animate_zoom_to_fit`.
+    pub animate_zoom_to_fit: bool,
     /// Help mode (#672): every control in the Context pane gets a floating note beside it
     /// saying what it wants. Off by default — the pane itself stays controls and values only
     /// — and never persisted. The documentation's pane pictures are captured with it on, so
@@ -3902,6 +3906,7 @@ impl Default for AppState {
         Self {
             auto_zoom: false,
             animate_joints: true,
+            animate_zoom_to_fit: true,
             move_angle_snap_deg: MAX_ANGLE_SNAP_DEG,
             move_translate_mode: crate::model::MoveTranslateMode::default(),
             help_mode: false,
@@ -10044,7 +10049,17 @@ impl AppState {
                 let bounds = union_aabb(base, operation_preview_world_bounds(self));
                 match bounds {
                     Some((min, max)) => {
-                        self.cam.frame_bounds_instant(min, max, self.viewport_aspect);
+                        // #1276: same glide as Home view unless the user turned animation off.
+                        if self.animate_zoom_to_fit {
+                            self.cam.frame_bounds_animated(
+                                min,
+                                max,
+                                self.viewport_aspect,
+                                VIEW_TRANSITION_DURATION,
+                            );
+                        } else {
+                            self.cam.frame_bounds_instant(min, max, self.viewport_aspect);
+                        }
                         self.status = if self.scene_selection.is_empty() {
                             "Zoomed to fit".to_string()
                         } else {
@@ -28413,6 +28428,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         state.cam.target = glam::Vec3::new(999.0, 999.0, 999.0);
         let result = state.apply(Action::ZoomToFit);
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        while state.cam.tick_transition(0.05) {}
         let target = state.cam.target;
         assert!(
             target.z.abs() < 0.75,
@@ -28426,6 +28442,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         state.cam.target = glam::Vec3::new(999.0, 999.0, 999.0);
         let result = state.apply(Action::ZoomToFit);
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        while state.cam.tick_transition(0.05) {}
         assert!(
             state.cam.target.z.abs() < 0.75,
             "selection + mirror preview must still frame both halves, got {:?}",
@@ -28446,6 +28463,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         });
         let result = state.apply(Action::ZoomToFit);
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        while state.cam.tick_transition(0.05) {}
         let target = state.cam.target;
         assert!(
             (target - glam::Vec3::new(5.0, 5.0, 2.5)).length() < 0.5,
@@ -28457,9 +28475,57 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         state.cam.target = glam::Vec3::new(999.0, 999.0, 999.0);
         let result = state.apply(Action::ZoomToFit);
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        while state.cam.tick_transition(0.05) {}
         assert!(
             (state.cam.target - glam::Vec3::new(5.0, 5.0, 2.5)).length() < 0.6,
             "empty selection frames the whole document, got {:?}",
+            state.cam.target
+        );
+    }
+
+    /// #1276: Zoom to Fit glides over `VIEW_TRANSITION_DURATION` by default (same as Home).
+    #[test]
+    fn zoom_to_fit_animates_by_default() {
+        let mut state = box_extrusion_state();
+        state.apply(Action::ExitSketch);
+        state.cam.target = glam::Vec3::new(999.0, 999.0, 999.0);
+        let start = state.cam.target;
+        let result = state.apply(Action::ZoomToFit);
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert!(
+            state.cam.is_transitioning(),
+            "default Zoom to Fit should start a view transition"
+        );
+        // Mid-flight the target is still between start and destination.
+        assert!(
+            (state.cam.target - start).length() < 1.0,
+            "before ticking, the live target has not jumped"
+        );
+        while state.cam.tick_transition(0.05) {}
+        assert!(!state.cam.is_transitioning());
+        assert!(
+            (state.cam.target - glam::Vec3::new(5.0, 5.0, 2.5)).length() < 0.6,
+            "after the glide the camera centers on the body, got {:?}",
+            state.cam.target
+        );
+    }
+
+    /// #1276: preference off → Zoom to Fit snaps instantly.
+    #[test]
+    fn zoom_to_fit_instant_when_animation_disabled() {
+        let mut state = box_extrusion_state();
+        state.apply(Action::ExitSketch);
+        state.animate_zoom_to_fit = false;
+        state.cam.target = glam::Vec3::new(999.0, 999.0, 999.0);
+        let result = state.apply(Action::ZoomToFit);
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert!(
+            !state.cam.is_transitioning(),
+            "with the pref off, Zoom to Fit must not animate"
+        );
+        assert!(
+            (state.cam.target - glam::Vec3::new(5.0, 5.0, 2.5)).length() < 0.6,
+            "instant frame centers on the body, got {:?}",
             state.cam.target
         );
     }

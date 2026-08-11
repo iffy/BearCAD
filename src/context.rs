@@ -4424,6 +4424,10 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
              by name, so the import is found again on any machine whose library holds the \
              same parts.",
         ),
+        "Animate zoom to fit" => Some(
+            "When on, Zoom to Fit (Z) glides the camera the same way Home does. Turn off to \
+             snap the view instantly.",
+        ),
         _ => None,
     })
 }

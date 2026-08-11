@@ -3765,9 +3765,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // #108: frame the whole document (bodies + sketch geometry) instantly.
+    // #108/#1276: frame selection or document; glides like Home unless animation is off.
+    // Native name is `_zoom_fit`; the public `zoom_fit` yields until the transition ends.
     api.set(
-        "zoom_fit",
+        "_zoom_fit",
         lua.create_function(|lua, ()| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::ZoomFit) }
@@ -4245,6 +4246,16 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let on = on.unwrap_or(true);
             unsafe { tick.exec(Instruction::SetJointAnimation { on }) }
+        })?,
+    )?;
+
+    // #1276: Zoom to Fit glide (same duration as Home). Off snaps instantly.
+    api.set(
+        "animate_zoom_to_fit",
+        lua.create_function(|lua, on: Option<bool>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let on = on.unwrap_or(true);
+            unsafe { tick.exec(Instruction::SetAnimateZoomToFit { on }) }
         })?,
     )?;
 
@@ -6581,14 +6592,15 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "new_tab", "close_tab", "tab", "tab_count", "window_count", "tabs", "reorder_tab", "detach_tab",
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading", "ground",
             "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance", "fps_scale",
-            "camera", "zoom_fit", "elements_view", "auto_zoom", "animate_joints", "snapping", "picker_focus", "angle_snap",
+            "camera", "elements_view", "auto_zoom", "animate_joints", "animate_zoom_to_fit",
+            "snapping", "picker_focus", "angle_snap",
             "tutorial", "tutorial_next", "tutorial_assist", "tutorial_end", "tutorial_step",
             "tutorial_pane", "tutorials",
             "touch",
             "move", "click", "move_ground", "click_ground",
             "drag", "drag_ground", "right_drag", "right_drag_pan",
             "key", "keydown", "keyup", "type",
-            "_view", "_view_home", "_wait", "_wait_ms", "_screenshot",
+            "_view", "_view_home", "_zoom_fit", "_wait", "_wait_ms", "_screenshot",
         }
         for _, name in ipairs(ui_funcs) do
             bearcad.ui[name] = bearcad[name]
@@ -6611,6 +6623,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         yielding("screenshot", "_screenshot")
         yielding("view", "_view")
         yielding("view_home", "_view_home")
+        yielding("zoom_fit", "_zoom_fit")
     "#,
     )
     .exec()?;
@@ -6692,8 +6705,14 @@ mod tests {
         let mut synthetic = SyntheticInput::default();
         let ctx = egui::Context::default();
         let vp = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0));
+        // No App frame loop here: advance view transitions so yielding camera ops
+        // (view, view_home, zoom_fit) complete instead of spinning forever (#1276).
+        let mut safety = 0u32;
         while !runner.done {
+            let _ = state.cam.tick_transition(1.0 / 60.0);
             runner.tick(&mut state, &mut synthetic, Some(vp), &ctx);
+            safety += 1;
+            assert!(safety < 100_000, "run_lua spun too long; stuck waiting?");
         }
         // Failed modeling actions now raise Lua errors (#104/#109/#110/#112); tests that
         // exercise rejection paths catch them with `pcall`, so an uncaught error here is
@@ -6709,8 +6728,12 @@ mod tests {
         let mut synthetic = SyntheticInput::default();
         let ctx = egui::Context::default();
         let vp = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0));
+        let mut safety = 0u32;
         while !runner.done {
+            let _ = state.cam.tick_transition(1.0 / 60.0);
             runner.tick(&mut state, &mut synthetic, Some(vp), &ctx);
+            safety += 1;
+            assert!(safety < 100_000, "run_lua_expect_ok spun too long; stuck waiting?");
         }
         assert!(runner.error.is_none(), "script error: {:?}", runner.error);
     }
@@ -10713,8 +10736,8 @@ mod tests {
         );
     }
 
-    /// #108: `bearcad.ui.zoom_fit()` frames the document — the camera target lands on the
-    /// body's bbox center, instantly (no transition).
+    /// #108/#1276: `bearcad.ui.zoom_fit()` frames the document — the camera target lands on
+    /// the body's bbox center after the glide (or instantly when animation is off).
     #[test]
     fn lua_zoom_fit_targets_the_document_center() {
         let state = run_lua(
@@ -10731,8 +10754,29 @@ mod tests {
             "zoom_fit should center the target on the body, got {:?}",
             state.cam.target
         );
-        assert!(!state.cam.is_transitioning(), "zoom_fit applies instantly");
+        assert!(
+            !state.cam.is_transitioning(),
+            "yielding zoom_fit waits out the transition"
+        );
         assert!(state.cam.distance > 0.0 && state.cam.distance.is_finite());
+    }
+
+    /// #1276: `bearcad.ui.animate_zoom_to_fit(false)` makes zoom_fit snap.
+    #[test]
+    fn lua_animate_zoom_to_fit_toggles() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.ui.animate_zoom_to_fit(false)
+            bearcad.rect{ x = 0, y = 0, width = 40, height = 30 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            bearcad.ui.zoom_fit()
+        "#,
+        );
+        assert!(!state.animate_zoom_to_fit);
+        assert!(!state.cam.is_transitioning());
+        let expected = glam::Vec3::new(20.0, 15.0, 5.0);
+        assert!((state.cam.target - expected).length() < 0.5);
     }
 
     /// #108: an empty document leaves the camera alone.

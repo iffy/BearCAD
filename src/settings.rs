@@ -10,9 +10,13 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+fn default_true() -> bool {
+    true
+}
+
 /// Every persisted setting. Keep each field `#[serde(default)]` so older settings files
 /// keep loading as more land here.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppSettings {
     /// The library directory (#720): where `Library(...)` import sources resolve.
     #[serde(default)]
@@ -21,6 +25,20 @@ pub struct AppSettings {
     /// the Tutorials pane (#1260); survives restarts.
     #[serde(default)]
     pub completed_tutorials: Vec<String>,
+    /// When true, Zoom to Fit glides over the same duration as Home view (#1276). When
+    /// false, the camera snaps. On by default.
+    #[serde(default = "default_true")]
+    pub animate_zoom_to_fit: bool,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            library_directory: None,
+            completed_tutorials: Vec::new(),
+            animate_zoom_to_fit: true,
+        }
+    }
 }
 
 /// Where the settings file lives: the platform config directory + `BearCAD/settings.json`.
@@ -85,6 +103,7 @@ mod tests {
         let settings = AppSettings {
             library_directory: Some(PathBuf::from("/some/library")),
             completed_tutorials: vec!["bracket".into(), "cube".into()],
+            animate_zoom_to_fit: false,
         };
         settings.save_to(&path).unwrap();
         assert_eq!(AppSettings::load_from(&path), settings);
@@ -98,6 +117,16 @@ mod tests {
         std::fs::write(&path, br#"{"library_directory": null}"#).unwrap();
         let loaded = AppSettings::load_from(&path);
         assert!(loaded.completed_tutorials.is_empty());
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// #1276: older settings files without `animate_zoom_to_fit` still animate (default on).
+    #[test]
+    fn animate_zoom_to_fit_defaults_on_when_absent() {
+        let path = temp_file("bearcad_settings_no_zoom_anim.json");
+        std::fs::write(&path, br#"{"library_directory": null}"#).unwrap();
+        let loaded = AppSettings::load_from(&path);
+        assert!(loaded.animate_zoom_to_fit);
         std::fs::remove_file(&path).unwrap();
     }
 

@@ -46,7 +46,8 @@ local c = bearcad.ui.camera{}           -- { yaw, pitch, distance, target = {x, 
                                         --   projection = "perspective" | "orthographic" }
 bearcad.ui.camera{ yaw = 1.0, distance = 200 }        -- set any subset of the pose
 bearcad.ui.camera{ target = {20, 15, 5}, pitch = 0.6 }
-bearcad.ui.zoom_fit()                   -- frame the whole document (bodies + sketch geometry)
+bearcad.ui.zoom_fit()                   -- frame selection or document (glides like Home)
+bearcad.ui.animate_zoom_to_fit(false)   -- off = snap zoom_fit instantly
 bearcad.ui.snapping(false)              -- snapping while drawing and placing shapes
 ```
 
