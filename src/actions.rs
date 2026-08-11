@@ -2263,6 +2263,10 @@ pub enum Action {
     /// (including a repeated instance's face) and adds that profile to the in-progress
     /// revolve — same as Extrude's body-face push/pull, for the revolve profile set.
     RevolveBodyFace { face_id: FaceId },
+    /// Sweep a bare 3D body face as a profile (#1237): builds an implicit sketch on
+    /// `face_id` (primitive faces, extrude caps/sides, revolve flats, repeated faces)
+    /// and adds that profile to the in-progress sweep — same path as [`Action::RevolveBodyFace`].
+    SweepBodyFace { face_id: FaceId },
     /// Scripted push/pull of a bare body face committed in one step (#130): builds the
     /// implicit sketch mirroring `face_id`, then creates the extrusion with `distance`,
     /// optional snap `target`, and body attachment — the declarative equivalent of clicking
@@ -10696,6 +10700,43 @@ impl AppState {
                     cr.faces.len(),
                     if cr.axis.is_none() {
                         " — click an axis line"
+                    } else {
+                        ""
+                    }
+                );
+                ActionResult::Ok
+            }
+            Action::SweepBodyFace { face_id } => {
+                // Implicit sketch on the body face (#1237), then feed that profile into the
+                // in-progress sweep — same path as revolve/extrude body-face picking.
+                let face = match create_implicit_extrude_sketch(&mut self.doc, face_id) {
+                    Ok(face) => face,
+                    Err(e) => {
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                };
+                let Some(sketch) = extrude_face_sketch(&self.doc, &face) else {
+                    return ActionResult::Err("Face not found".to_string());
+                };
+                let cf = self
+                    .creating_sweep
+                    .get_or_insert_with(CreatingSweep::default);
+                if cf.sketch.is_some() && cf.sketch != Some(sketch) {
+                    self.status = "Sweep faces must share one sketch".to_string();
+                    return ActionResult::Err(self.status.clone());
+                }
+                cf.sketch = Some(sketch);
+                if let Some(pos) = cf.faces.iter().position(|f| *f == face) {
+                    cf.faces.remove(pos);
+                } else {
+                    cf.faces.push(face);
+                }
+                self.status = format!(
+                    "Sweep: {} face(s){}",
+                    cf.faces.len(),
+                    if cf.path.is_empty() {
+                        " — click a path line"
                     } else {
                         ""
                     }
@@ -26791,6 +26832,105 @@ mod tests {
             .expect("revolve should be in progress");
         assert_eq!(cr.faces.len(), 1);
         assert!(matches!(cr.faces[0], ExtrudeFace::Polygon(_)));
+    }
+
+    /// #1237: a Shape-tool cuboid face is a valid Sweep profile — `SweepBodyFace` builds
+    /// an implicit sketch on `PrimitiveFace` (same path as revolve/extrude).
+    #[test]
+    fn sweep_body_face_accepts_a_primitive_cuboid_face() {
+        use crate::model::{Body, BodySource, Primitive, PrimitiveFace, PrimitiveKind};
+        let mut state = AppState::default();
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.width = "20".to_string();
+        shape.depth = "20".to_string();
+        shape.height = "10".to_string();
+        let pi = state.doc.primitives.insert(shape);
+        state.doc.bodies.insert(Body {
+            source: BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let face_id = FaceId::PrimitiveFace {
+            primitive: pi,
+            face: PrimitiveFace::CuboidTop,
+        };
+        let sketches_before = state.doc.sketches.len();
+        let result = state.apply(Action::SweepBodyFace { face_id });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert_eq!(
+            state.doc.sketches.len(),
+            sketches_before + 1,
+            "implicit sketch on the primitive face"
+        );
+        let cf = state
+            .creating_sweep
+            .as_ref()
+            .expect("sweep should be in progress");
+        assert_eq!(cf.faces.len(), 1);
+        assert!(matches!(cf.faces[0], ExtrudeFace::Polygon(_)));
+        // The profile resolves to a closed world loop so the sweep mesher can use it.
+        assert!(
+            crate::extrude::face_profile_world(&state.doc, &cf.faces[0]).is_some(),
+            "implicit body-face profile must resolve"
+        );
+    }
+
+    /// #1237: body-face profile + a path that leaves the face plane commits a solid sweep.
+    #[test]
+    fn sweep_body_face_commits_with_path() {
+        use crate::model::{Body, BodySource, Primitive, PrimitiveFace, PrimitiveKind};
+        let mut state = AppState::default();
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.width = "20".to_string();
+        shape.depth = "20".to_string();
+        shape.height = "10".to_string();
+        let pi = state.doc.primitives.insert(shape);
+        state.doc.bodies.insert(Body {
+            source: BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let face_id = FaceId::PrimitiveFace {
+            primitive: pi,
+            face: PrimitiveFace::CuboidTop,
+        };
+        assert!(matches!(
+            state.apply(Action::SweepBodyFace { face_id }),
+            ActionResult::Ok
+        ));
+        // Path leaves the top face (+Z) — a vertical plane with a line along +Z.
+        state.doc.construction_planes.insert(crate::model::ConstructionPlane {
+            origin: glam::Vec3::ZERO,
+            normal: glam::Vec3::Y,
+            u_axis: glam::Vec3::X,
+            v_axis: glam::Vec3::Z,
+            parent: crate::model::ConstructionPlaneParent::Root,
+            definition: crate::face::default_xy_plane_definition(),
+            repeat_instance: None,
+            name: None,
+            extent: crate::model::PlaneExtent::default(),
+        });
+        let path_sketch = state
+            .doc
+            .add_sketch(FaceId::ConstructionPlane(
+                state.doc.construction_planes.keys().last().unwrap(),
+            ));
+        // Top face of the 10mm-high cuboid sits at z=10; path from there up to z=40.
+        state
+            .doc
+            .lines
+            .insert(crate::model::Line::from_local_endpoints(path_sketch, 0.0, 10.0, 0.0, 40.0));
+        let li = state.doc.lines.keys().last().expect("path line");
+        let cf = state.creating_sweep.as_mut().expect("sweep in progress");
+        cf.path.push(li);
+        assert!(matches!(state.apply(Action::CommitSweep), ActionResult::Ok));
+        assert_eq!(state.doc.sweeps.len(), 1);
+        let body = state.doc.bodies.keys().last().expect("sweep body");
+        let mesh = crate::extrude::body_solid_mesh(&state.doc, body)
+            .expect("sweep body should mesh");
+        assert!(!mesh.triangles.is_empty());
     }
 
     /// #1119: Extrude on a primitive face also starts (same implicit-sketch path as revolve).

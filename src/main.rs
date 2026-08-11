@@ -7933,7 +7933,8 @@ impl App {
 
     /// Sweep tool (#sweep): click coplanar profile faces, then click sketch
     /// lines to build the path; in Cut mode clicking a body toggles it into the cut set.
-    /// Enter commits.
+    /// Enter commits. Bare body faces (primitive, extrude cap/side, revolve flat) are
+    /// valid profiles via an implicit sketch (#1237), matching revolve/extrude.
     #[allow(clippy::too_many_arguments)]
     fn handle_sweep_tool(
         &mut self,
@@ -7995,6 +7996,13 @@ impl App {
                 cf.faces.len(),
                 if cf.path.is_empty() { " — click a path line" } else { "" }
             );
+            return;
+        }
+        // A bare body face (#1237): same as revolve — implicit sketch, then profile set.
+        if let Some(face_id) =
+            pick_extrude_body_face(pp, project, &self.state.doc, self.state.cam.eye())
+        {
+            self.state.apply(Action::SweepBodyFace { face_id });
             return;
         }
         // 2) path lines / 3) cut bodies

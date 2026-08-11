@@ -2151,7 +2151,9 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   `at` defaults to the world origin and `normal` to +Z.
 - **Sweep** *(implemented)* — sweep one or more coplanar closed profiles
   along a path of sketch lines into a solid. The **Sweep** toolbar tool collects
-  profile faces by clicking (same face picking as Extrude), then path lines: any lines —
+  profile faces by clicking (same face picking as Extrude: sketch profiles **and** bare
+  flat body faces — primitive caps/sides, extrude caps/sides, revolve flats — via an
+  implicit boundary sketch, #1237), then path lines: any lines —
   straight or bezier-curved, plain/construction/projected, in any sketch — that chain
   end-to-end and cross the profile plane (an in-plane line is refused with a status hint).
   Pick order doesn't matter: segments are chained tip-to-tail at evaluation and the chain

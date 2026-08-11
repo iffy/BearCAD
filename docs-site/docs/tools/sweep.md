@@ -21,7 +21,8 @@ rails, handles, curved channels.
 
 ## How to use it
 
-1. Pick the **Sweep** tool and click one or more profile faces (same sketch plane).
+1. Pick the **Sweep** tool and click one or more profile faces (same sketch plane) —
+   a closed sketch face, or any flat body face (a cuboid side, an extrusion cap, …).
 2. Click the **path**: one or more lines — straight or curved, in any sketch — that
    connect end-to-end and cross the profile's plane. Click a picked line again to remove
    it; pick order doesn't matter, the segments chain tip-to-tail.
