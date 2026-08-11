@@ -433,7 +433,7 @@ impl IconId {
             Self::TaperDistance => "Taper by distance",
             Self::TaperAngle => "Taper by angle",
             Self::RevolveAngle => "Angle in degrees",
-            Self::RevolveRevolutions => "Revolutions (turns)",
+            Self::RevolveRevolutions => "Revs (turns)",
             Self::RepeatAlongPath => "Along the path",
             Self::RepeatAroundAxis => "Around the path",
             Self::Filter => "Filter",

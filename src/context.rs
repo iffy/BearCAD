@@ -179,7 +179,7 @@ pub struct RevolveControl {
     pub axis_focused: bool,
     /// Angle field text (degrees) or revolutions, matching `angle_is_revolutions` (#1242).
     pub angle_text: String,
-    /// When true the angle field is **Revolutions**; when false it's **Angle** (#1242).
+    /// When true the angle field is **Revs**; when false it's **Angle** (#1242).
     pub angle_is_revolutions: bool,
     /// Gap/Offset field text (#1242).
     pub gap_text: String,
@@ -4062,9 +4062,9 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         ),
         (Some(Tool::Revolve), "Angle") => Some(
             "How far the profile turns, in degrees. Click the icon (or label) to switch to \
-             Revolutions.",
+             Revs.",
         ),
-        (Some(Tool::Revolve), "Revolutions") => Some(
+        (Some(Tool::Revolve), "Revs") => Some(
             "How many full turns the profile makes (decimals allowed). Click the icon (or \
              label) to switch back to Angle.",
         ),
@@ -5163,7 +5163,7 @@ pub fn show_pane(
         {
             const FIELD_W: f32 = 110.0;
             let angle_label = if control.angle_is_revolutions {
-                "Revolutions"
+                "Revs"
             } else {
                 "Angle"
             };
@@ -5178,7 +5178,7 @@ pub fn show_pane(
                     egui::Layout::left_to_right(egui::Align::Center),
                     |ui| {
                         ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
-                        const TIP: &str = "Click to toggle between Angle and Revolutions";
+                        const TIP: &str = "Click to toggle between Angle and Revs";
                         if crate::icons::icon_button_hover_gold(ui, angle_icon, TIP).clicked()
                             || clickable_label(ui, angle_label, TIP).clicked()
                         {

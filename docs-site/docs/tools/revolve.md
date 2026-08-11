@@ -23,7 +23,7 @@ Revolve spins a flat profile around an axis into a solid — rings, shafts, vase
 1. Pick the **Revolve** tool and click one or more profile faces (same sketch plane).
 2. Click the **axis**: any line in the sketch — construction and projected lines work —
    or one of the origin's X/Y/Z axes.
-3. Set the **Angle** (or click the icon / label for **Revolutions** — decimals and
+3. Set the **Angle** (or click the icon / label for **Revs** — decimals and
    negatives allowed). Drag the round handle around the arc, or type. Defaults to
    `360°` / `1`.
 4. Optional **Offset** (coil pitch): how far the start face advances along the axis after
