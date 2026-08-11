@@ -3140,11 +3140,12 @@ fn occt_slice_pieces(doc: &Document, op_index: crate::model::SliceOpKey, target_
 }
 
 /// Preview meshes of the laser cutting surfaces for in-progress slice cutters (#1142/#1144):
-/// each continuous laser path becomes a ruled strip extruded along the face normal
-/// (into and through the body), **clipped to the targets' AABB** so the cutter does not
-/// wing past the solid. With `extend_infinite` free ends ray-cast to the body bounds
-/// along the end tangent only (#1145/#1147) — never overshot and axis-clamped, which
-/// dragged ends sideways along the AABB faces.
+/// each continuous laser path becomes a **prismatic** ruled strip extruded along the face
+/// normal — front and back edges are parallel translates of the path (#1217), not a
+/// per-point AABB clip that shears into a trapezoid/triangle when the face is tilted.
+/// Laterally, free ends with `extend_infinite` ray-cast to the body AABB along the end
+/// tangent only (#1145/#1147). Depth along `n` is one shared interval for the whole path
+/// so the laser line on the cut face stays parallel with the cut line on the back.
 pub fn slice_laser_preview_meshes(
     doc: &Document,
     cutters: &[crate::model::SliceCutter],
@@ -3197,15 +3198,14 @@ pub fn slice_laser_preview_meshes(
         if path.len() < 2 || n == Vec3::ZERO {
             continue;
         }
-        // Ruled strip: each path point's laser line along ±n is intersected with the
-        // body AABB. Path points themselves are not axis-clamped (#1147) — free-end
-        // extension already landed on the box via ray-cast, and interior points lie
-        // on the face inside the solid.
-        let mut clipped: Vec<(Vec3, Vec3)> = Vec::with_capacity(path.len());
+        // One shared depth along n for every path point (#1217). Per-point AABB
+        // intervals shear the strip when the face normal is not axis-aligned (front
+        // and back stop being parallel) and free ends that land on an AABB corner
+        // collapse a ruling to a point — the goofy triangle. Pick the thickest
+        // non-degenerate hit among path samples so the slab still covers the body.
+        let mut best: Option<(f32, f32)> = None;
+        let mut best_len = 0.0_f32;
         for &p in &path {
-            // If a free-end extension landed slightly outside (numerical), pull it onto
-            // the box along n only by using the closest point for the laser ray origin
-            // when the ray still hits; skip points whose laser misses the box entirely.
             let origin = if p.x >= bmin.x
                 && p.x <= bmax.x
                 && p.y >= bmin.y
@@ -3215,27 +3215,36 @@ pub fn slice_laser_preview_meshes(
             {
                 p
             } else {
-                // Outside: project onto AABB (axis clamp is OK only as a last resort for
-                // points already outside after ray-cast — should be rare / on a face).
                 Vec3::new(
                     p.x.clamp(bmin.x, bmax.x),
                     p.y.clamp(bmin.y, bmax.y),
                     p.z.clamp(bmin.z, bmax.z),
                 )
             };
-            let Some((t0, t1)) = line_aabb_interval(origin, n, bmin, bmax) else {
-                continue;
-            };
-            clipped.push((origin + n * t0, origin + n * t1));
+            if let Some((t0, t1)) = line_aabb_interval(origin, n, bmin, bmax) {
+                let len = (t1 - t0).abs();
+                if len > best_len {
+                    best_len = len;
+                    best = Some((t0, t1));
+                }
+            }
         }
-        if clipped.len() < 2 {
+        let Some((t0, t1)) = best else {
             continue;
+        };
+        if best_len < 1e-6 {
+            continue;
+        }
+        // Prismatic strip: same (t0, t1) at every path point. Path points stay where
+        // free-end extension left them (#1147) — not axis-clamped per vertex.
+        let mut clipped: Vec<(Vec3, Vec3)> = Vec::with_capacity(path.len());
+        for &p in &path {
+            clipped.push((p + n * t0, p + n * t1));
         }
         let mut triangles = Vec::with_capacity((clipped.len() - 1) * 2);
         for w in clipped.windows(2) {
             let (a0, a1) = w[0];
             let (b0, b1) = w[1];
-            // Degenerate after clamp (both ends collapsed to the same boundary point).
             if (a0 - b0).length_squared() < 1e-12 && (a1 - b1).length_squared() < 1e-12 {
                 continue;
             }

@@ -25720,6 +25720,123 @@ mod tests {
         }
     }
 
+    /// #1217: infinite laser preview is a rectangular ruled strip — front and back edges
+    /// stay parallel (same direction as the path), not a sheared/collapsed triangle when
+    /// the sketch face is tilted relative to the body AABB.
+    #[test]
+    fn slice_laser_preview_infinite_is_square_with_parallel_edges() {
+        let bytes = include_bytes!("../tests/fixtures/issue_1217.json");
+        let mut state = AppState::default();
+        state.doc = crate::storage::from_json_bytes(bytes).expect("load issue_1217");
+        state.doc.bump_mesh_rev();
+        let sk1 = crate::model::sketch_key_for_slot(1);
+        // Report used two straight cutters on the extrude side face (a V peak).
+        let cutters: Vec<_> = state
+            .doc
+            .lines
+            .iter()
+            .filter(|(_, l)| l.sketch == sk1 && !l.construction && l.bezier.is_none())
+            .take(2)
+            .map(|(k, _)| crate::model::SliceCutter::Line { line: k })
+            .collect();
+        assert_eq!(cutters.len(), 2);
+        let body_key = crate::model::body_key_for_slot(2);
+        let meshes = crate::extrude::slice_laser_preview_meshes(
+            &state.doc,
+            &cutters,
+            true,
+            &[body_key],
+        );
+        assert_eq!(meshes.len(), 1, "one continuous laser surface");
+        let mesh = &meshes[0];
+        assert!(
+            mesh.triangles.len() >= 2,
+            "at least one ruled quad (two tris), got {}",
+            mesh.triangles.len()
+        );
+
+        // Rebuild the path the preview used (infinite free-end extension) and measure
+        // each ruling (front→back along the face normal). Every ruling must be a
+        // non-zero translation of the same vector so front ∥ back.
+        // Infer rulings from consecutive triangle pairs that share the strip structure
+        // [a0,b0,b1] + [a0,b1,a1] → ruling at a is a1-a0, at b is b1-b0.
+        let mut rulings: Vec<glam::Vec3> = Vec::new();
+        let tris = &mesh.triangles;
+        let mut i = 0;
+        while i + 1 < tris.len() {
+            let t0 = tris[i];
+            let t1 = tris[i + 1];
+            // Match the strip order from slice_laser_preview_meshes.
+            let a0 = t0[0];
+            let b0 = t0[1];
+            let b1 = t0[2];
+            let a1 = t1[2];
+            // Sanity: second tri should be [a0, b1, a1].
+            assert!(
+                (t1[0] - a0).length() < 1e-3 && (t1[1] - b1).length() < 1e-3,
+                "preview triangulation is not the expected ruled strip at tri {i}"
+            );
+            let r_a = a1 - a0;
+            let r_b = b1 - b0;
+            rulings.push(r_a);
+            rulings.push(r_b);
+            // No collapsed end: ruling must have real length (the goofy triangle).
+            assert!(
+                r_a.length() > 1.0,
+                "ruling collapsed at segment start: |r|={}",
+                r_a.length()
+            );
+            assert!(
+                r_b.length() > 1.0,
+                "ruling collapsed at segment end: |r|={}",
+                r_b.length()
+            );
+            // Front and back edges of this quad must be parallel (and same sense).
+            let front = b0 - a0;
+            let back = b1 - a1;
+            if front.length() > 1e-3 && back.length() > 1e-3 {
+                let f = front.normalize();
+                let b = back.normalize();
+                let parallel = f.dot(b).abs() > 0.999;
+                assert!(
+                    parallel,
+                    "front/back edges not parallel: front={front:?} back={back:?} dot={}",
+                    f.dot(b)
+                );
+            }
+            // Both rulings of the quad must match (parallelogram, not trapezoid/triangle).
+            let ra = r_a.normalize();
+            let rb = r_b.normalize();
+            assert!(
+                ra.dot(rb) > 0.999,
+                "rulings of one quad not parallel: r_a={r_a:?} r_b={r_b:?}"
+            );
+            assert!(
+                (r_a.length() - r_b.length()).abs() < 1.0,
+                "ruling lengths differ across a quad (sheared strip): {} vs {}",
+                r_a.length(),
+                r_b.length()
+            );
+            i += 2;
+        }
+        // All rulings across the whole path must share one direction and length —
+        // a prismatic laser slab, not a fan.
+        assert!(!rulings.is_empty());
+        let r0 = rulings[0];
+        for (k, r) in rulings.iter().enumerate().skip(1) {
+            assert!(
+                r.normalize().dot(r0.normalize()) > 0.999,
+                "ruling {k} not parallel to ruling 0: {r:?} vs {r0:?}"
+            );
+            assert!(
+                (r.length() - r0.length()).abs() < 1.0,
+                "ruling {k} length {} ≠ ruling 0 length {}",
+                r.length(),
+                r0.length()
+            );
+        }
+    }
+
     /// #1148: the committed cut surface follows the defining laser path.
     #[test]
     fn slice_zigzag_cut_surface_follows_the_path() {
