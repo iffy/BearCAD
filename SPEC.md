@@ -2223,9 +2223,12 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   `BRepPrimAPI_MakeRevol` (full revolutions via the no-angle constructor — the angle
   constructor normalizes mod 2π and would build a sliver from a float 2π) with symmetric
   sweeps pre-rotating the profile; non-zero `pitch_mm` (axial travel per full turn, #1242)
-  lofts intermediate helical sections via ThruSections for springs. The no-kernel fallback
-  lathes rotated (and axially advanced) profile rings with sweep-end caps, oriented against
-  the rotated profile centroid (correct for washer profiles that don't contain the axis).
+  pipes the profile along a smooth B-spline helix with fixed BiNormal = revolve axis
+  (`BRepOffsetAPI_MakePipeShell`, #1249) so springs stay true curved BREP for STEP and
+  adaptive tessellation for the viewport (not a density-capped lathe). The no-kernel
+  fallback lathes rotated (and axially advanced) profile rings with sweep-end caps,
+  oriented against the rotated profile centroid (correct for washer profiles that don't
+  contain the axis).
   The context pane's **Angle** field toggles to **Revolutions** (turns, decimals allowed;
   both signed) via an icon+label toggle (#1246: angled lines for degrees, `#` for turns),
   and a **Gap/Offset** field (same icons as Repeat) sets the helical pitch — Offset is

@@ -850,8 +850,9 @@ mod tests {
         assert!(common < 1e-6, "disjoint solids share no volume, got {common}");
     }
 
-    /// #1248: multi-turn helical revolve (ThruSections with pitch) must tessellate
-    /// leanly — ruled strips + section cap, not a dense smooth loft of the whole coil.
+    /// #1248/#1249: multi-turn helical revolve must tessellate leanly enough for
+    /// interactive orbit while still being a *smooth* BREP (helix pipe), not a
+    /// coarse ruled-strip loft that exports faceted STEP.
     #[test]
     fn multi_turn_helical_revolve_tessellates_leanly() {
         // Rectangular profile offset from the X axis (matches a spring coil sketch).
@@ -872,9 +873,40 @@ mod tests {
         assert!(vol > 1.0, "spring must have solid volume, got {vol}");
         let tris = sh.tessellate(0.05);
         assert!(
-            !tris.is_empty() && tris.len() < 20_000,
+            !tris.is_empty() && tris.len() < 40_000,
             "multi-turn helix must not explode under default deflection, got {} tris",
             tris.len()
         );
+    }
+
+    /// #1249: helical revolve BREP must be curved (refines under tighter deflection),
+    /// not planar ruled strips whose triangle count is deflection-invariant.
+    #[test]
+    fn helical_revolve_brep_has_curved_surfaces() {
+        let profile = [
+            Vec3::new(0.0, 20.0, 0.0),
+            Vec3::new(5.0, 20.0, 0.0),
+            Vec3::new(5.0, 24.0, 0.0),
+            Vec3::new(0.0, 24.0, 0.0),
+        ];
+        // Compact 2-turn spring so the adaptive deflection floor stays tiny.
+        let sh = Shape::revolve(
+            &profile,
+            Vec3::ZERO,
+            Vec3::Y,
+            2.0 * std::f64::consts::TAU,
+            false,
+            10.0,
+        )
+        .expect("helical revolve");
+        let coarse = sh.tessellate(2.0).len();
+        let fine = sh.tessellate(0.05).len();
+        assert!(
+            fine > coarse && fine as f64 > (coarse as f64) * 1.4,
+            "smooth helical surfaces must refine under tighter deflection \
+             (coarse={coarse}, fine={fine}); planar ruled strips would not"
+        );
+        let vol = sh.volume().expect("volume");
+        assert!(vol > 1.0, "spring volume, got {vol}");
     }
 }

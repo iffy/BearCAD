@@ -189,57 +189,96 @@ extern "C" BearcadShape* bearcad_shape_revolve(const double* xyz, unsigned long 
             return new BearcadShape{revol.Shape()};
         }
 
-        // Helical revolve (#1242): loft intermediate wires of the profile rotated and
-        // translated along the axis. pitch is axial travel per full 2π turn.
+        // Helical revolve (#1242/#1249): screw the profile along a smooth helix spine
+        // (pipe shell with fixed BiNormal = revolve axis). That matches the lathe
+        // semantics of "rotate about the axis + advance pitch per turn" while producing
+        // true curved BREP for STEP and adaptive tessellation for the viewport.
         //
-        // Ruled strips (#1248): a smooth ThruSections loft builds high-order surfaces
-        // between every pair of sections; OCCT then tessellates those at linear
-        // deflection into O(turns × radius / deflection) triangles, which made a
-        // 20-turn spring ~130k tris and laggy to orbit. Ruled faces between adjacent
-        // sections tessellate to two triangles each — density tracks section count,
-        // not the chord error of a huge spiral surface.
+        // #1248's ruled ThruSections shortcut kept pan/orbit interactive by making
+        // planar strips — but the solid looked faceted and STEP exported faceted
+        // surfaces. A pipe along a B-spline helix keeps curved faces; the adaptive
+        // deflection floor in bearcad_shape_tessellate still bounds triangle count.
         const double start =
             (symmetric != 0) ? -signed_angle / 2.0 : 0.0;
         const double end =
             (symmetric != 0) ? signed_angle / 2.0 : signed_angle;
-        // ~12 sections/turn is smooth enough for coils; hard-cap total so multi-turn
-        // springs stay interactive (viewport + face/edge analysis scale with tris).
         const double turns = std::fabs(signed_angle) / (2.0 * M_PI);
-        int n_sections = static_cast<int>(std::ceil(turns * 12.0));
-        if (n_sections < 8) {
-            n_sections = 8;
-        }
-        if (n_sections > 128) {
-            n_sections = 128;
-        }
 
-        BRepOffsetAPI_ThruSections gen(/*isSolid=*/true, /*ruled=*/true);
-        for (int s = 0; s <= n_sections; ++s) {
-            const double t = static_cast<double>(s) / static_cast<double>(n_sections);
-            const double a = start + t * (end - start);
+        // Profile centroid — attachment point whose screw path is the spine.
+        gp_XYZ sum(0.0, 0.0, 0.0);
+        for (unsigned long i = 0; i < n_pts; ++i) {
+            sum.SetX(sum.X() + xyz[3 * i]);
+            sum.SetY(sum.Y() + xyz[3 * i + 1]);
+            sum.SetZ(sum.Z() + xyz[3 * i + 2]);
+        }
+        const double inv = 1.0 / static_cast<double>(n_pts);
+        gp_Pnt centroid(sum.X() * inv, sum.Y() * inv, sum.Z() * inv);
+
+        auto screw_trsf = [&](double a) -> gp_Trsf {
             const double axial = pitch * (a / (2.0 * M_PI));
-            gp_Trsf tr;
-            tr.SetRotation(axis, a);
+            gp_Trsf tr_rot;
+            tr_rot.SetRotation(axis, a);
             gp_Trsf tr_axial;
             tr_axial.SetTranslation(gp_Vec(dir) * axial);
-            tr = tr_axial * tr;
-            BRepBuilderAPI_MakePolygon poly;
-            for (unsigned long i = 0; i < n_pts; ++i) {
-                gp_Pnt p(xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]);
-                p.Transform(tr);
-                poly.Add(p);
-            }
-            poly.Close();
-            if (!poly.IsDone()) {
-                return nullptr;
-            }
-            gen.AddWire(poly.Wire());
+            return tr_axial * tr_rot;
+        };
+
+        // Dense helix samples for a smooth B-spline spine (~24/turn, hard-capped).
+        int n_spine = static_cast<int>(std::ceil(turns * 24.0));
+        if (n_spine < 16) {
+            n_spine = 16;
         }
-        gen.Build();
-        if (!gen.IsDone()) {
+        if (n_spine > 512) {
+            n_spine = 512;
+        }
+        NCollection_Array1<gp_Pnt> spine_pts(1, n_spine + 1);
+        for (int s = 0; s <= n_spine; ++s) {
+            const double t = static_cast<double>(s) / static_cast<double>(n_spine);
+            const double a = start + t * (end - start);
+            spine_pts.SetValue(s + 1, centroid.Transformed(screw_trsf(a)));
+        }
+        GeomAPI_PointsToBSpline fit(spine_pts);
+        if (!fit.IsDone()) {
             return nullptr;
         }
-        return new BearcadShape{gen.Shape()};
+        BRepBuilderAPI_MakeEdge spine_edge(fit.Curve());
+        if (!spine_edge.IsDone()) {
+            return nullptr;
+        }
+        BRepBuilderAPI_MakeWire spine_wire(spine_edge.Edge());
+        if (!spine_wire.IsDone()) {
+            return nullptr;
+        }
+
+        // Profile wire at the start pose of the sweep (screw by `start`).
+        const gp_Trsf pre = screw_trsf(start);
+        BRepBuilderAPI_MakePolygon poly;
+        for (unsigned long i = 0; i < n_pts; ++i) {
+            gp_Pnt p(xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]);
+            p.Transform(pre);
+            poly.Add(p);
+        }
+        poly.Close();
+        if (!poly.IsDone()) {
+            return nullptr;
+        }
+
+        BRepOffsetAPI_MakePipeShell pipe(spine_wire.Wire());
+        // Fixed BiNormal = revolve axis keeps the profile parallel to its start
+        // orientation (screw motion), not Frenet-twisted along the helix tangent.
+        pipe.SetMode(dir);
+        pipe.SetTransitionMode(BRepBuilderAPI_RoundCorner);
+        // WithContact=false: profile already sits at the spine start; WithCorrection=
+        // false: don't re-orient onto the tangent (BiNormal mode owns orientation).
+        pipe.Add(poly.Wire(), /*WithContact=*/false, /*WithCorrection=*/false);
+        pipe.Build();
+        if (!pipe.IsDone()) {
+            return nullptr;
+        }
+        if (!pipe.MakeSolid()) {
+            return nullptr;
+        }
+        return new BearcadShape{pipe.Shape()};
     } catch (const Standard_Failure&) {
         return nullptr;
     } catch (...) {

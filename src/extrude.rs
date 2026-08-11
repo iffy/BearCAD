@@ -4131,16 +4131,17 @@ pub fn revolve_side_annulus(
     Some((ra.min(rb), ra.max(rb)))
 }
 
-/// Angular steps for a revolve lathe mesh (#1242/#1248).
+/// Angular steps for the hand-rolled revolve lathe mesh (#1242/#1249) — live ghost
+/// preview and no-kernel fallback only. The committed viewport uses the kernel's
+/// smooth helix BREP tessellation instead.
 ///
 /// Pure revolve keeps the usual [`CIRCLE_SEGMENTS`] density for one turn. Helical
-/// multi-turn springs scale at 12 facets/turn and hard-cap total steps so a long
-/// coil stays interactive — pan/orbit walk every triangle every frame.
+/// multi-turn springs scale at a quarter of that per turn with a hard cap so the
+/// ghost stays light while dragging angle/pitch.
 pub fn revolve_mesh_steps(angle_deg: f32, pitch_mm: f32) -> usize {
     if pitch_mm.abs() > 1e-6 {
-        // Match the kernel's helical ThruSections density (#1248).
-        const PER_TURN: f32 = 12.0;
-        const MAX_STEPS: usize = 128;
+        const PER_TURN: f32 = 24.0;
+        const MAX_STEPS: usize = 256;
         let steps = ((PER_TURN * angle_deg.abs() / 360.0).ceil() as usize).max(8);
         steps.min(MAX_STEPS)
     } else {
@@ -6184,20 +6185,10 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: crate::model::BodyKey) -
             return (!tris.is_empty()).then_some(SolidMesh { triangles: tris });
         }
     }
-    // Pure helical revolve (#1248): use the density-capped lathe mesh for the viewport
-    // rather than OCCT ThruSections + tessellate. A multi-turn spring's smooth loft was
-    // producing ~100k+ triangles and lagging pan/orbit; the lathe matches the preview
-    // and stays O(sections × profile). STEP export and fused/cut paths still go through
-    // `occt_body_shape` below / in their own branches.
-    if let crate::model::BodySource::Revolve(ri) = body.source {
-        if let Some(rev) = doc.revolutions.get(ri) {
-            if rev.pitch_mm.abs() > 1e-6 {
-                if let Some(mesh) = revolve_mesh(doc, rev) {
-                    return Some(mesh);
-                }
-            }
-        }
-    }
+    // Helical revolve (#1249): do *not* shortcut to the density-capped lathe mesh.
+    // The kernel builds a smooth helix-pipe BREP; tessellate that (adaptive deflection
+    // floor keeps multi-turn coils interactive). STEP export and the viewport then
+    // share the same curved solid — like cylinders/spheres, not a permanent low-poly.
     // Fuse the body's added extrusions into one real solid via OCCT and subtract its cut
     // extrusions (#86/#35) when they're all kernel-representable; otherwise fall back to
     // per-extrusion meshing below. The hand-rolled fallback cannot perform a solid
@@ -10974,8 +10965,9 @@ mod tests {
         );
     }
 
-    /// #1248: multi-turn helical revolve (fixture spring, 7200°) stays density-capped so
-    /// pan/orbit do not pay for a 100k-triangle OCCT tessellation every frame.
+    /// #1248/#1249: multi-turn helical revolve (fixture spring, 7200°) stays
+    /// interactive (tessellation not 100k+) while the viewport mesh comes from
+    /// the smooth OCCT helix BREP — not the density-capped lathe shortcut.
     #[test]
     fn issue_1248_helical_revolve_stays_density_capped() {
         let bytes = include_bytes!("../tests/fixtures/issue_1248.json");
@@ -10988,24 +10980,27 @@ mod tests {
             "fixture should be a multi-turn helical spring"
         );
 
-        // Lathe step budget is independent of OCCT and must hard-cap multi-turn density.
-        let steps = revolve_mesh_steps(rev.angle_deg, rev.pitch_mm);
-        assert!(
-            steps <= 128,
-            "helical revolve must cap angular steps, got {steps}"
-        );
         assert_eq!(
             revolve_mesh_steps(360.0, 0.0),
             CIRCLE_SEGMENTS,
             "pure revolve keeps CIRCLE_SEGMENTS density"
         );
 
+        // Viewport path must use the kernel solid (smooth helix pipe), not the
+        // hand-rolled lathe that #1248 temporarily preferred for speed (#1249).
+        let shape = occt_body_shape(&doc, bi).expect("kernel spring BREP");
+        let occt_tris = shape.tessellate(OCCT_DEFLECTION as f64);
         let mesh = body_solid_mesh_uncached_pub(&doc, bi).expect("mesh");
         let n_tris = mesh.triangles.len();
-        // 128 steps × 4 profile edges × 2 tris + caps ≪ tens of thousands.
+        assert_eq!(
+            n_tris,
+            occt_tris.len(),
+            "viewport mesh must be the OCCT tessellation of the smooth spring BREP, \
+             not the density-capped lathe (lathe would differ from kernel tri count)"
+        );
         assert!(
-            n_tris < 8_000,
-            "multi-turn spring viewport mesh must stay lean, got {n_tris} tris"
+            n_tris < 40_000,
+            "multi-turn spring viewport mesh must stay interactive, got {n_tris} tris"
         );
         // Geometry still spans ~20 turns of pitch along the axis.
         let (min, max) = mesh.bounds().expect("bounds");
@@ -11023,6 +11018,52 @@ mod tests {
             let hit = body_solid_mesh(&doc, bi).expect("hit");
             assert_eq!(hit.triangles.len(), n_tris);
         }
+    }
+
+    /// #1249: a pure helical revolve body's viewport mesh is the adaptive
+    /// tessellation of a curved BREP — denser than the coarse lathe, and STEP
+    /// export goes through real kernel BREP (not FACETED_BREP of the lathe).
+    #[test]
+    fn issue_1249_helical_revolve_viewport_uses_smooth_brep() {
+        let (mut doc, sketch) = sketch_doc();
+        // Profile at x 10..15, y 0..4 — small coil wire.
+        let profile = rect_profile(&mut doc, sketch, 10.0, 0.0, 5.0, 4.0);
+        let mut rev = test_revolution(
+            sketch,
+            vec![profile],
+            1080.0, // 3 turns
+            false,
+            crate::model::RevolveMode::NewBody,
+        );
+        rev.pitch_mm = 10.0;
+        let ri = doc.revolutions.insert(rev.clone());
+        let bi = doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Revolve(ri),
+            name: None,
+            material: None,
+            shadow: false,
+        });
+        doc.bump_mesh_rev();
+
+        let lathe = revolve_mesh(&doc, &rev).expect("lathe");
+        let mesh = body_solid_mesh_uncached_pub(&doc, bi).expect("body mesh");
+        // Smooth BREP tessellation is not the fixed-step lathe (different topology).
+        assert_ne!(
+            mesh.triangles.len(),
+            lathe.triangles.len(),
+            "viewport must not use the density-capped lathe for helical revolves"
+        );
+        // Kernel shape is what STEP export writes as real BREP.
+        let shape = occt_body_shape(&doc, bi).expect("STEP path BREP");
+        let vol = shape.volume().expect("volume");
+        assert!(vol > 1.0, "spring BREP volume, got {vol}");
+        let (min, max) = mesh.bounds().expect("bounds");
+        // profile height 4 + 3 × pitch 10 = 34
+        let span = max.y - min.y;
+        assert!(
+            (span - 34.0).abs() < 3.0,
+            "3-turn spring axial span ~34, got {span}"
+        );
     }
 
 
