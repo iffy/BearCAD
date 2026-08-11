@@ -239,6 +239,12 @@ fn extrusion_mesh_tessellated(
     extrusion: &Extrusion,
     distance: f32,
 ) -> Option<SolidMesh> {
+    // #1268: symmetric + taper must keep the sketch-plane size at mid. A single base→top loft
+    // with both ends equally offset is a prism of the *tapered* size. Split into two
+    // non-symmetric half-extrusions (sketch→+d/2 and sketch→−d/2) and merge the triangles.
+    if let Some(mesh) = extrusion_mesh_tessellated_symmetric_taper(doc, extrusion, distance) {
+        return Some(mesh);
+    }
     let mut mesh = SolidMesh::default();
     for (face_index, face) in extrusion.faces.iter().enumerate() {
         if let Some((profile, top, _normal)) = extrusion_profile_rings(doc, extrusion, face, distance)
@@ -270,6 +276,33 @@ fn extrusion_mesh_tessellated(
                 extrude_profile_with_treatments(&profile, &top, &treatments, &mut mesh.triangles);
             }
         }
+    }
+    (!mesh.is_empty()).then_some(mesh)
+}
+
+/// #1268: hand-rolled mesh for a symmetric tapered extrude — two half-extrusions merged.
+/// Returns `None` when this path does not apply (caller uses the normal mesher).
+fn extrusion_mesh_tessellated_symmetric_taper(
+    doc: &Document,
+    extrusion: &Extrusion,
+    distance: f32,
+) -> Option<SolidMesh> {
+    if !(extrusion.symmetric && extrusion.target.is_none() && extrusion.taper.abs() > 1e-12) {
+        return None;
+    }
+    let half = distance.abs() * 0.5;
+    if half < 1e-4 {
+        return None;
+    }
+    let sign = if distance < 0.0 { -1.0 } else { 1.0 };
+    let mut half_ext = extrusion.clone();
+    half_ext.symmetric = false;
+    let mut mesh = SolidMesh::default();
+    for d in [half * sign, -half * sign] {
+        let Some(part) = extrusion_mesh_tessellated(doc, &half_ext, d) else {
+            continue;
+        };
+        mesh.triangles.extend(part.triangles);
     }
     (!mesh.is_empty()).then_some(mesh)
 }
@@ -310,6 +343,22 @@ fn occt_face_solid(
     distance: f32,
     overshoot: f32,
 ) -> Option<crate::kernel::Shape> {
+    // #1268: symmetric + taper — mid plane must stay the sketch size. Fuse two
+    // non-symmetric half-extrusions (sketch→+d/2 and sketch→−d/2), each tapering from
+    // the profile at mid to the free end. A single loft with both ends equally offset
+    // would be a prism of the *tapered* size (wrong mid).
+    if extrusion.symmetric && extrusion.target.is_none() && extrusion.taper.abs() > 1e-12 {
+        let half = distance.abs() * 0.5;
+        if half < 1e-4 {
+            return None;
+        }
+        let sign = if distance < 0.0 { -1.0 } else { 1.0 };
+        let mut half_ext = extrusion.clone();
+        half_ext.symmetric = false;
+        let upper = occt_face_solid(doc, &half_ext, face, half * sign, overshoot)?;
+        let lower = occt_face_solid(doc, &half_ext, face, -half * sign, overshoot)?;
+        return upper.boolean(&lower, crate::kernel::BoolOp::Fuse);
+    }
     if let ExtrudeFace::Boolean { op, a, b } = face {
         let sa = occt_face_solid(doc, extrusion, a, distance, overshoot)?;
         let sb = occt_face_solid(doc, extrusion, b, distance, overshoot)?;
@@ -6692,6 +6741,10 @@ fn uv_loop_is_point(poly: &[(f32, f32)]) -> bool {
 ///
 /// Returns `(start, end, base_uv_offset, top_uv_offset)` where the UV offsets are solid-growth
 /// amounts applied to the outer loop (holes use the opposite sign).
+///
+/// For a **symmetric** extrude the free ends both get the taper offset (cap size); the solid
+/// body itself is built as two half-extrusions so the sketch mid-plane stays the profile size
+/// (#1268) — this plan alone is for end caps / rings, not a single base→top loft of the body.
 fn taper_end_plan(
     doc: &Document,
     extrusion: &Extrusion,
@@ -11713,6 +11766,130 @@ mod tests {
         let top_pt = extruded_free_end_point(&doc, &ext, glam::Vec3::Z, glam::Vec3::ZERO, 20.0);
         assert!((base_pt.z + 10.0).abs() < 1e-4, "base z={}", base_pt.z);
         assert!((top_pt.z - 10.0).abs() < 1e-4, "top z={}", top_pt.z);
+    }
+
+    /// #1268: symmetric + distance taper keeps the sketch plane at the original profile size.
+    /// Both free ends shrink/grow by the taper; the solid is two frustums joined at mid,
+    /// not a single end-to-end taper (or a prism of the tapered size).
+    #[test]
+    fn taper_symmetric_distance_keeps_midplane_at_sketch_size() {
+        let (mut doc, sketch) = sketch_doc();
+        // 10×10 square, total height 20 (±10), taper −2 per side → ends 6×6, mid 10×10.
+        let profile = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
+        let mut ext = extrusion(sketch, vec![profile], 20.0);
+        ext.symmetric = true;
+        ext.taper = -2.0;
+        ext.taper_mode = ExtrudeTaperMode::Distance;
+        let mesh = extrusion_mesh(&doc, &ext).expect("symmetric taper mesh");
+        let (min, max) = mesh.bounds().expect("bounds");
+        assert!(
+            (min.z + 10.0).abs() < 0.5 && (max.z - 10.0).abs() < 0.5,
+            "height still ±10, min={min:?} max={max:?}"
+        );
+        // Overall xy is the larger of mid (10) and ends (6) → 10×10.
+        assert!(
+            (max.x - min.x - 10.0).abs() < 0.5 && (max.y - min.y - 10.0).abs() < 0.5,
+            "overall xy should be the mid-plane 10×10, got {}×{}",
+            max.x - min.x,
+            max.y - min.y
+        );
+        // Two frustums 10×10 → 6×6 over h=10 each.
+        // V_one = h/3*(A1+A2+√(A1*A2)) = 10/3*(100+36+60) = 1960/3 ≈ 653.333
+        let vol = mesh_signed_volume(&mesh).abs();
+        let expected = 2.0 * (10.0 / 3.0) * (100.0 + 36.0 + (100.0f32 * 36.0).sqrt());
+        assert!(
+            (vol - expected).abs() < expected * 0.08,
+            "double-frustum volume expected ~{expected}, got {vol} \
+             (a tapered-size prism would be ~720; a single end-to-end frustum differs too)"
+        );
+        // Mid-plane cross-section of the solid should hit the sketch extent (~10).
+        let mid_span = mesh_xy_span_near_z(&mesh, 0.0, 0.3);
+        assert!(
+            (mid_span - 10.0).abs() < 0.8,
+            "mid-plane solid span should be ~10 (sketch size), got {mid_span}"
+        );
+        // Ends should be the tapered 6×6.
+        let top_span = mesh_xy_span_near_z(&mesh, 10.0, 0.3);
+        let bot_span = mesh_xy_span_near_z(&mesh, -10.0, 0.3);
+        assert!(
+            (top_span - 6.0).abs() < 0.8,
+            "top end span should be ~6, got {top_span}"
+        );
+        assert!(
+            (bot_span - 6.0).abs() < 0.8,
+            "bottom end span should be ~6, got {bot_span}"
+        );
+    }
+
+    /// #1268: symmetric + positive distance taper flares both ends; mid stays sketch size.
+    #[test]
+    fn taper_symmetric_distance_positive_flares_both_ends() {
+        let (mut doc, sketch) = sketch_doc();
+        let profile = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
+        let mut ext = extrusion(sketch, vec![profile], 20.0);
+        ext.symmetric = true;
+        ext.taper = 5.0;
+        ext.taper_mode = ExtrudeTaperMode::Distance;
+        let mesh = extrusion_mesh(&doc, &ext).expect("flare mesh");
+        let (min, max) = mesh.bounds().expect("bounds");
+        // Ends 20×20, mid 10×10 → overall xy 20.
+        assert!(
+            (max.x - min.x - 20.0).abs() < 0.5,
+            "overall xy should be end span 20, got {}",
+            max.x - min.x
+        );
+        let mid_span = mesh_xy_span_near_z(&mesh, 0.0, 0.3);
+        assert!(
+            (mid_span - 10.0).abs() < 0.8,
+            "mid-plane should stay sketch size 10, got {mid_span}"
+        );
+        let vol = mesh_signed_volume(&mesh).abs();
+        // Two frustums 10×10 → 20×20 over h=10: h/3*(100+400+200)= 10/3*700 ≈ 2333.33 each → 4666.67
+        let expected = 2.0 * (10.0 / 3.0) * (100.0 + 400.0 + (100.0f32 * 400.0).sqrt());
+        assert!(
+            (vol - expected).abs() < expected * 0.08,
+            "double-frustum volume expected ~{expected}, got {vol}"
+        );
+    }
+
+    /// Max XY span of the mesh at plane z = z0: vertices within `tol`, plus intersections of
+    /// triangle edges that straddle the plane (OCCT fuse often drops coplanar mid faces, so the
+    /// waist may only appear as side-wall edge crossings).
+    fn mesh_xy_span_near_z(mesh: &SolidMesh, z0: f32, tol: f32) -> f32 {
+        let mut min_x = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut min_y = f32::MAX;
+        let mut max_y = f32::MIN;
+        let mut any = false;
+        let mut consider = |p: glam::Vec3| {
+            any = true;
+            min_x = min_x.min(p.x);
+            max_x = max_x.max(p.x);
+            min_y = min_y.min(p.y);
+            max_y = max_y.max(p.y);
+        };
+        for tri in &mesh.triangles {
+            for p in tri {
+                if (p.z - z0).abs() <= tol {
+                    consider(*p);
+                }
+            }
+            // Edge–plane hits for edges that straddle z0.
+            for i in 0..3 {
+                let a = tri[i];
+                let b = tri[(i + 1) % 3];
+                let da = a.z - z0;
+                let db = b.z - z0;
+                if da * db < 0.0 {
+                    let t = da / (da - db);
+                    consider(a + (b - a) * t);
+                }
+            }
+        }
+        if !any {
+            return 0.0;
+        }
+        (max_x - min_x).max(max_y - min_y)
     }
 
     /// #504/#548: the extrude-to-face distance to a **symmetric** extrusion's cap reaches its

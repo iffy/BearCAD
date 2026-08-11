@@ -711,8 +711,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     square with taper 5 ends 20×20; circles add to the radius). Angle mode is a draft against
     the extrusion normal (−90°…+90°); a negative draft that collapses the profile **cuts the
     height** (10×10 at −45° over distance 10 ends as a point at height 5). Past collapse the
-    end stays a point (never inverted). The context pane's **Taper** row toggles distance/angle
-    via a picture icon like Repeat's measure toggles. Scriptable:
+    end stays a point (never inverted). With **Symmetric** (#1268) the sketch mid-plane keeps
+    the profile size and both free ends take the taper (two half-frustums), not a single
+    bottom-to-top taper. The context pane's **Taper** row toggles distance/angle via a picture
+    icon like Repeat's measure toggles. Scriptable:
     `bearcad.extrude{ …, taper = 5 }` or `taper = -45, taper_mode = "angle"`.
   - **In-context distance / target / commit (#584):** the Extrude tool's context section carries a
     full alternative to the 3D gizmo — a **Distance** value input that mirrors the floating 3D field,
