@@ -1735,7 +1735,13 @@ pub fn resolve_pick_target(
         }
     }
 
-    if let Some((index, dist)) = nearest_construction_plane(screen, project, &doc.construction_planes)
+    // Prefer the frontmost plane under the cursor (#1277): when several display quads
+    // contain the pointer (a big buried XZ covering a smaller front XY, say), only the
+    // one nearer the eye is what a click would take. Eye comes from the occlusion context
+    // when present; without it, ties fall back to iteration order.
+    let eye = occlusion.map(|occ| occ.eye());
+    if let Some((index, dist)) =
+        nearest_construction_plane(screen, project, &doc.construction_planes, eye)
     {
         let plane = &doc.construction_planes[index];
         let origin = ground_point.unwrap_or(plane.origin);
@@ -3148,6 +3154,8 @@ pub fn collect_pick_candidates(
     // Every construction plane near the cursor (#975). One reaches the crowd as an analytic
     // face too, and `crowd_key` collapses the pair — but only when `sketch_faces_near` offers
     // that plane, which it does not for one seen edge-on or one the pointer is merely near.
+    // Anchor at the point under the cursor (#1277) so crowd depth order matches the ordinary
+    // pick: a front plane sorts ahead of a big buried one that covers the same screen spot.
     for (index, plane) in doc.construction_planes.iter() {
         let corners = plane_corners(plane);
         let Some(pts) = corners.iter().map(|&c| project(c)).collect::<Option<Vec<_>>>() else {
@@ -3161,7 +3169,8 @@ pub fn collect_pick_candidates(
         };
         let kind = PickTargetKind::ConstructionPlane(index);
         if dist <= FACE_PICK_MARGIN_PX && pickable(&kind) {
-            raw.push((kind, project_point_on_plane(plane.origin, plane), dist));
+            let at = plane_point_under_cursor(screen, &pts, &corners).unwrap_or(plane.origin);
+            raw.push((kind, at, dist));
         }
     }
 
@@ -3434,13 +3443,50 @@ fn nearest_global_axis(
     best
 }
 
+/// Screen-distance band within which two construction-plane picks count as the same depth
+/// under the cursor, so the nearer (camera-facing) one wins (#1277). Mirrors the body-face
+/// tie band in `face::consider_face_pick_sized`.
+const PLANE_PICK_DEPTH_TIE_PX: f32 = 0.5;
+
+/// World point on a plane's display quad under `screen`, via the same screen-space
+/// barycentric blend body faces use — the point depth comparisons need, not the plane origin.
+fn plane_point_under_cursor(
+    screen: egui::Pos2,
+    projected: &[egui::Pos2],
+    corners: &[Vec3; 4],
+) -> Option<Vec3> {
+    if projected.len() != 4 {
+        return None;
+    }
+    // Two triangles covering the display quad (same split as `point_in_screen_quad`).
+    for tri in [[0usize, 1, 2], [0, 2, 3]] {
+        let (a, b, c) = (tri[0], tri[1], tri[2]);
+        let (pa, pb, pc) = (projected[a], projected[b], projected[c]);
+        let area = (pb.x - pa.x) * (pc.y - pa.y) - (pc.x - pa.x) * (pb.y - pa.y);
+        if area.abs() < 1e-6 {
+            continue;
+        }
+        let w0 = ((pb.x - screen.x) * (pc.y - screen.y) - (pc.x - screen.x) * (pb.y - screen.y))
+            / area;
+        let w1 = ((pc.x - screen.x) * (pa.y - screen.y) - (pa.x - screen.x) * (pc.y - screen.y))
+            / area;
+        let w2 = 1.0 - w0 - w1;
+        if w0 >= -1e-4 && w1 >= -1e-4 && w2 >= -1e-4 {
+            return Some(corners[a] * w0 + corners[b] * w1 + corners[c] * w2);
+        }
+    }
+    None
+}
+
 fn nearest_construction_plane(
     screen: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     planes: &crate::arena::Arena<ConstructionPlane>,
+    eye: Option<Vec3>,
 ) -> Option<(crate::model::ConstructionPlaneKey, f32)> {
-    let mut best: Option<(crate::model::ConstructionPlaneKey, f32)> = None;
-    for (index, plane) in planes.iter().collect::<Vec<_>>().into_iter().rev() {
+    // (index, screen dist, eye depth at the point under the cursor)
+    let mut best: Option<(crate::model::ConstructionPlaneKey, f32, f32)> = None;
+    for (index, plane) in planes.iter() {
         let corners = plane_corners(plane);
         let pts: Option<Vec<egui::Pos2>> = corners.iter().map(|&c| project(c)).collect();
         let Some(pts) = pts else { continue };
@@ -3450,13 +3496,32 @@ fn nearest_construction_plane(
         } else {
             dist_point_to_quad_edges(screen, quad)
         };
-        if dist <= FACE_PICK_MARGIN_PX {
-            if best.as_ref().is_none_or(|(_, d)| dist < *d) {
-                best = Some((index, dist));
+        if dist > FACE_PICK_MARGIN_PX {
+            continue;
+        }
+        // Depth at the point under the cursor, not the plane origin: a large plane's centre
+        // can sit farther from the eye than a small front one the cursor is actually on
+        // (#1277 / same rule as face::quad_face_pick_distance).
+        let at = plane_point_under_cursor(screen, &pts, &corners).unwrap_or(plane.origin);
+        let depth = eye.map(|e| (at - e).length()).unwrap_or(f32::MAX);
+        let better = match best {
+            None => true,
+            Some((_, d, dep)) => {
+                if dist < d - PLANE_PICK_DEPTH_TIE_PX {
+                    true
+                } else if dist > d + PLANE_PICK_DEPTH_TIE_PX {
+                    false
+                } else {
+                    // Same screen distance (cursor inside both quads): nearer the camera wins.
+                    depth < dep
+                }
             }
+        };
+        if better {
+            best = Some((index, dist, depth));
         }
     }
-    best
+    best.map(|(i, d, _)| (i, d))
 }
 
 fn dist_point_to_quad_edges(p: egui::Pos2, quad: [egui::Pos2; 4]) -> f32 {
@@ -5409,5 +5474,68 @@ mod tests {
         let max_v = verts.iter().map(|v| v.1).fold(f32::NEG_INFINITY, f32::max);
         assert!((max_u - min_u - 20.0).abs() < 1e-2, "width solved to 20mm");
         assert!((max_v - min_v - 8.0).abs() < 1e-2, "height solved to 8mm");
+    }
+
+    /// #1277: when two construction planes both contain the cursor in screen space, the pick
+    /// must take the one nearer the camera — not whichever was considered first (the old
+    /// reverse-iteration tie left a big buried plane winning over a smaller front one).
+    #[test]
+    fn construction_plane_pick_prefers_frontmost_when_overlapping() {
+        let mut doc = Document::default();
+        // Two parallel XY-oriented planes with the same display extent. Orthographic
+        // (x, y) projection puts both under every cursor in the quad; only eye-depth
+        // can tell them apart.
+        let extent = crate::model::PlaneExtent {
+            u_min: 0.0,
+            u_max: 100.0,
+            v_min: 0.0,
+            v_max: 100.0,
+        };
+        doc.construction_planes[pkey(0)].extent = extent;
+        // A second plane behind the first (lower z), inserted after the default XZ/YZ so
+        // reverse-iteration would prefer it over XY when screen distances are equal.
+        let mut behind = crate::face::default_xy_plane();
+        behind.origin = Vec3::new(0.0, 0.0, -40.0);
+        behind.extent = extent;
+        behind.name = Some("Behind".to_string());
+        let behind_key = doc.construction_planes.insert(behind);
+
+        // Drop z: both quads map to the same screen rectangle.
+        let project = |p: Vec3| Some(egui::pos2(p.x, p.y));
+        let eye = Vec3::new(50.0, 50.0, 200.0);
+        let world = Vec3::new(50.0, 50.0, 0.0);
+        let sp = egui::pos2(50.0, 50.0);
+
+        // Sanity: both display quads contain the cursor, and the buried plane is listed later.
+        assert!(
+            point_in_screen_quad(sp, {
+                let c = plane_corners(&doc.construction_planes[pkey(0)]);
+                let pts: Vec<_> = c.iter().map(|&p| project(p).unwrap()).collect();
+                [pts[0], pts[1], pts[2], pts[3]]
+            }),
+            "front plane under cursor"
+        );
+        assert!(
+            point_in_screen_quad(sp, {
+                let c = plane_corners(&doc.construction_planes[behind_key]);
+                let pts: Vec<_> = c.iter().map(|&p| project(p).unwrap()).collect();
+                [pts[0], pts[1], pts[2], pts[3]]
+            }),
+            "buried plane also under cursor"
+        );
+        assert!(
+            behind_key.index() > 0,
+            "buried plane is later so reverse-iter would take it first without depth"
+        );
+
+        let vis = crate::hierarchy::ElementVisibility::default();
+        let occ = PickOcclusion::new(&doc, &vis, eye);
+        let t = resolve_pick_target(sp, &project, Some(world), &doc, Some(&occ))
+            .expect("a plane under the cursor");
+        assert!(
+            matches!(t.kind, PickTargetKind::ConstructionPlane(i) if i == pkey(0)),
+            "front plane (z=0) must win over the buried one (z=-40), got {:?}",
+            t.kind
+        );
     }
 }
