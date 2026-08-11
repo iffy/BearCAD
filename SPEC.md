@@ -4986,9 +4986,15 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
 
 - **Tutorial mode**: guided, in-app walkthroughs narrated by **Bear** (the view cube — the
   narration calls him by name, #766). A
-  **Tutorial** button in the bottom-right status bar (beside the update badge) lists every
-  registered tutorial (`tutorial::TUTORIALS` — a registry designed to hold more than one);
-  starting one opens a fresh document.
+  **Tutorial** button in the bottom-right status bar (beside the update badge) opens the
+  **Tutorials pane** listing every registered tutorial (`tutorial::TUTORIALS`); the whole
+  row (status circle + title) is clickable and highlights on hover (#1252). Starting one
+  opens a fresh document. Short walkthroughs come first; **Build an angle bracket** is last
+  (#1251).
+- **One action per step** when authoring (#1253): every click is its own step, every bit of
+  typing is its own step — never combine a click with typing (or two clicks / two typed
+  values) in one step. The long bracket walkthrough predates this rule and is left alone;
+  every newer tutorial follows it. See the module docs on `tutorial`.
 - Each tutorial is a list of **steps**: Bear's narration in a cartoon **speech
   bubble** tucked under the view cube (with a tail pointing at Bear), a **pulsing
   gold ring** on what to click next (toolbar buttons, the Parameters `+`, or a projected
@@ -5149,13 +5155,13 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   steps isn't stranded. An assist never clobbers work already done: parameters keep values
   the user typed, and a step whose work exists is a no-op. A test walks the whole tutorial on
   the buttons, pressing Next where there is none.
-- First tutorial: **Build an angle bracket** (`"bracket"`) — the Quickstart's part,
-  interactive: parameters, sloppy profile, constraints, dimensions (parameter-driven
-  angle), extrude, bend fillets, hole cuts, countersinks, corner rounds, engraving, and
-  the parametric angle change. Only **four** parameters are entered up front; `thick` and
-  `width` are deliberately left out and then defined **from the field that uses them**
-  (`thick = 5mm` in an end cap's dimension, `width = 40mm` in the extrude distance), which
-  is how the walkthrough teaches the `name = value` shorthand (#788).
+- Long walkthrough (listed last): **Build an angle bracket** (`"bracket"`) — the
+  Quickstart's part, interactive: parameters, sloppy profile, constraints, dimensions
+  (parameter-driven angle), extrude, bend fillets, hole cuts, countersinks, corner rounds,
+  engraving, and the parametric angle change. Only **four** parameters are entered up
+  front; `thick` and `width` are deliberately left out and then defined **from the field
+  that uses them** (`thick = 5mm` in an end cap's dimension, `width = 40mm` in the extrude
+  distance), which is how the walkthrough teaches the `name = value` shorthand (#788).
 - **Linkable (#765):** the web build reads **`?tutorial=<name>`** from the page URL at boot
   (`tutorial::tutorial_from_query`) and starts that walkthrough, so the docs' Quickstart can
   link straight into "show me" — `…/app/?tutorial=bracket`. The desktop twin is
