@@ -11366,7 +11366,8 @@ impl App {
             // is unitless, so it uses the length field's bare-number path.
             let mut result = SketchDimFieldResult::default();
             let doc = &mut self.state.doc;
-            egui::Area::new(egui::Id::new("revolve_angle_input"))
+            // Area id is separate from the field id (same pattern as extrude_distance_area).
+            egui::Area::new(egui::Id::new("revolve_angle_area"))
                 .fixed_pos(pos)
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
@@ -21574,8 +21575,16 @@ fn wrap_signed_radians(a: f32) -> f32 {
 /// Screen-space grab radius (px) for the revolve arc gizmo's push/pull handle (#262).
 const REVOLVE_ARC_HANDLE_PICK_PX: f32 = 12.0;
 
-/// egui id of the floating extrude-distance text field.
-const REVOLVE_ANGLE_FIELD_ID: &str = "revolve_angle_field";
+/// egui id of the floating revolve-angle text field.
+///
+/// Must differ from the context-pane angle field (`"revolve_angle_field"` in `context.rs`):
+/// both are drawn in the same frame once a revolve has an axis (#1245), and egui 0.35 panics
+/// if the same widget id appears on Background and Foreground layers.
+const REVOLVE_ANGLE_FIELD_ID: &str = "revolve_angle_input";
+/// Context-pane angle ValueInput id (`context.rs`); named here so the dual-layer
+/// regression test can assert both ends stay distinct (#1245).
+#[cfg(test)]
+const REVOLVE_ANGLE_CONTEXT_FIELD_ID: &str = "revolve_angle_field";
 const EXTRUDE_DISTANCE_FIELD_ID: &str = "extrude_distance_input";
 /// Context-pane thickness ValueInput id for the Shell tool (#1164) — matching
 /// `ValueInput::new("shell_thickness", …)` so a gizmo grab can focus it for overwrite typing.
@@ -35692,6 +35701,38 @@ mod tests {
             probe(true),
             "toggling the command palette must not renumber Elements-pane widget ids"
         );
+    }
+
+    /// #1245: context-pane and floating revolve angle fields must use distinct egui ids.
+    /// Drawing the same id on Background and Foreground in one frame panics in egui 0.35
+    /// (`Widget Id … changed layer_id during the frame`).
+    #[test]
+    fn revolve_angle_field_ids_differ_across_layers() {
+        assert_ne!(
+            super::REVOLVE_ANGLE_FIELD_ID,
+            super::REVOLVE_ANGLE_CONTEXT_FIELD_ID,
+            "floating and context revolve angle fields must not share an egui id"
+        );
+        // Reproduce the dual-layer layout that panicked: context field on the background
+        // layer, floating field in a Foreground Area — same frame, distinct ids.
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            let mut context_text = "360".to_string();
+            let mut floating_text = "360".to_string();
+            ui.add(
+                egui::TextEdit::singleline(&mut context_text)
+                    .id(egui::Id::new(super::REVOLVE_ANGLE_CONTEXT_FIELD_ID)),
+            );
+            egui::Area::new(egui::Id::new("revolve_angle_area"))
+                .fixed_pos(egui::pos2(100.0, 100.0))
+                .order(egui::Order::Foreground)
+                .show(ui.ctx(), |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut floating_text)
+                            .id(egui::Id::new(super::REVOLVE_ANGLE_FIELD_ID)),
+                    );
+                });
+        });
     }
 
     /// #1211: the pre-fix pattern — allocate the palette panel only while open — *does*

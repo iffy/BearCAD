@@ -5184,6 +5184,9 @@ pub fn show_pane(
                 } else {
                     crate::expression_input::ValueKind::Angle
                 };
+                // Id must stay distinct from the floating revolve angle field
+                // (`REVOLVE_ANGLE_FIELD_ID` / `"revolve_angle_input"` in main.rs) — both
+                // paint in the same frame once an axis is set (#1245).
                 let resp = crate::expression_input::ValueInput::from_id(
                     egui::Id::new("revolve_angle_field"),
                     kind,
