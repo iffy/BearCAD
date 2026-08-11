@@ -2227,8 +2227,9 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   lathes rotated (and axially advanced) profile rings with sweep-end caps, oriented against
   the rotated profile centroid (correct for washer profiles that don't contain the axis).
   The context pane's **Angle** field toggles to **Revolutions** (turns, decimals allowed;
-  both signed), and a **Gap/Offset** field (same icons as Repeat) sets the helical pitch —
-  Offset is start-to-start after 360°, Gap is clear space between coils. Scriptable as
+  both signed) via an icon+label toggle (#1246: angled lines for degrees, `#` for turns),
+  and a **Gap/Offset** field (same icons as Repeat) sets the helical pitch — Offset is
+  start-to-start after 360°, Gap is clear space between coils. Scriptable as
   `bearcad.revolve{ polygon|circles =, axis = "x"|"y"|"z"|{line = i}, angle = |
   revolutions =, pitch|offset|gap =, symmetric =, body = "new"|"add"|"cut", bodies = {..} }`,
   and interactive revolves replay to the command log as the same call. Limitation: the

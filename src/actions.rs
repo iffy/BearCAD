@@ -1602,6 +1602,7 @@ pub struct CreatingRevolve {
     pub gap_user_edited: bool,
     /// When true the field is **Offset** (start-to-start pitch); when false it's **Gap**
     /// (clear space between coils) — same toggle icons as the Repeat tool (#1242).
+    /// Angle/Revolutions uses its own icon pair (#1246).
     pub gap_is_offset: bool,
     pub symmetric: bool,
     pub body_choice: RevolveBodyChoice,

@@ -4061,11 +4061,12 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
              axes. The angle is dragged in the 3D view.",
         ),
         (Some(Tool::Revolve), "Angle") => Some(
-            "How far the profile turns, in degrees. Click the label to switch to Revolutions.",
+            "How far the profile turns, in degrees. Click the icon (or label) to switch to \
+             Revolutions.",
         ),
         (Some(Tool::Revolve), "Revolutions") => Some(
-            "How many full turns the profile makes (decimals allowed). Click the label to \
-             switch back to Angle.",
+            "How many full turns the profile makes (decimals allowed). Click the icon (or \
+             label) to switch back to Angle.",
         ),
         (Some(Tool::Revolve), "Offset") => Some(
             "How far the start face advances along the axis after one full turn — the coil \
@@ -5156,8 +5157,8 @@ pub fn show_pane(
         any_control = true;
         // Profile and Axis are real `ToolPickerView`s now (#955), rendered with every other
         // tool picker above; only the parameters and the commit button live here.
-        // Angle/Revolutions and Gap/Offset toggle rows (#1242) — same icon+label toggle
-        // pattern as the Repeat tool's Gap/Offset field.
+        // Angle/Revolutions (#1246) and Gap/Offset (#1242) toggle rows — same icon+label
+        // toggle pattern as the Repeat tool's Gap/Offset field.
         let mut pending_revolve: Option<RevolveEdit> = None;
         {
             const FIELD_W: f32 = 110.0;
@@ -5166,6 +5167,11 @@ pub fn show_pane(
             } else {
                 "Angle"
             };
+            let angle_icon = if control.angle_is_revolutions {
+                crate::icons::IconId::RevolveRevolutions
+            } else {
+                crate::icons::IconId::RevolveAngle
+            };
             let angle_row = ui.horizontal(|ui| {
                 ui.allocate_ui_with_layout(
                     egui::vec2(FIELD_LABEL_W, 18.0),
@@ -5173,7 +5179,9 @@ pub fn show_pane(
                     |ui| {
                         ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
                         const TIP: &str = "Click to toggle between Angle and Revolutions";
-                        if clickable_label(ui, angle_label, TIP).clicked() {
+                        if crate::icons::icon_button_hover_gold(ui, angle_icon, TIP).clicked()
+                            || clickable_label(ui, angle_label, TIP).clicked()
+                        {
                             pending_revolve = Some(RevolveEdit::ToggleAngleMode);
                         }
                     },

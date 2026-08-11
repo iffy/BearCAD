@@ -116,6 +116,9 @@ pub enum IconId {
     /// Extrude taper measure toggles (#1243): length-per-side vs draft angle.
     TaperDistance,
     TaperAngle,
+    /// Revolve Angle/Revolutions measure toggles (#1246): degrees vs turn count.
+    RevolveAngle,
+    RevolveRevolutions,
     /// Repeat tool along-the-path / around-the-axis toggle (#839).
     RepeatAlongPath,
     RepeatAroundAxis,
@@ -138,7 +141,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 94] = [
+    pub const ALL: [Self; 96] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -224,6 +227,8 @@ impl IconId {
         Self::RepeatGapOffset,
         Self::TaperDistance,
         Self::TaperAngle,
+        Self::RevolveAngle,
+        Self::RevolveRevolutions,
         Self::RepeatAlongPath,
         Self::RepeatAroundAxis,
         Self::Filter,
@@ -324,6 +329,8 @@ impl IconId {
             Self::RepeatGapOffset => include_str!("assets/icons/repeat_gap_offset.svg"),
             Self::TaperDistance => include_str!("assets/icons/taper_distance.svg"),
             Self::TaperAngle => include_str!("assets/icons/taper_angle.svg"),
+            Self::RevolveAngle => include_str!("assets/icons/revolve_angle.svg"),
+            Self::RevolveRevolutions => include_str!("assets/icons/revolve_revolutions.svg"),
             Self::RepeatAlongPath => include_str!("assets/icons/repeat_along_path.svg"),
             Self::RepeatAroundAxis => include_str!("assets/icons/repeat_around_axis.svg"),
             Self::Filter => include_str!("assets/icons/filter.svg"),
@@ -425,6 +432,8 @@ impl IconId {
             Self::RepeatGapOffset => "Start-to-start offset",
             Self::TaperDistance => "Taper by distance",
             Self::TaperAngle => "Taper by angle",
+            Self::RevolveAngle => "Angle in degrees",
+            Self::RevolveRevolutions => "Revolutions (turns)",
             Self::RepeatAlongPath => "Along the path",
             Self::RepeatAroundAxis => "Around the path",
             Self::Filter => "Filter",
