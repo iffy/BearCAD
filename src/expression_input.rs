@@ -948,7 +948,8 @@ impl<'a> ValueInput<'a> {
 
     /// Render the field. Every value input in the app draws through [`boxed::show`], so
     /// the pane rows and the floating tool fields are the same control (#889).
-    /// Returns the field's response; `.changed()` reports edits as usual.
+    /// Returns the field's response (full frame rect, including the computed line);
+    /// `.changed()` reports edits as usual.
     pub fn show(self, ui: &mut egui::Ui, text: &mut String, doc: &Document) -> Response {
         // An empty field is an unset one, not a complaint — every pane row with an
         // optional value relies on that.
@@ -974,8 +975,15 @@ impl<'a> ValueInput<'a> {
         } else {
             &errors
         };
-        let computed = value_input_computed_display(text, self.kind, doc)
-            .filter(|_| shown_errors.is_empty());
+        // Reserve the computed line whenever the expression warrants one (#1281), even if
+        // errors hide the text — same rule as the floating sketch-dimension fields.
+        let computed_raw = value_input_computed_display(text, self.kind, doc);
+        let reserve_computed = computed_raw.is_some();
+        let computed = computed_raw.filter(|_| shown_errors.is_empty());
+        // Autocomplete drops below the computed chip when it's showing (#793).
+        ctx.data_mut(|d| {
+            d.insert_temp(self.id.with("value_input_has_computed"), computed.is_some());
+        });
         let out = boxed::show(
             ui,
             self.id,
@@ -985,7 +993,7 @@ impl<'a> ValueInput<'a> {
             shown_errors,
             self.exclude_names,
             computed,
-            false,
+            reserve_computed,
             self.width,
         );
         // Typing again means "I'm still working on it": complaints wait for the next
@@ -993,7 +1001,9 @@ impl<'a> ValueInput<'a> {
         if out.response.changed() {
             set_commit_attempted(&ctx, self.id, false);
         }
-        out.response
+        // Report the whole box (expression + computed line) so hover, tutorial anchors,
+        // and grid row height all see the space the field actually occupies (#1281).
+        out.response.with_new_rect(out.rect)
     }
 }
 
@@ -1402,4 +1412,99 @@ mod tests {
         let matches = parameter_autocomplete_candidates(&doc, "wid", &["width"]);
         assert!(matches.is_empty());
     }
+
+    /// #1281: a ValueInput with a computed line must allocate that space in a Parameters-style
+    /// grid so the next row sits fully below the box. Value cells are placed directly in the
+    /// grid (not wrapped in `ui.horizontal`, which centers a single-line desired height and
+    /// lets the multi-line box leak into the next row).
+    #[test]
+    fn value_input_computed_row_does_not_overlap_next_grid_row() {
+        let ctx = egui::Context::default();
+        let doc = Document::default();
+        let mut text = "25".to_string();
+        let mut frame_rect = egui::Rect::NOTHING;
+        let mut response_rect = egui::Rect::NOTHING;
+        let mut next_name_rect = egui::Rect::NOTHING;
+        let mut next_value_rect = egui::Rect::NOTHING;
+
+        assert!(
+            value_input_computed_display("25", ValueKind::Length, &doc).is_some(),
+            "bare number shows a computed unit line"
+        );
+
+        // Grid may discard the first pass to measure column/row sizes.
+        ctx.options_mut(|o| {
+            o.max_passes = std::num::NonZeroUsize::new(3).unwrap();
+        });
+        for _ in 0..3 {
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    ui.set_width(240.0);
+                    egui::Grid::new("parameters_table_probe")
+                        .num_columns(3)
+                        .spacing([8.0, 4.0])
+                        .min_col_width(72.0)
+                        .show(ui, |ui| {
+                            ui.label("Name");
+                            ui.label("Value");
+                            ui.label("");
+                            ui.end_row();
+
+                            // Existing parameter row — value cell is the ValueInput itself
+                            // (same nesting as `parameters::show_pane` after #1281).
+                            ui.label("foo");
+                            let resp = ValueInput::from_id(Id::new("param_value_0"), ValueKind::Length)
+                                .show(ui, &mut text, &doc);
+                            response_rect = resp.rect;
+                            frame_rect = resp.rect;
+                            ui.horizontal(|ui| {
+                                ui.label("⚙");
+                                ui.label("✕");
+                            });
+                            ui.end_row();
+
+                            // New-parameter draft row.
+                            let name_r = ui.add(
+                                egui::TextEdit::singleline(&mut String::new())
+                                    .hint_text("name")
+                                    .desired_width(f32::INFINITY),
+                            );
+                            next_name_rect = name_r.rect;
+                            let mut new_val = String::new();
+                            let val_r =
+                                ValueInput::from_id(Id::new("new_value"), ValueKind::Length)
+                                    .hint("value")
+                                    .show(ui, &mut new_val, &doc);
+                            next_value_rect = val_r.rect;
+                            ui.label("+");
+                            ui.end_row();
+                        });
+                });
+            });
+        }
+
+        assert!(
+            frame_rect.height() >= 28.0,
+            "ValueInput with computed line should be multi-line tall, got {}",
+            frame_rect.height()
+        );
+        // Response rect is the whole box (expression + computed), not just the text line.
+        assert!(
+            (response_rect.height() - frame_rect.height()).abs() < 0.5,
+            "ValueInput response must cover the full frame"
+        );
+        assert!(
+            next_name_rect.top() >= frame_rect.bottom() - 0.5,
+            "next row name must start below the ValueInput frame (no leak): frame={:?} next_name={:?}",
+            frame_rect,
+            next_name_rect
+        );
+        assert!(
+            next_value_rect.top() >= frame_rect.bottom() - 0.5,
+            "next row value must start below the ValueInput frame (no leak): frame={:?} next_value={:?}",
+            frame_rect,
+            next_value_rect
+        );
+    }
+
 }

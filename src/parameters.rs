@@ -2343,62 +2343,63 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                         }
                     });
 
-                    let value_cell = ui.horizontal(|ui| {
-                        if editing_value {
-                            let param_ctx = ParameterExpressionContext {
-                                param_name: param_name.clone(),
-                                existing_index: Some(index),
-                            };
-                            let exclude = [param_name.as_str()];
-                            let mut draft = app.parameters_pane.draft.clone();
-                            let response = crate::expression_input::ValueInput::from_id(
-                                param_value_id(index),
-                                crate::expression_input::ValueKind::Length,
-                            )
-                            .no_definitions()
-                            .parameter_context(&param_ctx)
-                            .exclude_names(&exclude)
-                            .show(ui, &mut draft, &app.doc);
-                            app.parameters_pane.draft = draft;
-                            if app.parameters_pane.editing_focus {
-                                response.request_focus();
-                                app.parameters_pane.editing_focus = false;
+                    // Do not wrap the value cell in `ui.horizontal`: inside a Grid that
+                    // centers a single-line desired height, a multi-line ValueInput
+                    // (expression + computed) overflows into the next row (#1281).
+                    let value_cell = if editing_value {
+                        let param_ctx = ParameterExpressionContext {
+                            param_name: param_name.clone(),
+                            existing_index: Some(index),
+                        };
+                        let exclude = [param_name.as_str()];
+                        let mut draft = app.parameters_pane.draft.clone();
+                        let response = crate::expression_input::ValueInput::from_id(
+                            param_value_id(index),
+                            crate::expression_input::ValueKind::Length,
+                        )
+                        .no_definitions()
+                        .parameter_context(&param_ctx)
+                        .exclude_names(&exclude)
+                        .show(ui, &mut draft, &app.doc);
+                        app.parameters_pane.draft = draft;
+                        if app.parameters_pane.editing_focus {
+                            response.request_focus();
+                            app.parameters_pane.editing_focus = false;
+                        }
+                        if parameter_edit_enter_pressed(
+                            enter,
+                            response.has_focus(),
+                            response.lost_focus(),
+                        ) {
+                            let draft = app.parameters_pane.draft.clone();
+                            if apply_parameter_action(
+                                app,
+                                Action::CommitParameterExpression {
+                                    index,
+                                    expression: draft,
+                                },
+                            ) == ActionResult::Ok
+                            {
+                                app.parameters_pane.cancel_edit();
                             }
-                            if parameter_edit_enter_pressed(
-                                enter,
-                                response.has_focus(),
-                                response.lost_focus(),
-                            ) {
-                                let draft = app.parameters_pane.draft.clone();
-                                if apply_parameter_action(
-                                    app,
-                                    Action::CommitParameterExpression {
-                                        index,
-                                        expression: draft,
-                                    },
-                                ) == ActionResult::Ok
-                                {
-                                    app.parameters_pane.cancel_edit();
-                                }
-                                ui.input_mut(|i| {
-                                    i.consume_key(egui::Modifiers::NONE, Key::Enter);
-                                });
-                            }
-                        } else if ui
-                            .selectable_label(
-                                false,
-                                styled_parameter_label(&param_display, param_status),
-                            )
-                            .clicked()
-                            && !param_frozen
-                            && !value_readonly
-                        {
+                            ui.input_mut(|i| {
+                                i.consume_key(egui::Modifiers::NONE, Key::Enter);
+                            });
+                        }
+                        response
+                    } else {
+                        let response = ui.selectable_label(
+                            false,
+                            styled_parameter_label(&param_display, param_status),
+                        );
+                        if response.clicked() && !param_frozen && !value_readonly {
                             app.parameters_pane.begin_edit(
                                 ParameterEditCell::Value(index),
                                 &param_expression,
                             );
                         }
-                    });
+                        response
+                    };
                     let options_open = app.parameters_pane.options_open.contains(&index);
                     let extras_cell = ui.horizontal(|ui| {
                         // Gear cog toggles this parameter's options panel (#1176). Multiple
@@ -2448,7 +2449,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                     });
                     // Pointer over any of the row's cells marks the parameter hovered (#620).
                     if name_cell.response.contains_pointer()
-                        || value_cell.response.contains_pointer()
+                        || value_cell.contains_pointer()
                         || extras_cell.response.contains_pointer()
                     {
                         hovered_name = Some(param_name.clone());
