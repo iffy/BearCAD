@@ -4576,6 +4576,26 @@ pub fn constraint_button_rect(
     ctx.data(|d| d.get_temp::<egui::Rect>(constraint_button_rect_id(kind)))
 }
 
+/// Egui-memory key for a Create Shape dimension field (Height / Radius) drawn this frame.
+fn shape_field_rect_id(field: crate::actions::ShapeDimension) -> egui::Id {
+    use crate::actions::ShapeDimension as D;
+    let label = match field {
+        D::Height => "height",
+        D::Radius => "radius",
+        D::Width => "width",
+        D::Depth => "depth",
+    };
+    egui::Id::new(("shape_field_rect", label))
+}
+
+/// Where the Context pane drew a Create Shape dimension field this frame (#1264).
+pub fn shape_field_rect(
+    ctx: &egui::Context,
+    field: crate::actions::ShapeDimension,
+) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<egui::Rect>(shape_field_rect_id(field)))
+}
+
 pub fn show_pane(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
@@ -5875,6 +5895,10 @@ pub fn show_pane(
                 )
                 .width(90.0)
                 .show(ui, &mut text, doc);
+                // Tutorial orb target for typing steps (#1264).
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(shape_field_rect_id(field), resp.rect);
+                });
                 // The phase's own field takes the keyboard, so its size can be typed
                 // straight after the click that asked for it (#912). Selecting the whole
                 // value on the frame it gains focus means the next keystroke overwrites

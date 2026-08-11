@@ -3928,6 +3928,13 @@ impl App {
                     // A tutorial anchor only needs the button's identity, not a real body.
                     &actions::ExtrudeBodyMode::Cut(crate::arena::Key::from_bits(u64::MAX)),
                 ),
+                // Shape Height / Radius fields in the Context pane (#1264).
+                tutorial::UiAnchor::ShapeHeight => {
+                    context::shape_field_rect(ctx, actions::ShapeDimension::Height)
+                }
+                tutorial::UiAnchor::ShapeRadius => {
+                    context::shape_field_rect(ctx, actions::ShapeDimension::Radius)
+                }
                 other => self.state.tutorial_anchor_rects.get(&other).copied(),
             }
         };

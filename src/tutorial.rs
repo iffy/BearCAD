@@ -39,6 +39,10 @@ pub enum UiAnchor {
     RectWidth,
     /// In-progress rectangle **height** field (#1258).
     RectHeight,
+    /// Shape tool **Height** field in the Context pane (#1264).
+    ShapeHeight,
+    /// Shape tool **Radius** field in the Context pane (#1264).
+    ShapeRadius,
     /// A status-bar pane toggle (phone layout only, #828): Elements / Context / Params.
     PaneButton(crate::actions::Pane),
 }
@@ -3315,7 +3319,7 @@ static SHAPES_STEPS: &[Step] = &[
     ),
     assisted_step(
         "Type the height: `20`, then Enter.",
-        StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        StepAnchor::Ui(UiAnchor::ShapeHeight),
         Some(has_cuboid),
         StepAssist {
             label: "Place it for me",
@@ -3340,7 +3344,7 @@ static SHAPES_STEPS: &[Step] = &[
     ),
     assisted_step(
         "Type the radius: `10`, then Enter.",
-        StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        StepAnchor::Ui(UiAnchor::ShapeRadius),
         Some(cylinder_radius_typed_10),
         StepAssist {
             label: "Place it for me",
@@ -3350,7 +3354,7 @@ static SHAPES_STEPS: &[Step] = &[
     ),
     assisted_step(
         "Type the height: `20`, then Enter.",
-        StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        StepAnchor::Ui(UiAnchor::ShapeHeight),
         Some(has_cylinder),
         StepAssist {
             label: "Place it for me",
@@ -3375,7 +3379,7 @@ static SHAPES_STEPS: &[Step] = &[
     ),
     assisted_step(
         "Type the radius: `10`, then Enter.",
-        StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        StepAnchor::Ui(UiAnchor::ShapeRadius),
         Some(has_all_three_shapes),
         StepAssist {
             label: "Place it for me",
@@ -4142,6 +4146,108 @@ mod tests {
         ));
         assert!(typing[0].on_enter.is_some());
         assert!(typing[1].on_enter.is_some());
+    }
+
+    /// #1263: opposite-corner steps point at the next corner in the world, not the tool.
+    #[test]
+    fn opposite_corner_guide_follows_first_corner() {
+        let mut app = AppState::default();
+        // Cuboid base after first corner: guide sits on the opposite corner.
+        let mut creating = crate::actions::CreatingShape::new(crate::model::PrimitiveKind::Cuboid);
+        creating.first_corner = Some(glam::Vec3::new(10.0, 10.0, 0.0));
+        creating.shape.origin = [10.0, 10.0, 0.0];
+        creating.shape.u_axis = [1.0, 0.0, 0.0];
+        creating.shape.normal = [0.0, 0.0, 1.0];
+        creating.phase = crate::actions::ShapePhase::Base;
+        app.creating_shape = Some(creating);
+        let opp = ground_anchor_b(&app).expect("opposite corner guide");
+        assert!(
+            (opp - glam::Vec3::new(50.0, 50.0, 0.0)).length() < 0.1,
+            "expected first_corner + 40u + 40v, got {opp:?}"
+        );
+
+        // Cube tutorial rectangle: opposite corner follows the first click.
+        app.creating_shape = None;
+        ensure_rect_sketch_for_tutorial(&mut app);
+        app.creating_rect = Some(crate::actions::CreatingRect {
+            origin: glam::Vec3::new(5.0, 5.0, 0.0),
+            texts: ["20".into(), "20".into()],
+            focused: 0,
+            last_mouse: glam::Vec3::new(25.0, 25.0, 0.0),
+            user_edited: [false, false],
+            pending_focus: true,
+            construction: false,
+            anchor: crate::actions::RectAnchor::Corner,
+        });
+        let rect_opp = rect_opposite_corner_guide(&app).expect("rect opposite");
+        assert!(rect_opp.x > 5.0 && rect_opp.y > 5.0);
+
+        // Step authoring: shapes + cube opposite-corner steps use World.
+        let shapes = &TUTORIALS[tutorial_index("shapes").unwrap()];
+        let opp_step = shapes
+            .steps
+            .iter()
+            .find(|s| s.narration.to_ascii_lowercase().contains("opposite corner"))
+            .expect("shapes opposite-corner step");
+        assert!(matches!(opp_step.anchor, StepAnchor::World(_)));
+
+        let cube = &TUTORIALS[tutorial_index("cube").unwrap()];
+        let cube_opp = cube
+            .steps
+            .iter()
+            .find(|s| s.narration.to_ascii_lowercase().contains("opposite corner"))
+            .expect("cube opposite-corner step");
+        assert!(matches!(cube_opp.anchor, StepAnchor::World(_)));
+    }
+
+    /// #1264: shape typing steps point at Height / Radius fields, not the Shape tool.
+    #[test]
+    fn shapes_typing_steps_target_height_and_radius_fields() {
+        let shapes = &TUTORIALS[tutorial_index("shapes").unwrap()];
+        let height_steps: Vec<_> = shapes
+            .steps
+            .iter()
+            .filter(|s| s.narration.to_ascii_lowercase().contains("type the height"))
+            .collect();
+        assert!(!height_steps.is_empty());
+        for step in height_steps {
+            assert!(
+                matches!(step.anchor, StepAnchor::Ui(UiAnchor::ShapeHeight)),
+                "height typing should point at ShapeHeight: {}",
+                step.narration
+            );
+            assert!(step.type_hint.is_some());
+        }
+        let radius_steps: Vec<_> = shapes
+            .steps
+            .iter()
+            .filter(|s| s.narration.to_ascii_lowercase().contains("type the radius"))
+            .collect();
+        assert!(!radius_steps.is_empty());
+        for step in radius_steps {
+            assert!(
+                matches!(step.anchor, StepAnchor::Ui(UiAnchor::ShapeRadius)),
+                "radius typing should point at ShapeRadius: {}",
+                step.narration
+            );
+        }
+
+        // Cube face / extrude click also uses a world guide (same multi-step family).
+        let cube = &TUTORIALS[tutorial_index("cube").unwrap()];
+        let face = cube
+            .steps
+            .iter()
+            .find(|s| {
+                let n = s.narration.to_ascii_lowercase();
+                n.contains("the square") || n.contains("the face")
+            })
+            .expect("cube face click step");
+        assert!(
+            matches!(face.anchor, StepAnchor::World(_)),
+            "face click should use a world guide: {}",
+            face.narration
+        );
+        assert!(rectangle_face_guide(&AppState::default()).is_some());
     }
 
     /// #1239: shapes tutorial assists place all three primitives.
