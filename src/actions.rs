@@ -252,7 +252,8 @@ pub enum ShapeDimension {
 }
 
 impl ShapeDimension {
-    fn slot(self) -> usize {
+    /// Index into [`CreatingShape::typed`] (and parallel arrays).
+    pub fn slot(self) -> usize {
         match self {
             ShapeDimension::Width => 0,
             ShapeDimension::Depth => 1,

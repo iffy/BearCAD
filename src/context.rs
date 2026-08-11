@@ -389,12 +389,18 @@ pub enum MoveEdit {
 pub struct ShapeControl {
     pub kind: crate::model::PrimitiveKind,
     /// The dimension the current placement phase is asking for (#912): its field takes the
-    /// keyboard, so a size can be typed the moment a click lands.
+    /// keyboard, so a size can be typed the moment a click lands. Stays set for the whole
+    /// phase so live mouse-driven values keep select-all for overwrite typing (#1271).
     pub focus_field: Option<crate::actions::ShapeDimension>,
     pub width: String,
     pub depth: String,
     pub height: String,
     pub radius: String,
+    /// Per-field typed flags (Width/Depth/Height/Radius slots) — select-all stops once the
+    /// user has typed into that field (#1271).
+    pub typed: [bool; 4],
+    /// Arm a one-shot focus request (phase just advanced); cleared once the target lands.
+    pub pending_focus: bool,
     pub editing: bool,
     pub can_commit: bool,
 }
@@ -406,6 +412,8 @@ pub enum ShapeEdit {
     Dimension(crate::actions::ShapeDimension, String),
     /// Advance to the next phase (e.g. Base → Height on Enter in the radius field, #1094).
     AdvancePhase,
+    /// The phase's field absorbed the pending focus request (clears `pending_focus`).
+    FocusConsumed,
     Commit,
 }
 
@@ -5878,6 +5886,7 @@ pub fn show_pane(
         ui.separator();
         let mut pending: Option<ShapeEdit> = None;
         let mut enter_commit = false;
+        let mut pending_focus_consumed = false;
         labeled_row(ui, "Shape", |ui| {
             for (value, icon, tooltip) in [
                 (K::Cuboid, crate::icons::IconId::ShapeCuboid, "Cuboid (B cycles)"),
@@ -5906,15 +5915,30 @@ pub fn show_pane(
                 ui.ctx().data_mut(|d| {
                     d.insert_temp(shape_field_rect_id(field), resp.rect);
                 });
-                // The phase's own field takes the keyboard, so its size can be typed
-                // straight after the click that asked for it (#912). Selecting the whole
-                // value on the frame it gains focus means the next keystroke overwrites
-                // it, like the sketch Rectangle's typed dimensions do (#1100).
+                // The phase's own field takes the keyboard (#912). While the mouse still
+                // drives the value, keep focus + select-all so typing overwrites the live
+                // number (#1271). Never steal from another field the user clicked (#1274).
                 let is_focus_target = control.focus_field == Some(field);
-                if is_focus_target && !resp.has_focus() {
+                let user_edited = control.typed[field.slot()];
+                let memory_focused = ui.ctx().memory(|m| m.focused()) == Some(id);
+                let other_widget_focused =
+                    ui.ctx().memory(|m| m.focused().is_some_and(|f| f != id));
+                if crate::should_hold_live_value_focus(
+                    is_focus_target,
+                    user_edited,
+                    control.pending_focus,
+                    other_widget_focused,
+                ) {
                     resp.request_focus();
                 }
-                if is_focus_target && resp.gained_focus() {
+                if crate::should_select_all_rect_value(
+                    resp.gained_focus(),
+                    memory_focused || resp.has_focus(),
+                    is_focus_target,
+                    control.pending_focus,
+                    user_edited,
+                    resp.changed(),
+                ) {
                     let len = text.chars().count();
                     if let Some(mut state) =
                         egui::widgets::text_edit::TextEditState::load(ui.ctx(), id)
@@ -5925,6 +5949,11 @@ pub fn show_pane(
                         )));
                         state.store(ui.ctx(), id);
                     }
+                }
+                // Focus target has the keyboard: drop the one-shot arm so we don't keep a
+                // stale pending flag after the phase field lands (#1274).
+                if is_focus_target && memory_focused && control.pending_focus {
+                    pending_focus_consumed = true;
                 }
                 if resp.changed() {
                     pending = Some(ShapeEdit::Dimension(field, text.clone()));
@@ -5949,6 +5978,9 @@ pub fn show_pane(
                 dimension(ui, "Height", D::Height, &control.height);
             }
             K::Sphere => dimension(ui, "Radius", D::Radius, &control.radius),
+        }
+        if pending_focus_consumed {
+            on_shape_edit(ShapeEdit::FocusConsumed);
         }
         if let Some(edit) = pending {
             on_shape_edit(edit);

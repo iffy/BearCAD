@@ -2845,6 +2845,23 @@ fn focus_rect_height_field(app: &mut AppState) {
     });
 }
 
+/// Height typing step: ensure the shape is in the Height phase with the Height field armed
+/// for overwrite typing (#1274). Typing the radius alone used to advance the tutorial while
+/// the tool was still in Base with Radius clinging to the keyboard.
+fn ensure_shape_height_focus(app: &mut AppState) {
+    use crate::actions::ShapePhase;
+    let Some(c) = app.creating_shape.as_mut() else {
+        return;
+    };
+    if matches!(c.phase, ShapePhase::Base | ShapePhase::Anchor) {
+        c.phase = ShapePhase::Height;
+        c.phase_screen = None;
+    }
+    if c.phase == ShapePhase::Height {
+        c.pending_focus = true;
+    }
+}
+
 fn ground_anchor_a(app: &AppState) -> Option<glam::Vec3> {
     ground_local(app, 15.0, 15.0)
 }
@@ -3317,7 +3334,7 @@ static SHAPES_STEPS: &[Step] = &[
         StepAnchor::World(ground_anchor_b),
         Some(cuboid_base_set),
     ),
-    assisted_step(
+    assisted_step_enter(
         "Type the height: `20`, then Enter.",
         StepAnchor::Ui(UiAnchor::ShapeHeight),
         Some(has_cuboid),
@@ -3326,6 +3343,7 @@ static SHAPES_STEPS: &[Step] = &[
             run: assist_place_cuboid,
         },
         Some(TypeHint::Fixed("20")),
+        ensure_shape_height_focus,
     ),
     plain_step(
         "Press `B` to re-arm the Shape tool.",
@@ -3352,7 +3370,7 @@ static SHAPES_STEPS: &[Step] = &[
         },
         Some(TypeHint::Fixed("10")),
     ),
-    assisted_step(
+    assisted_step_enter(
         "Type the height: `20`, then Enter.",
         StepAnchor::Ui(UiAnchor::ShapeHeight),
         Some(has_cylinder),
@@ -3361,6 +3379,7 @@ static SHAPES_STEPS: &[Step] = &[
             run: assist_place_cylinder,
         },
         Some(TypeHint::Fixed("20")),
+        ensure_shape_height_focus,
     ),
     plain_step(
         "Press `B` to re-arm the Shape tool.",
@@ -4200,6 +4219,7 @@ mod tests {
     }
 
     /// #1264: shape typing steps point at Height / Radius fields, not the Shape tool.
+    /// #1274: height steps also arm Height focus on enter so Radius can't keep the keyboard.
     #[test]
     fn shapes_typing_steps_target_height_and_radius_fields() {
         let shapes = &TUTORIALS[tutorial_index("shapes").unwrap()];
@@ -4216,7 +4236,25 @@ mod tests {
                 step.narration
             );
             assert!(step.type_hint.is_some());
+            assert!(
+                step.on_enter.is_some(),
+                "height typing should focus Height on enter: {}",
+                step.narration
+            );
         }
+
+        // on_enter advances Base → Height and arms pending focus.
+        let mut app = AppState::default();
+        app.apply(Action::SetTool(Tool::Shape));
+        if let Some(c) = app.creating_shape.as_mut() {
+            c.phase = crate::actions::ShapePhase::Base;
+            c.shape.kind = crate::model::PrimitiveKind::Cylinder;
+            c.pending_focus = false;
+        }
+        ensure_shape_height_focus(&mut app);
+        let c = app.creating_shape.as_ref().unwrap();
+        assert_eq!(c.phase, crate::actions::ShapePhase::Height);
+        assert!(c.pending_focus);
         let radius_steps: Vec<_> = shapes
             .steps
             .iter()

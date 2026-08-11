@@ -12090,6 +12090,10 @@ impl App {
         let mut depth_text = creating.shape.depth.clone();
         let focused = creating.focused;
         let mut pending_focus = creating.pending_focus;
+        // `typed` gates select-all / continuous focus hold — without it every keystroke
+        // re-selects and multi-digit sizes collapse to the last digit (#1271 family).
+        let width_edited = creating.typed[actions::ShapeDimension::Width.slot()];
+        let depth_edited = creating.typed[actions::ShapeDimension::Depth.slot()];
         let id_w = egui::Id::new("shape_base_width");
         let id_d = egui::Id::new("shape_base_depth");
         let width_layout = line_dim_layout(c0, w_end, &width_text);
@@ -12114,7 +12118,7 @@ impl App {
                         None,
                         focused == 0,
                         &mut pending_focus,
-                        false,
+                        width_edited,
                         false,
                     );
                 });
@@ -12134,7 +12138,7 @@ impl App {
                         None,
                         focused == 1,
                         &mut pending_focus,
-                        false,
+                        depth_edited,
                         false,
                     );
                 });
@@ -14282,28 +14286,19 @@ impl App {
                 let creating = self.state.creating_shape.clone().unwrap_or_else(|| {
                     actions::CreatingShape::new(self.state.shape_kind)
                 });
+                // Phase owns the focus target for the whole step — not only while
+                // `pending_focus` is armed — so Height stays selected for overwrite while
+                // the mouse drives the top (#1271) and Radius doesn't cling after the
+                // user moves on (#1274).
                 context::ShapeControl {
                     kind: creating.shape.kind,
-                    focus_field: if creating.pending_focus {
-                        match (creating.shape.kind, creating.phase) {
-                            (_, actions::ShapePhase::Height) => {
-                                Some(actions::ShapeDimension::Height)
-                            }
-                            // The cuboid Base phase has its own floating W/D fields in the
-                            // 3D view (#1102): the context pane must not steal their focus.
-                            (model::PrimitiveKind::Cuboid, actions::ShapePhase::Base) => None,
-                            (model::PrimitiveKind::Cuboid, _) => {
-                                Some(actions::ShapeDimension::Width)
-                            }
-                            _ => Some(actions::ShapeDimension::Radius),
-                        }
-                    } else {
-                        None
-                    },
+                    focus_field: shape_phase_focus_field(creating.shape.kind, creating.phase),
                     width: creating.shape.width.clone(),
                     depth: creating.shape.depth.clone(),
                     height: creating.shape.height.clone(),
                     radius: creating.shape.radius.clone(),
+                    typed: creating.typed,
+                    pending_focus: creating.pending_focus,
                     editing: creating.editing.is_some(),
                     can_commit: creating.can_commit(&self.state.doc),
                 }
@@ -15434,9 +15429,19 @@ impl App {
                     }
                     context::ShapeEdit::Dimension(field, text) => {
                         self.state.apply(Action::SetShapeDimension { field, text });
+                        // Typing into a field means focus has landed; drop the one-shot arm
+                        // so a still-pending flag can't fight the next phase (#1274).
+                        if let Some(c) = self.state.creating_shape.as_mut() {
+                            c.pending_focus = false;
+                        }
                     }
                     context::ShapeEdit::AdvancePhase => {
                         self.advance_shape_phase();
+                    }
+                    context::ShapeEdit::FocusConsumed => {
+                        if let Some(c) = self.state.creating_shape.as_mut() {
+                            c.pending_focus = false;
+                        }
                     }
                     context::ShapeEdit::Commit => {
                         self.state.apply(Action::CommitShape);
@@ -20360,8 +20365,10 @@ fn should_commit_sketch_on_click(
 /// Once the user has typed (`user_edited`), do not re-select on a still-pending focus
 /// request — that would wipe multi-char input that arrived via unfocused type-to-edit
 /// before the field held the keyboard (#1201). `pending_focus` still arms select-all
-/// while the buffer is the measured default.
-fn should_select_all_rect_value(
+/// while the buffer is the measured default. While the mouse still drives the value
+/// (`!user_edited`), keep selecting every frame so a live-updating height/width stays
+/// ready for overwrite typing (#1271).
+pub(crate) fn should_select_all_rect_value(
     gained_focus: bool,
     has_focus: bool,
     is_focus_target: bool,
@@ -20394,6 +20401,48 @@ fn should_grab_unfocused_tool_typing(field_has_focus: bool, wants_keyboard_input
 /// steal focus back from another focused widget (parameter pane, etc.) (#506).
 fn should_request_pending_tool_focus(pending_focus: bool, other_widget_focused: bool) -> bool {
     pending_focus && !other_widget_focused
+}
+
+/// Hold the keyboard on a live mouse-driven dimension so typing overwrites even while the
+/// field (or its Area) moves with the cursor (#1271/#1274/#1278).
+///
+/// - While the buffer is still the measured default (`!user_edited`), keep requesting
+///   focus for the phase's target field — clearing `pending_focus` after one frame used
+///   to drop focus the moment a floating field repositioned.
+/// - `pending_focus` still re-arms after type-to-edit so the field can land the keyboard
+///   without re-selecting (see [`should_select_all_rect_value`]).
+/// - Never steal from another focused widget (#506/#1274): clicking Height must not lose
+///   to a Radius field that still thinks it owns the keyboard.
+pub(crate) fn should_hold_live_value_focus(
+    is_focus_target: bool,
+    user_edited: bool,
+    pending_focus: bool,
+    other_widget_focused: bool,
+) -> bool {
+    if other_widget_focused {
+        return false;
+    }
+    is_focus_target && (!user_edited || pending_focus)
+}
+
+/// Which Create Shape context-pane field owns the keyboard for the current phase (#1271/#1274).
+///
+/// Height phase always targets Height (so select-all stays armed while the mouse drives the
+/// top). Cuboid Base uses floating W/D fields instead. Cylinder/sphere Base targets Radius.
+pub(crate) fn shape_phase_focus_field(
+    kind: model::PrimitiveKind,
+    phase: actions::ShapePhase,
+) -> Option<actions::ShapeDimension> {
+    use actions::ShapeDimension as D;
+    use actions::ShapePhase as P;
+    use model::PrimitiveKind as K;
+    match (kind, phase) {
+        (_, P::Height) => Some(D::Height),
+        (K::Cuboid, P::Base) => None,
+        (K::Cylinder | K::Sphere, P::Base) => Some(D::Radius),
+        (K::Sphere, P::Done) => Some(D::Radius),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -20485,7 +20534,15 @@ fn show_sketch_dimension_field(
     // focused, and a scripted (background) window still routes typing into the field
     // that holds keyboard focus (#1201, same rationale as Enter below).
     let memory_focused = ctx.memory(|m| m.focused()) == Some(id);
-    if is_focus_target && *pending_focus {
+    let other_widget_focused = ctx.memory(|m| m.focused().is_some_and(|f| f != id));
+    // Live-measured fields keep requesting focus until the user types — floating Areas
+    // that ride the cursor otherwise drop the keyboard after one frame (#1278).
+    if should_hold_live_value_focus(
+        is_focus_target,
+        user_edited,
+        *pending_focus,
+        other_widget_focused,
+    ) {
         resp.request_focus();
     }
     if should_select_all_rect_value(
@@ -33266,6 +33323,49 @@ mod tests {
     #[test]
     fn select_all_while_focused_and_not_user_edited() {
         assert!(should_select_all_rect_value(false, true, true, false, false, false));
+    }
+
+    /// #1271: live mouse-driven height keeps select-all every frame until the user types.
+    #[test]
+    fn live_shape_height_keeps_select_all_while_unedited() {
+        // Same condition every frame while the top rides the pointer.
+        assert!(should_select_all_rect_value(false, true, true, false, false, false));
+        assert!(should_select_all_rect_value(false, true, true, true, false, false));
+        // Once typed, stop re-selecting so multi-digit input builds.
+        assert!(!should_select_all_rect_value(false, true, true, false, true, false));
+    }
+
+    /// #1271/#1278: hold keyboard on the live field even after pending_focus clears; never
+    /// steal from a field the user clicked (#1274).
+    #[test]
+    fn live_value_focus_hold_and_no_steal() {
+        // Unedited focus target: keep holding.
+        assert!(should_hold_live_value_focus(true, false, false, false));
+        assert!(should_hold_live_value_focus(true, false, true, false));
+        // After type-to-edit armed pending: still request so the field lands.
+        assert!(should_hold_live_value_focus(true, true, true, false));
+        // Typed and settled: stop re-requesting.
+        assert!(!should_hold_live_value_focus(true, true, false, false));
+        // Another widget has the keyboard: do not steal (#1274 Radius vs Height).
+        assert!(!should_hold_live_value_focus(true, false, true, true));
+        assert!(!should_hold_live_value_focus(true, false, false, true));
+        // Not the phase target: never.
+        assert!(!should_hold_live_value_focus(false, false, true, false));
+    }
+
+    /// #1271/#1274: phase owns the context-pane focus target for the whole step.
+    #[test]
+    fn shape_phase_focus_field_targets_active_dimension() {
+        use actions::ShapeDimension as D;
+        use actions::ShapePhase as P;
+        use model::PrimitiveKind as K;
+        assert_eq!(shape_phase_focus_field(K::Cuboid, P::Height), Some(D::Height));
+        assert_eq!(shape_phase_focus_field(K::Cylinder, P::Height), Some(D::Height));
+        assert_eq!(shape_phase_focus_field(K::Cylinder, P::Base), Some(D::Radius));
+        assert_eq!(shape_phase_focus_field(K::Sphere, P::Base), Some(D::Radius));
+        // Cuboid Base uses floating W/D fields — context must not steal them.
+        assert_eq!(shape_phase_focus_field(K::Cuboid, P::Base), None);
+        assert_eq!(shape_phase_focus_field(K::Cuboid, P::Anchor), None);
     }
 
     /// #1161: grabbing a gizmo clears the user-edited flag and arms pending focus so the
