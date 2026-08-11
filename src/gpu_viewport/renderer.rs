@@ -613,10 +613,12 @@ impl ViewportGpuResources {
                 cull_mode: None,
                 ..Default::default()
             },
+            // Dimension labels only appear in sketch mode and must show through bodies
+            // (#1280) — depth Always, no depth write (same always-on-top idea as gizmos).
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: VIEWPORT_DEPTH_FORMAT,
                 depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                depth_compare: Some(wgpu::CompareFunction::Always),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -625,10 +627,8 @@ impl ViewportGpuResources {
             cache: None,
         });
 
-        // Tracing-image pipeline (#170): identical to the text pipeline except for the
-        // fragment (full-color texture sample instead of glyph-alpha) — same vertex layout,
-        // same texture bind group layout, same depth-test-on/write-off behavior so bodies
-        // in front occlude images while images never occlude anything themselves.
+        // Tracing-image pipeline (#170): textured world quads. Depth-test on, write off —
+        // bodies in front occlude images while images never occlude anything themselves.
         let image_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("bearcad_viewport_image_pipeline"),
             layout: Some(&text_pipeline_layout),

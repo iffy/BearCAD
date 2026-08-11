@@ -1997,6 +1997,15 @@ impl ViewportScene {
         }
 
         if input.dim_label_view.is_some() {
+            // While a sketch is open, dimension lines/arrows show through bodies
+            // (#1280) — same depth-disabled wireframe path as open-sketch lines
+            // (#1200). Committed dims only draw in sketch mode, so this always
+            // applies when labels are present.
+            let show_through = input.sketch_session.is_some();
+            let restore = mesh.index_layer;
+            if show_through {
+                mesh.set_index_layer(MeshIndexLayer::Wireframe);
+            }
             let project = |w: Vec3| input.cam.project(w, input.viewport, &vp);
             for label in input.dimension_labels {
                 if label.draw_dimension_lines {
@@ -2010,6 +2019,9 @@ impl ViewportScene {
                         &project,
                     );
                 }
+            }
+            if show_through {
+                mesh.set_index_layer(restore);
             }
         }
         drop(mesh);
@@ -10151,11 +10163,145 @@ mod tests {
         });
         assert!(!scene.text_vertices.is_empty());
         assert!(!scene.text_indices.is_empty());
-        // Dimension extension/witness lines are screen-space strokes (#1157).
+        // Sketch-mode dimensions use the depth-disabled wireframe layer (#1280); closed
+        // (if any) would use depth-tested strokes (#1157).
         assert!(
-            scene.stroke_vertices.len() > 0
+            scene.wireframe_indices.len() > 0
+                || scene.stroke_vertices.len() > 0
                 || scene.vertices.len() > vertex_count_before,
-            "dimension should add line geometry (stroke or mesh)"
+            "dimension should add line geometry (wireframe, stroke, or mesh)"
+        );
+    }
+
+    /// #1280: while a sketch is open, dimension extension/witness lines and arrows must
+    /// land on the depth-disabled wireframe layer so a body between the camera and the
+    /// sketch plane cannot hide them (same always-on-top path as open-sketch lines #1200).
+    #[test]
+    fn open_sketch_dimension_lines_draw_depth_test_disabled() {
+        let mut state = AppState::default();
+        state.apply(crate::actions::Action::BeginSketch {
+            face: FaceId::ConstructionPlane(pkey(0)),
+            viewport: None,
+        });
+        state.creating_rect = Some(crate::actions::CreatingRect {
+            origin: glam::Vec3::ZERO,
+            texts: ["40".into(), "20".into()],
+            focused: 0,
+            last_mouse: glam::Vec3::new(40.0, 20.0, 0.0),
+            user_edited: [true, true],
+            pending_focus: false,
+            construction: false,
+            anchor: crate::actions::RectAnchor::Corner,
+        });
+        state.apply(crate::actions::Action::CommitRectangle);
+        let session = state.sketch_session.unwrap();
+        let cam = state.cam.clone();
+        let viewport = test_viewport();
+        let vp = cam.view_proj(viewport);
+        let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
+        let view = crate::dimensions::PlanarLabelView::from_camera_and_plane(&cam, glam::Vec3::Z);
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
+        let width_dim = state
+            .doc
+            .constraints
+            .keys()
+            .find(|&i| crate::constraints::constraint_evaluated_length(&state.doc, i).is_some())
+            .expect("rectangle should have a width dimension constraint");
+        let (a, b) = crate::constraints::constraint_segment_endpoints(&state.doc, width_dim)
+            .expect("width dimension has endpoints");
+        let world = crate::dimensions::linear_dimension_world_geom(
+            a,
+            b,
+            glam::Vec3::Y,
+            5.0,
+            1.0,
+            2.0,
+        );
+        let label_text = crate::constraints::constraint_evaluated_length(&state.doc, width_dim)
+            .map(crate::value::format_length_display)
+            .unwrap();
+        let (text_vertices, text_indices) = crate::gpu_viewport::build_planar_label_mesh(
+            &ctx,
+            &world,
+            &view,
+            &label_text,
+            Color32::WHITE,
+            &project,
+        );
+        let dim_label = crate::gpu_viewport::ViewportDimLabel {
+            world_geom: world,
+            color: Color32::WHITE,
+            text_vertices,
+            text_indices,
+            draw_dimension_lines: true,
+        };
+        let empty_sel = crate::selection::SceneSelection::default();
+        let empty_vis = crate::hierarchy::ElementVisibility::default();
+        let build = |labels: &[crate::gpu_viewport::ViewportDimLabel]| {
+            ViewportScene::build(&ViewportSceneInput {
+                doc: &state.doc,
+                cam: &cam,
+                viewport,
+                palette: ViewportPalette::default(),
+                sketch_session: Some(session),
+                selection: &empty_sel,
+                cut_highlight_bodies: Vec::new(),
+                faded_bodies: Vec::new(),
+                sketch_repeat_ghost: Vec::new(),
+                sketch_ghost_lines: Vec::new(),
+                edit_preview_meshes: std::collections::HashMap::new(),
+                element_visibility: &empty_vis,
+                preview_rect: None,
+                preview_line: None,
+                preview_circle: None,
+                preview_extrusion: None,
+                preview_solid: None,
+                repeat_ghosts: Vec::new(),
+                cut_surface_ghosts: Vec::new(),
+                preview_cut_body: None,
+                preview_replacement: PreviewReplacement::default(),
+                highlighted_bezier_handles: Vec::new(),
+                editing_extrusion: None,
+                plane_preview: None,
+                active_sketch_face: None,
+                dimension_labels: labels,
+                dim_label_view: Some(view),
+                plane_gizmo: None,
+                extrude_gizmo: None,
+                vertex_treatment_gizmo: None,
+                arrow_gizmos: Vec::new(),
+                move_rotation_gizmos: Vec::new(),
+                revolve_arc_gizmo: None,
+                vertex_treatment_preview: None,
+                hover_highlight: None,
+                extra_pick_highlights: Vec::new(),
+                colored_pick_highlights: Vec::new(),
+                colored_element_highlights: Vec::new(),
+                tinted_bodies: Vec::new(),
+                colored_segments: Vec::new(),
+                parameter_highlight_elements: Vec::new(),
+                hover_color: Color32::WHITE,
+                document_health: &DocumentHealth::default(),
+                constraint_graphics: None,
+                constraint_connector_color: None,
+            })
+        };
+        let baseline = build(&[]);
+        let with_dim = build(std::slice::from_ref(&dim_label));
+        let wire_delta = with_dim.wireframe_indices.len() - baseline.wireframe_indices.len();
+        let stroke_delta = with_dim.stroke_indices.len() - baseline.stroke_indices.len();
+        assert!(
+            wire_delta >= 6,
+            "open-sketch dimension lines must use depth-disabled wireframe (#1280), got wire +{wire_delta}"
+        );
+        assert_eq!(
+            stroke_delta, 0,
+            "open-sketch dimension lines must not use depth-tested strokes (bodies would occlude them), got stroke +{stroke_delta}"
+        );
+        assert!(
+            !with_dim.text_vertices.is_empty() && !with_dim.text_indices.is_empty(),
+            "dimension label text mesh must still be present"
         );
     }
 
