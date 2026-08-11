@@ -587,6 +587,24 @@ pub struct RevolveArcGizmo {
     pub hovered: bool,
 }
 
+/// Arc length drawn for the revolve gizmo. Multi-turn angles only need the last fractional
+/// turn of geometry (or one full turn when the angle is an integer multiple of 360°) —
+/// further turns re-trace the same circle, and with a fixed segment count that produced a
+/// star of long chords (#1247). The push/pull handle is the arc's far end, so this keeps it
+/// at the true planar end angle (angle mod 360°).
+fn revolve_arc_display_angle_deg(angle_deg: f32) -> f32 {
+    if angle_deg.abs() < 360.0 {
+        return angle_deg;
+    }
+    let sign = if angle_deg < 0.0 { -1.0 } else { 1.0 };
+    let rem = angle_deg.abs() % 360.0;
+    if rem < 1e-3 {
+        sign * 360.0
+    } else {
+        sign * rem
+    }
+}
+
 /// Points along the arc from 0° to `angle_deg` of a [`RevolveArcGizmo`], `zero_dir` rotated
 /// about `axis`. Empty if the axis is degenerate.
 fn revolve_arc_points(
@@ -601,6 +619,7 @@ fn revolve_arc_points(
     if n == Vec3::ZERO {
         return Vec::new();
     }
+    let segments = segments.max(1);
     let total = angle_deg.to_radians();
     (0..=segments)
         .map(|i| {
@@ -1854,13 +1873,14 @@ impl ViewportScene {
         }
         if let Some(arc) = input.revolve_arc_gizmo.as_ref() {
             // The swept arc from 0° to the current angle, plus a push/pull disc handle at its
-            // far end (#262).
+            // far end (#262). Multi-turn angles draw one full turn so the arc never becomes a
+            // star of long chords (#1247); the handle still uses the true end angle.
             let points = revolve_arc_points(
                 arc.center,
                 arc.axis,
                 arc.zero_dir,
                 arc.radius,
-                arc.angle_deg,
+                revolve_arc_display_angle_deg(arc.angle_deg),
                 64,
             );
             let width = if arc.hovered { 4.0 } else { 2.5 };
@@ -5610,6 +5630,44 @@ mod tests {
 
     fn test_viewport() -> UiRect {
         UiRect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0))
+    }
+
+    /// #1247: multi-turn revolve angles must not feed the full multi-turn into a fixed
+    /// segment polyline (that drew a star of long chords). Display collapses to the last
+    /// fractional turn (or one full turn for integer revolutions).
+    #[test]
+    fn revolve_arc_display_collapses_multi_turn() {
+        assert!((revolve_arc_display_angle_deg(90.0) - 90.0).abs() < 1e-4);
+        assert!((revolve_arc_display_angle_deg(360.0) - 360.0).abs() < 1e-4);
+        assert!((revolve_arc_display_angle_deg(7200.0) - 360.0).abs() < 1e-3); // 20 revs
+        assert!((revolve_arc_display_angle_deg(7380.0) - 180.0).abs() < 1e-3); // 20.5 revs
+        assert!((revolve_arc_display_angle_deg(-7200.0) + 360.0).abs() < 1e-3);
+        assert!((revolve_arc_display_angle_deg(-370.0) + 10.0).abs() < 1e-3);
+    }
+
+    /// #1247: with the collapsed display angle, consecutive arc samples stay on a smooth
+    /// circle (chord span ≲ 360°/64), never the ~100° jumps that made the star.
+    #[test]
+    fn revolve_arc_multi_turn_samples_stay_smooth() {
+        let center = Vec3::ZERO;
+        let axis = Vec3::Y;
+        let zero_dir = Vec3::X;
+        let radius = 10.0;
+        let display = revolve_arc_display_angle_deg(20.0 * 360.0);
+        let pts = revolve_arc_points(center, axis, zero_dir, radius, display, 64);
+        assert_eq!(pts.len(), 65);
+        let max_step_deg = pts
+            .windows(2)
+            .map(|w| {
+                let a = (w[0] - center).normalize_or_zero();
+                let b = (w[1] - center).normalize_or_zero();
+                a.dot(b).clamp(-1.0, 1.0).acos().to_degrees()
+            })
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_step_deg < 10.0,
+            "multi-turn arc step {max_step_deg}° is a star chord, not a smooth circle"
+        );
     }
 
     fn build_scene_with_shading(
