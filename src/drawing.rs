@@ -347,6 +347,18 @@ pub fn view_size_from_corner_drag(
     (sx, sy)
 }
 
+/// Whether a view card shows its border and Delete ✕ chrome (#1229).
+/// Idle cards are bare; selection, pointer hover, aligned-view parent highlight, and
+/// element-picker row hover each turn the chrome on.
+pub fn view_card_chrome_active(
+    selected: bool,
+    hovered: bool,
+    align_parent: bool,
+    picker_hover: bool,
+) -> bool {
+    selected || hovered || align_parent || picker_hover
+}
+
 /// The projected `(right, up)` bounding box of a view's geometry, or `None` if it has none.
 fn view_projected_bbox(
     doc: &Document,
@@ -2073,6 +2085,17 @@ mod tests {
         // Bottom extreme on shared Y, facing right (max x): right side of the bar.
         let bot_right = silhouette_facing_point(&pts, false, true, false).unwrap();
         assert!((bot_right.y - 0.0).abs() < 1e-5 && (bot_right.x - 10.0).abs() < 1e-5, "{bot_right:?}");
+    }
+
+    /// #1229: view card border + Delete ✕ only when selected or hovered (not idle).
+    #[test]
+    fn view_card_chrome_only_when_selected_or_hovered() {
+        assert!(!view_card_chrome_active(false, false, false, false));
+        assert!(view_card_chrome_active(true, false, false, false));
+        assert!(view_card_chrome_active(false, true, false, false));
+        assert!(view_card_chrome_active(false, false, true, false));
+        assert!(view_card_chrome_active(false, false, false, true));
+        assert!(view_card_chrome_active(true, true, true, true));
     }
 
     /// #1207: corner-grip hit testing and centre-fixed size math for view card resize.

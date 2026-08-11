@@ -244,7 +244,7 @@ pub fn activate_app() -> bool {
     // surface showing its uninitialised contents (#1032/#1082/#1112).
     //
     // Order every visible window to the front, not just the first one (#1091). Once there
-    // are multiple windows (e.g. a popped-out drawing, #276), `app.windows()` may return
+    // are multiple windows (e.g. the report-issue window), `app.windows()` may return
     // them in creation order with the main window first — but we order every visible one
     // anyway so the main viewport window is never missed. Skip invisible windows (e.g. a
     // closed drawing popout) — making them visible would pop them onto the screen.

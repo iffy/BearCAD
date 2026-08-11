@@ -3331,8 +3331,6 @@ struct App {
     /// it hides by default there (still re-showable from the View menu) and this restores it
     /// on the way back to the model.
     params_visible_before_drawing: bool,
-    /// A drawing popped out into its own OS window (#276), so it can sit beside the 3D view.
-    drawing_window: Option<model::DrawingKey>,
     /// The DEV → Report issue window (#627), dev builds only: files an issue (with optional
     /// screenshot/document-JSON attachments) into the repo's local todoer db.
     report_issue: Option<ReportIssueWindow>,
@@ -4429,7 +4427,6 @@ impl App {
             drawing_view_drag: None,
             drawing_view_resize_drag: None,
             params_visible_before_drawing: false,
-            drawing_window: None,
             report_issue: None,
             script_failed,
             last_window_title: None,
@@ -12902,16 +12899,16 @@ impl App {
                 // only the tools that apply to drawings — Select and Dimension (#295: no Move;
                 // the Select tool drags projections directly).
                 if self.state.editing_drawing.is_some() {
-                    // Back to the model (#318): left of Select, replacing Esc-to-exit. The arrow
-                    // is a bundled SVG icon, not a font glyph (#325) — the old "← Back" text
-                    // showed an empty box wherever the font lacked the arrow.
-                    if ui
-                        .add(egui::Button::image_and_text(
-                            icons::sized_texture(ui.ctx(), icons::IconId::Back),
-                            "Back",
-                        ))
-                        .on_hover_text("Return to the 3D model")
-                        .clicked()
+                    // Back to the model (#318): left of Select, icon-only at toolbar size (#1231).
+                    // Bundled SVG, not a font glyph (#325).
+                    if icons::selectable_icon_button_at(
+                        ui,
+                        icons::IconId::Back,
+                        false,
+                        "Return to the 3D model",
+                        TOOLBAR_ICON_SIZE,
+                    )
+                    .clicked()
                     {
                         self.state.apply(Action::EditDrawing { drawing: None });
                     }
@@ -16839,40 +16836,6 @@ impl eframe::App for App {
             self.shortcuts_open = open;
         }
 
-
-        // A popped-out drawing (#276) renders in its own OS window so it can sit beside the 3D
-        // view. Uses an *immediate* viewport so the render closure can borrow `self`.
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(di) = self.drawing_window {
-            if self.state.doc.drawings.get(di).is_none() {
-                self.drawing_window = None;
-            } else {
-                let title =
-                    crate::names::node_label(&self.state.doc, hierarchy::HierarchyNode::Drawing(di));
-                let builder = egui::ViewportBuilder::default()
-                    .with_title(format!("Drawing — {title}"))
-                    .with_inner_size([900.0, 700.0]);
-                let mut close = false;
-                ctx.show_viewport_immediate(
-                    egui::ViewportId::from_hash_of("drawing_popout"),
-                    builder,
-                    |vui, _class| {
-                        theme::apply(vui.ctx());
-                        egui::CentralPanel::default()
-                            .frame(egui::Frame::NONE)
-                            .show(vui, |ui| {
-                                self.draw_drawing_pane(ui, di);
-                            });
-                        if vui.input(|i| i.viewport().close_requested()) {
-                            close = true;
-                        }
-                    },
-                );
-                if close {
-                    self.drawing_window = None;
-                }
-            }
-        }
 
         // DEV → Report issue window (#627): its own OS window (reachable only through the
         // debug-build DEV menu) with a focused description textarea, attachment checkboxes
@@ -22926,10 +22889,6 @@ impl App {
             });
         }
 
-        // Whether this pane is rendering inside the popped-out drawing window (#276).
-        let in_window = self.drawing_window == Some(drawing);
-        #[allow(unused_mut)] // only mutated by the native-only "Open in window" button
-        let mut pop_out = false;
         let mut remove_view: Option<usize> = None;
         let mut toggle_dim: Option<(usize, [i32; 3], [i32; 3])> = None;
         let mut toggle_circle_dim: Option<(usize, [i32; 3])> = None;
@@ -22941,22 +22900,7 @@ impl App {
 
         // Escape no longer leaves the Drawing workbench (#318) — it's used for cancelling
         // in-progress tool actions. A Back button (in the toolbar, left of Select) returns to
-        // the model instead.
-        // The title/hint were removed (#349) and export moved to the toolbar's Export icon (#348),
-        // so only the pop-out action remains on this row (until #347 moves it to the OS menu).
-        #[cfg(not(target_arch = "wasm32"))]
-        if !in_window {
-            ui.horizontal(|ui| {
-                if ui
-                    .button("Open in window")
-                    .on_hover_text("Open this drawing in its own window, beside the 3D view")
-                    .clicked()
-                {
-                    pop_out = true;
-                }
-            });
-            ui.separator();
-        }
+        // the model instead. The in-pane "Open in window" control was removed (#1230).
 
         // Views are added with the toolbar's Add-view tool (#289): pick a body or sketch in
         // the Elements pane and a projection drops onto the page, ready to drag and configure
@@ -23177,8 +23121,7 @@ impl App {
                         ui.close();
                     }
                 });
-                // The selected card (#289) gets an accent border; a hovered card gets a lighter
-                // one so it's clear the whole card is clickable (#316); others a faint outline.
+                // Selected / hovered cards get a border (#289/#316); idle cards stay bare (#1229).
                 let selected_here = self
                     .state
                     .is_drawing_element_selected(drawing, context::DrawingElementRef::Projection(vi));
@@ -23187,14 +23130,20 @@ impl App {
                 // The Select-tool element picker hovering this projection's row highlights it (#328).
                 let picker_hover_here = self.state.hovered_drawing_element
                     == Some(context::DrawingElementRef::Projection(vi));
-                let stroke = if selected_here || align_parent_here || picker_hover_here {
-                    egui::Stroke::new(1.5, egui::Color32::from_rgb(90, 150, 230))
-                } else if drag.hovered() {
-                    egui::Stroke::new(1.5, egui::Color32::from_rgb(120, 140, 170))
-                } else {
-                    egui::Stroke::new(1.0, egui::Color32::from_gray(80))
-                };
-                painter.rect_stroke(cell.shrink(2.0), 2.0, stroke, egui::StrokeKind::Inside);
+                let chrome_active = crate::drawing::view_card_chrome_active(
+                    selected_here,
+                    drag.hovered(),
+                    align_parent_here,
+                    picker_hover_here,
+                );
+                if chrome_active {
+                    let stroke = if selected_here || align_parent_here || picker_hover_here {
+                        egui::Stroke::new(1.5, egui::Color32::from_rgb(90, 150, 230))
+                    } else {
+                        egui::Stroke::new(1.5, egui::Color32::from_rgb(120, 140, 170))
+                    };
+                    painter.rect_stroke(cell.shrink(2.0), 2.0, stroke, egui::StrokeKind::Inside);
+                }
                 // Corner resize grips on the selected projection (#1207).
                 if selected_here && self.state.tool == Tool::Select {
                     let corners = crate::drawing::view_card_corners(
@@ -23279,25 +23228,27 @@ impl App {
                     };
                     painter.text(pos, align, caption, egui::FontId::proportional(dim_font), INK);
                 }
-                // Remove button in the cell's top-right corner.
-                let x_rect = egui::Rect::from_min_size(
-                    egui::pos2(cell.max.x - 24.0, cell.min.y + 4.0),
-                    egui::vec2(20.0, 20.0),
-                );
-                // Remove uses the bundled ✕ SVG (IconId::Close), never a font glyph (#325).
-                if ui
-                    .put(
-                        x_rect,
-                        egui::Button::new(egui::Image::new(icons::sized_texture(
-                            ui.ctx(),
-                            icons::IconId::Close,
-                        )))
-                        .frame(true),
-                    )
-                    .on_hover_text("Remove view")
-                    .clicked()
-                {
-                    remove_view = Some(vi);
+                // Remove ✕ only with the border chrome — selected or hovered (#1229).
+                // Uses the bundled ✕ SVG (IconId::Close), never a font glyph (#325).
+                if chrome_active {
+                    let x_rect = egui::Rect::from_min_size(
+                        egui::pos2(cell.max.x - 24.0, cell.min.y + 4.0),
+                        egui::vec2(20.0, 20.0),
+                    );
+                    if ui
+                        .put(
+                            x_rect,
+                            egui::Button::new(egui::Image::new(icons::sized_texture(
+                                ui.ctx(),
+                                icons::IconId::Close,
+                            )))
+                            .frame(true),
+                        )
+                        .on_hover_text("Remove view")
+                        .clicked()
+                    {
+                        remove_view = Some(vi);
+                    }
                 }
                 // Project the body's feature edges into the cell (below the caption strip),
                 // padded exactly like the export (#376) so auto-fit scales match.
@@ -24387,11 +24338,6 @@ impl App {
                 height_mm: Some(height_mm),
                 margin_mm: Some(margin_mm),
             });
-        }
-        if pop_out {
-            // Move the drawing into its own window and hand the central area back to the 3D view.
-            self.drawing_window = Some(drawing);
-            self.state.apply(Action::EditDrawing { drawing: None });
         }
     }
 
