@@ -17944,28 +17944,70 @@ fn move_ghost_target_transform(
 /// exponential ease — quick, but smooth.
 const MOVE_GHOST_EASE_SECS: f32 = 0.06;
 
-/// Where a sketch-axis label sits (#751): march from the axis origin's screen position
-/// along its positive on-screen direction to the point where the ray leaves `rect`. The
-/// origin is clamped into the rect first (it may sit off-screen), and a degenerate
-/// direction (axis edge-on to the camera) yields `None`.
+/// Where a sketch-axis label sits (#751, #1216): the point where the infinite axis line
+/// meets `rect`'s boundary. Of the (up to two) line–rect intersections, pick the one
+/// **nearer the origin in screen space** so the label stays next to the visible axis when
+/// the origin is lopsided against one edge (#1216: +X pointing up would put LX at the far
+/// top — flip to the bottom). When both exits are equidistant, prefer the positive
+/// direction. A degenerate direction (axis edge-on) or a line that misses `rect` yields
+/// `None`.
 fn axis_label_edge_pos(rect: egui::Rect, origin: egui::Pos2, dir: egui::Vec2) -> Option<egui::Pos2> {
     if dir.length() < 1e-4 {
         return None;
     }
     let d = dir.normalized();
-    let o = rect.clamp(origin);
-    let mut t = f32::INFINITY;
-    if d.x > 1e-6 {
-        t = t.min((rect.max.x - o.x) / d.x);
-    } else if d.x < -1e-6 {
-        t = t.min((rect.min.x - o.x) / d.x);
+    // Intersect the infinite line origin + t·d with each edge; keep hits that land on the
+    // edge segment (inclusive). Corner hits appear twice with the same t — dedupe by t.
+    let mut hits: Vec<(f32, egui::Pos2)> = Vec::with_capacity(4);
+    let push_hit = |hits: &mut Vec<(f32, egui::Pos2)>, t: f32, p: egui::Pos2| {
+        if hits.iter().any(|(ot, _)| (ot - t).abs() < 1e-4) {
+            return;
+        }
+        hits.push((t, p));
+    };
+    // Vertical edges (x fixed).
+    if d.x.abs() > 1e-6 {
+        for x in [rect.min.x, rect.max.x] {
+            let t = (x - origin.x) / d.x;
+            let y = origin.y + t * d.y;
+            if y >= rect.min.y - 1e-4 && y <= rect.max.y + 1e-4 {
+                push_hit(
+                    &mut hits,
+                    t,
+                    egui::pos2(x, y.clamp(rect.min.y, rect.max.y)),
+                );
+            }
+        }
     }
-    if d.y > 1e-6 {
-        t = t.min((rect.max.y - o.y) / d.y);
-    } else if d.y < -1e-6 {
-        t = t.min((rect.min.y - o.y) / d.y);
+    // Horizontal edges (y fixed).
+    if d.y.abs() > 1e-6 {
+        for y in [rect.min.y, rect.max.y] {
+            let t = (y - origin.y) / d.y;
+            let x = origin.x + t * d.x;
+            if x >= rect.min.x - 1e-4 && x <= rect.max.x + 1e-4 {
+                push_hit(
+                    &mut hits,
+                    t,
+                    egui::pos2(x.clamp(rect.min.x, rect.max.x), y),
+                );
+            }
+        }
     }
-    t.is_finite().then(|| o + d * t.max(0.0))
+    // Prefer smaller |t|; break ties toward positive t (the axis's positive direction).
+    hits
+        .into_iter()
+        .min_by(|a, b| {
+            let ac = a.0.abs();
+            let bc = b.0.abs();
+            match ac.partial_cmp(&bc).unwrap_or(std::cmp::Ordering::Equal) {
+                std::cmp::Ordering::Equal => {
+                    // Prefer positive t when |t| ties.
+                    b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+                }
+                other => other,
+            }
+        })
+        .map(|(_, p)| p)
 }
 
 /// Nudge an axis-edge label off the axis line so the line doesn't run through the letters
@@ -31127,25 +31169,52 @@ mod tests {
         assert!(placed.y > corner.y, "pushed down into the frame: {placed:?}");
     }
 
-    /// #751: the sketch-axis edge labels sit where each axis's positive direction leaves
-    /// the (inset) viewport, whatever way the view has the axes pointing.
+    /// #751: the sketch-axis edge labels sit where the axis line meets the (inset)
+    /// viewport, preferring the positive direction when both exits are equidistant.
     #[test]
     fn axis_label_edge_pos_walks_to_the_rect_edge() {
         let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 80.0));
-        // Straight right from the centre: lands on the right edge.
+        // Straight right from the centre: equidistant — prefer positive → right edge.
         let p = axis_label_edge_pos(rect, egui::pos2(50.0, 40.0), egui::vec2(1.0, 0.0)).unwrap();
         assert!((p - egui::pos2(100.0, 40.0)).length() < 1e-3, "{p:?}");
-        // Up-screen (negative y): lands on the top edge.
+        // Up-screen (negative y) from the centre: prefer positive → top edge.
         let p = axis_label_edge_pos(rect, egui::pos2(50.0, 40.0), egui::vec2(0.0, -1.0)).unwrap();
         assert!((p - egui::pos2(50.0, 0.0)).length() < 1e-3, "{p:?}");
-        // Diagonal: leaves through whichever edge comes first.
+        // Diagonal: positive exit is the nearer of the two line-rect hits.
         let p = axis_label_edge_pos(rect, egui::pos2(50.0, 40.0), egui::vec2(1.0, 1.0)).unwrap();
         assert!((p - egui::pos2(90.0, 80.0)).length() < 1e-3, "{p:?}");
-        // An off-screen origin clamps into the rect first.
+        // Origin off to the left: label sits on the near (left) edge, not the far right.
         let p = axis_label_edge_pos(rect, egui::pos2(-50.0, 40.0), egui::vec2(1.0, 0.0)).unwrap();
-        assert!((p - egui::pos2(100.0, 40.0)).length() < 1e-3, "{p:?}");
+        assert!((p - egui::pos2(0.0, 40.0)).length() < 1e-3, "{p:?}");
         // Edge-on axis (no screen direction): no label.
         assert!(axis_label_edge_pos(rect, egui::pos2(50.0, 40.0), egui::Vec2::ZERO).is_none());
+    }
+
+    /// #1216: when the origin sits near one edge, the positive-direction exit can put the
+    /// label on the far side of the viewport — far enough that the axis no longer reads as
+    /// connected to it. Prefer the nearer exit so LX flips to the bottom when +X points up
+    /// but the origin is already near the bottom.
+    #[test]
+    fn axis_label_picks_the_nearer_edge_when_origin_is_lopsided() {
+        let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 80.0));
+        // Origin near the bottom, +X up-screen: positive exit is the far top — flip to bottom.
+        let p = axis_label_edge_pos(rect, egui::pos2(50.0, 70.0), egui::vec2(0.0, -1.0)).unwrap();
+        assert!(
+            (p - egui::pos2(50.0, 80.0)).length() < 1e-3,
+            "expected bottom edge, got {p:?}"
+        );
+        // Origin near the top, same +X: nearer exit is the top — stay positive.
+        let p = axis_label_edge_pos(rect, egui::pos2(50.0, 10.0), egui::vec2(0.0, -1.0)).unwrap();
+        assert!(
+            (p - egui::pos2(50.0, 0.0)).length() < 1e-3,
+            "expected top edge, got {p:?}"
+        );
+        // Origin near the right, +Y left-screen: flip to the right edge (nearer).
+        let p = axis_label_edge_pos(rect, egui::pos2(90.0, 40.0), egui::vec2(-1.0, 0.0)).unwrap();
+        assert!(
+            (p - egui::pos2(100.0, 40.0)).length() < 1e-3,
+            "expected right edge, got {p:?}"
+        );
     }
 
     /// #742: while a sketch is open, the selection-family pick filter admits only that

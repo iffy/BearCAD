@@ -3308,9 +3308,10 @@ ordinal too.
     (`ContextInput::sketch_axis_screen_dirs`, the projected local axes normalized — rotated with the
     view, never skewed), so which way the line will snap always matches what the viewport shows.
     The viewport itself labels the local axes at its edge (#751): **"LX"/"LY"** in the axis colours,
-    where each axis's positive direction leaves the view (`axis_label_edge_pos`), nudged
-    **perpendicular** onto whichever side has room so the axis line never runs through the
-    letters (#771, `axis_label_offset_pos`).
+    where the axis line meets the view (`axis_label_edge_pos`) — the nearer of the two exits so a
+    lopsided origin doesn't park the label on the far side (#1216), preferring the positive
+    direction when equidistant — nudged **perpendicular** onto whichever side has room so the
+    axis line never runs through the letters (#771, `axis_label_offset_pos`).
   - **No separate Horizontal/Vertical constraint *kind* (#577/#580):** the old standalone constraints
     were removed entirely in favour of the general **parallel-to-axis** solution (the buttons above,
     or select a line **and a sketch axis** and apply **Parallel**/**Perpendicular** directly).
