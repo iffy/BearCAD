@@ -1062,7 +1062,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   keep adding to it", so it is never auto-released. The Move and Joint tools were the same
   algorithm written out twice, seven states and nine; they now declare a chain each
   (`move_focus_chain` / `joint_focus_chain`) and share the walk. A Free move has no point
-  pairs, so its chain is just the bodies and start A; the Joint tool's chain runs the parts, the
+  pairs, so its chain is just the bodies and its **Reference Point** (#1235; same picker
+  target as Start point A, different label — Free has no A/B/C pairing); the Joint tool's chain runs the parts, the
   mate's two faces (#1021/#1079), and then — only when the placement named no plane to seed
   it from — the joint's own axis; its slide stops (#896) are hand-focused from the pane rather
   than stepped into, so they sit outside it.
@@ -1617,9 +1618,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   - **Only the mode's own pickers are registered (#1081).** The registered list is what
     focus, hover, the Selection Exploder and `bearcad.pickers()` all read, so a row the pane
     doesn't show must not be in it: Face Snap registers its two staged rows, Point Snap its
-    six point rows, Free the one start point its typed amounts move from, and In place
-    nothing. Registering all six regardless left **Start point A** live and focused beside
-    Face Snap's rows, so the hover offered corners while the tool was asking for a face.
+    six point rows, Free its **Reference Point** (#1235; the handle its typed amounts move
+    from), and In place nothing. Registering all six regardless left **Start point A** live
+    and focused beside Face Snap's rows, so the hover offered corners while the tool was
+    asking for a face.
   - **Face on face, in two picks a side.** Each of **Moving face** and **Fixed face** is a
     staged picker (#1075): the **face** first, then a **point on that face**. The face shows
     in the row on its own while its point is being chosen, and the side isn't finished until

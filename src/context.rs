@@ -2462,9 +2462,10 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
                     ("Start point C", PickerTarget::MoveStartC, m.start_c, true, m.start_c_focused),
                     ("End point C", PickerTarget::MoveEndC, m.end_c, false, m.end_c_focused),
                 ],
-                // Free still takes a start point — the handle its typed amounts move from.
+                // Free still takes a handle for its typed amounts / drag arrows (#1235):
+                // **Reference Point**, not "Start point A" — Free has no A/B/C pairing.
                 crate::model::MoveTranslateMode::Free => &[(
-                    "Start point A",
+                    "Reference Point",
                     PickerTarget::MoveStartA,
                     m.start_a,
                     true,
@@ -3901,8 +3902,11 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
              amounts. M switches between them.",
         ),
         (Some(Tool::Move), "Start point A") => Some(
-            "The corner or edge midpoint on a moving body that you are aiming with. In Free \
-             mode it is where the drag arrows sit.",
+            "The corner or edge midpoint on a moving body that you are aiming with.",
+        ),
+        (Some(Tool::Move), "Reference Point") => Some(
+            "Where the drag arrows sit and the free X/Y/Z amounts are measured from — a corner \
+             or edge midpoint on a moving body.",
         ),
         (Some(Tool::Move), "End point A") => Some(
             "Where start point A lands — a corner or edge midpoint on something that isn't \
@@ -5459,8 +5463,8 @@ pub fn show_pane(
                 pending = Some(MoveEdit::TranslateMode(mode));
             }
         }
-        // Start point A is picked in both modes (#649/#668): it's the handle a snap moves
-        // *from*.
+        // The A-pair start handle (#649/#668) — Point Snap's **Start point A**, Free's
+        // **Reference Point** (#1235). Same picker target; the heading depends on the mode.
         // Each point picker is built with the other tool pickers (#958) and drawn here, where
         // it belongs among the tool's controls — between the Rotation heading and the
         // Angle-snap slider, which is why it can't be hoisted into the shared block. Its rule
@@ -5540,18 +5544,29 @@ pub fn show_pane(
         }
         // In place (#1076) has nothing to pick and nothing to type — the mate is the identity.
         // Offering no rows is how the pane says so; there is no prose to say it with.
-        if matches!(
-            control.translate_mode,
-            crate::model::MoveTranslateMode::PointSnap | crate::model::MoveTranslateMode::Free
-        ) {
-            picker_row(
-                ui,
-                "Start point A",
-                "move_start_point_a",
-                PickerTarget::MoveStartA,
-                MoveEdit::StartAFocus,
-                MoveEdit::ClearStartA,
-            );
+        // Free (#1235): **Reference Point**. Point Snap: **Start point A**. Same target.
+        match control.translate_mode {
+            crate::model::MoveTranslateMode::Free => {
+                picker_row(
+                    ui,
+                    "Reference Point",
+                    "move_start_point_a",
+                    PickerTarget::MoveStartA,
+                    MoveEdit::StartAFocus,
+                    MoveEdit::ClearStartA,
+                );
+            }
+            crate::model::MoveTranslateMode::PointSnap => {
+                picker_row(
+                    ui,
+                    "Start point A",
+                    "move_start_point_a",
+                    PickerTarget::MoveStartA,
+                    MoveEdit::StartAFocus,
+                    MoveEdit::ClearStartA,
+                );
+            }
+            _ => {}
         }
         // Snap (#650/#668): end point A on stationary geometry; the offset is derived from
         // the pair, so there are no X/Y/Z fields. The optional B pair below it adds the
@@ -8845,6 +8860,79 @@ mod tests {
         );
     }
 
+    /// #1235: Free has no A/B/C pairing, so its handle is **Reference Point** — not the Point
+    /// Snap label "Start point A". The registered heading is what the pane, hover, and
+    /// `bearcad.pickers()` all show, so the name has to live on the picker itself.
+    #[test]
+    fn free_move_calls_its_handle_reference_point() {
+        use crate::model::MoveTranslateMode as M;
+        let doc = crate::model::Document::default();
+        let selection = crate::selection::SceneSelection::default();
+        let heading = |mode: M| -> Option<&'static str> {
+            let control = MoveControl {
+                plane_targets: Vec::new(),
+                image_targets: Vec::new(),
+                angle_snap_deg: crate::actions::MAX_ANGLE_SNAP_DEG,
+                translate_mode: mode,
+                allow_in_place: true,
+                bodies_focused: true,
+                start_a: None,
+                start_a_focused: false,
+                end_a: None,
+                end_a_focused: false,
+                start_b: None,
+                start_b_focused: false,
+                end_b: None,
+                end_b_focused: false,
+                start_c: None,
+                start_c_focused: false,
+                end_c: None,
+                end_c_focused: false,
+                targets: vec![bkey(1)],
+                tx: String::new(),
+                ty: String::new(),
+                tz: String::new(),
+                rx: String::new(),
+                ry: String::new(),
+                rz: String::new(),
+                roll_angle: String::new(),
+                face_flip: false,
+                face_spin: String::new(),
+                face_offset: String::new(),
+                face_a: None,
+                face_b: None,
+                editing: false,
+                can_commit: true,
+            };
+            let input = ContextInput {
+                tool: Tool::Move,
+                in_drawing_workbench: false,
+                open_drawing: None,
+                move_op: Some(control),
+                ..input(&doc, &selection)
+            };
+            context_pane_content(&input)
+                .tool_pickers
+                .iter()
+                .find(|v| v.target == PickerTarget::MoveStartA)
+                .map(|v| v.heading)
+        };
+
+        assert_eq!(
+            heading(M::Free),
+            Some("Reference Point"),
+            "Free mode's handle is Reference Point"
+        );
+        assert_eq!(
+            heading(M::PointSnap),
+            Some("Start point A"),
+            "Point Snap keeps the A/B/C pairing names"
+        );
+        // Help text follows the same labels the pane shows.
+        assert!(row_help(Some(Tool::Move), "Reference Point").is_some());
+        assert!(row_help(Some(Tool::Move), "Start point A").is_some());
+    }
+
     #[test]
     fn move_and_repeat_yield_body_pickers_without_cut_override() {
         use crate::hierarchy::SceneElement;
@@ -8893,13 +8981,21 @@ mod tests {
             ..input(&doc, &selection)
         };
         let pickers = context_pane_content(&move_input).tool_pickers;
-        // Only the pickers this mode uses are registered (#1081) — Free takes a start point
-        // and nothing else. They render inline among the tool's own controls but are
+        // Only the pickers this mode uses are registered (#1081) — Free takes a reference
+        // point and nothing else. They render inline among the tool's own controls but are
         // registered like every other picker, so find this one by target.
         assert_eq!(
             pickers.len(),
             2,
-            "Free registers Bodies and Start point A, and no rows it does not offer"
+            "Free registers Bodies and Reference Point, and no rows it does not offer"
+        );
+        assert_eq!(
+            pickers
+                .iter()
+                .find(|v| v.target == PickerTarget::MoveStartA)
+                .map(|v| v.heading),
+            Some("Reference Point"),
+            "Free mode names the handle Reference Point (#1235)"
         );
         assert_eq!(
             pickers

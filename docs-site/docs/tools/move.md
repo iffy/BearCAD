@@ -64,11 +64,12 @@ Move slides whole bodies to a new place, producing moved copies.
      other side instead, and **Turn** spins it about the fixed face — type a value or drag the
      ring that appears at the mate point. A **yellow line** connects the two spots, and the
      ghost shows where the part lands.
-   - **Free** — type the **X / Y / Z** amounts, or drag the coloured arrows on each face of the
-     selection's tight bounding cuboid (all six sides; each axis has a value box beside its
-     +face handle). Under **Rotation**, type **X / Y / Z** turns or drag the matching coloured
-     rings; they spin the part about its own centre. Everything is an expression, so the move
-     stays parametric.
+   - **Free** — optionally pick a **Reference Point** on a moving body, then type the
+     **X / Y / Z** amounts, or drag the coloured arrows on each face of the selection's tight
+     bounding cuboid (all six sides; each axis has a value box beside its +face handle).
+     Under **Rotation**, type **X / Y / Z** turns or drag the matching coloured rings; they
+     spin the part about its own centre. Everything is an expression, so the move stays
+     parametric.
 3. Press **Enter**.
 
 ### What each pair decides

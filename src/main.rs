@@ -8669,8 +8669,15 @@ impl App {
         let focus = self.move_focus();
         // Point pick (#649/#650/#651): the focused picker takes a body corner or edge midpoint
         // instead of toggling a body. Start point A must sit on a moving body and end point A
-        // target on a stationary one; the rotation point may be either.
+        // target on a stationary one; the rotation point may be either. Free mode labels the
+        // same picker **reference** (#1235) — it has no A/B/C pairing.
+        let free_mode = self
+            .state
+            .creating_move
+            .as_ref()
+            .is_some_and(|c| c.translate_mode == model::MoveTranslateMode::Free);
         if let Some((side, what)) = match focus {
+            MoveFocus::StartPointA if free_mode => Some((Some(true), "reference")),
             MoveFocus::StartPointA => Some((Some(true), "start A")),
             MoveFocus::EndPointA => Some((Some(false), "end A")),
             MoveFocus::StartPointB => Some((Some(true), "start B")),
