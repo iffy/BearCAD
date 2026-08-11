@@ -42,6 +42,11 @@ adjusting the distance or target first.
   depth later.
 - Typing a digit jumps straight into the distance field.
 - **Flip** extrudes to the other side of the sketch plane, keeping the same depth.
+- **Taper** changes the end face size. Click the icon to switch between **distance**
+  (mm added per side — a 10×10 square with taper 5 ends 20×20; circles add to the
+  radius) and **angle** (draft against the normal; −45° on a 10-high 10×10 collapses
+  to a point at height 5). Negative values shrink; past collapse the end is a point
+  (angle mode also shortens the solid).
 
 ## Help
 

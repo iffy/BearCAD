@@ -1728,6 +1728,11 @@ fn assist_extrude(app: &mut AppState) {
         target: None,
         expression: Some("width".to_string()),
         symmetric: false,
+    
+        taper: 0.0,
+        taper_mode: crate::model::ExtrudeTaperMode::Distance,
+        taper_expression: None,
+
     });
 }
 
@@ -1832,6 +1837,11 @@ fn assist_cut_holes(app: &mut AppState) {
         target: None,
         expression: Some("-(thick+1)".to_string()),
         symmetric: false,
+    
+        taper: 0.0,
+        taper_mode: crate::model::ExtrudeTaperMode::Distance,
+        taper_expression: None,
+
     });
 }
 
@@ -1970,6 +1980,11 @@ fn assist_engrave(app: &mut AppState) {
         target: None,
         expression: None,
         symmetric: false,
+    
+        taper: 0.0,
+        taper_mode: crate::model::ExtrudeTaperMode::Distance,
+        taper_expression: None,
+
     });
 }
 
@@ -2789,6 +2804,11 @@ fn assist_extrude_to_cube(app: &mut AppState) {
         target: None,
         expression: Some("20".into()),
         symmetric: false,
+    
+        taper: 0.0,
+        taper_mode: crate::model::ExtrudeTaperMode::Distance,
+        taper_expression: None,
+
     });
 }
 
@@ -2867,6 +2887,11 @@ fn assist_extrude_10mm(app: &mut AppState) {
         target: None,
         expression: Some("10".into()),
         symmetric: false,
+    
+        taper: 0.0,
+        taper_mode: crate::model::ExtrudeTaperMode::Distance,
+        taper_expression: None,
+
     });
 }
 

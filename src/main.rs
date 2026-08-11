@@ -14083,6 +14083,10 @@ impl App {
                     target_focused: self.state.extrude_target_pick,
                     can_commit: ce.is_some_and(|ce| !ce.faces.is_empty()),
                     has_extrusion: ce.is_some_and(|ce| !ce.faces.is_empty()),
+                    taper: ce.map(|ce| ce.taper_text.clone()).unwrap_or_default(),
+                    taper_mode: ce
+                        .map(|ce| ce.taper_mode)
+                        .unwrap_or(model::ExtrudeTaperMode::Distance),
                 }
             }),
             // #157/#167: the Chamfer/Fillet selection picker — rows for the in-progress
@@ -15232,6 +15236,43 @@ impl App {
                         self.state.extrude_target_pick = false;
                         self.pending_extrude_target = None;
                         self.state.apply(Action::SetExtrudeTarget { target: None });
+                    }
+                    context::ExtrudeEdit::Taper(text) => {
+                        if let Some(ce) = self.state.creating_extrusion.as_mut() {
+                            ce.taper_text = text;
+                            ce.taper_user_edited = true;
+                            ce.taper = ce.evaluated_taper(&self.state.doc);
+                        }
+                    }
+                    context::ExtrudeEdit::ToggleTaperMode => {
+                        if let Some(ce) = self.state.creating_extrusion.as_mut() {
+                            // Keep the numeric magnitude; switch units display.
+                            let val = ce.evaluated_taper(&self.state.doc);
+                            ce.taper_mode = match ce.taper_mode {
+                                model::ExtrudeTaperMode::Distance => {
+                                    model::ExtrudeTaperMode::Angle
+                                }
+                                model::ExtrudeTaperMode::Angle => {
+                                    model::ExtrudeTaperMode::Distance
+                                }
+                            };
+                            ce.taper = val;
+                            let unit = model::effective_length_unit(&self.state.doc, ce.sketch);
+                            let angle_unit =
+                                model::effective_angle_unit(&self.state.doc, ce.sketch);
+                            ce.taper_text = match ce.taper_mode {
+                                model::ExtrudeTaperMode::Distance => {
+                                    crate::value::format_length_display_in(val, unit)
+                                }
+                                model::ExtrudeTaperMode::Angle => {
+                                    crate::value::format_angle_display_in(
+                                        val.to_radians(),
+                                        angle_unit,
+                                    )
+                                }
+                            };
+                            ce.taper_user_edited = true;
+                        }
                     }
                     context::ExtrudeEdit::Commit => {
                         self.state.apply(Action::CommitExtrusion);
@@ -19581,6 +19622,9 @@ fn build_viewport_scene_input<'a>(
                 expression: String::new(),
                 symmetric: ce.symmetric,
                 name: None,
+                taper: ce.evaluated_taper(doc),
+                taper_mode: ce.taper_mode,
+                taper_expression: String::new(),
                 edge_treatments: Vec::new(),
             })
         })
@@ -32449,6 +32493,9 @@ mod tests {
             expression: String::new(),
             symmetric: false,
             name: None,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
         });
         state.creating_repeat = Some(CreatingRepeat {
@@ -34205,6 +34252,9 @@ mod tests {
             expression: String::new(),
             symmetric: false,
             name: None,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
         });
         doc.bodies.insert(model::Body {
@@ -34264,6 +34314,9 @@ mod tests {
             expression: String::new(),
             symmetric: false,
             name: None,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
         });
         doc.bodies.insert(model::Body {
@@ -34386,6 +34439,9 @@ mod tests {
             expression: String::new(),
             symmetric: false,
             name: None,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
         });
         doc.bodies.insert(model::Body {

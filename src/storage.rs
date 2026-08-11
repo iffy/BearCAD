@@ -971,6 +971,9 @@ mod tests {
             expression: String::new(),
             symmetric: false,
             name: None,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
         });
 
@@ -1102,6 +1105,9 @@ mod tests {
             expression: String::new(),
             symmetric: false,
             name: None,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
         });
 
@@ -1159,6 +1165,9 @@ mod tests {
             expression: String::new(),
             symmetric: false,
             name: None,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
         });
 
@@ -1325,6 +1334,9 @@ mod tests {
             expression: String::new(),
             symmetric: false,
             name: Some(name.to_string()),
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
         };
         let mut doc = Document::default();
@@ -2377,6 +2389,9 @@ mod tests {
             expression: String::new(),
             name: Some("Boss".to_string()),
             symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
         });
         doc.shape_order.push(ShapeKind::Extrusion);
@@ -2432,6 +2447,9 @@ mod tests {
                 expression: String::new(),
                 name: None,
                 symmetric: false,
+                taper: 0.0,
+                taper_mode: crate::model::ExtrudeTaperMode::Distance,
+                taper_expression: String::new(),
                 edge_treatments: Vec::new(),
             });
             doc.shape_order.push(ShapeKind::Extrusion);

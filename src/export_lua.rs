@@ -1522,6 +1522,10 @@ fn instruction_for_extrusion(
         target: extrusion.target.clone(),
         expression: (!extrusion.expression.trim().is_empty()).then(|| extrusion.expression.clone()),
         symmetric: extrusion.symmetric,
+        taper: extrusion.taper,
+        taper_mode: extrusion.taper_mode,
+        taper_expression: (!extrusion.taper_expression.trim().is_empty())
+            .then(|| extrusion.taper_expression.clone()),
     })
 }
 

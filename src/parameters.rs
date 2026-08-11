@@ -1014,6 +1014,8 @@ fn substitute_name_everywhere(doc: &mut Document, old: &str, new: &str) {
     propagate_parameter_rename(doc, old, new);
     for extrusion in doc.extrusions.values_mut() {
         extrusion.expression = substitute_parameter_name(&extrusion.expression, old, new);
+        extrusion.taper_expression =
+            substitute_parameter_name(&extrusion.taper_expression, old, new);
     }
     for op in doc.move_ops.values_mut() {
         for expr in [&mut op.tx, &mut op.ty, &mut op.tz] {
@@ -1177,16 +1179,35 @@ pub fn rebake_sketch_texts(doc: &mut Document) {
 /// direction (sign) is preserved; magnitude comes from the expression.
 pub fn rebake_extrusion_distances(doc: &mut Document) {
     for i in doc.extrusions.keys().collect::<Vec<_>>() {
-        let (expr, dist) = {
+        let (expr, dist, taper_expr, taper_mode) = {
             let e = &doc.extrusions[i];
-            (e.expression.clone(), e.distance)
+            (
+                e.expression.clone(),
+                e.distance,
+                e.taper_expression.clone(),
+                e.taper_mode,
+            )
         };
-        if expr.trim().is_empty() {
-            continue;
+        if !expr.trim().is_empty() {
+            if let Some(mag) = crate::value::eval_length_mm_in_doc(&expr, doc) {
+                let sign = if dist < 0.0 { -1.0 } else { 1.0 };
+                doc.extrusions[i].distance = mag.abs() * sign;
+            }
         }
-        if let Some(mag) = crate::value::eval_length_mm_in_doc(&expr, doc) {
-            let sign = if dist < 0.0 { -1.0 } else { 1.0 };
-            doc.extrusions[i].distance = mag.abs() * sign;
+        // Taper expression (#1243): length or angle depending on mode.
+        if !taper_expr.trim().is_empty() {
+            match taper_mode {
+                crate::model::ExtrudeTaperMode::Distance => {
+                    if let Some(v) = crate::value::eval_length_mm_in_doc(&taper_expr, doc) {
+                        doc.extrusions[i].taper = v;
+                    }
+                }
+                crate::model::ExtrudeTaperMode::Angle => {
+                    if let Some(r) = crate::value::eval_angle_rad_in_doc(&taper_expr, doc) {
+                        doc.extrusions[i].taper = r.to_degrees().clamp(-89.999, 89.999);
+                    }
+                }
+            }
         }
     }
 }

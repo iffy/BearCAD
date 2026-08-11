@@ -1145,6 +1145,15 @@ pub fn extrude_instruction(name: &str, args: &Value, doc: &Document) -> Result<I
                 .and_then(|key| doc.sketches.keys().position(|k| k == key))
                 .ok_or("extrude face does not exist")?;
             let symmetric = opt_bool(o, "symmetric")?.unwrap_or(false);
+            let taper_mode = match o.get("taper_mode").and_then(|v| v.as_str()) {
+                None => crate::model::ExtrudeTaperMode::Distance,
+                Some(s) => crate::model::ExtrudeTaperMode::from_name(s)
+                    .ok_or_else(|| format!("unknown taper_mode '{s}' (distance|angle)"))?,
+            };
+            let (taper, taper_expression) = match opt_scalar(o, "taper")? {
+                Some((v, e)) => (v, e),
+                None => (0.0, None),
+            };
             Ok(Instruction::Extrude {
                 sketch,
                 faces,
@@ -1153,6 +1162,9 @@ pub fn extrude_instruction(name: &str, args: &Value, doc: &Document) -> Result<I
                 target,
                 expression,
                 symmetric,
+                taper,
+                taper_mode,
+                taper_expression,
             })
         }
         "extrude_face" => {
@@ -3311,6 +3323,9 @@ mod tests {
                 expression: String::new(),
                 symmetric: false,
                 name: None,
+                taper: 0.0,
+                taper_mode: crate::model::ExtrudeTaperMode::Distance,
+                taper_expression: String::new(),
                 edge_treatments: Vec::new(),
             });
         }
@@ -3722,6 +3737,11 @@ mod tests {
                 body: ExtrudeBodyChoice::New,
                 target: None,
                 symmetric: false,
+            
+                taper: 0.0,
+                taper_mode: crate::model::ExtrudeTaperMode::Distance,
+                taper_expression: None,
+
             })
         );
         // A `to` target lets distance default to 0.
@@ -3787,6 +3807,9 @@ mod tests {
             expression: String::new(),
             symmetric: false,
             name: None,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
         });
         assert_eq!(

@@ -1266,6 +1266,35 @@ pub enum ExtrudeTarget {
     },
 }
 
+/// How the extrude taper amount is measured (#1243): a length added per side of the end
+/// face, or a draft angle of each side wall against the extrusion normal.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtrudeTaperMode {
+    /// End face grows/shrinks by this many millimetres along each dimension (per side).
+    #[default]
+    Distance,
+    /// Side wall angle from the normal, in degrees; (−90, +90). Positive flares out.
+    Angle,
+}
+
+impl ExtrudeTaperMode {
+    pub fn from_name(s: &str) -> Option<Self> {
+        match s {
+            "distance" | "length" => Some(Self::Distance),
+            "angle" | "deg" | "degrees" => Some(Self::Angle),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Distance => "distance",
+            Self::Angle => "angle",
+        }
+    }
+}
+
 /// An extrusion of one or more coplanar sketch faces into a 3D solid.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Extrusion {
@@ -1287,6 +1316,16 @@ pub struct Extrusion {
     /// `target` is set (depth is plane-to-plane).
     #[serde(default)]
     pub symmetric: bool,
+    /// End-face size change vs the start face (#1243). Units depend on [`Self::taper_mode`]:
+    /// length (mm, per side) or angle (degrees). Zero = prism (no taper).
+    #[serde(default)]
+    pub taper: f32,
+    /// Whether [`Self::taper`] is a length or a draft angle (#1243).
+    #[serde(default)]
+    pub taper_mode: ExtrudeTaperMode,
+    /// Optional expression driving `taper` (empty = free number).
+    #[serde(default)]
+    pub taper_expression: String,
     #[serde(default)]
     pub name: Option<String>,
     /// Parametric 3D edge chamfer/fillet bevels applied to this extrusion's own analytic

@@ -604,6 +604,13 @@ pub struct CreatingExtrusion {
     pub merge_candidate: Option<crate::model::BodyKey>,
     /// Extrude half the distance each way from the sketch plane (#504).
     pub symmetric: bool,
+    /// Live taper amount (#1243): length (mm) or angle (degrees), per `taper_mode`.
+    pub taper: f32,
+    /// Taper input text.
+    pub taper_text: String,
+    pub taper_user_edited: bool,
+    /// Whether taper is a distance or an angle (#1243).
+    pub taper_mode: crate::model::ExtrudeTaperMode,
 }
 
 impl CreatingExtrusion {
@@ -615,6 +622,38 @@ impl CreatingExtrusion {
             magnitude * sign
         } else {
             self.distance
+        }
+    }
+
+    /// Evaluated taper amount (#1243): length mm or angle degrees depending on mode.
+    pub fn evaluated_taper(&self, doc: &Document) -> f32 {
+        if !self.taper_user_edited {
+            return self.taper;
+        }
+        let text = self.taper_text.trim();
+        if text.is_empty() {
+            return self.taper;
+        }
+        match self.taper_mode {
+            crate::model::ExtrudeTaperMode::Distance => {
+                // Signed length: allow negative taper.
+                crate::value::eval_length_mm_in_doc(text, doc).unwrap_or(self.taper)
+            }
+            crate::model::ExtrudeTaperMode::Angle => {
+                crate::value::eval_angle_rad_in_doc(text, doc)
+                    .map(|r| r.to_degrees())
+                    .unwrap_or(self.taper)
+            }
+        }
+    }
+
+    /// Expression text stored for taper when the user typed it (#1243).
+    pub fn taper_expr(&self) -> String {
+        let text = self.taper_text.trim();
+        if self.taper_user_edited && !text.is_empty() {
+            text.to_string()
+        } else {
+            String::new()
         }
     }
 }
@@ -2356,6 +2395,12 @@ pub enum Action {
         expression: Option<String>,
         /// Extrude half the distance each way from the sketch plane (#504).
         symmetric: bool,
+        /// End-face size change vs the start face (#1243); units depend on `taper_mode`.
+        taper: f32,
+        /// Whether `taper` is a length (mm per side) or a draft angle in degrees (#1243).
+        taper_mode: crate::model::ExtrudeTaperMode,
+        /// Optional expression driving `taper` (#1243).
+        taper_expression: Option<String>,
     },
     /// Semantic push/pull of an existing extrusion (#114): set a new fixed distance
     /// (clears any snap target — a plain typed distance is a blind extrude) and/or
@@ -6568,6 +6613,9 @@ fn operation_preview_world_bounds(state: &AppState) -> Option<(Vec3, Vec3)> {
                 expression: String::new(),
                 symmetric: ce.symmetric,
                 name: None,
+                taper: ce.evaluated_taper(doc),
+                taper_mode: ce.taper_mode,
+                taper_expression: String::new(),
                 edge_treatments: Vec::new(),
             };
             if let Some(mesh) = crate::extrude::preview_extrusion_mesh(doc, &probe) {
@@ -10980,6 +11028,9 @@ impl AppState {
                 target,
                 expression,
                 symmetric,
+                taper,
+                taper_mode,
+                taper_expression,
             } => {
                 if faces.is_empty() {
                     return ActionResult::Err("Extrusion needs at least one face".to_string());
@@ -11040,6 +11091,7 @@ impl AppState {
                     _ => vec![faces.clone()],
                 };
                 let expression = expression.unwrap_or_default();
+                let taper_expression = taper_expression.unwrap_or_default();
                 let mut cut_note = None;
                 let mut extrusion_index = None;
                 for group in &groups {
@@ -11051,6 +11103,9 @@ impl AppState {
                         expression: expression.clone(),
                         symmetric,
                         name: None,
+                        taper,
+                        taper_mode,
+                        taper_expression: taper_expression.clone(),
                         edge_treatments: Vec::new(),
                     };
                     // #380: a cut must actually bite — flip an outward cut inward, or warn.
@@ -11166,6 +11221,12 @@ impl AppState {
                             body_mode,
                             merge_candidate,
                             symmetric: self.pending_extrude_symmetric,
+                        
+                        taper: 0.0,
+                        taper_text: String::new(),
+                        taper_user_edited: false,
+                        taper_mode: crate::model::ExtrudeTaperMode::Distance,
+
                         });
                     }
                 }
@@ -11283,6 +11344,12 @@ impl AppState {
                     body_mode,
                     merge_candidate,
                     symmetric: self.pending_extrude_symmetric,
+                
+                taper: 0.0,
+                taper_text: String::new(),
+                taper_user_edited: false,
+                taper_mode: crate::model::ExtrudeTaperMode::Distance,
+
                 });
                 ActionResult::Ok
             }
@@ -11307,6 +11374,11 @@ impl AppState {
                     target,
                     expression: None,
                     symmetric: self.pending_extrude_symmetric,
+                
+                    taper: 0.0,
+                    taper_mode: crate::model::ExtrudeTaperMode::Distance,
+                    taper_expression: None,
+
                 })
             }
             Action::SetExtrudeDistance { distance } => {
@@ -11401,14 +11473,22 @@ impl AppState {
                     Some(bi) => ExtrudeBodyMode::MergeInto(bi),
                     None => ExtrudeBodyMode::NewBody,
                 };
+                let unit = crate::model::effective_length_unit(&self.doc, extrusion.sketch);
+                let angle_unit = crate::model::effective_angle_unit(&self.doc, extrusion.sketch);
+                let taper_text = match extrusion.taper_mode {
+                    crate::model::ExtrudeTaperMode::Distance => {
+                        crate::value::format_length_display_in(extrusion.taper, unit)
+                    }
+                    crate::model::ExtrudeTaperMode::Angle => crate::value::format_angle_display_in(
+                        extrusion.taper.to_radians(),
+                        angle_unit,
+                    ),
+                };
                 self.creating_extrusion = Some(CreatingExtrusion {
                     sketch: extrusion.sketch,
                     faces: extrusion.faces.clone(),
                     distance: extrusion.distance,
-                    text: crate::value::format_length_display_in(
-                        extrusion.distance.abs(),
-                        crate::model::effective_length_unit(&self.doc, extrusion.sketch),
-                    ),
+                    text: crate::value::format_length_display_in(extrusion.distance.abs(), unit),
                     user_edited: false,
                     pending_focus: true,
                     target: extrusion.target.clone(),
@@ -11416,7 +11496,17 @@ impl AppState {
                     body_mode,
                     merge_candidate,
                     symmetric: extrusion.symmetric,
+                    taper: extrusion.taper,
+                    taper_text,
+                    taper_user_edited: !extrusion.taper_expression.trim().is_empty(),
+                    taper_mode: extrusion.taper_mode,
                 });
+                // Prefer the stored expression text when present.
+                if let Some(ce) = self.creating_extrusion.as_mut() {
+                    if !extrusion.taper_expression.trim().is_empty() {
+                        ce.taper_text = extrusion.taper_expression.clone();
+                    }
+                }
                 self.tool = Tool::Extrude;
                 self.status = format!("Editing extrusion {}", index.index());
                 ActionResult::Ok
@@ -11467,6 +11557,15 @@ impl AppState {
                 } else {
                     String::new()
                 };
+                let taper = ce.evaluated_taper(&self.doc);
+                // Angle taper must stay in (−90, 90).
+                let taper = if ce.taper_mode == crate::model::ExtrudeTaperMode::Angle {
+                    taper.clamp(-89.999, 89.999)
+                } else {
+                    taper
+                };
+                let taper_expr = ce.taper_expr();
+                let taper_mode = ce.taper_mode;
                 if let Some(idx) = ce.edit_index {
                     if let Some(extrusion) = self.doc.extrusions.get_mut(idx) {
                         extrusion.faces = ce.faces.clone();
@@ -11478,6 +11577,11 @@ impl AppState {
                         }
                         extrusion.target = ce.target;
                         extrusion.symmetric = ce.symmetric;
+                        extrusion.taper = taper;
+                        extrusion.taper_mode = taper_mode;
+                        if ce.taper_user_edited {
+                            extrusion.taper_expression = taper_expr.clone();
+                        }
                     }
                     self.apply_extrude_body_mode(idx, ce.body_mode);
                     self.status = format!(
@@ -11508,6 +11612,9 @@ impl AppState {
                             expression: distance_expr.clone(),
                             symmetric: ce.symmetric,
                             name: None,
+                            taper,
+                            taper_mode,
+                            taper_expression: taper_expr.clone(),
                             edge_treatments: Vec::new(),
                         };
                         // #380: a cut must actually bite — flip an outward cut inward, or warn.
@@ -18943,6 +19050,11 @@ mod tests {
             body: ExtrudeBodyChoice::New,
             target: Some(ExtrudeTarget::Plane(pkey(1))),
             symmetric: false,
+        
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+
         });
         assert_eq!(state.doc.extrusions.len(), 1, "extrude failed: {}", state.status);
         assert_eq!(
@@ -18973,6 +19085,11 @@ mod tests {
             body: ExtrudeBodyChoice::New,
             target: None,
             symmetric: false,
+        
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+
         });
         assert_eq!(state.doc.bodies.len(), 1);
 
@@ -19401,6 +19518,11 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
             symmetric: false,
+        
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+
         });
         // CreateExtrusion commits; re-open for live distance edits.
         state.apply(Action::EditExtrusion { index: xkey(0) });
@@ -19978,6 +20100,9 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             expression: "width".to_string(),
             symmetric: false,
             name: None,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
         });
         doc.bodies.insert(crate::model::Body {
@@ -20226,6 +20351,11 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             body: ExtrudeBodyChoice::Cut,
             target: None,
             symmetric: false,
+        
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+
         });
         assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
 
@@ -20275,6 +20405,11 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 body: ExtrudeBodyChoice::New,
                 target: None,
                 symmetric: false,
+            
+                taper: 0.0,
+                taper_mode: crate::model::ExtrudeTaperMode::Distance,
+                taper_expression: None,
+
             });
             l
         };
@@ -20468,6 +20603,9 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             expression: format!("{first}.width + 1"),
             symmetric: false,
             name: None,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
         });
         state.doc.unit_instances[uikey(1)].parameter_overrides =
@@ -21047,6 +21185,11 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
             symmetric: false,
+        
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+
         });
         let path = dir.join("3201T26_Black-Oxide_Steel_U-Bolt.STEP");
         assert!(matches!(
@@ -21144,6 +21287,11 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
             symmetric: false,
+        
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+
         });
         assert!(
             state.doc.mesh_rev > before,
@@ -21259,6 +21407,11 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
             symmetric: false,
+        
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+
         });
         assert_eq!(state.doc.bodies.len(), 2);
 
@@ -23510,6 +23663,11 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
             symmetric: false,
+        
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+
         });
         state
     }
@@ -23545,6 +23703,11 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
             symmetric: false,
+        
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+
         });
         state.apply(Action::CreateExtrusion {
             expression: None,
@@ -23554,6 +23717,11 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
             symmetric: false,
+        
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+
         });
         assert_eq!(state.doc.bodies.len(), 2);
         state
@@ -25385,6 +25553,11 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
             symmetric: false,
+        
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+
         });
         let cap = FaceId::ExtrudeCap { extrusion: xkey(0), profile, top: true };
         state.apply(Action::BeginSketch { face: cap.clone(), viewport: None });
@@ -26995,6 +27168,11 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
             symmetric: false,
+        
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+
         });
         let circles_before = state.doc.circles.len();
         let face_id = FaceId::ExtrudeCap {
@@ -27215,6 +27393,11 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             body: crate::actions::ExtrudeBodyChoice::Cut,
             target: None,
             symmetric: false,
+        
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         let cut = state.doc.extrusions.values().last().unwrap();
@@ -27253,6 +27436,11 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             body: crate::actions::ExtrudeBodyChoice::Cut,
             target: None,
             symmetric: false,
+        
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         let cut = state.doc.extrusions.values().last().unwrap();
@@ -27280,6 +27468,11 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             body: crate::actions::ExtrudeBodyChoice::Cut,
             target: None,
             symmetric: false,
+        
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+
         });
         let cut = state.doc.extrusions.values().last().unwrap();
         assert!((cut.distance - 4.0).abs() < 1e-6, "a hopeless cut keeps its distance");
@@ -27307,6 +27500,11 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
             symmetric: false,
+        
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+
         });
         state.apply(Action::ExtrudeBodyFace {
             face_id: FaceId::ExtrudeCap { extrusion: xkey(0), profile, top: true },
@@ -28565,6 +28763,9 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 expression: String::new(),
                 name: None,
                 symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
             });
             state.doc.shape_order.push(ShapeKind::Extrusion);
@@ -28636,6 +28837,11 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
             symmetric: false,
+        
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+
         });
         let result = state.apply(Action::CommitEdgeTreatments {
             edges: vec![(xkey(0), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })],

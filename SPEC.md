@@ -625,8 +625,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     **Body** (the solid result) that depends on it: the body nests under the extrusion in the
     Elements pane and is removed if the extrusion is deleted.
     Created in script via
-    `bearcad.extrude{ circle|polygon|circles|text, distance?, name?, body?, to? }` (`text = i`
-    extrudes/engraves a whole sketch text — all its glyph regions, #355).
+    `bearcad.extrude{ circle|polygon|circles|text, distance?, name?, body?, to?, taper?,
+    taper_mode? }` (`text = i` extrudes/engraves a whole sketch text — all its glyph regions,
+    #355; `taper`/`taper_mode` #1243).
     **Extrude to object (#114):** instead of a fixed distance, `to = { plane = i }` /
     `{ face = <face spec> }` / `{ vertex = <point> }` snaps the extrusion to that object's
     extended plane, and the link is parametric — the snapped extrusion follows when the
@@ -705,6 +706,14 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     analytic faces (`SceneElement::SketchFace`), always focused — Extrude has only the one
     picker. Dropping a row goes through `Action::ToggleExtrudeFace`, so it does the same sketch
     bookkeeping and lands as the same single undo step as clicking the face off in the viewport.
+  - **Taper (#1243):** an end-face size change vs the start face — `Extrusion::taper` plus
+    `taper_mode` (`distance` | `angle`). Distance mode is millimetres **per side** (a 10×10
+    square with taper 5 ends 20×20; circles add to the radius). Angle mode is a draft against
+    the extrusion normal (−90°…+90°); a negative draft that collapses the profile **cuts the
+    height** (10×10 at −45° over distance 10 ends as a point at height 5). Past collapse the
+    end stays a point (never inverted). The context pane's **Taper** row toggles distance/angle
+    via a picture icon like Repeat's measure toggles. Scriptable:
+    `bearcad.extrude{ …, taper = 5 }` or `taper = -45, taper_mode = "angle"`.
   - **In-context distance / target / commit (#584):** the Extrude tool's context section carries a
     full alternative to the 3D gizmo — a **Distance** value input that mirrors the floating 3D field,
     an **"Up to"** element picker (single-select, planes/faces) for the extrude-to target, and an

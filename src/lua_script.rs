@@ -4757,6 +4757,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     "body",
                     "name",
                     "symmetric",
+                    "taper",
+                    "taper_mode",
                 ],
             )?;
             // `to = { plane = i } | { face = <face spec> } | { vertex = <point> }` snaps the
@@ -4838,6 +4840,29 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             }
             .ok_or_else(|| mlua::Error::external("extrude face does not exist"))?;
             let symmetric: bool = opts.get::<Option<bool>>("symmetric")?.unwrap_or(false);
+            // Taper (#1243): `taper` is a number or expression; `taper_mode = "distance"|"angle"`.
+            let taper_mode = match opts.get::<Option<String>>("taper_mode")? {
+                None => crate::model::ExtrudeTaperMode::Distance,
+                Some(s) => crate::model::ExtrudeTaperMode::from_name(&s).ok_or_else(|| {
+                    mlua::Error::external(format!(
+                        "unknown taper_mode '{s}' (distance|angle)"
+                    ))
+                })?,
+            };
+            let (taper, taper_expression) = match scalar_arg(lua, &opts, "taper")? {
+                Some((v, e)) => {
+                    // Angle mode: bare numbers are degrees (not radians).
+                    let v = if taper_mode == crate::model::ExtrudeTaperMode::Angle {
+                        // scalar_arg always treats numbers as lengths; for angles a bare
+                        // number is already degrees when the user wrote `taper = -45`.
+                        v
+                    } else {
+                        v
+                    };
+                    (v, e)
+                }
+                None => (0.0, None),
+            };
             unsafe {
                 tick.exec(Instruction::Extrude {
                     sketch,
@@ -4847,6 +4872,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     target,
                     expression,
                     symmetric,
+                    taper,
+                    taper_mode,
+                    taper_expression,
                 })?;
             }
             // The extrusion just committed (#1055): the newest live one.
@@ -8476,6 +8504,48 @@ mod tests {
         assert!(
             (min.z + 10.0).abs() < 0.5 && (max.z - 10.0).abs() < 0.5,
             "symmetric extrude should span z≈[-10,10], min={min:?} max={max:?}"
+        );
+    }
+
+    /// #1243: `taper` + `taper_mode` on `bearcad.extrude` grow the end face / cut height.
+    #[test]
+    fn lua_extrude_taper_distance_and_angle() {
+        // Distance taper +5 on a 10×10×10 box → 20×20 end face.
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10, taper = 5 }
+        "#,
+        );
+        assert_eq!(state.doc.extrusions.len(), 1);
+        let ext = &state.doc.extrusions[xkey(0)];
+        assert!((ext.taper - 5.0).abs() < 1e-4);
+        assert_eq!(ext.taper_mode, crate::model::ExtrudeTaperMode::Distance);
+        let mesh = crate::extrude::extrusion_mesh(&state.doc, ext).unwrap();
+        let (min, max) = mesh.bounds().unwrap();
+        assert!(
+            (max.x - min.x - 20.0).abs() < 0.5,
+            "distance taper should make 20-wide end, got {}",
+            max.x - min.x
+        );
+
+        // Angle taper −45° on 10×10×10 collapses at height 5.
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10, taper = -45, taper_mode = "angle" }
+        "#,
+        );
+        let ext = &state.doc.extrusions[xkey(0)];
+        assert_eq!(ext.taper_mode, crate::model::ExtrudeTaperMode::Angle);
+        let mesh = crate::extrude::extrusion_mesh(&state.doc, ext).unwrap();
+        let (min, max) = mesh.bounds().unwrap();
+        assert!(
+            (max.z - min.z - 5.0).abs() < 0.6,
+            "−45° taper should cut height to 5, got {}",
+            max.z - min.z
         );
     }
 

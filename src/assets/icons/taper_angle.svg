@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Taper by angle: frustum with an angle arc against the normal -->
+  <path d="M9 26 L13 8 L19 8 L23 26 Z" />
+  <line x1="16" y1="26" x2="16" y2="6" stroke-dasharray="2 2" />
+  <path d="M16 14 A6 6 0 0 1 20.2 16.5" />
+  <polyline points="19.2 14.8 20.4 16.7 18.5 17.3" fill="none" />
+</svg>

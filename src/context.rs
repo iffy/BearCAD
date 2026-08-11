@@ -1245,6 +1245,10 @@ pub struct ExtrudeControl {
     /// Whether an extrusion is actually in progress (a face is picked). When false the Distance and
     /// "Up to" rows are hidden but the (disabled) primary button still shows (#601).
     pub has_extrusion: bool,
+    /// Taper amount text (#1243) — length or angle depending on `taper_mode`.
+    pub taper: String,
+    /// Whether taper is measured as a length or a draft angle (#1243).
+    pub taper_mode: crate::model::ExtrudeTaperMode,
 }
 
 /// Edits driven by the Extrude tool's context section (#584).
@@ -1256,6 +1260,10 @@ pub enum ExtrudeEdit {
     TargetFocus,
     /// Clear the extrude-to target (depth reverts to the distance field).
     ClearTarget,
+    /// The taper value-input text changed (#1243).
+    Taper(String),
+    /// Toggle taper between distance and angle measure (#1243).
+    ToggleTaperMode,
     /// The "Extrude" button was pressed — commit the extrusion.
     Commit,
 }
@@ -7620,6 +7628,50 @@ pub fn show_pane(
                 }
             });
             }
+            // Taper (#1243): end-face size change. Icon toggles distance ↔ angle like Repeat's
+            // gap/distance measure icons.
+            {
+                let is_angle =
+                    control.taper_mode == crate::model::ExtrudeTaperMode::Angle;
+                let icon = if is_angle {
+                    crate::icons::IconId::TaperAngle
+                } else {
+                    crate::icons::IconId::TaperDistance
+                };
+                let label = if is_angle { "Angle" } else { "Taper" };
+                let tip = "Click to toggle taper by distance or angle";
+                let row = ui.horizontal(|ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(FIELD_LABEL_W, 18.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
+                            ui.add_enabled_ui(controls_enabled, |ui| {
+                                if crate::icons::icon_button_hover_gold(ui, icon, tip).clicked()
+                                    || clickable_label(ui, label, tip).clicked()
+                                {
+                                    on_extrude_edit(ExtrudeEdit::ToggleTaperMode);
+                                }
+                            });
+                        },
+                    );
+                    ui.add_enabled_ui(controls_enabled, |ui| {
+                        let mut text = control.taper.clone();
+                        let kind = if is_angle {
+                            crate::expression_input::ValueKind::Angle
+                        } else {
+                            crate::expression_input::ValueKind::Length
+                        };
+                        let resp = crate::expression_input::ValueInput::new("extrude_taper", kind)
+                            .width(90.0)
+                            .show(ui, &mut text, doc);
+                        if resp.changed() {
+                            on_extrude_edit(ExtrudeEdit::Taper(text));
+                        }
+                    });
+                });
+                note_help(ui, "Taper", row.response.rect);
+            }
         }
     }
 
@@ -8533,6 +8585,10 @@ mod tests {
                 target_focused: false,
                 can_commit: true,
                 has_extrusion: true,
+            
+                taper: String::new(),
+                taper_mode: crate::model::ExtrudeTaperMode::Distance,
+
             }),
             ..input(&doc, &selection)
         });
@@ -8550,6 +8606,10 @@ mod tests {
                 target_focused: false,
                 can_commit: true,
                 has_extrusion: true,
+            
+                taper: String::new(),
+                taper_mode: crate::model::ExtrudeTaperMode::Distance,
+
             }),
             ..input(&doc, &selection)
         });
@@ -9449,6 +9509,10 @@ mod tests {
                 target_focused,
                 can_commit: true,
                 has_extrusion: true,
+            
+                taper: String::new(),
+                taper_mode: crate::model::ExtrudeTaperMode::Distance,
+
             }),
             ..input(&doc, &selection)
         };

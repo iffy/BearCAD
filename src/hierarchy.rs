@@ -6146,6 +6146,9 @@ mod tests {
             expression: String::new(),
             symmetric: false,
             name: None,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
         });
         let live = |source| Body {
@@ -7071,6 +7074,9 @@ label_hidden: false,
             expression: String::new(),
             name: None,
             symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
         });
         assert!(delete_element(&mut doc, SceneElement::Sketch(sketch)));
@@ -7824,6 +7830,9 @@ label_hidden: false,
             expression: String::new(),
             name: None,
             symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
         });
         doc.bodies.insert(Body {
@@ -8352,6 +8361,9 @@ label_hidden: false,
             expression: String::new(),
             symmetric: false,
             name: None,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
         });
         // Keep body source extrusion key in sync with the real extrusion key.
@@ -8477,6 +8489,9 @@ label_hidden: false,
             expression: String::new(),
             symmetric: false,
             name: None,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
         });
         let live = doc.bodies.insert(Body {

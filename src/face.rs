@@ -2251,6 +2251,9 @@ mod tests {
             expression: String::new(),
             name: None,
             symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
         });
         doc
@@ -2464,6 +2467,9 @@ mod tests {
             expression: String::new(),
             name: None,
             symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
         });
         let profile = crate::model::ExtrudeFace::Circle(rkey(0));
@@ -2919,6 +2925,9 @@ mod tests {
             expression: String::new(),
             name: None,
             symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
         });
     }

@@ -576,6 +576,9 @@ mod tests {
             expression: String::new(),
             name: None,
             symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
         });
         let cap = doc.add_sketch(FaceId::ExtrudeCap {

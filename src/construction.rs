@@ -4691,6 +4691,9 @@ mod tests {
             expression: String::new(),
             symmetric: false,
             name: None,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
         });
         doc.bodies.insert(Body {

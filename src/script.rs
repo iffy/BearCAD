@@ -230,6 +230,12 @@ pub enum Instruction {
         expression: Option<String>,
         /// Extrude half the distance each way from the sketch plane (#504).
         symmetric: bool,
+        /// End-face size change vs the start face (#1243); units depend on `taper_mode`.
+        taper: f32,
+        /// Whether `taper` is a length (mm per side) or a draft angle in degrees (#1243).
+        taper_mode: crate::model::ExtrudeTaperMode,
+        /// Optional expression driving `taper` (#1243).
+        taper_expression: Option<String>,
     },
     /// Scripted push/pull of a bare body face (#130/#122): the declarative equivalent of
     /// clicking the face with the Extrude tool and pulling it (optionally onto `target`).
@@ -1079,6 +1085,9 @@ impl Instruction {
                 target,
                 expression,
                 symmetric,
+                taper,
+                taper_mode,
+                taper_expression,
                 ..
             } => {
                 let body = match body {
@@ -1096,8 +1105,25 @@ impl Instruction {
                     None => distance.to_string(),
                 };
                 let sym = if *symmetric { ", symmetric = true" } else { "" };
+                let taper_s = if taper.abs() > 1e-12
+                    || taper_expression.is_some()
+                    || *taper_mode != crate::model::ExtrudeTaperMode::Distance
+                {
+                    let t = match taper_expression {
+                        Some(e) => format!("{e:?}"),
+                        None => taper.to_string(),
+                    };
+                    let mode = if *taper_mode != crate::model::ExtrudeTaperMode::Distance {
+                        format!(", taper_mode = {:?}", taper_mode.as_str())
+                    } else {
+                        String::new()
+                    };
+                    format!(", taper = {t}{mode}")
+                } else {
+                    String::new()
+                };
                 format!(
-                    "bearcad.extrude{{ {}, distance = {distance}{body}{to}{sym} }}",
+                    "bearcad.extrude{{ {}, distance = {distance}{body}{to}{sym}{taper_s} }}",
                     extrude_face_args(faces, doc)
                 )
             }
@@ -3293,6 +3319,10 @@ pub fn instruction_for_new_extrusion(doc: &crate::model::Document) -> Option<Ins
         expression: (!extrusion.expression.trim().is_empty())
             .then(|| extrusion.expression.clone()),
         symmetric: extrusion.symmetric,
+        taper: extrusion.taper,
+        taper_mode: extrusion.taper_mode,
+        taper_expression: (!extrusion.taper_expression.trim().is_empty())
+            .then(|| extrusion.taper_expression.clone()),
     })
 }
 
@@ -5797,6 +5827,9 @@ impl ScriptRunner {
                 target,
                 expression,
                 symmetric,
+                taper,
+                taper_mode,
+                taper_expression,
             } => {
                 let distance = match eval_scalar_input(
                     &state.doc,
@@ -5814,6 +5847,20 @@ impl ScriptRunner {
                     self.last_action_error = Some(format!("Unknown sketch {sketch}"));
                     return StepResult::Continue;
                 };
+                let taper = match &taper_expression {
+                    Some(e) => match taper_mode {
+                        crate::model::ExtrudeTaperMode::Distance => {
+                            crate::value::eval_length_mm_in_doc(e, &state.doc).unwrap_or(taper)
+                        }
+                        crate::model::ExtrudeTaperMode::Angle => crate::value::eval_angle_rad_in_doc(
+                            e,
+                            &state.doc,
+                        )
+                        .map(|r| r.to_degrees())
+                        .unwrap_or(taper),
+                    },
+                    None => taper,
+                };
                 let result = state.apply(Action::CreateExtrusion {
                     sketch,
                     faces,
@@ -5822,6 +5869,9 @@ impl ScriptRunner {
                     target,
                     expression,
                     symmetric,
+                    taper,
+                    taper_mode,
+                    taper_expression,
                 });
                 self.record_action_error(result);
                 StepResult::Continue
@@ -8266,6 +8316,9 @@ mod tests {
                 expression: String::new(),
                 symmetric: false,
                 name: None,
+                taper: 0.0,
+                taper_mode: crate::model::ExtrudeTaperMode::Distance,
+                taper_expression: String::new(),
                 edge_treatments: Vec::new(),
             });
         }

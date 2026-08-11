@@ -8,10 +8,10 @@
 use crate::face::{local_to_world, sketch_frame, sketch_geometry_frame, SketchFrame};
 use crate::geometric_constraints::point_uv;
 use crate::model::{
-    vertex_treatment_geometry, Document, EdgeTreatment, ExtrudeFace, ExtrudeTarget, Extrusion,
-    ExtrusionEdgeRef, FaceId, VertexTreatmentKind,
+    vertex_treatment_geometry, Document, EdgeTreatment, ExtrudeFace, ExtrudeTarget, ExtrudeTaperMode,
+    Extrusion, ExtrusionEdgeRef, FaceId, VertexTreatmentKind,
 };
-use glam::Vec3;
+use glam::{Vec2, Vec3};
 use std::collections::HashMap;
 
 /// Number of segments used to facet a circular profile.
@@ -241,30 +241,15 @@ fn extrusion_mesh_tessellated(
 ) -> Option<SolidMesh> {
     let mut mesh = SolidMesh::default();
     for (face_index, face) in extrusion.faces.iter().enumerate() {
-        if let Some((profile, top, normal)) = extrusion_profile_rings(doc, extrusion, face, distance)
+        if let Some((profile, top, _normal)) = extrusion_profile_rings(doc, extrusion, face, distance)
         {
             // A face with holes (annulus, #268) has no edge treatments in the fallback path;
-            // build it as a hollow region (hole-aware caps + inner walls).
-            let holes0: Vec<Vec<Vec3>> = face_region_world(doc, face)
-                .map(|(_, holes, _)| holes)
-                .unwrap_or_default();
-            if !holes0.is_empty() {
-                let holes: Vec<Vec<Vec3>> = holes0
-                    .iter()
-                    .map(|h| {
-                        h.iter()
-                            .map(|p| extruded_base_point(doc, extrusion, normal, *p, distance))
-                            .collect()
-                    })
-                    .collect();
-                let holes_top: Vec<Vec<Vec3>> = holes0
-                    .iter()
-                    .map(|h| {
-                        h.iter()
-                            .map(|p| extruded_free_end_point(doc, extrusion, normal, *p, distance))
-                            .collect()
-                    })
-                    .collect();
+            // build it as a hollow region (hole-aware caps + inner walls). Holes follow taper
+            // the same way the outer does (#1243).
+            let hole_rings = extrusion_hole_rings(doc, extrusion, face, distance);
+            if !hole_rings.is_empty() {
+                let holes: Vec<Vec<Vec3>> = hole_rings.iter().map(|(b, _)| b.clone()).collect();
+                let holes_top: Vec<Vec<Vec3>> = hole_rings.iter().map(|(_, t)| t.clone()).collect();
                 extrude_region(&profile, &top, &holes, &holes_top, &mut mesh.triangles);
                 continue;
             }
@@ -363,30 +348,32 @@ fn occt_face_solid(
     } else {
         crate::kernel::Shape::loft(&profile, &top)
     }?;
-    // A leaf face with holes (a text glyph's counters, #285): subtract each hole's prism so the
-    // glyph extrudes hollow. Boolean faces get their holes via the recursion above instead.
-    if let Some((_, holes, hnormal)) = face_region_world(doc, face) {
-        for hole0 in holes {
-            if hole0.len() < 3 {
-                continue;
-            }
-            let mut hole: Vec<Vec3> = hole0
-                .iter()
-                .map(|p| extruded_base_point(doc, extrusion, hnormal, *p, distance))
-                .collect();
-            let mut htop: Vec<Vec3> = hole0
-                .iter()
-                .map(|p| extruded_free_end_point(doc, extrusion, hnormal, *p, distance))
-                .collect();
-            if overshoot > 1e-6 {
-                let u = (htop[0] - hole[0]).normalize_or_zero();
-                hole = hole.iter().map(|p| *p - u * overshoot).collect();
-                htop = htop.iter().map(|t| *t + u * overshoot).collect();
-            }
-            let hdir = htop[0] - hole[0];
-            let hole_solid = crate::kernel::Shape::prism(&hole, hdir)?;
-            shape = shape.boolean(&hole_solid, crate::kernel::BoolOp::Cut)?;
+    // A leaf face with holes (a text glyph's counters, #285): subtract each hole's prism/loft so
+    // the glyph extrudes hollow. Boolean faces get their holes via the recursion above instead.
+    // Holes follow taper the same way the outer does (#1243).
+    for (mut hole, mut htop) in extrusion_hole_rings(doc, extrusion, face, distance) {
+        if hole.len() < 3 {
+            continue;
         }
+        if overshoot > 1e-6 {
+            let u = (htop[0] - hole[0]).normalize_or_zero();
+            hole = hole.iter().map(|p| *p - u * overshoot).collect();
+            htop = htop.iter().map(|t| *t + u * overshoot).collect();
+        }
+        let hdir = htop[0] - hole[0];
+        let is_translation = hole
+            .iter()
+            .zip(&htop)
+            .all(|(p, t)| (*t - *p - hdir).length() <= 1e-4);
+        let hole_solid = if is_translation {
+            crate::kernel::Shape::prism(&hole, hdir)
+        } else {
+            crate::kernel::Shape::loft(&hole, &htop)
+        };
+        let Some(hole_solid) = hole_solid else {
+            continue;
+        };
+        shape = shape.boolean(&hole_solid, crate::kernel::BoolOp::Cut)?;
     }
     Some(shape)
 }
@@ -6539,39 +6526,481 @@ pub fn extruded_free_end_point(
     }
 }
 
-/// Base and free-end loops for a profile face under this extrusion's distance/target.
+/// In-plane solid-growth offset (mm) for a free end of height `|h|` under this extrusion's
+/// taper (#1243). Positive grows the end face; negative shrinks it.
+pub fn taper_offset_at_height(extrusion: &Extrusion, height_abs: f32) -> f32 {
+    match extrusion.taper_mode {
+        ExtrudeTaperMode::Distance => extrusion.taper,
+        ExtrudeTaperMode::Angle => {
+            // Clamp away from ±90° so tan stays finite.
+            let deg = extrusion.taper.clamp(-89.999, 89.999);
+            height_abs * deg.to_radians().tan()
+        }
+    }
+}
+
+/// Signed area of a 2D loop (positive = CCW).
+fn uv_signed_area(poly: &[(f32, f32)]) -> f32 {
+    if poly.len() < 3 {
+        return 0.0;
+    }
+    let mut a = 0.0;
+    for i in 0..poly.len() {
+        let (x1, y1) = poly[i];
+        let (x2, y2) = poly[(i + 1) % poly.len()];
+        a += x1 * y2 - x2 * y1;
+    }
+    a * 0.5
+}
+
+fn uv_centroid(poly: &[(f32, f32)]) -> (f32, f32) {
+    if poly.is_empty() {
+        return (0.0, 0.0);
+    }
+    let n = poly.len() as f32;
+    let (sx, sy) = poly.iter().fold((0.0, 0.0), |(sx, sy), &(u, v)| (sx + u, sy + v));
+    (sx / n, sy / n)
+}
+
+/// Offset a closed UV loop by `d` millimetres (positive grows the enclosed area). When the
+/// offset would invert or collapse the loop, returns the centroid as a degenerate triangle
+/// so callers can loft to a point without inventing inverted geometry (#1243).
+pub fn offset_uv_loop(poly: &[(f32, f32)], d: f32) -> Vec<(f32, f32)> {
+    if poly.len() < 3 {
+        return poly.to_vec();
+    }
+    if d.abs() < 1e-9 {
+        return poly.to_vec();
+    }
+    let orig_area = uv_signed_area(poly).abs();
+    if orig_area < 1e-8 {
+        let c = uv_centroid(poly);
+        return vec![c, c, c];
+    }
+    let sources: Vec<crate::offset::OffsetSource> = (0..poly.len())
+        .map(|i| {
+            let (au, av) = poly[i];
+            let (bu, bv) = poly[(i + 1) % poly.len()];
+            crate::offset::OffsetSource {
+                // Synthetic ids — offset only needs them to order outputs; they are not
+                // live document lines.
+                id: crate::arena::Key::from_bits((i as u64) << 32),
+                a: Vec2::new(au, av),
+                b: Vec2::new(bu, bv),
+                bezier: None,
+            }
+        })
+        .collect();
+    let out = crate::offset::offset_segments(&sources, d);
+    if out.len() != poly.len() {
+        let c = uv_centroid(poly);
+        return vec![c, c, c];
+    }
+    let result: Vec<(f32, f32)> = out.iter().map(|s| (s.a.x, s.a.y)).collect();
+    let new_area = uv_signed_area(&result).abs();
+    // Collapsed or inverted: don't ship inverted geometry (#1243).
+    if new_area < 1e-6 || new_area > orig_area * 50.0 && d < 0.0 {
+        let c = uv_centroid(poly);
+        return vec![c, c, c];
+    }
+    // Inward offset that flipped winding counts as collapsed.
+    if d < 0.0 && uv_signed_area(&result).signum() != uv_signed_area(poly).signum() && new_area > 1e-6
+    {
+        let c = uv_centroid(poly);
+        return vec![c, c, c];
+    }
+    result
+}
+
+/// Largest inward offset (positive number) the outer loop tolerates before collapsing to a
+/// point — used to cut the extrude height under a negative angle taper (#1243).
+pub fn max_inward_offset_uv(poly: &[(f32, f32)]) -> f32 {
+    if poly.len() < 3 {
+        return 0.0;
+    }
+    // Binary-search the largest |d| whose offset still has positive area.
+    let mut lo = 0.0f32;
+    let mut hi = {
+        // Upper bound: half the larger bbox side.
+        let (mut min_u, mut max_u) = (f32::MAX, f32::MIN);
+        let (mut min_v, mut max_v) = (f32::MAX, f32::MIN);
+        for &(u, v) in poly {
+            min_u = min_u.min(u);
+            max_u = max_u.max(u);
+            min_v = min_v.min(v);
+            max_v = max_v.max(v);
+        }
+        ((max_u - min_u).max(max_v - min_v) * 0.5).max(1e-3)
+    };
+    // Confirm hi collapses; if not, grow it.
+    for _ in 0..8 {
+        let o = offset_uv_loop(poly, -hi);
+        if uv_signed_area(&o).abs() < 1e-5 {
+            break;
+        }
+        hi *= 2.0;
+        if hi > 1.0e6 {
+            break;
+        }
+    }
+    for _ in 0..24 {
+        let mid = 0.5 * (lo + hi);
+        let o = offset_uv_loop(poly, -mid);
+        if uv_signed_area(&o).abs() < 1e-5 {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    lo
+}
+
+/// Whether a UV loop is effectively a single point (collapsed taper end).
+fn uv_loop_is_point(poly: &[(f32, f32)]) -> bool {
+    if poly.is_empty() {
+        return true;
+    }
+    let c = uv_centroid(poly);
+    poly.iter()
+        .all(|&(u, v)| (u - c.0).hypot(v - c.1) < 1e-4)
+}
+
+/// Plan base/top in-plane solid offsets and the (possibly shortened) end offsets along the
+/// normal for one face under taper (#1243).
+///
+/// Returns `(start, end, base_uv_offset, top_uv_offset)` where the UV offsets are solid-growth
+/// amounts applied to the outer loop (holes use the opposite sign).
+fn taper_end_plan(
+    doc: &Document,
+    extrusion: &Extrusion,
+    face: &ExtrudeFace,
+    distance: f32,
+) -> (f32, f32, f32, f32) {
+    let (start0, end0) = extrusion_end_offsets(doc, extrusion, distance);
+    let taper = extrusion.taper;
+    if taper.abs() < 1e-12 {
+        return (start0, end0, 0.0, 0.0);
+    }
+    let half = |h: f32| h.abs();
+    // Per free end: distance from the sketch plane to that end.
+    let base_h = half(start0);
+    let top_h = half(end0);
+    let mut base_off = if extrusion.symmetric && extrusion.target.is_none() {
+        taper_offset_at_height(extrusion, base_h)
+    } else {
+        0.0 // non-symmetric start face stays the profile
+    };
+    let mut top_off = taper_offset_at_height(extrusion, top_h);
+
+    // Angle taper: cut height when a negative draft would collapse before the free end.
+    if extrusion.taper_mode == ExtrudeTaperMode::Angle && taper < 0.0 {
+        let sketch = crate::actions::extrude_face_sketch(doc, face);
+        let region = sketch.and_then(|s| extrude_face_uv_region(doc, s, face));
+        if let Some(region) = region {
+            let max_in = max_inward_offset_uv(&region.outer);
+            let tan = (-taper).clamp(0.0, 89.999).to_radians().tan().max(1e-9);
+            let max_h = max_in / tan;
+            // Shorten each free end that would overshoot.
+            if extrusion.symmetric && extrusion.target.is_none() {
+                let h = max_h.min(half(end0 - start0) * 0.5);
+                let sign = if distance < 0.0 { -1.0 } else { 1.0 };
+                let start = -h * sign;
+                let end = h * sign;
+                base_off = taper_offset_at_height(extrusion, h);
+                top_off = base_off;
+                return (start, end, base_off, top_off);
+            }
+            // Only the free end moves; collapse height measured from the start plane.
+            let dir = if end0 >= start0 { 1.0 } else { -1.0 };
+            let full = (end0 - start0).abs();
+            let h = max_h.min(full);
+            let end = start0 + dir * h;
+            top_off = taper_offset_at_height(extrusion, h);
+            return (start0, end, base_off, top_off);
+        }
+    }
+    // Distance mode: clamp offset so the end doesn't invert (stays a point at worst).
+    if let Some(sketch) = crate::actions::extrude_face_sketch(doc, face) {
+        if let Some(region) = extrude_face_uv_region(doc, sketch, face) {
+            let max_in = max_inward_offset_uv(&region.outer);
+            if base_off < -max_in {
+                base_off = -max_in;
+            }
+            if top_off < -max_in {
+                top_off = -max_in;
+            }
+        }
+    }
+    (start0, end0, base_off, top_off)
+}
+
+/// UV outer (+ holes) at a given solid-growth offset for `face` (#1243).
+fn tapered_uv_region(
+    doc: &Document,
+    face: &ExtrudeFace,
+    solid_offset: f32,
+) -> Option<(Vec<(f32, f32)>, Vec<Vec<(f32, f32)>>)> {
+    let sketch = crate::actions::extrude_face_sketch(doc, face)?;
+    let region = extrude_face_uv_region(doc, sketch, face)?;
+    if solid_offset.abs() < 1e-9 {
+        return Some((region.outer, region.holes));
+    }
+    // Circles: exact radius change (add to radius, not diameter) — cleaner than faceted offset.
+    if let ExtrudeFace::Circle(i) = face {
+        if region.holes.is_empty() {
+            let c = doc.circles.get(*i)?;
+            let r = (c.r + solid_offset).max(0.0);
+            let (cx, cy) = (c.cx, c.cy);
+            if r < 1e-6 {
+                return Some((vec![(cx, cy), (cx, cy), (cx, cy)], Vec::new()));
+            }
+            let outer = (0..CIRCLE_SEGMENTS)
+                .map(|k| {
+                    let a = k as f32 / CIRCLE_SEGMENTS as f32 * std::f32::consts::TAU;
+                    (cx + r * a.cos(), cy + r * a.sin())
+                })
+                .collect();
+            return Some((outer, Vec::new()));
+        }
+    }
+    let outer = offset_uv_loop(&region.outer, solid_offset);
+    // Holes move the opposite way: solid growth shrinks holes; solid shrink grows them.
+    let mut holes: Vec<Vec<(f32, f32)>> = region
+        .holes
+        .iter()
+        .map(|h| offset_uv_loop(h, -solid_offset))
+        .filter(|h| !uv_loop_is_point(h) && uv_signed_area(h).abs() > 1e-6)
+        // Keep only holes that still sit inside the outer boundary.
+        .filter(|h| loop_strictly_inside(h, &outer) || uv_loop_is_point(&outer))
+        .collect();
+    // When holes grow into each other under a negative taper, merge pairwise (#1243).
+    if solid_offset < 0.0 && holes.len() > 1 {
+        let mut merged: Vec<Vec<(f32, f32)>> = Vec::new();
+        for h in holes {
+            let mut absorbed = false;
+            for m in merged.iter_mut() {
+                if loops_overlap(&h, m) {
+                    if let Some(u) = crate::polygon_boolean::face_boolean(
+                        m,
+                        &h,
+                        crate::model::BooleanOp::Intersection,
+                    ) {
+                        // Union of hole areas ≈ not of intersection of solids; use difference
+                        // of nothing… fall back: keep the larger loop when they overlap hard.
+                        let _ = u;
+                    }
+                    // Prefer the larger hole when they overlap (joined void).
+                    if uv_signed_area(&h).abs() > uv_signed_area(m).abs() {
+                        *m = h.clone();
+                    }
+                    absorbed = true;
+                    break;
+                }
+            }
+            if !absorbed {
+                merged.push(h);
+            }
+        }
+        holes = merged;
+    }
+    Some((outer, holes))
+}
+
+/// Project a UV loop to world at a given axial offset along `normal` from the sketch origin
+/// of each point (points already include any in-plane taper).
+fn uv_loop_at_height(
+    frame: &SketchFrame,
+    loop_uv: &[(f32, f32)],
+    normal: Vec3,
+    axial: f32,
+) -> Vec<Vec3> {
+    loop_uv
+        .iter()
+        .map(|&(u, v)| local_to_world(frame, u, v) + normal * axial)
+        .collect()
+}
+
+/// Base and free-end loops for a profile face under this extrusion's distance/target/taper.
 fn extrusion_profile_rings(
     doc: &Document,
     extrusion: &Extrusion,
     face: &ExtrudeFace,
     distance: f32,
 ) -> Option<(Vec<Vec3>, Vec<Vec3>, Vec3)> {
-    let (profile0, normal) = face_profile_world(doc, face)?;
-    if profile0.len() < 3 {
-        return None;
+    // Fast path: no taper — preserve previous world-space projection (handles slanted targets).
+    if extrusion.taper.abs() < 1e-12 {
+        let (profile0, n) = face_profile_world(doc, face)?;
+        if profile0.len() < 3 {
+            return None;
+        }
+        let base: Vec<Vec3> = profile0
+            .iter()
+            .map(|p| extruded_base_point(doc, extrusion, n, *p, distance))
+            .collect();
+        let top: Vec<Vec3> = profile0
+            .iter()
+            .map(|p| extruded_free_end_point(doc, extrusion, n, *p, distance))
+            .collect();
+        return Some((base, top, n));
     }
-    let base: Vec<Vec3> = profile0
-        .iter()
-        .map(|p| extruded_base_point(doc, extrusion, normal, *p, distance))
-        .collect();
-    let top: Vec<Vec3> = profile0
-        .iter()
-        .map(|p| extruded_free_end_point(doc, extrusion, normal, *p, distance))
-        .collect();
+
+    let sketch = crate::actions::extrude_face_sketch(doc, face)?;
+    let frame = sketch_geometry_frame(doc, sketch)?;
+    let normal = frame.normal;
+    let (start, end, base_off, top_off) = taper_end_plan(doc, extrusion, face, distance);
+
+    let (base_uv, _) = tapered_uv_region(doc, face, base_off)?;
+    let (top_uv, _) = tapered_uv_region(doc, face, top_off)?;
+    // Match vertex counts for loft: if one end collapsed to a point, replicate the centroid
+    // to the other end's vertex count so side walls form a pyramid.
+    let (base_uv, top_uv) = match (uv_loop_is_point(&base_uv), uv_loop_is_point(&top_uv)) {
+        (true, false) => {
+            let c = uv_centroid(&base_uv);
+            (vec![c; top_uv.len().max(3)], top_uv)
+        }
+        (false, true) => {
+            let c = uv_centroid(&top_uv);
+            (base_uv.clone(), vec![c; base_uv.len().max(3)])
+        }
+        (true, true) => {
+            let c = uv_centroid(&base_uv);
+            (vec![c; 3], vec![c; 3])
+        }
+        (false, false) => {
+            if base_uv.len() == top_uv.len() {
+                (base_uv, top_uv)
+            } else {
+                let n = base_uv.len().max(top_uv.len()).max(3);
+                (resample_uv_loop(&base_uv, n), resample_uv_loop(&top_uv, n))
+            }
+        }
+    };
+
+    let base = uv_loop_at_height(&frame, &base_uv, normal, start);
+    let top = uv_loop_at_height(&frame, &top_uv, normal, end);
     Some((base, top, normal))
+}
+
+/// Evenly resample a closed UV loop to `n` vertices (linear along edges).
+fn resample_uv_loop(poly: &[(f32, f32)], n: usize) -> Vec<(f32, f32)> {
+    if poly.len() < 2 || n < 3 {
+        return poly.to_vec();
+    }
+    let mut edge_lens = Vec::with_capacity(poly.len());
+    let mut total = 0.0f32;
+    for i in 0..poly.len() {
+        let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+        let len = (a.0 - b.0).hypot(a.1 - b.1);
+        edge_lens.push(len);
+        total += len;
+    }
+    if total < 1e-9 {
+        let c = uv_centroid(poly);
+        return vec![c; n];
+    }
+    let mut out = Vec::with_capacity(n);
+    for k in 0..n {
+        let mut t = total * (k as f32 / n as f32);
+        for i in 0..poly.len() {
+            let len = edge_lens[i];
+            if t <= len || i + 1 == poly.len() {
+                let f = if len > 1e-9 { t / len } else { 0.0 };
+                let a = poly[i];
+                let b = poly[(i + 1) % poly.len()];
+                out.push((a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f));
+                break;
+            }
+            t -= len;
+        }
+    }
+    out
+}
+
+/// Base/top hole loops for a face under taper, parallel to [`extrusion_profile_rings`].
+fn extrusion_hole_rings(
+    doc: &Document,
+    extrusion: &Extrusion,
+    face: &ExtrudeFace,
+    distance: f32,
+) -> Vec<(Vec<Vec3>, Vec<Vec3>)> {
+    let Some(sketch) = crate::actions::extrude_face_sketch(doc, face) else {
+        return Vec::new();
+    };
+    let Some(frame) = sketch_geometry_frame(doc, sketch) else {
+        return Vec::new();
+    };
+    let normal = frame.normal;
+    let (start, end, base_off, top_off) = taper_end_plan(doc, extrusion, face, distance);
+    let Some((_, base_holes)) = tapered_uv_region(doc, face, base_off) else {
+        return Vec::new();
+    };
+    let Some((_, top_holes)) = tapered_uv_region(doc, face, top_off) else {
+        return Vec::new();
+    };
+    // Pair by index; drop holes that collapsed on either end alone by lofting to a point.
+    let n = base_holes.len().max(top_holes.len());
+    let mut out = Vec::new();
+    for i in 0..n {
+        let b = base_holes.get(i).cloned().unwrap_or_default();
+        let t = top_holes.get(i).cloned().unwrap_or_default();
+        if b.is_empty() && t.is_empty() {
+            continue;
+        }
+        let (bu, tu) = match (b.is_empty() || uv_loop_is_point(&b), t.is_empty() || uv_loop_is_point(&t))
+        {
+            (true, true) => continue,
+            (true, false) => {
+                let c = uv_centroid(&t);
+                (vec![c; t.len().max(3)], t)
+            }
+            (false, true) => {
+                let c = uv_centroid(&b);
+                (b.clone(), vec![c; b.len().max(3)])
+            }
+            (false, false) if b.len() == t.len() => (b, t),
+            (false, false) => {
+                let m = b.len().max(t.len()).max(3);
+                (resample_uv_loop(&b, m), resample_uv_loop(&t, m))
+            }
+        };
+        let base = uv_loop_at_height(&frame, &bu, normal, start);
+        let top = uv_loop_at_height(&frame, &tu, normal, end);
+        out.push((base, top));
+    }
+    out
 }
 
 /// The effective signed depth: derived from `target`'s extended plane when set, else `distance`.
 /// For a symmetric extrusion this is still the *total* height (end-to-end).
+///
+/// Under a negative **angle** taper that collapses the profile before the typed depth, the
+/// returned value is the shortened solid height (#1243).
 pub fn effective_distance(doc: &Document, extrusion: &Extrusion) -> f32 {
-    if let Some(target) = &extrusion.target {
+    let raw = if let Some(target) = &extrusion.target {
         if let Some((base, normal)) = faces_anchor(doc, &extrusion.faces) {
             if let Some(d) = target_distance(doc, base, normal, target) {
-                return d;
+                d
+            } else {
+                extrusion.distance
             }
+        } else {
+            extrusion.distance
+        }
+    } else {
+        extrusion.distance
+    };
+    // Angle collapse shortens the solid — report the actual height of the first face.
+    if extrusion.taper_mode == ExtrudeTaperMode::Angle
+        && extrusion.taper < 0.0
+        && extrusion.target.is_none()
+    {
+        if let Some(face) = extrusion.faces.first() {
+            let (start, end, _, _) = taper_end_plan(doc, extrusion, face, raw);
+            let sign = if raw < 0.0 { -1.0 } else { 1.0 };
+            return (end - start).abs() * sign;
         }
     }
-    extrusion.distance
+    raw
 }
 
 /// Signed distance along `normal` from `base` to where the axis reaches `target`'s plane.
@@ -10994,8 +11423,150 @@ mod tests {
             expression: String::new(),
             symmetric: false,
             name: None,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
         }
+    }
+
+    /// #1243: distance taper of +5 on a 10×10 square makes a 20×20 end face (5 per side).
+    #[test]
+    fn taper_distance_positive_grows_end_face_by_per_side_amount() {
+        let (mut doc, sketch) = sketch_doc();
+        let profile = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
+        let mut ext = extrusion(sketch, vec![profile], 10.0);
+        ext.taper = 5.0;
+        ext.taper_mode = ExtrudeTaperMode::Distance;
+        let mesh = extrusion_mesh(&doc, &ext).expect("tapered mesh");
+        let (min, max) = mesh.bounds().expect("bounds");
+        assert!(
+            (max.x - min.x - 20.0).abs() < 0.5 && (max.y - min.y - 20.0).abs() < 0.5,
+            "end face should span 20×20, got {}×{}",
+            max.x - min.x,
+            max.y - min.y
+        );
+        assert!((max.z - min.z - 10.0).abs() < 0.5, "height still 10, got {}", max.z - min.z);
+        // Base stays 10×10: the solid's min corner is at the larger end's -5, so overall
+        // xy is 20×20; volume of a frustum of squares 10→20 over h=10 is h/3*(A1+A2+sqrt(A1*A2)).
+        let vol = mesh_signed_volume(&mesh).abs();
+        let expected = 10.0 / 3.0 * (100.0 + 400.0 + (100.0f32 * 400.0).sqrt());
+        assert!(
+            (vol - expected).abs() < expected * 0.05,
+            "frustum volume expected ~{expected}, got {vol}"
+        );
+    }
+
+    /// #1243: distance taper of −5 on a 10×10 square collapses the end to a point (pyramid).
+    #[test]
+    fn taper_distance_negative_collapses_to_a_point() {
+        let (mut doc, sketch) = sketch_doc();
+        let profile = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
+        let mut ext = extrusion(sketch, vec![profile], 10.0);
+        ext.taper = -5.0;
+        ext.taper_mode = ExtrudeTaperMode::Distance;
+        let mesh = extrusion_mesh(&doc, &ext).expect("pyramid mesh");
+        let (min, max) = mesh.bounds().expect("bounds");
+        // Base 10×10, tip at centre; overall xy still 10×10, height 10.
+        assert!((max.x - min.x - 10.0).abs() < 0.5, "xy width {}", max.x - min.x);
+        assert!((max.z - min.z - 10.0).abs() < 0.5, "height {}", max.z - min.z);
+        let vol = mesh_signed_volume(&mesh).abs();
+        let expected = 100.0 * 10.0 / 3.0; // pyramid
+        assert!(
+            (vol - expected).abs() < expected * 0.08,
+            "pyramid volume expected ~{expected}, got {vol}"
+        );
+    }
+
+    /// #1243: more negative than collapse still yields a point end (no invert), full height.
+    #[test]
+    fn taper_distance_past_collapse_stays_a_point() {
+        let (mut doc, sketch) = sketch_doc();
+        let profile = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
+        let mut ext = extrusion(sketch, vec![profile], 10.0);
+        ext.taper = -20.0;
+        ext.taper_mode = ExtrudeTaperMode::Distance;
+        let mesh = extrusion_mesh(&doc, &ext).expect("still a solid");
+        let vol = mesh_signed_volume(&mesh).abs();
+        assert!(vol > 50.0 && vol < 400.0, "clamped pyramid-ish volume, got {vol}");
+        assert!((effective_distance(&doc, &ext) - 10.0).abs() < 1e-3, "distance mode does not cut height");
+    }
+
+    /// #1243: circle taper adds to the radius, not the diameter.
+    #[test]
+    fn taper_distance_on_circle_adds_to_radius() {
+        let (mut doc, sketch) = sketch_doc();
+        let ck = doc
+            .circles
+            .insert(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
+        let mut ext = extrusion(sketch, vec![ExtrudeFace::Circle(ck)], 10.0);
+        ext.taper = 5.0;
+        ext.taper_mode = ExtrudeTaperMode::Distance;
+        let mesh = extrusion_mesh(&doc, &ext).expect("cone frustum");
+        let (min, max) = mesh.bounds().expect("bounds");
+        // Bottom r=10, top r=15 → overall diameter 30.
+        let xy = (max.x - min.x).max(max.y - min.y);
+        assert!(
+            (xy - 30.0).abs() < 1.0,
+            "top diameter should be 30 (r=15), got span {xy}"
+        );
+    }
+
+    /// #1243: −45° angle taper on a 10×10×10 extrude collapses at height 5.
+    #[test]
+    fn taper_angle_negative_45_collapses_at_half_height() {
+        let (mut doc, sketch) = sketch_doc();
+        let profile = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
+        let mut ext = extrusion(sketch, vec![profile], 10.0);
+        ext.taper = -45.0;
+        ext.taper_mode = ExtrudeTaperMode::Angle;
+        let mesh = extrusion_mesh(&doc, &ext).expect("angle pyramid");
+        let (min, max) = mesh.bounds().expect("bounds");
+        assert!(
+            (max.z - min.z - 5.0).abs() < 0.6,
+            "height cut to 5, got {}",
+            max.z - min.z
+        );
+        let eff = effective_distance(&doc, &ext);
+        assert!((eff.abs() - 5.0).abs() < 0.6, "effective distance ~5, got {eff}");
+        let vol = mesh_signed_volume(&mesh).abs();
+        let expected = 100.0 * 5.0 / 3.0;
+        assert!(
+            (vol - expected).abs() < expected * 0.1,
+            "pyramid vol ~{expected}, got {vol}"
+        );
+    }
+
+    /// #1243: 0° angle taper is a plain prism.
+    #[test]
+    fn taper_angle_zero_is_prism() {
+        let (mut doc, sketch) = sketch_doc();
+        let profile = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
+        let mut ext = extrusion(sketch, vec![profile], 10.0);
+        ext.taper = 0.0;
+        ext.taper_mode = ExtrudeTaperMode::Angle;
+        let mesh = extrusion_mesh(&doc, &ext).expect("prism");
+        let (min, max) = mesh.bounds().expect("bounds");
+        assert!((max.x - min.x - 10.0).abs() < 0.2);
+        assert!((max.z - min.z - 10.0).abs() < 0.2);
+    }
+
+    /// #1243: +45° angle taper on height 10 grows each side by 10 (tan45=1).
+    #[test]
+    fn taper_angle_positive_45_flares_out() {
+        let (mut doc, sketch) = sketch_doc();
+        let profile = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
+        let mut ext = extrusion(sketch, vec![profile], 10.0);
+        ext.taper = 45.0;
+        ext.taper_mode = ExtrudeTaperMode::Angle;
+        let mesh = extrusion_mesh(&doc, &ext).expect("flare");
+        let (min, max) = mesh.bounds().expect("bounds");
+        assert!(
+            (max.x - min.x - 30.0).abs() < 1.0,
+            "10 + 2×10 = 30 end span, got {}",
+            max.x - min.x
+        );
+        assert!((max.z - min.z - 10.0).abs() < 0.5);
     }
 
     /// #504: a symmetric extrude of total height `d` spans `[-d/2, +d/2]` along the normal.

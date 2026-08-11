@@ -5702,6 +5702,11 @@ mod tests {
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
             symmetric: false,
+        
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+
         });
         assert_eq!(state.doc.bodies.len(), 1);
         state
@@ -6527,6 +6532,11 @@ mod tests {
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
             symmetric: false,
+        
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+
         });
         assert_eq!(state.doc.bodies.len(), 2);
         // A component holding the first body, and a joint between the two.
@@ -7769,6 +7779,11 @@ mod tests {
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
             symmetric: false,
+        
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+
         });
 
         let scene = build_scene_for_doc(&state);
@@ -7806,6 +7821,11 @@ mod tests {
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
             symmetric: false,
+        
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+
         });
         state.doc.extrusions[xkey(0)].target = Some(crate::model::ExtrudeTarget::Plane(pkey(1)));
 
@@ -7951,6 +7971,9 @@ mod tests {
             expression: String::new(),
             name: None,
             symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
             edge_treatments: Vec::new(),
         };
 
@@ -9010,6 +9033,11 @@ mod tests {
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
             symmetric: false,
+        
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+
         });
         let plane = plane_from_definition(
             &definition_from_reference(
