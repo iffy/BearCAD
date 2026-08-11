@@ -182,6 +182,9 @@ pub fn narration_spans(text: &str) -> Vec<(&str, bool)> {
     spans
 }
 
+/// Side-panel title shown in the UI (#1255), matching Elements / Parameters / Context.
+pub const PANE_TITLE: &str = "Tutorials";
+
 pub struct Tutorial {
     /// Stable name for scripting (`bearcad.ui.tutorial("bracket")`).
     pub name: &'static str,
@@ -3159,7 +3162,7 @@ static CUBE_STEPS: &[Step] = &[
     ),
     plain_step(
         "That's a solid from a sketch: rectangle, extrude, done. Try changing a side \
-         dimension next \u{2014} or pick another tutorial from the Tutorial button.",
+         dimension next \u{2014} or pick another tutorial from the Tutorials button.",
         StepAnchor::None,
         None,
     ),
@@ -3824,6 +3827,22 @@ mod tests {
         assert!(app.tutorial_pane_open);
         app.apply(Action::SetTutorialPane { open: None });
         assert!(!app.tutorial_pane_open);
+    }
+
+    /// #1255: pane title matches Elements / Parameters style.
+    #[test]
+    fn pane_title_is_tutorials() {
+        assert_eq!(PANE_TITLE, "Tutorials");
+    }
+
+    /// #1254: graduation-cap icon is registered for the status-bar launcher.
+    #[test]
+    fn graduation_cap_icon_is_registered() {
+        assert_eq!(
+            crate::icons::IconId::GraduationCap.label(),
+            "Graduation cap"
+        );
+        assert!(crate::icons::IconId::ALL.contains(&crate::icons::IconId::GraduationCap));
     }
 
     /// #1238: the cube tutorial's assists build a rectangle and an extrusion.

@@ -3581,15 +3581,27 @@ impl App {
         }
     }
 
-    /// The bottom-right tutorial launcher, next to the update badge: opens the Tutorials
-    /// pane (#1241). Hidden while a walkthrough is running (the bubble takes over).
+    /// The bottom-right Tutorials launcher, next to the update badge: opens the Tutorials
+    /// pane (#1241). Graduation-cap icon + plural label (#1254). Hidden while a walkthrough
+    /// is running (the bubble takes over).
     fn show_tutorial_button(&mut self, ui: &mut egui::Ui) {
         if self.state.tutorial.is_some() {
             return;
         }
         let open = self.state.tutorial_pane_open;
+        let image = egui::Image::new(icons::sized_texture_at(
+            ui.ctx(),
+            icons::IconId::GraduationCap,
+            14.0,
+        ));
         let btn = ui
-            .add(egui::Button::new(egui::RichText::new("Tutorial").size(12.0)).selected(open))
+            .add(
+                egui::Button::image_and_text(
+                    image,
+                    egui::RichText::new("Tutorials").size(12.0),
+                )
+                .selected(open),
+            )
             .on_hover_text("Learn BearCAD hands-on, guided by Bear");
         if btn.clicked() {
             self.state.apply(Action::SetTutorialPane { open: None });
@@ -3597,14 +3609,15 @@ impl App {
     }
 
     /// The Tutorials pane (#1241): every registered walkthrough, with a green check for
-    /// ones already finished. The whole row (circle + label) is clickable; hover highlights
-    /// the row (#1252).
+    /// ones already finished. Heading matches other panes (#1255); each walkthrough is a
+    /// full-row button so hover stays continuous and the cursor stays a pointer (#1252/#1255).
     fn show_tutorial_pane(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         if !self.state.tutorial_pane_open {
             return;
         }
         let mut start: Option<usize> = None;
-        let kept = show_pane_shell(ui, "tutorials", "Tutorials", true, 320.0, None, |ui| {
+        let kept = show_pane_shell(ui, "tutorials", tutorial::PANE_TITLE, true, 320.0, None, |ui| {
+            ui.heading(tutorial::PANE_TITLE);
             ui.label(
                 egui::RichText::new("Pick a walkthrough — Bear guides you step by step.")
                     .size(12.0)
@@ -3613,37 +3626,29 @@ impl App {
             ui.add_space(8.0);
             for (index, tut) in tutorial::TUTORIALS.iter().enumerate() {
                 let done = self.state.tutorial_completed(tut.name);
-                let row_height = 28.0;
-                let (row_rect, response) = ui.allocate_exact_size(
-                    egui::vec2(ui.available_width(), row_height),
-                    egui::Sense::click(),
-                );
-                if response.hovered() {
-                    ui.painter().rect_filled(
-                        row_rect.expand(2.0),
-                        4.0,
-                        ui.visuals().widgets.hovered.weak_bg_fill,
-                    );
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                }
-                let check = if done {
-                    egui::RichText::new("✓")
-                        .color(egui::Color32::from_rgb(46, 160, 67))
-                        .strong()
-                } else {
-                    egui::RichText::new("○").weak()
+                // LayoutJob keeps the check green/weak while the whole control is one Button
+                // — no nested Labels that flip the cursor to an i-beam over the title.
+                let mut job = egui::text::LayoutJob::default();
+                let check_fmt = egui::TextFormat {
+                    font_id: egui::FontId::proportional(13.0),
+                    color: if done {
+                        egui::Color32::from_rgb(46, 160, 67)
+                    } else {
+                        ui.visuals().weak_text_color()
+                    },
+                    ..Default::default()
                 };
-                let title = egui::RichText::new(tut.title).size(13.0);
-                let mut content_ui = ui.new_child(
-                    egui::UiBuilder::new()
-                        .max_rect(row_rect)
-                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                let title_fmt = egui::TextFormat {
+                    font_id: egui::FontId::proportional(13.0),
+                    color: ui.visuals().text_color(),
+                    ..Default::default()
+                };
+                job.append(if done { "✓  " } else { "○  " }, 0.0, check_fmt);
+                job.append(tut.title, 0.0, title_fmt);
+                let response = ui.add(
+                    egui::Button::new(job)
+                        .min_size(egui::vec2(ui.available_width(), 28.0)),
                 );
-                content_ui.set_min_size(row_rect.size());
-                content_ui.add_space(4.0);
-                content_ui.label(check);
-                content_ui.add_space(6.0);
-                content_ui.label(title);
                 let tip = if done {
                     "Completed — run again?"
                 } else {
@@ -3652,7 +3657,6 @@ impl App {
                 if response.on_hover_text(tip).clicked() {
                     start = Some(index);
                 }
-                ui.add_space(2.0);
             }
         });
         if let Some(index) = start {

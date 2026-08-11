@@ -137,11 +137,13 @@ pub enum IconId {
     SketchComponents,
     /// A drawing's child components (#389): the drawing sheet with a tree of child elements.
     DrawingComponents,
+    /// Tutorials launcher (#1254): a graduation cap on the status-bar button.
+    GraduationCap,
 }
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 96] = [
+    pub const ALL: [Self; 97] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -238,6 +240,7 @@ impl IconId {
         Self::Image,
         Self::SketchComponents,
         Self::DrawingComponents,
+        Self::GraduationCap,
     ];
 
     pub fn svg_source(self) -> &'static str {
@@ -340,6 +343,7 @@ impl IconId {
             Self::Image => include_str!("assets/icons/image.svg"),
             Self::SketchComponents => include_str!("assets/icons/sketch-components.svg"),
             Self::DrawingComponents => include_str!("assets/icons/drawing-components.svg"),
+            Self::GraduationCap => include_str!("assets/icons/graduation_cap.svg"),
         }
     }
 
@@ -443,6 +447,7 @@ impl IconId {
             Self::Image => "Image",
             Self::SketchComponents => "Sketch components",
             Self::DrawingComponents => "Drawing components",
+            Self::GraduationCap => "Graduation cap",
         }
     }
 }

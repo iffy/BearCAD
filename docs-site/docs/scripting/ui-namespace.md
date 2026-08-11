@@ -111,7 +111,7 @@ pictures in the tool pages are made.
 ## Tutorials
 
 ```lua
-bearcad.ui.tutorial_pane("show")   -- list every walkthrough (status-bar Tutorial button)
+bearcad.ui.tutorial_pane("show")   -- list every walkthrough (status-bar Tutorials button)
 local list = bearcad.ui.tutorials() -- { {name=, title=, completed=}, ... }
 bearcad.ui.tutorial("cube")        -- start by registry name; fresh document
 bearcad.ui.tutorial_next()
