@@ -3580,23 +3580,71 @@ impl App {
         }
     }
 
-    /// The bottom-right tutorial launcher, next to the update badge: a popup listing
-    /// every registered tutorial. Hidden while one is running (the bubble takes over).
+    /// The bottom-right tutorial launcher, next to the update badge: opens the Tutorials
+    /// pane (#1241). Hidden while a walkthrough is running (the bubble takes over).
     fn show_tutorial_button(&mut self, ui: &mut egui::Ui) {
         if self.state.tutorial.is_some() {
             return;
         }
+        let open = self.state.tutorial_pane_open;
         let btn = ui
-            .add(egui::Button::new(egui::RichText::new("Tutorial").size(12.0)))
+            .add(egui::Button::new(egui::RichText::new("Tutorial").size(12.0)).selected(open))
             .on_hover_text("Learn BearCAD hands-on, guided by Bear");
-        egui::Popup::menu(&btn).show(|ui| {
+        if btn.clicked() {
+            self.state.apply(Action::SetTutorialPane { open: None });
+        }
+    }
+
+    /// The Tutorials pane (#1241): every registered walkthrough, with a green check for
+    /// ones already finished. Click a row to start it.
+    fn show_tutorial_pane(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
+        if !self.state.tutorial_pane_open {
+            return;
+        }
+        let mut start: Option<usize> = None;
+        let kept = show_pane_shell(ui, "tutorials", "Tutorials", true, 320.0, None, |ui| {
+            ui.label(
+                egui::RichText::new("Pick a walkthrough — Bear guides you step by step.")
+                    .size(12.0)
+                    .weak(),
+            );
+            ui.add_space(8.0);
             for (index, tut) in tutorial::TUTORIALS.iter().enumerate() {
-                if ui.button(tut.title).clicked() {
-                    self.state.apply(Action::StartTutorial { index });
-                    ui.close();
-                }
+                let done = self.state.tutorial_completed(tut.name);
+                ui.horizontal(|ui| {
+                    let check = if done {
+                        egui::RichText::new("✓")
+                            .color(egui::Color32::from_rgb(46, 160, 67))
+                            .strong()
+                    } else {
+                        egui::RichText::new("○").weak()
+                    };
+                    ui.label(check);
+                    if ui
+                        .add(
+                            egui::Button::new(egui::RichText::new(tut.title).size(13.0))
+                                .frame(false)
+                                .wrap(),
+                        )
+                        .on_hover_text(if done {
+                            "Completed — run again?"
+                        } else {
+                            "Start this tutorial"
+                        })
+                        .clicked()
+                    {
+                        start = Some(index);
+                    }
+                });
+                ui.add_space(4.0);
             }
         });
+        if let Some(index) = start {
+            self.state.apply(Action::StartTutorial { index });
+        }
+        if !kept {
+            self.state.tutorial_pane_open = false;
+        }
     }
 
     /// Auto-advance the running tutorial when the current step's predicate is satisfied.
@@ -4312,12 +4360,14 @@ impl App {
         let mut state = std::mem::take(&mut workspace.main_mut().tabs[0].state);
         state.status = status;
         // App settings (#720): loaded once here; the library directory is mirrored into
-        // AppState so Action::ImportUnit (#721) can classify sources.
+        // AppState so Action::ImportUnit (#721) can classify sources. Completed tutorials
+        // (#1241) land here too so the Tutorials pane can show green checks.
         #[cfg(not(target_arch = "wasm32"))]
         let settings = settings::AppSettings::load();
         #[cfg(not(target_arch = "wasm32"))]
         {
             state.library_directory = settings.library_directory.clone();
+            state.completed_tutorials = settings.completed_tutorials.clone();
         }
         if let Some(path) = document_path {
             match state.apply(Action::Open { path }) {
@@ -13367,6 +13417,20 @@ impl App {
         // window every pane uses there.
         #[cfg(not(target_arch = "wasm32"))]
         self.show_settings_window(ui, ctx);
+
+        // Tutorials pane (#1241): same dock side as Settings; lists every walkthrough.
+        self.show_tutorial_pane(ui, ctx);
+
+        // Persist newly completed tutorials (#1241) without waiting for another settings
+        // change — the pane reads from AppState, the file is the long-term copy.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.state.completed_tutorials_dirty {
+            self.settings.completed_tutorials = self.state.completed_tutorials.clone();
+            if let Err(err) = self.settings.save() {
+                self.state.status = format!("Could not save settings: {err}");
+            }
+            self.state.completed_tutorials_dirty = false;
+        }
 
         if self.state.panes.is_visible(Pane::Hierarchy) {
             // On a Model/Drawing workbench switch, reset the element filter to that workbench's

@@ -4001,6 +4001,42 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Tutorials pane (#1241): open/close/toggle, list registered walkthroughs with
+    // completion flags, or start one by name (see `tutorial` below).
+    api.set(
+        "tutorial_pane",
+        lua.create_function(|lua, verb: Option<String>| {
+            let open = match verb.as_deref() {
+                Some("show") | Some("open") => Some(true),
+                Some("hide") | Some("close") => Some(false),
+                None | Some("toggle") => None,
+                Some(other) => {
+                    return Err(mlua::Error::external(format!(
+                        "tutorial_pane expects \"show\"/\"hide\"/\"toggle\", got {other:?}"
+                    )))
+                }
+            };
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::SetTutorialPane { open }) }
+        })?,
+    )?;
+    api.set(
+        "tutorials",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            let list = lua.create_table()?;
+            for (i, tut) in crate::tutorial::TUTORIALS.iter().enumerate() {
+                let row = lua.create_table()?;
+                row.set("name", tut.name)?;
+                row.set("title", tut.title)?;
+                row.set("completed", state.tutorial_completed(tut.name))?;
+                list.set(i + 1, row)?;
+            }
+            Ok(list)
+        })?,
+    )?;
+
     // Document tabs: new / close / select / reorder / detach, plus a read-only strip snapshot.
     api.set(
         "new_tab",
@@ -6481,6 +6517,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance", "fps_scale",
             "camera", "zoom_fit", "elements_view", "auto_zoom", "animate_joints", "snapping", "picker_focus", "angle_snap",
             "tutorial", "tutorial_next", "tutorial_assist", "tutorial_end", "tutorial_step",
+            "tutorial_pane", "tutorials",
             "touch",
             "move", "click", "move_ground", "click_ground",
             "drag", "drag_ground", "right_drag", "right_drag_pan",

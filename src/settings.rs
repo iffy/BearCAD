@@ -17,6 +17,10 @@ pub struct AppSettings {
     /// The library directory (#720): where `Library(...)` import sources resolve.
     #[serde(default)]
     pub library_directory: Option<PathBuf>,
+    /// Registry names of tutorials the user has finished (#1241). Green checks in the
+    /// Tutorials pane; survives restarts.
+    #[serde(default)]
+    pub completed_tutorials: Vec<String>,
 }
 
 /// Where the settings file lives: the platform config directory + `BearCAD/settings.json`.
@@ -80,9 +84,20 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let settings = AppSettings {
             library_directory: Some(PathBuf::from("/some/library")),
+            completed_tutorials: vec!["bracket".into(), "cube".into()],
         };
         settings.save_to(&path).unwrap();
         assert_eq!(AppSettings::load_from(&path), settings);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// #1241: older settings files without `completed_tutorials` still load.
+    #[test]
+    fn completed_tutorials_defaults_when_absent() {
+        let path = temp_file("bearcad_settings_no_tutorials.json");
+        std::fs::write(&path, br#"{"library_directory": null}"#).unwrap();
+        let loaded = AppSettings::load_from(&path);
+        assert!(loaded.completed_tutorials.is_empty());
         std::fs::remove_file(&path).unwrap();
     }
 

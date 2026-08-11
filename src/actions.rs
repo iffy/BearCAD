@@ -1997,6 +1997,8 @@ pub enum Action {
     SetHelpMode(Option<bool>),
     /// Show/hide/toggle the Settings window (#720/#737).
     SetSettingsWindow { open: Option<bool> },
+    /// Show/hide/toggle the Tutorials pane (#1241).
+    SetTutorialPane { open: Option<bool> },
     /// Open/close the McMaster-Carr catalog window (#1022), optionally at a part number.
     SetMcMasterWindow { open: Option<bool>, part: Option<String> },
     AddParameter { name: String, expression: String },
@@ -2899,6 +2901,7 @@ impl Action {
                     | Action::SetPaneVisible { .. }
                     | Action::SetMcMasterWindow { .. }
                     | Action::SetSettingsWindow { .. }
+                    | Action::SetTutorialPane { .. }
                     | Action::SetElementsViewMode { .. }
                     | Action::SetHomeView
             )
@@ -3460,6 +3463,14 @@ pub struct AppState {
     /// The Settings window (#720) is open. Lives here (not on `App`) so scripts can
     /// drive it for docs captures (#737): `bearcad.ui.settings(...)`.
     pub settings_open: bool,
+    /// The Tutorials pane (#1241) is open. Lives here so scripts can drive it:
+    /// `bearcad.ui.tutorial_pane(...)`.
+    pub tutorial_pane_open: bool,
+    /// Registry names of finished tutorials (#1241). Mirrored from
+    /// [`crate::settings::AppSettings`]; the UI shows a green check for each.
+    pub completed_tutorials: Vec<String>,
+    /// Set when [`Self::completed_tutorials`] changes so the host can persist it.
+    pub completed_tutorials_dirty: bool,
     /// The McMaster-Carr catalog window (#1022) is open. Here rather than on `App` for the
     /// same reason: scripts drive it for docs captures.
     pub mcmaster_open: bool,
@@ -3704,6 +3715,9 @@ impl Default for AppState {
             move_translate_mode: crate::model::MoveTranslateMode::default(),
             help_mode: false,
             settings_open: false,
+            tutorial_pane_open: false,
+            completed_tutorials: Vec::new(),
+            completed_tutorials_dirty: false,
             mcmaster_open: false,
             mcmaster_part: String::new(),
             dimension_param_name: String::new(),
@@ -7131,11 +7145,15 @@ impl AppState {
             if !done(self) {
                 break;
             }
-            let run = self.tutorial.as_mut().unwrap();
-            run.step += 1;
-            if run.step >= crate::tutorial::TUTORIALS[run.tutorial].steps.len() {
-                self.tutorial = None;
-                self.status = "Tutorial complete — happy modeling!".to_string();
+            let (index, finished) = {
+                let run = self.tutorial.as_mut().unwrap();
+                run.step += 1;
+                let index = run.tutorial;
+                let finished = run.step >= crate::tutorial::TUTORIALS[index].steps.len();
+                (index, finished)
+            };
+            if finished {
+                self.finish_tutorial(index);
                 break;
             }
         }
@@ -7150,6 +7168,29 @@ impl AppState {
                 }
             }
         }
+    }
+
+    /// End a finished walkthrough and remember it (#1241).
+    fn finish_tutorial(&mut self, index: usize) {
+        self.tutorial = None;
+        if let Some(tut) = crate::tutorial::TUTORIALS.get(index) {
+            self.mark_tutorial_completed(tut.name);
+        }
+        self.status = "Tutorial complete — happy modeling!".to_string();
+    }
+
+    /// Record that the user finished the tutorial named `name` (#1241).
+    pub fn mark_tutorial_completed(&mut self, name: &str) {
+        if self.completed_tutorials.iter().any(|n| n == name) {
+            return;
+        }
+        self.completed_tutorials.push(name.to_string());
+        self.completed_tutorials_dirty = true;
+    }
+
+    /// Whether the tutorial named `name` has a green check (#1241).
+    pub fn tutorial_completed(&self, name: &str) -> bool {
+        self.completed_tutorials.iter().any(|n| n == name)
     }
 
     fn apply_action(&mut self, action: Action) -> ActionResult {
@@ -9530,6 +9571,15 @@ impl AppState {
                     "Settings opened".to_string()
                 } else {
                     "Settings closed".to_string()
+                };
+                ActionResult::Ok
+            }
+            Action::SetTutorialPane { open } => {
+                self.tutorial_pane_open = open.unwrap_or(!self.tutorial_pane_open);
+                self.status = if self.tutorial_pane_open {
+                    "Tutorials opened".to_string()
+                } else {
+                    "Tutorials closed".to_string()
                 };
                 ActionResult::Ok
             }
@@ -12030,6 +12080,7 @@ impl AppState {
                 };
                 // Tutorials assume a clean slate, like the quickstart they mirror.
                 self.apply(Action::NewDocument);
+                self.tutorial_pane_open = false;
                 self.tutorial =
                     Some(crate::tutorial::TutorialRun { tutorial: index, step: 0, hold: false });
                 self.status = format!("Tutorial started: {}", tut.title);
@@ -12039,8 +12090,7 @@ impl AppState {
                 if let Some(mut run) = self.tutorial {
                     run.step += 1;
                     if run.step >= crate::tutorial::TUTORIALS[run.tutorial].steps.len() {
-                        self.tutorial = None;
-                        self.status = "Tutorial complete — happy modeling!".to_string();
+                        self.finish_tutorial(run.tutorial);
                     } else {
                         // Reviewing (Back) ends when Next reaches a step whose work
                         // isn't done yet — from there auto-advance takes over again.

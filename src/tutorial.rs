@@ -193,14 +193,76 @@ pub struct TutorialRun {
     pub hold: bool,
 }
 
-pub static TUTORIALS: &[Tutorial] = &[Tutorial {
-    name: "bracket",
-    title: "Build an angle bracket",
-    steps: BRACKET_STEPS,
-}];
+pub static TUTORIALS: &[Tutorial] = &[
+    Tutorial {
+        name: "bracket",
+        title: "Build an angle bracket",
+        steps: BRACKET_STEPS,
+    },
+    Tutorial {
+        name: "cube",
+        title: "Rectangle to cube",
+        steps: CUBE_STEPS,
+    },
+    Tutorial {
+        name: "shapes",
+        title: "Place cuboid, sphere & cylinder",
+        steps: SHAPES_STEPS,
+    },
+    Tutorial {
+        name: "dimensioned_box",
+        title: "Dimensioned box, then edit",
+        steps: DIMENSIONED_BOX_STEPS,
+    },
+];
 
 pub fn tutorial_index(name: &str) -> Option<usize> {
     TUTORIALS.iter().position(|t| t.name == name)
+}
+
+/// A plain step (no assist, no phone-only branches) for the shorter tutorials.
+const fn plain_step(
+    narration: &'static str,
+    anchor: StepAnchor,
+    done: Option<fn(&AppState) -> bool>,
+) -> Step {
+    Step {
+        narration,
+        anchor,
+        done,
+        on_enter: None,
+        assist: None,
+        needs_shift: None,
+        drag_hint: None,
+        key_hint: None,
+        marks: None,
+        type_hint: None,
+        phone_narration: None,
+        only_on_phone: false,
+    }
+}
+
+const fn assisted_step(
+    narration: &'static str,
+    anchor: StepAnchor,
+    done: Option<fn(&AppState) -> bool>,
+    assist: StepAssist,
+    type_hint: Option<TypeHint>,
+) -> Step {
+    Step {
+        narration,
+        anchor,
+        done,
+        on_enter: None,
+        assist: Some(assist),
+        needs_shift: None,
+        drag_hint: None,
+        key_hint: None,
+        marks: None,
+        type_hint,
+        phone_narration: None,
+        only_on_phone: false,
+    }
 }
 
 /// The tutorial named by a page URL's query string, if it names a real one (#765):
@@ -2595,6 +2657,455 @@ static BRACKET_STEPS: &[Step] = &[
     },
 ];
 
+// --- Short tutorials (#1238–#1240) -------------------------------------------------
+
+fn rectangle_tool_active(app: &AppState) -> bool {
+    app.tool == Tool::Rectangle
+}
+
+fn extrude_tool_active(app: &AppState) -> bool {
+    app.tool == Tool::Extrude
+}
+
+fn shape_tool_active(app: &AppState) -> bool {
+    app.tool == Tool::Shape
+}
+
+fn has_closed_rectangle(app: &AppState) -> bool {
+    // A committed rectangle is four non-construction lines plus width/height dims.
+    let lines = app.doc.lines.values().filter(|l| !l.construction).count();
+    let dims = live_constraints(app)
+        .filter(|c| matches!(c.kind, ConstraintKind::Distance { .. }))
+        .count();
+    lines >= 4 && dims >= 2
+}
+
+fn has_extrusion(app: &AppState) -> bool {
+    !app.doc.extrusions.is_empty()
+}
+
+fn has_primitive_kind(app: &AppState, kind: crate::model::PrimitiveKind) -> bool {
+    app.doc.primitives.values().any(|p| p.kind == kind)
+}
+
+fn has_cuboid(app: &AppState) -> bool {
+    has_primitive_kind(app, crate::model::PrimitiveKind::Cuboid)
+}
+
+fn has_sphere(app: &AppState) -> bool {
+    has_primitive_kind(app, crate::model::PrimitiveKind::Sphere)
+}
+
+fn has_cylinder(app: &AppState) -> bool {
+    has_primitive_kind(app, crate::model::PrimitiveKind::Cylinder)
+}
+
+fn has_all_three_shapes(app: &AppState) -> bool {
+    has_cuboid(app) && has_sphere(app) && has_cylinder(app)
+}
+
+fn distance_dims_near(app: &AppState, target: f32, min_count: usize) -> bool {
+    let n = live_constraints(app)
+        .filter(|c| matches!(c.kind, ConstraintKind::Distance { .. }))
+        .filter_map(|c| crate::value::eval_length_mm_in_doc(&c.expression, &app.doc))
+        .filter(|&d| (d - target).abs() < 0.51)
+        .count();
+    n >= min_count
+}
+
+fn rect_dims_are_10(app: &AppState) -> bool {
+    has_closed_rectangle(app) && distance_dims_near(app, 10.0, 2)
+}
+
+fn extrusion_is_10(app: &AppState) -> bool {
+    app.doc.extrusions.values().any(|e| {
+        if (e.distance - 10.0).abs() < 0.51 {
+            return true;
+        }
+        crate::value::eval_length_mm_in_doc(&e.expression, &app.doc)
+            .map(|d| (d - 10.0).abs() < 0.51)
+            .unwrap_or(false)
+    })
+}
+
+fn one_sketch_dim_is_20(app: &AppState) -> bool {
+    distance_dims_near(app, 20.0, 1)
+}
+
+fn ensure_ground_sketch(app: &mut AppState) {
+    if app.sketch_session.is_some() {
+        return;
+    }
+    let Some(ground) = app.doc.ground_plane() else {
+        return;
+    };
+    app.apply(Action::BeginSketch {
+        face: crate::model::FaceId::ConstructionPlane(ground),
+        viewport: None,
+    });
+}
+
+fn assist_draw_square(app: &mut AppState) {
+    if has_closed_rectangle(app) {
+        return;
+    }
+    ensure_ground_sketch(app);
+    app.apply(Action::CreateRectangle {
+        x: 0.0,
+        y: 0.0,
+        width: 20.0,
+        height: 20.0,
+        width_expr: Some("20".into()),
+        height_expr: Some("20".into()),
+    });
+}
+
+fn assist_extrude_to_cube(app: &mut AppState) {
+    if has_extrusion(app) {
+        return;
+    }
+    assist_draw_square(app);
+    let Some(sketch) = app.doc.lines.values().find(|l| !l.construction).map(|l| l.sketch) else {
+        return;
+    };
+    let lines: Vec<_> = app
+        .doc
+        .lines
+        .iter()
+        .filter(|(_, l)| l.sketch == sketch && !l.construction)
+        .map(|(k, _)| k)
+        .collect();
+    if lines.len() < 4 {
+        return;
+    }
+    if app.sketch_session.is_some() {
+        app.apply(Action::ExitSketch);
+    }
+    app.apply(Action::CreateExtrusion {
+        sketch,
+        faces: vec![crate::model::ExtrudeFace::Polygon(lines)],
+        distance: 20.0,
+        body: crate::actions::ExtrudeBodyChoice::New,
+        target: None,
+        expression: Some("20".into()),
+        symmetric: false,
+    });
+}
+
+fn assist_draw_10mm_square(app: &mut AppState) {
+    if rect_dims_are_10(app) {
+        return;
+    }
+    ensure_ground_sketch(app);
+    // Replace a half-drawn sketch if needed.
+    if has_closed_rectangle(app) && !rect_dims_are_10(app) {
+        // Nudge existing dims to 10 rather than rebuilding.
+        let dim_keys: Vec<_> = app
+            .doc
+            .constraints
+            .iter()
+            .filter(|(_, c)| matches!(c.kind, ConstraintKind::Distance { .. }))
+            .map(|(key, _)| key)
+            .collect();
+        for key in dim_keys {
+            let _ = crate::constraints::set_constraint_expression(
+                &mut app.doc,
+                key,
+                "10".to_string(),
+            );
+        }
+        let _ = crate::constraints::solve_document_constraints(&mut app.doc);
+        app.refresh_document_health();
+        return;
+    }
+    app.apply(Action::CreateRectangle {
+        x: 0.0,
+        y: 0.0,
+        width: 10.0,
+        height: 10.0,
+        width_expr: Some("10".into()),
+        height_expr: Some("10".into()),
+    });
+}
+
+fn assist_extrude_10mm(app: &mut AppState) {
+    if extrusion_is_10(app) {
+        return;
+    }
+    assist_draw_10mm_square(app);
+    let Some(sketch) = app.doc.lines.values().find(|l| !l.construction).map(|l| l.sketch) else {
+        return;
+    };
+    let lines: Vec<_> = app
+        .doc
+        .lines
+        .iter()
+        .filter(|(_, l)| l.sketch == sketch && !l.construction)
+        .map(|(k, _)| k)
+        .collect();
+    if lines.len() < 4 {
+        return;
+    }
+    if app.sketch_session.is_some() {
+        app.apply(Action::ExitSketch);
+    }
+    if has_extrusion(app) {
+        // Already extruded; just ensure the distance is 10.
+        let key = app.doc.extrusions.keys().next();
+        if let Some(key) = key {
+            app.doc.extrusions[key].distance = 10.0;
+            app.doc.extrusions[key].expression = "10".into();
+            app.refresh_document_health();
+        }
+        return;
+    }
+    app.apply(Action::CreateExtrusion {
+        sketch,
+        faces: vec![crate::model::ExtrudeFace::Polygon(lines)],
+        distance: 10.0,
+        body: crate::actions::ExtrudeBodyChoice::New,
+        target: None,
+        expression: Some("10".into()),
+        symmetric: false,
+    });
+}
+
+fn assist_edit_dim_to_20(app: &mut AppState) {
+    if one_sketch_dim_is_20(app) {
+        return;
+    }
+    assist_extrude_10mm(app);
+    // Change the first sketch distance dimension to 20 mm.
+    let target = app.doc.constraints.iter().find_map(|(key, c)| {
+        matches!(c.kind, ConstraintKind::Distance { .. }).then_some(key)
+    });
+    if let Some(key) = target {
+        let _ = crate::constraints::set_constraint_expression(&mut app.doc, key, "20".to_string());
+        let _ = crate::constraints::solve_document_constraints(&mut app.doc);
+        app.refresh_document_health();
+    }
+}
+
+fn place_shape(app: &mut AppState, kind: crate::model::PrimitiveKind, origin: [f32; 3]) {
+    if has_primitive_kind(app, kind) {
+        return;
+    }
+    let mut shape = crate::model::Primitive::new(kind);
+    shape.origin = origin;
+    match kind {
+        crate::model::PrimitiveKind::Cuboid => {
+            shape.width = "20".into();
+            shape.depth = "20".into();
+            shape.height = "20".into();
+        }
+        crate::model::PrimitiveKind::Cylinder => {
+            shape.radius = "10".into();
+            shape.height = "20".into();
+        }
+        crate::model::PrimitiveKind::Sphere => {
+            shape.radius = "10".into();
+        }
+    }
+    app.apply(Action::CreateShape { shape });
+}
+
+fn assist_place_cuboid(app: &mut AppState) {
+    place_shape(app, crate::model::PrimitiveKind::Cuboid, [0.0, 0.0, 0.0]);
+}
+
+fn assist_place_cylinder(app: &mut AppState) {
+    assist_place_cuboid(app);
+    place_shape(app, crate::model::PrimitiveKind::Cylinder, [40.0, 0.0, 0.0]);
+}
+
+fn assist_place_sphere(app: &mut AppState) {
+    assist_place_cylinder(app);
+    place_shape(app, crate::model::PrimitiveKind::Sphere, [80.0, 0.0, 0.0]);
+}
+
+fn cuboid_kind_ready(app: &AppState) -> bool {
+    // Already placed, or tool is armed for a cuboid (default).
+    has_cuboid(app)
+        || (shape_tool_active(app) && app.shape_kind == crate::model::PrimitiveKind::Cuboid)
+}
+
+fn cylinder_kind_ready(app: &AppState) -> bool {
+    has_cylinder(app)
+        || (shape_tool_active(app) && app.shape_kind == crate::model::PrimitiveKind::Cylinder)
+}
+
+fn sphere_kind_ready(app: &AppState) -> bool {
+    has_sphere(app)
+        || (shape_tool_active(app) && app.shape_kind == crate::model::PrimitiveKind::Sphere)
+}
+
+/// #1238: draw a rectangle and extrude it into a cube.
+static CUBE_STEPS: &[Step] = &[
+    plain_step(
+        "Hi! Let's make a cube the classic way: draw a square on the ground, then \
+         extrude it up the same distance. I've opened a fresh document.",
+        StepAnchor::None,
+        None,
+    ),
+    plain_step(
+        "Grab the Rectangle tool \u{2014} the glowing button, or press `R`.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Rectangle)),
+        Some(rectangle_tool_active),
+    ),
+    assisted_step(
+        "Click two opposite corners on the ground to draw a square. Type equal width \
+         and height (try `20`) if you like \u{2014} Enter commits each size.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Rectangle)),
+        Some(has_closed_rectangle),
+        StepAssist {
+            label: "Draw it for me",
+            run: assist_draw_square,
+        },
+        Some(TypeHint::Fixed("20")),
+    ),
+    plain_step(
+        "Now the Extrude tool \u{2014} the glowing button, or press `E`.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude)),
+        Some(extrude_tool_active),
+    ),
+    assisted_step(
+        "Click the square's face, type the same size as a side (`20`), and press Enter. \
+         A cube!",
+        StepAnchor::Ui(UiAnchor::ExtrudeDistance),
+        Some(has_extrusion),
+        StepAssist {
+            label: "Extrude it for me",
+            run: assist_extrude_to_cube,
+        },
+        Some(TypeHint::Fixed("20")),
+    ),
+    plain_step(
+        "That's a solid from a sketch: rectangle, extrude, done. Try changing a side \
+         dimension next \u{2014} or pick another tutorial from the Tutorial button.",
+        StepAnchor::None,
+        None,
+    ),
+];
+
+/// #1239: place a cuboid, cylinder, and sphere with the Shape tool (tool cycle order).
+static SHAPES_STEPS: &[Step] = &[
+    plain_step(
+        "Hi! The Shape tool drops solids straight into 3D \u{2014} no sketch needed. \
+         We'll place a cuboid, a cylinder, and a sphere. Fresh document ready.",
+        StepAnchor::None,
+        None,
+    ),
+    plain_step(
+        "Grab the Shape tool \u{2014} the glowing button, or press `B`. It starts as a cuboid.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        Some(cuboid_kind_ready),
+    ),
+    assisted_step(
+        "Click a ground corner, the opposite corner, then set the height (type `20` and Enter). \
+         A cuboid!",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        Some(has_cuboid),
+        StepAssist {
+            label: "Place it for me",
+            run: assist_place_cuboid,
+        },
+        Some(TypeHint::Fixed("20")),
+    ),
+    plain_step(
+        "Press `B` to re-arm the tool, then `B` again to cycle to a cylinder (toolbar icon updates).",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        Some(cylinder_kind_ready),
+    ),
+    assisted_step(
+        "Click the centre, set the radius, then the height \u{2014} type and Enter each.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        Some(has_cylinder),
+        StepAssist {
+            label: "Place it for me",
+            run: assist_place_cylinder,
+        },
+        Some(TypeHint::Fixed("10")),
+    ),
+    plain_step(
+        "Press `B` again for a sphere.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        Some(sphere_kind_ready),
+    ),
+    assisted_step(
+        "Click where the sphere should rest, type a radius (`10`), Enter.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        Some(has_all_three_shapes),
+        StepAssist {
+            label: "Place it for me",
+            run: assist_place_sphere,
+        },
+        Some(TypeHint::Fixed("10")),
+    ),
+    plain_step(
+        "Three solids, no sketches. Press `B` any time to cycle cuboid \u{2192} cylinder \
+         \u{2192} sphere. See you around the viewport!",
+        StepAnchor::None,
+        None,
+    ),
+];
+
+/// #1240: 10×10×10 mm box, then edit a sketch dimension to 20 mm.
+static DIMENSIONED_BOX_STEPS: &[Step] = &[
+    plain_step(
+        "Hi! We'll build a 10 mm cube with typed dimensions, then edit the original sketch \
+         so one side becomes 20 mm \u{2014} the solid rebuilds with it.",
+        StepAnchor::None,
+        None,
+    ),
+    plain_step(
+        "Rectangle tool first \u{2014} glowing button, or `R`.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Rectangle)),
+        Some(rectangle_tool_active),
+    ),
+    assisted_step(
+        "Draw a square on the ground and set both sides to `10` (type in the size fields, Enter).",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Rectangle)),
+        Some(rect_dims_are_10),
+        StepAssist {
+            label: "Draw 10×10 for me",
+            run: assist_draw_10mm_square,
+        },
+        Some(TypeHint::Fixed("10")),
+    ),
+    plain_step(
+        "Extrude tool \u{2014} glowing button, or `E`.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude)),
+        Some(extrude_tool_active),
+    ),
+    assisted_step(
+        "Click the face, type `10` for the depth, Enter. A 10 mm cube.",
+        StepAnchor::Ui(UiAnchor::ExtrudeDistance),
+        Some(extrusion_is_10),
+        StepAssist {
+            label: "Extrude 10 for me",
+            run: assist_extrude_10mm,
+        },
+        Some(TypeHint::Fixed("10")),
+    ),
+    assisted_step(
+        "Reopen the sketch (double-click it in Elements, or the sketch in the viewport) and \
+         change one side dimension from `10` to `20`. The box stretches.",
+        StepAnchor::None,
+        Some(one_sketch_dim_is_20),
+        StepAssist {
+            label: "Change it for me",
+            run: assist_edit_dim_to_20,
+        },
+        Some(TypeHint::Fixed("20")),
+    ),
+    plain_step(
+        "That's the parametric loop: dimensions drive the solid. Change numbers, not geometry. \
+         Nice work!",
+        StepAnchor::None,
+        None,
+    ),
+];
+
 #[cfg(test)]
 mod tests {
     use crate::model::plane_key_for_slot as pkey;
@@ -2977,6 +3488,7 @@ mod tests {
         assert_eq!(tutorial_from_query("?tutorial=bracket"), Some(0));
         assert_eq!(tutorial_from_query("tutorial=bracket"), Some(0));
         assert_eq!(tutorial_from_query("?foo=1&tutorial=bracket&bar=2"), Some(0));
+        assert_eq!(tutorial_from_query("?tutorial=cube"), Some(1));
         assert_eq!(tutorial_from_query("?tutorial=nope"), None);
         assert_eq!(tutorial_from_query("?other=bracket"), None);
         assert_eq!(tutorial_from_query(""), None);
@@ -2985,7 +3497,80 @@ mod tests {
     #[test]
     fn tutorial_registry_lookup_by_name() {
         assert_eq!(tutorial_index("bracket"), Some(0));
+        assert_eq!(tutorial_index("cube"), Some(1));
+        assert_eq!(tutorial_index("shapes"), Some(2));
+        assert_eq!(tutorial_index("dimensioned_box"), Some(3));
         assert_eq!(tutorial_index("nope"), None);
         assert!(TUTORIALS[0].steps.len() >= 10);
+        assert!(TUTORIALS.len() >= 4, "pane lists every walkthrough");
+    }
+
+    /// #1241: finishing a tutorial records it for the green check in the pane.
+    #[test]
+    fn finishing_a_tutorial_marks_it_completed() {
+        let mut app = AppState::default();
+        assert!(!app.tutorial_completed("cube"));
+        app.apply(Action::StartTutorial {
+            index: tutorial_index("cube").unwrap(),
+        });
+        assert!(!app.tutorial_pane_open, "starting a walkthrough closes the pane");
+        // Walk every step via Next / assist until the run ends.
+        let mut guard = 0;
+        while app.tutorial.is_some() {
+            guard += 1;
+            assert!(guard < 50, "tutorial should finish");
+            let run = app.tutorial.unwrap();
+            let step = &TUTORIALS[run.tutorial].steps[run.step];
+            if step.assist.is_some() {
+                app.apply(Action::TutorialAssist);
+            }
+            if app.tutorial.is_some() {
+                app.apply(Action::TutorialNext);
+            }
+        }
+        assert!(app.tutorial_completed("cube"));
+        assert!(app.completed_tutorials_dirty);
+    }
+
+    /// #1241: the Tutorials pane flag is scriptable.
+    #[test]
+    fn tutorial_pane_toggles() {
+        let mut app = AppState::default();
+        assert!(!app.tutorial_pane_open);
+        app.apply(Action::SetTutorialPane { open: Some(true) });
+        assert!(app.tutorial_pane_open);
+        app.apply(Action::SetTutorialPane { open: None });
+        assert!(!app.tutorial_pane_open);
+    }
+
+    /// #1238: the cube tutorial's assists build a rectangle and an extrusion.
+    #[test]
+    fn cube_tutorial_assists_build_a_solid() {
+        let mut app = AppState::default();
+        assist_extrude_to_cube(&mut app);
+        assert!(has_closed_rectangle(&app));
+        assert!(has_extrusion(&app));
+        assert!(!app.doc.bodies.is_empty());
+    }
+
+    /// #1239: shapes tutorial assists place all three primitives.
+    #[test]
+    fn shapes_tutorial_assists_place_three_solids() {
+        let mut app = AppState::default();
+        assist_place_sphere(&mut app); // chains cuboid → cylinder → sphere
+        assert!(has_cuboid(&app));
+        assert!(has_sphere(&app));
+        assert!(has_cylinder(&app));
+        assert_eq!(app.doc.primitives.len(), 3);
+    }
+
+    /// #1240: dimensioned box assist draws 10×10, extrudes 10, then edits to 20.
+    #[test]
+    fn dimensioned_box_tutorial_edits_a_side_to_20() {
+        let mut app = AppState::default();
+        assist_edit_dim_to_20(&mut app);
+        assert!(rect_dims_are_10(&app) || one_sketch_dim_is_20(&app));
+        assert!(extrusion_is_10(&app) || has_extrusion(&app));
+        assert!(one_sketch_dim_is_20(&app));
     }
 }

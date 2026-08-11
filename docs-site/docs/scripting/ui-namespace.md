@@ -108,6 +108,18 @@ With help mode on, each row of the Context pane gets a floating note beside it s
 it wants. A pane screenshot widens to include the notes, which is how the annotated pane
 pictures in the tool pages are made.
 
+## Tutorials
+
+```lua
+bearcad.ui.tutorial_pane("show")   -- list every walkthrough (status-bar Tutorial button)
+local list = bearcad.ui.tutorials() -- { {name=, title=, completed=}, ... }
+bearcad.ui.tutorial("cube")        -- start by registry name; fresh document
+bearcad.ui.tutorial_next()
+bearcad.ui.tutorial_assist()
+bearcad.ui.tutorial_end()
+local step = bearcad.ui.tutorial_step()  -- nil when none running
+```
+
 ```lua
 bearcad.ui.tool_mode("free")   -- put the active tool in one of its modes
 ```

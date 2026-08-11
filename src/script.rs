@@ -838,6 +838,8 @@ pub enum Instruction {
     AddUnitInstance { unit: usize, name: Option<String> },
     /// Show/hide/toggle the Settings window (#737).
     SetSettingsWindow { open: Option<bool> },
+    /// Show/hide/toggle the Tutorials pane (#1241).
+    SetTutorialPane { open: Option<bool> },
     /// Open/close the McMaster-Carr catalog window (#1022).
     SetMcMasterWindow { open: Option<bool>, part: Option<String> },
     /// Open a new blank document tab (`bearcad.ui.new_tab()`).
@@ -1949,6 +1951,14 @@ impl Instruction {
                     None => "toggle",
                 };
                 format!("bearcad.ui.settings({verb:?})")
+            }
+            Instruction::SetTutorialPane { open } => {
+                let verb = match open {
+                    Some(true) => "show",
+                    Some(false) => "hide",
+                    None => "toggle",
+                };
+                format!("bearcad.ui.tutorial_pane({verb:?})")
             }
             Instruction::SetMcMasterWindow { open, part } => {
                 let verb = match open {
@@ -3074,6 +3084,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             })
         }
         Action::SetSettingsWindow { open } => Some(Instruction::SetSettingsWindow { open: *open }),
+        Action::SetTutorialPane { open } => Some(Instruction::SetTutorialPane { open: *open }),
         Action::SetMcMasterWindow { open, part } => Some(Instruction::SetMcMasterWindow {
             open: *open,
             part: part.clone(),
@@ -7224,6 +7235,10 @@ impl ScriptRunner {
             }
             Instruction::SetSettingsWindow { open } => {
                 state.apply(Action::SetSettingsWindow { open });
+                StepResult::Continue
+            }
+            Instruction::SetTutorialPane { open } => {
+                state.apply(Action::SetTutorialPane { open });
                 StepResult::Continue
             }
             Instruction::DeleteParameter { index } => {
