@@ -4211,6 +4211,12 @@ pub fn show_pane(
         }
     }
 
+    // Filter bottom panel FIRST (#1282 / egui panel ordering): nested panels must be
+    // allocated before the remaining content. Showing it after the ScrollArea forced a
+    // multipass re-layout that thrashing auto-ids on the whole Elements pane (full-height
+    // rect flashing red with "Widget rect … changed id between passes").
+    show_elements_filter(ui, filter, filter_expanded);
+
     match view_mode {
         // `Tree` is retired (#252); a lingering script-set Tree mode falls back to List.
         HierarchyViewMode::List | HierarchyViewMode::Tree => {
@@ -4236,7 +4242,10 @@ pub fn show_pane(
             });
             let elements: Vec<HierarchyNode> = rows.iter().map(|(n, _)| *n).collect();
             let style_selection = selection_styles_visible_list(&elements, selection);
-            egui::ScrollArea::vertical().show(ui, |ui| {
+            // Explicit salt: nested auto-ids under the list stay put across multipass (#1282).
+            egui::ScrollArea::vertical()
+                .id_salt("elements_list")
+                .show(ui, |ui| {
                 for (node, base_depth) in rows {
                     // Component rows render inline (#423): triangle, eye, icon, name; they
                     // collapse their contents and accept row drops.
@@ -4408,9 +4417,16 @@ pub fn show_pane(
             );
         }
     }
+}
 
-    // Filter control (#275): a button at the pane's bottom that expands up into a set of
-    // per-type show/hide toggles.
+/// Filter control (#275): a button at the pane's bottom that expands up into a set of
+/// per-type show/hide toggles. Drawn as a nested bottom panel **before** the list/graph
+/// content so egui's multipass layout keeps widget ids stable (#1282).
+fn show_elements_filter(
+    ui: &mut egui::Ui,
+    filter: &mut ElementFilter,
+    filter_expanded: &mut bool,
+) {
     egui::Panel::bottom("elements_filter")
         .frame(egui::Frame::default().inner_margin(egui::Margin::symmetric(4, 3)))
         .show(ui, |ui| {
@@ -4723,6 +4739,7 @@ fn show_graph_view(
     let content_height = max_y.max(acc) + TOP_PADDING + BOTTOM_PADDING + NODE_RADIUS + ROW_H;
 
     egui::ScrollArea::vertical()
+        .id_salt("elements_graph")
         .auto_shrink([false, false])
         .show(ui, |ui| {
             let (rect, _response) =
@@ -6894,6 +6911,54 @@ label_hidden: false,
                 .iter()
                 .any(|(n, _)| *n == HierarchyNode::Drawings),
             "collapsed section still shows the header"
+        );
+    }
+
+    /// #1282: Elements filter bottom panel is allocated *before* the list ScrollArea.
+    /// The reverse order forced multipass re-layout that renumbered widget ids on the whole
+    /// pane (full-height red flash: "Widget rect … changed id between passes"). List-row
+    /// button ids under the explicit scroll salt must stay put across multipass frames.
+    #[test]
+    fn elements_filter_before_list_keeps_widget_ids_stable() {
+        let ctx = egui::Context::default();
+        ctx.options_mut(|o| {
+            o.max_passes = std::num::NonZeroUsize::new(2).unwrap();
+        });
+        let mut ids = Vec::new();
+        for _frame in 0..6 {
+            let mut captured = None;
+            let mut filter = ElementFilter::default();
+            let mut expanded = false;
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                egui::Panel::left("tree").default_size(220.0).show(ui, |ui| {
+                    ui.scope_builder(
+                        egui::UiBuilder::new().id(egui::Id::new(("pane_contents", "tree"))),
+                        |ui| {
+                            ui.heading("Elements");
+                            ui.separator();
+                            // Production order: filter panel first, then list content.
+                            super::show_elements_filter(ui, &mut filter, &mut expanded);
+                            // Always-present Grid (not frame-conditional) so multipass
+                            // sizing still runs without changing the widget tree shape.
+                            egui::Grid::new("elements_multipass_probe").show(ui, |ui| {
+                                ui.label("probe");
+                                ui.end_row();
+                            });
+                            egui::ScrollArea::vertical()
+                                .id_salt("elements_list")
+                                .show(ui, |ui| {
+                                    captured = Some(ui.button("Sketch 0").id);
+                                });
+                        },
+                    );
+                });
+            });
+            ids.push(captured.expect("list button id"));
+        }
+        // Frame 0 may multipass-settle panel sizes; after that ids must not thrash.
+        assert!(
+            ids[1..].windows(2).all(|w| w[0] == w[1]),
+            "list-row widget id must not renumber after settle: {ids:?}"
         );
     }
 

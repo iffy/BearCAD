@@ -4438,21 +4438,27 @@ pub(crate) fn labeled_row<R>(
 ) -> R {
     let label = label.into();
     let help_key = label.text().to_string();
-    let out = ui.horizontal(|ui| {
-        ui.allocate_ui_with_layout(
-            egui::vec2(FIELD_LABEL_W, 18.0),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                // The parent advances by the *used* rect, so pin the column width — and
-                // wrap labels wider than it (#632: "Parameter name") onto a second line,
-                // so every row's input starts at the same x.
-                ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
-                ui.set_max_width(FIELD_LABEL_W);
-                ui.add(egui::Label::new(label).wrap());
-            },
-        );
-        add_input(ui)
-    });
+    // Explicit row salt so nested label/input auto-ids don't thrash across multipass
+    // when a sibling panel renegotiates layout (#1282 / egui#8343).
+    let out = ui
+        .push_id(("labeled_row", help_key.as_str()), |ui| {
+            ui.horizontal(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(FIELD_LABEL_W, 18.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        // The parent advances by the *used* rect, so pin the column width — and
+                        // wrap labels wider than it (#632: "Parameter name") onto a second line,
+                        // so every row's input starts at the same x.
+                        ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
+                        ui.set_max_width(FIELD_LABEL_W);
+                        ui.add(egui::Label::new(label).wrap());
+                    },
+                );
+                add_input(ui)
+            })
+        })
+        .inner;
     note_help(ui, &help_key, out.response.rect);
     out.inner
 }
@@ -4467,35 +4473,40 @@ fn checkbox_row(
     shortcut: Option<crate::shortcuts::ShortcutHint>,
 ) -> bool {
     let mut changed = false;
-    let row = ui.horizontal(|ui| {
-        // Left column: the clickable label.
-        let resp = ui
-            .allocate_ui_with_layout(
-                egui::vec2(FIELD_LABEL_W, 18.0),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
-                    ui.add(egui::Label::new(label).sense(egui::Sense::click()))
-                },
-            )
-            .inner;
-        if resp.clicked() {
-            *checked = !*checked;
-            changed = true;
-        }
-        // Right column: the checkbox, with the shortcut hint to its **right** (#597).
-        if ui.checkbox(checked, "").changed() {
-            changed = true;
-        }
-        if let Some(hint) = shortcut {
-            ui.add(egui::Label::new(
-                egui::RichText::new(crate::shortcuts::format_shortcut(hint))
-                    .weak()
-                    .monospace()
-                    .size(11.0),
-            ));
-        }
-    });
+    // Explicit row salt: same multipass stability as [`labeled_row`] (#1282).
+    let row = ui
+        .push_id(("checkbox_row", label), |ui| {
+            ui.horizontal(|ui| {
+                // Left column: the clickable label.
+                let resp = ui
+                    .allocate_ui_with_layout(
+                        egui::vec2(FIELD_LABEL_W, 18.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
+                            ui.add(egui::Label::new(label).sense(egui::Sense::click()))
+                        },
+                    )
+                    .inner;
+                if resp.clicked() {
+                    *checked = !*checked;
+                    changed = true;
+                }
+                // Right column: the checkbox, with the shortcut hint to its **right** (#597).
+                if ui.checkbox(checked, "").changed() {
+                    changed = true;
+                }
+                if let Some(hint) = shortcut {
+                    ui.add(egui::Label::new(
+                        egui::RichText::new(crate::shortcuts::format_shortcut(hint))
+                            .weak()
+                            .monospace()
+                            .size(11.0),
+                    ));
+                }
+            })
+        })
+        .inner;
     note_help(ui, label, row.response.rect);
     changed
 }
@@ -4537,20 +4548,25 @@ fn labeled_row_top<R>(
 ) -> R {
     let label = label.into();
     let help_key = label.text().to_string();
-    let out = ui.horizontal_top(|ui| {
-        ui.allocate_ui_with_layout(
-            egui::vec2(FIELD_LABEL_W, 26.0),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                // The parent advances by the *used* rect, so pin the column width; wide
-                // labels wrap within it (#632) so every input starts at the same x.
-                ui.set_min_size(egui::vec2(FIELD_LABEL_W, 26.0));
-                ui.set_max_width(FIELD_LABEL_W);
-                ui.add(egui::Label::new(label).wrap());
-            },
-        );
-        ui.vertical(add_input)
-    });
+    // Explicit row salt: same multipass stability as [`labeled_row`] (#1282).
+    let out = ui
+        .push_id(("labeled_row_top", help_key.as_str()), |ui| {
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(FIELD_LABEL_W, 26.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        // The parent advances by the *used* rect, so pin the column width; wide
+                        // labels wrap within it (#632) so every input starts at the same x.
+                        ui.set_min_size(egui::vec2(FIELD_LABEL_W, 26.0));
+                        ui.set_max_width(FIELD_LABEL_W);
+                        ui.add(egui::Label::new(label).wrap());
+                    },
+                );
+                ui.vertical(add_input)
+            })
+        })
+        .inner;
     note_help(ui, &help_key, out.response.rect);
     out.inner.inner
 }
@@ -5209,39 +5225,44 @@ pub fn show_pane(
             } else {
                 crate::icons::IconId::RevolveAngle
             };
-            let angle_row = ui.horizontal(|ui| {
-                ui.allocate_ui_with_layout(
-                    egui::vec2(FIELD_LABEL_W, 18.0),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
-                        const TIP: &str = "Click to toggle between Angle and Revs";
-                        if crate::icons::icon_button_hover_gold(ui, angle_icon, TIP).clicked()
-                            || clickable_label(ui, angle_label, TIP).clicked()
-                        {
-                            pending_revolve = Some(RevolveEdit::ToggleAngleMode);
+            let angle_row = ui
+                .push_id(("revolve_row", angle_label), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(FIELD_LABEL_W, 18.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
+                                const TIP: &str = "Click to toggle between Angle and Revs";
+                                if crate::icons::icon_button_hover_gold(ui, angle_icon, TIP)
+                                    .clicked()
+                                    || clickable_label(ui, angle_label, TIP).clicked()
+                                {
+                                    pending_revolve = Some(RevolveEdit::ToggleAngleMode);
+                                }
+                            },
+                        );
+                        let mut text = control.angle_text.clone();
+                        let kind = if control.angle_is_revolutions {
+                            crate::expression_input::ValueKind::Count
+                        } else {
+                            crate::expression_input::ValueKind::Angle
+                        };
+                        // Id must stay distinct from the floating revolve angle field
+                        // (`REVOLVE_ANGLE_FIELD_ID` / `"revolve_angle_input"` in main.rs) — both
+                        // paint in the same frame once an axis is set (#1245).
+                        let resp = crate::expression_input::ValueInput::from_id(
+                            egui::Id::new("revolve_angle_field"),
+                            kind,
+                        )
+                        .width(FIELD_W)
+                        .show(ui, &mut text, doc);
+                        if resp.changed() {
+                            pending_revolve = Some(RevolveEdit::Angle(text));
                         }
-                    },
-                );
-                let mut text = control.angle_text.clone();
-                let kind = if control.angle_is_revolutions {
-                    crate::expression_input::ValueKind::Count
-                } else {
-                    crate::expression_input::ValueKind::Angle
-                };
-                // Id must stay distinct from the floating revolve angle field
-                // (`REVOLVE_ANGLE_FIELD_ID` / `"revolve_angle_input"` in main.rs) — both
-                // paint in the same frame once an axis is set (#1245).
-                let resp = crate::expression_input::ValueInput::from_id(
-                    egui::Id::new("revolve_angle_field"),
-                    kind,
-                )
-                .width(FIELD_W)
-                .show(ui, &mut text, doc);
-                if resp.changed() {
-                    pending_revolve = Some(RevolveEdit::Angle(text));
-                }
-            });
+                    })
+                })
+                .inner;
             note_help(ui, angle_label, angle_row.response.rect);
 
             let gap_label = if control.gap_is_offset { "Offset" } else { "Gap" };
@@ -5250,31 +5271,36 @@ pub fn show_pane(
             } else {
                 crate::icons::IconId::RepeatGapBetween
             };
-            let gap_row = ui.horizontal(|ui| {
-                ui.allocate_ui_with_layout(
-                    egui::vec2(FIELD_LABEL_W, 18.0),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
-                        const TIP: &str = "Click to toggle how this is measured";
-                        if crate::icons::icon_button_hover_gold(ui, gap_icon, TIP).clicked()
-                            || clickable_label(ui, gap_label, TIP).clicked()
-                        {
-                            pending_revolve = Some(RevolveEdit::ToggleGapOffset);
+            let gap_row = ui
+                .push_id(("revolve_row", gap_label), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(FIELD_LABEL_W, 18.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
+                                const TIP: &str = "Click to toggle how this is measured";
+                                if crate::icons::icon_button_hover_gold(ui, gap_icon, TIP)
+                                    .clicked()
+                                    || clickable_label(ui, gap_label, TIP).clicked()
+                                {
+                                    pending_revolve = Some(RevolveEdit::ToggleGapOffset);
+                                }
+                            },
+                        );
+                        let mut text = control.gap_text.clone();
+                        let resp = crate::expression_input::ValueInput::from_id(
+                            egui::Id::new("revolve_gap_field"),
+                            crate::expression_input::ValueKind::Length,
+                        )
+                        .width(FIELD_W)
+                        .show(ui, &mut text, doc);
+                        if resp.changed() {
+                            pending_revolve = Some(RevolveEdit::Gap(text));
                         }
-                    },
-                );
-                let mut text = control.gap_text.clone();
-                let resp = crate::expression_input::ValueInput::from_id(
-                    egui::Id::new("revolve_gap_field"),
-                    crate::expression_input::ValueKind::Length,
-                )
-                .width(FIELD_W)
-                .show(ui, &mut text, doc);
-                if resp.changed() {
-                    pending_revolve = Some(RevolveEdit::Gap(text));
-                }
-            });
+                    })
+                })
+                .inner;
             note_help(ui, gap_label, gap_row.response.rect);
         }
         if let Some(edit) = pending_revolve {
@@ -6588,7 +6614,9 @@ pub fn show_pane(
                                toggle: Option<(crate::icons::IconId, RepeatEdit)>,
                                make: &dyn Fn(String) -> RepeatEdit| {
                 let computed = control.computed_var == var;
-                let row = ui.horizontal(|ui| {
+                let row = ui
+                    .push_id(("repeat_var_row", label), |ui| {
+                    ui.horizontal(|ui| {
                     // Icon + label share the fixed label column (#371) so the inputs align.
                     ui.allocate_ui_with_layout(
                         egui::vec2(FIELD_LABEL_W, 18.0),
@@ -6688,7 +6716,9 @@ pub fn show_pane(
                     if lock.clicked() && !computed {
                         pending = Some(RepeatEdit::SetComputed(var));
                     }
-                });
+                    })
+                    })
+                    .inner;
                 note_help(ui, label, row.response.rect);
             };
             var_row(ui, RepeatVar::Count, "Count", &control.count, None, &RepeatEdit::Count);
@@ -6831,84 +6861,89 @@ pub fn show_pane(
                            toggle: Option<(crate::icons::IconId, SketchRepeatEdit)>,
                            make: &dyn Fn(String) -> SketchRepeatEdit| {
             let computed = control.computed_var == var;
-            let row = ui.horizontal(|ui| {
-                // Icon + label share the fixed label column (#371) so the inputs align.
-                ui.allocate_ui_with_layout(
-                    egui::vec2(FIELD_LABEL_W, 18.0),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
-                        match toggle {
-                            Some((icon, edit)) => {
-                                const TIP: &str = "Click to toggle how this is measured";
-                                if crate::icons::icon_button_hover_gold(ui, icon, TIP).clicked()
-                                    || clickable_label(ui, label, TIP).clicked()
-                                {
-                                    pending = Some(edit);
+            let row = ui
+                .push_id(("sketch_repeat_var_row", label), |ui| {
+                    ui.horizontal(|ui| {
+                        // Icon + label share the fixed label column (#371) so the inputs align.
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(FIELD_LABEL_W, 18.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
+                                match toggle {
+                                    Some((icon, edit)) => {
+                                        const TIP: &str = "Click to toggle how this is measured";
+                                        if crate::icons::icon_button_hover_gold(ui, icon, TIP)
+                                            .clicked()
+                                            || clickable_label(ui, label, TIP).clicked()
+                                        {
+                                            pending = Some(edit);
+                                        }
+                                    }
+                                    None => {
+                                        ui.label(label);
+                                    }
                                 }
-                            }
-                            None => {
-                                ui.label(label);
+                            },
+                        );
+                        // Both states render at the same width (#641) so the column doesn't jump as
+                        // the computed one moves between rows.
+                        const VAR_FIELD_W: f32 = 110.0;
+                        if computed {
+                            let mut text = control.computed_value.clone().unwrap_or_default();
+                            ui.add_enabled_ui(false, |ui| {
+                                crate::expression_input::ValueInput::new(
+                                    ("sketch_repeat_var_field", label, "computed"),
+                                    crate::expression_input::ValueKind::Length,
+                                )
+                                .width(VAR_FIELD_W)
+                                .show(ui, &mut text, doc)
+                                .on_hover_text("Computed from the other two");
+                            });
+                        } else {
+                            let mut text = value.to_string();
+                            let kind = if var == RepeatVar::Count {
+                                crate::expression_input::ValueKind::Count
+                            } else {
+                                crate::expression_input::ValueKind::Length
+                            };
+                            let resp = crate::expression_input::ValueInput::new(
+                                ("sketch_repeat_var_field", label),
+                                kind,
+                            )
+                            .width(VAR_FIELD_W)
+                            .show(ui, &mut text, doc);
+                            if resp.changed() {
+                                pending = Some(make(text));
                             }
                         }
-                    },
-                );
-                // Both states render at the same width (#641) so the column doesn't jump as
-                // the computed one moves between rows.
-                const VAR_FIELD_W: f32 = 110.0;
-                if computed {
-                    let mut text = control.computed_value.clone().unwrap_or_default();
-                    ui.add_enabled_ui(false, |ui| {
-                        crate::expression_input::ValueInput::new(
-                            ("sketch_repeat_var_field", label, "computed"),
-                            crate::expression_input::ValueKind::Length,
-                        )
-                        .width(VAR_FIELD_W)
-                        .show(ui, &mut text, doc)
-                        .on_hover_text("Computed from the other two");
-                    });
-                } else {
-                    let mut text = value.to_string();
-                    let kind = if var == RepeatVar::Count {
-                        crate::expression_input::ValueKind::Count
-                    } else {
-                        crate::expression_input::ValueKind::Length
-                    };
-                    let resp = crate::expression_input::ValueInput::new(
-                        ("sketch_repeat_var_field", label),
-                        kind,
-                    )
-                    .width(VAR_FIELD_W)
-                    .show(ui, &mut text, doc);
-                    if resp.changed() {
-                        pending = Some(make(text));
-                    }
-                }
-                // Lock (#642/#835): green on the value the app computes, grey on the two the
-                // user sets; clicking a grey lock moves the green one there.
-                let lock = crate::icons::tinted_icon_button(
-                    ui,
-                    crate::icons::IconId::Lock,
-                    if computed {
-                        crate::theme::LOCKED_ACCENT
-                    } else {
-                        crate::theme::UNLOCKED_GRAY
-                    },
-                    if computed {
-                        crate::theme::LOCKED_ACCENT
-                    } else {
-                        crate::theme::LOCKED_ACCENT.gamma_multiply(0.7)
-                    },
-                    if computed {
-                        "Computed from the other two"
-                    } else {
-                        "Click to compute this from the other two instead"
-                    },
-                );
-                if lock.clicked() && !computed {
-                    pending = Some(SketchRepeatEdit::SetComputed(var));
-                }
-            });
+                        // Lock (#642/#835): green on the value the app computes, grey on the two the
+                        // user sets; clicking a grey lock moves the green one there.
+                        let lock = crate::icons::tinted_icon_button(
+                            ui,
+                            crate::icons::IconId::Lock,
+                            if computed {
+                                crate::theme::LOCKED_ACCENT
+                            } else {
+                                crate::theme::UNLOCKED_GRAY
+                            },
+                            if computed {
+                                crate::theme::LOCKED_ACCENT
+                            } else {
+                                crate::theme::LOCKED_ACCENT.gamma_multiply(0.7)
+                            },
+                            if computed {
+                                "Computed from the other two"
+                            } else {
+                                "Click to compute this from the other two instead"
+                            },
+                        );
+                        if lock.clicked() && !computed {
+                            pending = Some(SketchRepeatEdit::SetComputed(var));
+                        }
+                    })
+                })
+                .inner;
             note_help(ui, label, row.response.rect);
         };
         var_row(ui, RepeatVar::Count, "Count", &control.count, None, &SketchRepeatEdit::Count);
@@ -7721,36 +7756,42 @@ pub fn show_pane(
                 };
                 let label = if is_angle { "Taper Angle" } else { "Taper Width" };
                 let tip = "Click to toggle taper by distance or angle";
-                let row = ui.horizontal(|ui| {
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(FIELD_LABEL_W, 18.0),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| {
-                            ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
+                let row = ui
+                    .push_id(("extrude_taper_row", label), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(FIELD_LABEL_W, 18.0),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
+                                    ui.add_enabled_ui(controls_enabled, |ui| {
+                                        if crate::icons::icon_button_hover_gold(ui, icon, tip)
+                                            .clicked()
+                                            || clickable_label(ui, label, tip).clicked()
+                                        {
+                                            on_extrude_edit(ExtrudeEdit::ToggleTaperMode);
+                                        }
+                                    });
+                                },
+                            );
                             ui.add_enabled_ui(controls_enabled, |ui| {
-                                if crate::icons::icon_button_hover_gold(ui, icon, tip).clicked()
-                                    || clickable_label(ui, label, tip).clicked()
-                                {
-                                    on_extrude_edit(ExtrudeEdit::ToggleTaperMode);
+                                let mut text = control.taper.clone();
+                                let kind = if is_angle {
+                                    crate::expression_input::ValueKind::Angle
+                                } else {
+                                    crate::expression_input::ValueKind::Length
+                                };
+                                let resp =
+                                    crate::expression_input::ValueInput::new("extrude_taper", kind)
+                                        .width(90.0)
+                                        .show(ui, &mut text, doc);
+                                if resp.changed() {
+                                    on_extrude_edit(ExtrudeEdit::Taper(text));
                                 }
                             });
-                        },
-                    );
-                    ui.add_enabled_ui(controls_enabled, |ui| {
-                        let mut text = control.taper.clone();
-                        let kind = if is_angle {
-                            crate::expression_input::ValueKind::Angle
-                        } else {
-                            crate::expression_input::ValueKind::Length
-                        };
-                        let resp = crate::expression_input::ValueInput::new("extrude_taper", kind)
-                            .width(90.0)
-                            .show(ui, &mut text, doc);
-                        if resp.changed() {
-                            on_extrude_edit(ExtrudeEdit::Taper(text));
-                        }
-                    });
-                });
+                        })
+                    })
+                    .inner;
                 note_help(ui, label, row.response.rect);
             }
         }
@@ -8202,6 +8243,48 @@ mod tests {
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::body_key_for_slot as bkey;
     use super::*;
+
+    /// #1282: labeled_row / checkbox_row salts keep nested widget ids stable across
+    /// multipass frames (Context pane field labels flashing red).
+    #[test]
+    fn labeled_row_ids_stable_across_multipass() {
+        let ctx = egui::Context::default();
+        ctx.options_mut(|o| {
+            o.max_passes = std::num::NonZeroUsize::new(2).unwrap();
+        });
+        let mut ids = Vec::new();
+        for _frame in 0..6 {
+            let mut captured = None;
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                egui::Panel::right("context").default_size(200.0).show(ui, |ui| {
+                    ui.scope_builder(
+                        egui::UiBuilder::new().id(egui::Id::new(("pane_contents", "context"))),
+                        |ui| {
+                            ui.heading("Context");
+                            ui.separator();
+                            // Always-present Grid so multipass sizing still runs without
+                            // changing the widget tree shape between frames.
+                            egui::Grid::new("context_multipass_probe").show(ui, |ui| {
+                                ui.label("probe");
+                                ui.end_row();
+                            });
+                            labeled_row(ui, "Angle", |ui| {
+                                captured = Some(ui.button("360").id);
+                            });
+                            let mut checked = true;
+                            let _ = checkbox_row(ui, "Symmetric", &mut checked, None);
+                        },
+                    );
+                });
+            });
+            ids.push(captured.expect("labeled_row input id"));
+        }
+        // Frame 0 may multipass-settle panel sizes; after that ids must not thrash.
+        assert!(
+            ids[1..].windows(2).all(|w| w[0] == w[1]),
+            "labeled_row input id must not renumber after settle: {ids:?}"
+        );
+    }
 
     /// #982: with a sketch open, the Select tool's picker view carries the sketch-only rule
     /// (#742) — the one the click path enforces — so the Exploder's fan and every other

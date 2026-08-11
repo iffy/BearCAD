@@ -15272,8 +15272,9 @@ op,
                 }
                 let targets =
                     crate::hierarchy::visibility_targets_from_selection(&self.scene_selection);
+                // Same quiet no-op as ToggleSelectionVisibility (#1282).
                 if targets.is_empty() {
-                    return ActionResult::Err("No hideable selection".to_string());
+                    return ActionResult::Ok;
                 }
                 for element in &targets {
                     self.element_visibility
@@ -15294,8 +15295,10 @@ op,
                 }
                 let targets =
                     crate::hierarchy::visibility_targets_from_selection(&self.scene_selection);
+                // Empty selection is a silent no-op: V is easy to hit by accident
+                // (tutorials, typing) and "No hideable selection" just noise (#1282).
                 if targets.is_empty() {
-                    return ActionResult::Err("No hideable selection".to_string());
+                    return ActionResult::Ok;
                 }
                 // If any is visible, hide all; if all are hidden, show all (#1152).
                 let visible = !self.element_visibility.any_visible(&targets);
@@ -30482,6 +30485,22 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             state.apply(Action::ToggleSelectionVisibility),
             ActionResult::Err(_)
         ));
+    }
+
+    /// #1282: V with nothing selected is a quiet no-op (not a refused log line).
+    #[test]
+    fn toggle_selection_visibility_empty_is_ok() {
+        let mut state = AppState::default();
+        state.apply(Action::SetTool(Tool::Select));
+        assert!(state.scene_selection.is_empty());
+        assert_eq!(
+            state.apply(Action::ToggleSelectionVisibility),
+            ActionResult::Ok
+        );
+        assert_eq!(
+            state.apply(Action::ApplySelectionVisibility { visible: false }),
+            ActionResult::Ok
+        );
     }
 
     #[test]

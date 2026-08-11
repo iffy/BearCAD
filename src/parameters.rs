@@ -2212,7 +2212,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
     let mut set_bound: Option<(ParameterKey, ParameterBound, Option<String>)> = None;
     let mut toggle_options: Option<ParameterKey> = None;
 
-    ScrollArea::vertical().show(ui, |ui| {
+    ScrollArea::vertical().id_salt("parameters_list").show(ui, |ui| {
         // Selected unit instance (#728): its parameters lead the pane, unmistakably its
         // own section; the document's parameters follow below.
         show_unit_parameters_section(ui, app);
