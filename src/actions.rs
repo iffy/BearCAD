@@ -3032,6 +3032,54 @@ impl DimLabelAxis {
     }
 }
 
+/// Write a drawing edge dimension's label offset without going through undo (#294/#1228).
+/// The live label-drag path uses this every frame; the final commit still runs
+/// [`Action::SetDrawingDimensionOffset`] once so the gesture is a single undo step.
+pub fn set_drawing_dimension_offset(
+    doc: &mut Document,
+    drawing: crate::model::DrawingKey,
+    view: usize,
+    a: [i32; 3],
+    b: [i32; 3],
+    offset: Option<f32>,
+) -> Result<(), String> {
+    let key = if a <= b { (a, b) } else { (b, a) };
+    let Some(v) = doc
+        .drawings
+        .get_mut(drawing)
+        .and_then(|d| d.views.get_mut(view))
+    else {
+        return Err(format!("No view {view} in drawing {}", drawing.index()));
+    };
+    v.dimension_offsets.retain(|(k, _)| *k != key);
+    if let Some(o) = offset {
+        v.dimension_offsets.push((key, o));
+    }
+    Ok(())
+}
+
+/// Write a drawing circle Ø-label offset without going through undo (#397/#1228).
+pub fn set_drawing_circle_dim_offset(
+    doc: &mut Document,
+    drawing: crate::model::DrawingKey,
+    view: usize,
+    center: [i32; 3],
+    offset: Option<f32>,
+) -> Result<(), String> {
+    let Some(v) = doc
+        .drawings
+        .get_mut(drawing)
+        .and_then(|d| d.views.get_mut(view))
+    else {
+        return Err(format!("No view {view} in drawing {}", drawing.index()));
+    };
+    v.circle_dim_offsets.retain(|(k, _)| *k != center);
+    if let Some(o) = offset {
+        v.circle_dim_offsets.push((center, o));
+    }
+    Ok(())
+}
+
 pub fn dim_label_target_in_sketch(
     doc: &Document,
     sketch: SketchId,
@@ -11577,35 +11625,16 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::SetDrawingDimensionOffset { drawing, view, a, b, offset } => {
-                let key = if a <= b { (a, b) } else { (b, a) };
-                let Some(v) = self
-                    .doc
-                    .drawings
-                    .get_mut(drawing)
-                    .and_then(|d| d.views.get_mut(view))
-                else {
-                    return ActionResult::Err(format!("No view {view} in drawing {}", drawing.index()));
-                };
-                v.dimension_offsets.retain(|(k, _)| *k != key);
-                if let Some(o) = offset {
-                    v.dimension_offsets.push((key, o));
+                match set_drawing_dimension_offset(&mut self.doc, drawing, view, a, b, offset) {
+                    Ok(()) => ActionResult::Ok,
+                    Err(e) => ActionResult::Err(e),
                 }
-                ActionResult::Ok
             }
             Action::SetDrawingCircleDimOffset { drawing, view, center, offset } => {
-                let Some(v) = self
-                    .doc
-                    .drawings
-                    .get_mut(drawing)
-                    .and_then(|d| d.views.get_mut(view))
-                else {
-                    return ActionResult::Err(format!("No view {view} in drawing {}", drawing.index()));
-                };
-                v.circle_dim_offsets.retain(|(k, _)| *k != center);
-                if let Some(o) = offset {
-                    v.circle_dim_offsets.push((center, o));
+                match set_drawing_circle_dim_offset(&mut self.doc, drawing, view, center, offset) {
+                    Ok(()) => ActionResult::Ok,
+                    Err(e) => ActionResult::Err(e),
                 }
-                ActionResult::Ok
             }
             Action::ToggleDrawingAngle {
                 drawing,
@@ -26251,6 +26280,115 @@ mod tests {
             offset: None,
         });
         assert!(state.doc.drawings[dkey(0)].views[0].circle_dim_offsets.is_empty());
+    }
+
+    /// #294: an edge dimension's label offset override stores and clears like circle Ø offsets.
+    #[test]
+    fn edge_dim_offset_stores_and_clears() {
+        let mut state = box_extrusion_state();
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::AddDrawingView {
+            drawing: dkey(0),
+            bodies: vec![bkey(0)],
+            orientation: crate::model::DrawingOrientation::Front,
+        });
+        let a = [0, 0, 0];
+        let b = [1000, 0, 0];
+        let key = if a <= b { (a, b) } else { (b, a) };
+        state.apply(Action::SetDrawingDimensionOffset {
+            drawing: dkey(0),
+            view: 0,
+            a,
+            b,
+            offset: Some(3.25),
+        });
+        assert_eq!(
+            state.doc.drawings[dkey(0)].views[0].dimension_offsets,
+            vec![(key, 3.25)]
+        );
+        state.apply(Action::SetDrawingDimensionOffset {
+            drawing: dkey(0),
+            view: 0,
+            a,
+            b,
+            offset: None,
+        });
+        assert!(state.doc.drawings[dkey(0)].views[0].dimension_offsets.is_empty());
+    }
+
+    /// #1228: dragging a drawing dim label used to `apply(SetDrawingDimensionOffset)` every
+    /// frame, cloning the whole document for undo. Live writes must not checkpoint; the
+    /// release lands as a single undoable apply (same pattern as joint select-drag).
+    #[test]
+    fn live_drawing_dim_offset_drag_is_one_undo_step() {
+        let mut state = box_extrusion_state();
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::AddDrawingView {
+            drawing: dkey(0),
+            bodies: vec![bkey(0)],
+            orientation: crate::model::DrawingOrientation::Front,
+        });
+        let a = [0, 0, 0];
+        let b = [1000, 0, 0];
+        let undo_before = state.undo_stack.len();
+        let t0 = crate::time::Instant::now();
+        // Live path: mutate offsets without apply (what the UI does mid-drag).
+        for i in 1..=200 {
+            set_drawing_dimension_offset(
+                &mut state.doc,
+                dkey(0),
+                0,
+                a,
+                b,
+                Some(i as f32 * 0.05),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            state.undo_stack.len(),
+            undo_before,
+            "live offset writes must not push undo snapshots"
+        );
+        assert!(
+            t0.elapsed() < std::time::Duration::from_millis(50),
+            "200 live offset writes took {:?} — still too heavy",
+            t0.elapsed()
+        );
+        let final_offset = state.doc.drawings[dkey(0)].views[0]
+            .dimension_offsets
+            .first()
+            .map(|(_, o)| *o)
+            .unwrap();
+        // Restore the pre-drag value (no override), then commit once (release path).
+        set_drawing_dimension_offset(&mut state.doc, dkey(0), 0, a, b, None).unwrap();
+        assert!(matches!(
+            state.apply(Action::SetDrawingDimensionOffset {
+                drawing: dkey(0),
+                view: 0,
+                a,
+                b,
+                offset: Some(final_offset),
+            }),
+            ActionResult::Ok
+        ));
+        assert_eq!(
+            state.undo_stack.len(),
+            undo_before + 1,
+            "release must be a single undo step"
+        );
+        assert!(
+            (state.doc.drawings[dkey(0)].views[0]
+                .dimension_offsets
+                .first()
+                .map(|(_, o)| *o)
+                .unwrap()
+                - 10.0)
+                .abs()
+                < 1e-3
+        );
+        // Undo returns to no override.
+        state.apply(Action::UndoLast);
+        assert!(state.doc.drawings[dkey(0)].views[0].dimension_offsets.is_empty());
     }
 
     /// #508: starting an extrude faces the free half-space the camera is looking at.

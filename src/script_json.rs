@@ -999,6 +999,19 @@ pub fn instruction_from_json(
             view: req_usize(o, "view", "drawing_circle_dimension")?,
             center: xyz(o, "center")?,
         }),
+        "drawing_dim_offset" => Ok(Instruction::SetDrawingDimensionOffset {
+            drawing: req_usize(o, "drawing", "drawing_dim_offset")?,
+            view: req_usize(o, "view", "drawing_dim_offset")?,
+            a: xyz(o, "a")?,
+            b: xyz(o, "b")?,
+            offset: opt_f32(o, "offset")?,
+        }),
+        "drawing_circle_dim_offset" => Ok(Instruction::SetDrawingCircleDimOffset {
+            drawing: req_usize(o, "drawing", "drawing_circle_dim_offset")?,
+            view: req_usize(o, "view", "drawing_circle_dim_offset")?,
+            center: xyz(o, "center")?,
+            offset: opt_f32(o, "offset")?,
+        }),
         "drawing_view_align_lines" => Ok(Instruction::SetDrawingViewAlignLines {
             drawing: req_usize(o, "drawing", "drawing_view_align_lines")?,
             view: req_usize(o, "view", "drawing_view_align_lines")?,

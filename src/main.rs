@@ -919,12 +919,19 @@ struct DrawingDimLabelDrag {
     /// A circle Ø-label drag (#397): `key.0` is the circle's quantized centre and the offset
     /// writes through `SetDrawingCircleDimOffset` instead of the edge-keyed action.
     circle: bool,
-    start_offset: f32,
+    /// Offset at grab time. `None` means the dim had no override (auto-placed).
+    start_offset: Option<f32>,
     start_pointer: egui::Pos2,
     /// Outward unit direction in screen space (pixels), for projecting the drag delta.
     outward_screen: egui::Vec2,
     /// Projected-mm per screen pixel (1 / scale), to convert the pixel delta to a mm offset.
     mm_per_px: f32,
+}
+
+/// Whether the Select tool should relocate a drawing projection card (#1227).
+/// An in-flight dimension-label drag owns the pointer instead.
+fn drawing_view_should_relocate(tool: Tool, dim_label_drag_active: bool) -> bool {
+    tool == Tool::Select && !dim_label_drag_active
 }
 
 /// A drag on one of the Move tool's translation arrows (#215): which axis (0=X, 1=Y, 2=Z), and
@@ -22795,8 +22802,10 @@ impl App {
         let press_on_sheet = press_origin.is_some_and(|o| area.contains(o));
         let bg_pan_delta = (bg.dragged() || (primary_down && press_on_sheet))
             .then_some(pointer_delta);
-        let mut pan_suppressed_by_card =
-            self.drawing_view_drag.is_some() || self.drawing_view_resize_drag.is_some();
+        let mut pan_suppressed_by_card = self.drawing_view_drag.is_some()
+            || self.drawing_view_resize_drag.is_some()
+            // A dim-label drag owns the pointer: don't pan the sheet underneath it (#1227).
+            || self.drawing_dim_label_drag.is_some();
         let scroll = if bg.hovered() { raw_scroll_y(ui.ctx()) } else { 0.0 };
         if scroll != 0.0 {
             let f = (1.0 + scroll * 0.0015).clamp(0.5, 2.0);
@@ -23052,13 +23061,22 @@ impl App {
                     ui.make_persistent_id(("drawing_view_drag", drawing, vi)),
                     egui::Sense::click_and_drag(),
                 );
+                // A dim-label drag for this card owns the pointer: drop any earlier card grab
+                // so the Select tool doesn't relocate the projection underneath the label (#1227).
+                let dim_label_drag_here = self.drawing_dim_label_drag.is_some_and(|d| {
+                    d.drawing == drawing && d.view == vi
+                });
+                if dim_label_drag_here && self.drawing_view_drag == Some((drawing, vi)) {
+                    self.drawing_view_drag = None;
+                }
                 // Resolve card grabbing from the press origin, not egui's drag arbitration, so
                 // it works on touch (no pre-press hover) as well as mouse (mobile/touch). A press that
                 // began inside this card claims it for the duration of the press; the grab is
                 // remembered across frames so it survives the card sliding under the finger.
-                // Corner resize owns the pointer when active (#1207).
+                // Corner resize owns the pointer when active (#1207). Dim-label drags win (#1227).
                 if self.drawing_view_resize_drag.is_none()
                     && self.drawing_view_drag.is_none()
+                    && self.drawing_dim_label_drag.is_none()
                     && primary_down
                     && press_origin.is_some_and(|o| cell.contains(o))
                 {
@@ -23066,11 +23084,17 @@ impl App {
                     pan_suppressed_by_card = true;
                 }
                 let grabbed = self.drawing_view_drag == Some((drawing, vi))
-                    && self.drawing_view_resize_drag.is_none();
+                    && self.drawing_view_resize_drag.is_none()
+                    && !dim_label_drag_here;
                 // Only the Select tool moves views (#374): with e.g. the Dimension tool a drag
                 // across a card must not relocate it (the grab still suppresses the page pan so
-                // it doesn't fall through).
-                if grabbed && self.state.tool == Tool::Select {
+                // it doesn't fall through). Dim-label drag also suppresses relocation (#1227).
+                if grabbed
+                    && drawing_view_should_relocate(
+                        self.state.tool,
+                        self.drawing_dim_label_drag.is_some(),
+                    )
+                {
                     // Relative drag: keep the grab point under the cursor instead of snapping
                     // the card's centre to it. An aligned child (#296) only slides along its
                     // free axis — the shared axis stays locked to its parent.
@@ -23615,15 +23639,24 @@ impl App {
                                 {
                                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                                 }
-                                if lr.drag_started() {
-                                    if let Some(pp) = lr.interact_pointer_pos() {
+                                // Start on press (not drag_started) so the label claims the
+                                // pointer before the card-move grab relocates the view (#1227).
+                                if self.drawing_dim_label_drag.is_none()
+                                    && primary_down
+                                    && press_origin.is_some_and(|o| label_rect.contains(o))
+                                {
+                                    if let Some(pp) = pointer_screen.or(lr.interact_pointer_pos()) {
                                         // Screen up = +offset (projected +v maps to −y).
                                         self.drawing_dim_label_drag = Some(DrawingDimLabelDrag {
                                             drawing,
                                             view: vi,
                                             key: (circle_key, circle_key),
                                             circle: true,
-                                            start_offset: extra,
+                                            start_offset: view
+                                                .circle_dim_offsets
+                                                .iter()
+                                                .find(|(k, _)| *k == circle_key)
+                                                .map(|(_, o)| *o),
                                             start_pointer: pp,
                                             outward_screen: egui::vec2(0.0, -1.0),
                                             mm_per_px: if scale.abs() > 1e-6 {
@@ -23632,6 +23665,10 @@ impl App {
                                                 0.0
                                             },
                                         });
+                                        if self.drawing_view_drag == Some((drawing, vi)) {
+                                            self.drawing_view_drag = None;
+                                        }
+                                        pan_suppressed_by_card = true;
                                     }
                                 }
                             }
@@ -23715,14 +23752,22 @@ impl App {
                                 {
                                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                                 }
-                                if lr.drag_started() {
-                                    if let Some(pp) = lr.interact_pointer_pos() {
+                                // Press-start so card grab can't steal the drag (#1227).
+                                if self.drawing_dim_label_drag.is_none()
+                                    && primary_down
+                                    && press_origin.is_some_and(|o| label_rect.contains(o))
+                                {
+                                    if let Some(pp) = pointer_screen.or(lr.interact_pointer_pos()) {
                                         self.drawing_dim_label_drag = Some(DrawingDimLabelDrag {
                                             drawing,
                                             view: vi,
                                             key: (circle_key, circle_key),
                                             circle: true,
-                                            start_offset: extra,
+                                            start_offset: view
+                                                .circle_dim_offsets
+                                                .iter()
+                                                .find(|(k, _)| *k == circle_key)
+                                                .map(|(_, o)| *o),
                                             start_pointer: pp,
                                             outward_screen: egui::vec2(out_screen.x, out_screen.y),
                                             mm_per_px: if scale.abs() > 1e-6 {
@@ -23731,6 +23776,10 @@ impl App {
                                                 0.0
                                             },
                                         });
+                                        if self.drawing_view_drag == Some((drawing, vi)) {
+                                            self.drawing_view_drag = None;
+                                        }
+                                        pan_suppressed_by_card = true;
                                     }
                                 }
                             }
@@ -23894,8 +23943,13 @@ impl App {
                                     egui::StrokeKind::Outside,
                                 );
                             }
-                            if lr.drag_started() {
-                                if let Some(pp) = lr.interact_pointer_pos() {
+                            // Press-start so the Select tool's card grab can't relocate the
+                            // view under a dim-label drag (#1227).
+                            if self.drawing_dim_label_drag.is_none()
+                                && primary_down
+                                && press_origin.is_some_and(|o| label_rect.contains(o))
+                            {
+                                if let Some(pp) = pointer_screen.or(lr.interact_pointer_pos()) {
                                     let om = sp(g.line.0 + glam::Vec2::new(outward.x, outward.y))
                                         - sp(g.line.0);
                                     self.drawing_dim_label_drag = Some(DrawingDimLabelDrag {
@@ -23903,11 +23957,23 @@ impl App {
                                         view: vi,
                                         key,
                                         circle: false,
-                                        start_offset: extra,
+                                        start_offset: view
+                                            .dimension_offsets
+                                            .iter()
+                                            .find(|(k, _)| *k == key)
+                                            .map(|(_, o)| *o),
                                         start_pointer: pp,
                                         outward_screen: om.normalized(),
-                                        mm_per_px: if scale.abs() > 1e-6 { 1.0 / scale } else { 0.0 },
+                                        mm_per_px: if scale.abs() > 1e-6 {
+                                            1.0 / scale
+                                        } else {
+                                            0.0
+                                        },
                                     });
+                                    if self.drawing_view_drag == Some((drawing, vi)) {
+                                        self.drawing_view_drag = None;
+                                    }
+                                    pan_suppressed_by_card = true;
                                 }
                             }
                         }
@@ -24204,19 +24270,75 @@ impl App {
             self.drawing_align_parent = None;
         }
 
-        // Follow / end an in-flight dimension-label drag (#294): the label rides the pointer's
-        // perpendicular offset from its edge, written as a dimension_offsets override.
+        // Follow / end an in-flight dimension-label drag (#294/#1228): live-write the offset
+        // without undo snapshots (cloning the doc every frame was the lag), then land one
+        // undoable apply on release — same pattern as joint select-drag.
         if let Some(d) = self.drawing_dim_label_drag {
+            let base = d.start_offset.unwrap_or(0.0);
+            let delta_mm = pointer_screen
+                .map(|pp| (pp - d.start_pointer).dot(d.outward_screen) * d.mm_per_px)
+                .unwrap_or(0.0);
+            // Treat tiny motion as a click (select only) — don't leave a zero override.
+            let moved = delta_mm.abs() > 1e-3;
+            let live_offset = if moved {
+                Some(base + delta_mm)
+            } else {
+                d.start_offset
+            };
             if ui.input(|i| i.pointer.primary_down()) {
-                if let Some(pp) = pointer_screen {
-                    let delta_px = (pp - d.start_pointer).dot(d.outward_screen);
-                    let offset = d.start_offset + delta_px * d.mm_per_px;
+                if moved {
+                    if d.circle {
+                        let _ = actions::set_drawing_circle_dim_offset(
+                            &mut self.state.doc,
+                            d.drawing,
+                            d.view,
+                            d.key.0,
+                            live_offset,
+                        );
+                    } else {
+                        let _ = actions::set_drawing_dimension_offset(
+                            &mut self.state.doc,
+                            d.drawing,
+                            d.view,
+                            d.key.0,
+                            d.key.1,
+                            live_offset,
+                        );
+                    }
+                }
+                pan_suppressed_by_card = true;
+            } else {
+                // Release: restore the pre-drag value, then apply the landed offset once.
+                if d.circle {
+                    let _ = actions::set_drawing_circle_dim_offset(
+                        &mut self.state.doc,
+                        d.drawing,
+                        d.view,
+                        d.key.0,
+                        d.start_offset,
+                    );
+                } else {
+                    let _ = actions::set_drawing_dimension_offset(
+                        &mut self.state.doc,
+                        d.drawing,
+                        d.view,
+                        d.key.0,
+                        d.key.1,
+                        d.start_offset,
+                    );
+                }
+                let changed = match (d.start_offset, live_offset) {
+                    (None, None) => false,
+                    (Some(a), Some(b)) => (a - b).abs() > 1e-6,
+                    _ => true,
+                };
+                if changed {
                     if d.circle {
                         self.state.apply(Action::SetDrawingCircleDimOffset {
                             drawing: d.drawing,
                             view: d.view,
                             center: d.key.0,
-                            offset: Some(offset),
+                            offset: live_offset,
                         });
                     } else {
                         self.state.apply(Action::SetDrawingDimensionOffset {
@@ -24224,11 +24346,10 @@ impl App {
                             view: d.view,
                             a: d.key.0,
                             b: d.key.1,
-                            offset: Some(offset),
+                            offset: live_offset,
                         });
                     }
                 }
-            } else {
                 self.drawing_dim_label_drag = None;
             }
         }
@@ -24299,6 +24420,10 @@ impl App {
         }
         if let Some(view) = remove_view {
             self.state.apply(Action::RemoveDrawingView { drawing, view });
+        }
+        // Never relocate a projection while a dim label is being dragged (#1227).
+        if self.drawing_dim_label_drag.is_some() {
+            move_view = None;
         }
         if let Some((view, pos_x, pos_y)) = move_view {
             self.state.apply(Action::MoveDrawingView { drawing, view, pos_x, pos_y });
@@ -30768,6 +30893,21 @@ mod tests {
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::body_key_for_slot as bkey;
     use super::*;
+
+    /// #1227: Select relocates projection cards unless a dim-label drag owns the pointer.
+    #[test]
+    fn drawing_view_relocates_only_without_dim_label_drag() {
+        assert!(drawing_view_should_relocate(Tool::Select, false));
+        assert!(
+            !drawing_view_should_relocate(Tool::Select, true),
+            "a dim-label drag must not also move the view"
+        );
+        assert!(
+            !drawing_view_should_relocate(Tool::Dimension, false),
+            "only Select relocates cards (#374)"
+        );
+        assert!(!drawing_view_should_relocate(Tool::Dimension, true));
+    }
 
     /// #1177: a leftover script runner must not steal the DEV report-issue capture.
     #[test]

@@ -6154,6 +6154,63 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Set (or clear) a drawing edge dim label's offset (#294/#1228).
+    // `bearcad.drawing_dim_offset{ drawing, view, a, b, offset }` — omit/nil `offset` clears.
+    api.set(
+        "drawing_dim_offset",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let drawing: usize = opts.get("drawing")?;
+            let view: usize = opts.get("view")?;
+            let point = |key: &str| -> mlua::Result<(f32, f32, f32)> {
+                let v: Vec<f32> = opts.get(key)?;
+                if v.len() != 3 {
+                    return Err(mlua::Error::external(format!(
+                        "drawing_dim_offset `{key}` must be a {{x, y, z}} point"
+                    )));
+                }
+                Ok((v[0], v[1], v[2]))
+            };
+            let a = point("a")?;
+            let b = point("b")?;
+            let offset: Option<f32> = opts.get("offset")?;
+            unsafe {
+                tick.exec(Instruction::SetDrawingDimensionOffset {
+                    drawing,
+                    view,
+                    a,
+                    b,
+                    offset,
+                })
+            }
+        })?,
+    )?;
+
+    // Set (or clear) a drawing circle Ø-label offset (#397/#1228).
+    api.set(
+        "drawing_circle_dim_offset",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let drawing: usize = opts.get("drawing")?;
+            let view: usize = opts.get("view")?;
+            let c: Vec<f32> = opts.get("center")?;
+            if c.len() != 3 {
+                return Err(mlua::Error::external(
+                    "drawing_circle_dim_offset `center` must be a {x, y, z} point",
+                ));
+            }
+            let offset: Option<f32> = opts.get("offset")?;
+            unsafe {
+                tick.exec(Instruction::SetDrawingCircleDimOffset {
+                    drawing,
+                    view,
+                    center: (c[0], c[1], c[2]),
+                    offset,
+                })
+            }
+        })?,
+    )?;
+
     // Show/hide an aligned child's dashed projection lines to its base view (#377):
     // `bearcad.drawing_view_align_lines{ drawing, view, show }`.
     api.set(
@@ -11093,6 +11150,38 @@ mod tests {
         assert!(
             hidden.doc.drawings[dkey(0)].views[0].dimensioned_edges.is_empty(),
             "toggling the same edge twice hides it again"
+        );
+    }
+
+    /// #294/#1228: `bearcad.drawing_dim_offset{}` sets a drawing edge dim label's offset.
+    #[test]
+    fn lua_drawing_dim_offset_sets_and_clears() {
+        let script = r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 40, height = 25 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
+            bearcad.drawing_dimension{ drawing = d, view = 0, a = {0,0,0}, b = {40,0,0} }
+            bearcad.drawing_dim_offset{ drawing = d, view = 0, a = {0,0,0}, b = {40,0,0}, offset = 6.5 }
+        "#;
+        let state = run_lua(script);
+        let a = crate::hierarchy::quantize_body_point(glam::Vec3::new(0.0, 0.0, 0.0));
+        let b = crate::hierarchy::quantize_body_point(glam::Vec3::new(40.0, 0.0, 0.0));
+        let key = crate::model::normalized_edge_key(a, b);
+        assert_eq!(
+            state.doc.drawings[dkey(0)].views[0].dimension_offsets,
+            vec![(key, 6.5)]
+        );
+        let cleared = run_lua(
+            &(script.to_string()
+                + "\nbearcad.drawing_dim_offset{ drawing = d, view = 0, a = {0,0,0}, b = {40,0,0} }\n"),
+        );
+        assert!(
+            cleared.doc.drawings[dkey(0)].views[0]
+                .dimension_offsets
+                .is_empty(),
+            "omitting offset clears the override"
         );
     }
 

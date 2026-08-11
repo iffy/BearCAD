@@ -320,6 +320,22 @@ pub enum Instruction {
         view: usize,
         center: (f32, f32, f32),
     },
+    /// Set (or clear) a drawing edge dimension's label offset (#294/#1228).
+    /// `offset = None` restores the auto-placed default.
+    SetDrawingDimensionOffset {
+        drawing: usize,
+        view: usize,
+        a: (f32, f32, f32),
+        b: (f32, f32, f32),
+        offset: Option<f32>,
+    },
+    /// Set (or clear) a drawing circle Ø-label offset (#397/#1228).
+    SetDrawingCircleDimOffset {
+        drawing: usize,
+        view: usize,
+        center: (f32, f32, f32),
+        offset: Option<f32>,
+    },
     /// Show/hide an aligned child's dashed projection lines to its base view (#377).
     SetDrawingViewAlignLines {
         drawing: usize,
@@ -1236,6 +1252,39 @@ impl Instruction {
                  center = {{ {}, {}, {} }} }}",
                 center.0, center.1, center.2
             ),
+            Instruction::SetDrawingDimensionOffset {
+                drawing,
+                view,
+                a,
+                b,
+                offset,
+            } => {
+                let off = match offset {
+                    Some(o) => format!("{o}"),
+                    None => "nil".into(),
+                };
+                format!(
+                    "bearcad.drawing_dim_offset{{ drawing = {drawing}, view = {view}, \
+                     a = {{ {}, {}, {} }}, b = {{ {}, {}, {} }}, offset = {off} }}",
+                    a.0, a.1, a.2, b.0, b.1, b.2
+                )
+            }
+            Instruction::SetDrawingCircleDimOffset {
+                drawing,
+                view,
+                center,
+                offset,
+            } => {
+                let off = match offset {
+                    Some(o) => format!("{o}"),
+                    None => "nil".into(),
+                };
+                format!(
+                    "bearcad.drawing_circle_dim_offset{{ drawing = {drawing}, view = {view}, \
+                     center = {{ {}, {}, {} }}, offset = {off} }}",
+                    center.0, center.1, center.2
+                )
+            }
             Instruction::SetDrawingViewAlignLines { drawing, view, show } => format!(
                 "bearcad.drawing_view_align_lines{{ drawing = {drawing}, view = {view}, \
                  show = {show} }}"
@@ -5971,6 +6020,52 @@ impl ScriptRunner {
                     view,
                     a: q(a),
                     b: q(b),
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::SetDrawingDimensionOffset {
+                drawing,
+                view,
+                a,
+                b,
+                offset,
+            } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
+                let q = |p: (f32, f32, f32)| {
+                    crate::hierarchy::quantize_body_point(glam::Vec3::new(p.0, p.1, p.2))
+                };
+                let result = state.apply(Action::SetDrawingDimensionOffset {
+                    drawing,
+                    view,
+                    a: q(a),
+                    b: q(b),
+                    offset,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::SetDrawingCircleDimOffset {
+                drawing,
+                view,
+                center,
+                offset,
+            } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
+                let center = crate::hierarchy::quantize_body_point(glam::Vec3::new(
+                    center.0, center.1, center.2,
+                ));
+                let result = state.apply(Action::SetDrawingCircleDimOffset {
+                    drawing,
+                    view,
+                    center,
+                    offset,
                 });
                 self.record_action_error(result);
                 StepResult::Continue
