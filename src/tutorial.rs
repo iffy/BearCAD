@@ -3816,6 +3816,35 @@ mod tests {
         }
     }
 
+    /// #1261: starting any tutorial resets the camera to the home view (View → Home).
+    #[test]
+    fn starting_a_tutorial_resets_to_home_view() {
+        let mut app = AppState::default();
+        // Park the camera somewhere that isn't home.
+        app.cam.target = glam::Vec3::new(80.0, -40.0, 25.0);
+        app.cam.yaw = 2.4;
+        app.cam.pitch = -0.55;
+        app.cam.distance = 180.0;
+        app.cam.set_view_up(Some(glam::Vec3::Y));
+
+        let home = app.cam.home_view();
+        app.apply(Action::StartTutorial {
+            index: tutorial_index("cube").unwrap(),
+        });
+        // Same animation path as View → Home; settle it so the pose is readable.
+        while app.cam.tick_transition(0.05) {}
+
+        assert!((app.cam.target - home.target).length() < 0.01);
+        assert!((app.cam.yaw - home.yaw).abs() < 0.01);
+        assert!((app.cam.pitch - home.pitch).abs() < 0.01);
+        assert!((app.cam.distance - home.distance).abs() < 0.5);
+        assert!(
+            app.cam.view_up_hint().dot(glam::Vec3::Z).abs() > 0.99,
+            "home clears custom up"
+        );
+        assert!(app.tutorial.is_some());
+    }
+
     /// #1241: finishing a tutorial records it for the Confirm-SVG check in the pane (#1260).
     #[test]
     fn finishing_a_tutorial_marks_it_completed() {

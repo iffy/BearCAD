@@ -12640,6 +12640,9 @@ impl AppState {
                 };
                 // Tutorials assume a clean slate, like the quickstart they mirror.
                 self.apply(Action::NewDocument);
+                // Same home pose as View → Home so every walkthrough starts oriented the
+                // same way, even if the user had spun/zoomed the camera (#1261).
+                self.cam.start_home_transition(VIEW_TRANSITION_DURATION);
                 self.tutorial_pane_open = false;
                 self.tutorial =
                     Some(crate::tutorial::TutorialRun { tutorial: index, step: 0, hold: false });

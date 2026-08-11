@@ -4989,8 +4989,8 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   **Tutorial** button in the bottom-right status bar (beside the update badge) opens the
   **Tutorials pane** listing every registered tutorial (`tutorial::TUTORIALS`); the whole
   row (status circle + title) is clickable and highlights on hover (#1252). Starting one
-  opens a fresh document. Short walkthroughs come first; **Build an angle bracket** is last
-  (#1251).
+  opens a fresh document and resets the camera to the home view (#1261). Short walkthroughs
+  come first; **Build an angle bracket** is last (#1251).
 - **One action per step** when authoring (#1253): every click is its own step, every bit of
   typing is its own step — never combine a click with typing (or two clicks / two typed
   values) in one step. The long bracket walkthrough predates this rule and is left alone;
