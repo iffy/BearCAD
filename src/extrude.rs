@@ -6209,11 +6209,15 @@ pub fn document_solid_mesh(doc: &Document) -> SolidMesh {
     // (STL, faceted STEP) have no kernel shape and are concatenated on top; a STEP import
     // that kept its BREP (#1029) joins the union. If any non-import body isn't representable
     // the whole union is unreliable and we fall back to plain concatenation.
+    // Shadow bodies are never deliverables (#1218) — skip them in both paths.
     if let Some(mesh) = occt_document_union_mesh(doc) {
         return mesh;
     }
     let mut mesh = SolidMesh::default();
-    for bi in doc.bodies.keys().collect::<Vec<_>>() {
+    for (bi, body) in doc.bodies.iter() {
+        if body.shadow {
+            continue;
+        }
         if let Some(solid) = body_solid_mesh(doc, bi) {
             mesh.triangles.extend(solid.triangles);
         }
@@ -6232,6 +6236,10 @@ fn occt_document_union_mesh(doc: &Document) -> Option<SolidMesh> {
     let mut imported_triangles: Vec<[Vec3; 3]> = Vec::new();
     let mut saw_kernel_body = false;
     for (bi, body) in doc.bodies.iter() {
+        // Shadow bodies are consumed inputs / references — not deliverables (#1218).
+        if body.shadow {
+            continue;
+        }
         if body.source.imported_mesh_key().is_some() {
             // Prefer BREP when the import still has it (#1029); otherwise concatenate triangles.
             if let Some(shape) = occt_body_shape(doc, bi) {

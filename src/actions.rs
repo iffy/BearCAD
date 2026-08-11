@@ -1937,6 +1937,14 @@ pub enum Action {
         body: crate::model::BodyKey,
         material: Option<crate::model::MaterialKey>,
     },
+    /// Mark a body as a shadow body (or restore it as live) (#1218). A shadow body
+    /// is hidden in the viewport except while hovered/selected and is omitted from
+    /// whole-document and component export — the same flag operations use when they
+    /// consume an input.
+    SetBodyShadow {
+        body: crate::model::BodyKey,
+        shadow: bool,
+    },
     SetMaterialName {
         material: crate::model::MaterialKey,
         name: String,
@@ -5350,16 +5358,20 @@ impl AppState {
     pub fn component_body_indices(&self, ci: crate::model::ComponentKey) -> Vec<crate::model::BodyKey> {
         self.doc
             .bodies
-            .keys()
-            .filter(|&bi| {
-                crate::hierarchy::owning_component(
+            .iter()
+            .filter(|(bi, body)| {
+                // Shadow bodies are not deliverables (#1218) — skip them in component export
+                // the same way whole-document export skips them.
+                !body.shadow
+                    && crate::hierarchy::owning_component(
                         &self.doc,
-                        &crate::hierarchy::SceneElement::Body(bi),
+                        &crate::hierarchy::SceneElement::Body(*bi),
                     )
                     // The body's owning component is `ci` itself or nested beneath it — its
                     // parent chain (self first) passes through `ci`.
                     .is_some_and(|owner| self.doc.component_chain(owner).contains(&ci))
             })
+            .map(|(bi, _)| bi)
             .collect()
     }
 
@@ -14444,6 +14456,24 @@ impl AppState {
                 self.status = format!("{} is {label}", element_label(SceneElement::Body(body)));
                 ActionResult::Ok
             }
+            Action::SetBodyShadow { body, shadow } => {
+                let Some(b) = self.doc.bodies.get_mut(body) else {
+                    return ActionResult::Err(format!("Unknown body {body:?}"));
+                };
+                b.shadow = shadow;
+                self.status = if shadow {
+                    format!(
+                        "{} is now a shadow body",
+                        element_label(SceneElement::Body(body))
+                    )
+                } else {
+                    format!(
+                        "{} is now a live body",
+                        element_label(SceneElement::Body(body))
+                    )
+                };
+                ActionResult::Ok
+            }
             Action::SetMaterialName { material, name } => {
                 let trimmed = name.trim().to_string();
                 if trimmed.is_empty() {
@@ -21372,6 +21402,52 @@ mod tests {
         let seeded = crate::model::Material::DEFAULTS.len();
         state.apply(Action::UndoLast);
         assert_eq!(state.doc.materials.len(), seeded, "one undo removes the material");
+    }
+
+    /// #1218: any body can be turned into a shadow body (and back) so it no longer shows
+    /// as a live solid and drops out of whole-document export.
+    #[test]
+    fn set_body_shadow_toggles_and_undoes() {
+        let mut state = two_box_state(false);
+        let a = bkey(0);
+        let b = bkey(1);
+        assert!(!state.doc.bodies[a].shadow);
+        assert!(!state.doc.bodies[b].shadow);
+
+        assert!(matches!(
+            state.apply(Action::SetBodyShadow { body: a, shadow: true }),
+            ActionResult::Ok
+        ));
+        assert!(state.doc.bodies[a].shadow, "body A is a shadow");
+        assert!(!state.doc.bodies[b].shadow, "body B is untouched");
+
+        // Whole-document mesh must omit the shadow body — two live boxes have more
+        // triangles than one.
+        let both = crate::extrude::document_solid_mesh(&state.doc);
+        state.apply(Action::SetBodyShadow { body: a, shadow: false });
+        let live_both = crate::extrude::document_solid_mesh(&state.doc);
+        state.apply(Action::SetBodyShadow { body: a, shadow: true });
+        let one_live = crate::extrude::document_solid_mesh(&state.doc);
+        assert!(
+            one_live.triangles.len() < live_both.triangles.len(),
+            "shadowing a body shrinks the export mesh ({} vs {})",
+            one_live.triangles.len(),
+            live_both.triangles.len()
+        );
+        assert_eq!(
+            both.triangles.len(),
+            one_live.triangles.len(),
+            "document_solid_mesh already skipped the shadow"
+        );
+
+        // Undo restores the live body.
+        state.apply(Action::UndoLast);
+        assert!(!state.doc.bodies[a].shadow, "undo restores the live body");
+
+        assert!(matches!(
+            state.apply(Action::SetBodyShadow { body: bkey(99), shadow: true }),
+            ActionResult::Err(_)
+        ));
     }
 
     /// #833: resizing a plane is one undoable edit.

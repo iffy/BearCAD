@@ -1946,9 +1946,10 @@ pub struct Body {
     /// is the document's default material — the look every body has always had.
     #[serde(default)]
     pub material: Option<MaterialKey>,
-    /// A consumed boolean-operation input (Combine tool): still listed in the Elements
-    /// pane (dimmed, its own icon) but hidden in the viewport except while hovered or
-    /// selected there, where it renders ghosted.
+    /// A shadow body — a consumed operation input, or any body the user has marked as
+    /// shadow (#1218). Still listed in the Elements pane (dimmed, its own icon) but
+    /// hidden in the viewport except while hovered or selected there (renders ghosted),
+    /// and omitted from whole-document / component export.
     #[serde(default)]
     pub shadow: bool,
 }

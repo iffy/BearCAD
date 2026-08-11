@@ -13279,6 +13279,7 @@ impl App {
                 });
             let mut export_body: Option<model::BodyKey> = None;
             let mut export_body_step: Option<model::BodyKey> = None;
+            let mut set_body_shadow: Option<(model::BodyKey, bool)> = None;
             let mut export_component: Option<model::ComponentKey> = None;
             let mut export_component_step: Option<model::ComponentKey> = None;
             let mut click_element: Option<(SceneElement, bool)> = None;
@@ -13332,6 +13333,9 @@ impl App {
                         };
                     let mut queue_rename_drawing = |index: model::DrawingKey, name: String| {
                         rename_drawing = Some((index, name));
+                    };
+                    let mut queue_set_body_shadow = |index: model::BodyKey, shadow: bool| {
+                        set_body_shadow = Some((index, shadow));
                     };
                     let mut queue_export_body = |index: model::BodyKey| {
                         export_body = Some(index);
@@ -13457,6 +13461,7 @@ impl App {
                         &mut queue_hover_drawing_element,
                         selected_drawing_leaf,
                         &mut queue_rename_drawing,
+                        &mut queue_set_body_shadow,
                         &mut queue_export_body,
                         &mut queue_export_body_step,
                         &mut queue_export_component,
@@ -13553,6 +13558,10 @@ impl App {
             // Elements-pane body right-click → create a drawing of that body (#1158).
             if let Some(body) = create_drawing_of_body {
                 self.state.apply(Action::CreateDrawingOfBody { body });
+            }
+            // Elements-pane body right-click → make shadow / live body (#1218).
+            if let Some((body, shadow)) = set_body_shadow {
+                self.state.apply(Action::SetBodyShadow { body, shadow });
             }
             if let Some((drawing, name)) = rename_drawing {
                 self.state.apply(Action::RenameDrawing { drawing, name });

@@ -3319,6 +3319,19 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Shadow bodies (#1218): `bearcad.set_body_shadow{ body = 0, shadow = true }` hides a
+    // body from the viewport (except hover/select) and from whole-document export —
+    // the same flag operations set when they consume an input. `shadow = false` restores it.
+    api.set(
+        "set_body_shadow",
+        lua.create_function(|lua, opts: Table| {
+            let body: usize = opts.get("body")?;
+            let shadow: bool = opts.get("shadow")?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::SetBodyShadow { body, shadow }) }
+        })?,
+    )?;
+
     api.set(
         "add_constraint",
         lua.create_function(|lua, (target, expression): (Table, String)| {
@@ -7354,6 +7367,37 @@ mod tests {
         // resolves that to the key the body actually holds (#1055).
         let steel = state.doc.materials.keys().nth(seeded + 1).expect("Steel");
         assert_eq!(state.doc.bodies[bkey(0)].material, Some(steel), "reassigned to Steel");
+    }
+
+    /// #1218: scripts can turn any body into a shadow body (and back).
+    #[test]
+    fn lua_set_body_shadow_is_scriptable() {
+        let state = run_lua(
+            r##"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.set_body_shadow{ body = 0, shadow = true }
+        "##,
+        );
+        assert!(
+            state.doc.bodies[bkey(0)].shadow,
+            "set_body_shadow marks the body as a shadow"
+        );
+
+        let state = run_lua(
+            r##"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.set_body_shadow{ body = 0, shadow = true }
+            bearcad.set_body_shadow{ body = 0, shadow = false }
+        "##,
+        );
+        assert!(
+            !state.doc.bodies[bkey(0)].shadow,
+            "set_body_shadow restores a live body"
+        );
     }
 
     #[test]

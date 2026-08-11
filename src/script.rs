@@ -604,6 +604,11 @@ pub enum Instruction {
         body: usize,
         material: Option<usize>,
     },
+    /// Mark a body as a shadow body or restore it as live (#1218).
+    SetBodyShadow {
+        body: usize,
+        shadow: bool,
+    },
     /// Click a tree row: replaces selection unless `additive` is true.
     SelectSceneElement {
         element: SceneElement,
@@ -1452,6 +1457,9 @@ impl Instruction {
                     .map(|m| m.to_string())
                     .unwrap_or_else(|| "nil".to_string());
                 format!("bearcad.set_material{{ body = {body}, material = {material} }}")
+            }
+            Instruction::SetBodyShadow { body, shadow } => {
+                format!("bearcad.set_body_shadow{{ body = {body}, shadow = {shadow} }}")
             }
             Instruction::SelectSceneElement { element, additive } => {
                 let target = element_lua_ref(element, doc);
@@ -6484,6 +6492,15 @@ impl ScriptRunner {
                     return StepResult::Continue;
                 };
                 let result = state.apply(Action::SetBodyMaterial { body, material: key });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::SetBodyShadow { body, shadow } => {
+                let Some(body) = body_key(&state.doc, body) else {
+                    self.last_action_error = Some(format!("Unknown body {body}"));
+                    return StepResult::Continue;
+                };
+                let result = state.apply(Action::SetBodyShadow { body, shadow });
                 self.record_action_error(result);
                 StepResult::Continue
             }

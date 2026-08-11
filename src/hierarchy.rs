@@ -4045,6 +4045,7 @@ pub fn show_pane(
     on_hover_drawing_element: &mut impl FnMut(Option<HierarchyNode>),
     selected_drawing_leaf: Option<HierarchyNode>,
     on_rename_drawing: &mut impl FnMut(crate::model::DrawingKey, String),
+    on_set_body_shadow: &mut impl FnMut(crate::model::BodyKey, bool),
     on_export_body: &mut impl FnMut(crate::model::BodyKey),
     on_export_body_step: &mut impl FnMut(crate::model::BodyKey),
     on_export_component: &mut impl FnMut(crate::model::ComponentKey),
@@ -4287,6 +4288,7 @@ pub fn show_pane(
                         on_hover_drawing_element,
                         selected_drawing_leaf,
                         on_rename_drawing,
+                        on_set_body_shadow,
                         on_export_body,
                         on_export_body_step,
                         on_set_rollback,
@@ -4345,6 +4347,7 @@ pub fn show_pane(
                 on_joint_rest,
                 on_add_to_drawing,
                 on_create_drawing_of_body,
+                on_set_body_shadow,
                 on_export_body,
                 on_export_body_step,
                 on_move_to_component,
@@ -4528,6 +4531,7 @@ fn show_graph_view(
     on_joint_rest: &mut impl FnMut(JointRestCommand),
     on_add_to_drawing: &mut impl FnMut(SceneElement),
     on_create_drawing_of_body: &mut impl FnMut(crate::model::BodyKey),
+    on_set_body_shadow: &mut impl FnMut(crate::model::BodyKey, bool),
     on_export_body: &mut impl FnMut(crate::model::BodyKey),
     on_export_body_step: &mut impl FnMut(crate::model::BodyKey),
     on_move_to_component: &mut impl FnMut(SceneElement, Option<crate::model::ComponentKey>),
@@ -4835,6 +4839,7 @@ fn show_graph_view(
                             on_joint_rest,
                             on_add_to_drawing,
                             on_create_drawing_of_body,
+                            on_set_body_shadow,
                             on_export_body,
                             on_export_body_step,
                             on_move_to_component,
@@ -5259,6 +5264,7 @@ fn show_row(
     on_hover_drawing_element: &mut impl FnMut(Option<HierarchyNode>),
     selected_drawing_leaf: Option<HierarchyNode>,
     on_rename_drawing: &mut impl FnMut(crate::model::DrawingKey, String),
+    on_set_body_shadow: &mut impl FnMut(crate::model::BodyKey, bool),
     on_export_body: &mut impl FnMut(crate::model::BodyKey),
     on_export_body_step: &mut impl FnMut(crate::model::BodyKey),
     on_set_rollback: &mut impl FnMut(Option<RollbackMarker>),
@@ -5668,6 +5674,7 @@ fn show_row(
                 on_joint_rest,
                 on_add_to_drawing,
                 on_create_drawing_of_body,
+                on_set_body_shadow,
                 on_export_body,
                 on_export_body_step,
                 on_move_to_component,
@@ -5730,6 +5737,7 @@ fn element_context_menu(
     on_joint_rest: &mut impl FnMut(JointRestCommand),
     on_add_to_drawing: &mut impl FnMut(SceneElement),
     on_create_drawing_of_body: &mut impl FnMut(crate::model::BodyKey),
+    on_set_body_shadow: &mut impl FnMut(crate::model::BodyKey, bool),
     on_export_body: &mut impl FnMut(crate::model::BodyKey),
     on_export_body_step: &mut impl FnMut(crate::model::BodyKey),
     on_move_to_component: &mut impl FnMut(SceneElement, Option<crate::model::ComponentKey>),
@@ -5784,6 +5792,17 @@ fn element_context_menu(
             // In the Drawing workbench, add this body as a view of the open drawing (#274).
             if active_drawing.is_some() && ui.button("Add to drawing").clicked() {
                 on_add_to_drawing(SceneElement::Body(index));
+                ui.close();
+            }
+            // Manual shadow body (#1218): hide in the viewport and drop from export.
+            let is_shadow = doc.bodies.get(index).is_some_and(|b| b.shadow);
+            let shadow_label = if is_shadow {
+                "Make live body"
+            } else {
+                "Make shadow body"
+            };
+            if ui.button(shadow_label).clicked() {
+                on_set_body_shadow(index, !is_shadow);
                 ui.close();
             }
             if ui.button("Export STL…").clicked() {

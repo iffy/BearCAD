@@ -316,11 +316,14 @@ bearcad.set_material{ body = 1, material = 0 }
 bearcad.set_material{ body = 1 }        -- back to the default material
 ```
 
-## Visibility and construction geometry
+## Visibility, construction, and shadow bodies
 
 ```lua
 bearcad.set_visible(box, "hide")       -- "show" | "hide" | "toggle"
 bearcad.set_construction(box, true)
+-- Shadow body: hidden in the viewport (except hover/select) and omitted from export.
+bearcad.set_body_shadow{ body = 0, shadow = true }
+bearcad.set_body_shadow{ body = 0, shadow = false }  -- back to a live body
 ```
 
 ## Import

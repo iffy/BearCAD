@@ -55,7 +55,9 @@ select a line and press **D** to dimension it; select edges and press **F** to f
 **Shift+click** adds to a selection.
 
 The **Elements pane** mirrors the selection and offers three views — list, tree, and a
-dependency graph.
+dependency graph. Right-click a **body** for **Make shadow body** / **Make live body**:
+a shadow body is hidden in the viewport (except while hovered or selected) and omitted
+from whole-document export.
 
 ## Reviewing the selection
 
