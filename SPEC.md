@@ -164,6 +164,10 @@ features in dependency order.
   a datum plane is a *reference* the user is pointing at, and it reads over the geometry it
   crosses rather than being hidden by it. Translucent **solids** (shadow bodies, previews,
   ghosts, faded bodies) share that layer, because they too are meant to tint what they cover.
+  Body faces that **lie on** a construction plane (or an extrusion target plane) are then
+  re-drawn once more **after** that wash (#1215/#29): coplanar solid/plane pairs would otherwise
+  z-fight under floating-point depth, and neither world-space nor frag-depth bias is used
+  (those mis-place planes — #1088/#1121).
 - **The origin axes are widened on screen (#1072).** Each axis quad's corners carry both of
   the segment's world endpoints and a signed half-width in **pixels**; `vs_axis` projects
   both, then steps the corner sideways in screen space. A fixed-world-width quad is only the
@@ -4746,8 +4750,9 @@ The model in one place:
     depth bias** toward the camera (`wgpu::DepthBiasState`, sketch-fill and overlay
     pipelines): constant offsets alone collapse under glancing-angle depth interpolation
     on long thin faces (stippled z-fighting on e.g. an 8 ft board); the slope term grows
-    the bias exactly where the depth gradient does. Construction-plane fills keep their
-    away-from-camera bias so faces win overlaps deterministically.
+    the bias exactly where the depth gradient does. Construction-plane fills themselves
+    take **no** bias (#1088/#1121); body faces that lie on a plane are re-drawn after the
+    plane wash so coplanar solid/plane pairs stay clean (#1215).
   - **In-plane dimension-label text (#454):** committed dimension labels lie **in the
     dimension's plane**, flat with their dimension lines and arrows. Glyphs are laid out
     on orthonormal in-plane axes with **one uniform** world-per-pixel scale taken at the

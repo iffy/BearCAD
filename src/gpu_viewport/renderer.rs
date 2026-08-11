@@ -1254,6 +1254,8 @@ impl ViewportGpuResources {
         let shadow_index_count = scene.shadow_indices.len();
         let sketch_fill_index_count = scene.sketch_fill_indices.len();
         let plane_fill_index_count = scene.plane_fill_indices.len();
+        // Solid faces coplanar with a construction plane, re-drawn after plane fills (#1215).
+        let body_over_plane_index_count = scene.body_over_plane_indices.len();
         let overlay_index_count = scene.overlay_indices.len();
         let gizmo_index_count = scene.gizmo_indices.len();
         // Body edge-wireframe overlay (#33). Same depth-disabled pipeline as gizmos (both
@@ -1267,6 +1269,7 @@ impl ViewportGpuResources {
             + shadow_index_count
             + sketch_fill_index_count
             + plane_fill_index_count
+            + body_over_plane_index_count
             + overlay_index_count
             + gizmo_index_count
             + wireframe_index_count;
@@ -1320,6 +1323,7 @@ impl ViewportGpuResources {
             combined_indices.extend_from_slice(&scene.shadow_indices);
             combined_indices.extend_from_slice(&scene.sketch_fill_indices);
             combined_indices.extend_from_slice(&scene.plane_fill_indices);
+            combined_indices.extend_from_slice(&scene.body_over_plane_indices);
             combined_indices.extend_from_slice(&scene.overlay_indices);
             combined_indices.extend_from_slice(&scene.gizmo_indices);
             combined_indices.extend_from_slice(&scene.wireframe_indices);
@@ -1608,7 +1612,8 @@ impl ViewportGpuResources {
                 let shadow_end = base_end + shadow_index_count as u32;
                 let sketch_fill_end = shadow_end + sketch_fill_index_count as u32;
                 let plane_end = sketch_fill_end + plane_fill_index_count as u32;
-                let overlay_end = plane_end + overlay_index_count as u32;
+                let body_over_end = plane_end + body_over_plane_index_count as u32;
+                let overlay_end = body_over_end + overlay_index_count as u32;
                 let scene_end = scene_index_count as u32;
                 if shadow_end > base_end {
                     // Reference 0b10 against bit 1: a fragment passes while that bit is
@@ -1630,6 +1635,14 @@ impl ViewportGpuResources {
                     pass.set_pipeline(&self.scene_transparent_pipeline);
                     pass.draw_indexed(sketch_fill_end..plane_end, 0, 0..1);
                 }
+                // Solid faces that share a construction plane's surface, re-drawn after the
+                // translucent plane wash so they win coplanar depth ties without bias (#1215).
+                // Sketch fills wrote a closer depth with their own bias, so LessEqual keeps
+                // them in front of this pass.
+                if body_over_end > plane_end {
+                    pass.set_pipeline(&self.scene_pipeline);
+                    pass.draw_indexed(plane_end..body_over_end, 0, 0..1);
+                }
                 if !image_draws.is_empty() {
                     // Tracing images (#170): depth-tested, no depth write — under all
                     // overlay/gizmo geometry.
@@ -1648,9 +1661,9 @@ impl ViewportGpuResources {
                     pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                     pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 }
-                if overlay_end > plane_end {
+                if overlay_end > body_over_end {
                     pass.set_pipeline(&self.overlay_pipeline);
-                    pass.draw_indexed(plane_end..overlay_end, 0, 0..1);
+                    pass.draw_indexed(body_over_end..overlay_end, 0, 0..1);
                 }
                 if scene_end > overlay_end {
                     // Gizmos, then the body edge-wireframe overlay (#33): both use the

@@ -219,10 +219,6 @@ const HOVER_PLANE_DEPTH_LIFT: f32 = 0.0;
 /// depth-test-disabled (#1139); the lift still helps when a face is only coplanar with other
 /// sketch fills (e.g. on a construction plane).
 const HOVER_FILL_DEPTH_BIAS: f32 = 0.09;
-/// Lift an extrusion's top-cap triangles toward the camera when they lie on the target
-/// plane, so the solid wins over the (separately rendered) target plane's own fill instead
-/// of z-fighting with it at grazing camera angles (#29).
-const SOLID_CAP_DEPTH_BIAS: f32 = 0.02;
 /// Blue aura outline drawn around the selected bodies' screen-space silhouette (#145/#148):
 /// one solid-color mitered stroke (stacking a bright core over a dim halo read as splotchy
 /// wherever the two strokes' antialiased edges beat against each other).
@@ -297,6 +293,12 @@ pub struct ViewportScene {
     /// faded bodies — drawn after the opaque scene, so they tint what they cover. A datum
     /// plane is a reference that shows through the bodies it bisects (#1087).
     pub plane_fill_indices: Vec<u32>,
+    /// Opaque body triangles that lie on a construction plane (or an extrusion's target
+    /// plane), re-drawn **after** plane fills (#1215). Coplanar solid/plane pairs z-fight
+    /// under floating-point depth; a second pass of just those faces restores the solid
+    /// colour without world-space, pipeline, or frag-depth bias (those mis-place planes,
+    /// #1088/#1121). Shares vertices with the base solid draw.
+    pub body_over_plane_indices: Vec<u32>,
     /// Strokes, selection, hover, and previews (drawn on top of plane fills).
     pub overlay_indices: Vec<u32>,
     /// Manipulation gizmos (plane/extrude offset+angle handles). Drawn last with the
@@ -1140,12 +1142,36 @@ impl ViewportScene {
             } else {
                 fill
             };
-            let cap_plane = body
+            // Frames that this body's faces may sit on: every visible construction plane,
+            // plus an extrusion's target plane when the top cap lands on one (#29/#1215).
+            // Triangles on these frames are re-drawn after plane fills so coplanar solid/
+            // plane pairs don't z-fight — without geometric or frag-depth bias.
+            let mut coplanar_planes: Vec<(Vec3, Vec3)> = input
+                .doc
+                .construction_planes
+                .iter()
+                .filter(|(pi, _)| {
+                    input.element_visibility.effective_visible(
+                        input.doc,
+                        SceneElement::ConstructionPlane(*pi),
+                    )
+                })
+                .map(|(_, p)| (p.origin, p.normal))
+                .collect();
+            if let Some(cap) = body
                 .source
                 .extrusion_indices()
                 .first()
                 .and_then(|&ei| input.doc.extrusions.get(ei))
-                .and_then(|ext| crate::extrude::target_top_plane(input.doc, ext));
+                .and_then(|ext| crate::extrude::target_top_plane(input.doc, ext))
+            {
+                if !coplanar_planes
+                    .iter()
+                    .any(|&(o, n)| (o - cap.0).length() < 1e-4 && n.dot(cap.1).abs() > 0.999)
+                {
+                    coplanar_planes.push(cap);
+                }
+            }
             // Shading mode (#33) picks how the committed body renders: `Solid` (today's
             // existing look) is opaque fill only; `Wireframe` is edges only, no fill;
             // `TransparentSolid` is translucent fill, no edges; `SolidWireframe` is opaque
@@ -1153,7 +1179,7 @@ impl ViewportScene {
             // gizmos draw through bodies — depth-test disabled, see `MeshIndexLayer::Wireframe`).
             match input.cam.shading_mode() {
                 crate::camera::ShadingMode::Solid => {
-                    mesh.push_solid(solid, normals, fill, input.cam, cap_plane);
+                    mesh.push_solid(solid, normals, fill, input.cam, &coplanar_planes);
                 }
                 crate::camera::ShadingMode::TransparentSolid => {
                     mesh.push_solid_translucent(solid, fill, TRANSPARENT_SOLID_OPACITY);
@@ -1173,7 +1199,7 @@ impl ViewportScene {
                     );
                 }
                 crate::camera::ShadingMode::SolidWireframe => {
-                    mesh.push_solid(solid, normals, fill, input.cam, cap_plane);
+                    mesh.push_solid(solid, normals, fill, input.cam, &coplanar_planes);
                     let edges = crate::extrude::body_feature_edges(input.doc, bi);
                     mesh.push_solid_wireframe(
                         solid,
@@ -1185,7 +1211,7 @@ impl ViewportScene {
                     );
                 }
                 crate::camera::ShadingMode::Realistic => {
-                    mesh.push_solid_realistic(solid, normals, fill, input.cam, cap_plane);
+                    mesh.push_solid_realistic(solid, normals, fill, input.cam, &coplanar_planes);
                     // A contact shadow on the build plane (#1041), Realistic only. Without
                     // one a part resting on the ground and a part hovering 50 mm above it
                     // look identical — there is no cue for where geometry sits at all.
@@ -1993,6 +2019,9 @@ enum MeshIndexLayer {
     GroundShadow,
 
     PlaneFill,
+    /// Solid faces coplanar with a construction/target plane, drawn after plane fills
+    /// so they win coplanar depth ties without bias (#1215).
+    BodyOverPlane,
     Overlay,
     /// Manipulation gizmos, drawn last with the depth test disabled (#36).
     Gizmo,
@@ -2027,6 +2056,7 @@ impl<'a> SceneMesh<'a> {
             MeshIndexLayer::GroundShadow => &mut self.scene.shadow_indices,
 
             MeshIndexLayer::PlaneFill => &mut self.scene.plane_fill_indices,
+            MeshIndexLayer::BodyOverPlane => &mut self.scene.body_over_plane_indices,
             MeshIndexLayer::Overlay => &mut self.scene.overlay_indices,
             MeshIndexLayer::Gizmo => &mut self.scene.gizmo_indices,
             MeshIndexLayer::Wireframe => &mut self.scene.wireframe_indices,
@@ -2084,20 +2114,21 @@ impl<'a> SceneMesh<'a> {
         self.push_triangle(fill_corners[0], fill_corners[2], fill_corners[3], fill);
     }
 
-    /// Push a solid mesh with flat (per-triangle) two-sided shading. `cap_plane`, when the
-    /// extrusion targets a face/plane, nudges triangles lying exactly on that plane (the top
-    /// cap) toward the camera by a hair so they don't z-fight with the target plane's own
-    /// fill at grazing angles (#29) — geometry used for export/measurement is untouched,
-    /// this only biases what gets rasterized.
+    /// Push a solid mesh with flat (per-triangle) two-sided shading.
+    ///
+    /// `coplanar_planes` are construction-plane (and optional extrusion-target) frames:
+    /// triangles that lie on any of them are also indexed into
+    /// [`ViewportScene::body_over_plane_indices`] so the renderer can re-draw them after
+    /// translucent plane fills and break coplanar z-fighting without depth bias (#1215/#29).
     fn push_solid(
         &mut self,
         solid: &crate::extrude::SolidMesh,
         normals: Option<&[[Vec3; 3]]>,
         base: Color32,
         cam: &Camera,
-        cap_plane: Option<(Vec3, Vec3)>,
+        coplanar_planes: &[(Vec3, Vec3)],
     ) {
-        self.push_shaded_solid(solid, normals, base, cam, cap_plane, ShadingModel::Lambert);
+        self.push_shaded_solid(solid, normals, base, cam, coplanar_planes, ShadingModel::Lambert);
     }
 
     /// A body's contact shadow on the build plane (#1041): its triangles projected onto
@@ -2150,44 +2181,54 @@ impl<'a> SceneMesh<'a> {
         normals: Option<&[[Vec3; 3]]>,
         base: Color32,
         cam: &Camera,
-        cap_plane: Option<(Vec3, Vec3)>,
+        coplanar_planes: &[(Vec3, Vec3)],
     ) {
-        self.push_shaded_solid(solid, normals, base, cam, cap_plane, ShadingModel::Realistic);
+        self.push_shaded_solid(
+            solid,
+            normals,
+            base,
+            cam,
+            coplanar_planes,
+            ShadingModel::Realistic,
+        );
     }
 
     /// Push a solid mesh for the fragment shader to light per pixel (#1037).
     ///
     /// `normals` are the body's smooth per-vertex normals; without them each corner falls
     /// back to its triangle's own geometric normal, which is the pre-#1037 faceted look.
-    /// `cap_plane`, when the extrusion targets a face/plane, nudges triangles lying exactly
-    /// on that plane (the top cap) toward the camera by a hair so they don't z-fight with
-    /// the target plane's own fill at grazing angles (#29) — geometry used for
-    /// export/measurement is untouched, this only biases what gets rasterized.
+    /// Triangles that lie on any frame in `coplanar_planes` are also recorded in
+    /// [`ViewportScene::body_over_plane_indices`] so a later pass can repaint them over
+    /// translucent plane fills without geometric or frag-depth bias (#1215/#29).
     fn push_shaded_solid(
         &mut self,
         solid: &crate::extrude::SolidMesh,
         normals: Option<&[[Vec3; 3]]>,
         base: Color32,
-        cam: &Camera,
-        cap_plane: Option<(Vec3, Vec3)>,
+        _cam: &Camera,
+        coplanar_planes: &[(Vec3, Vec3)],
         model: ShadingModel,
     ) {
-        let eye = cam.eye();
         // Stale normals would shade the wrong geometry, so a length mismatch drops back to
         // flat rather than indexing into whatever is there.
         let normals = normals.filter(|n| n.len() == solid.triangles.len());
         for (ti, tri) in solid.triangles.iter().enumerate() {
             let flat = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
             let corner_normals = normals.map(|n| n[ti]).unwrap_or([flat; 3]);
-            let verts = match cap_plane {
-                Some((origin, plane_normal)) if triangle_on_plane(tri, origin, plane_normal) => [
-                    offset_toward_camera(tri[0], plane_normal, eye, SOLID_CAP_DEPTH_BIAS),
-                    offset_toward_camera(tri[1], plane_normal, eye, SOLID_CAP_DEPTH_BIAS),
-                    offset_toward_camera(tri[2], plane_normal, eye, SOLID_CAP_DEPTH_BIAS),
-                ],
-                _ => *tri,
-            };
-            self.push_lit_triangle(verts, corner_normals, base, model);
+            let base_idx = self.scene.vertices.len() as u32;
+            self.push_lit_triangle(*tri, corner_normals, base, model);
+            // Re-index (same vertices) for the post-plane solid pass when this face sits on
+            // a datum/target plane — no position nudge (#1215).
+            if coplanar_planes
+                .iter()
+                .any(|&(origin, normal)| triangle_on_plane(tri, origin, normal))
+            {
+                let restore = self.index_layer;
+                self.set_index_layer(MeshIndexLayer::BodyOverPlane);
+                self.indices_mut()
+                    .extend_from_slice(&[base_idx, base_idx + 1, base_idx + 2]);
+                self.set_index_layer(restore);
+            }
         }
     }
 
@@ -2412,6 +2453,7 @@ impl<'a> SceneMesh<'a> {
             | MeshIndexLayer::Overlay
             | MeshIndexLayer::SketchFill
             | MeshIndexLayer::PlaneFill
+            | MeshIndexLayer::BodyOverPlane
             | MeshIndexLayer::GroundShadow
             | MeshIndexLayer::Mask => {
                 let _ = (viewport, view_proj);
@@ -7719,7 +7761,10 @@ mod tests {
     }
 
     #[test]
-    fn extruded_top_cap_on_slanted_target_plane_is_biased_toward_camera() {
+    fn extruded_top_cap_on_slanted_target_plane_is_repainted_after_plane_fills() {
+        // #29/#1215: the top cap sits on the target plane. Rather than a world-space depth
+        // bias (which mis-places planes, #1088), those triangles are re-indexed into
+        // `body_over_plane_indices` and drawn again after the translucent plane wash.
         let mut state = AppState::default();
         retain_ground_plane_only(&mut state.doc);
         commit_test_rectangle(&mut state);
@@ -7751,32 +7796,18 @@ mod tests {
             .find(|p| ((**p - plane_origin).dot(plane_normal)).abs() < 1e-3)
             .expect("expected at least one top-cap vertex on the target plane");
 
-        let raw_unbiased_count = raw
-            .triangles
-            .iter()
-            .flat_map(|t| t.iter())
-            .filter(|p| (**p - cap_vertex).length() < 1e-5)
-            .count();
-
         let scene = build_scene_for_doc(&state);
-        let eye = state.cam.eye();
-        let biased = offset_toward_camera(cap_vertex, plane_normal, eye, SOLID_CAP_DEPTH_BIAS);
-        let scene_unbiased_count = scene
-            .vertices
-            .iter()
-            .filter(|v| (Vec3::from(v.position) - cap_vertex).length() < 1e-5)
-            .count();
-
+        assert!(
+            !scene.body_over_plane_indices.is_empty(),
+            "top-cap triangles on the target plane must be re-drawn after plane fills"
+        );
+        // Positions stay unbiased — no geometric lift toward the camera.
         assert!(
             scene
                 .vertices
                 .iter()
-                .any(|v| (Vec3::from(v.position) - biased).length() < 1e-4),
-            "expected a rasterized vertex at the camera-biased cap position {biased:?}"
-        );
-        assert!(
-            scene_unbiased_count < raw_unbiased_count,
-            "expected fewer unbiased copies of the cap corner after biasing: raw={raw_unbiased_count} scene={scene_unbiased_count}"
+                .any(|v| (Vec3::from(v.position) - cap_vertex).length() < 1e-4),
+            "cap vertices stay at their raw (export) positions"
         );
 
         let base_vertex = *raw
@@ -7791,6 +7822,87 @@ mod tests {
                 .iter()
                 .any(|v| (Vec3::from(v.position) - base_vertex).length() < 1e-4),
             "non-cap vertices should be rasterized at their raw position"
+        );
+    }
+
+    /// #1215: a body face that rests on a construction plane is re-drawn after the plane
+    /// fill so coplanar solid/plane pairs don't z-fight — without world-space, pipeline, or
+    /// frag-depth bias.
+    #[test]
+    fn body_face_coplanar_with_construction_plane_is_repainted_after_plane_fills() {
+        let state = state_with_one_body();
+        let scene = build_scene_for_doc(&state);
+        // Extruded box on XY: bottom at z=0, and sides on x=0 / y=0 hit YZ / XZ too.
+        assert!(
+            scene.body_over_plane_indices.len() >= 6,
+            "at least the base face (two tris) should re-draw over the plane fill; got {}",
+            scene.body_over_plane_indices.len()
+        );
+        assert!(
+            !scene.plane_fill_indices.is_empty(),
+            "construction plane fills still draw in the translucent layer"
+        );
+        // Every overpaint index must point at a real solid vertex.
+        let nverts = scene.vertices.len() as u32;
+        assert!(
+            scene
+                .body_over_plane_indices
+                .iter()
+                .all(|&i| i < nverts),
+            "body_over_plane indices must reference solid vertices"
+        );
+    }
+
+    /// #1215: hiding every construction plane means nothing to z-fight with — the overpaint
+    /// layer stays empty.
+    #[test]
+    fn body_over_plane_is_empty_when_construction_planes_are_hidden() {
+        use crate::hierarchy::SceneElement;
+        let mut state = state_with_one_body();
+        for (pi, _) in state.doc.construction_planes.iter() {
+            state
+                .element_visibility
+                .set_visible(SceneElement::ConstructionPlane(pi), false);
+        }
+        let scene = build_scene_for_doc(&state);
+        assert!(
+            scene.body_over_plane_indices.is_empty(),
+            "no plane fills → no coplanar overpaint"
+        );
+    }
+
+    /// #1215 (issue report): a cuboid whose face sits on the YZ datum must re-paint that
+    /// face after the plane wash — the left-cube mottling in the bug screenshot.
+    #[test]
+    fn cuboid_face_on_yz_plane_is_in_body_over_plane_layer() {
+        use crate::model::{Primitive, PrimitiveKind};
+        let mut state = AppState::default();
+        // Cuboid resting on YZ (x = 0): origin on the plane, extruded along +X.
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.origin = [0.0, 50.0, 50.0];
+        shape.normal = [1.0, 0.0, 0.0];
+        shape.u_axis = [0.0, 1.0, 0.0];
+        shape.width = "40".into();
+        shape.depth = "25".into();
+        shape.height = "80".into();
+        state.apply(crate::actions::Action::CreateShape { shape });
+        assert_eq!(state.doc.bodies.len(), 1);
+
+        let scene = build_scene_for_doc(&state);
+        assert!(
+            scene.body_over_plane_indices.len() >= 6,
+            "YZ-coplanar face must re-draw after plane fills; got {}",
+            scene.body_over_plane_indices.len()
+        );
+        // Those overpaint vertices must actually lie on x ≈ 0 (the YZ plane).
+        let on_yz = scene
+            .body_over_plane_indices
+            .iter()
+            .map(|&i| scene.vertices[i as usize].position[0].abs())
+            .all(|x| x < 1e-2);
+        assert!(
+            on_yz,
+            "body_over_plane vertices for a YZ-resting cuboid should sit on x = 0"
         );
     }
 
