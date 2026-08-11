@@ -17,8 +17,8 @@ pub struct AppSettings {
     /// The library directory (#720): where `Library(...)` import sources resolve.
     #[serde(default)]
     pub library_directory: Option<PathBuf>,
-    /// Registry names of tutorials the user has finished (#1241). Green checks in the
-    /// Tutorials pane; survives restarts.
+    /// Registry names of tutorials the user has finished (#1241). Confirm-SVG checks in
+    /// the Tutorials pane (#1260); survives restarts.
     #[serde(default)]
     pub completed_tutorials: Vec<String>,
 }

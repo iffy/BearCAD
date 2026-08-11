@@ -3816,7 +3816,7 @@ mod tests {
         }
     }
 
-    /// #1241: finishing a tutorial records it for the green check in the pane.
+    /// #1241: finishing a tutorial records it for the Confirm-SVG check in the pane (#1260).
     #[test]
     fn finishing_a_tutorial_marks_it_completed() {
         let mut app = AppState::default();

@@ -3608,9 +3608,10 @@ impl App {
         }
     }
 
-    /// The Tutorials pane (#1241): every registered walkthrough, with a green check for
-    /// ones already finished. Heading matches other panes (#1255); each walkthrough is a
-    /// full-row button so hover stays continuous and the cursor stays a pointer (#1252/#1255).
+    /// The Tutorials pane (#1241): every registered walkthrough, with the same Confirm
+    /// SVG check used by tool commit buttons for ones already finished (#1260). Heading
+    /// matches other panes (#1255); each walkthrough is a full-row button so hover stays
+    /// continuous and the cursor stays a pointer (#1252/#1255).
     fn show_tutorial_pane(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         if !self.state.tutorial_pane_open {
             return;
@@ -3626,29 +3627,39 @@ impl App {
             ui.add_space(8.0);
             for (index, tut) in tutorial::TUTORIALS.iter().enumerate() {
                 let done = self.state.tutorial_completed(tut.name);
-                // LayoutJob keeps the check green/weak while the whole control is one Button
-                // — no nested Labels that flip the cursor to an i-beam over the title.
-                let mut job = egui::text::LayoutJob::default();
-                let check_fmt = egui::TextFormat {
-                    font_id: egui::FontId::proportional(13.0),
-                    color: if done {
-                        egui::Color32::from_rgb(46, 160, 67)
-                    } else {
-                        ui.visuals().weak_text_color()
-                    },
-                    ..Default::default()
+                // One Button per row (#1252/#1255): no nested Labels that flip the cursor
+                // to an i-beam over the title. Completed uses IconId::Confirm (the commit
+                // check SVG, #1260); incomplete keeps a weak ○.
+                let response = if done {
+                    let image = egui::Image::new(icons::sized_texture_at(
+                        ui.ctx(),
+                        icons::IconId::Confirm,
+                        14.0,
+                    ))
+                    .tint(egui::Color32::from_rgb(46, 160, 67));
+                    ui.add(
+                        egui::Button::image_and_text(image, tut.title)
+                            .min_size(egui::vec2(ui.available_width(), 28.0)),
+                    )
+                } else {
+                    let mut job = egui::text::LayoutJob::default();
+                    let check_fmt = egui::TextFormat {
+                        font_id: egui::FontId::proportional(13.0),
+                        color: ui.visuals().weak_text_color(),
+                        ..Default::default()
+                    };
+                    let title_fmt = egui::TextFormat {
+                        font_id: egui::FontId::proportional(13.0),
+                        color: ui.visuals().text_color(),
+                        ..Default::default()
+                    };
+                    job.append("○  ", 0.0, check_fmt);
+                    job.append(tut.title, 0.0, title_fmt);
+                    ui.add(
+                        egui::Button::new(job)
+                            .min_size(egui::vec2(ui.available_width(), 28.0)),
+                    )
                 };
-                let title_fmt = egui::TextFormat {
-                    font_id: egui::FontId::proportional(13.0),
-                    color: ui.visuals().text_color(),
-                    ..Default::default()
-                };
-                job.append(if done { "✓  " } else { "○  " }, 0.0, check_fmt);
-                job.append(tut.title, 0.0, title_fmt);
-                let response = ui.add(
-                    egui::Button::new(job)
-                        .min_size(egui::vec2(ui.available_width(), 28.0)),
-                );
                 let tip = if done {
                     "Completed — run again?"
                 } else {
@@ -4381,7 +4392,7 @@ impl App {
         state.status = status;
         // App settings (#720): loaded once here; the library directory is mirrored into
         // AppState so Action::ImportUnit (#721) can classify sources. Completed tutorials
-        // (#1241) land here too so the Tutorials pane can show green checks.
+        // (#1241) land here too so the Tutorials pane can show completed checks.
         #[cfg(not(target_arch = "wasm32"))]
         let settings = settings::AppSettings::load();
         #[cfg(not(target_arch = "wasm32"))]

@@ -3653,7 +3653,7 @@ pub struct AppState {
     /// `bearcad.ui.tutorial_pane(...)`.
     pub tutorial_pane_open: bool,
     /// Registry names of finished tutorials (#1241). Mirrored from
-    /// [`crate::settings::AppSettings`]; the UI shows a green check for each.
+    /// [`crate::settings::AppSettings`]; the UI shows a Confirm-SVG check for each (#1260).
     pub completed_tutorials: Vec<String>,
     /// Set when [`Self::completed_tutorials`] changes so the host can persist it.
     pub completed_tutorials_dirty: bool,
@@ -7687,7 +7687,7 @@ impl AppState {
         self.completed_tutorials_dirty = true;
     }
 
-    /// Whether the tutorial named `name` has a green check (#1241).
+    /// Whether the tutorial named `name` is marked complete in the pane (#1241).
     pub fn tutorial_completed(&self, name: &str) -> bool {
         self.completed_tutorials.iter().any(|n| n == name)
     }
