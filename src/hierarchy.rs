@@ -1718,6 +1718,31 @@ fn input_chain_depth(node: HierarchyNode, edges: &[(HierarchyNode, HierarchyNode
     walk(node, &inputs, &mut HashMap::new(), &mut HashSet::new())
 }
 
+/// The element whose shared Elements-pane context menu should open for a viewport
+/// right-click on already-selected geometry (#1224).
+///
+/// - The exact pick, when it is selected and has a hierarchy row.
+/// - Otherwise a body (or extrusion) sub-pick opens the owner's menu when that owner
+///   is selected — so right-clicking any face/edge/vertex of a selected body shows the
+///   same menu as the body's Elements-pane row.
+pub fn selected_context_menu_element(
+    picked: &SceneElement,
+    selection: &SceneSelection,
+) -> Option<SceneElement> {
+    if selection.is_selected(picked.clone()) && hierarchy_node_for_element(picked).is_some() {
+        return Some(picked.clone());
+    }
+    if let Some(owner) = visibility_target_for_element(picked) {
+        if owner != *picked
+            && selection.is_selected(owner.clone())
+            && hierarchy_node_for_element(&owner).is_some()
+        {
+            return Some(owner);
+        }
+    }
+    None
+}
+
 /// The [`HierarchyNode`] for a [`SceneElement`] — the inverse of [`scene_element_for_node`]
 /// for the kinds that appear in the element graph (#524/#531). `None` for sub-element
 /// selections (points, edges, vertices) that aren't graph nodes.
@@ -5728,11 +5753,12 @@ fn drawing_context_menu(
     }
 }
 
-/// The element context menu shared by the List/Tree rows and the Graph view's nodes (#623):
+/// The element context menu shared by the List/Tree rows, the Graph view's nodes (#623),
+/// and a right-click on already-selected geometry in the 3D viewport (#1224):
 /// node-specific actions (edit entries, drawing/export extras), Move-to-component (#423),
 /// Rollback (#545), and the universal Delete (#253).
 #[allow(clippy::too_many_arguments)]
-fn element_context_menu(
+pub(crate) fn element_context_menu(
     ui: &mut egui::Ui,
     doc: &Document,
     node: HierarchyNode,
@@ -6003,6 +6029,66 @@ mod tests {
                 .unwrap_or_else(|| panic!("{member:?} names a scene element"));
             assert_eq!(component_member_for_element(&element), Some(member));
         }
+    }
+
+    /// #1224: right-clicking already-selected geometry in the viewport opens the same
+    /// context menu as that element's Elements-pane row. Body sub-picks count as the body
+    /// when the body is selected; unselected picks never open the menu.
+    #[test]
+    fn selected_context_menu_element_matches_elements_pane_target() {
+        let body = SceneElement::Body(bkey(0));
+        let face = SceneElement::BodyFace {
+            body: bkey(0),
+            centroid: [0, 0, 0],
+            normal: [0, 0, 1],
+        };
+        let edge = SceneElement::BodyEdge {
+            body: bkey(0),
+            a: [0, 0, 0],
+            b: [1000, 0, 0],
+        };
+        let other_body = SceneElement::Body(bkey(1));
+        let line = SceneElement::Line(lkey(0));
+        let plane = SceneElement::ConstructionPlane(pkey(0));
+
+        let mut sel = SceneSelection::default();
+        // Nothing selected → no menu, even on a solid pick.
+        assert_eq!(selected_context_menu_element(&body, &sel), None);
+        assert_eq!(selected_context_menu_element(&face, &sel), None);
+
+        sel.insert(body.clone());
+        // Exact body pick while selected.
+        assert_eq!(
+            selected_context_menu_element(&body, &sel),
+            Some(body.clone())
+        );
+        // Face/edge of the selected body open the body's menu.
+        assert_eq!(
+            selected_context_menu_element(&face, &sel),
+            Some(body.clone())
+        );
+        assert_eq!(
+            selected_context_menu_element(&edge, &sel),
+            Some(body.clone())
+        );
+        // A different body under the cursor does not inherit the selection.
+        assert_eq!(selected_context_menu_element(&other_body, &sel), None);
+        // Sub-element only (no hierarchy row of its own) with the body unselected → none.
+        sel.clear();
+        sel.insert(face.clone());
+        assert_eq!(
+            selected_context_menu_element(&face, &sel),
+            None,
+            "a face has no Elements-pane row of its own"
+        );
+
+        // Hierarchy rows that are selected open for themselves.
+        sel.clear();
+        sel.insert(line.clone());
+        assert_eq!(selected_context_menu_element(&line, &sel), Some(line));
+        sel.clear();
+        sel.insert(plane.clone());
+        assert_eq!(selected_context_menu_element(&plane, &sel), Some(plane));
     }
 
     /// #977: an operation, a component and a joint have no shape of their own in the 3D view,

@@ -3091,7 +3091,7 @@ fn draw_touch_draw_loupe(
     );
 }
 
-/// What the viewport's right-click context menu should offer (#54/#75).
+/// What the viewport's right-click context menu should offer (#54/#75/#1224).
 #[derive(Clone)]
 enum ViewportContextMenu {
     ConvertVertexToBezier(ConstraintPoint),
@@ -3100,6 +3100,8 @@ enum ViewportContextMenu {
     /// (there's no independent per-handle state to remove — see `selected_bezier_handle`), but
     /// worded as "delete" since that's what the user clicked on (#75).
     DeleteBezierHandle(model::LineKey),
+    /// Same menu as the Elements-pane row for this already-selected element (#1224).
+    Element(SceneElement),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -25901,47 +25903,132 @@ impl App {
             }
         }
 
-        // Right-click a bezier handle to offer deleting it, a two-line vertex to offer
-        // converting it to a smooth bezier joint, or a curved line to offer straightening it
-        // back out (#54/#75).
+        // Right-click context menu (#54/#75/#1224):
+        // 1. Bezier handle under the cursor → Delete handle.
+        // 2. Already-selected hierarchy element under the cursor → the same Elements-pane menu.
+        // 3. Sketch-only extras: convert a two-line vertex to bezier, or straighten a curve.
         if response.secondary_clicked() {
-            self.viewport_context_menu = sketch_session.and_then(|session| {
-                let pp = response.interact_pointer_pos().or(pointer_screen)?;
+            self.viewport_context_menu = None;
+            let pp = response.interact_pointer_pos().or(pointer_screen);
+            // Bezier handles win over the element menu: the handle is a UI affordance, not a
+            // hierarchy row.
+            if let (Some(session), Some(pp)) = (sketch_session, pp) {
                 if let Some((line, _)) =
                     nearest_bezier_handle_in_sketch(pp, &project, &self.state.doc, session.sketch)
                 {
-                    return Some(ViewportContextMenu::DeleteBezierHandle(line));
+                    self.viewport_context_menu =
+                        Some(ViewportContextMenu::DeleteBezierHandle(line));
                 }
-                if let Some((point, _)) =
-                    nearest_sketch_point_in_sketch(pp, &project, &self.state.doc, session.sketch)
-                {
-                    if vertex_incident_line_count(&self.state.doc, session.sketch, point.clone()) == 2 {
-                        return Some(ViewportContextMenu::ConvertVertexToBezier(point));
+            }
+            if self.viewport_context_menu.is_none() {
+                if let Some(pp) = pp {
+                    let sketch_only = sketch_session.map(|session| session.sketch);
+                    let gp = cam.ground_point(pp, viewport, &vp);
+                    let picked = if let Some(index) =
+                        pointer_over_constraint_icon(&constraint_icon_hits, pp)
+                    {
+                        Some(SceneElement::Constraint(index))
+                    } else if let Some(ji) = (sketch_only.is_none())
+                        .then(|| joint_viewport::pointer_over_joint_icon(&joint_icon_hits, pp))
+                        .flatten()
+                    {
+                        Some(SceneElement::Joint(ji))
+                    } else {
+                        let body_vertex = if sketch_only.is_some() {
+                            None
+                        } else {
+                            pickable_body_vertex(pp, &project, &self.state.doc, pick_occlusion)
+                                .as_ref()
+                                .and_then(scene_element_from_pick)
+                        };
+                        if let Some(element) = body_vertex {
+                            Some(element)
+                        } else if let Some(target) =
+                            resolve_pick_target(pp, &project, gp, &self.state.doc, pick_occlusion)
+                        {
+                            // Same Select-tool face→body promotion as a left click (#902), so a
+                            // right-click on a selected body's face opens the body's menu.
+                            let resolve = if self.state.tool == Tool::Select && sketch_only.is_none()
+                            {
+                                select_tool_element_from_pick
+                            } else {
+                                scene_element_from_pick
+                            };
+                            resolve(&target.kind).filter(|element| {
+                                sketch_only.is_none_or(|sketch| {
+                                    element_in_sketch(&self.state.doc, sketch, element)
+                                })
+                            })
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(picked) = picked {
+                        if let Some(element) = hierarchy::selected_context_menu_element(
+                            &picked,
+                            &self.state.scene_selection,
+                        ) {
+                            self.viewport_context_menu =
+                                Some(ViewportContextMenu::Element(element));
+                        }
                     }
                 }
-                if let Some((crate::model::ConstraintLine::Line(li), _)) =
-                    nearest_sketch_line_in_sketch(pp, &project, &self.state.doc, session.sketch)
-                {
-                    if self.state.doc.lines.get(li).is_some_and(Line::is_curved) {
-                        return Some(ViewportContextMenu::StraightenLine(li));
+            }
+            if self.viewport_context_menu.is_none() {
+                self.viewport_context_menu = sketch_session.and_then(|session| {
+                    let pp = pp?;
+                    if let Some((point, _)) =
+                        nearest_sketch_point_in_sketch(pp, &project, &self.state.doc, session.sketch)
+                    {
+                        if vertex_incident_line_count(&self.state.doc, session.sketch, point.clone())
+                            == 2
+                        {
+                            return Some(ViewportContextMenu::ConvertVertexToBezier(point));
+                        }
                     }
-                }
-                None
-            });
+                    if let Some((crate::model::ConstraintLine::Line(li), _)) =
+                        nearest_sketch_line_in_sketch(pp, &project, &self.state.doc, session.sketch)
+                    {
+                        if self.state.doc.lines.get(li).is_some_and(Line::is_curved) {
+                            return Some(ViewportContextMenu::StraightenLine(li));
+                        }
+                    }
+                    None
+                });
+            }
         }
         if self.viewport_context_menu.is_some() {
+            // Queue menu actions so the shared `element_context_menu` doesn't need `&mut self`
+            // while painting (same pattern as the Elements pane).
+            let mut edit_sketch: Option<model::SketchId> = None;
+            let mut edit_plane: Option<model::ConstructionPlaneKey> = None;
+            let mut import_image_on_plane: Option<model::ConstructionPlaneKey> = None;
+            let mut edit_extrusion: Option<model::ExtrusionKey> = None;
+            let mut edit_edge_treatment_op: Option<model::EdgeTreatmentOpKey> = None;
+            let mut edit_operation: Option<SceneElement> = None;
+            let mut joint_rest: Option<hierarchy::JointRestCommand> = None;
+            let mut add_to_drawing: Option<SceneElement> = None;
+            let mut create_drawing_of_body: Option<model::BodyKey> = None;
+            let mut set_body_shadow: Option<(model::BodyKey, bool)> = None;
+            let mut export_body: Option<model::BodyKey> = None;
+            let mut export_body_step: Option<model::BodyKey> = None;
+            let mut move_to_component: Option<(SceneElement, Option<model::ComponentKey>)> = None;
+            let mut set_rollback: Option<Option<hierarchy::RollbackMarker>> = None;
+            let mut delete_element: Option<SceneElement> = None;
+            let mut bezier_acted = false;
+
             response.context_menu(|ui| match self.viewport_context_menu.clone() {
                 Some(ViewportContextMenu::ConvertVertexToBezier(point)) => {
                     if ui.button("Convert to bezier curve").clicked() {
                         self.state.apply(Action::ConvertVertexToBezier { point });
-                        self.viewport_context_menu = None;
+                        bezier_acted = true;
                         ui.close();
                     }
                 }
                 Some(ViewportContextMenu::StraightenLine(line)) => {
                     if ui.button("Straighten curve").clicked() {
                         self.state.apply(Action::StraightenLine { line });
-                        self.viewport_context_menu = None;
+                        bezier_acted = true;
                         ui.close();
                     }
                 }
@@ -25949,12 +26036,150 @@ impl App {
                     if ui.button("Delete handle").clicked() {
                         self.state.apply(Action::StraightenLine { line });
                         self.selected_bezier_handle = None;
-                        self.viewport_context_menu = None;
+                        bezier_acted = true;
                         ui.close();
+                    }
+                }
+                Some(ViewportContextMenu::Element(element)) => {
+                    if let Some(node) = hierarchy::hierarchy_node_for_element(&element) {
+                        hierarchy::element_context_menu(
+                            ui,
+                            &self.state.doc,
+                            node,
+                            &element,
+                            self.state.editing_drawing,
+                            &mut |sketch| edit_sketch = Some(sketch),
+                            &mut |index| edit_plane = Some(index),
+                            &mut |index| import_image_on_plane = Some(index),
+                            &mut |index| edit_extrusion = Some(index),
+                            &mut |op| edit_edge_treatment_op = Some(op),
+                            &mut |el| edit_operation = Some(el),
+                            &mut |command| joint_rest = Some(command),
+                            &mut |el| add_to_drawing = Some(el),
+                            &mut |body| create_drawing_of_body = Some(body),
+                            &mut |body, shadow| set_body_shadow = Some((body, shadow)),
+                            &mut |body| export_body = Some(body),
+                            &mut |body| export_body_step = Some(body),
+                            &mut |el, component| move_to_component = Some((el, component)),
+                            &mut |marker| set_rollback = Some(marker),
+                            &mut |el| delete_element = Some(el),
+                        );
                     }
                 }
                 None => {}
             });
+            let element_acted = edit_sketch.is_some()
+                || edit_plane.is_some()
+                || import_image_on_plane.is_some()
+                || edit_extrusion.is_some()
+                || edit_edge_treatment_op.is_some()
+                || edit_operation.is_some()
+                || joint_rest.is_some()
+                || add_to_drawing.is_some()
+                || create_drawing_of_body.is_some()
+                || set_body_shadow.is_some()
+                || export_body.is_some()
+                || export_body_step.is_some()
+                || move_to_component.is_some()
+                || set_rollback.is_some()
+                || delete_element.is_some();
+            if bezier_acted || element_acted {
+                self.viewport_context_menu = None;
+            }
+            // Dispatch the same actions the Elements pane queues for this menu (#1224).
+            if let Some(sketch) = edit_sketch {
+                self.state.apply(Action::OpenSketch {
+                    sketch,
+                    viewport: self.last_viewport,
+                });
+            }
+            if let Some(index) = import_image_on_plane {
+                self.import_image_on_plane(index);
+            }
+            if let Some(index) = edit_plane {
+                self.state.apply(Action::BeginEditConstructionPlane { index });
+            }
+            if let Some(index) = edit_extrusion {
+                self.state.apply(Action::EditExtrusion { index });
+            }
+            if let Some(op) = edit_edge_treatment_op {
+                self.state.apply(Action::EditEdgeTreatmentOp { op });
+            }
+            if let Some(element) = edit_operation {
+                if let SceneElement::UnitInstance(instance) = element {
+                    if let Some(unit) =
+                        self.state.doc.unit_instances.get(instance).map(|i| i.unit)
+                    {
+                        self.state.apply(Action::SyncUnit { unit });
+                    }
+                } else {
+                    self.begin_operation_edit(element);
+                }
+            }
+            if let Some(command) = joint_rest {
+                match command {
+                    hierarchy::JointRestCommand::SetRest(joint) => {
+                        self.state.apply(Action::SetJointRest { joint });
+                    }
+                    hierarchy::JointRestCommand::Revert(joint) => {
+                        self.state.apply(Action::RevertJoint { joint });
+                    }
+                    hierarchy::JointRestCommand::RevertAll => {
+                        self.state.apply(Action::RevertAllJoints);
+                    }
+                }
+            }
+            if let (Some(element), Some(drawing)) = (add_to_drawing, self.state.editing_drawing) {
+                let orientation = model::DrawingOrientation::default();
+                match element {
+                    SceneElement::Body(body) => {
+                        self.state.apply(Action::AddDrawingView {
+                            drawing,
+                            bodies: vec![body],
+                            orientation,
+                        });
+                    }
+                    SceneElement::Component(component) => {
+                        let bodies = self.state.component_body_indices(component);
+                        if bodies.is_empty() {
+                            self.state.status =
+                                "This component has no bodies to project".to_string();
+                        } else {
+                            self.state.apply(Action::AddDrawingView {
+                                drawing,
+                                bodies,
+                                orientation,
+                            });
+                        }
+                    }
+                    SceneElement::Sketch(sketch) => {
+                        self.state
+                            .apply(Action::AddDrawingSketchView { drawing, sketch, orientation });
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(body) = create_drawing_of_body {
+                self.state.apply(Action::CreateDrawingOfBody { body });
+            }
+            if let Some((body, shadow)) = set_body_shadow {
+                self.state.apply(Action::SetBodyShadow { body, shadow });
+            }
+            if let Some(index) = export_body {
+                self.export_stl_body(index);
+            }
+            if let Some(index) = export_body_step {
+                self.export_step_body(index);
+            }
+            if let Some((element, component)) = move_to_component {
+                self.state.apply(Action::MoveToComponent { element, component });
+            }
+            if let Some(marker) = set_rollback {
+                self.rollback_marker = marker;
+            }
+            if let Some(element) = delete_element {
+                self.state.apply(Action::DeleteElement { element });
+            }
         }
 
         // While the fan is open it owns the pointer (#986): only loupes are hoverable and
