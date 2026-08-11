@@ -129,6 +129,22 @@ export function kernel_chamfer(h, edges, dists) {
   return out;
 }
 
+// Hollow a solid (Shell tool, #1156). `faces` is flat [px,py,pz,nx,ny,nz, ...]
+// (point + outward normal per open face). Empty list → closed hollow.
+// A kernel built before shell existed has no export; degrade to 0 like other ops.
+export function kernel_shell(h, faces, thickness) {
+  const m = M();
+  if (!m || typeof m._bearcad_shape_shell !== "function") return 0;
+  const n = faces.length / 6;
+  if (n === 0) {
+    return m._bearcad_shape_shell(h, 0, 0, thickness);
+  }
+  const fp = copyF64In(m, faces);
+  const out = m._bearcad_shape_shell(h, fp, n, thickness);
+  m._free(fp);
+  return out;
+}
+
 export function kernel_volume(h) {
   const m = M();
   return m ? m._bearcad_shape_volume(h) : -1.0;

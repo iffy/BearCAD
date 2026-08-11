@@ -239,4 +239,59 @@ mod tests {
             );
         }
     }
+
+    /// #1244: wasm-bindgen imports every `fn kernel_*` from web/kernel-bridge.js as a
+    /// named ES export. A missing export is a hard module load SyntaxError (app won't
+    /// start). Keep the Rust extern block and the JS bridge in lockstep; also require
+    /// each `_bearcad_*` the bridge calls to be listed in the Emscripten export list.
+    #[test]
+    fn kernel_bridge_exports_match_web_rs_imports() {
+        let web_rs = include_str!("kernel/web.rs");
+        let bridge = include_str!("../web/kernel-bridge.js");
+        let emcc = include_str!("../scripts/build-occt-wasm.sh");
+
+        fn kernel_fns<'a>(src: &'a str, line_prefix: &str) -> Vec<&'a str> {
+            let mut out = Vec::new();
+            for line in src.lines() {
+                let t = line.trim_start();
+                if let Some(rest) = t.strip_prefix(line_prefix) {
+                    if rest.starts_with("kernel_") {
+                        let name = rest.split('(').next().unwrap_or("");
+                        if !name.is_empty() {
+                            out.push(name);
+                        }
+                    }
+                }
+            }
+            out.sort_unstable();
+            out.dedup();
+            out
+        }
+
+        let imports = kernel_fns(web_rs, "fn ");
+        let exports = kernel_fns(bridge, "export function ");
+        assert_eq!(
+            imports, exports,
+            "src/kernel/web.rs imports must match export function names in web/kernel-bridge.js"
+        );
+        assert!(
+            exports.iter().any(|n| *n == "kernel_shell"),
+            "kernel_shell must be exported (Shell tool web path)"
+        );
+
+        // Every `_bearcad_*` the bridge names must appear in EXPORTED_FUNCTIONS.
+        let mut rest = bridge;
+        while let Some(i) = rest.find("_bearcad_") {
+            let after = &rest[i..];
+            let end = after
+                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .unwrap_or(after.len());
+            let sym = &after[..end];
+            assert!(
+                emcc.contains(&format!("\"{sym}\"")),
+                "build-occt-wasm.sh EXPORTED_FUNCTIONS must include {sym} (referenced by kernel-bridge.js)"
+            );
+            rest = &after[end..];
+        }
+    }
 }
