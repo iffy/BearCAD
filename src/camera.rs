@@ -167,9 +167,13 @@ impl ShadingMode {
 
 #[derive(Clone, Debug)]
 struct ViewTransition {
-    from_yaw: f32,
-    from_pitch: f32,
-    delta_yaw: f32,
+    /// Unit eye-offset directions (target → eye). Slerped so adjacent face
+    /// clicks take a great-circle path ("just rotate down" for side→top, #1222)
+    /// instead of independent yaw/pitch lerp (which tumbles through a third face).
+    from_dir: Vec3,
+    to_dir: Vec3,
+    /// Exact landing yaw/pitch (polar roll is encoded in yaw at ±90° pitch).
+    to_yaw: f32,
     to_pitch: f32,
     from_target: Vec3,
     to_target: Vec3,
@@ -301,6 +305,13 @@ fn smoothstep(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// Unit direction of the eye offset for a yaw/pitch pose.
+fn spherical_dir(yaw: f32, pitch: f32) -> Vec3 {
+    let (sy, cy) = yaw.sin_cos();
+    let (sp, cp) = pitch.sin_cos();
+    Vec3::new(cp * cy, cp * sy, sp)
+}
+
 fn slerp_direction(from: Vec3, to: Vec3, t: f32) -> Vec3 {
     let from = from.normalize_or_zero();
     let to = to.normalize_or_zero();
@@ -313,6 +324,16 @@ fn slerp_direction(from: Vec3, to: Vec3, t: f32) -> Vec3 {
     let dot = from.dot(to).clamp(-1.0, 1.0);
     if dot > 0.9995 {
         return from.lerp(to, t).normalize_or_zero();
+    }
+    // Antipodal: lerp would pass through the origin. Rotate about a stable axis
+    // (prefer world Z so opposite side faces tip over the top/bottom).
+    if dot < -0.9995 {
+        let axis = if from.cross(Vec3::Z).length_squared() > 1e-6 {
+            from.cross(Vec3::Z).normalize()
+        } else {
+            from.cross(Vec3::X).normalize()
+        };
+        return (Quat::from_axis_angle(axis, std::f32::consts::PI * t) * from).normalize_or_zero();
     }
     let omega = dot.acos();
     let sin_omega = omega.sin();
@@ -493,20 +514,14 @@ impl Camera {
         self.world_up_on_complete();
     }
 
-    /// Standard/world view transitions must not inherit a lingering sketch-mode
-    /// `view_up` (#100): a preset chosen after sketching would land rolled by the
-    /// sketch frame. Animate the roll back to the world (or polar) up and drop the
-    /// override when the transition completes. At top/bottom the destination up is
-    /// yaw-derived so `look_at_rh` stays well-defined at the true pole (#1183).
+    /// Standard/world view transitions land on world (or polar) up and drop any
+    /// lingering sketch-mode `view_up` (#100). Always animate the up so great-circle
+    /// eye paths to top/bottom can roll smoothly into the CAD plan-view convention
+    /// without a snap at the pole (#1222 / #1183).
     fn world_up_on_complete(&mut self) {
-        if self.view_up.is_none() {
-            return;
-        }
         if let Some(t) = self.transition.as_mut() {
-            let to_pitch = t.to_pitch;
-            t.to_view_up = if to_pitch.abs() > 0.999 * std::f32::consts::FRAC_PI_2 {
-                // Yaw at completion is from_yaw + delta_yaw.
-                Self::polar_orbit_up(t.from_yaw + t.delta_yaw)
+            t.to_view_up = if t.to_pitch.abs() > 0.999 * std::f32::consts::FRAC_PI_2 {
+                Self::polar_orbit_up(t.to_yaw)
             } else {
                 Vec3::Z
             };
@@ -595,10 +610,18 @@ impl Camera {
         self.resolve_orbit_state();
         let to_pitch = to_pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT);
         let view_up = self.view_up_hint();
+        let from_dir = {
+            let d = self.eye() - self.target;
+            if d.length_squared() > 1e-12 {
+                d.normalize()
+            } else {
+                spherical_dir(self.yaw, self.pitch)
+            }
+        };
         self.transition = Some(ViewTransition {
-            from_yaw: self.yaw,
-            from_pitch: self.pitch,
-            delta_yaw: shortest_yaw_delta(self.yaw, to_yaw),
+            from_dir,
+            to_dir: spherical_dir(to_yaw, to_pitch),
+            to_yaw,
             to_pitch,
             from_target: self.target,
             to_target: self.target,
@@ -681,7 +704,7 @@ impl Camera {
         self.start_transition_to_view(self.home, duration);
     }
 
-    /// Animate to an arbitrary saved camera pose with minimal yaw rotation.
+    /// Animate to an arbitrary saved camera pose along a great-circle eye path.
     pub fn start_transition_to_view(&mut self, view: HomeView, duration: f32) {
         self.resolve_orbit_state();
         let from_view_up = self.view_up_hint();
@@ -689,10 +712,18 @@ impl Camera {
         let had_custom_up = self.view_up.is_some();
         let animate_view_up =
             had_custom_up || view.view_up.is_some() || (from_view_up - to_view_up).length() > 1e-3;
+        let from_dir = {
+            let d = self.eye() - self.target;
+            if d.length_squared() > 1e-12 {
+                d.normalize()
+            } else {
+                spherical_dir(self.yaw, self.pitch)
+            }
+        };
         self.transition = Some(ViewTransition {
-            from_yaw: self.yaw,
-            from_pitch: self.pitch,
-            delta_yaw: shortest_yaw_delta(self.yaw, view.yaw),
+            from_dir,
+            to_dir: spherical_dir(view.yaw, view.pitch),
+            to_yaw: view.yaw,
             to_pitch: view.pitch,
             from_target: self.target,
             to_target: view.target,
@@ -738,13 +769,22 @@ impl Camera {
                 (yaw, pitch)
             }
         };
+        let to_pitch = pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT);
         let to_distance = zoom_distance.unwrap_or(self.distance).clamp(2.0, 50_000.0);
         let from_view_up = self.view_up_hint();
+        let from_dir = {
+            let d = self.eye() - self.target;
+            if d.length_squared() > 1e-12 {
+                d.normalize()
+            } else {
+                spherical_dir(self.yaw, self.pitch)
+            }
+        };
         self.transition = Some(ViewTransition {
-            from_yaw: self.yaw,
-            from_pitch: self.pitch,
-            delta_yaw: shortest_yaw_delta(self.yaw, yaw),
-            to_pitch: pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT),
+            from_dir,
+            to_dir: spherical_dir(yaw, to_pitch),
+            to_yaw: yaw,
+            to_pitch,
             from_target: self.target,
             to_target: target,
             from_distance: self.distance,
@@ -935,17 +975,26 @@ impl Camera {
         {
             return;
         }
+        let dir = {
+            let d = self.eye() - self.target;
+            if d.length_squared() > 1e-12 {
+                d.normalize()
+            } else {
+                spherical_dir(self.yaw, self.pitch)
+            }
+        };
+        let up = self.view_up_hint();
         self.transition = Some(ViewTransition {
-            from_yaw: self.yaw,
-            from_pitch: self.pitch,
-            delta_yaw: 0.0,
+            from_dir: dir,
+            to_dir: dir,
+            to_yaw: self.yaw,
             to_pitch: self.pitch,
             from_target: self.target,
             to_target,
             from_distance: self.distance,
             to_distance,
-            from_view_up: self.view_up.unwrap_or(Vec3::Z),
-            to_view_up: self.view_up.unwrap_or(Vec3::Z),
+            from_view_up: up,
+            to_view_up: up,
             animate_target: true,
             animate_distance: true,
             animate_view_up: false,
@@ -968,7 +1017,7 @@ impl Camera {
         probe.transition = None;
         probe.orbit_quat = None;
         probe.orbit_base_offset = None;
-        probe.yaw = transition.from_yaw + transition.delta_yaw;
+        probe.yaw = transition.to_yaw;
         probe.pitch = transition.to_pitch;
         probe.view_up = Some(transition.to_view_up);
         probe.frame_bounds_instant(min, max, aspect);
@@ -994,8 +1043,19 @@ impl Camera {
         let mut t = transition;
         t.elapsed += dt;
         let u = smoothstep((t.elapsed / t.duration).min(1.0));
-        self.yaw = t.from_yaw + t.delta_yaw * u;
-        self.pitch = t.from_pitch + (t.to_pitch - t.from_pitch) * u;
+        // Great-circle eye path (#1222): slerp the offset direction, then recover yaw/pitch.
+        // Independent yaw/pitch lerp from side→top spun through the front; slerp tips straight over.
+        let dir = slerp_direction(t.from_dir, t.to_dir, u);
+        let (yaw, pitch) = Self::view_direction_to_yaw_pitch(dir);
+        // At the pole `view_direction_to_yaw_pitch` zeroes yaw; keep the destination polar
+        // yaw so roll (via `view_up_hint` / `polar_orbit_up`) stays well-defined.
+        if dir.z.abs() > 0.999 {
+            self.yaw = t.to_yaw;
+            self.pitch = dir.z.signum() * PITCH_LIMIT;
+        } else {
+            self.yaw = yaw;
+            self.pitch = pitch;
+        }
         if t.animate_target {
             self.target = t.from_target.lerp(t.to_target, u);
         }
@@ -1006,7 +1066,7 @@ impl Camera {
             self.transition = Some(t);
             true
         } else {
-            self.yaw = t.from_yaw + t.delta_yaw;
+            self.yaw = t.to_yaw;
             self.pitch = t.to_pitch;
             if t.animate_target {
                 self.target = t.to_target;
@@ -1737,6 +1797,63 @@ mod tests {
         assert!((cam.yaw - yaw).abs() < 0.01);
         assert!((cam.pitch - pitch).abs() < 0.01);
         assert!(!cam.is_transitioning());
+    }
+
+    /// #1222: looking at the side of the bear and clicking top must tip straight over
+    /// (great-circle / pure pitch) — not yaw-spin through the front. Lands on the
+    /// canonical top orientation (+X screen-right, +Y screen-up).
+    #[test]
+    fn side_to_top_view_transition_just_rotates_down() {
+        let mut cam = Camera::default();
+        cam.set_projection_mode(ProjectionMode::Orthographic);
+        let (yaw, pitch) = StandardView::Right.yaw_pitch();
+        cam.yaw = yaw;
+        cam.pitch = pitch;
+
+        cam.start_view_transition(StandardView::Top, 1.0);
+        // Mid-transition eye must stay in the right–top half-plane (x≥0, z≥0, |y|≈0).
+        for _ in 0..10 {
+            cam.tick_transition(0.05);
+            let dir = (cam.eye() - cam.target).normalize();
+            assert!(
+                dir.x >= -0.05 && dir.z >= -0.05,
+                "side→top must tip over the right–top edge, not swing around; dir={dir:?}"
+            );
+            assert!(
+                dir.y.abs() < 0.08,
+                "side→top must not yaw toward the front mid-path; dir={dir:?}"
+            );
+        }
+        while cam.tick_transition(0.05) {}
+
+        let top = (cam.eye() - cam.target).normalize();
+        assert!(top.z > 0.999, "must land looking from +Z, got {top:?}");
+        // Canonical top (#100): +X right, +Y up.
+        let viewport = test_viewport();
+        let vp = cam.view_proj(viewport);
+        let origin = cam.project(Vec3::ZERO, viewport, &vp).expect("origin");
+        let r = cam.project(Vec3::X * 50.0, viewport, &vp).expect("x");
+        let u = cam.project(Vec3::Y * 50.0, viewport, &vp).expect("y");
+        assert!(r.x > origin.x + 10.0, "+X screen-right: {origin:?} {r:?}");
+        assert!(u.y < origin.y - 10.0, "+Y screen-up: {origin:?} {u:?}");
+    }
+
+    /// #1222: left side → top is the mirror pure-pitch path (x≤0, |y|≈0).
+    #[test]
+    fn left_to_top_view_transition_just_rotates_down() {
+        let mut cam = Camera::default();
+        let (yaw, pitch) = StandardView::Left.yaw_pitch();
+        cam.yaw = yaw;
+        cam.pitch = pitch;
+        cam.start_view_transition(StandardView::Top, 1.0);
+        for _ in 0..10 {
+            cam.tick_transition(0.05);
+            let dir = (cam.eye() - cam.target).normalize();
+            assert!(dir.x <= 0.05 && dir.z >= -0.05, "dir={dir:?}");
+            assert!(dir.y.abs() < 0.08, "must not swing through front; dir={dir:?}");
+        }
+        while cam.tick_transition(0.05) {}
+        assert!((cam.eye() - cam.target).normalize().z > 0.999);
     }
 
     #[test]
