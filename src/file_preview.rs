@@ -615,8 +615,10 @@ fn md5_hex(data: &[u8]) -> String {
             *w = u32::from_le_bytes(chunk[i * 4..i * 4 + 4].try_into().unwrap());
         }
         let (mut a, mut b, mut c, mut d) = (a0, b0, c0, d0);
+        // Use :literal (not :expr) for k/s/ac — adjacent expr fragments are a hard
+        // error on stable (`$k:expr` followed by `$s:expr` is not allowed).
         macro_rules! round {
-            ($fun:ident; $($a:ident $b:ident $c:ident $d:ident $k:expr $s:expr $ac:expr),* $(,)?) => {
+            ($fun:ident; $($a:ident $b:ident $c:ident $d:ident $k:literal $s:literal $ac:literal),* $(,)?) => {
                 $( $a = op($a, $b, $c, $d, x[$k], $s, $ac, $fun); )*
             };
         }
