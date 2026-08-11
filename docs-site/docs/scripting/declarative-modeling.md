@@ -30,6 +30,7 @@ bearcad.quit()
 ```
 
 `bearcad.export_stl(path, [body])` works the same way for STL.
+`bearcad.export_preview(path)` writes a Home zoom-to-fit PNG (same image embedded on save).
 
 ## Sketch, draw, and name elements
 

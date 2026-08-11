@@ -2062,6 +2062,15 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1223: Home zoom-to-fit PNG preview (same image saved into .bearcad for Finder).
+    api.set(
+        "export_preview",
+        lua.create_function(|lua, path: String| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::ExportPreview { path }) }
+        })?,
+    )?;
+
     api.set(
         "import_stl",
         lua.create_function(|lua, path: String| {
@@ -7277,6 +7286,7 @@ mod tests {
             -- declarative modeling stays at the top level
             for _, name in ipairs({ "rect", "line", "circle", "extrude", "new", "select",
                                     "add_constraint", "parameter", "export_stl", "export_step",
+                                    "export_preview",
                                     "import_stl", "import_step", "import_lua", "chamfer_vertex",
                                     "fillet_vertex", "chamfer_edge", "fillet_edge" }) do
                 assert(type(bearcad[name]) == "function", "bearcad." .. name .. " should stay top-level")

@@ -42,6 +42,7 @@ mod document_lifecycle;
 mod expression_input;
 mod extrude;
 mod face;
+mod file_preview;
 mod fps;
 mod gpu_view_cube;
 mod gpu_viewport;

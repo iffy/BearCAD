@@ -12,6 +12,10 @@ fonts ([Text](/docs/tools/text)) and [tracing images](/docs/tools/tracing) trave
 so it opens identically on any machine. In the browser app, saving downloads the file and
 opening picks one from disk.
 
+On save, BearCAD writes a **Home zoom-to-fit preview** (black outline so it reads on light
+and dark backgrounds) into the file and publishes it as the OS thumbnail — Finder on macOS,
+free-desktop file managers on Linux. `bearcad.export_preview(path)` writes the same PNG.
+
 **Undo** (⌘/Ctrl+Z) reverts whole steps — a fillet or a boolean undoes as one unit.
 
 The window title (and each **tab**) shows the current file name and a leading **`*`**

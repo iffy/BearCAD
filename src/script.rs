@@ -120,6 +120,8 @@ pub enum Instruction {
     ExportStl { path: String, body: Option<String> },
     /// Export bodies to a STEP file at `path`; `body` names a single body (`None` = all).
     ExportStep { path: String, body: Option<String> },
+    /// Write a Home zoom-to-fit PNG preview of the document (#1223).
+    ExportPreview { path: String },
     /// Import an STL file at `path` as a new body (#70).
     ImportStl { path: String },
     /// Import another BearCAD document as a unit with a first instance (#721).
@@ -908,6 +910,7 @@ impl Instruction {
             Instruction::Open(path) => format!("bearcad.open({path:?})"),
             Instruction::Save(None) => "bearcad.save()".to_string(),
             Instruction::Save(Some(path)) => format!("bearcad.save({path:?})"),
+            Instruction::ExportPreview { path } => format!("bearcad.export_preview({path:?})"),
             Instruction::ExportStl { path, body: None } => format!("bearcad.export_stl({path:?})"),
             Instruction::ExportStl {
                 path,
@@ -5434,6 +5437,13 @@ impl ScriptRunner {
             Instruction::ExportStep { path, body } => {
                 let r = state.apply(Action::ExportStep { path, body });
                 self.record_action_error(r);
+                StepResult::Continue
+            }
+            Instruction::ExportPreview { path } => {
+                match crate::file_preview::export_preview_png(&state.doc, &path) {
+                    Ok(()) => {}
+                    Err(e) => self.record_action_error(crate::actions::ActionResult::Err(e)),
+                }
                 StepResult::Continue
             }
             Instruction::ImportStl { path } => {
