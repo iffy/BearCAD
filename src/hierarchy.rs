@@ -6,7 +6,7 @@ pub const PANE_TITLE: &str = "Elements";
 use crate::actions::SketchSession;
 use crate::icons::{
     icon_button, icon_for_constraint_kind, icon_for_visibility, selectable_icon_button,
-    sized_texture, IconId,
+    sized_texture, IconId, ICON_DISPLAY_SIZE,
 };
 use crate::document_health::{DocumentHealth, HealthStatus};
 use crate::document_lifecycle::{element_alive, sketch_alive};
@@ -5038,6 +5038,40 @@ fn component_list_rows(
     out
 }
 
+/// Collapse/expand disclosure triangle for list rows.
+///
+/// `width` is the hit-target column width. Component/unit rows use a narrow column in front
+/// of the eye; the Drawings section has no eye, so its column matches [`ICON_DISPLAY_SIZE`]
+/// and the following type icon lines up with every other row (#1232).
+fn collapse_triangle(ui: &mut egui::Ui, collapsed: bool, width: f32) -> egui::Response {
+    let (tri_rect, tri_resp) =
+        ui.allocate_exact_size(egui::vec2(width, 14.0), egui::Sense::click());
+    let c = tri_rect.center();
+    let r = 4.0;
+    let pts = if collapsed {
+        vec![
+            egui::pos2(c.x - r * 0.5, c.y - r),
+            egui::pos2(c.x + r, c.y),
+            egui::pos2(c.x - r * 0.5, c.y + r),
+        ]
+    } else {
+        vec![
+            egui::pos2(c.x - r, c.y - r * 0.5),
+            egui::pos2(c.x + r, c.y - r * 0.5),
+            egui::pos2(c.x, c.y + r),
+        ]
+    };
+    ui.painter().add(egui::Shape::convex_polygon(
+        pts,
+        Color32::from_gray(170),
+        egui::Stroke::NONE,
+    ));
+    tri_resp.on_hover_text(if collapsed { "Expand" } else { "Collapse" })
+}
+
+/// Narrow disclosure column when a row also has a visibility eye (components, units).
+const DISCLOSURE_BEFORE_EYE_WIDTH: f32 = 12.0;
+
 /// The collapsible "Drawings" section header in the List view (#1205): triangle + icon +
 /// label. Not selectable or hideable — it only groups drawing rows at the bottom.
 fn show_drawings_section_row(
@@ -5049,32 +5083,8 @@ fn show_drawings_section_row(
     ui.horizontal(|ui| {
         ui.add_space(depth as f32 * 18.0);
         let collapsed = *drawings_section_collapsed;
-        let (tri_rect, tri_resp) =
-            ui.allocate_exact_size(egui::vec2(12.0, 14.0), egui::Sense::click());
-        let c = tri_rect.center();
-        let r = 4.0;
-        let pts = if collapsed {
-            vec![
-                egui::pos2(c.x - r * 0.5, c.y - r),
-                egui::pos2(c.x + r, c.y),
-                egui::pos2(c.x - r * 0.5, c.y + r),
-            ]
-        } else {
-            vec![
-                egui::pos2(c.x - r, c.y - r * 0.5),
-                egui::pos2(c.x + r, c.y - r * 0.5),
-                egui::pos2(c.x, c.y + r),
-            ]
-        };
-        ui.painter().add(egui::Shape::convex_polygon(
-            pts,
-            Color32::from_gray(170),
-            egui::Stroke::NONE,
-        ));
-        if tri_resp
-            .on_hover_text(if collapsed { "Expand" } else { "Collapse" })
-            .clicked()
-        {
+        // Triangle replaces the eye column, so match eye width for type-icon alignment (#1232).
+        if collapse_triangle(ui, collapsed, ICON_DISPLAY_SIZE).clicked() {
             *drawings_section_collapsed = !collapsed;
         }
         if let Some(icon) = icon_for_hierarchy_node(doc, HierarchyNode::Drawings) {
@@ -5132,32 +5142,7 @@ fn show_component_row(
     let row = ui.horizontal(|ui| {
         ui.add_space(depth as f32 * 18.0);
         let collapsed = collapsed_components.contains(&ci);
-        let (tri_rect, tri_resp) =
-            ui.allocate_exact_size(egui::vec2(12.0, 14.0), egui::Sense::click());
-        let c = tri_rect.center();
-        let r = 4.0;
-        let pts = if collapsed {
-            vec![
-                egui::pos2(c.x - r * 0.5, c.y - r),
-                egui::pos2(c.x + r, c.y),
-                egui::pos2(c.x - r * 0.5, c.y + r),
-            ]
-        } else {
-            vec![
-                egui::pos2(c.x - r, c.y - r * 0.5),
-                egui::pos2(c.x + r, c.y - r * 0.5),
-                egui::pos2(c.x, c.y + r),
-            ]
-        };
-        ui.painter().add(egui::Shape::convex_polygon(
-            pts,
-            Color32::from_gray(170),
-            egui::Stroke::NONE,
-        ));
-        if tri_resp
-            .on_hover_text(if collapsed { "Expand" } else { "Collapse" })
-            .clicked()
-        {
+        if collapse_triangle(ui, collapsed, DISCLOSURE_BEFORE_EYE_WIDTH).clicked() {
             if collapsed {
                 collapsed_components.remove(&ci);
             } else {
@@ -5516,32 +5501,14 @@ fn show_row(
         // read-only contents expand beneath it in the List.
         if let HierarchyNode::UnitInstance(index) = node {
             let expanded = expanded_units.contains(&index);
-            let (tri_rect, tri_resp) =
-                ui.allocate_exact_size(egui::vec2(12.0, 14.0), egui::Sense::click());
-            let c = tri_rect.center();
-            let r = 4.0;
-            let pts = if expanded {
-                vec![
-                    egui::pos2(c.x - r, c.y - r * 0.5),
-                    egui::pos2(c.x + r, c.y - r * 0.5),
-                    egui::pos2(c.x, c.y + r),
-                ]
-            } else {
-                vec![
-                    egui::pos2(c.x - r * 0.5, c.y - r),
-                    egui::pos2(c.x + r, c.y),
-                    egui::pos2(c.x - r * 0.5, c.y + r),
-                ]
-            };
-            ui.painter().add(egui::Shape::convex_polygon(
-                pts,
-                Color32::from_gray(170),
-                egui::Stroke::NONE,
-            ));
-            if tri_resp
-                .on_hover_text(if expanded { "Collapse" } else { "Look inside (read-only)" })
-                .clicked()
-            {
+            // Units keep the narrow disclosure in front of the eye; hover text differs.
+            let tri = collapse_triangle(ui, !expanded, DISCLOSURE_BEFORE_EYE_WIDTH)
+                .on_hover_text(if expanded {
+                    "Collapse"
+                } else {
+                    "Look inside (read-only)"
+                });
+            if tri.clicked() {
                 if expanded {
                     expanded_units.remove(&index);
                 } else {
@@ -6853,6 +6820,60 @@ label_hidden: false,
                 .iter()
                 .any(|(n, _)| *n == HierarchyNode::Drawings),
             "collapsed section still shows the header"
+        );
+    }
+
+    /// #1232: the Drawings section has no visibility eye; its collapse triangle claims the
+    /// same column width as the eye so the type icon lines up with every other list row.
+    #[test]
+    fn drawings_section_type_icon_aligns_with_other_row_icons() {
+        let ctx = egui::Context::default();
+        let mut body_icon_x = f32::NAN;
+        let mut drawings_icon_x = f32::NAN;
+        let depth = 1usize;
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            // Normal list row leading controls: eye, then type-icon placeholder.
+            ui.horizontal(|ui| {
+                ui.add_space(depth as f32 * 18.0);
+                let _ = icon_button(ui, icon_for_visibility(true), "Hide");
+                let (icon_rect, _) = ui.allocate_exact_size(
+                    egui::vec2(ICON_DISPLAY_SIZE, ICON_DISPLAY_SIZE),
+                    egui::Sense::hover(),
+                );
+                body_icon_x = icon_rect.min.x;
+            });
+            // Drawings section: disclosure (eye-width), then type-icon placeholder.
+            ui.horizontal(|ui| {
+                ui.add_space(depth as f32 * 18.0);
+                let _ = collapse_triangle(ui, false, ICON_DISPLAY_SIZE);
+                let (icon_rect, _) = ui.allocate_exact_size(
+                    egui::vec2(ICON_DISPLAY_SIZE, ICON_DISPLAY_SIZE),
+                    egui::Sense::hover(),
+                );
+                drawings_icon_x = icon_rect.min.x;
+            });
+        });
+        assert!(
+            (body_icon_x - drawings_icon_x).abs() < 0.5,
+            "Drawings section type icon x={drawings_icon_x} should match body type icon x={body_icon_x}"
+        );
+        // Regression guard: a narrow (pre-fix) disclosure leaves the icon ~6px early.
+        let mut narrow_icon_x = f32::NAN;
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.horizontal(|ui| {
+                ui.add_space(depth as f32 * 18.0);
+                let _ = collapse_triangle(ui, false, DISCLOSURE_BEFORE_EYE_WIDTH);
+                let (icon_rect, _) = ui.allocate_exact_size(
+                    egui::vec2(ICON_DISPLAY_SIZE, ICON_DISPLAY_SIZE),
+                    egui::Sense::hover(),
+                );
+                narrow_icon_x = icon_rect.min.x;
+            });
+        });
+        assert!(
+            drawings_icon_x > narrow_icon_x + 1.0,
+            "eye-width disclosure must sit the type icon right of a narrow triangle \
+             (drawings={drawings_icon_x}, narrow={narrow_icon_x})"
         );
     }
 
