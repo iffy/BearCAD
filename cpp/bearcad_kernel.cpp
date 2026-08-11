@@ -191,21 +191,29 @@ extern "C" BearcadShape* bearcad_shape_revolve(const double* xyz, unsigned long 
 
         // Helical revolve (#1242): loft intermediate wires of the profile rotated and
         // translated along the axis. pitch is axial travel per full 2π turn.
+        //
+        // Ruled strips (#1248): a smooth ThruSections loft builds high-order surfaces
+        // between every pair of sections; OCCT then tessellates those at linear
+        // deflection into O(turns × radius / deflection) triangles, which made a
+        // 20-turn spring ~130k tris and laggy to orbit. Ruled faces between adjacent
+        // sections tessellate to two triangles each — density tracks section count,
+        // not the chord error of a huge spiral surface.
         const double start =
             (symmetric != 0) ? -signed_angle / 2.0 : 0.0;
         const double end =
             (symmetric != 0) ? signed_angle / 2.0 : signed_angle;
-        // At least 16 sections per turn so multi-turn springs stay smooth.
+        // ~12 sections/turn is smooth enough for coils; hard-cap total so multi-turn
+        // springs stay interactive (viewport + face/edge analysis scale with tris).
         const double turns = std::fabs(signed_angle) / (2.0 * M_PI);
-        int n_sections = static_cast<int>(std::ceil(turns * 16.0));
+        int n_sections = static_cast<int>(std::ceil(turns * 12.0));
         if (n_sections < 8) {
             n_sections = 8;
         }
-        if (n_sections > 256) {
-            n_sections = 256;
+        if (n_sections > 128) {
+            n_sections = 128;
         }
 
-        BRepOffsetAPI_ThruSections gen(/*isSolid=*/true, /*ruled=*/false);
+        BRepOffsetAPI_ThruSections gen(/*isSolid=*/true, /*ruled=*/true);
         for (int s = 0; s <= n_sections; ++s) {
             const double t = static_cast<double>(s) / static_cast<double>(n_sections);
             const double a = start + t * (end - start);
@@ -961,7 +969,29 @@ extern "C" double* bearcad_shape_tessellate(const BearcadShape* shape, double de
         // handle (cheap, shares the underlying TShape) so the const contract holds
         // at the Rust boundary while OCCT attaches its triangulation.
         TopoDS_Shape s = shape->shape;
-        BRepMesh_IncrementalMesh mesher(s, deflection, false, 0.5, true);
+        // Floor linear deflection at a tiny fraction of the bbox diagonal so large
+        // multi-turn helical faces don't explode into hundreds of thousands of
+        // triangles under a fixed 0.05 mm chord error (#1248). Small parts keep the
+        // caller's absolute deflection (the floor falls below it).
+        double lin_defl = deflection > 0.0 ? deflection : 0.05;
+        {
+            Bnd_Box box;
+            BRepBndLib::Add(s, box);
+            if (!box.IsVoid()) {
+                double xmin, ymin, zmin, xmax, ymax, zmax;
+                box.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+                const double dx = xmax - xmin;
+                const double dy = ymax - ymin;
+                const double dz = zmax - zmin;
+                const double diag = std::sqrt(dx * dx + dy * dy + dz * dz);
+                // ~0.05% of diagonal: a 600 mm spring floors at ~0.3 mm.
+                const double floor_defl = diag * 5.0e-4;
+                if (floor_defl > lin_defl) {
+                    lin_defl = floor_defl;
+                }
+            }
+        }
+        BRepMesh_IncrementalMesh mesher(s, lin_defl, false, 0.5, true);
         mesher.Perform();
 
         std::vector<double> tris;

@@ -849,4 +849,32 @@ mod tests {
         let common = boxy.boolean(&sphere, BoolOp::Common).unwrap().volume().unwrap();
         assert!(common < 1e-6, "disjoint solids share no volume, got {common}");
     }
+
+    /// #1248: multi-turn helical revolve (ThruSections with pitch) must tessellate
+    /// leanly — ruled strips + section cap, not a dense smooth loft of the whole coil.
+    #[test]
+    fn multi_turn_helical_revolve_tessellates_leanly() {
+        // Rectangular profile offset from the X axis (matches a spring coil sketch).
+        let profile = [
+            Vec3::new(0.0, 50.0, 0.0),
+            Vec3::new(20.0, 50.0, 0.0),
+            Vec3::new(20.0, 60.0, 0.0),
+            Vec3::new(0.0, 60.0, 0.0),
+        ];
+        let origin = Vec3::ZERO;
+        let axis = Vec3::X;
+        // 20 turns × 30 mm pitch — same order as the issue-1248 fixture.
+        let angle = 20.0 * std::f64::consts::TAU;
+        let pitch = 30.0;
+        let sh = Shape::revolve(&profile, origin, axis, angle, false, pitch)
+            .expect("helical revolve");
+        let vol = sh.volume().expect("volume");
+        assert!(vol > 1.0, "spring must have solid volume, got {vol}");
+        let tris = sh.tessellate(0.05);
+        assert!(
+            !tris.is_empty() && tris.len() < 20_000,
+            "multi-turn helix must not explode under default deflection, got {} tris",
+            tris.len()
+        );
+    }
 }

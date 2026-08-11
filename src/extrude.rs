@@ -4131,6 +4131,23 @@ pub fn revolve_side_annulus(
     Some((ra.min(rb), ra.max(rb)))
 }
 
+/// Angular steps for a revolve lathe mesh (#1242/#1248).
+///
+/// Pure revolve keeps the usual [`CIRCLE_SEGMENTS`] density for one turn. Helical
+/// multi-turn springs scale at 12 facets/turn and hard-cap total steps so a long
+/// coil stays interactive — pan/orbit walk every triangle every frame.
+pub fn revolve_mesh_steps(angle_deg: f32, pitch_mm: f32) -> usize {
+    if pitch_mm.abs() > 1e-6 {
+        // Match the kernel's helical ThruSections density (#1248).
+        const PER_TURN: f32 = 12.0;
+        const MAX_STEPS: usize = 128;
+        let steps = ((PER_TURN * angle_deg.abs() / 360.0).ceil() as usize).max(8);
+        steps.min(MAX_STEPS)
+    } else {
+        (((CIRCLE_SEGMENTS as f32) * angle_deg.abs() / 360.0).ceil() as usize).max(8)
+    }
+}
+
 /// Hand-rolled lathe mesh for a revolution (the no-kernel fallback and the live ghost
 /// preview): each profile is swept around the axis in angular steps, walls stitched
 /// between consecutive rotated rings, with the start/end profile faces capped for a
@@ -4148,7 +4165,7 @@ pub fn revolve_mesh(doc: &Document, rev: &crate::model::Revolution) -> Option<So
         if profile.len() < 3 {
             return None;
         }
-        let steps = (((CIRCLE_SEGMENTS as f32) * angle.abs() / 360.0).ceil() as usize).max(8);
+        let steps = revolve_mesh_steps(angle, pitch);
         let rings: Vec<Vec<Vec3>> = (0..=steps)
             .map(|i| {
                 let a = start + angle * i as f32 / steps as f32;
@@ -6165,6 +6182,20 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: crate::model::BodyKey) -
             let shape = occt_shelled_output_shape(doc, op, target)?;
             let tris = shape.tessellate(OCCT_DEFLECTION as f64);
             return (!tris.is_empty()).then_some(SolidMesh { triangles: tris });
+        }
+    }
+    // Pure helical revolve (#1248): use the density-capped lathe mesh for the viewport
+    // rather than OCCT ThruSections + tessellate. A multi-turn spring's smooth loft was
+    // producing ~100k+ triangles and lagging pan/orbit; the lathe matches the preview
+    // and stays O(sections × profile). STEP export and fused/cut paths still go through
+    // `occt_body_shape` below / in their own branches.
+    if let crate::model::BodySource::Revolve(ri) = body.source {
+        if let Some(rev) = doc.revolutions.get(ri) {
+            if rev.pitch_mm.abs() > 1e-6 {
+                if let Some(mesh) = revolve_mesh(doc, rev) {
+                    return Some(mesh);
+                }
+            }
         }
     }
     // Fuse the body's added extrusions into one real solid via OCCT and subtract its cut
@@ -10942,6 +10973,58 @@ mod tests {
             "2.5 turns × pitch 10 + height 5 ≈ 30, got span {span}"
         );
     }
+
+    /// #1248: multi-turn helical revolve (fixture spring, 7200°) stays density-capped so
+    /// pan/orbit do not pay for a 100k-triangle OCCT tessellation every frame.
+    #[test]
+    fn issue_1248_helical_revolve_stays_density_capped() {
+        let bytes = include_bytes!("../tests/fixtures/issue_1248.json");
+        let mut doc = crate::storage::from_json_bytes(bytes).expect("load");
+        doc.bump_mesh_rev();
+        let bi = doc.bodies.keys().next().expect("body");
+        let rev = doc.revolutions.values().next().expect("revolve").clone();
+        assert!(
+            rev.pitch_mm.abs() > 1.0 && rev.angle_deg.abs() > 3600.0,
+            "fixture should be a multi-turn helical spring"
+        );
+
+        // Lathe step budget is independent of OCCT and must hard-cap multi-turn density.
+        let steps = revolve_mesh_steps(rev.angle_deg, rev.pitch_mm);
+        assert!(
+            steps <= 128,
+            "helical revolve must cap angular steps, got {steps}"
+        );
+        assert_eq!(
+            revolve_mesh_steps(360.0, 0.0),
+            CIRCLE_SEGMENTS,
+            "pure revolve keeps CIRCLE_SEGMENTS density"
+        );
+
+        let mesh = body_solid_mesh_uncached_pub(&doc, bi).expect("mesh");
+        let n_tris = mesh.triangles.len();
+        // 128 steps × 4 profile edges × 2 tris + caps ≪ tens of thousands.
+        assert!(
+            n_tris < 8_000,
+            "multi-turn spring viewport mesh must stay lean, got {n_tris} tris"
+        );
+        // Geometry still spans ~20 turns of pitch along the axis.
+        let (min, max) = mesh.bounds().expect("bounds");
+        let span = (max - min).max_element();
+        assert!(
+            span > 400.0,
+            "spring should still be long (~20×pitch), span={span}"
+        );
+
+        // Cached mesh path: fingerprint-stable reads return the same density (no
+        // re-tessellate). View navigation only clones the memoized mesh.
+        let again = body_solid_mesh(&doc, bi).expect("cached");
+        assert_eq!(again.triangles.len(), n_tris);
+        for _ in 0..5 {
+            let hit = body_solid_mesh(&doc, bi).expect("hit");
+            assert_eq!(hit.triangles.len(), n_tris);
+        }
+    }
+
 
     /// #1242: Gap mode stores pitch = gap + profile height; Offset mode stores pitch as-is.
     #[test]
