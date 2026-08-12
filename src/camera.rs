@@ -964,6 +964,13 @@ impl Camera {
         duration: f32,
         min_distance: f32,
     ) {
+        // Match `frame_bounds_instant` → `set_pose_instant`: bake mid-transition view-up
+        // and trackball roll so the glide drives eye via yaw/pitch/distance. Leaving
+        // `orbit_quat` live kept the pre-frame base-offset length while `distance`
+        // animated, so Zoom to Fit landed at the wrong zoom until a wheel event
+        // rewrote `orbit_base_offset` (#1302). Roll survives in `view_up` (#1203).
+        self.cancel_transition();
+        self.resolve_orbit_state();
         // Compute the destination with the instant math on a scratch copy.
         let mut probe = self.clone();
         probe.transition = None;
@@ -1447,6 +1454,63 @@ mod tests {
         assert!(!animated.transition_active());
         assert!((animated.target - instant.target).length() < 1e-3);
         assert!((animated.distance - instant.distance).abs() < 1e-2);
+    }
+
+    /// #1302: after a trackball orbit, animated Zoom to Fit must land at the same *eye*
+    /// as the instant path. Leaving `orbit_quat` live made `eye()` ignore the animated
+    /// distance until a wheel zoom rewrote `orbit_base_offset` (snap-to-correct).
+    #[test]
+    fn frame_bounds_animated_after_orbit_matches_instant_eye() {
+        let (min, max) = (Vec3::new(0.0, 0.0, 0.0), Vec3::new(40.0, 36.0, 95.0));
+        let aspect = 1.5;
+
+        let mut cam = Camera::default();
+        cam.set_pose_instant(
+            Some(ISOMETRIC_YAW),
+            Some(ISOMETRIC_PITCH),
+            Some(800.0),
+            Some(Vec3::new(200.0, -150.0, 50.0)),
+        );
+        cam.orbit_trackball(egui::vec2(40.0, -28.0));
+        assert!(cam.has_orbit_trackball_state());
+
+        let mut instant = cam.clone();
+        instant.frame_bounds_instant(min, max, aspect);
+
+        cam.frame_bounds_animated(min, max, aspect, 0.2);
+        assert!(cam.transition_active());
+        for _ in 0..60 {
+            cam.tick_transition(0.016);
+        }
+        assert!(!cam.transition_active());
+        assert!(
+            !cam.has_orbit_trackball_state(),
+            "animated frame must bake trackball so eye() follows distance"
+        );
+        assert!(
+            (cam.target - instant.target).length() < 1e-3,
+            "target: animated {:?} vs instant {:?}",
+            cam.target,
+            instant.target
+        );
+        assert!(
+            (cam.distance - instant.distance).abs() < 1e-2,
+            "distance field: animated {} vs instant {}",
+            cam.distance,
+            instant.distance
+        );
+        let eye_dist = (cam.eye() - cam.target).length();
+        assert!(
+            (eye_dist - cam.distance).abs() < 1e-2,
+            "eye offset length {eye_dist} must match distance {}",
+            cam.distance
+        );
+        assert!(
+            (cam.eye() - instant.eye()).length() < 1e-2,
+            "eye: animated {:?} vs instant {:?}",
+            cam.eye(),
+            instant.eye()
+        );
     }
 
     /// Auto-zoom's selection watch (#438): the zoom-out-only frame pans to small bounds at
