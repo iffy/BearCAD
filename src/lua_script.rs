@@ -4451,6 +4451,21 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             Ok(state.tutorial.map(|r| r.step))
         })?,
     )?;
+    // Animated guide-orb screen position (#1346). Nil when no ring is drawn.
+    api.set(
+        "tutorial_orb",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            let Some(p) = state.tutorial_orb_screen else {
+                return Ok(Value::Nil);
+            };
+            let t = lua.create_table()?;
+            t.set("x", p.x)?;
+            t.set("y", p.y)?;
+            Ok(Value::Table(t))
+        })?,
+    )?;
 
     api.set(
         "move",
@@ -6735,6 +6750,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "update_channel",
             "snapping", "picker_focus", "angle_snap",
             "tutorial", "tutorial_next", "tutorial_assist", "tutorial_end", "tutorial_step",
+            "tutorial_orb",
             "tutorial_pane", "tutorials",
             "touch",
             "os_open",
@@ -6919,6 +6935,21 @@ mod tests {
         for &ci in &op.circle_outputs {
             assert!(!state.doc.circles.contains(ci), "copy circle {ci:?} removed with the op");
         }
+    }
+
+    /// #1346: scripts can read the guide orb's screen position (nil until the
+    /// overlay draws it).
+    #[test]
+    fn tutorial_orb_lua_is_nil_without_a_drawn_overlay() {
+        run_lua_expect_ok(
+            r#"
+            assert(bearcad.ui.tutorial_orb() == nil, "no tutorial, no orb")
+            bearcad.ui.tutorial("cube")
+            assert(bearcad.ui.tutorial_step() == 0)
+            assert(bearcad.ui.tutorial_orb() == nil,
+                   "headless apply does not draw the overlay")
+            "#,
+        );
     }
 
     /// #1334: the angle-bracket walkthrough is gone; scripting must not start it.
