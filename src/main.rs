@@ -6710,7 +6710,14 @@ impl App {
         // the fan is the only way to name a face buried behind the solid — which is exactly what
         // "up to the bottom of this box" asks for. The field auto-focuses so a depth can be typed
         // the moment a profile is picked; that convenience must not outrank an armed pick.
-        if self.state.extrude_target_pick {
+        //
+        // Live focus-hold (`should_hold_live_value_focus`, #1271) re-requests the keyboard every
+        // frame while the buffer is unedited — that undoes a one-shot `surrender_focus` and
+        // leaves `egui_wants_keyboard_input` true forever, so Space never reaches the exploder
+        // (CI `extrude_up_to_a_buried_face`). While Up to is armed the field is *not* a focus
+        // target: no re-grab, no type-to-edit, no pending_focus.
+        let target_armed = self.state.extrude_target_pick;
+        if target_armed {
             if ctx.memory(|m| m.has_focus(id)) {
                 ctx.memory_mut(|m| m.surrender_focus(id));
             }
@@ -6730,10 +6737,10 @@ impl App {
         // so the user can just start typing a depth. Any expression character is accepted —
         // not only digits — so a unit or parameter expression like `15mm` or `width=2` can be
         // typed from the first keystroke (#196). Skip when another field (e.g. Parameters
-        // name) has the keyboard (#506).
+        // name) has the keyboard (#506), and while Up to owns the next click (#988).
         let field_focused = ctx.memory(|m| m.has_focus(id));
         let other_wants_kb = ctx.egui_wants_keyboard_input() && !field_focused;
-        if should_grab_unfocused_tool_typing(field_focused, other_wants_kb) {
+        if !target_armed && should_grab_unfocused_tool_typing(field_focused, other_wants_kb) {
             let typed: String = ctx.input(|i| {
                 i.events
                     .iter()
@@ -6769,6 +6776,8 @@ impl App {
             );
             // #881: the very same field the line/dimension inputs use — amber frame, the
             // typed expression in monospace, its computed value underneath.
+            // Not a focus target while Up to is armed (#988 / live focus-hold undoes surrender).
+            let is_focus_target = !target_armed;
             let mut result = SketchDimFieldResult::default();
             let doc = &mut self.state.doc;
             egui::Area::new(egui::Id::new("extrude_distance_area"))
@@ -6783,7 +6792,7 @@ impl App {
                             &mut text,
                             doc,
                             sketch,
-                            true,
+                            is_focus_target,
                             &mut want_focus,
                             user_edited,
                             false,
@@ -20595,6 +20604,34 @@ fn offset_enter_commits_despite_keyboard(
     }
 }
 
+/// Whether the construction-plane tool should commit on Enter.
+///
+/// Own offset/angle fields (or wants_keyboard with no focused id) never block: live focus-hold
+/// can leave memory pointing at the field while the field's own enter_commit missed the
+/// keystroke after TextEdit surrendered (#1275 pattern; CI plane_*).
+fn plane_enter_commits(
+    field_enter_commit: bool,
+    enter_pressed: bool,
+    wants_keyboard: bool,
+    focused: Option<egui::Id>,
+    id_offset: egui::Id,
+    id_angle: egui::Id,
+) -> bool {
+    if field_enter_commit {
+        return true;
+    }
+    if !enter_pressed {
+        return false;
+    }
+    if !wants_keyboard {
+        return true;
+    }
+    match focused {
+        None => true,
+        Some(id) => id == id_offset || id == id_angle,
+    }
+}
+
 /// Show a sketch dimension field; selects all text when it gains focus so typing replaces
 /// the value. Draws through the one shared boxed field (#889), which every value input in
 /// the app — pane rows included — now uses; this adds the focus targeting, select-on-focus,
@@ -20686,15 +20723,24 @@ fn show_sketch_dimension_field(
     if is_focus_target && memory_focused {
         *pending_focus = false;
     }
-    // Enter belongs to whichever field holds the keyboard, which is not the same as
-    // `Response::has_focus` — that also demands the OS window be focused, and a background
-    // window's open field is still where Enter lands.
-    let enter_commit =
-        sketch_dimension_enter_pressed(ui) && memory_focused;
+    // Enter belongs to whichever field holds (or just held) the keyboard. `Response::has_focus`
+    // also demands the OS window be focused, so we use memory focus; a background window's
+    // open field is still where Enter lands (#1201).
+    //
+    // Singleline TextEdit surrenders focus on Enter *inside* `boxed::show`, so a post-show
+    // `memory_focused` check alone is false the same frame — and live focus-hold can
+    // `request_focus` again before the outer commit path runs, leaving `dim_field_focused`
+    // true with no `enter_commit` (CI plane_* Enter never committed). Count `lost_focus`
+    // as "Enter just finished this field" too.
+    let lost_focus = resp.lost_focus();
+    let enter_commit = sketch_dimension_field_enter_commit(
+        sketch_dimension_enter_pressed(ui),
+        memory_focused,
+        lost_focus,
+    );
     if enter_commit {
         consume_sketch_dimension_enter(ui);
     }
-    let lost_focus = resp.lost_focus();
     let changed = resp.changed();
     let mut inline_parameter_added = None;
     let mut inline_parameter_error = None;
@@ -20713,6 +20759,19 @@ fn show_sketch_dimension_field(
         inline_parameter_added,
         inline_parameter_error,
     }
+}
+
+/// Whether a floating sketch-dimension field should report Enter as commit (#1201 / CI plane).
+///
+/// TextEdit surrenders focus on Enter before the caller reads memory focus, so `lost_focus`
+/// is the reliable same-frame signal. `memory_focused` still covers the rare case where the
+/// field keeps focus (multiline / custom return_key).
+fn sketch_dimension_field_enter_commit(
+    enter_pressed: bool,
+    memory_focused: bool,
+    lost_focus: bool,
+) -> bool {
+    enter_pressed && (memory_focused || lost_focus)
 }
 
 fn apply_dimension_field_feedback(state: &mut AppState, result: &SketchDimFieldResult) {
@@ -30704,19 +30763,19 @@ impl App {
                     ctx.memory_mut(|m| m.request_focus(target_id));
                 }
 
-                // While `pending_focus` is still set the field has requested focus but not
-                // settled it (its `resp.has_focus()` is false, so it never reports its own
-                // enter_commit). If `memory().focused()` already points at the field we'd
-                // otherwise suppress the unfocused-Enter path too, and Enter would be lost
-                // in that gap — which is exactly what happens on a small/WM-less window
-                // where focus can take several frames to land. Treat a field whose focus is
-                // still pending as not-yet-focused so Enter commits the plane directly.
-                let dim_field_focused = !cp.pending_focus
-                    && (current == Some(id_offset) || current == Some(id_angle));
-                if should_commit_sketch_on_enter(
+                // Enter commits the plane when nothing *else* holds the keyboard. Own
+                // offset/angle fields are non-blocking (#1275 pattern / CI plane_*): live
+                // focus-hold re-requests the keyboard after TextEdit surrenders on Enter, so
+                // the old `dim_field_focused` gate suppressed both the field's enter_commit
+                // and the unfocused path. Treat our fields (and wants_keyboard with no id)
+                // like the Offset tool does.
+                if plane_enter_commits(
                     commit_plane,
-                    dim_field_focused,
                     sketch_dimension_enter_pressed(ui),
+                    ctx.egui_wants_keyboard_input(),
+                    current,
+                    id_offset,
+                    id_angle,
                 ) {
                     if !commit_plane {
                         consume_sketch_dimension_enter(ui);
@@ -33994,6 +34053,48 @@ mod tests {
             Some(other),
             field
         ));
+    }
+
+    /// Floating dim Enter: singleline TextEdit surrenders focus the same frame, so a
+    /// post-show memory-focus check alone misses Enter (CI plane_* after live focus-hold
+    /// settled). `lost_focus` is the same-frame commit signal.
+    #[test]
+    fn sketch_dimension_field_enter_commit_on_lost_focus() {
+        use super::sketch_dimension_field_enter_commit;
+        // Enter while still focused (multiline / no surrender yet).
+        assert!(sketch_dimension_field_enter_commit(true, true, false));
+        // Enter after TextEdit surrendered this frame.
+        assert!(sketch_dimension_field_enter_commit(true, false, true));
+        // Re-focus after surrender still counts (live hold re-requests).
+        assert!(sketch_dimension_field_enter_commit(true, true, true));
+        // No Enter.
+        assert!(!sketch_dimension_field_enter_commit(false, true, true));
+        // Enter but field never had the keyboard.
+        assert!(!sketch_dimension_field_enter_commit(true, false, false));
+    }
+
+    /// Plane Enter commits even when the floating offset/angle field holds the keyboard
+    /// (live focus-hold after settle; CI plane_line_and_point / plane_curve / plane_normal).
+    #[test]
+    fn plane_enter_commits_despite_own_offset_field() {
+        use super::plane_enter_commits;
+        let off = egui::Id::new("cp_offset");
+        let ang = egui::Id::new("cp_angle");
+        let other = egui::Id::new("parameters_name");
+        // Field already reported enter_commit.
+        assert!(plane_enter_commits(true, false, true, Some(off), off, ang));
+        // Enter, nothing wants the keyboard.
+        assert!(plane_enter_commits(false, true, false, None, off, ang));
+        // Enter while our offset field is focused.
+        assert!(plane_enter_commits(false, true, true, Some(off), off, ang));
+        // Enter while our angle field is focused.
+        assert!(plane_enter_commits(false, true, true, Some(ang), off, ang));
+        // Enter with wants_keyboard but no focused id (fragile Area).
+        assert!(plane_enter_commits(false, true, true, None, off, ang));
+        // Another widget has the keyboard — do not steal.
+        assert!(!plane_enter_commits(false, true, true, Some(other), off, ang));
+        // No Enter.
+        assert!(!plane_enter_commits(false, false, true, Some(off), off, ang));
     }
 
     #[test]
