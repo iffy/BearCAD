@@ -3434,8 +3434,12 @@ back the assembly joints/mates (§2.3).
 
 ## 7. File format (`.bearcad` / SQLite)
 
-A `.bearcad` is a SQLite database. The schema below is the starting point; refine during
-implementation but keep the migration mechanism.
+A `.bearcad` is a SQLite database. One table per arena; `id` is `Key::to_bits()`.
+Native open sniffs the 16-byte SQLite header (web JSON still works). Session RAM is
+still the live model — hydrate into `Arena`s on open.
+
+No `FOREIGN KEY` constraints. A dangling `sketch_id` / `material_id` loads; document
+health reports it.
 
 ### 7.1 Versioning & migrations
 - A `schema_migrations` table records every patch applied, so older files can be upgraded:
@@ -3446,41 +3450,69 @@ implementation but keep the migration mechanism.
     applied_at  TEXT NOT NULL          -- ISO-8601 timestamp
   );
   ```
-- On open, BearCAD applies any migrations whose id is newer than the file's latest applied
-  migration. A file from a newer BearCAD than the running binary must be detected and refused
-  (or opened read-only) rather than corrupted.
-- A `meta` key/value table records app version, **OCCT version used** (for deterministic
-  recompute, §4.4), document units defaults, etc.
+- Current version: **2** (`typed_entity_tables`). A newer file than the running binary
+  is refused. Pre-alpha: no reader for the v1 `dag_nodes` dump.
+- `meta` holds scalars only: `app_version`, `occt_version`, `schema_version`,
+  `default_length_unit`, `default_angle_unit`.
 
 ### 7.2 What is persisted
-- **Full action DAG / undo history** — every node and edge, enough to reconstruct all
-  states and support infinite persistent undo.
-- **Parameters** — name, raw expression text, evaluated value, unit, scope.
-- **UI/view state** — pane layout, camera position(s), active theme, and per-document
-  custom shortcuts.
-- **Cached evaluated geometry** — per-node BREP and/or tessellation blobs plus their
-  validity fingerprint (§4.4), so files open fast without a full rebuild. The cache is
-  derived data: it can always be regenerated from the DAG and may be discarded
-  (force-rebuild) or stripped to shrink a file.
+- **Every arena** as its own table: parameters, sketches, lines, circles, constraints,
+  construction planes, bodies, ops, drawings, joints, units, …
+- **Typed columns** for names, expressions, flags, numeric fields, and integer refs
+  (`sketch_id`, `material_id`, `unit_id`). `SELECT name FROM parameters` just works.
+- **JSON** only for tagged unions (`FaceId`, constraint entities, `BodySource` extras,
+  face lists, move points).
+- **`blobs`** for fonts, tracing images, STEP bytes, packed mesh triangles, preview
+  PNG/STL. First save of a new path is a full typed write, atomic (`*.tmp` + rename).
+- Undo remains session snapshots (cap 200), not a SQL history. Incremental
+  INSERT/UPDATE/DELETE, nested unit blobs, and `geometry_cache` come later.
 
-### 7.3 Indicative schema (refine as needed)
+### 7.3 Schema
 ```sql
-CREATE TABLE meta            (key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE components      (id INTEGER PRIMARY KEY, name TEXT, parent_id INTEGER, default_units TEXT);
-CREATE TABLE parameters      (id INTEGER PRIMARY KEY, scope_component_id INTEGER, name TEXT,
-                              expression TEXT, value REAL, unit TEXT, description TEXT);
-CREATE TABLE dag_nodes       (id INTEGER PRIMARY KEY, component_id INTEGER, kind TEXT,
-                              payload JSON);          -- feature/param/joint definition
-CREATE TABLE dag_edges       (from_node INTEGER, to_node INTEGER,
-                              PRIMARY KEY (from_node, to_node));
-CREATE TABLE history_commits (id INTEGER PRIMARY KEY, parent_id INTEGER,
-                              node_id INTEGER, created_at TEXT);  -- commit graph for undo/redo
-CREATE TABLE ui_state        (key TEXT PRIMARY KEY, value JSON);
-CREATE TABLE geometry_cache  (node_id INTEGER PRIMARY KEY, fingerprint TEXT NOT NULL,
-                              brep BLOB, mesh BLOB, occt_version TEXT);  -- derived; rebuildable
+CREATE TABLE meta   (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE blobs  (id INTEGER NOT NULL, kind TEXT NOT NULL, bytes BLOB NOT NULL,
+                     PRIMARY KEY (id, kind));
+CREATE TABLE parameters (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, expression TEXT NOT NULL,
+  is_primary INTEGER NOT NULL DEFAULT 1, minimum TEXT, maximum TEXT, step TEXT,
+  source_json TEXT);
+CREATE TABLE sketches (
+  id INTEGER PRIMARY KEY, name TEXT, length_unit TEXT, angle_unit TEXT,
+  face_json TEXT NOT NULL);
+CREATE TABLE lines (
+  id INTEGER PRIMARY KEY, sketch_id INTEGER,  -- may dangle
+  x0 REAL NOT NULL, y0 REAL NOT NULL, x1 REAL NOT NULL, y1 REAL NOT NULL,
+  construction INTEGER NOT NULL DEFAULT 0, shadow INTEGER NOT NULL DEFAULT 0,
+  length_locked INTEGER NOT NULL DEFAULT 0, length_expr TEXT, name TEXT,
+  payload_json TEXT);                         -- bezier, projection, chamfer parent
+CREATE TABLE constraints (
+  id INTEGER PRIMARY KEY, sketch_id INTEGER, kind TEXT NOT NULL,
+  expression TEXT NOT NULL, name TEXT, payload_json TEXT NOT NULL);
+CREATE TABLE bodies (
+  id INTEGER PRIMARY KEY, source_kind TEXT NOT NULL, source_id INTEGER,
+  material_id INTEGER, name TEXT, shadow INTEGER NOT NULL DEFAULT 0,
+  source_json TEXT NOT NULL);
+CREATE TABLE components (
+  id INTEGER PRIMARY KEY, name TEXT, parent_id INTEGER,
+  length_unit TEXT, angle_unit TEXT);
+CREATE TABLE component_members (
+  member_kind TEXT NOT NULL, member_id INTEGER NOT NULL, component_id INTEGER NOT NULL,
+  PRIMARY KEY (member_kind, member_id));
+CREATE TABLE units (
+  id INTEGER PRIMARY KEY, source_json TEXT NOT NULL, link TEXT NOT NULL,
+  source_mtime INTEGER, source_hash INTEGER, document_json TEXT NOT NULL);
+CREATE TABLE unit_instances (
+  id INTEGER PRIMARY KEY, unit_id INTEGER, name TEXT,
+  tx TEXT, ty TEXT, tz TEXT, axis_x REAL, axis_y REAL, axis_z REAL, angle TEXT,
+  overrides_json TEXT);
+CREATE TABLE shape_order (seq INTEGER PRIMARY KEY, kind TEXT NOT NULL);
+CREATE TABLE undo_groups (seq INTEGER PRIMARY KEY, size INTEGER NOT NULL);
+-- plus one table each for circles, planes, extrusions, materials, meshes, images,
+-- lofts, revolutions, primitives, sweeps, boolean/move/mirror/repeat/slice/shell/
+-- edge-treatment ops, in-sketch ops, sketch texts, drawings, joints.
 ```
-The exact `payload`/`kind` encoding for each feature type is **TBD** but must round-trip
-losslessly.
+Same pattern everywhere: new feature = new table or new columns. Preview PNG/STL are
+`blobs` rows (`kind` = `preview_png` / `preview_stl`).
 
 ### 7.4 Imported units (#719)
 

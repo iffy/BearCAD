@@ -298,8 +298,58 @@ pub fn recompute_document_health(doc: &Document) -> DocumentHealth {
     mark_invalid_parameters(doc, &mut health);
     mark_broken_unit_instances(doc, &mut health);
     mark_orphaned_unit_face_sketches(doc, &mut health);
+    mark_orphaned_sketch_geometry(doc, &mut health);
     mark_broken_joints(doc, &mut health);
     health
+}
+
+/// A line/circle/text whose sketch is gone is invalid — the file still loads (no FK refuse);
+/// health is the integrity layer (#1340).
+fn mark_orphaned_sketch_geometry(doc: &Document, health: &mut DocumentHealth) {
+    for (i, line) in doc.lines.iter() {
+        if !doc.sketches.contains(line.sketch) {
+            set_element_invalid(
+                health,
+                doc,
+                SceneElement::Line(i),
+                "The sketch this line belongs to is gone".to_string(),
+                None,
+            );
+        }
+    }
+    for (i, circle) in doc.circles.iter() {
+        if !doc.sketches.contains(circle.sketch) {
+            set_element_invalid(
+                health,
+                doc,
+                SceneElement::Circle(i),
+                "The sketch this circle belongs to is gone".to_string(),
+                None,
+            );
+        }
+    }
+    for (i, text) in doc.sketch_texts.iter() {
+        if !doc.sketches.contains(text.sketch) {
+            set_element_invalid(
+                health,
+                doc,
+                SceneElement::SketchText(i),
+                "The sketch this text belongs to is gone".to_string(),
+                None,
+            );
+        }
+    }
+    for (i, constraint) in doc.constraints.iter() {
+        if !doc.sketches.contains(constraint.sketch) {
+            set_element_invalid(
+                health,
+                doc,
+                SceneElement::Constraint(i),
+                "The sketch this constraint belongs to is gone".to_string(),
+                None,
+            );
+        }
+    }
 }
 
 /// Joints (#891/#893) that can't hold: too few parts, a dead member, a loop of joints,

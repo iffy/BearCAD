@@ -1,9 +1,9 @@
 //! File preview thumbnails for `.bearcad` documents (#1223, #1290).
 //!
 //! On save, render a zoom-to-fit view of the **Home** camera orientation as a PNG, embed it
-//! in the SQLite file, and publish it to the OS so Finder (and free-desktop file managers)
-//! can show the model in the icon/preview slot. A black silhouette outline keeps the model
-//! readable on both light and dark backgrounds.
+//! in the SQLite `blobs` table, and publish it to the OS so Finder (and free-desktop file
+//! managers) can show the model in the icon/preview slot. A black silhouette outline keeps
+//! the model readable on both light and dark backgrounds.
 //!
 //! Also embeds a binary STL mesh snapshot (`preview_stl`) so the macOS QuickLook Preview
 //! Extension can load the geometry into SceneKit and let the user rotate it like an STL.
@@ -17,10 +17,10 @@ use glam::{Mat4, Vec3};
 
 /// Pixel size of the embedded / OS thumbnail (square).
 pub const PREVIEW_SIZE: u32 = 512;
-/// SQLite `meta` key holding base64-encoded PNG bytes.
-pub const PREVIEW_META_KEY: &str = "preview_png";
-/// SQLite `meta` key holding base64-encoded binary STL bytes (#1290 QuickLook).
-pub const PREVIEW_STL_META_KEY: &str = "preview_stl";
+/// `blobs.kind` for the Home-orientation PNG thumbnail.
+pub const PREVIEW_PNG_BLOB_KIND: &str = "preview_png";
+/// `blobs.kind` for the binary STL mesh snapshot (#1290 QuickLook).
+pub const PREVIEW_STL_BLOB_KIND: &str = "preview_stl";
 /// Silhouette outline radius in pixels — enough to read on light and dark backgrounds.
 const OUTLINE_RADIUS: i32 = 3;
 /// Extra margin beyond zoom-to-fit so the black outline is not clipped at the image edge.
@@ -131,27 +131,13 @@ pub fn attach_preview_after_save(_path: &str, _doc: &Document) {}
 /// Read the embedded preview PNG from a `.bearcad` SQLite file (tests / tooling).
 #[cfg(all(not(target_arch = "wasm32"), test))]
 pub fn load_embedded_preview_png(path: &str) -> Option<Vec<u8>> {
-    load_embedded_meta_b64(path, PREVIEW_META_KEY)
+    crate::storage::load_preview_blob(path, PREVIEW_PNG_BLOB_KIND)
 }
 
 /// Read the embedded preview STL from a `.bearcad` SQLite file (tests / tooling / QL).
 #[cfg(all(not(target_arch = "wasm32"), test))]
 pub fn load_embedded_preview_stl(path: &str) -> Option<Vec<u8>> {
-    load_embedded_meta_b64(path, PREVIEW_STL_META_KEY)
-}
-
-#[cfg(all(not(target_arch = "wasm32"), test))]
-fn load_embedded_meta_b64(path: &str, key: &str) -> Option<Vec<u8>> {
-    let conn = rusqlite::Connection::open(path).ok()?;
-    let b64: String = conn
-        .query_row(
-            "SELECT value FROM meta WHERE key = ?1",
-            rusqlite::params![key],
-            |row| row.get(0),
-        )
-        .ok()?;
-    use base64::Engine as _;
-    base64::engine::general_purpose::STANDARD.decode(b64).ok()
+    crate::storage::load_preview_blob(path, PREVIEW_STL_BLOB_KIND)
 }
 
 // ── mesh collection ──────────────────────────────────────────────────────────
@@ -467,50 +453,24 @@ fn draw_line(pixels: &mut [u8], size: i32, x0: f32, y0: f32, x1: f32, y1: f32, c
 // ── embed in SQLite ──────────────────────────────────────────────────────────
 
 #[cfg(not(target_arch = "wasm32"))]
-fn embed_meta_b64(path: &str, key: &str, bytes: &[u8]) -> Result<(), String> {
-    use base64::Engine as _;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
-    let conn = rusqlite::Connection::open(path).map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
-        rusqlite::params![key, b64],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 fn embed_preview_png(path: &str, png: &[u8]) -> Result<(), String> {
-    embed_meta_b64(path, PREVIEW_META_KEY, png)
+    crate::storage::upsert_preview_blob(path, PREVIEW_PNG_BLOB_KIND, png)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn embed_preview_stl(path: &str, stl: &[u8]) -> Result<(), String> {
-    embed_meta_b64(path, PREVIEW_STL_META_KEY, stl)
+    crate::storage::upsert_preview_blob(path, PREVIEW_STL_BLOB_KIND, stl)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn clear_embedded_preview(path: &str) {
-    if let Ok(conn) = rusqlite::Connection::open(path) {
-        let _ = conn.execute(
-            "DELETE FROM meta WHERE key = ?1",
-            rusqlite::params![PREVIEW_META_KEY],
-        );
-        let _ = conn.execute(
-            "DELETE FROM meta WHERE key = ?1",
-            rusqlite::params![PREVIEW_STL_META_KEY],
-        );
-    }
+    let _ = crate::storage::delete_preview_blob(path, PREVIEW_PNG_BLOB_KIND);
+    let _ = crate::storage::delete_preview_blob(path, PREVIEW_STL_BLOB_KIND);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn clear_embedded_preview_stl(path: &str) {
-    if let Ok(conn) = rusqlite::Connection::open(path) {
-        let _ = conn.execute(
-            "DELETE FROM meta WHERE key = ?1",
-            rusqlite::params![PREVIEW_STL_META_KEY],
-        );
-    }
+    let _ = crate::storage::delete_preview_blob(path, PREVIEW_STL_BLOB_KIND);
 }
 
 // ── OS-side thumbnail / custom icon ──────────────────────────────────────────
@@ -1151,7 +1111,7 @@ mod tests {
         crate::storage::save(&path_s, &doc).expect("save");
         attach_preview_after_save(&path_s, &doc);
 
-        let png = load_embedded_preview_png(&path_s).expect("save should embed preview_png meta");
+        let png = load_embedded_preview_png(&path_s).expect("save should embed preview_png blob");
         assert!(png.starts_with(&[0x89, b'P', b'N', b'G']));
         assert!(png.len() > 200);
 
@@ -1174,7 +1134,7 @@ mod tests {
         crate::storage::save(&path_s, &doc).expect("save");
         attach_preview_after_save(&path_s, &doc);
 
-        let stl = load_embedded_preview_stl(&path_s).expect("save should embed preview_stl meta");
+        let stl = load_embedded_preview_stl(&path_s).expect("save should embed preview_stl blob");
         // Binary STL: 80-byte header + u32 count + 50 bytes/tri. A cube has 12 tris.
         assert!(stl.len() >= 84, "binary STL too short: {}", stl.len());
         let count = u32::from_le_bytes(stl[80..84].try_into().unwrap());
