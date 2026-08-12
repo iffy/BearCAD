@@ -2591,12 +2591,132 @@ mod tests {
 
         std::fs::remove_file(&path).unwrap();
     }
+
+    fn add_cuboid(doc: &mut Document) {
+        use crate::model::{Body, BodySource, Primitive, PrimitiveKind};
+        let key = doc.primitives.insert(Primitive {
+            kind: PrimitiveKind::Cuboid,
+            origin: [0.0, 0.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            u_axis: [1.0, 0.0, 0.0],
+            width: "10".into(),
+            depth: "10".into(),
+            height: "10".into(),
+            radius: String::new(),
+            name: None,
+        });
+        doc.bodies.insert(Body {
+            source: BodySource::Primitive(key),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        doc.shape_order.push(ShapeKind::Primitive);
+    }
+
+    fn committed_count(path: &str, sql: &str) -> i64 {
+        let conn = Connection::open(path).unwrap();
+        conn.query_row(sql, [], |row| row.get(0)).unwrap()
+    }
+
+    /// #1341: incremental writes sit in an open transaction. Another connection
+    /// still sees the last COMMIT until Save.
+    #[test]
+    fn incremental_body_insert_is_invisible_until_commit() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "bearcad_incr_body_{}.bearcad",
+            std::process::id()
+        ));
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        let sketch = plane_sketch(&mut doc);
+        doc.lines
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.shape_order.push(ShapeKind::Line);
+        add_cuboid(&mut doc);
+        save(&path, &doc).unwrap();
+
+        let bodies_at_save = committed_count(&path, "SELECT COUNT(*) FROM bodies");
+        let lines_at_save = committed_count(&path, "SELECT COUNT(*) FROM lines");
+        assert_eq!(bodies_at_save, 1);
+        assert_eq!(lines_at_save, 1);
+
+        let mut session = DocumentSession::attach(&path, &doc).unwrap();
+        add_cuboid(&mut doc);
+        let stats = session.flush(&doc).unwrap().clone();
+
+        assert_eq!(stats.inserts("bodies"), 1, "one new body row");
+        assert_eq!(stats.inserts("primitives"), 1);
+        assert!(
+            !stats.touched("lines"),
+            "existing lines must not be deleted/reinserted: {stats:?}"
+        );
+        assert_eq!(
+            session.query_i64("SELECT COUNT(*) FROM bodies").unwrap(),
+            bodies_at_save + 1,
+            "the live session sees the uncommitted insert"
+        );
+        assert_eq!(
+            committed_count(&path, "SELECT COUNT(*) FROM bodies"),
+            bodies_at_save,
+            "another connection must still see the last save"
+        );
+        assert_eq!(
+            committed_count(&path, "SELECT COUNT(*) FROM lines"),
+            lines_at_save
+        );
+
+        session.commit().unwrap();
+        assert_eq!(
+            committed_count(&path, "SELECT COUNT(*) FROM bodies"),
+            bodies_at_save + 1
+        );
+        assert_eq!(
+            committed_count(&path, "SELECT COUNT(*) FROM lines"),
+            lines_at_save,
+            "unrelated line rows survive commit"
+        );
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// #1341: ROLLBACK drops unsaved incremental writes.
+    #[test]
+    fn incremental_discard_rolls_back() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "bearcad_incr_rollback_{}.bearcad",
+            std::process::id()
+        ));
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        add_cuboid(&mut doc);
+        save(&path, &doc).unwrap();
+        let bodies_at_save = committed_count(&path, "SELECT COUNT(*) FROM bodies");
+
+        let mut session = DocumentSession::attach(&path, &doc).unwrap();
+        add_cuboid(&mut doc);
+        session.flush(&doc).unwrap();
+        session.rollback().unwrap();
+
+        assert_eq!(
+            committed_count(&path, "SELECT COUNT(*) FROM bodies"),
+            bodies_at_save
+        );
+
+        std::fs::remove_file(&path).unwrap();
+    }
 }
 
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use sqlite_format::{delete_preview_blob, open, save, upsert_preview_blob};
+pub use sqlite_format::{delete_preview_blob, open, save, upsert_preview_blob, DocumentSession};
 #[cfg(all(not(target_arch = "wasm32"), test))]
 pub use sqlite_format::load_preview_blob;
 

@@ -27,8 +27,9 @@ zoom, same gestures as STL). Save the file once so the mesh snapshot is embedded
 
 The window title (and each **tab**) shows the current file name and a leading **`*`**
 whenever there are unsaved changes; the `*` clears once you save (or if you undo all the
-way back to the last saved state). Quitting with unsaved changes asks whether to **Save**,
-**Don't Save**, or **Cancel** so a stray ⌘Q doesn't lose work.
+way back to the last saved state). Unsaved edits sit in an open SQLite transaction —
+another app opening the file still sees the last save. Quitting with unsaved changes
+asks whether to **Save**, **Don't Save**, or **Cancel** so a stray ⌘Q doesn't lose work.
 
 ## Tabs
 

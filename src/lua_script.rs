@@ -2109,6 +2109,67 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1341: last incremental flush, so a script can assert only the changed
+    // tables were written. `{ bodies = { inserts = 1, updates = 0, deletes = 0 }, ... }`.
+    api.set(
+        "session_writes",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            let out = lua.create_table()?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(session) = &state.document_session {
+                let session = session.borrow();
+                for (name, t) in &session.last_write().tables {
+                    let row = lua.create_table()?;
+                    row.set("inserts", t.inserts)?;
+                    row.set("updates", t.updates)?;
+                    row.set("deletes", t.deletes)?;
+                    out.set(name.as_str(), row)?;
+                }
+            }
+            Ok(out)
+        })?,
+    )?;
+
+    // #1341: read one scalar from the *committed* file via a new connection
+    // (the last Save, not the open transaction).
+    api.set(
+        "sqlite_scalar",
+        lua.create_function(|lua, sql: String| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let path = state
+                    .path
+                    .as_deref()
+                    .ok_or_else(|| mlua::Error::external("sqlite_scalar: document has no path"))?;
+                let conn = rusqlite::Connection::open(path)
+                    .map_err(|e| mlua::Error::external(e.to_string()))?;
+                let val: rusqlite::types::Value = conn
+                    .query_row(&sql, [], |row| row.get(0))
+                    .map_err(|e| mlua::Error::external(e.to_string()))?;
+                return match val {
+                    rusqlite::types::Value::Null => Ok(Value::Nil),
+                    rusqlite::types::Value::Integer(i) => Ok(Value::Integer(i)),
+                    rusqlite::types::Value::Real(f) => Ok(Value::Number(f)),
+                    rusqlite::types::Value::Text(s) => Ok(Value::String(lua.create_string(s)?)),
+                    rusqlite::types::Value::Blob(_) => Err(mlua::Error::external(
+                        "sqlite_scalar: blob columns are not returned",
+                    )),
+                };
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = (lua, sql, state);
+                Err(mlua::Error::external(
+                    "sqlite_scalar is not available in the browser",
+                ))
+            }
+        })?,
+    )?;
+
     api.set(
         "export_stl",
         lua.create_function(|lua, (path, body): (String, Option<String>)| {
@@ -7487,6 +7548,42 @@ mod tests {
         ));
         let _ = std::fs::remove_file(&path);
         assert_eq!(state.doc.lines.len(), 4);
+    }
+
+    /// #1341: adding a body after save writes one body row; a second connection
+    /// still sees the last commit until Save; existing lines are not rewritten.
+    #[test]
+    fn lua_incremental_body_write() {
+        let path = std::env::temp_dir().join(format!(
+            "bearcad_lua_incr_{}.bearcad",
+            std::process::id()
+        ));
+        let path_s = path.to_string_lossy().replace('\\', "\\\\");
+        let _ = std::fs::remove_file(&path);
+        let state = run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.rect{{ width = 20, height = 10 }}
+            bearcad.cuboid{{ width = 8, depth = 8, height = 8 }}
+            bearcad.save("{path_s}")
+            local bodies0 = bearcad.sqlite_scalar("SELECT COUNT(*) FROM bodies")
+            local lines0 = bearcad.sqlite_scalar("SELECT COUNT(*) FROM lines")
+            assert(bodies0 == 1, "one body after first save")
+            bearcad.cuboid{{ width = 4, depth = 4, height = 4, at = {{20, 0, 0}} }}
+            local w = bearcad.session_writes()
+            assert(w.bodies and w.bodies.inserts == 1, "bodies table grew by one insert")
+            assert(not w.lines, "existing lines were not deleted/reinserted")
+            assert(
+                bearcad.sqlite_scalar("SELECT COUNT(*) FROM bodies") == bodies0,
+                "another connection still sees the last save"
+            )
+            bearcad.save()
+            assert(bearcad.sqlite_scalar("SELECT COUNT(*) FROM bodies") == bodies0 + 1)
+            assert(bearcad.sqlite_scalar("SELECT COUNT(*) FROM lines") == lines0)
+        "#
+        ));
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(state.doc.bodies.len(), 2);
     }
 
     /// #46: GUI/UI manipulation lives under `bearcad.ui.*`; modeling stays top-level.
