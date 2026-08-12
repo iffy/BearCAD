@@ -1,0 +1,64 @@
+name: Release published
+
+# Draft → published release or pre-release (#1328): fold pending changer snippets
+# into CHANGELOG.md so it matches the release, keep unreleased snippets for the
+# next draft, and tag the released commit with the changelog version (vX.Y.Z).
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  bump-changelog:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Install Nim
+        uses: iffy/install-nim@v5
+        with:
+          version: binary:stable
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install changer
+        run: nimble install changer@0.9.1 -y
+
+      - name: Update CHANGELOG and tag version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.release.tag_name }}"
+          if [[ "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+            version="${BASH_REMATCH[1]}"
+          else
+            echo "Release tag ${tag} is not vX.Y.Z-build...; skipping"
+            exit 0
+          fi
+          git fetch origin "refs/tags/${tag}:refs/tags/${tag}" 2>/dev/null || true
+          release_sha="$(git rev-list -n 1 "refs/tags/${tag}" 2>/dev/null || true)"
+          if [[ -z "$release_sha" ]]; then
+            release_sha="$(git rev-parse "${{ github.sha }}")"
+          fi
+          bash scripts/release-changelog.sh apply-published "$version" "$release_sha"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet -- CHANGELOG.md changes/; then
+            git add CHANGELOG.md changes/
+            git commit -m "changelog: v${version}"
+            git push origin "HEAD:${{ github.event.repository.default_branch }}"
+          fi
+          if git rev-parse "refs/tags/v${version}" >/dev/null 2>&1; then
+            echo "Tag v${version} already exists"
+          else
+            git tag "v${version}" "$release_sha"
+            git push origin "v${version}"
+          fi

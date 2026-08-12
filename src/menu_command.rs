@@ -57,6 +57,8 @@ pub enum MenuCommand {
     ZoomToFit,
     /// Open the Keyboard Shortcuts window (View/Help menus, #434).
     ShowShortcuts,
+    /// Open the Changelog window (Help menu, #1328).
+    ShowChangelog,
     /// Open the Settings window (#720): app-level preferences (Cmd/Ctrl+comma).
     ShowSettings,
     /// Toggle help mode (#672): every pane control grows a note saying what it wants.
@@ -106,6 +108,7 @@ impl MenuCommand {
             MenuCommand::ZoomToFit => Some(Action::ZoomToFit),
             // Toggles UI-only window state; handled in the app frame loop.
             MenuCommand::ShowShortcuts => None,
+            MenuCommand::ShowChangelog => Some(Action::SetChangelogWindow { open: Some(true) }),
             MenuCommand::ShowSettings => None,
             MenuCommand::ToggleHelpMode => Some(Action::SetHelpMode(None)),
             MenuCommand::SetPaneVisible { pane, visible } => {

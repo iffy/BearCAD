@@ -4046,6 +4046,31 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1328: Help → Changelog. `text` returns the markdown baked into this build.
+    api.set(
+        "changelog",
+        lua.create_function(|lua, verb: Option<String>| {
+            match verb.as_deref() {
+                Some("text") => Ok(mlua::Value::String(lua.create_string(crate::changelog::markdown())?)),
+                other => {
+                    let open = match other {
+                        Some("show") | Some("open") => Some(true),
+                        Some("hide") | Some("close") => Some(false),
+                        None | Some("toggle") => None,
+                        Some(got) => {
+                            return Err(mlua::Error::external(format!(
+                                "changelog expects \"show\"/\"hide\"/\"toggle\"/\"text\", got {got:?}"
+                            )))
+                        }
+                    };
+                    let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+                    unsafe { tick.exec(Instruction::SetChangelogWindow { open })? };
+                    Ok(mlua::Value::Nil)
+                }
+            }
+        })?,
+    )?;
+
     // Tutorials pane (#1241): open/close/toggle, list registered walkthroughs with
     // completion flags, or start one by name (see `tutorial` below).
     api.set(
@@ -6648,6 +6673,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         bearcad.ui = {}
         local ui_funcs = {
             "tool", "tool_mode", "help", "toolbar_shortcuts", "focus_name", "focus_dim", "pane", "palette", "settings",
+            "changelog",
             "mcmaster",
             "new_tab", "close_tab", "tab", "tab_count", "window_count", "tabs", "reorder_tab", "detach_tab",
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading", "ground",
@@ -7557,7 +7583,7 @@ mod tests {
             assert(bearcad.ui ~= nil, "bearcad.ui table missing")
             for _, name in ipairs({ "move", "click", "tool", "view", "orbit", "pan",
                                     "key", "type", "pane", "palette", "wait", "help",
-                                    "toolbar_shortcuts",
+                                    "toolbar_shortcuts", "changelog",
                                     "new_tab", "close_tab", "tab", "tabs", "tab_count",
                                     "window_count", "reorder_tab", "detach_tab" }) do
                 assert(type(bearcad.ui[name]) == "function", "bearcad.ui." .. name .. " missing")

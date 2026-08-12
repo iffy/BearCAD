@@ -27,6 +27,7 @@ mod camera;
 mod cli_install;
 mod file_association;
 mod command_log;
+mod changelog;
 mod command_palette;
 mod copy_paste;
 mod export_lua;
@@ -17545,6 +17546,26 @@ impl eframe::App for App {
             self.shortcuts_open = open;
         }
 
+        // Changelog window (#1328): the changelog baked into this build.
+        if self.state.changelog_open {
+            let mut open = true;
+            egui::Window::new("Changelog")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(true)
+                .default_width(520.0)
+                .default_height(560.0)
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        show_changelog_markdown(ui, crate::changelog::markdown());
+                    });
+                });
+            if !open {
+                self.state.apply(Action::SetChangelogWindow { open: Some(false) });
+            }
+        }
+
 
         // DEV → Report issue window (#627): its own OS window (reachable only through the
         // debug-build DEV menu) with a focused description textarea, attachment checkboxes
@@ -18408,6 +18429,27 @@ fn remember_pane_rect(ctx: &egui::Context, id: &'static str, rect: Option<egui::
         }
         None => data.remove::<egui::Rect>(key),
     });
+}
+
+/// Render the baked changelog markdown into an egui UI (#1328). Headings and list
+/// items only — changer output is a version heading plus `-` bullets.
+fn show_changelog_markdown(ui: &mut egui::Ui, markdown: &str) {
+    for line in markdown.lines() {
+        if let Some(heading) = line.strip_prefix("# ") {
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(heading).strong().size(16.0));
+            ui.add_space(4.0);
+        } else if let Some(item) = line.strip_prefix("- ") {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("•");
+                ui.label(item);
+            });
+        } else if line.trim().is_empty() {
+            ui.add_space(6.0);
+        } else {
+            ui.label(line);
+        }
+    }
 }
 
 /// The build's full identity (About, web and native alike): the release tag when this

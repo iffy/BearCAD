@@ -58,6 +58,147 @@ mod tests {
         );
     }
 
+    /// #1328: release identity and notes come from `changer bump`, not Cargo.toml +
+    /// GitHub-generated notes. The existing YYMMDD-### build number is still appended.
+    #[test]
+    fn ci_uses_changer_bump_for_release_version_and_notes() {
+        let workflow = include_str!("../.github/workflows/ci.yml");
+        assert!(
+            workflow.contains("release-changelog.sh"),
+            "CI should compute the release version and notes via scripts/release-changelog.sh"
+        );
+        assert!(
+            !workflow.contains("generate_release_notes: true"),
+            "CI should not use GitHub-generated release notes"
+        );
+        assert!(
+            workflow.contains("body_path:"),
+            "CI should publish changer bump output as the release body"
+        );
+    }
+
+    /// #1328: the full changelog.md from changer bump is baked into the release binary.
+    #[test]
+    fn ci_embeds_changer_changelog_in_release_binaries() {
+        let workflow = include_str!("../.github/workflows/ci.yml");
+        assert!(
+            workflow.contains("BEARCAD_CHANGELOG_PATH"),
+            "release builds should point cargo at the changer-produced changelog"
+        );
+        let build = include_str!("../build.rs");
+        assert!(
+            build.contains("BEARCAD_CHANGELOG_PATH"),
+            "build.rs should bake BEARCAD_CHANGELOG_PATH (or CHANGELOG.md) into the binary"
+        );
+    }
+
+    /// `release-changelog.sh full` is the file `changer bump` would write (new section + old).
+    #[test]
+    #[cfg(unix)]
+    fn release_changelog_full_matches_changer_concatenation() {
+        let script = concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/release-changelog.sh");
+        if std::process::Command::new("changer")
+            .arg("--help")
+            .output()
+            .map(|o| !o.status.success())
+            .unwrap_or(true)
+        {
+            return;
+        }
+        let out = std::process::Command::new("bash")
+            .arg(script)
+            .arg("full")
+            .output()
+            .expect("run release-changelog.sh full");
+        assert!(
+            out.status.success(),
+            "script failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let got = String::from_utf8(out.stdout).unwrap();
+        assert!(
+            got.contains("# v") && got.contains("# v0.1.0"),
+            "full changelog should include the new section and the existing one: {got:?}"
+        );
+        // The two version headings must not be glued onto one line.
+        assert!(
+            !got.contains("# v0.1.0") || got.contains("\n# v0.1.0"),
+            "changer sections must be separated by a newline: {got:?}"
+        );
+    }
+
+    /// `changer bump` deletes consumed snippets, so the next bump only sees new entries.
+    #[test]
+    #[cfg(unix)]
+    fn changer_bump_excludes_already_released_entries() {
+        if std::process::Command::new("changer")
+            .arg("--help")
+            .output()
+            .map(|o| !o.status.success())
+            .unwrap_or(true)
+        {
+            return;
+        }
+        let dir = std::env::temp_dir().join("bearcad-changer-1328");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("changes")).unwrap();
+        std::fs::write(dir.join("CHANGELOG.md"), "# v0.1.0 - 2026-01-01\n\n- Initial\n").unwrap();
+        std::fs::write(
+            dir.join("changes/config.toml"),
+            "update_nimble = false\nupdate_package_json = false\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("changes/fix-released.md"), "already released\n").unwrap();
+        let bump = std::process::Command::new("changer")
+            .args(["bump", "0.1.1"])
+            .current_dir(&dir)
+            .output()
+            .expect("changer bump");
+        assert!(
+            bump.status.success(),
+            "changer bump failed: {}",
+            String::from_utf8_lossy(&bump.stderr)
+        );
+        assert!(
+            !dir.join("changes/fix-released.md").exists(),
+            "changer bump should consume released snippets"
+        );
+        std::fs::write(dir.join("changes/fix-later.md"), "not yet released\n").unwrap();
+        let notes = std::process::Command::new("changer")
+            .args(["bump", "-n"])
+            .current_dir(&dir)
+            .output()
+            .expect("changer bump -n");
+        let stdout = String::from_utf8_lossy(&notes.stdout);
+        assert!(
+            !stdout.contains("already released"),
+            "next bump must not repeat released notes: {stdout}"
+        );
+        assert!(
+            stdout.contains("not yet released"),
+            "next bump should include leftover snippets: {stdout}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #1328: publishing a draft runs `changer bump`, commits CHANGELOG, and tags vX.Y.Z.
+    #[test]
+    fn publish_workflow_bumps_changelog_and_tags_version() {
+        let workflow = include_str!("../.github/workflows/release-published.yml");
+        assert!(
+            workflow.contains("release:") && workflow.contains("published"),
+            "workflow should run when a draft is published as a release or pre-release"
+        );
+        assert!(
+            workflow.contains("changer bump") || workflow.contains("release-changelog.sh"),
+            "publishing should update CHANGELOG via changer bump"
+        );
+        assert!(
+            workflow.contains("git tag") || workflow.contains("tag v"),
+            "publishing should tag the released commit with the changelog version"
+        );
+    }
+
     /// #1129: release build numbers are YYMMDD-### (per UTC day), not GITHUB_RUN_NUMBER.
     /// Runs only on Unix: Windows CI has no reliable bash for this script, and release-id
     /// only invokes it on ubuntu-latest.

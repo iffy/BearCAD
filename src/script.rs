@@ -861,6 +861,8 @@ pub enum Instruction {
     AddUnitInstance { unit: usize, name: Option<String> },
     /// Show/hide/toggle the Settings window (#737).
     SetSettingsWindow { open: Option<bool> },
+    /// Show/hide/toggle the Changelog window (#1328).
+    SetChangelogWindow { open: Option<bool> },
     /// Show/hide/toggle the Tutorials pane (#1241).
     SetTutorialPane { open: Option<bool> },
     /// Open/close the McMaster-Carr catalog window (#1022).
@@ -2018,6 +2020,14 @@ impl Instruction {
                 };
                 format!("bearcad.ui.settings({verb:?})")
             }
+            Instruction::SetChangelogWindow { open } => {
+                let verb = match open {
+                    Some(true) => "show",
+                    Some(false) => "hide",
+                    None => "toggle",
+                };
+                format!("bearcad.ui.changelog({verb:?})")
+            }
             Instruction::SetTutorialPane { open } => {
                 let verb = match open {
                     Some(true) => "show",
@@ -3161,6 +3171,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             })
         }
         Action::SetSettingsWindow { open } => Some(Instruction::SetSettingsWindow { open: *open }),
+        Action::SetChangelogWindow { open } => Some(Instruction::SetChangelogWindow { open: *open }),
         Action::SetTutorialPane { open } => Some(Instruction::SetTutorialPane { open: *open }),
         Action::SetMcMasterWindow { open, part } => Some(Instruction::SetMcMasterWindow {
             open: *open,
@@ -7380,6 +7391,10 @@ impl ScriptRunner {
             }
             Instruction::SetSettingsWindow { open } => {
                 state.apply(Action::SetSettingsWindow { open });
+                StepResult::Continue
+            }
+            Instruction::SetChangelogWindow { open } => {
+                state.apply(Action::SetChangelogWindow { open });
                 StepResult::Continue
             }
             Instruction::SetTutorialPane { open } => {

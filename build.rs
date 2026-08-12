@@ -16,6 +16,26 @@ fn main() {
     // leaving the update check comparing against the bare crate version and offering
     // the very build being run.
     println!("cargo:rerun-if-env-changed=BEARCAD_RELEASE_TAG");
+    // Help → Changelog (#1328): bake the full changelog.md `changer bump` produced
+    // (CI sets BEARCAD_CHANGELOG_PATH) or the repo CHANGELOG.md for local builds.
+    println!("cargo:rerun-if-env-changed=BEARCAD_CHANGELOG_PATH");
+    {
+        let src = std::env::var("BEARCAD_CHANGELOG_PATH")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
+                    .join("CHANGELOG.md")
+            });
+        println!("cargo:rerun-if-changed={}", src.display());
+        let dest = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("changelog.md");
+        let contents = std::fs::read_to_string(&src).unwrap_or_else(|e| {
+            panic!("read changelog {}: {e}", src.display());
+        });
+        std::fs::write(&dest, contents).expect("write baked changelog");
+    }
     let describe = std::env::var("BEARCAD_RELEASE_TAG")
         .ok()
         .map(|s| s.trim().to_string())

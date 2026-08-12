@@ -77,6 +77,8 @@ pub enum PaletteCommandId {
     ZoomToFit,
     ProjectSelection,
     ShowShortcuts,
+    /// Open the Changelog window (#1328).
+    ShowChangelog,
     /// Open the Settings window (#720). Native only: the settings it edits (the library
     /// directory) are filesystem paths the web build has no use for.
     ShowSettings,
@@ -225,6 +227,9 @@ impl PaletteCommand {
             PaletteCommandId::ZoomToFit => PaletteOutcome::Action(Action::ZoomToFit),
             PaletteCommandId::ProjectSelection => PaletteOutcome::Action(Action::ProjectSelection),
             PaletteCommandId::ShowShortcuts => PaletteOutcome::ShowShortcuts,
+            PaletteCommandId::ShowChangelog => {
+                PaletteOutcome::Action(Action::SetChangelogWindow { open: Some(true) })
+            }
             PaletteCommandId::ShowSettings => PaletteOutcome::ShowSettings,
             PaletteCommandId::ImportUnit => PaletteOutcome::ImportUnit,
             // The catalog opens with the search already done for whatever was typed (#1022);
@@ -667,6 +672,11 @@ const BASE_COMMANDS: &[PaletteCommand] = &[
         PaletteCommandId::ShowShortcuts,
         "Keyboard Shortcuts",
         "keyboard shortcuts keys hotkeys bindings help",
+    ),
+    PaletteCommand::new(
+        PaletteCommandId::ShowChangelog,
+        "Changelog",
+        "changelog changes release notes history version whats new",
     ),
     #[cfg(not(target_arch = "wasm32"))]
     PaletteCommand::new(

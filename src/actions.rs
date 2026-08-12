@@ -2175,6 +2175,8 @@ pub enum Action {
     SetHelpMode(Option<bool>),
     /// Show/hide/toggle the Settings window (#720/#737).
     SetSettingsWindow { open: Option<bool> },
+    /// Show/hide/toggle the Changelog window (#1328).
+    SetChangelogWindow { open: Option<bool> },
     /// Show/hide/toggle the Tutorials pane (#1241).
     SetTutorialPane { open: Option<bool> },
     /// Open/close the McMaster-Carr catalog window (#1022), optionally at a part number.
@@ -3112,6 +3114,7 @@ impl Action {
                     | Action::SetPaneVisible { .. }
                     | Action::SetMcMasterWindow { .. }
                     | Action::SetSettingsWindow { .. }
+                    | Action::SetChangelogWindow { .. }
                     | Action::SetTutorialPane { .. }
                     | Action::SetElementsViewMode { .. }
                     | Action::SetHomeView
@@ -3698,6 +3701,8 @@ pub struct AppState {
     /// The Settings window (#720) is open. Lives here (not on `App`) so scripts can
     /// drive it for docs captures (#737): `bearcad.ui.settings(...)`.
     pub settings_open: bool,
+    /// The Changelog window (#1328) is open. Same reason as settings: scripts drive it.
+    pub changelog_open: bool,
     /// Registry names of finished tutorials (#1241). Mirrored from
     /// [`crate::settings::AppSettings`]; the UI shows a Confirm-SVG check for each (#1260).
     pub completed_tutorials: Vec<String>,
@@ -3953,6 +3958,7 @@ impl Default for AppState {
             move_translate_mode: crate::model::MoveTranslateMode::default(),
             help_mode: false,
             settings_open: false,
+            changelog_open: false,
             completed_tutorials: Vec::new(),
             completed_tutorials_dirty: false,
             mcmaster_open: false,
@@ -10337,6 +10343,15 @@ impl AppState {
                     "Settings opened".to_string()
                 } else {
                     "Settings closed".to_string()
+                };
+                ActionResult::Ok
+            }
+            Action::SetChangelogWindow { open } => {
+                self.changelog_open = open.unwrap_or(!self.changelog_open);
+                self.status = if self.changelog_open {
+                    "Changelog opened".to_string()
+                } else {
+                    "Changelog closed".to_string()
                 };
                 ActionResult::Ok
             }

@@ -53,6 +53,8 @@ pub struct MenuIds {
     pub zoom_to_fit: MenuId,
     pub shortcuts_view: MenuId,
     pub shortcuts_help: MenuId,
+    /// Help ▸ Changelog (#1328).
+    pub changelog: MenuId,
     /// Settings… (#720): the app menu on macOS, the File menu elsewhere.
     pub settings: MenuId,
     /// Help ▸ Help Mode (#672), a checked toggle with the Cmd/Ctrl+/ accelerator.
@@ -172,6 +174,9 @@ pub fn command_for_id(
     }
     if ids.shortcuts_view == id || ids.shortcuts_help == id {
         return Some(MenuCommand::ShowShortcuts);
+    }
+    if ids.changelog == id {
+        return Some(MenuCommand::ShowChangelog);
     }
     if ids.settings == id {
         return Some(MenuCommand::ShowSettings);
@@ -354,6 +359,7 @@ impl NativeMenu {
             MenuItem::with_id("shortcuts_view", "Keyboard Shortcuts", true, None);
         let shortcuts_help =
             MenuItem::with_id("shortcuts_help", "Keyboard Shortcuts", true, None);
+        let changelog = MenuItem::with_id("changelog", "Changelog", true, None);
         // Help mode (#672): the pane-note overlay, toggled from the Help menu or
         // Cmd/Ctrl+/ (a slash — the question mark without reaching for Shift).
         let help_mode = CheckMenuItem::with_id(
@@ -440,6 +446,7 @@ impl NativeMenu {
         view_menu.append(&panes_menu)?;
         help_menu.append(&help_mode)?;
         help_menu.append(&shortcuts_help)?;
+        help_menu.append(&changelog)?;
         help_menu.append(&install_cli)?;
         help_menu.append(&PredefinedMenuItem::separator())?;
         help_menu.append(&licenses)?;
@@ -496,6 +503,7 @@ impl NativeMenu {
             zoom_to_fit: zoom_to_fit.id().clone(),
             shortcuts_view: shortcuts_view.id().clone(),
             shortcuts_help: shortcuts_help.id().clone(),
+            changelog: changelog.id().clone(),
             settings: settings_item.id().clone(),
             help_mode: help_mode.id().clone(),
             report_issue: report_issue.id().clone(),
@@ -620,6 +628,7 @@ mod tests {
             zoom_to_fit: MenuId::new("zoom_to_fit"),
             shortcuts_view: MenuId::new("shortcuts_view"),
             shortcuts_help: MenuId::new("shortcuts_help"),
+            changelog: MenuId::new("changelog"),
             settings: MenuId::new("settings"),
             help_mode: MenuId::new("help_mode"),
             report_issue: MenuId::new("report_issue"),
@@ -697,6 +706,20 @@ mod tests {
             Some(MenuCommand::ShowSettings)
         );
         assert_eq!(MenuCommand::ShowSettings.to_action(), None);
+    }
+
+    #[test]
+    fn maps_changelog_menu_item() {
+        // #1328: Help ▸ Changelog opens the changelog window for this build.
+        let ids = ids_with_pane("view_cube").0;
+        assert_eq!(
+            command_for_id(&ids.changelog, &ids, |_| true),
+            Some(MenuCommand::ShowChangelog)
+        );
+        assert_eq!(
+            MenuCommand::ShowChangelog.to_action(),
+            Some(Action::SetChangelogWindow { open: Some(true) })
+        );
     }
 
     #[test]

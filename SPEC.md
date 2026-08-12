@@ -5353,6 +5353,19 @@ labels use) and Constraints from `GeometricConstraintType::ALL` — with tests
 `shortcut_list_covers_every_constraint_mnemonic`) enforcing the coverage; everything
 else is listed explicitly in that function.
 
+### 11.y1 Changelog window (#1328)
+
+**Help → Changelog** (and the palette entry "Changelog") opens a window with the changelog
+baked into this build — the full `changelog.md` `changer bump` produced when the binary
+was built. Scriptable as `bearcad.ui.changelog("show"|"hide"|"toggle")`;
+`bearcad.ui.changelog("text")` returns the markdown.
+
+GitHub draft releases take their version from `changer next-version` plus the existing
+`YYMMDD-###` build number (`vX.Y.Z-build.YYMMDD-###`), and their notes from
+`changer bump -n`. Publishing a draft runs `changer bump` so the repo CHANGELOG matches
+that release, leaves later snippets for the next draft, and tags the released commit
+`vX.Y.Z`.
+
 ### 11.z Settings window & app settings store (#720)
 
 **Cmd/Ctrl+comma** toggles the **Settings** window; it is also reachable from the

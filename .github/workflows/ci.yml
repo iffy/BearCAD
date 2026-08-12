@@ -209,13 +209,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Install Nim
+        uses: iffy/install-nim@v5
+        with:
+          version: binary:stable
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install changer
+        run: nimble install changer@0.9.1 -y
+
       - name: Compute release identity
         id: id
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          version="$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)"
+          version="$(bash scripts/release-changelog.sh next-version | tr -d '[:space:]')"
+          mkdir -p dist-release
+          bash scripts/release-changelog.sh notes > dist-release/notes.md
+          bash scripts/release-changelog.sh full dist-release/changelog.md
           build_number="$(bash scripts/next-build-number.sh --from-github)"
           tag="v${version}-build.${build_number}"
           {
@@ -225,6 +238,12 @@ jobs:
             echo "release_name=v${version} build ${build_number}"
           } >> "$GITHUB_OUTPUT"
           echo "Release identity: ${tag}"
+
+      - name: Upload changelog for release builds
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-meta
+          path: dist-release/
 
   build-release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
@@ -318,9 +337,18 @@ jobs:
       # job tags v{version}-build.YYMMDD-### *after* this build, and the shallow checkout
       # has no tags for `git describe` — without this the shipped binary only knows its
       # crate version and the update badge offers the very build being run.
+      # Changelog (#1328): the full changer-bump preview produced by release-id.
+      - name: Download changelog
+        uses: actions/download-artifact@v7
+        with:
+          name: release-meta
+          path: release-meta
+
       - name: Bake release identity
         shell: bash
-        run: echo "BEARCAD_RELEASE_TAG=${{ needs.release-id.outputs.tag }}" >> "$GITHUB_ENV"
+        run: |
+          echo "BEARCAD_RELEASE_TAG=${{ needs.release-id.outputs.tag }}" >> "$GITHUB_ENV"
+          echo "BEARCAD_CHANGELOG_PATH=${GITHUB_WORKSPACE}/release-meta/changelog.md" >> "$GITHUB_ENV"
 
       # Every platform builds the default feature set (kernel included).
       - name: cargo build --release
@@ -362,13 +390,17 @@ jobs:
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v3
         with:
-          # Build number is YYMMDD-### (per UTC day); see scripts/next-build-number.sh (#1129).
+          # Version is changer bump's next version; build number is YYMMDD-### (#1328, #1129).
           tag_name: ${{ needs.release-id.outputs.tag }}
           name: ${{ needs.release-id.outputs.release_name }}
           draft: true
           prerelease: false
-          generate_release_notes: true
-          files: artifacts/*
+          generate_release_notes: false
+          body_path: artifacts/notes.md
+          files: |
+            artifacts/bearcad-linux-x86_64.tar.gz
+            artifacts/bearcad.dmg
+            artifacts/bearcad.exe
 
       - name: Prune old draft releases
         env:

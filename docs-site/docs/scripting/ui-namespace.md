@@ -96,6 +96,15 @@ bearcad.ui.wait(5)        -- wait 5 UI frames
 bearcad.ui.wait_ms(100)   -- wait 100 milliseconds
 ```
 
+## Changelog
+
+**Help → Changelog** shows the changelog baked into this build.
+
+```lua
+bearcad.ui.changelog("show")   -- "hide" / "toggle"
+local md = bearcad.ui.changelog("text")
+```
+
 ## Help mode
 
 **Help → Help Mode** in the OS menu (⌘/Ctrl+/) toggles it in the app; from scripts:
