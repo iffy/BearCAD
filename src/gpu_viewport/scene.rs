@@ -192,7 +192,15 @@ pub const PREVIEW_FILL_DEPTH_BIAS: f32 = 0.2;
 /// between two coplanar unbiased surfaces gets visibly worse at low grazing angles and far zoom
 /// (reduced depth-buffer precision), which is why it showed up as the ground grid appearing to
 /// slice through the middle of a body when orbiting below the ground and zooming out (#78).
+///
+/// Solid ground (#159/#1295) does **not** use this bias: a world-space lift mis-places the plane
+/// (#1088/#1121). Instead, body faces on z = 0 re-draw after the ground fill (`body_over_plane`),
+/// the same no-bias pattern as construction-plane coplanarity (#1215).
 pub const GRID_DEPTH_BIAS: f32 = -0.05;
+/// Solid ground fill (#159/#1295): dark grey-blue, readable against the near-black viewport
+/// background and distinct from pure black. Not derived from the grid grey (that scaled too
+/// dark and read as black).
+pub const SOLID_GROUND_COLOR: Color32 = Color32::from_rgb(42, 50, 64);
 /// Contact shadows on the build plane (#1041): dark and mostly transparent, so the grid and
 /// the ground's own colour still read through rather than being blacked out.
 pub const GROUND_SHADOW_FILL: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 90);
@@ -1163,9 +1171,11 @@ impl ViewportScene {
                 fill
             };
             // Frames that this body's faces may sit on: every visible construction plane,
-            // plus an extrusion's target plane when the top cap lands on one (#29/#1215).
-            // Triangles on these frames are re-drawn after plane fills so coplanar solid/
-            // plane pairs don't z-fight — without geometric or frag-depth bias.
+            // plus an extrusion's target plane when the top cap lands on one (#29/#1215),
+            // plus the build plane itself when solid ground is showing (#1295).
+            // Triangles on these frames are re-drawn after plane fills (and after the solid
+            // ground fill in the base pass) so coplanar solid/plane pairs don't z-fight —
+            // without geometric or frag-depth bias.
             let mut coplanar_planes: Vec<(Vec3, Vec3)> = input
                 .doc
                 .construction_planes
@@ -1190,6 +1200,17 @@ impl ViewportScene {
                     .any(|&(o, n)| (o - cap.0).length() < 1e-4 && n.dot(cap.1).abs() > 0.999)
                 {
                     coplanar_planes.push(cap);
+                }
+            }
+            // Solid ground (#1295): same coplanar-overpaint path as construction planes
+            // (#1215), so body bottoms on z = 0 win without a world-space ground bias.
+            if input.cam.ground_display() == crate::camera::GroundDisplay::Solid {
+                let ground = (Vec3::ZERO, Vec3::Z);
+                if !coplanar_planes
+                    .iter()
+                    .any(|&(o, n)| o.length() < 1e-4 && n.dot(Vec3::Z).abs() > 0.999)
+                {
+                    coplanar_planes.push(ground);
                 }
             }
             // Shading mode (#33) picks how the committed body renders: `Solid` (today's
@@ -2602,24 +2623,23 @@ impl<'a> SceneMesh<'a> {
         hi = hi.max(anchor + glam::Vec2::splat(reach));
         lo -= glam::Vec2::splat(coarse_step);
         hi += glam::Vec2::splat(coarse_step);
-        // Solid ground (#159): one filled plane in the grid's grey (darkened so bodies and
-        // sketches still read against it), pushed slightly away from the camera with the
-        // same bias the grid lines use so body bottoms resting on z = 0 never z-fight it.
+        // Solid ground (#159/#1295): one filled plane in a dark grey-blue, at exact z = 0
+        // (no world-space bias — that mis-places coplanar geometry, #1088/#1121). Body faces
+        // resting on the ground re-draw after this fill via `body_over_plane` (#1215 pattern).
         // The axis lines below still draw on top for orientation.
         // `None` hides the ground entirely (#579) — no solid fill and no grid lines; only the world
         // axes below still draw for orientation.
         if cam.ground_display() == crate::camera::GroundDisplay::None {
             // nothing
         } else if cam.ground_display() == crate::camera::GroundDisplay::Solid {
-            let fill = sketch_ground_color(scale_color(palette.grid, 0.55), dim);
+            let fill = sketch_ground_color(SOLID_GROUND_COLOR, dim);
             let corners = [
                 Vec3::new(lo.x, lo.y, 0.0),
                 Vec3::new(hi.x, lo.y, 0.0),
                 Vec3::new(hi.x, hi.y, 0.0),
                 Vec3::new(lo.x, hi.y, 0.0),
             ];
-            let lifted = offset_corners_toward_camera(corners, Vec3::Z, eye, GRID_DEPTH_BIAS);
-            self.push_quad_fill(lifted, fill);
+            self.push_quad_fill(corners, fill);
         } else {
             // One footprint quad; the lattice is computed per fragment (#1073). The old
             // per-line world-space quads could not hold a constant on-screen width — at a
@@ -7594,6 +7614,104 @@ mod tests {
         state.cam.set_ground_display(GroundDisplay::None);
         let hidden = build_scene_for_doc(&state);
         assert!(hidden.grid.is_none(), "None hides the ground entirely (#579)");
+    }
+
+    /// #1295: solid ground is a dark grey-blue, not near-black (scaled grid grey).
+    #[test]
+    fn solid_ground_is_dark_grey_blue() {
+        use crate::camera::GroundDisplay;
+        use crate::hierarchy::SceneElement;
+        let mut state = AppState::default();
+        // Hide construction-plane fills so base-mesh colours are solid ground + axes only.
+        for (pi, _) in state.doc.construction_planes.iter() {
+            state
+                .element_visibility
+                .set_visible(SceneElement::ConstructionPlane(pi), false);
+        }
+        state.cam.set_ground_display(GroundDisplay::Solid);
+        let scene = build_scene_for_doc(&state);
+        let expected = SOLID_GROUND_COLOR;
+        let found = scene.vertices.iter().any(|v| {
+            let c = v.color;
+            (c[0] - expected.r() as f32 / 255.0).abs() < 1e-3
+                && (c[1] - expected.g() as f32 / 255.0).abs() < 1e-3
+                && (c[2] - expected.b() as f32 / 255.0).abs() < 1e-3
+        });
+        assert!(
+            found,
+            "solid ground vertices should use SOLID_GROUND_COLOR {expected:?}; sample colors: {:?}",
+            scene
+                .vertices
+                .iter()
+                .take(8)
+                .map(|v| v.color)
+                .collect::<Vec<_>>()
+        );
+        // Blue channel dominates red/green slightly (grey-blue, not pure grey or black).
+        assert!(
+            expected.b() > expected.r() && expected.b() > expected.g(),
+            "ground should be blue-tinted, got {expected:?}"
+        );
+        assert!(
+            expected.r() > 20 && expected.r() < 80,
+            "ground should be dark but not black, got {expected:?}"
+        );
+    }
+
+    /// #1295: solid ground sits at z = 0 with no world-space depth bias (bias mis-places
+    /// coplanar geometry, #1088/#1121). Body faces on the ground re-draw after plane fills
+    /// so coplanar pairs stay clean without bias (#1215 pattern).
+    #[test]
+    fn solid_ground_is_unbiased_and_body_base_is_repainted() {
+        use crate::camera::GroundDisplay;
+        use crate::hierarchy::SceneElement;
+        let mut state = state_with_one_body();
+        // Hide construction planes so overpaint only comes from solid-ground coplanarity.
+        for (pi, _) in state.doc.construction_planes.iter() {
+            state
+                .element_visibility
+                .set_visible(SceneElement::ConstructionPlane(pi), false);
+        }
+        state.cam.set_ground_display(GroundDisplay::Solid);
+        let scene = build_scene_for_doc(&state);
+
+        // Solid-ground footprint verts (unlit, dark grey-blue) stay on z = 0 — no bias.
+        let ground_zs: Vec<f32> = scene
+            .vertices
+            .iter()
+            .filter(|v| {
+                let c = v.color;
+                (c[0] - SOLID_GROUND_COLOR.r() as f32 / 255.0).abs() < 1e-3
+                    && (c[1] - SOLID_GROUND_COLOR.g() as f32 / 255.0).abs() < 1e-3
+                    && (c[2] - SOLID_GROUND_COLOR.b() as f32 / 255.0).abs() < 1e-3
+            })
+            .map(|v| v.position[2])
+            .collect();
+        assert!(
+            !ground_zs.is_empty(),
+            "expected solid-ground vertices in the scene"
+        );
+        assert!(
+            ground_zs.iter().all(|&z| z.abs() < 1e-5),
+            "solid ground must not use geometric depth bias; zs={ground_zs:?}"
+        );
+
+        // Body base on z = 0 is re-indexed into body_over_plane so it wins the depth tie
+        // without bias, even when construction planes are hidden.
+        assert!(
+            scene.body_over_plane_indices.len() >= 6,
+            "body faces on solid ground must re-draw after the ground fill; got {}",
+            scene.body_over_plane_indices.len()
+        );
+        let on_ground = scene
+            .body_over_plane_indices
+            .iter()
+            .map(|&i| scene.vertices[i as usize].position[2].abs())
+            .all(|z| z < 1e-2);
+        assert!(
+            on_ground,
+            "body_over_plane vertices for a ground-resting body should sit on z = 0"
+        );
     }
 
     fn build_scene_for_doc(state: &AppState) -> ViewportScene {

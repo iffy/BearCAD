@@ -4804,9 +4804,10 @@ The model in one place:
     directly; the active one is highlighted, click the other to switch.
   - **Ground** — how the ground plane renders (#159), one of three icon options:
     - *Ground grid*: the classic line grid (the default).
-    - *Solid ground*: one filled plane in the grid's grey, slightly darkened, drawn with
-      the same depth bias as the grid so bodies resting on z = 0 never z-fight it; the
-      X/Y/Z axis lines still draw on top for orientation.
+    - *Solid ground*: one filled plane in a dark grey-blue at exact z = 0 (no world-space
+      depth bias — that mis-places coplanar geometry); body faces on the ground re-draw
+      after the fill so coplanar pairs stay clean (#1215 pattern). The X/Y/Z axis lines
+      still draw on top for orientation.
     - *Off* (#579): no grid and no solid fill — a clean background — though the world axes
       still draw for orientation. Used by the doc screenshots for an uncluttered body shot.
     Scriptable via `bearcad.ui.ground("grid" | "solid" | "off")`.
