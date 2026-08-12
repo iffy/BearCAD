@@ -2449,9 +2449,9 @@ pub enum Action {
     /// (including a repeated instance's face) and adds that profile to the in-progress
     /// revolve — same as Extrude's body-face push/pull, for the revolve profile set.
     RevolveBodyFace { face_id: FaceId },
-    /// Sweep a bare 3D body face as a profile (#1237): builds an implicit sketch on
-    /// `face_id` (primitive faces, extrude caps/sides, revolve flats, repeated faces)
-    /// and adds that profile to the in-progress sweep — same path as [`Action::RevolveBodyFace`].
+    /// Sweep a bare 3D body face as a profile (#1237/#1325): builds an implicit sketch on
+    /// `face_id` (primitive faces, extrude caps/sides, revolve flats, repeated faces,
+    /// remaining mesh flats) and adds that profile to the in-progress sweep.
     SweepBodyFace { face_id: FaceId },
     /// Scripted push/pull of a bare body face committed in one step (#130): builds the
     /// implicit sketch mirroring `face_id`, then creates the extrusion with `distance`,
@@ -6357,6 +6357,7 @@ fn create_implicit_extrude_sketch(
             | FaceId::RevolveCap { .. }
             | FaceId::RevolveSide { .. }
             | FaceId::PrimitiveFace { .. }
+            | FaceId::BodyMeshFace { .. }
     ) {
         return Err("Not a body face".to_string());
     }
@@ -6518,6 +6519,8 @@ fn extrude_merge_candidate(doc: &Document, sketch: SketchId) -> Option<crate::mo
         }
         // A sketch on a repeated copy's face (#1116) merges into that copy.
         FaceId::RepeatedFace { .. } => crate::model::body_index_for_face(doc, &face),
+        // A remaining flat on a treated/boolean/imported body (#1325).
+        FaceId::BodyMeshFace { body, .. } => Some(body),
         _ => return None,
     }
 }
@@ -28244,6 +28247,69 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             .expect("extrusion should be in progress");
         assert_eq!(ce.faces.len(), 1);
         assert!(matches!(ce.faces[0], ExtrudeFace::Polygon(_)));
+    }
+
+    /// #1325: a remaining flat on a filleted (EdgeTreated) body is a mesh face, not an
+    /// analytic cap/side — Extrude must still start a push/pull from it, merging into the
+    /// live treated body.
+    #[test]
+    fn extrude_body_face_accepts_a_filleted_mesh_face() {
+        let mut state = box_extrusion_state();
+        let result = state.apply(Action::CommitEdgeTreatments {
+            edges: vec![(
+                xkey(0),
+                crate::model::ExtrusionEdgeRef::Cap {
+                    face: 0,
+                    edge: 0,
+                    top: true,
+                },
+            )],
+            kind: VertexTreatmentKind::Fillet,
+            amount: 1.5,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        let live = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| !b.shadow)
+            .map(|(k, _)| k)
+            .expect("filleted live body");
+        let groups = crate::extrude::body_flat_face_groups(&state.doc, live);
+        let tris = groups
+            .iter()
+            .find(|g| !g.is_empty())
+            .expect("filleted body has a remaining flat");
+        let centroid = crate::extrude::face_group_center(tris);
+        let normal = (tris[0][1] - tris[0][0])
+            .cross(tris[0][2] - tris[0][0])
+            .normalize_or_zero();
+        let q = crate::hierarchy::quantize_body_point;
+        let face_id = FaceId::BodyMeshFace {
+            body: live,
+            centroid: q(centroid),
+            normal: q(normal),
+        };
+
+        let sketches_before = state.doc.sketches.len();
+        let result = state.apply(Action::ExtrudeBodyFace { face_id });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert_eq!(
+            state.doc.sketches.len(),
+            sketches_before + 1,
+            "implicit sketch on the remaining mesh face"
+        );
+        let ce = state
+            .creating_extrusion
+            .as_ref()
+            .expect("extrusion should be in progress");
+        assert_eq!(ce.faces.len(), 1);
+        assert!(matches!(ce.faces[0], ExtrudeFace::Polygon(_)));
+        assert_eq!(
+            ce.merge_candidate,
+            Some(live),
+            "push/pull should offer the live filleted body"
+        );
     }
 
     /// #140/#1197: pressing P with a body edge selected projects it into the open sketch as an

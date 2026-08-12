@@ -21967,8 +21967,9 @@ fn pick_extrude_face(
 }
 
 /// The bare 3D body face (cap or side wall — never a sketch profile) under the cursor, if
-/// any (#122): the fallback the Extrude tool tries when [`pick_extrude_face`] finds nothing,
-/// so a solid's own face can be pushed/pulled directly, no separate sketch needed.
+/// any (#122/#1325): the fallback the Extrude tool tries when [`pick_extrude_face`] finds
+/// nothing, so a solid's own face can be pushed/pulled directly, no separate sketch needed.
+/// Includes remaining flats of a treated/boolean/imported body (`BodyMeshFace`).
 fn pick_extrude_body_face(
     pp: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
@@ -21981,7 +21982,8 @@ fn pick_extrude_body_face(
         | FaceId::RevolveCap { .. }
         | FaceId::RevolveSide { .. }
         | FaceId::PrimitiveFace { .. }
-        | FaceId::RepeatedFace { .. }) => Some(face_id),
+        | FaceId::RepeatedFace { .. }
+        | FaceId::BodyMeshFace { .. }) => Some(face_id),
         _ => None,
     }
 }
@@ -31509,7 +31511,7 @@ impl App {
                 if self.state.creating_extrusion.is_some() {
                     "e: extrude  •  Click faces to toggle • drag the arrow or type a distance • Enter: commit • Esc: cancel"
                 } else {
-                    "e: extrude  •  Click a coplanar face (rectangle/circle) to start an extrusion"
+                    "e: extrude  •  Click a flat face to start an extrusion"
                 }
             }
             Tool::Chamfer => {
