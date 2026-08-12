@@ -25,6 +25,8 @@ pub enum UiAnchor {
     ParametersName,
     /// The Parameters pane's new-parameter **value** field.
     ParametersValue,
+    /// An existing parameter's **value** cell in the Parameters pane (#1347).
+    ParametersExistingValue,
     /// A constraint button in the Context pane's Constraints list (#770) — where a
     /// squaring-up step points once both of its picks are made.
     #[allow(dead_code)]
@@ -252,6 +254,12 @@ pub static TUTORIALS: &[Tutorial] = &[
         name: "dimensioned_box",
         title: "Dimensions",
         steps: DIMENSIONED_BOX_STEPS,
+    },
+    // #1347: named parameters, expressions on a rectangle, inline `name=value`.
+    Tutorial {
+        name: "parameters",
+        title: "Parameters",
+        steps: PARAMETERS_STEPS,
     },
 ];
 
@@ -1761,6 +1769,392 @@ static DIMENSIONED_BOX_STEPS: &[Step] = &[
     ),
 ];
 
+// --- Parameters tutorial (#1347) -------------------------------------------------------
+
+fn expr_norm(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).collect::<String>()
+}
+
+fn expr_eq(a: &str, b: &str) -> bool {
+    expr_norm(a).eq_ignore_ascii_case(&expr_norm(b))
+}
+
+fn param_exists(app: &AppState, name: &str) -> bool {
+    app.doc
+        .parameters
+        .values()
+        .any(|p| p.name.eq_ignore_ascii_case(name))
+}
+
+fn param_key(app: &AppState, name: &str) -> Option<crate::model::ParameterKey> {
+    app.doc
+        .parameters
+        .iter()
+        .find_map(|(k, p)| p.name.eq_ignore_ascii_case(name).then_some(k))
+}
+
+fn param_length_near(app: &AppState, name: &str, mm: f32) -> bool {
+    app.doc.parameters.values().any(|p| {
+        p.name.eq_ignore_ascii_case(name)
+            && crate::value::eval_length_mm_in_doc(&p.expression, &app.doc)
+                .is_some_and(|v| (v - mm).abs() < 0.51)
+    })
+}
+
+fn dim_expr_eq(app: &AppState, want: &str) -> bool {
+    live_constraints(app).any(|c| {
+        matches!(c.kind, ConstraintKind::Distance { .. }) && expr_eq(&c.expression, want)
+    })
+}
+
+fn creating_rect_text_eq(app: &AppState, axis: usize, want: &str) -> bool {
+    app.creating_rect.as_ref().is_some_and(|cr| {
+        cr.user_edited[axis] && expr_eq(&cr.texts[axis], want)
+    })
+}
+
+fn name_box_tapped(app: &AppState) -> bool {
+    app.parameters_pane.new_name_focused
+        || !app.parameters_pane.new_name.trim().is_empty()
+        || param_exists(app, "width")
+}
+
+fn value_box_tapped(app: &AppState) -> bool {
+    app.parameters_pane.new_value_focused
+        || !app.parameters_pane.new_value.trim().is_empty()
+        || param_exists(app, "width")
+}
+
+fn name_says_width(app: &AppState) -> bool {
+    app.parameters_pane
+        .new_name
+        .trim()
+        .eq_ignore_ascii_case("width")
+        || param_exists(app, "width")
+}
+
+fn value_says_20(app: &AppState) -> bool {
+    crate::value::eval_length_mm(&app.parameters_pane.new_value)
+        .is_some_and(|v| (v - 20.0).abs() < 1e-3)
+        || param_exists(app, "width")
+}
+
+fn width_added(app: &AppState) -> bool {
+    param_exists(app, "width")
+}
+
+fn rect_width_is_width(app: &AppState) -> bool {
+    creating_rect_text_eq(app, 0, "width") || dim_expr_eq(app, "width")
+}
+
+fn rect_height_focused(app: &AppState) -> bool {
+    app.creating_rect.as_ref().is_some_and(|cr| cr.focused == 1)
+        || parametric_rect_committed(app)
+}
+
+fn parametric_rect_committed(app: &AppState) -> bool {
+    has_rectangle_outline(app) && dim_expr_eq(app, "width") && dim_expr_eq(app, "width*2")
+}
+
+fn editing_param_value(app: &AppState, name: &str) -> bool {
+    match app.parameters_pane.editing {
+        Some(crate::parameters::ParameterEditCell::Value(i)) => app
+            .doc
+            .parameters
+            .get(i)
+            .is_some_and(|p| p.name.eq_ignore_ascii_case(name)),
+        _ => false,
+    }
+}
+
+fn width_value_open(app: &AppState) -> bool {
+    editing_param_value(app, "width") || param_length_near(app, "width", 30.0)
+}
+
+fn width_is_30(app: &AppState) -> bool {
+    param_length_near(app, "width", 30.0)
+}
+
+fn extruded_with_height(app: &AppState) -> bool {
+    param_exists(app, "height") && has_extrusion(app)
+}
+
+fn height_value_open(app: &AppState) -> bool {
+    editing_param_value(app, "height") || param_length_near(app, "height", 50.0)
+}
+
+fn height_is_50(app: &AppState) -> bool {
+    param_length_near(app, "height", 50.0)
+}
+
+fn ensure_param(app: &mut AppState, name: &str, expression: &str) {
+    if !param_exists(app, name) {
+        app.apply(Action::AddParameter {
+            name: name.to_string(),
+            expression: expression.to_string(),
+        });
+    }
+}
+
+fn set_param(app: &mut AppState, name: &str, expression: &str) {
+    if let Some(index) = param_key(app, name) {
+        app.apply(Action::CommitParameterExpression {
+            index,
+            expression: expression.to_string(),
+        });
+    } else {
+        ensure_param(app, name, expression);
+    }
+}
+
+fn add_width_param(app: &mut AppState) {
+    ensure_param(app, "width", "20mm");
+}
+
+fn ensure_rect_height_focus(app: &mut AppState) {
+    if let Some(cr) = app.creating_rect.as_mut() {
+        cr.focused = 1;
+        cr.pending_focus = true;
+    }
+}
+
+fn assist_draw_parametric_rect(app: &mut AppState) {
+    if parametric_rect_committed(app) {
+        return;
+    }
+    ensure_param(app, "width", "20mm");
+    if app.creating_rect.is_some() {
+        if let Some(cr) = app.creating_rect.as_mut() {
+            cr.texts[0] = "width".into();
+            cr.texts[1] = "width*2".into();
+            cr.user_edited = [true, true];
+        }
+        app.apply(Action::CommitRectangle);
+        return;
+    }
+    if has_rectangle_outline(app) {
+        dimension_rect_line(app, 0, "width");
+        dimension_rect_line(app, 1, "width*2");
+        return;
+    }
+    ensure_ground_sketch(app);
+    let w = crate::value::eval_length_mm_in_doc("width", &app.doc).unwrap_or(20.0);
+    app.apply(Action::CreateRectangle {
+        x: 20.0,
+        y: 20.0,
+        width: w,
+        height: w * 2.0,
+        width_expr: Some("width".into()),
+        height_expr: Some("width*2".into()),
+    });
+}
+
+fn assist_change_width(app: &mut AppState) {
+    assist_draw_parametric_rect(app);
+    set_param(app, "width", "30mm");
+}
+
+fn assist_extrude_with_height(app: &mut AppState) {
+    if extruded_with_height(app) {
+        return;
+    }
+    assist_change_width(app);
+    ensure_param(app, "height", "30mm");
+    if has_extrusion(app) {
+        let key = app.doc.extrusions.keys().next();
+        let h = crate::value::eval_length_mm_in_doc("height", &app.doc).unwrap_or(30.0);
+        if let Some(key) = key {
+            app.doc.extrusions[key].distance = h;
+            app.doc.extrusions[key].expression = "height".into();
+            app.refresh_document_health();
+        }
+        return;
+    }
+    let Some(sketch) = app
+        .doc
+        .lines
+        .values()
+        .find(|l| !l.construction)
+        .map(|l| l.sketch)
+    else {
+        return;
+    };
+    let lines: Vec<_> = app
+        .doc
+        .lines
+        .iter()
+        .filter(|(_, l)| l.sketch == sketch && !l.construction)
+        .map(|(k, _)| k)
+        .collect();
+    if lines.len() < 4 {
+        return;
+    }
+    if app.sketch_session.is_some() {
+        app.apply(Action::ExitSketch);
+    }
+    let h = crate::value::eval_length_mm_in_doc("height", &app.doc).unwrap_or(30.0);
+    app.apply(Action::CreateExtrusion {
+        sketch,
+        faces: vec![crate::model::ExtrudeFace::Polygon(lines)],
+        distance: h,
+        body: crate::actions::ExtrudeBodyChoice::New,
+        target: None,
+        expression: Some("height".into()),
+        symmetric: false,
+        taper: 0.0,
+        taper_mode: crate::model::ExtrudeTaperMode::Distance,
+        taper_expression: None,
+    });
+}
+
+fn assist_change_height(app: &mut AppState) {
+    assist_extrude_with_height(app);
+    set_param(app, "height", "50mm");
+}
+
+/// #1347: create `width`, sketch a `width` × `width*2` rectangle, change `width`,
+/// extrude with inline `height=30mm`, then change `height`. One action per step (#1253).
+static PARAMETERS_STEPS: &[Step] = &[
+    plain_step(
+        "Hi! Let's drive a box with parameters.",
+        StepAnchor::None,
+        None,
+    ),
+    plain_step(
+        "See the Parameters pane on the right? Tap inside the name box.",
+        StepAnchor::Ui(UiAnchor::ParametersName),
+        Some(name_box_tapped),
+    ),
+    assisted_step(
+        "Type `width` \u{2014} just those five letters.",
+        StepAnchor::Ui(UiAnchor::ParametersName),
+        Some(name_says_width),
+        StepAssist {
+            label: "Add it for me",
+            run: add_width_param,
+        },
+        Some(TypeHint::Fixed("width")),
+    ),
+    plain_step(
+        "Now tap the value box beside it.",
+        StepAnchor::Ui(UiAnchor::ParametersValue),
+        Some(value_box_tapped),
+    ),
+    assisted_step(
+        "Type `20mm`.",
+        StepAnchor::Ui(UiAnchor::ParametersValue),
+        Some(value_says_20),
+        StepAssist {
+            label: "Add it for me",
+            run: add_width_param,
+        },
+        Some(TypeHint::Fixed("20mm")),
+    ),
+    plain_step(
+        "Press + to add it. Your first parameter!",
+        StepAnchor::Ui(UiAnchor::ParametersAdd),
+        Some(width_added),
+    ),
+    plain_step(
+        "Rectangle tool \u{2014} glowing button, or `R`.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Rectangle)),
+        Some(rectangle_tool_active),
+    ),
+    plain_step_enter(
+        "Click a corner on the ground.",
+        StepAnchor::World(rect_first_corner_guide),
+        Some(rect_first_corner_placed),
+        ensure_rect_sketch_for_tutorial,
+    ),
+    assisted_step(
+        "Type `width` in the width field, then Tab.",
+        StepAnchor::Ui(UiAnchor::RectWidth),
+        Some(rect_width_is_width),
+        StepAssist {
+            label: "Draw it for me",
+            run: assist_draw_parametric_rect,
+        },
+        Some(TypeHint::Fixed("width")),
+    ),
+    assisted_step(
+        "Press `Tab`, or click the height field.",
+        StepAnchor::Ui(UiAnchor::RectHeight),
+        Some(rect_height_focused),
+        StepAssist {
+            label: "Draw it for me",
+            run: assist_draw_parametric_rect,
+        },
+        None,
+    ),
+    assisted_step_enter(
+        "Type `width*2`, then Enter.",
+        StepAnchor::Ui(UiAnchor::RectHeight),
+        Some(parametric_rect_committed),
+        StepAssist {
+            label: "Draw it for me",
+            run: assist_draw_parametric_rect,
+        },
+        Some(TypeHint::Fixed("width*2")),
+        ensure_rect_height_focus,
+    ),
+    plain_step(
+        "Click the `width` value in the Parameters pane.",
+        StepAnchor::Ui(UiAnchor::ParametersExistingValue),
+        Some(width_value_open),
+    ),
+    assisted_step(
+        "Change it to `30mm`. The rectangle stretches.",
+        StepAnchor::Ui(UiAnchor::ParametersExistingValue),
+        Some(width_is_30),
+        StepAssist {
+            label: "Change it for me",
+            run: assist_change_width,
+        },
+        Some(TypeHint::Fixed("30mm")),
+    ),
+    plain_step(
+        "Extrude tool \u{2014} glowing button, or `E`.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude)),
+        Some(extrude_tool_active),
+    ),
+    plain_step(
+        "Click the rectangle.",
+        StepAnchor::World(rectangle_face_guide),
+        Some(extrude_face_picked),
+    ),
+    assisted_step(
+        "Type `height=30mm` \u{2014} that creates a parameter right in the field \u{2014} then Enter.",
+        StepAnchor::Ui(UiAnchor::ExtrudeDistance),
+        Some(extruded_with_height),
+        StepAssist {
+            label: "Extrude it for me",
+            run: assist_extrude_with_height,
+        },
+        Some(TypeHint::Fixed("height=30mm")),
+    ),
+    plain_step(
+        "Click the `height` value in the Parameters pane.",
+        StepAnchor::Ui(UiAnchor::ParametersExistingValue),
+        Some(height_value_open),
+    ),
+    assisted_step(
+        "Change it to `50mm`. The solid grows.",
+        StepAnchor::Ui(UiAnchor::ParametersExistingValue),
+        Some(height_is_50),
+        StepAssist {
+            label: "Change it for me",
+            run: assist_change_height,
+        },
+        Some(TypeHint::Fixed("50mm")),
+    ),
+    plain_step(
+        "That's the loop: parameters drive the model. Change a number, the solid follows. \
+         Nice!",
+        StepAnchor::None,
+        None,
+    ),
+];
+
 fn shape_tool_active_or_past_cuboid(app: &AppState) -> bool {
     // Re-arm step: tool is Shape again, or the user already cycled / placed further shapes.
     shape_tool_active(app) || has_cylinder(app) || has_sphere(app) || cylinder_kind_ready(app)
@@ -1888,10 +2282,11 @@ mod tests {
         assert_eq!(tutorial_index("navigate"), Some(1), "#1269: navigate is second");
         assert_eq!(tutorial_index("shapes"), Some(2));
         assert_eq!(tutorial_index("dimensioned_box"), Some(3));
+        assert_eq!(tutorial_index("parameters"), Some(4), "#1347: parameters is fifth");
         assert_eq!(tutorial_index("bracket"), None, "#1334: build-a-bracket tutorial is gone");
         assert_eq!(tutorial_index("nope"), None);
-        assert_eq!(TUTORIALS.last().unwrap().name, "dimensioned_box");
-        assert_eq!(TUTORIALS.len(), 4, "pane lists every remaining walkthrough");
+        assert_eq!(TUTORIALS.last().unwrap().name, "parameters");
+        assert_eq!(TUTORIALS.len(), 5, "pane lists every remaining walkthrough");
         for tut in TUTORIALS {
             assert_ne!(tut.name, "bracket");
             assert_ne!(tut.title, "Build an angle bracket");
@@ -2749,6 +3144,10 @@ mod tests {
             "3D Bodies"
         );
         assert_eq!(dimensioned_box().title, "Dimensions");
+        assert_eq!(
+            TUTORIALS[tutorial_index("parameters").unwrap()].title,
+            "Parameters"
+        );
     }
 
     /// #1316: the Dimensions tutorial never mentions parameters.
@@ -3005,5 +3404,208 @@ mod tests {
 
         assist_nav_home(&mut app);
         assert!(camera_at_home(&app));
+    }
+
+    fn parameters_tut() -> &'static Tutorial {
+        &TUTORIALS[tutorial_index("parameters").expect("parameters tutorial is registered")]
+    }
+
+    fn param_step(needle: &str) -> &'static Step {
+        parameters_tut()
+            .steps
+            .iter()
+            .find(|s| s.narration.to_ascii_lowercase().contains(needle))
+            .unwrap_or_else(|| panic!("parameters step matching {needle:?}"))
+    }
+
+    fn param_step_index(needle: &str) -> usize {
+        parameters_tut()
+            .steps
+            .iter()
+            .position(|s| s.narration.to_ascii_lowercase().contains(needle))
+            .unwrap_or_else(|| panic!("parameters step matching {needle:?}"))
+    }
+
+    /// #1347: parameters tutorial sits after Dimensions and teaches named + inline params.
+    #[test]
+    fn parameters_tutorial_is_registered() {
+        let tut = parameters_tut();
+        assert_eq!(tut.name, "parameters");
+        assert_eq!(tut.title, "Parameters");
+        assert_eq!(tutorial_index("parameters"), Some(4));
+        assert_eq!(TUTORIALS.last().unwrap().name, "parameters");
+    }
+
+    /// #1347: create width → rect width / width*2 → change width → extrude
+    /// height=30mm → change height.
+    #[test]
+    fn parameters_tutorial_covers_width_rect_and_inline_height() {
+        let steps = parameters_tut().steps;
+        let joined: String = steps
+            .iter()
+            .map(|s| s.narration.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for needle in [
+            "width",
+            "20mm",
+            "width*2",
+            "30mm",
+            "height=30mm",
+            "50mm",
+        ] {
+            assert!(
+                joined.contains(needle),
+                "parameters tutorial should mention {needle}: {joined}"
+            );
+        }
+        assert!(
+            steps
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::ParametersName))),
+            "should point at the Parameters name box"
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::ParametersValue))),
+            "should point at the Parameters value box"
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::ParametersAdd))),
+            "should point at the Parameters + button"
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::RectWidth))),
+            "should type into the rectangle width field"
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::RectHeight))),
+            "should type into the rectangle height field"
+        );
+        assert!(
+            steps.iter().any(|s| {
+                matches!(s.anchor, StepAnchor::Ui(UiAnchor::ExtrudeDistance))
+                    && s.narration.to_ascii_lowercase().contains("height=30mm")
+            }),
+            "should type height=30mm into the extrude ValueInput"
+        );
+
+        let add_i = param_step_index("your first parameter");
+        let rect_w = steps
+            .iter()
+            .position(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::RectWidth)))
+            .expect("rect width typing");
+        let change_w = param_step_index("the rectangle stretches");
+        let extrude_i = steps
+            .iter()
+            .position(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude))))
+            .expect("extrude tool");
+        let inline_i = steps
+            .iter()
+            .position(|s| s.narration.to_ascii_lowercase().contains("height=30mm"))
+            .expect("inline height");
+        let change_h = param_step_index("the solid grows");
+        assert!(
+            add_i < rect_w && rect_w < change_w && change_w < extrude_i && extrude_i < inline_i && inline_i < change_h,
+            "order: add width, type rect dims, change width, extrude, height=30mm, change height \
+             (got {add_i}, {rect_w}, {change_w}, {extrude_i}, {inline_i}, {change_h})"
+        );
+    }
+
+    /// #1347: assists create width, a width × width*2 rectangle, then height via the extrude.
+    #[test]
+    fn parameters_tutorial_assists_build_a_parametric_box() {
+        let mut app = AppState::default();
+        assist_change_height(&mut app);
+        assert!(param_exists(&app, "width"), "width parameter");
+        assert!(param_exists(&app, "height"), "height parameter");
+        assert!(
+            param_length_near(&app, "width", 30.0),
+            "width should have been changed to 30mm"
+        );
+        assert!(
+            param_length_near(&app, "height", 50.0),
+            "height should have been changed to 50mm"
+        );
+        assert!(
+            dim_expr_eq(&app, "width") && dim_expr_eq(&app, "width*2"),
+            "rectangle sides should be width and width*2"
+        );
+        assert!(has_extrusion(&app));
+        let height = crate::value::eval_length_mm_in_doc("height", &app.doc).unwrap_or(0.0);
+        assert!(
+            (height - 50.0).abs() < 0.51,
+            "extrude should follow height, got {height}"
+        );
+        let ext = app.doc.extrusions.values().next().expect("extrusion");
+        assert!(
+            ext.expression.to_ascii_lowercase().contains("height"),
+            "extrude expression should bind to height, got {}",
+            ext.expression
+        );
+    }
+
+    /// #1347: "do it for me" walks the whole parameters tutorial.
+    #[test]
+    fn parameters_tutorial_walks_with_assists() {
+        let mut app = AppState::default();
+        finish_tutorial_via_next(&mut app, "parameters");
+        assert!(app.tutorial_completed("parameters"));
+        assert!(param_exists(&app, "width"));
+        assert!(param_exists(&app, "height"));
+        assert!(has_extrusion(&app));
+    }
+
+    /// #1347: creating `width` is tap-name, type, tap-value, type, then +.
+    #[test]
+    fn parameters_tutorial_adds_width_one_action_at_a_time() {
+        let name_tap = param_step("name box");
+        assert!(matches!(
+            name_tap.anchor,
+            StepAnchor::Ui(UiAnchor::ParametersName)
+        ));
+        assert!(name_tap.type_hint.is_none(), "tap before type");
+
+        let type_name = param_step("type `width`");
+        assert!(matches!(
+            type_name.anchor,
+            StepAnchor::Ui(UiAnchor::ParametersName)
+        ));
+        assert!(matches!(type_name.type_hint, Some(TypeHint::Fixed("width"))));
+
+        let value_tap = param_step("value box");
+        assert!(matches!(
+            value_tap.anchor,
+            StepAnchor::Ui(UiAnchor::ParametersValue)
+        ));
+
+        let type_val = steps_containing("20mm");
+        assert!(
+            type_val
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::ParametersValue))),
+            "20mm is typed in the new-parameter value box"
+        );
+
+        let add = param_step("your first parameter");
+        assert!(matches!(
+            add.anchor,
+            StepAnchor::Ui(UiAnchor::ParametersAdd)
+        ));
+    }
+
+    fn steps_containing(needle: &str) -> Vec<&'static Step> {
+        parameters_tut()
+            .steps
+            .iter()
+            .filter(|s| s.narration.to_ascii_lowercase().contains(needle))
+            .collect()
     }
 }

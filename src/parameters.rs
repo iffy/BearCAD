@@ -2400,6 +2400,10 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                         }
                         response
                     };
+                    app.tutorial_anchor_rects.insert(
+                        crate::tutorial::UiAnchor::ParametersExistingValue,
+                        value_cell.rect,
+                    );
                     let options_open = app.parameters_pane.options_open.contains(&index);
                     let extras_cell = ui.horizontal(|ui| {
                         // Gear cog toggles this parameter's options panel (#1176). Multiple
