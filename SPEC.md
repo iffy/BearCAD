@@ -34,13 +34,17 @@ Absent a paid Apple Developer certificate, it must at minimum be **ad-hoc signed
 (`codesign --force --deep --sign -`) so that a quarantined download is not rejected by
 Gatekeeper as *"'BearCAD' is damaged and can't be opened"* (the message macOS shows for an
 unsigned or signature-invalidated bundle on Apple Silicon). The signature must be applied to
-the fully assembled bundle (after the executable, icons, and `Info.plist` are in place) and
-verified with `codesign --verify --deep --strict`. The `.dmg` volume must also contain an
-`Applications` symlink (→ `/Applications`) alongside the app so the user can drag
-`BearCAD.app` straight into Applications from the mounted volume. The `Info.plist` must
-declare `.bearcad` as a document type (`CFBundleDocumentTypes` +
+the fully assembled bundle (after the executable, icons, `Info.plist`, and PlugIns are in
+place) and verified with `codesign --verify --deep --strict`. The `.dmg` volume must also
+contain an `Applications` symlink (→ `/Applications`) alongside the app so the user can
+drag `BearCAD.app` straight into Applications from the mounted volume. The `Info.plist`
+must declare `.bearcad` as a document type (`CFBundleDocumentTypes` +
 `UTExportedTypeDeclarations` for UTI `com.bearcad.document`) so double-click opens
-BearCAD; the app handles the open-documents Apple Event at runtime (#1285).
+BearCAD; the app handles the open-documents Apple Event at runtime (#1285). The bundle
+ships a QuickLook Preview Extension at `Contents/PlugIns/BearCADQuickLook.appex`
+(`com.bearcad.app.quicklook`) that claims the same UTI and renders the `preview_stl` mesh
+snapshot embedded on save, with SceneKit camera control (rotate/pan/zoom like system STL)
+(#1290).
 
 **Linux packaging:** the tarball ships FreeDesktop `com.bearcad.app.desktop` and
 `com.bearcad.app.xml` (MIME `application/x-bearcad`). First GUI launch and

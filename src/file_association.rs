@@ -563,6 +563,38 @@ mod tests {
         assert_eq!(DESKTOP_ID, "com.bearcad.app");
     }
 
+    /// #1290: the QuickLook Preview Extension Info.plist must claim the same UTI the
+    /// app exports, or Space-bar preview silently never fires for `.bearcad` files.
+    #[test]
+    fn quicklook_extension_plist_claims_document_uti() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let plist = std::fs::read_to_string(root.join("macos/quicklook/Info.plist"))
+            .expect("macos/quicklook/Info.plist must exist");
+        assert!(
+            plist.contains(UTI),
+            "QLSupportedContentTypes must include {UTI}:\n{plist}"
+        );
+        assert!(
+            plist.contains("com.apple.quicklook.preview"),
+            "must be a QuickLook preview extension:\n{plist}"
+        );
+        assert!(
+            plist.contains("com.bearcad.app.quicklook"),
+            "extension bundle id must nest under com.bearcad.app:\n{plist}"
+        );
+        // Package script must inject the appex into the .app bundle.
+        let pkg = std::fs::read_to_string(root.join("scripts/package-release.sh"))
+            .expect("package-release.sh");
+        assert!(
+            pkg.contains("build-macos-quicklook.sh"),
+            "package-release.sh must build the QuickLook appex"
+        );
+        assert!(
+            pkg.contains("PlugIns/BearCADQuickLook.appex"),
+            "package-release.sh must place the appex under Contents/PlugIns"
+        );
+    }
+
     #[test]
     fn queue_and_drain_pending_open_paths() {
         // Isolate from other tests: drain first.

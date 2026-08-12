@@ -20,6 +20,9 @@ On save, BearCAD writes a **Home zoom-to-fit preview** (black outline so it read
 and dark backgrounds) into the file and publishes it as the OS thumbnail — Finder on macOS,
 free-desktop file managers on Linux. `bearcad.export_preview(path)` writes the same PNG.
 
+On macOS, Space-bar **Quick Look** opens an interactive 3D view of the model (rotate / pan /
+zoom, same gestures as STL). Save the file once so the mesh snapshot is embedded.
+
 **Undo** (⌘/Ctrl+Z) reverts whole steps — a fillet or a boolean undoes as one unit.
 
 The window title (and each **tab**) shows the current file name and a leading **`*`**

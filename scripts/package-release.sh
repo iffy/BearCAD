@@ -127,11 +127,20 @@ package_macos() {
 </plist>
 EOF
 
+  # QuickLook Preview Extension (#1290): Space-bar preview of .bearcad with SceneKit
+  # rotate/pan/zoom, same gesture as system STL. Reads the embedded preview_stl meta.
+  mkdir -p "${app_dir}/Contents/PlugIns"
+  bash scripts/build-macos-quicklook.sh "${app_dir}/Contents/PlugIns/BearCADQuickLook.appex"
+
   # Ad-hoc code-sign the bundle. Apple Silicon requires every executable to carry
   # at least an ad-hoc signature; an unsigned (or signature-invalidated) bundle that
   # has been quarantined after download is reported by Gatekeeper as "damaged and
   # can't be opened". Signing the assembled bundle deeply produces a valid signature
   # so the app launches (after the user clears quarantine / right-click → Open).
+  # Sign nested PlugIns first, then the outer app (deep sign can re-seal children).
+  codesign --force --sign - --timestamp=none \
+    --entitlements macos/quicklook/BearCADQuickLook.entitlements \
+    "${app_dir}/Contents/PlugIns/BearCADQuickLook.appex"
   codesign --force --deep --sign - --timestamp=none "$app_dir"
   codesign --verify --deep --strict "$app_dir"
 

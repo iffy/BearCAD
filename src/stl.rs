@@ -111,6 +111,32 @@ pub fn write_ascii_stl(name: &str, mesh: &SolidMesh) -> String {
     out
 }
 
+/// Binary STL (80-byte header + little-endian u32 triangle count + 50-byte records).
+/// Compact form used for the QuickLook mesh snapshot embedded in `.bearcad` files (#1290).
+pub fn write_binary_stl(name: &str, mesh: &SolidMesh) -> Vec<u8> {
+    let mut out = vec![0u8; 80];
+    // Header is free-form; put a short label so the source is obvious in a hex dump.
+    let label = format!("BearCAD {name}");
+    let label_bytes = label.as_bytes();
+    let n = label_bytes.len().min(80);
+    out[..n].copy_from_slice(&label_bytes[..n]);
+    out.extend_from_slice(&(mesh.triangles.len() as u32).to_le_bytes());
+    for tri in &mesh.triangles {
+        let [a, b, c] = *tri;
+        let nrm = (b - a).cross(c - a).normalize_or_zero();
+        for f in [nrm.x, nrm.y, nrm.z] {
+            out.extend_from_slice(&f.to_le_bytes());
+        }
+        for v in [a, b, c] {
+            for f in [v.x, v.y, v.z] {
+                out.extend_from_slice(&f.to_le_bytes());
+            }
+        }
+        out.extend_from_slice(&[0u8; 2]); // attribute byte count
+    }
+    out
+}
+
 fn parse_vec3(s: &str) -> Option<Vec3> {
     let mut parts = s.split_whitespace();
     let x: f32 = parts.next()?.parse().ok()?;
@@ -230,21 +256,10 @@ mod tests {
         assert!(parse_ascii_stl("solid empty\nendsolid empty").is_err());
     }
 
-    fn write_binary_stl(triangles: &[MeshTriangle]) -> Vec<u8> {
-        let mut out = vec![0u8; 80];
-        out.extend_from_slice(&(triangles.len() as u32).to_le_bytes());
-        for tri in triangles {
-            for f in [tri.normal.x, tri.normal.y, tri.normal.z] {
-                out.extend_from_slice(&f.to_le_bytes());
-            }
-            for v in tri.vertices {
-                for f in [v.x, v.y, v.z] {
-                    out.extend_from_slice(&f.to_le_bytes());
-                }
-            }
-            out.extend_from_slice(&[0u8; 2]); // attribute byte count
+    fn mesh_from_tris(triangles: &[MeshTriangle]) -> SolidMesh {
+        SolidMesh {
+            triangles: triangles.iter().map(|t| t.vertices).collect(),
         }
-        out
     }
 
     #[test]
@@ -267,7 +282,7 @@ mod tests {
                 normal: Vec3::Z,
             },
         ];
-        let bytes = write_binary_stl(&triangles);
+        let bytes = write_binary_stl("t", &mesh_from_tris(&triangles));
         let parsed = parse_stl(&bytes).expect("binary stl");
         assert_eq!(parsed, triangles);
     }
@@ -284,10 +299,26 @@ mod tests {
             ],
             normal: Vec3::Z,
         }];
-        let mut bytes = write_binary_stl(&triangles);
+        let mut bytes = write_binary_stl("t", &mesh_from_tris(&triangles));
         bytes[0..5].copy_from_slice(b"solid");
         let parsed = parse_stl(&bytes).expect("binary stl with solid-prefixed header");
         assert_eq!(parsed, triangles);
+    }
+
+    #[test]
+    fn write_binary_stl_round_trips() {
+        let mesh = SolidMesh {
+            triangles: vec![[
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+            ]],
+        };
+        let bytes = write_binary_stl("part", &mesh);
+        assert_eq!(bytes.len(), 84 + 50);
+        let parsed = parse_stl(&bytes).expect("binary round-trip");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].vertices, mesh.triangles[0]);
     }
 
     #[test]

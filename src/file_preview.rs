@@ -1,12 +1,15 @@
-//! File preview thumbnails for `.bearcad` documents (#1223).
+//! File preview thumbnails for `.bearcad` documents (#1223, #1290).
 //!
 //! On save, render a zoom-to-fit view of the **Home** camera orientation as a PNG, embed it
 //! in the SQLite file, and publish it to the OS so Finder (and free-desktop file managers)
 //! can show the model in the icon/preview slot. A black silhouette outline keeps the model
 //! readable on both light and dark backgrounds.
+//!
+//! Also embeds a binary STL mesh snapshot (`preview_stl`) so the macOS QuickLook Preview
+//! Extension can load the geometry into SceneKit and let the user rotate it like an STL.
 
 use crate::camera::Camera;
-use crate::extrude::{body_solid_mesh, document_world_bounds, SolidMesh};
+use crate::extrude::{body_solid_mesh, document_solid_mesh, document_world_bounds, SolidMesh};
 use crate::gpu_viewport::body_material_fill;
 use crate::model::Document;
 use egui::{Pos2, Rect};
@@ -16,6 +19,8 @@ use glam::{Mat4, Vec3};
 pub const PREVIEW_SIZE: u32 = 512;
 /// SQLite `meta` key holding base64-encoded PNG bytes.
 pub const PREVIEW_META_KEY: &str = "preview_png";
+/// SQLite `meta` key holding base64-encoded binary STL bytes (#1290 QuickLook).
+pub const PREVIEW_STL_META_KEY: &str = "preview_stl";
 /// Silhouette outline radius in pixels — enough to read on light and dark backgrounds.
 const OUTLINE_RADIUS: i32 = 3;
 /// Extra margin beyond zoom-to-fit so the black outline is not clipped at the image edge.
@@ -71,6 +76,15 @@ pub fn document_preview_png(doc: &Document) -> Option<Vec<u8>> {
     preview.encode_png().ok()
 }
 
+/// Binary STL of all non-shadow body meshes for QuickLook (#1290). `None` when empty.
+pub fn document_preview_stl(doc: &Document) -> Option<Vec<u8>> {
+    let mesh = document_solid_mesh(doc);
+    if mesh.is_empty() {
+        return None;
+    }
+    Some(crate::stl::write_binary_stl("preview", &mesh))
+}
+
 /// Write a preview PNG of `doc` to `path` (scriptable via `bearcad.export_preview`).
 pub fn export_preview_png(doc: &Document, path: &str) -> Result<(), String> {
     let png = document_preview_png(doc).ok_or_else(|| {
@@ -91,6 +105,15 @@ pub fn attach_preview_after_save(path: &str, doc: &Document) {
     if let Err(e) = embed_preview_png(path, &png) {
         crate::diag::warn(format!("preview embed failed for {path}: {e}"));
     }
+    // Mesh snapshot for macOS QuickLook interactive rotate (#1290). Independent of PNG.
+    match document_preview_stl(doc) {
+        Some(stl) => {
+            if let Err(e) = embed_preview_stl(path, &stl) {
+                crate::diag::warn(format!("preview STL embed failed for {path}: {e}"));
+            }
+        }
+        None => clear_embedded_preview_stl(path),
+    }
     if let Err(e) = apply_os_preview(path, &png) {
         crate::diag::warn(format!("preview OS publish failed for {path}: {e}"));
     }
@@ -102,11 +125,22 @@ pub fn attach_preview_after_save(_path: &str, _doc: &Document) {}
 /// Read the embedded preview PNG from a `.bearcad` SQLite file (tests / tooling).
 #[cfg(all(not(target_arch = "wasm32"), test))]
 pub fn load_embedded_preview_png(path: &str) -> Option<Vec<u8>> {
+    load_embedded_meta_b64(path, PREVIEW_META_KEY)
+}
+
+/// Read the embedded preview STL from a `.bearcad` SQLite file (tests / tooling / QL).
+#[cfg(all(not(target_arch = "wasm32"), test))]
+pub fn load_embedded_preview_stl(path: &str) -> Option<Vec<u8>> {
+    load_embedded_meta_b64(path, PREVIEW_STL_META_KEY)
+}
+
+#[cfg(all(not(target_arch = "wasm32"), test))]
+fn load_embedded_meta_b64(path: &str, key: &str) -> Option<Vec<u8>> {
     let conn = rusqlite::Connection::open(path).ok()?;
     let b64: String = conn
         .query_row(
             "SELECT value FROM meta WHERE key = ?1",
-            rusqlite::params![PREVIEW_META_KEY],
+            rusqlite::params![key],
             |row| row.get(0),
         )
         .ok()?;
@@ -427,16 +461,26 @@ fn draw_line(pixels: &mut [u8], size: i32, x0: f32, y0: f32, x1: f32, y1: f32, c
 // ── embed in SQLite ──────────────────────────────────────────────────────────
 
 #[cfg(not(target_arch = "wasm32"))]
-fn embed_preview_png(path: &str, png: &[u8]) -> Result<(), String> {
+fn embed_meta_b64(path: &str, key: &str, bytes: &[u8]) -> Result<(), String> {
     use base64::Engine as _;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(png);
+    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
     let conn = rusqlite::Connection::open(path).map_err(|e| e.to_string())?;
     conn.execute(
         "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
-        rusqlite::params![PREVIEW_META_KEY, b64],
+        rusqlite::params![key, b64],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn embed_preview_png(path: &str, png: &[u8]) -> Result<(), String> {
+    embed_meta_b64(path, PREVIEW_META_KEY, png)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn embed_preview_stl(path: &str, stl: &[u8]) -> Result<(), String> {
+    embed_meta_b64(path, PREVIEW_STL_META_KEY, stl)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -445,6 +489,20 @@ fn clear_embedded_preview(path: &str) {
         let _ = conn.execute(
             "DELETE FROM meta WHERE key = ?1",
             rusqlite::params![PREVIEW_META_KEY],
+        );
+        let _ = conn.execute(
+            "DELETE FROM meta WHERE key = ?1",
+            rusqlite::params![PREVIEW_STL_META_KEY],
+        );
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn clear_embedded_preview_stl(path: &str) {
+    if let Ok(conn) = rusqlite::Connection::open(path) {
+        let _ = conn.execute(
+            "DELETE FROM meta WHERE key = ?1",
+            rusqlite::params![PREVIEW_STL_META_KEY],
         );
     }
 }
@@ -848,6 +906,46 @@ mod tests {
         assert_eq!(loaded.bodies.len(), 1);
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// #1290: save embeds a binary STL mesh so the macOS QuickLook extension can show an
+    /// interactive SceneKit rotate preview (same gesture as system STL).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn save_embeds_preview_stl_meta() {
+        let doc = cube_document();
+        let path = std::env::temp_dir().join("bearcad_preview_stl_embed_test.bearcad");
+        let path_s = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        crate::storage::save(&path_s, &doc).expect("save");
+        attach_preview_after_save(&path_s, &doc);
+
+        let stl = load_embedded_preview_stl(&path_s).expect("save should embed preview_stl meta");
+        // Binary STL: 80-byte header + u32 count + 50 bytes/tri. A cube has 12 tris.
+        assert!(stl.len() >= 84, "binary STL too short: {}", stl.len());
+        let count = u32::from_le_bytes(stl[80..84].try_into().unwrap());
+        assert_eq!(count, 12, "cube should export 12 triangles");
+        assert_eq!(stl.len(), 84 + 12 * 50);
+        // Round-trip through the public parser.
+        let tris = crate::stl::parse_stl(&stl).expect("embedded STL must parse");
+        assert_eq!(tris.len(), 12);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn document_preview_stl_from_imported_mesh() {
+        let doc = cube_document();
+        let stl = document_preview_stl(&doc).expect("cube must produce preview STL");
+        let count = u32::from_le_bytes(stl[80..84].try_into().unwrap());
+        assert_eq!(count, 12);
+    }
+
+    #[test]
+    fn empty_document_has_no_preview_stl() {
+        let doc = Document::default();
+        assert!(document_preview_stl(&doc).is_none());
     }
 
     #[test]
