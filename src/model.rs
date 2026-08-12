@@ -1383,6 +1383,12 @@ pub enum BodySource {
         target: usize,
         #[serde(default)]
         instance: usize,
+        /// Extrusions fused onto this instance after the repeat (#1345).
+        #[serde(default)]
+        add: Vec<ExtrusionKey>,
+        /// Extrusions cut from this instance after the repeat (#1345).
+        #[serde(default)]
+        cut: Vec<ExtrusionKey>,
     },
     /// The moved copy of one input of a move operation (Move tool): `op` indexes
     /// `Document::move_ops`, `target` is the position within that operation's input list.
@@ -1391,6 +1397,12 @@ pub enum BodySource {
         op: MoveOpKey,
         #[serde(default)]
         target: usize,
+        /// Extrusions fused onto the moved solid after the move (#1345).
+        #[serde(default)]
+        add: Vec<ExtrusionKey>,
+        /// Extrusions cut from the moved solid after the move (#1345).
+        #[serde(default)]
+        cut: Vec<ExtrusionKey>,
     },
     /// The reflected copy of one input of a mirror operation (Mirror tool, #523): `op`
     /// indexes `Document::mirror_ops`, `target` is the input's position within that
@@ -1401,6 +1413,12 @@ pub enum BodySource {
         op: MirrorOpKey,
         #[serde(default)]
         target: usize,
+        /// Extrusions fused onto the reflection after the mirror (#1345).
+        #[serde(default)]
+        add: Vec<ExtrusionKey>,
+        /// Extrusions cut from the reflection after the mirror (#1345).
+        #[serde(default)]
+        cut: Vec<ExtrusionKey>,
     },
     /// One output solid of a boolean operation (Combine tool): `op` indexes
     /// `Document::boolean_ops`, `solid` is the ordinal of this body's solid within the
@@ -1429,6 +1447,12 @@ pub enum BodySource {
         target: usize,
         #[serde(default)]
         piece: usize,
+        /// Extrusions fused onto this fragment after the slice (#1345).
+        #[serde(default)]
+        add: Vec<ExtrusionKey>,
+        /// Extrusions cut from this fragment after the slice (#1345).
+        #[serde(default)]
+        cut: Vec<ExtrusionKey>,
     },
     /// The hollowed output of one input of a shell operation (Shell tool, #1156): `op`
     /// indexes `Document::shell_ops`, `target` is the input's position in the op's target
@@ -1456,6 +1480,12 @@ pub enum BodySource {
         op: EdgeTreatmentOpKey,
         #[serde(default)]
         target: usize,
+        /// Extrusions fused onto the beveled solid after the treatment (#1345).
+        #[serde(default)]
+        add: Vec<ExtrusionKey>,
+        /// Extrusions cut from the beveled solid after the treatment (#1345).
+        #[serde(default)]
+        cut: Vec<ExtrusionKey>,
     },
     /// Additive extrusions with one or more extrusions **subtracted** (cut) from them (#35).
     /// Purely-additive bodies stay in the `Extrusion`/`Extrusions` forms; a body only takes
@@ -1499,18 +1529,18 @@ impl BodySource {
         match self {
             Self::Extrusion(index) => std::slice::from_ref(index),
             Self::Extrusions(indices) => indices.as_slice(),
-            Self::Solid { add, .. } | Self::Shelled { add, .. } | Self::Boolean { add, .. } => {
-                add.as_slice()
-            }
+            Self::Solid { add, .. }
+            | Self::Shelled { add, .. }
+            | Self::Boolean { add, .. }
+            | Self::Moved { add, .. }
+            | Self::Mirrored { add, .. }
+            | Self::Repeated { add, .. }
+            | Self::Sliced { add, .. }
+            | Self::EdgeTreated { add, .. } => add.as_slice(),
             Self::Loft(_)
             | Self::Revolve(_)
             | Self::Primitive(_)
             | Self::Sweep(_)
-            | Self::Moved { .. }
-            | Self::Mirrored { .. }
-            | Self::Repeated { .. }
-            | Self::Sliced { .. }
-            | Self::EdgeTreated { .. }
             | Self::UnitInstance(_)
             | Self::UnitCut { .. } => &[],
             Self::Imported(_) => &[],
@@ -1518,13 +1548,19 @@ impl BodySource {
     }
 
     /// Extrusions **subtracted** (cut) from the body (#35). Empty for every non-`Solid`
-    /// form except a unit cut (#726), a shelled body with post-shell cuts (#1168), and a
-    /// combined body with post-boolean cuts (#1338).
+    /// form except a unit cut (#726), a shelled body with post-shell cuts (#1168), a
+    /// combined body with post-boolean cuts (#1338), and the other op-produced sources
+    /// that keep post-op add/cut lists (#1345).
     pub fn cut_extrusion_indices(&self) -> &[ExtrusionKey] {
         match self {
-            Self::Solid { cut, .. } | Self::Shelled { cut, .. } | Self::Boolean { cut, .. } => {
-                cut.as_slice()
-            }
+            Self::Solid { cut, .. }
+            | Self::Shelled { cut, .. }
+            | Self::Boolean { cut, .. }
+            | Self::Moved { cut, .. }
+            | Self::Mirrored { cut, .. }
+            | Self::Repeated { cut, .. }
+            | Self::Sliced { cut, .. }
+            | Self::EdgeTreated { cut, .. } => cut.as_slice(),
             Self::UnitCut { cut, .. } => cut.as_slice(),
             Self::Extrusion(_)
             | Self::Extrusions(_)
@@ -1533,11 +1569,6 @@ impl BodySource {
             | Self::Revolve(_)
             | Self::Primitive(_)
             | Self::Sweep(_)
-            | Self::Moved { .. }
-            | Self::Mirrored { .. }
-            | Self::Repeated { .. }
-            | Self::Sliced { .. }
-            | Self::EdgeTreated { .. }
             | Self::UnitInstance(_) => &[],
         }
     }
@@ -1576,9 +1607,14 @@ impl BodySource {
                 *self = Self::Extrusions(vec![*existing, extrusion]);
             }
             Self::Extrusions(indices) => indices.push(extrusion),
-            Self::Solid { add, .. } | Self::Shelled { add, .. } | Self::Boolean { add, .. } => {
-                add.push(extrusion)
-            }
+            Self::Solid { add, .. }
+            | Self::Shelled { add, .. }
+            | Self::Boolean { add, .. }
+            | Self::Moved { add, .. }
+            | Self::Mirrored { add, .. }
+            | Self::Repeated { add, .. }
+            | Self::Sliced { add, .. }
+            | Self::EdgeTreated { add, .. } => add.push(extrusion),
             // A primitive base takes its first added extrusion by becoming a `Solid` whose
             // base is that primitive (#1104); further adds push onto the list.
             Self::Primitive(pi) => {
@@ -1594,11 +1630,6 @@ impl BodySource {
             | Self::Loft(_)
             | Self::Revolve(_)
             | Self::Sweep(_)
-            | Self::Moved { .. }
-            | Self::Mirrored { .. }
-            | Self::Repeated { .. }
-            | Self::Sliced { .. }
-            | Self::EdgeTreated { .. }
             | Self::UnitInstance(_)
             | Self::UnitCut { .. } => {}
         }
@@ -1622,9 +1653,14 @@ impl BodySource {
                     cut: vec![extrusion],
                 };
             }
-            Self::Solid { cut, .. } | Self::Shelled { cut, .. } | Self::Boolean { cut, .. } => {
-                cut.push(extrusion)
-            }
+            Self::Solid { cut, .. }
+            | Self::Shelled { cut, .. }
+            | Self::Boolean { cut, .. }
+            | Self::Moved { cut, .. }
+            | Self::Mirrored { cut, .. }
+            | Self::Repeated { cut, .. }
+            | Self::Sliced { cut, .. }
+            | Self::EdgeTreated { cut, .. } => cut.push(extrusion),
             // A primitive base takes its first cut by becoming a `Solid` whose base is that
             // primitive (#1104); the cut list starts with this extrusion.
             Self::Primitive(pi) => {
@@ -1637,16 +1673,8 @@ impl BodySource {
             // A unit-cut body takes further cuts (#726).
             Self::UnitCut { cut, .. } => cut.push(extrusion),
             // An imported mesh body has no solid feature to cut; unreachable in practice.
-            Self::Imported(_)
-            | Self::Loft(_)
-            | Self::Revolve(_)
-            | Self::Sweep(_)
-            | Self::Moved { .. }
-            | Self::Mirrored { .. }
-            | Self::Repeated { .. }
-            | Self::Sliced { .. }
-            | Self::EdgeTreated { .. }
-            | Self::UnitInstance(_) => {}
+            Self::Imported(_) | Self::Loft(_) | Self::Revolve(_) | Self::Sweep(_) | Self::UnitInstance(_) => {
+            }
         }
     }
 
@@ -1692,6 +1720,15 @@ impl BodySource {
                 add.retain(|&ei| ei != extrusion);
                 cut.retain(|&ei| ei != extrusion);
             }
+            // Other op-produced bodies keep their form; empty add/cut is the pure op (#1345).
+            Self::Moved { add, cut, .. }
+            | Self::Mirrored { add, cut, .. }
+            | Self::Repeated { add, cut, .. }
+            | Self::Sliced { add, cut, .. }
+            | Self::EdgeTreated { add, cut, .. } => {
+                add.retain(|&ei| ei != extrusion);
+                cut.retain(|&ei| ei != extrusion);
+            }
             // A unit cut keeps its form with an empty list (#726): it then reads as the
             // intact unit; the sync pass re-shadows accordingly.
             Self::UnitCut { cut, .. } => {
@@ -1703,11 +1740,6 @@ impl BodySource {
             | Self::Revolve(_)
             | Self::Primitive(_)
             | Self::Sweep(_)
-            | Self::Moved { .. }
-            | Self::Mirrored { .. }
-            | Self::Repeated { .. }
-            | Self::Sliced { .. }
-            | Self::EdgeTreated { .. }
             | Self::UnitInstance(_) => {}
         }
     }
@@ -1732,8 +1764,13 @@ impl BodySource {
             Self::Solid { add, cut, .. } | Self::Shelled { add, cut, .. } => {
                 add.last().copied().or_else(|| cut.last().copied())
             }
-            // In-place cuts stay under the Combine op; only a fused add re-parents (#1338).
-            Self::Boolean { add, .. } => add.last().copied(),
+            // In-place cuts stay under the op; only a fused add re-parents (#1338/#1345).
+            Self::Boolean { add, .. }
+            | Self::Moved { add, .. }
+            | Self::Mirrored { add, .. }
+            | Self::Repeated { add, .. }
+            | Self::Sliced { add, .. }
+            | Self::EdgeTreated { add, .. } => add.last().copied(),
             _ => None,
         }
     }
@@ -1809,6 +1846,86 @@ impl BodySource {
                     target: *target,
                     add,
                     cut,
+                })
+            }
+            // Peel a fused add; the op output remains when add/cut are empty (#1345).
+            Self::Moved { op, target, add, cut } => {
+                if add.last().copied() != Some(extrusion) {
+                    return None;
+                }
+                let add: Vec<ExtrusionKey> =
+                    add.iter().copied().filter(|&e| e != extrusion).collect();
+                Some(Self::Moved {
+                    op: *op,
+                    target: *target,
+                    add,
+                    cut: cut.clone(),
+                })
+            }
+            Self::Mirrored { op, target, add, cut } => {
+                if add.last().copied() != Some(extrusion) {
+                    return None;
+                }
+                let add: Vec<ExtrusionKey> =
+                    add.iter().copied().filter(|&e| e != extrusion).collect();
+                Some(Self::Mirrored {
+                    op: *op,
+                    target: *target,
+                    add,
+                    cut: cut.clone(),
+                })
+            }
+            Self::Repeated {
+                op,
+                target,
+                instance,
+                add,
+                cut,
+            } => {
+                if add.last().copied() != Some(extrusion) {
+                    return None;
+                }
+                let add: Vec<ExtrusionKey> =
+                    add.iter().copied().filter(|&e| e != extrusion).collect();
+                Some(Self::Repeated {
+                    op: *op,
+                    target: *target,
+                    instance: *instance,
+                    add,
+                    cut: cut.clone(),
+                })
+            }
+            Self::Sliced {
+                op,
+                target,
+                piece,
+                add,
+                cut,
+            } => {
+                if add.last().copied() != Some(extrusion) {
+                    return None;
+                }
+                let add: Vec<ExtrusionKey> =
+                    add.iter().copied().filter(|&e| e != extrusion).collect();
+                Some(Self::Sliced {
+                    op: *op,
+                    target: *target,
+                    piece: *piece,
+                    add,
+                    cut: cut.clone(),
+                })
+            }
+            Self::EdgeTreated { op, target, add, cut } => {
+                if add.last().copied() != Some(extrusion) {
+                    return None;
+                }
+                let add: Vec<ExtrusionKey> =
+                    add.iter().copied().filter(|&e| e != extrusion).collect();
+                Some(Self::EdgeTreated {
+                    op: *op,
+                    target: *target,
+                    add,
+                    cut: cut.clone(),
                 })
             }
             _ => None,
@@ -5775,6 +5892,60 @@ mod tests {
             "cut into a combined body must stick to that body"
         );
         assert!(src.extrusion_indices().is_empty());
+    }
+
+    /// #1345: a cut into a Move/Slice/Mirror/Repeat/fillet result must record the
+    /// extrusion on that live body instead of silently no-op'ing (same class as #1338).
+    #[test]
+    fn op_produced_body_sources_record_a_cut_extrusion() {
+        let ei = extrusion_key_for_slot(1);
+        let cases = [
+            BodySource::Moved {
+                op: move_op_key_for_slot(0),
+                target: 0,
+                add: Vec::new(),
+                cut: Vec::new(),
+            },
+            BodySource::Sliced {
+                op: slice_op_key_for_slot(0),
+                target: 0,
+                piece: 0,
+                add: Vec::new(),
+                cut: Vec::new(),
+            },
+            BodySource::Mirrored {
+                op: mirror_op_key_for_slot(0),
+                target: 0,
+                add: Vec::new(),
+                cut: Vec::new(),
+            },
+            BodySource::Repeated {
+                op: repeat_op_key_for_slot(0),
+                target: 0,
+                instance: 1,
+                add: Vec::new(),
+                cut: Vec::new(),
+            },
+            BodySource::EdgeTreated {
+                op: edge_treatment_op_key_for_slot(0),
+                target: 0,
+                add: Vec::new(),
+                cut: Vec::new(),
+            },
+        ];
+        for mut src in cases {
+            let label = format!("{src:?}");
+            src.append_cut_extrusion(ei);
+            assert_eq!(
+                src.cut_extrusion_indices(),
+                [ei],
+                "cut into {label} must stick to that body"
+            );
+            assert!(
+                src.extrusion_indices().is_empty(),
+                "cut into {label} must not land as an add"
+            );
+        }
     }
 
     /// #1104: adding/cutting an extrusion on a Shape-tool body turns Primitive into Solid

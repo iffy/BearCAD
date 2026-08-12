@@ -861,17 +861,43 @@ fn occt_body_shape_uncached(
             let base = occt_boolean_output_shape(doc, op, solid)?;
             return occt_fuse_then_cut_extrusions(doc, base, add, cut);
         }
-        crate::model::BodySource::Moved { op, target } => {
-            return occt_moved_output_shape(doc, op, target);
+        crate::model::BodySource::Moved {
+            op,
+            target,
+            ref add,
+            ref cut,
+        } => {
+            let base = occt_moved_output_shape(doc, op, target)?;
+            return occt_fuse_then_cut_extrusions(doc, base, add, cut);
         }
-        crate::model::BodySource::Mirrored { op, target } => {
-            return occt_mirrored_output_shape(doc, op, target);
+        crate::model::BodySource::Mirrored {
+            op,
+            target,
+            ref add,
+            ref cut,
+        } => {
+            let base = occt_mirrored_output_shape(doc, op, target)?;
+            return occt_fuse_then_cut_extrusions(doc, base, add, cut);
         }
-        crate::model::BodySource::Repeated { op, target, instance } => {
-            return occt_repeated_output_shape(doc, op, target, instance);
+        crate::model::BodySource::Repeated {
+            op,
+            target,
+            instance,
+            ref add,
+            ref cut,
+        } => {
+            let base = occt_repeated_output_shape(doc, op, target, instance)?;
+            return occt_fuse_then_cut_extrusions(doc, base, add, cut);
         }
-        crate::model::BodySource::Sliced { op, target, piece } => {
-            return occt_sliced_output_shape(doc, op, target, piece);
+        crate::model::BodySource::Sliced {
+            op,
+            target,
+            piece,
+            ref add,
+            ref cut,
+        } => {
+            let base = occt_sliced_output_shape(doc, op, target, piece)?;
+            return occt_fuse_then_cut_extrusions(doc, base, add, cut);
         }
         crate::model::BodySource::Shelled {
             op,
@@ -883,8 +909,14 @@ fn occt_body_shape_uncached(
             let hollow = occt_shelled_output_shape(doc, op, target)?;
             return occt_fuse_then_cut_extrusions(doc, hollow, add, cut);
         }
-        crate::model::BodySource::EdgeTreated { op, target } => {
-            return occt_edge_treated_output_shape(doc, op, target);
+        crate::model::BodySource::EdgeTreated {
+            op,
+            target,
+            ref add,
+            ref cut,
+        } => {
+            let base = occt_edge_treated_output_shape(doc, op, target)?;
+            return occt_fuse_then_cut_extrusions(doc, base, add, cut);
         }
         // A unit instance's fused, placed kernel solid (#726).
         crate::model::BodySource::UnitInstance(instance) => {
@@ -1914,7 +1946,7 @@ pub fn edge_treatments_leading_to(
         let Some(b) = doc.bodies.get(current) else {
             break;
         };
-        let crate::model::BodySource::EdgeTreated { op, target } = b.source else {
+        let crate::model::BodySource::EdgeTreated { op, target, .. } = b.source else {
             break;
         };
         let Some(operation) = doc.edge_treatment_ops.get(op) else {
@@ -1955,7 +1987,7 @@ pub fn body_is_edge_treated_from_extrusion(
             return false;
         };
         match b.source {
-            crate::model::BodySource::EdgeTreated { op, target } => {
+            crate::model::BodySource::EdgeTreated { op, target, .. } => {
                 let Some(operation) = doc.edge_treatment_ops.get(op) else {
                     return false;
                 };
@@ -5159,6 +5191,42 @@ fn body_solid_mesh_for_face_key(
             add,
             cut,
         } if !add.is_empty() || !cut.is_empty() => occt_shelled_output_shape(doc, *op, *target),
+        crate::model::BodySource::Moved {
+            op,
+            target,
+            add,
+            cut,
+        } if !add.is_empty() || !cut.is_empty() => occt_moved_output_shape(doc, *op, *target),
+        crate::model::BodySource::Mirrored {
+            op,
+            target,
+            add,
+            cut,
+        } if !add.is_empty() || !cut.is_empty() => occt_mirrored_output_shape(doc, *op, *target),
+        crate::model::BodySource::Repeated {
+            op,
+            target,
+            instance,
+            add,
+            cut,
+        } if !add.is_empty() || !cut.is_empty() => {
+            occt_repeated_output_shape(doc, *op, *target, *instance)
+        }
+        crate::model::BodySource::Sliced {
+            op,
+            target,
+            piece,
+            add,
+            cut,
+        } if !add.is_empty() || !cut.is_empty() => {
+            occt_sliced_output_shape(doc, *op, *target, *piece)
+        }
+        crate::model::BodySource::EdgeTreated {
+            op,
+            target,
+            add,
+            cut,
+        } if !add.is_empty() || !cut.is_empty() => occt_edge_treated_output_shape(doc, *op, *target),
         _ => return body_solid_mesh(doc, body),
     };
     let tris = base?.tessellate(OCCT_DEFLECTION as f64);
@@ -6387,80 +6455,107 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: crate::model::BodyKey) -
         return (!triangles.is_empty()).then_some(SolidMesh { triangles });
     }
 
-    if let crate::model::BodySource::Repeated { op, target, instance } = body.source {
-        let rp = doc.repeat_ops.get(op)?;
-        let &input = rp.targets.get(target)?;
-        if input == body_index {
-            return None;
+    if let crate::model::BodySource::Repeated {
+        op,
+        target,
+        instance,
+        ref add,
+        ref cut,
+    } = body.source
+    {
+        // Pure repeat meshes by transforming the input; fused add/cut go through
+        // `occt_body_shape` below so a post-repeat cut shows up (#1345).
+        if add.is_empty() && cut.is_empty() {
+            let rp = doc.repeat_ops.get(op)?;
+            let &input = rp.targets.get(target)?;
+            if input == body_index {
+                return None;
+            }
+            let m = repeat_instance_transform(doc, rp, instance)?;
+            let source = body_solid_mesh_uncached(doc, input)?;
+            let triangles = source
+                .triangles
+                .iter()
+                .map(|tri| {
+                    [
+                        m.transform_point3(tri[0]),
+                        m.transform_point3(tri[1]),
+                        m.transform_point3(tri[2]),
+                    ]
+                })
+                .collect();
+            return Some(SolidMesh { triangles });
         }
-        let m = repeat_instance_transform(doc, rp, instance)?;
-        let source = body_solid_mesh_uncached(doc, input)?;
-        let triangles = source
-            .triangles
-            .iter()
-            .map(|tri| {
-                [
-                    m.transform_point3(tri[0]),
-                    m.transform_point3(tri[1]),
-                    m.transform_point3(tri[2]),
-                ]
-            })
-            .collect();
-        return Some(SolidMesh { triangles });
     }
-    if let crate::model::BodySource::Moved { op, target } = body.source {
-        let mv = doc.move_ops.get(op)?;
-        let &input = mv.targets.get(target)?;
-        if input == body_index {
-            return None;
+    if let crate::model::BodySource::Moved {
+        op,
+        target,
+        ref add,
+        ref cut,
+    } = body.source
+    {
+        if add.is_empty() && cut.is_empty() {
+            let mv = doc.move_ops.get(op)?;
+            let &input = mv.targets.get(target)?;
+            if input == body_index {
+                return None;
+            }
+            let m = move_op_transform(doc, mv)?;
+            // The uncached inner fn: this runs inside the mesh cache's own borrow, so going
+            // through the cached wrapper would double-borrow the RefCell.
+            let source = body_solid_mesh_uncached(doc, input)?;
+            let triangles = source
+                .triangles
+                .iter()
+                .map(|tri| {
+                    [
+                        m.transform_point3(tri[0]),
+                        m.transform_point3(tri[1]),
+                        m.transform_point3(tri[2]),
+                    ]
+                })
+                .collect();
+            return Some(SolidMesh { triangles });
         }
-        let m = move_op_transform(doc, mv)?;
-        // The uncached inner fn: this runs inside the mesh cache's own borrow, so going
-        // through the cached wrapper would double-borrow the RefCell.
-        let source = body_solid_mesh_uncached(doc, input)?;
-        let triangles = source
-            .triangles
-            .iter()
-            .map(|tri| {
-                [
-                    m.transform_point3(tri[0]),
-                    m.transform_point3(tri[1]),
-                    m.transform_point3(tri[2]),
-                ]
-            })
-            .collect();
-        return Some(SolidMesh { triangles });
     }
-    if let crate::model::BodySource::Mirrored { op, target } = body.source {
-        let mr = doc.mirror_ops.get(op)?;
-        let &input = mr.targets.get(target)?;
-        if input == body_index {
-            return None;
+    if let crate::model::BodySource::Mirrored {
+        op,
+        target,
+        ref add,
+        ref cut,
+    } = body.source
+    {
+        if add.is_empty() && cut.is_empty() {
+            let mr = doc.mirror_ops.get(op)?;
+            let &input = mr.targets.get(target)?;
+            if input == body_index {
+                return None;
+            }
+            // Join/Cut outputs are a real boolean against the source (#639), so they come from the
+            // kernel and tessellate — like Boolean and Slice outputs. A plain reflection stays on
+            // the cheap transform path so the lean build still mirrors.
+            if mr.mode.consumes_input() {
+                let shape = occt_mirrored_output_shape(doc, op, target)?;
+                let tris = shape.tessellate(OCCT_DEFLECTION as f64);
+                return (!tris.is_empty()).then_some(SolidMesh { triangles: tris });
+            }
+            let m = mirror_op_transform(doc, mr)?;
+            let source = body_solid_mesh_uncached(doc, input)?;
+            // A reflection flips handedness, so reverse each triangle's winding (swap two
+            // vertices) to keep its outward normal pointing out.
+            let triangles = source
+                .triangles
+                .iter()
+                .map(|tri| {
+                    [
+                        m.transform_point3(tri[0]),
+                        m.transform_point3(tri[2]),
+                        m.transform_point3(tri[1]),
+                    ]
+                })
+                .collect();
+            return Some(SolidMesh { triangles });
         }
-        // Join/Cut outputs are a real boolean against the source (#639), so they come from the
-        // kernel and tessellate — like Boolean and Slice outputs. A plain reflection stays on
-        // the cheap transform path so the lean build still mirrors.
-        if mr.mode.consumes_input() {
-            let shape = occt_mirrored_output_shape(doc, op, target)?;
-            let tris = shape.tessellate(OCCT_DEFLECTION as f64);
-            return (!tris.is_empty()).then_some(SolidMesh { triangles: tris });
-        }
-        let m = mirror_op_transform(doc, mr)?;
-        let source = body_solid_mesh_uncached(doc, input)?;
-        // A reflection flips handedness, so reverse each triangle's winding (swap two
-        // vertices) to keep its outward normal pointing out.
-        let triangles = source
-            .triangles
-            .iter()
-            .map(|tri| {
-                [
-                    m.transform_point3(tri[0]),
-                    m.transform_point3(tri[2]),
-                    m.transform_point3(tri[1]),
-                ]
-            })
-            .collect();
-        return Some(SolidMesh { triangles });
     }
     if let crate::model::BodySource::Boolean {
         op,
@@ -6477,22 +6572,40 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: crate::model::BodyKey) -
             return (!tris.is_empty()).then_some(SolidMesh { triangles: tris });
         }
     }
-    if let crate::model::BodySource::EdgeTreated { op, target } = body.source {
-        // Kernel first: primitive-hosted edges have no extrusion to splice onto (#1329),
-        // and an extrusion-hosted op still prefers the true BREP when the kernel can
-        // build it. Mesh-bevel fallback keeps the no-kernel path working.
-        if let Some(shape) = occt_edge_treated_output_shape(doc, op, target) {
-            let tris = shape.tessellate(OCCT_DEFLECTION as f64);
-            if !tris.is_empty() {
-                return Some(SolidMesh { triangles: tris });
+    if let crate::model::BodySource::EdgeTreated {
+        op,
+        target,
+        ref add,
+        ref cut,
+    } = body.source
+    {
+        // Pure treated meshes directly; fused add/cut go through `occt_body_shape` below
+        // so a post-fillet cut shows up (#1345).
+        if add.is_empty() && cut.is_empty() {
+            // Kernel first: primitive-hosted edges have no extrusion to splice onto (#1329),
+            // and an extrusion-hosted op still prefers the true BREP when the kernel can
+            // build it. Mesh-bevel fallback keeps the no-kernel path working.
+            if let Some(shape) = occt_edge_treated_output_shape(doc, op, target) {
+                let tris = shape.tessellate(OCCT_DEFLECTION as f64);
+                if !tris.is_empty() {
+                    return Some(SolidMesh { triangles: tris });
+                }
             }
+            let (clone, input) = edge_treated_input_doc(doc, op, target)?;
+            return body_solid_mesh_uncached(&clone, input);
         }
-        let (clone, input) = edge_treated_input_doc(doc, op, target)?;
-        return body_solid_mesh_uncached(&clone, input);
     }
-    if let crate::model::BodySource::Sliced { op, target, piece } = body.source {
-        // Slice fragments are kernel-computed; shadow inputs keep their own meshes.
-        {
+    if let crate::model::BodySource::Sliced {
+        op,
+        target,
+        piece,
+        ref add,
+        ref cut,
+    } = body.source
+    {
+        // Pure slice fragments mesh directly; fused add/cut go through `occt_body_shape`
+        // below so a post-slice cut shows up (#1345).
+        if add.is_empty() && cut.is_empty() {
             let shape = occt_sliced_output_shape(doc, op, target, piece)?;
             let tris = shape.tessellate(OCCT_DEFLECTION as f64);
             return (!tris.is_empty()).then_some(SolidMesh { triangles: tris });
@@ -10637,7 +10750,12 @@ mod tests {
             face_offset: String::new(),
         });
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Moved { op: mopkey(0), target: 0 },
+            source: crate::model::BodySource::Moved {
+                op: mopkey(0),
+                target: 0,
+                add: Vec::new(),
+                cut: Vec::new(),
+            },
             material: None,
             name: None,
             shadow: false,
@@ -11295,7 +11413,12 @@ mod tests {
             face_offset: String::new(),
         });
         doc.bodies.insert(Body {
-            source: BodySource::Moved { op: mopkey(0), target: 0 },
+            source: BodySource::Moved {
+                op: mopkey(0),
+                target: 0,
+                add: Vec::new(),
+                cut: Vec::new(),
+            },
             material: None,
             name: None,
             shadow: false,

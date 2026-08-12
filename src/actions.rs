@@ -5650,7 +5650,12 @@ impl AppState {
             let mut trial_outputs = Vec::new();
             for target in 0..targets.len() {
                 trial_outputs.push(trial.bodies.insert(Body {
-                    source: BodySource::EdgeTreated { op: op_index, target },
+                    source: BodySource::EdgeTreated {
+                        op: op_index,
+                        target,
+                        add: Vec::new(),
+                        cut: Vec::new(),
+                    },
                     material: None,
                     name: None,
                     shadow: false,
@@ -5680,7 +5685,12 @@ impl AppState {
         let mut outputs = Vec::new();
         for target in 0..targets.len() {
             outputs.push(self.doc.bodies.insert(Body {
-                source: BodySource::EdgeTreated { op: op_index, target },
+                source: BodySource::EdgeTreated {
+                    op: op_index,
+                    target,
+                    add: Vec::new(),
+                    cut: Vec::new(),
+                },
                 material: None,
                 name: None,
                 shadow: false,
@@ -12762,6 +12772,8 @@ impl AppState {
                                 op: op_index,
                                 target: ti,
                                 instance,
+                                add: Vec::new(),
+                                cut: Vec::new(),
                             },
                             material: None,
                             name: None,
@@ -13599,6 +13611,8 @@ op,
                         source: crate::model::BodySource::Moved {
                             op: op_index,
                             target: ordinal,
+                            add: Vec::new(),
+                            cut: Vec::new(),
                         },
                         material: None,
                         name: None,
@@ -13703,7 +13717,12 @@ op,
                     let mut outputs = self.doc.move_ops[op].outputs.clone();
                     for ordinal in have..targets.len() {
                         outputs.push(self.doc.bodies.insert(crate::model::Body {
-                            source: crate::model::BodySource::Moved { op, target: ordinal },
+                            source: crate::model::BodySource::Moved {
+                                op,
+                                target: ordinal,
+                                add: Vec::new(),
+                                cut: Vec::new(),
+                            },
                             material: None,
                             name: None,
                             shadow: false,
@@ -13942,7 +13961,12 @@ op,
                 let mut outputs = Vec::with_capacity(targets.len());
                 for (ordinal, _) in targets.iter().enumerate() {
                     outputs.push(self.doc.bodies.insert(crate::model::Body {
-                        source: crate::model::BodySource::Mirrored { op: op_index, target: ordinal },
+                        source: crate::model::BodySource::Mirrored {
+                            op: op_index,
+                            target: ordinal,
+                            add: Vec::new(),
+                            cut: Vec::new(),
+                        },
                         material: None,
                         name: None,
                         shadow: false,
@@ -13999,7 +14023,12 @@ op,
                     let mut outputs = self.doc.mirror_ops[op].outputs.clone();
                     for ordinal in have..targets.len() {
                         outputs.push(self.doc.bodies.insert(crate::model::Body {
-                            source: crate::model::BodySource::Mirrored { op, target: ordinal },
+                            source: crate::model::BodySource::Mirrored {
+                                op,
+                                target: ordinal,
+                                add: Vec::new(),
+                                cut: Vec::new(),
+                            },
                             material: None,
                             name: None,
                             shadow: false,
@@ -14244,7 +14273,13 @@ op,
                 for (target, &pieces) in piece_counts.iter().enumerate() {
                     for piece in 0..pieces {
                         outputs.push(self.doc.bodies.insert(crate::model::Body {
-                            source: crate::model::BodySource::Sliced { op: op_index, target, piece },
+                            source: crate::model::BodySource::Sliced {
+                                op: op_index,
+                                target,
+                                piece,
+                                add: Vec::new(),
+                                cut: Vec::new(),
+                            },
                             material: None,
                             name: None,
                             shadow: false,
@@ -14338,15 +14373,32 @@ op,
                 let existing = self.doc.slice_ops[op].outputs.clone();
                 let mut outputs = Vec::with_capacity(desired.len());
                 for (i, &(target, piece)) in desired.iter().enumerate() {
-                    let source = crate::model::BodySource::Sliced { op, target, piece };
                     if let Some(&bi) = existing.get(i) {
                         if let Some(body) = self.doc.bodies.get_mut(bi) {
-                            body.source = source;
+                            let (add, cut) = match &body.source {
+                                crate::model::BodySource::Sliced { add, cut, .. } => {
+                                    (add.clone(), cut.clone())
+                                }
+                                _ => (Vec::new(), Vec::new()),
+                            };
+                            body.source = crate::model::BodySource::Sliced {
+                                op,
+                                target,
+                                piece,
+                                add,
+                                cut,
+                            };
                         }
                         outputs.push(bi);
                     } else {
                         outputs.push(self.doc.bodies.insert(crate::model::Body {
-                            source,
+                            source: crate::model::BodySource::Sliced {
+                                op,
+                                target,
+                                piece,
+                                add: Vec::new(),
+                                cut: Vec::new(),
+                            },
                             material: None,
                             name: None,
                             shadow: false,
@@ -16961,6 +17013,8 @@ pub fn rebuild_body_repeat(
                     op,
                     target: ti,
                     instance,
+                    add: Vec::new(),
+                    cut: Vec::new(),
                 },
                 material: None,
                 name: None,
@@ -16983,10 +17037,18 @@ pub fn rebuild_body_repeat(
             let instance = slot / targets.len() + 1;
             let ti = slot % targets.len();
             if let Some(body) = doc.bodies.get_mut(out) {
+                let (add, cut) = match &body.source {
+                    crate::model::BodySource::Repeated { add, cut, .. } => {
+                        (add.clone(), cut.clone())
+                    }
+                    _ => (Vec::new(), Vec::new()),
+                };
                 body.source = crate::model::BodySource::Repeated {
                     op,
                     target: ti,
                     instance,
+                    add,
+                    cut,
                 };
             }
         }

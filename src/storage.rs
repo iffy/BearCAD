@@ -2143,13 +2143,25 @@ mod tests {
             shadow: true,
         });
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Sliced { op: slckey(0), target: 0, piece: 0 },
+            source: crate::model::BodySource::Sliced {
+                op: slckey(0),
+                target: 0,
+                piece: 0,
+                add: Vec::new(),
+                cut: Vec::new(),
+            },
             material: None,
             name: Some("Top".to_string()),
             shadow: false,
         });
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Sliced { op: slckey(0), target: 0, piece: 1 },
+            source: crate::model::BodySource::Sliced {
+                op: slckey(0),
+                target: 0,
+                piece: 1,
+                add: Vec::new(),
+                cut: Vec::new(),
+            },
             material: None,
             name: Some("Bottom".to_string()),
             shadow: false,
