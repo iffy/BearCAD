@@ -5032,12 +5032,10 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   tutorial (`tutorial::TUTORIALS`); the whole row (status circle + title) is clickable and
   highlights on hover (#1252). Starting one opens a fresh document and resets the camera
   to the home view (#1261). Finishing a walkthrough reopens the pane when other tutorials
-  are still incomplete (#1289). Short walkthroughs come first; **Build an angle bracket**
-  is last (#1251).
+  are still incomplete (#1289).
 - **One action per step** when authoring (#1253): every click is its own step, every bit of
   typing is its own step — never combine a click with typing (or two clicks / two typed
-  values) in one step. The long bracket walkthrough predates this rule and is left alone;
-  every newer tutorial follows it. See the module docs on `tutorial`.
+  values) in one step. See the module docs on `tutorial`.
 - **First tutorial (`cube`)** (#1256–#1259/#1262): ultra-short beginner copy, no typing and
   no parameters — click a rectangle on the ground, extrude, Enter. After a tool is selected,
   placement steps use **world** orbs on the ground/face (not the toolbar button again).
@@ -5065,62 +5063,33 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   drawn as a `LayoutJob`: runs wrapped in **backticks** — parameter names, values, the
   exact letters to type — come out **monospace in their own blue** so they stand out from
   the prose (`tutorial::narration_spans`, #757). The ring is a **pulsing blue
-  orb that glides** between anchors so the eye can follow it; the bracket's
-  parameter stage is guided literally click by click (tap the name box, type leg,
-  tap the value box, press + — each with its own anchor,
-  `UiAnchor::{ParametersName, ParametersValue, ParametersAdd}` recorded by the pane,
-  the name-box tap detected via `ParametersPaneState::new_name_focused`), and
-  the profile-drawing step leads **vertex by vertex** around the sloppy outline
-  (`next_profile_point`), pointing at the **first profile vertex out on the XY plane** until
-  the sketch opens (#850) — the profile is drawn in the middle of that plane, not over the
-  origin, since the plane stands clear of it and the first click has to land on the plane to
-  open a sketch at all. The
-  squaring-up steps lead **click by click** too (#758/#761): each points the orb at the
-  first thing to click, then — once that's selected — at the second, and finally at the
-  **Context pane's constraint button** that applies it (#770; `StepAnchor::Guided` resolves
-  to a world point or a `UiAnchor::ConstraintButton` per frame, the pane reporting each
-  button's rect through egui memory). A stray pick leaves the orb pointing back at what's
-  still wanted, which is how a mis-click finds its way back — and while **anything the pair
-  doesn't include** is selected (the previous step's picks, most often) the orb points at
-  the first target with **no Shift hint**, since that click has to replace the selection
-  rather than add a third thing to it (#785). A line's orb sits at its
-  **midpoint by arc length** (#769), not at whichever vertex fell in the middle of its
-  polyline — for a straight line that was its end. A step that wants a **drag** rather than a click names the
+  orb that glides** between anchors so the eye can follow it. A step that wants a **drag**
+  rather than a click names the
   button in the pointer badge below and animates it (`Step::drag_hint`, #819/#882) — a
-  pointer blown sideways by cartoon wind gusts under the ring; the spin-the-view step uses
-  it. Anything to be **held with the click** — the Shift of a second pick, the right button
+  pointer blown sideways by cartoon wind gusts under the ring. Anything to be **held with the click** — the Shift of a second pick, the right button
   of a drag — reads as the orb's own select-arrow, a `+`, and the thing to hold, in big bold
   blue on a pill sitting **clear of the ring** (#759/#851/#877/#882,
   `Step::needs_shift`/`Step::drag_hint`, `draw_orb_pointer_combo`), above it when there's
-  room and below it otherwise, so it never covers the spot being pointed at. Steps whose target sits **under other geometry** — the base line
-  lying along the X axis, once it's been levelled — say **"Press space if it's too crowded to
+  room and below it otherwise, so it never covers the spot being pointed at. Steps whose target sits **under other geometry**
+  say **"Press space if it's too crowded to
   pick"** in the same blue just above the ring (`Step::key_hint`, #777/#853), which is how the
-  tutorial introduces the Selection Exploder. None of them is a keycap: a key-shaped badge
+  navigate tutorial introduces the Selection Exploder. None of them is a keycap: a key-shaped badge
   reads as something to click, and these are things to hold or press on the keyboard. A step whose work
   is a short **sequence** — click this, Shift+click that, press the button — shows **every mark
   at once, numbered** (`Step::marks`, `tutorial::GuideMark`, #854): the active one is the orb
   with its pointer, the rest are quieter rings, and each turns **green** as its part lands, so
-  the whole move is visible from the start. The narration is then one short sentence naming the
-  goal rather than a list of clicks (#846), and each parameter gets its own step (#849). It appears **once**, on the step where the base line first hides under
-  the axis, and only while the orb is on that first pick — not on the axis pick, not while a
-  dimension is being placed, and never while the orb is on a **button** rather than geometry
-  (#783/#784/#785/#813). A step can also name the **words to type**
+  the whole move is visible from the start. A step can also name the **words to type**
   (`Step::type_hint`, #778/#781/#848). Once the field **the orb marks** has the keyboard the
-  **guide itself becomes the instruction** (`typing_guide_takes_over`, #874 — the keyboard being
-  in the box *beside* it, like the parameter name box while the orb is on the value box, leaves
-  the ring up, since there's still a box to click): the ring gives way to a single box just above the field reading
+  **guide itself becomes the instruction** (`typing_guide_takes_over`, #874): the ring gives way to a single box just above the field reading
   *Use the keyboard to type* in white with the words in the monospace blue the narration gives
   code (`draw_orb_typing_guide`). There's nothing left to click once you're in the box, so the
   click guide steps aside rather than sitting there looking like a button.
   The box hangs off the **focused field's own rect** (`typing_guide_rect`, #868) — just above it,
   or below when the top of the window is in the way — so it never covers the floating dimension
   and diameter inputs, which open right where the orb is.
-  It's either fixed text or **computed from the state** (`TypeHint::Dynamic`) — the
-  parameter-list step names whichever parameter is still missing, one **box** at a time: its
-  name until that's typed, then its value (#782/#812) — and the orb walks the two boxes with
-  it (#832) — and a step holds
+  It's either fixed text or **computed from the state** (`TypeHint::Dynamic`), and a step holds
   its words back until the field that takes them exists (#786/#787/#789): a dimension's
-  value input after it's placed, the extrude's distance after a face is picked. The extrude
+  value input after it's placed. The extrude
   step's orb likewise moves from the toolbar button to the **profile face** once the tool is
   up, so the face to click is shown rather than described (#790).
   All three badges are bounded by the **window**, not the viewport, since an orb can be
@@ -5129,48 +5098,11 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   the committed label takes, so "click away from the line" is shown rather than described —
   and then onto the **value field** it opened (`UiAnchor::DimensionValue`, the floating input
   recording its own rect, #814), where the typing goes. The extrude steps do the same with
-  the tool's floating **distance** field (`UiAnchor::ExtrudeDistance`, #816). And before the
-  screw holes, a step of its own has you **spin the view** round to the flange's inside face
-  — it watches the camera and passes once you're looking at it, with "Spin it for me" for the
-  impatient (#817). Steps can
+  the tool's floating **distance** field (`UiAnchor::ExtrudeDistance`, #816). Steps can
   carry an **`on_enter` hook** that runs once when the tutorial lands on them going
   forward (never while reviewing with Back) — and again when a sketch opens (#875), since a
   sketch's own entry transition aims at the plane's origin and would throw the step's framing
-  away. The drawing step uses it to **glide the camera in over the profile area**
-  (`frame_profile_area`), so a user who happened to be zoomed way out gets comfortable click
-  targets; mid-transition it **re-aims** the sketch entry rather than replacing it
-  (`Camera::reaim_transition_at_bounds`), so the view still lands square on the plane. The
-  loose profile itself is drawn on the **corner of the plane nearest the origin** — clear of
-  the origin and both axes, close enough in to stay on camera (#875). The squaring-up stage is **one
-  constraint application per step** — the base parallel to the X axis, the two Parallel
-  pairs, then each end cap's Perpendicular — every predicate cumulative so working ahead
-  skips ahead. The base one is a **single pick** (#876): the pane's own axis button
-  (`AlongXAxis`, `6`) takes just the line, so that step is one click and one button rather
-  than a line, a Shift+click on the axis, and Parallel. Nothing is pinned to the origin
-  (#863): grounding the bracket there laid its base line straight along the X axis, where
-  clicking one without getting the other is needlessly fiddly. The profile stays where it was
-  drawn. The **bend fillets** are a step each, the orb on the
-  body's bend edge (`bend_edge_point` picks the extrusion-direction feature edge nearest the
-  inner or outer bend corner, #791), with a **spin step between them** — the outside of the
-  bend sits round the back, so a step of its own has you right-drag round to it before it can
-  be clicked (`looking_at_outer_bend`, "Spin it for me", #867) — and the **screw-hole stage** is six: the Sketch tool,
-  the flange's inside face (with the narration naming right-drag to spin the view, #795),
-  the Circle tool, each hole's centre, and positioning them — each step's predicate also
-  satisfied by having done it already, so a user who opened the sketch themselves isn't told
-  to open it again (#796), and each circle's `hole` hint waits for its diameter field (#798).
-  The **cut**, **countersink** and **corner-rounding** steps lead click by click too
-  (#803/#804/#806): each hole face in turn and then the pane's **Output → Cut** button
-  (`UiAnchor::ExtrudeCut`, the pane reporting its rect like the constraint buttons), each
-  hole's rim with the Shift badge on the second, and each flange-tip edge in turn — with
-  the depth (`-(thick + 1)`), countersink (`1.2`) and corner radius (`2`) named as type
-  hints once their fields exist. The hole-positioning step asks for the **same distance from
-  each end** so the pair sits evenly (#801).
-  **Dimensioning is one dimension
-  per step too** (#776): pick up the tool, then each outer leg, each end cap and finally the
-  bend angle, the orb on the line each step wants (and the Shift badge for the angle's
-  second pick). Taking up the Dimension tool **clears the selection** the constraint steps
-  left behind (#772) — under that tool a live selection is already a dimension in the
-  making. The
+  away.
   On **phone-width layouts** the default spot (a narration step, no orb) is along the
   **bottom** of the viewport, above the status bar, with **no tail** — nothing to point at,
   and the top of a phone screen is where the model is (#827). Otherwise the
@@ -5185,42 +5117,24 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   than its content) plus the tail and a gap, so it never clips the HUD (#767,
   `tutorial_bubble_pos`).
 - **Phone steps (#828):** on the compact layout the side panes are floating windows toggled
-  from the status bar, so the walkthrough includes those taps: open **Params** before the
-  parameter stage and tuck it away before drawing; open **Context** for the constraint
-  buttons and again for the extrude **Output → Cut**, tucking it away when the model needs
-  the screen. Each such step's predicate is *already satisfied* on a desktop (where the panes
-  are docked), so it auto-advances the moment it's reached and only ever shows on a phone;
-  its orb points at the status-bar toggle (`UiAnchor::PaneButton`). Steps whose wording assumes a desktop can carry
+  from the status bar. A step can be `only_on_phone`: its predicate is already satisfied on a
+  desktop (where the panes are docked), so it auto-advances and only ever shows on a phone;
+  its orb can point at the status-bar toggle (`UiAnchor::PaneButton`). Steps whose wording
+  assumes a desktop can carry
   `Step::phone_narration`, used when `AppState::compact_layout` is set (mirrored each frame
   from `touch::compact`).
-- The parameter stage is one action a step (#846/#849/#861): tap the name box, type the name,
-  tap the value box, type the value, press **+** — then a step each for the three parameters
-  that follow, since a step that lists several has no way to say which part is outstanding.
 - The bubble's header is just **"Step N of M"** (#847) — the tutorial's own name is on the
   button that started it, and repeating it on every step is noise.
 - **Steps that need the keyboard offer to do themselves** (#810/#843): a **"do it for me"
   button** in the bubble (`tutorial::StepAssist { label, run: fn(&mut AppState) }`, applied by
-  `Action::TutorialAssist`) makes the same document changes the user's typing would — add the
-  parameters, apply each constraint, each dimension, the extrude, the fillets, the hole
-  circles, the cut, the countersink, the corner rounds, the engraving, the angle change — so
+  `Action::TutorialAssist`) makes the same document changes the user's typing would, so
   the step's own predicate advances the tutorial exactly as if they'd done it. Steps where
   **clicking the thing the orb points at is the whole job** carry no button (#843): tool
-  buttons, pane taps, tapping into a field, and clicking a face or the glowing profile
-  points. The assists that need earlier geometry make it themselves (the pin assist draws the
-  profile; the hole assists open the flange sketch), so a reader who clicked Next past those
-  steps isn't stranded. An assist never clobbers work already done: parameters keep values
-  the user typed, and a step whose work exists is a no-op. A test walks the whole tutorial on
-  the buttons, pressing Next where there is none.
-- Long walkthrough (listed last): **Build an angle bracket** (`"bracket"`) — the
-  Quickstart's part, interactive: parameters, sloppy profile, constraints, dimensions
-  (parameter-driven angle), extrude, bend fillets, hole cuts, countersinks, corner rounds,
-  engraving, and the parametric angle change. Only **four** parameters are entered up
-  front; `thick` and `width` are deliberately left out and then defined **from the field
-  that uses them** (`thick = 5mm` in an end cap's dimension, `width = 40mm` in the extrude
-  distance), which is how the walkthrough teaches the `name = value` shorthand (#788).
+  buttons, pane taps, tapping into a field, and clicking a face. An assist never clobbers
+  work already done, and a step whose work exists is a no-op.
 - **Linkable (#765):** the web build reads **`?tutorial=<name>`** from the page URL at boot
-  (`tutorial::tutorial_from_query`) and starts that walkthrough, so the docs' Quickstart can
-  link straight into "show me" — `…/app/?tutorial=bracket`. The desktop twin is
+  (`tutorial::tutorial_from_query`) and starts that walkthrough — `…/app/?tutorial=cube`.
+  The desktop twin is
   **`bearcad --tutorial <name>`** (`ScriptOptions::tutorial`). An unknown name just opens
   the app normally.
 - **`?open=<url>`**: the web build also fetches a document URL (percent-decoded,
@@ -5234,7 +5148,7 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   (`storage::to_json_bytes`); `bearcad.save("….json")` writes it, which is how a
   screenshot scene publishes the model beside its PNG. A failed fetch lands as a status
   line, not a broken app.
-- Scriptable: `bearcad.ui.tutorial("bracket")`, `bearcad.ui.tutorial_next()`,
+- Scriptable: `bearcad.ui.tutorial("cube")`, `bearcad.ui.tutorial_next()`,
   `bearcad.ui.tutorial_assist()` (press the current step's "do it for me" button),
   `bearcad.ui.tutorial_end()`, `bearcad.ui.tutorial_step()` (current step index or nil).
 

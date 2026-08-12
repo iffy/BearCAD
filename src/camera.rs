@@ -1013,32 +1013,6 @@ impl Camera {
         });
     }
 
-    /// Re-aim an **in-flight** transition at a bounding box (#875): the destination keeps the
-    /// direction it was already heading for — a sketch entry's straight-on view — but lands
-    /// framing `min..max` instead of wherever it was pointed. Returns false with nothing
-    /// animating, so the caller can fall back to a fresh framing.
-    pub fn reaim_transition_at_bounds(&mut self, min: Vec3, max: Vec3, aspect: f32) -> bool {
-        let Some(transition) = self.transition.as_ref() else {
-            return false;
-        };
-        // Frame from the pose the transition is heading for, not the one it started from.
-        let mut probe = self.clone();
-        probe.transition = None;
-        probe.orbit_quat = None;
-        probe.orbit_base_offset = None;
-        probe.yaw = transition.to_yaw;
-        probe.pitch = transition.to_pitch;
-        probe.view_up = Some(transition.to_view_up);
-        probe.frame_bounds_instant(min, max, aspect);
-        let (to_target, to_distance) = (probe.target, probe.distance);
-        let transition = self.transition.as_mut().expect("checked above");
-        transition.to_target = to_target;
-        transition.to_distance = to_distance;
-        transition.animate_target = true;
-        transition.animate_distance = true;
-        true
-    }
-
     /// Whether a view transition is currently animating (#438).
     pub fn transition_active(&self) -> bool {
         self.transition.is_some()
