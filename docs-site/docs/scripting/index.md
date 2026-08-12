@@ -67,7 +67,7 @@ Other flags:
 - **File → Import → Lua Script…** / `bearcad.import_lua(path)` — run such a script;
   refuses a non-blank document unless `force = true`.
 - `--tutorial <name>` — start a tutorial on launch. The browser app takes it as a URL
-  parameter: [`?tutorial=bracket`](pathname:///app/?tutorial=bracket).
+  parameter: [`?tutorial=cube`](pathname:///app/?tutorial=cube).
 
 ## Interactive REPL
 

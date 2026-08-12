@@ -731,7 +731,7 @@ mod cli_tests {
             Some("/img/screenshots/extrude.bearcad.json".to_string())
         );
         assert_eq!(
-            super::open_url_from_query("?tutorial=bracket&open=/a/b.json"),
+            super::open_url_from_query("?tutorial=cube&open=/a/b.json"),
             Some("/a/b.json".to_string())
         );
         assert_eq!(
@@ -739,7 +739,7 @@ mod cli_tests {
             Some("https://example.com/d.json".to_string())
         );
         assert_eq!(super::open_url_from_query("?open="), None);
-        assert_eq!(super::open_url_from_query("?tutorial=bracket"), None);
+        assert_eq!(super::open_url_from_query("?tutorial=cube"), None);
         assert_eq!(super::open_url_from_query(""), None);
     }
 

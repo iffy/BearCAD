@@ -6868,161 +6868,22 @@ mod tests {
         }
     }
 
-    /// The bracket tutorial rides along the whole quickstart build: every predicate
-    /// step auto-advances as the scripted part comes together, and the manual
-    /// bookend steps advance with tutorial_next. The lean (no-kernel) build can't
-    /// carve the screw holes, so its cap rims can't be chamfered — there the script
-    /// stops after the hole-cut step and ends the tutorial instead.
+    /// #1334: the angle-bracket walkthrough is gone; scripting must not start it.
     #[test]
-    fn bracket_tutorial_advances_through_the_quickstart_build() {
-        let prefix = r#"
-            bearcad.ui.tutorial("bracket")
-            assert(bearcad.ui.tutorial_step() == 0, "starts on the welcome step")
-            bearcad.ui.tutorial_next()
-            assert(bearcad.ui.tutorial_step() == 2, "parameters step")
-
-            bearcad.parameter("add", "leg", "50mm")
-            bearcad.parameter("add", "width", "40mm")
-            bearcad.parameter("add", "thick", "5mm")
-            bearcad.parameter("add", "hole", "5mm")
-            bearcad.parameter("add", "bend", "4mm")
-            bearcad.parameter("add", "bend_angle", "120deg")
-            assert(bearcad.ui.tutorial_step() == 11, "params done -> line tool step")
-
-            bearcad.ui.tool("line")
-            assert(bearcad.ui.tutorial_step() == 12, "line tool -> draw step")
-
-            bearcad.line{ x = 0,     y = 0,    x1 = 51,    y1 = 2.5 }
-            bearcad.line{ x = 51,    y = 2.5,  x1 = 49.5,  y1 = 7.8 }
-            bearcad.line{ x = 49.5,  y = 7.8,  x1 = 4.5,   y1 = 5.5 }
-            bearcad.line{ x = 4.5,   y = 5.5,  x1 = -17.5, y1 = 47 }
-            bearcad.line{ x = -17.5, y = 47,   x1 = -25.5, y1 = 43 }
-            bearcad.line{ x = -25.5, y = 43,   x1 = 0,     y1 = 0 }
-            for i = 0, 5 do
-              local j = (i + 1) % 6
-              bearcad.select{ kind = "line", index = i, ["end"] = "end" }
-              bearcad.select({ kind = "line", index = j, ["end"] = "start" }, true)
-              bearcad.add_geometric_constraint("coincident")
+    fn bracket_tutorial_is_not_registered() {
+        run_lua_expect_ok(
+            r#"
+            local names = {}
+            for _, t in ipairs(bearcad.ui.tutorials()) do
+              names[t.name] = t.title
             end
-            bearcad.clear_selection()
-            assert(bearcad.ui.tutorial_step() == 13, "six lines -> constraint tool step")
-
-            bearcad.ui.tool("constraint")
-            assert(bearcad.ui.tutorial_step() == 15, "constraint tool -> level-the-base step")
-
-            local function geo(kind, a, b)
-              bearcad.select{ kind = "line", index = a }
-              if b then bearcad.select({ kind = "line", index = b }, true) end
-              bearcad.add_geometric_constraint(kind)
-              bearcad.clear_selection()
-            end
-            -- #577: parallel-to-X-axis replaces the old Horizontal constraint.
-            bearcad.select{ kind = "line", index = 0 }
-            bearcad.select({ kind = "axis", axis = "x" }, true)
-            bearcad.add_geometric_constraint("parallel")
-            bearcad.clear_selection()
-            assert(bearcad.ui.tutorial_step() == 16, "leveled -> even-base step")
-            geo("parallel", 0, 2)
-            assert(bearcad.ui.tutorial_step() == 17, "even base -> parallel-legs step")
-            geo("parallel", 3, 5)
-            assert(bearcad.ui.tutorial_step() == 18, "parallel legs -> first end cap step")
-            geo("perpendicular", 1, 0)
-            assert(bearcad.ui.tutorial_step() == 19, "first cap -> second end cap step")
-            geo("perpendicular", 4, 5)
-            assert(bearcad.ui.tutorial_step() == 21, "squared -> dimension tool step")
-
-            -- One dimension per step now (#776), each led by the orb.
-            bearcad.ui.tool("dimension")
-            assert(bearcad.ui.tutorial_step() == 22, "dimension tool -> first length step")
-            bearcad.add_constraint({ kind = "line", index = 0 }, "leg")
-            assert(bearcad.ui.tutorial_step() == 23, "base leg -> tilted leg step")
-            bearcad.add_constraint({ kind = "line", index = 5 }, "leg")
-            assert(bearcad.ui.tutorial_step() == 24, "tilted leg -> first cap step")
-            bearcad.add_constraint({ kind = "line", index = 1 }, "thick")
-            assert(bearcad.ui.tutorial_step() == 25, "first cap -> second cap step")
-            bearcad.add_constraint({ kind = "line", index = 4 }, "thick")
-            assert(bearcad.ui.tutorial_step() == 26, "second cap -> bend angle step")
-            bearcad.add_angle_constraint{ a = 0, b = 3, value = "bend_angle", sign = 1 }
-            assert(bearcad.ui.tutorial_step() == 27, "dimensioned -> extrude step")
-
-            bearcad.exit_sketch()
-            local loop = {0, 1, 2, 3, 4, 5}
-            bearcad.extrude{ polygon = loop, distance = 40, name = "Bracket" }
-            assert(bearcad.ui.tutorial_step() == 28, "extruded -> bend fillet step")
-
-            -- One fillet per step now (#791): inside of the bend, then the outside.
-            bearcad.fillet_edge{ extrusion = 0, edge = { kind = "vertical", face = 0, edge = 2 }, radius = 4 }
-            assert(bearcad.ui.tutorial_step() == 29, "inner bend -> spin-to-the-outside step")
-            bearcad.fillet_edge{ extrusion = 0, edge = { kind = "vertical", face = 0, edge = 5 }, radius = 9 }
-            assert(bearcad.ui.tutorial_step() == 31, "bend rounded -> hole sketch step")
-
-            -- The hole stage is one click per step now (#795/#796/#798/#799).
-            bearcad.ui.tool("sketch")
-            -- The spin step (#817) satisfies itself when the camera already faces the
-            -- flange, so this lands on it (32) or straight past it (33).
-            local spin = bearcad.ui.tutorial_step()
-            assert(spin == 32 or spin == 33, "sketch tool -> spin/pick the flange face")
-            -- The spin step (#817) watches the camera; opening the sketch satisfies it too.
-            bearcad.begin_sketch{ kind = "extrude_side", extrusion = 0, profile = "polygon",
-                                  profile_lines = loop, edge = 2 }
-            assert(bearcad.ui.tutorial_step() == 34, "face picked -> circle tool")
-            bearcad.ui.tool("circle")
-            assert(bearcad.ui.tutorial_step() == 35, "circle tool -> first hole")
-            bearcad.circle{ x = 19, y = 10, r = 2.5 }
-            assert(bearcad.ui.tutorial_step() == 36, "first hole -> second hole")
-            bearcad.circle{ x = 19, y = 30, r = 2.5 }
-            assert(bearcad.ui.tutorial_step() == 37, "both holes -> position them")
-            -- Position each hole off one of the sketched-on face's own edges — the
-            -- point-to-edge dimension the step asks for, now scriptable (#809).
-            local flange = { kind = "extrude_side", extrusion = 0, profile = "polygon",
-                             profile_lines = loop, edge = 2 }
-            for nth, circle in ipairs({ 0, 1 }) do
-              bearcad.add_constraint({ kind = "point_line",
-                                       point = { kind = "circle", index = circle },
-                                       line = { kind = "face", face = flange,
-                                                index = nth == 1 and 1 or 3 } }, "10mm")
-            end
-            assert(bearcad.ui.tutorial_step() == 39, "positioned -> cut step")
-
-            bearcad.exit_sketch()
-            bearcad.extrude{ circles = {0, 1}, distance = -6, body = "cut" }
-            assert(bearcad.ui.tutorial_step() == 41, "holes cut -> countersink step")
-"#;
-        let full_tail = r#"
-            for face = 0, 1 do
-              bearcad.chamfer_edge{ extrusion = 1,
-                edge = { kind = "cap", face = face, edge = 0, top = false }, distance = 1.2 }
-            end
-            assert(bearcad.ui.tutorial_step() == 42, "countersunk -> corner fillet step")
-
-            for _, k in ipairs({0, 1, 3, 4}) do
-              bearcad.fillet_edge{ extrusion = 0,
-                edge = { kind = "vertical", face = 0, edge = k }, radius = 2.0 }
-            end
-            assert(bearcad.ui.tutorial_step() == 43, "corners rounded -> engrave step")
-
-            bearcad.begin_sketch{ kind = "extrude_side", extrusion = 0, profile = "polygon",
-                                  profile_lines = loop, edge = 0 }
-            bearcad.text{ text = "BearCAD", x = 6, y = 17, size = 5 }
-            bearcad.exit_sketch()
-            bearcad.extrude{ text = 0, distance = -1, body = "cut" }
-            assert(bearcad.ui.tutorial_step() == 44, "engraved -> change-your-mind step")
-
-            bearcad.parameter("value", 5, "150deg")
-            assert(bearcad.ui.tutorial_step() == 45, "angle changed -> final step")
-
-            bearcad.ui.tutorial_next()
-            assert(bearcad.ui.tutorial_step() == nil, "finished")
-            "#;
-        let lean_tail = r#"
-            bearcad.ui.tutorial_end()
-            assert(bearcad.ui.tutorial_step() == nil, "ended")
-            "#;
-        let _ = lean_tail;
-        let source = format!("{prefix}{full_tail}");
-        let state = run_lua(&source);
-        assert!(state.tutorial.is_none());
-        assert!(state.status.contains("Tutorial complete"));
+            assert(names.bracket == nil, "bracket tutorial should be gone")
+            assert(names.cube, "other tutorials stay")
+            local ok, err = pcall(function() bearcad.ui.tutorial("bracket") end)
+            assert(not ok, "starting the removed tutorial should fail")
+            assert(tostring(err):find("unknown tutorial", 1, true), tostring(err))
+            "#,
+        );
     }
 
     /// #1306: navigate tutorial starts with cubes and no default datum planes.

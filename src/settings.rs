@@ -137,7 +137,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let settings = AppSettings {
             library_directory: Some(PathBuf::from("/some/library")),
-            completed_tutorials: vec!["bracket".into(), "cube".into()],
+            completed_tutorials: vec!["navigate".into(), "cube".into()],
             animate_zoom_to_fit: false,
             update_channel: UpdateChannel::PreRelease,
         };

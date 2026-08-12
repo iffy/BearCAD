@@ -7687,7 +7687,7 @@ pub struct ScriptOptions {
     pub timeout_secs: Option<u64>,
     /// Run an interactive Lua REPL on stdin against the live app (`--repl`).
     pub repl: bool,
-    /// Start a tutorial by registry name on launch (`--tutorial bracket`, #765) — the same
+    /// Start a tutorial by registry name on launch (`--tutorial cube`, #765) — the same
     /// thing the web build's `?tutorial=` parameter does.
     pub tutorial: Option<String>,
 }
@@ -7736,7 +7736,7 @@ Options:
   --exit, --exit-on-complete
                         Exit after startup, or after the script finishes
   --show-commands       Print each user action as a script line on stdout
-  --tutorial <name>     Start a guided tutorial on launch (e.g. `bracket`)
+  --tutorial <name>     Start a guided tutorial on launch (e.g. `cube`)
   --timeout <seconds>   Force-exit with an error if the app hasn't closed on
                         its own within this many seconds
   -h, --help            Show this help and exit
@@ -7748,7 +7748,7 @@ Examples:
   bearcad --script demo.lua
   bearcad demo.lua --exit
   bearcad --repl
-  bearcad --tutorial bracket
+  bearcad --tutorial cube
   bearcad --exit --timeout 30
   bearcad install-cli
 
@@ -8437,8 +8437,8 @@ mod tests {
     /// #765: `--tutorial <name>` is the desktop twin of the web `?tutorial=` link.
     #[test]
     fn parse_args_finds_the_tutorial_flag() {
-        let opts = parse_args(["bearcad", "--tutorial", "bracket"]);
-        assert_eq!(opts.tutorial.as_deref(), Some("bracket"));
+        let opts = parse_args(["bearcad", "--tutorial", "cube"]);
+        assert_eq!(opts.tutorial.as_deref(), Some("cube"));
         assert_eq!(parse_args(["bearcad"]).tutorial, None);
     }
 
