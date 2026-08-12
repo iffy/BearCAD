@@ -5038,7 +5038,9 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   no parameters — click a rectangle on the ground, extrude, Enter. After a tool is selected,
   placement steps use **world** orbs on the ground/face (not the toolbar button again).
   Tutorials that still type (e.g. `dimensioned_box`) point at the floating dim fields
-  (`UiAnchor::RectWidth` / `RectHeight`) and arm focus so typing lands.
+  (`UiAnchor::RectWidth` / `RectHeight`) and arm focus so typing lands. Tab to the other
+  field is its own step; reopening a sketch is Elements double-click or right-click →
+  Edit sketch; changing a committed dim is double-click the label, then type.
 - **Second tutorial (`navigate`)** (#1269): pan / orbit / zoom, the view-bear HUD (snap a
   view + Home), and the Selection Exploder (Space). Starts with a few cubes already in the
   document; camera steps auto-advance on motion (with "…for me" assists), the exploder step

@@ -2944,6 +2944,14 @@ fn rect_height_10(app: &AppState) -> bool {
     rect_height_typed(app, 10.0)
 }
 
+/// Height field has the keyboard (Tab from width), or the square is already sized.
+fn rect_height_field_ready(app: &AppState) -> bool {
+    if has_closed_rectangle(app) || rect_height_10(app) {
+        return true;
+    }
+    app.creating_rect.as_ref().is_some_and(|cr| cr.focused == 1)
+}
+
 /// Extrude face picked (distance field open) or extrusion already committed.
 fn extrude_face_picked(app: &AppState) -> bool {
     app.creating_extrusion.is_some() || has_extrusion(app)
@@ -3071,6 +3079,47 @@ fn one_sketch_dim_is_20(app: &AppState) -> bool {
 /// Sketch reopened for the edit step (or the edit is already done).
 fn sketch_reopened_for_edit(app: &AppState) -> bool {
     app.sketch_session.is_some() || one_sketch_dim_is_20(app)
+}
+
+/// Dimension label opened for typing (or the 20 mm edit is already done).
+fn dim_label_opened_for_edit(app: &AppState) -> bool {
+    app.editing_committed_dim.is_some() || one_sketch_dim_is_20(app)
+}
+
+/// Midpoint of the first sketch length-dimension label, offset off the line.
+fn first_rect_dim_label(app: &AppState) -> Option<glam::Vec3> {
+    use crate::model::DistanceTarget;
+    let sketch = app
+        .sketch_session
+        .map(|s| s.sketch)
+        .or_else(|| app.doc.sketches.keys().next())?;
+    let frame = crate::face::sketch_geometry_frame(&app.doc, sketch)?;
+    let line = live_constraints(app).find_map(|c| match &c.kind {
+        ConstraintKind::Distance {
+            target: DistanceTarget::LineLength(i),
+        } => app.doc.lines.get(*i).filter(|l| l.sketch == sketch),
+        _ => None,
+    })?;
+    let (ua, va, ub, vb) = (line.x0, line.y0, line.x1, line.y1);
+    let mut sum = (0.0f32, 0.0f32);
+    let mut n = 0usize;
+    for l in app.doc.lines.values().filter(|l| l.sketch == sketch) {
+        sum.0 += l.x0 + l.x1;
+        sum.1 += l.y0 + l.y1;
+        n += 2;
+    }
+    let (cx, cy) = if n > 0 {
+        (sum.0 / n as f32, sum.1 / n as f32)
+    } else {
+        (0.0, 0.0)
+    };
+    let (ou, ov) = crate::dimensions::outward_perpendicular_uv(ua, va, ub, vb, cx, cy);
+    const AWAY_MM: f32 = 11.0;
+    Some(crate::face::local_to_world(
+        &frame,
+        (ua + ub) * 0.5 + ou * AWAY_MM,
+        (va + vb) * 0.5 + ov * AWAY_MM,
+    ))
 }
 
 fn ensure_ground_sketch(app: &mut AppState) {
@@ -3719,7 +3768,7 @@ static DIMENSIONED_BOX_STEPS: &[Step] = &[
         ensure_rect_sketch_for_tutorial,
     ),
     assisted_step_enter(
-        "Type the width: `10`, then Tab.",
+        "Type the width: `10`.",
         StepAnchor::Ui(UiAnchor::RectWidth),
         Some(rect_width_10),
         StepAssist {
@@ -3728,6 +3777,12 @@ static DIMENSIONED_BOX_STEPS: &[Step] = &[
         },
         Some(TypeHint::Fixed("10")),
         focus_rect_width_field,
+    ),
+    // #1311: Tab to the other field is its own step — do not auto-focus height.
+    plain_step(
+        "Press `Tab` to get to the height field.",
+        StepAnchor::Ui(UiAnchor::RectHeight),
+        Some(rect_height_field_ready),
     ),
     assisted_step_enter(
         "Type the height: `10`.",
@@ -3756,7 +3811,7 @@ static DIMENSIONED_BOX_STEPS: &[Step] = &[
         Some(extrude_face_picked),
     ),
     assisted_step(
-        "Type `10` for the depth, then Enter. A 10 mm cube.",
+        "Type `10` for the height, then Enter. A 10 mm cube.",
         StepAnchor::Ui(UiAnchor::ExtrudeDistance),
         Some(extrusion_is_10),
         StepAssist {
@@ -3765,15 +3820,21 @@ static DIMENSIONED_BOX_STEPS: &[Step] = &[
         },
         Some(TypeHint::Fixed("10")),
     ),
-    // #1279: orb on the sketch row in Elements.
+    // #1279 / #1313: Elements double-click or right-click → Edit (not the viewport).
     plain_step(
-        "Reopen the sketch \u{2014} double-click it in Elements, or the sketch in the viewport.",
+        "Reopen the sketch \u{2014} double-click it in Elements, or right-click and choose Edit sketch.",
         StepAnchor::Ui(UiAnchor::ElementsSketch),
         Some(sketch_reopened_for_edit),
     ),
+    // #1314: open the label before typing the new value.
+    plain_step(
+        "Double-click one of the dimension labels.",
+        StepAnchor::World(first_rect_dim_label),
+        Some(dim_label_opened_for_edit),
+    ),
     assisted_step(
-        "Change one side dimension from `10` to `20`. The box stretches.",
-        StepAnchor::None,
+        "Change it from `10` to `20`. The box stretches.",
+        StepAnchor::Ui(UiAnchor::DimensionValue),
         Some(one_sketch_dim_is_20),
         StepAssist {
             label: "Change it for me",
@@ -4503,11 +4564,30 @@ mod tests {
         assert!(opp.x > 10.0 && opp.y > 10.0);
     }
 
+    fn dimensioned_box() -> &'static Tutorial {
+        &TUTORIALS[tutorial_index("dimensioned_box").unwrap()]
+    }
+
+    fn box_step(needle: &str) -> &'static Step {
+        dimensioned_box()
+            .steps
+            .iter()
+            .find(|s| s.narration.to_ascii_lowercase().contains(needle))
+            .unwrap_or_else(|| panic!("dimensioned_box step matching {needle:?}"))
+    }
+
+    fn box_step_index(needle: &str) -> usize {
+        dimensioned_box()
+            .steps
+            .iter()
+            .position(|s| s.narration.to_ascii_lowercase().contains(needle))
+            .unwrap_or_else(|| panic!("dimensioned_box step matching {needle:?}"))
+    }
+
     /// #1258: typing steps focus the rect dim fields (dimensioned_box still types).
     #[test]
     fn dimensioned_box_typing_steps_target_rect_fields() {
-        let box_tut = &TUTORIALS[tutorial_index("dimensioned_box").unwrap()];
-        let typing: Vec<_> = box_tut
+        let typing: Vec<_> = dimensioned_box()
             .steps
             .iter()
             .filter(|s| {
@@ -4526,6 +4606,87 @@ mod tests {
         ));
         assert!(typing[0].on_enter.is_some());
         assert!(typing[1].on_enter.is_some());
+    }
+
+    /// #1311: Tab to the height field is its own step, after width is typed.
+    #[test]
+    fn dimensioned_box_tab_is_its_own_step_before_height() {
+        let width_i = box_step_index("type the width");
+        let tab_i = box_step_index("tab");
+        let height_i = box_step_index("type the height");
+        assert!(
+            width_i < tab_i && tab_i < height_i,
+            "Tab must sit between width and height typing (got {width_i}, {tab_i}, {height_i})"
+        );
+        let width = box_step("type the width");
+        assert!(
+            !width.narration.to_ascii_lowercase().contains("tab"),
+            "width typing should not also ask for Tab: {}",
+            width.narration
+        );
+        let tab = &dimensioned_box().steps[tab_i];
+        assert!(
+            tab.narration.to_ascii_lowercase().contains("height"),
+            "Tab step should name the height field: {}",
+            tab.narration
+        );
+        assert!(
+            matches!(tab.anchor, StepAnchor::Ui(UiAnchor::RectHeight)),
+            "Tab step should point at the height field: {}",
+            tab.narration
+        );
+        assert!(tab.on_enter.is_none(), "Tab step must not auto-focus height");
+    }
+
+    /// #1312: the extrude amount is a height, not a depth.
+    #[test]
+    fn dimensioned_box_extrude_calls_it_height() {
+        let step = dimensioned_box()
+            .steps
+            .iter()
+            .find(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::ExtrudeDistance)))
+            .expect("extrude distance step");
+        let n = step.narration.to_ascii_lowercase();
+        assert!(
+            n.contains("height"),
+            "extrude typing should say height: {}",
+            step.narration
+        );
+        assert!(
+            !n.contains("depth"),
+            "extrude typing should not say depth: {}",
+            step.narration
+        );
+    }
+
+    /// #1314: double-click a dimension label before changing 10 → 20.
+    #[test]
+    fn dimensioned_box_double_click_dim_before_changing() {
+        let click_i = box_step_index("double-click one of the dimension");
+        let change_i = dimensioned_box()
+            .steps
+            .iter()
+            .position(|s| {
+                let n = s.narration.to_ascii_lowercase();
+                (n.contains("10") && n.contains("20")) || n.contains("to `20`") || n.contains("to 20")
+            })
+            .expect("change 10 to 20 step");
+        assert!(
+            click_i < change_i,
+            "double-click the label before typing 20 (got {click_i}, {change_i})"
+        );
+        let click = &dimensioned_box().steps[click_i];
+        assert!(
+            matches!(click.anchor, StepAnchor::World(_)),
+            "dim-label click should point at a label: {}",
+            click.narration
+        );
+        let change = &dimensioned_box().steps[change_i];
+        assert!(
+            matches!(change.anchor, StepAnchor::Ui(UiAnchor::DimensionValue)),
+            "typing 20 should point at the value field: {}",
+            change.narration
+        );
     }
 
     /// #1263: opposite-corner steps point at the next corner in the world, not the tool.
@@ -4852,18 +5013,29 @@ mod tests {
         );
     }
 
-    /// #1279: reopen-sketch step points at the sketch row in Elements.
+    /// #1279 / #1313: reopen via Elements double-click or right-click → Edit, not the viewport.
     #[test]
     fn dimensioned_box_reopen_sketch_targets_elements_row() {
-        let box_tut = &TUTORIALS[tutorial_index("dimensioned_box").unwrap()];
-        let reopen = box_tut
-            .steps
-            .iter()
-            .find(|s| s.narration.to_ascii_lowercase().contains("reopen the sketch"))
-            .expect("reopen sketch step");
+        let reopen = box_step("reopen the sketch");
+        let n = reopen.narration.to_ascii_lowercase();
         assert!(
             matches!(reopen.anchor, StepAnchor::Ui(UiAnchor::ElementsSketch)),
             "reopen step should orb the Elements sketch row: {}",
+            reopen.narration
+        );
+        assert!(
+            n.contains("double-click") && n.contains("edit"),
+            "should say double-click or right-click Edit: {}",
+            reopen.narration
+        );
+        assert!(
+            n.contains("right-click") || n.contains("right click"),
+            "should mention right-click → Edit: {}",
+            reopen.narration
+        );
+        assert!(
+            !n.contains("viewport"),
+            "cannot edit the sketch from the viewport: {}",
             reopen.narration
         );
     }
@@ -4876,6 +5048,55 @@ mod tests {
         assert!(rect_dims_are_10(&app) || one_sketch_dim_is_20(&app));
         assert!(extrusion_is_10(&app) || has_extrusion(&app));
         assert!(one_sketch_dim_is_20(&app));
+    }
+
+    /// #1311: Tab step waits until the height field is focused.
+    #[test]
+    fn dimensioned_box_tab_step_advances_when_height_focused() {
+        let mut app = AppState::default();
+        ensure_rect_sketch_for_tutorial(&mut app);
+        app.creating_rect = Some(crate::actions::CreatingRect {
+            origin: glam::Vec3::new(0.0, 0.0, 0.0),
+            texts: ["10".into(), "0".into()],
+            focused: 0,
+            last_mouse: glam::Vec3::new(10.0, 0.0, 0.0),
+            user_edited: [true, false],
+            pending_focus: false,
+            construction: false,
+            anchor: crate::actions::RectAnchor::Corner,
+        });
+        assert!(rect_width_10(&app));
+        assert!(!rect_height_field_ready(&app));
+        app.apply(Action::FocusRectDimension {
+            axis: crate::actions::RectAxis::Height,
+        });
+        assert!(rect_height_field_ready(&app));
+        assert_eq!(app.creating_rect.as_ref().unwrap().focused, 1);
+    }
+
+    /// #1314: dim-label step points at a label and advances once the field is open.
+    #[test]
+    fn dimensioned_box_dim_label_step_tracks_edit() {
+        let mut app = AppState::default();
+        assist_extrude_10mm(&mut app);
+        let sketch = app.doc.sketches.keys().next().expect("sketch");
+        app.apply(Action::OpenSketch {
+            sketch,
+            viewport: None,
+        });
+        assert!(first_rect_dim_label(&app).is_some());
+        assert!(!dim_label_opened_for_edit(&app));
+        let target = app
+            .doc
+            .constraints
+            .iter()
+            .find_map(|(key, c)| {
+                matches!(c.kind, ConstraintKind::Distance { .. }).then_some(key)
+            })
+            .expect("length dim");
+        app.apply(Action::BeginEditCommittedDim { target });
+        assert!(dim_label_opened_for_edit(&app));
+        assert!(app.editing_committed_dim.is_some());
     }
 
     /// #1269: navigate tutorial sits after cube, seeds cubes, and teaches camera + exploder.
