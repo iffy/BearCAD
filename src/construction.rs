@@ -1427,6 +1427,8 @@ pub struct PickOcclusion {
     /// Snapshot of user-hidden state so [`resolve_pick_target`] can reject candidates that are
     /// hidden (or shadow), not just occluded behind a body (#258).
     visibility: crate::hierarchy::ElementVisibility,
+    /// Bodies treated as absent for hit-testing (#1336): they neither occlude nor pick.
+    ignore: Vec<crate::model::BodyKey>,
 }
 
 impl PickOcclusion {
@@ -1436,12 +1438,26 @@ impl PickOcclusion {
     }
 
     pub fn new(doc: &Document, visibility: &crate::hierarchy::ElementVisibility, eye: Vec3) -> Self {
+        Self::new_ignoring(doc, visibility, eye, &[])
+    }
+
+    /// Like [`Self::new`], but the listed bodies are not there: they do not occlude, and
+    /// their geometry is not pickable. Destination picks during Move use this so a click
+    /// goes through the body being moved (#1336).
+    pub fn new_ignoring(
+        doc: &Document,
+        visibility: &crate::hierarchy::ElementVisibility,
+        eye: Vec3,
+        ignore: &[crate::model::BodyKey],
+    ) -> Self {
         let meshes = doc
             .bodies
             .iter()
             .filter(|(bi, body)| {
-                // Shadow bodies neither render nor occlude/catch picks.
-                !body.shadow
+                // Shadow bodies neither render nor occlude/catch picks. Ignored bodies
+                // (a Move destination pick's moving set) are the same (#1336).
+                !ignore.contains(bi)
+                    && !body.shadow
                     && visibility
                         .effective_visible(doc, crate::hierarchy::SceneElement::Body(*bi))
             })
@@ -1451,6 +1467,7 @@ impl PickOcclusion {
             eye,
             meshes,
             visibility: visibility.clone(),
+            ignore: ignore.to_vec(),
         }
     }
 
@@ -1490,7 +1507,8 @@ impl PickOcclusion {
             | PickTargetKind::BodyAxis { body, .. }
             | PickTargetKind::BodyVertex { body, .. }
             | PickTargetKind::Body(body) => {
-                doc.bodies.get(*body).is_some_and(|b| !b.shadow)
+                !self.ignore.contains(body)
+                    && doc.bodies.get(*body).is_some_and(|b| !b.shadow)
                     && vis.effective_visible(doc, SceneElement::Body(*body))
             }
             PickTargetKind::ConstructionPlane(i) => {
@@ -1660,7 +1678,9 @@ pub fn resolve_pick_target(
     // clicking the face interior picks the face. Needs the camera eye to pick the front-most face,
     // so it's only offered when an occlusion context (which carries the eye) is present.
     if let Some(occ) = occlusion {
-        if let Some(kind) = crate::face::pick_body_face(screen, project, doc, occ.eye()) {
+        if let Some(kind) = crate::face::pick_body_face_where(screen, project, doc, occ.eye(), |bi| {
+            occ.pickable(doc, &PickTargetKind::Body(bi))
+        }) {
             // A round wall (#1013): the hole itself, not the flat face it never was. It
             // anchors like a face — a plane through its axis pointing at the camera is the
             // only sensible reference — but keeps its own identity.
@@ -2824,6 +2844,12 @@ fn nearest_body_edge(
     let bounds = crate::extrude::body_world_bounds_all(doc);
     for (bi, body) in doc.bodies.iter() {
         if body.shadow {
+            continue;
+        }
+        // Hidden or ignored bodies are not there: skip them inside the search so a
+        // body behind them can still win (#1336), instead of taking their edge and
+        // then dropping the whole pick.
+        if occlusion.is_some_and(|occ| !occ.pickable(doc, &PickTargetKind::Body(bi))) {
             continue;
         }
         // No edge of a body can be nearer than the body is (#1026).
@@ -4566,6 +4592,18 @@ mod tests {
         // Without occlusion the line is picked (the old X-ray behavior).
         let picked = resolve_pick_target(cursor, &project, None, &doc, None);
         assert!(matches!(picked.map(|t| t.kind), Some(PickTargetKind::Line(l)) if l == lkey(0)));
+
+        // Ignoring the blocker is the same as it not being there (#1336).
+        let occ = PickOcclusion::new_ignoring(&doc, &visibility, eye, &[bkey(0)]);
+        let picked = resolve_pick_target(cursor, &project, None, &doc, Some(&occ));
+        assert!(
+            matches!(picked.map(|t| t.kind), Some(PickTargetKind::Line(l)) if l == lkey(0)),
+            "an ignored body must not occlude"
+        );
+        assert!(
+            !occ.pickable(&doc, &PickTargetKind::Body(bkey(0))),
+            "an ignored body is not pickable"
+        );
 
         // Hiding the body restores pickability: an invisible body must not occlude.
         let mut visibility = crate::hierarchy::ElementVisibility::default();

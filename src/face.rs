@@ -1794,6 +1794,21 @@ pub fn pick_body_face(
     doc: &Document,
     eye: Vec3,
 ) -> Option<crate::construction::PickTargetKind> {
+    pick_body_face_where(screen, project, doc, eye, |_| true)
+}
+
+/// [`pick_body_face`] restricted to the bodies `allow` accepts (#1336).
+///
+/// The filter belongs *inside* the search: a body in front that the pick cannot take
+/// (the part being moved, while choosing where it lands) would otherwise win and then
+/// be rejected, leaving the face behind it unpickable.
+pub fn pick_body_face_where(
+    screen: eframe::egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<eframe::egui::Pos2>,
+    doc: &Document,
+    eye: Vec3,
+    allow: impl Fn(crate::model::BodyKey) -> bool,
+) -> Option<crate::construction::PickTargetKind> {
     let mut best: Option<(crate::construction::PickTargetKind, f32)> = None;
     // Reject the whole body, then each face, on screen-space bounds before touching a single
     // triangle (#1026). This runs every frame the camera moves, and testing every triangle of
@@ -1801,7 +1816,7 @@ pub fn pick_body_face(
     // because the per-body cached accessors each re-hash the whole document.
     let bounds = crate::extrude::body_world_bounds_all(doc);
     for (bi, body) in doc.bodies.iter() {
-        if body.shadow {
+        if body.shadow || !allow(bi) {
             continue;
         }
         if !bounds.get(&bi).copied().flatten().is_some_and(|b| {
@@ -2399,6 +2414,42 @@ mod tests {
             }
             other => panic!("expected a body face, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn pick_body_face_where_skips_a_front_body() {
+        // Two stacked boxes: the front one covers the back. Skipping the front body
+        // inside the search is what lets a Move destination pick the face behind it (#1336).
+        let mut doc = Document::default();
+        let insert = |doc: &mut Document, origin: Vec3, name: &str| {
+            let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
+                triangles: box_triangles(origin, Vec3::new(10.0, 10.0, 10.0)),
+                source_name: name.to_string(),
+                step_bytes: None,
+            });
+            doc.bodies.insert(crate::model::Body {
+                source: crate::model::BodySource::Imported(mesh),
+                material: None,
+                name: None,
+                shadow: false,
+            })
+        };
+        let back = insert(&mut doc, Vec3::ZERO, "back");
+        let front = insert(&mut doc, Vec3::new(0.0, 0.0, 20.0), "front");
+        let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.y));
+        let eye = Vec3::new(5.0, 5.0, 100.0);
+        let cursor = eframe::egui::pos2(5.0, 5.0);
+        let all = pick_body_face(cursor, &project, &doc, eye).expect("a face");
+        assert!(
+            matches!(all, crate::construction::PickTargetKind::BodyFace { body, .. } if body == front),
+            "the uncovered pick takes the front body, got {all:?}"
+        );
+        let through = pick_body_face_where(cursor, &project, &doc, eye, |bi| bi != front)
+            .expect("the back face");
+        assert!(
+            matches!(through, crate::construction::PickTargetKind::BodyFace { body, .. } if body == back),
+            "skipping the front body must take the one behind it, got {through:?}"
+        );
     }
 
     #[test]

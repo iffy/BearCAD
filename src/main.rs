@@ -10338,6 +10338,26 @@ impl App {
         move_focus_for(self.state.creating_move.as_ref(), self.state.move_focus_override)
     }
 
+    /// Bodies a Move destination pick treats as absent (#1336): the parts being moved,
+    /// once an end picker is armed. Empty when the click is for a start point or the
+    /// body set, so those picks still hit the moving geometry.
+    fn move_destination_ignore_bodies(&self) -> Vec<model::BodyKey> {
+        if self.state.tool != Tool::Move || self.state.sketch_session.is_some() {
+            return Vec::new();
+        }
+        if !matches!(
+            self.move_focus(),
+            MoveFocus::EndPointA | MoveFocus::EndPointB | MoveFocus::EndPointC
+        ) {
+            return Vec::new();
+        }
+        self.state
+            .creating_move
+            .as_ref()
+            .map(|cm| cm.targets.clone())
+            .unwrap_or_default()
+    }
+
     fn joint_focus(&self) -> JointFocus {
         joint_focus_for(self.state.creating_joint.as_ref(), self.state.joint_focus_override)
     }
@@ -10886,9 +10906,20 @@ impl App {
                 return None;
             }
         }
-        // The middle of the planar face under the cursor (#738).
-        let kind = crate::face::pick_body_face(pp, project, &self.state.doc, self.state.cam.eye())
-            .filter(|kind| pick_occlusion.is_none_or(|occ| occ.pickable(&self.state.doc, kind)))?;
+        // The middle of the planar face under the cursor (#738). Skip bodies this
+        // pick cannot take *inside* the search, so a moving body in front of a
+        // destination face does not swallow the click (#1336).
+        let kind = crate::face::pick_body_face_where(
+            pp,
+            project,
+            &self.state.doc,
+            self.state.cam.eye(),
+            |bi| {
+                allowed(bi)
+                    && pick_occlusion
+                        .is_none_or(|occ| occ.pickable(&self.state.doc, &construction::PickTargetKind::Body(bi)))
+            },
+        )?;
         let construction::PickTargetKind::BodyFace { body, triangles, normal } = &kind else {
             return None;
         };
@@ -11008,8 +11039,17 @@ impl App {
             .as_ref()
             .map(|cm| cm.targets.clone())
             .unwrap_or_default();
-        let kind = crate::face::pick_body_face(pp, project, &self.state.doc, self.state.cam.eye())
-            .filter(|kind| pick_occlusion.is_none_or(|occ| occ.pickable(&self.state.doc, kind)))?;
+        let kind = crate::face::pick_body_face_where(
+            pp,
+            project,
+            &self.state.doc,
+            self.state.cam.eye(),
+            |bi| {
+                moving.is_none_or(|m| targets.contains(&bi) == m)
+                    && pick_occlusion
+                        .is_none_or(|occ| occ.pickable(&self.state.doc, &construction::PickTargetKind::Body(bi)))
+            },
+        )?;
         let construction::PickTargetKind::BodyFace { body, triangles, normal } = &kind else {
             return None;
         };
@@ -19530,8 +19570,9 @@ fn resolve_viewport_hover_highlight(
             ));
         }
         if move_pick == MovePickHover::MateFace {
-            let kind = crate::face::pick_body_face(pp, project, doc, cam.eye())
-                .filter(|k| occlusion.is_none_or(|occ| occ.pickable(doc, k)))?;
+            let kind = crate::face::pick_body_face_where(pp, project, doc, cam.eye(), |bi| {
+                occlusion.is_none_or(|occ| occ.pickable(doc, &construction::PickTargetKind::Body(bi)))
+            })?;
             return Some(gpu_viewport::ViewportHoverHighlight::PickTarget(kind));
         }
     }
@@ -19800,8 +19841,9 @@ fn resolve_viewport_hover_highlight(
                     ));
                 }
             }
-            let kind = crate::face::pick_body_face(pp, project, doc, cam.eye())
-                .filter(|kind| occlusion.is_none_or(|occ| occ.pickable(doc, kind)))?;
+            let kind = crate::face::pick_body_face_where(pp, project, doc, cam.eye(), |bi| {
+                occlusion.is_none_or(|occ| occ.pickable(doc, &construction::PickTargetKind::Body(bi)))
+            })?;
             let construction::PickTargetKind::BodyFace { body, triangles, .. } = &kind else {
                 return None;
             };
@@ -26459,6 +26501,7 @@ impl App {
         // select things hidden behind a body. Built once per frame, only for those tools
         // (it meshes every visible body). The body-set tools (Combine, Move, Repeat, Slice,
         // Revolve) need it too, or a click can pass through a front body to one behind it (#265).
+        // A Move destination pick ignores the moving bodies (#1336): they are not there.
         let pick_occlusion = if matches!(
             self.state.tool,
             Tool::Select
@@ -26474,11 +26517,23 @@ impl App {
                 | Tool::Sweep
                 | Tool::Project
         ) {
-            Some(construction::PickOcclusion::new(
-                &self.state.doc,
-                &self.state.element_visibility,
-                cam.eye(),
-            ))
+            Some({
+                let ignore = self.move_destination_ignore_bodies();
+                if ignore.is_empty() {
+                    construction::PickOcclusion::new(
+                        &self.state.doc,
+                        &self.state.element_visibility,
+                        cam.eye(),
+                    )
+                } else {
+                    construction::PickOcclusion::new_ignoring(
+                        &self.state.doc,
+                        &self.state.element_visibility,
+                        cam.eye(),
+                        &ignore,
+                    )
+                }
+            })
         } else {
             None
         };

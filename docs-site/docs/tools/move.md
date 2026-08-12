@@ -27,7 +27,7 @@ Move slides whole bodies to a new place, producing moved copies.
 2. Choose how to **Translate**:
    - **Point Snap** (the default) — pick a **Start point A** on a moving body, then an **End point
      A** on something that isn't moving, and the bodies slide so the first lands on the
-     second. Either point can be a corner, the midpoint of an edge, or the middle of a flat
+     second. Destination picks ignore the moving bodies, so you can click through them. Either point can be a corner, the midpoint of an edge, or the middle of a flat
      face; an end point can also be the **origin**. Hovering marks the exact point a click
      would take — and while an end picker is
      armed, the preview glides over to show the move that point would make, before you
