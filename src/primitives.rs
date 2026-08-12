@@ -13,7 +13,7 @@ use crate::model::{Document, Primitive, PrimitiveKind};
 use glam::Vec3;
 
 /// How many segments a cylinder's wall (and a sphere's equator) is tessellated into.
-const RADIAL_SEGMENTS: usize = 64;
+pub(crate) const RADIAL_SEGMENTS: usize = 64;
 /// How many stacks a sphere is tessellated into, pole to pole.
 const SPHERE_STACKS: usize = 32;
 

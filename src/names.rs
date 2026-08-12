@@ -49,6 +49,7 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
         | SceneElement::ExtrusionEdge { .. }
+        | SceneElement::PrimitiveEdge { .. }
         | SceneElement::RepeatedFace { .. } => None,
     }
 }
@@ -183,6 +184,7 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
         | SceneElement::ExtrusionEdge { .. }
+        | SceneElement::PrimitiveEdge { .. }
         | SceneElement::RepeatedFace { .. } => None,
     }?;
     let trimmed = name.trim();
@@ -434,6 +436,7 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
         | SceneElement::ExtrusionEdge { .. }
+        | SceneElement::PrimitiveEdge { .. }
         | SceneElement::RepeatedFace { .. } => {
             return Err("body edges, vertices, and faces cannot be renamed".to_string());
         }
@@ -693,6 +696,14 @@ fn body_label(doc: &Document, body: crate::model::BodyKey) -> String {
         .unwrap_or_else(|| format!("Body {}", body.index()))
 }
 
+fn analytic_edge_which(edge: crate::model::ExtrusionEdgeRef) -> String {
+    match edge {
+        crate::model::ExtrusionEdgeRef::Vertical { edge, .. } => format!("vertical {edge}"),
+        crate::model::ExtrusionEdgeRef::Cap { edge, top: true, .. } => format!("top {edge}"),
+        crate::model::ExtrusionEdgeRef::Cap { edge, top: false, .. } => format!("base {edge}"),
+    }
+}
+
 pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
     if let Some(name) = element_name(doc, element.clone()) {
         return name.to_string();
@@ -762,18 +773,13 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
             let owner = element_name(doc, SceneElement::Extrusion(*extrusion))
                 .map(|n| n.to_string())
                 .unwrap_or_else(|| format!("Extrusion {}", extrusion.index()));
-            let which = match edge {
-                crate::model::ExtrusionEdgeRef::Vertical { edge, .. } => {
-                    format!("vertical {edge}")
-                }
-                crate::model::ExtrusionEdgeRef::Cap { edge, top: true, .. } => {
-                    format!("top {edge}")
-                }
-                crate::model::ExtrusionEdgeRef::Cap { edge, top: false, .. } => {
-                    format!("base {edge}")
-                }
-            };
-            format!("{owner} — {which}")
+            format!("{owner} — {}", analytic_edge_which(*edge))
+        }
+        SceneElement::PrimitiveEdge { primitive, edge } => {
+            let owner = element_name(doc, SceneElement::Shape(*primitive))
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| format!("Shape {}", primitive.index()));
+            format!("{owner} — {}", analytic_edge_which(*edge))
         }
         // A snap point reads by which feature of the body it sits on (#955), the wording the
         // Move tool's own picker rows used before they became real pickers.

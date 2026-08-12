@@ -3392,14 +3392,20 @@ pub fn nearest_treatable_edge(
     screen: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     doc: &Document,
-) -> Option<(crate::model::ExtrusionKey, crate::model::ExtrusionEdgeRef, Vec3, Vec3, f32)> {
-    let mut best: Option<(crate::model::ExtrusionKey, crate::model::ExtrusionEdgeRef, Vec3, Vec3, f32)> = None;
-    for (extrusion, edge, a, b) in crate::extrude::treatable_edges(doc) {
+) -> Option<(crate::model::TreatableSolid, crate::model::ExtrusionEdgeRef, Vec3, Vec3, f32)> {
+    let mut best: Option<(
+        crate::model::TreatableSolid,
+        crate::model::ExtrusionEdgeRef,
+        Vec3,
+        Vec3,
+        f32,
+    )> = None;
+    for (solid, edge, a, b) in crate::extrude::treatable_edges(doc) {
         let Some(dist) = segment_pick_distance(screen, project, a, b) else {
             continue;
         };
         if best.as_ref().is_none_or(|(_, _, _, _, d)| dist < *d) {
-            best = Some((extrusion, edge, a, b, dist));
+            best = Some((solid, edge, a, b, dist));
         }
     }
     best

@@ -10,7 +10,9 @@ use crate::model::{
     LineEnd, VertexTreatmentKind,
 };
 use crate::names::find_element_by_name;
-use crate::script::{parse_key, Instruction, ScreenshotRegion, ScriptRunner, SyntheticInput};
+use crate::script::{
+    parse_key, Instruction, ScreenshotRegion, ScriptRunner, SyntheticInput, TreatableSolidRef,
+};
 use crate::value::{AngleUnit, LengthUnit};
 use crate::view_cube::{CubeCornerId, CubeEdgeId};
 
@@ -123,6 +125,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::BodyAxis { .. } => "body_axis",
         SceneElement::MovePoint(_) => "move_point",
         SceneElement::ExtrusionEdge { .. } => "extrusion_edge",
+        SceneElement::PrimitiveEdge { .. } => "primitive_edge",
         SceneElement::RepeatedFace { .. } => "repeated_face",
         SceneElement::Image(_) => "image",
         SceneElement::BooleanOp(_) => "boolean_op",
@@ -243,6 +246,9 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         | SceneElement::MovePoint(_) => 0,
         SceneElement::ExtrusionEdge { extrusion, .. } => {
             doc.extrusions.keys().position(|k| k == extrusion).unwrap_or(0)
+        }
+        SceneElement::PrimitiveEdge { primitive, .. } => {
+            doc.primitives.keys().position(|k| k == primitive).unwrap_or(0)
         }
         SceneElement::RepeatedFace { instance, .. } => instance,
         // A drawing item indexes by its place on the page; a dimension has no index of its
@@ -975,7 +981,7 @@ fn parse_constraint_point_table(lua: &Lua, table: Table) -> mlua::Result<Constra
 /// for the edge where side wall 2 meets the top (or, with `top = false`/omitted, base) cap.
 fn parse_extrusion_edge_table(table: Table) -> mlua::Result<ExtrusionEdgeRef> {
     let kind: String = table.get("kind").or_else(|_| table.get("type"))?;
-    let face: usize = table.get("face")?;
+    let face: usize = table.get("face").unwrap_or(0);
     let edge: usize = table.get("edge")?;
     match kind.to_ascii_lowercase().as_str() {
         "vertical" => Ok(ExtrusionEdgeRef::Vertical { face, edge }),
@@ -990,12 +996,14 @@ fn parse_extrusion_edge_table(table: Table) -> mlua::Result<ExtrusionEdgeRef> {
 }
 
 /// Parses the edge argument of `bearcad.chamfer_edge`/`fillet_edge`: either a single
-/// `edge = { ... }` alongside a top-level `extrusion`, or `edges = { {...}, ... }` — a whole set
-/// treated by one operation (#672). Each entry of `edges` may name its own `extrusion`, falling
-/// back to the top-level one. The plural form matters: two one-edge operations each bevel the
-/// extrusion's own body, so their outputs overlap instead of compounding.
-fn parse_extrusion_edge_set(opts: &Table) -> mlua::Result<Vec<(usize, ExtrusionEdgeRef)>> {
-    let default_extrusion: Option<usize> = opts.get("extrusion")?;
+/// `edge = { ... }` alongside a top-level `extrusion` or `primitive`, or `edges = { {...}, ... }`
+/// — a whole set treated by one operation (#672). Each entry of `edges` may name its own
+/// host, falling back to the top-level one. The plural form matters: two one-edge operations
+/// each bevel the solid's own body, so their outputs overlap instead of compounding.
+fn parse_extrusion_edge_set(
+    opts: &Table,
+) -> mlua::Result<Vec<(TreatableSolidRef, ExtrusionEdgeRef)>> {
+    let default_host = parse_treatable_solid_ref(opts)?;
     if let Some(list) = opts.get::<Option<Vec<Table>>>("edges")? {
         if list.is_empty() {
             return Err(mlua::Error::external("`edges` must name at least one edge"));
@@ -1003,27 +1011,44 @@ fn parse_extrusion_edge_set(opts: &Table) -> mlua::Result<Vec<(usize, ExtrusionE
         return list
             .into_iter()
             .map(|entry| {
-                // An entry is either { extrusion = i, edge = {...} } or the edge table itself,
-                // whose own `edge` field is an index — so the shape, not the key, decides.
+                // An entry is either { extrusion/primitive = i, edge = {...} } or the edge
+                // table itself, whose own `edge` field is an index — so the shape, not the
+                // key, decides.
                 let wrapped = match entry.get::<Value>("edge")? {
                     Value::Table(inner) => Some(inner),
                     _ => None,
                 };
-                let (extrusion, edge_table) = match wrapped {
-                    Some(inner) => (entry.get::<Option<usize>>("extrusion")?, inner),
+                let (host, edge_table) = match wrapped {
+                    Some(inner) => (parse_treatable_solid_ref(&entry)?, inner),
                     None => (None, entry),
                 };
-                let extrusion = extrusion.or(default_extrusion).ok_or_else(|| {
-                    mlua::Error::external("each `edges` entry needs an `extrusion`")
+                let host = host.or(default_host).ok_or_else(|| {
+                    mlua::Error::external(
+                        "each `edges` entry needs an `extrusion` or `primitive`",
+                    )
                 })?;
-                Ok((extrusion, parse_extrusion_edge_table(edge_table)?))
+                Ok((host, parse_extrusion_edge_table(edge_table)?))
             })
             .collect();
     }
-    let extrusion = default_extrusion
-        .ok_or_else(|| mlua::Error::external("chamfer_edge/fillet_edge requires an `extrusion`"))?;
+    let host = default_host.ok_or_else(|| {
+        mlua::Error::external("chamfer_edge/fillet_edge requires an `extrusion` or `primitive`")
+    })?;
     let edge_table: Table = opts.get("edge")?;
-    Ok(vec![(extrusion, parse_extrusion_edge_table(edge_table)?)])
+    Ok(vec![(host, parse_extrusion_edge_table(edge_table)?)])
+}
+
+fn parse_treatable_solid_ref(opts: &Table) -> mlua::Result<Option<TreatableSolidRef>> {
+    let extrusion: Option<usize> = opts.get("extrusion")?;
+    let primitive: Option<usize> = opts.get("primitive")?;
+    match (extrusion, primitive) {
+        (Some(i), None) => Ok(Some(TreatableSolidRef::Extrusion(i))),
+        (None, Some(i)) => Ok(Some(TreatableSolidRef::Primitive(i))),
+        (Some(_), Some(_)) => Err(mlua::Error::external(
+            "give `extrusion` or `primitive`, not both",
+        )),
+        (None, None) => Ok(None),
+    }
 }
 
 /// Parses `bearcad.combine{}`/`bearcad.edit_boolean{}` arguments: the op kind, the A and
@@ -8262,7 +8287,7 @@ mod tests {
         let edge = crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
         assert_eq!(
             state.apply(crate::actions::Action::CommitEdgeTreatments {
-                edges: vec![(xkey(0), edge)],
+                edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), edge)],
                 kind: VertexTreatmentKind::Fillet,
                 amount: 2.75,
             }),
@@ -8275,6 +8300,39 @@ mod tests {
             .collect();
         assert_eq!(live.len(), 1);
         assert!((live[0].amount - 2.75).abs() < 1e-4);
+    }
+
+    /// #1329: `fillet_edge` / `chamfer_edge` treat a Shape-tool cuboid the same way they
+    /// treat a rectangular extrusion — `primitive =` names the shape, `edge` is the same
+    /// vertical/cap address.
+    #[test]
+    fn lua_fillet_edge_treats_a_cuboid_primitive() {
+        let state = run_lua(
+            r#"
+            bearcad.cuboid{ width = 40, depth = 50, height = 22 }
+            local v0 = bearcad.body_stats(0).volume
+            bearcad.fillet_edge{
+                primitive = 0,
+                edge = { kind = "cap", face = 0, edge = 0, top = true },
+                radius = 3,
+            }
+            local v1 = bearcad.body_stats(1).volume
+            assert(v1 < v0 - 1, "fillet must cut the cuboid: " .. v1 .. " vs " .. v0)
+        "#,
+        );
+        assert_eq!(state.doc.edge_treatment_ops.len(), 1);
+        assert_eq!(
+            state.doc.edge_treatment_ops.values().nth(0).unwrap().kind,
+            VertexTreatmentKind::Fillet
+        );
+        let live: Vec<_> = state
+            .doc
+            .bodies
+            .iter()
+            .filter(|(_, b)| !b.shadow)
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(live.len(), 1, "one live filleted body");
     }
 
     /// #1324: fillets created through the scripted API must not draw a Document spoke

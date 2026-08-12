@@ -1801,7 +1801,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   larger than the solid) is **rejected at commit time** via a kernel trial-build (#103), and if
   a cut-bearing body ever does render the additive-only fallback (e.g. a pre-existing infeasible
   treatment in an old document), the status bar warns that its cuts are not shown. Both paths are scoped to bodies whose source is one or more
-  `Extrusion`s with a `Polygon` profile (a rectangle being a four-line polygon), and to the two
+  `Extrusion`s with a `Polygon` profile (a rectangle being a four-line polygon), Shape-tool cuboids (same 12-edge box), and cylinder rims, and to the two
   edge families that have a clean
   analytic definition there (see `crate::extrude::side_quad_world`/`cap_polygon_world`):
   - a **vertical side edge**, where two adjacent flat side walls of the profile meet, and
@@ -1893,7 +1893,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     (a set spanning several extrusions still commits everywhere, but only the primary
     extrusion gets a ghost — the preview mechanism shows one extrusion at a time).
   - Scriptable via `bearcad.chamfer_edge{ extrusion =, edge = {...}, distance = }` and
-    `bearcad.fillet_edge{ extrusion =, edge = {...}, radius = }`, where `edge` is `{ kind =
+    `bearcad.fillet_edge{ extrusion =, edge = {...}, radius = }` (`primitive =` for a
+    Shape-tool cuboid/cylinder), where `edge` is `{ kind =
     "vertical", face =, edge = }` or `{ kind = "cap", face =, edge =, top = }`. A whole set goes
     in one call as `edges = { {...}, {...} }` (#672) — each entry either a bare edge spec covered
     by the top-level `extrusion`, or `{ extrusion =, edge = {...} }` to name its own. This is not

@@ -127,7 +127,9 @@ impl ElementKind {
             // A Move/Joint snap point (#952) is a point, whatever geometry it sits on.
             SceneElement::MovePoint(_) => ElementKind::Vertex,
             // An extrusion's analytic edge (#952) is an edge, like the mesh edge it draws as.
-            SceneElement::ExtrusionEdge { .. } => ElementKind::Edge,
+            SceneElement::ExtrusionEdge { .. } | SceneElement::PrimitiveEdge { .. } => {
+                ElementKind::Edge
+            }
             // A repeat instance's face (#955) is an analytic one — it is the source face's
             // plane, translated, not any mesh in the document.
             SceneElement::RepeatedFace { .. } => ElementKind::Profile,
@@ -446,6 +448,9 @@ fn element_body(doc: &Document, element: &SceneElement) -> Option<crate::model::
             }),
         SceneElement::ExtrusionEdge { extrusion, .. } => {
             crate::model::body_index_for_extrusion(doc, *extrusion)
+        }
+        SceneElement::PrimitiveEdge { primitive, .. } => {
+            crate::model::body_index_for_primitive(doc, *primitive)
         }
         _ => None,
     }
