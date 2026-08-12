@@ -4045,7 +4045,6 @@ impl Default for AppState {
 enum MeshExportFormat {
     Stl,
     Step,
-    ThreeMf,
 }
 
 impl MeshExportFormat {
@@ -4053,7 +4052,6 @@ impl MeshExportFormat {
         match self {
             MeshExportFormat::Stl => "STL",
             MeshExportFormat::Step => "STEP",
-            MeshExportFormat::ThreeMf => "3MF",
         }
     }
 }
@@ -4944,14 +4942,101 @@ impl AppState {
         self.write_mesh_file(path, name, mesh, MeshExportFormat::Step)
     }
 
-    /// Write `mesh` to `path` as a 3MF package named `name`, setting `self.status` (#1284).
-    fn write_3mf_file(
+    /// Write a multi-object coloured 3MF package (#1284 / #1294). Each part is a separate object
+    /// with basematerials `displaycolor` so Bambu Studio / PrusaSlicer can assign filaments.
+    fn write_3mf_collected_file(
         &mut self,
         path: &str,
-        name: &str,
-        mesh: Option<crate::extrude::SolidMesh>,
+        collected: &[(String, crate::extrude::SolidMesh, String, [u8; 3])],
     ) -> ActionResult {
-        self.write_mesh_file(path, name, mesh, MeshExportFormat::ThreeMf)
+        if collected.is_empty() {
+            self.status = "Export failed: no solid geometry to export".to_string();
+            return ActionResult::Err(self.status.clone());
+        }
+        let n_tris: usize = collected.iter().map(|(_, m, _, _)| m.triangles.len()).sum();
+        let contents = self.write_3mf_collected(collected);
+        match std::fs::write(path, contents) {
+            Ok(()) => {
+                self.status = format!(
+                    "Exported {n_tris} triangle(s) in {} part(s) to {path} (3MF)",
+                    collected.len()
+                );
+                ActionResult::Ok
+            }
+            Err(e) => {
+                self.status = format!("Export failed: {e}");
+                ActionResult::Err(self.status.clone())
+            }
+        }
+    }
+
+    /// Material name + sRGB colour a body exports with (#1294 / #834).
+    fn body_export_material(&self, body: &crate::model::Body) -> (String, [u8; 3]) {
+        let mat = body
+            .material
+            .and_then(|mi| self.doc.materials.get(mi))
+            .or_else(|| {
+                self.doc
+                    .default_material()
+                    .and_then(|mi| self.doc.materials.get(mi))
+            });
+        match mat {
+            Some(m) => (m.name.clone(), m.color),
+            None => (
+                "Default".to_string(),
+                crate::threemf::DEFAULT_BODY_COLOR,
+            ),
+        }
+    }
+
+    /// Collect non-empty solid meshes + colours for the given body keys (skip shadows / empty).
+    /// Each entry is `(object_name, mesh, material_name, color)`.
+    fn collect_3mf_export(
+        &self,
+        bodies: impl IntoIterator<Item = crate::model::BodyKey>,
+    ) -> Result<Vec<(String, crate::extrude::SolidMesh, String, [u8; 3])>, String> {
+        let mut parts = Vec::new();
+        for bi in bodies {
+            let Some(body) = self.doc.bodies.get(bi) else {
+                continue;
+            };
+            if body.shadow {
+                continue;
+            }
+            let Some(mesh) = crate::extrude::body_solid_mesh(&self.doc, bi) else {
+                continue;
+            };
+            if mesh.is_empty() {
+                continue;
+            }
+            let name = body
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("body-{}", bi.index()));
+            let (mat_name, color) = self.body_export_material(body);
+            parts.push((name, mesh, mat_name, color));
+        }
+        if parts.is_empty() {
+            return Err("no solid geometry to export".to_string());
+        }
+        Ok(parts)
+    }
+
+    /// Build a 3MF package from collected body parts (#1294).
+    fn write_3mf_collected(
+        &self,
+        collected: &[(String, crate::extrude::SolidMesh, String, [u8; 3])],
+    ) -> Vec<u8> {
+        let parts: Vec<crate::threemf::ThreeMfPart<'_>> = collected
+            .iter()
+            .map(|(name, mesh, mat, color)| crate::threemf::ThreeMfPart {
+                name: name.as_str(),
+                mesh,
+                color: *color,
+                material_name: mat.as_str(),
+            })
+            .collect();
+        crate::threemf::write_3mf_parts(&parts)
     }
 
     /// Export a single body (by index) to `path` as STEP (#65). In `occt` builds, when the
@@ -5326,11 +5411,22 @@ impl AppState {
         Ok(crate::stl::write_ascii_stl(&name, &mesh).into_bytes())
     }
 
-    /// 3MF package of one body (or the whole document) as bytes (#1284).
+    /// 3MF package of one body (or the whole document) as bytes (#1284 / #1294).
+    /// Multi-body exports keep each body as a separate coloured object.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub fn export_3mf_bytes(&self, body: Option<crate::model::BodyKey>) -> Result<Vec<u8>, String> {
-        let (name, mesh) = self.export_mesh_for(body)?;
-        Ok(crate::threemf::write_3mf(&name, &mesh))
+        let keys: Vec<crate::model::BodyKey> = match body {
+            Some(bi) => vec![bi],
+            None => self
+                .doc
+                .bodies
+                .iter()
+                .filter(|(_, b)| !b.shadow)
+                .map(|(k, _)| k)
+                .collect(),
+        };
+        let collected = self.collect_3mf_export(keys)?;
+        Ok(self.write_3mf_collected(&collected))
     }
 
     /// STEP of one body (or the whole document) as bytes. Web kernel builds write real
@@ -5384,14 +5480,13 @@ impl AppState {
         Ok(crate::step::write_step(&self.component_export_name(ci), &mesh).into_bytes())
     }
 
-    /// 3MF of every body in a component (and nested components) as bytes (#1284).
+    /// 3MF of every body in a component (and nested components) as bytes (#1284 / #1294).
+    /// Each body is a separate coloured object (not a single merged mesh).
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub fn export_component_3mf_bytes(&self, ci: crate::model::ComponentKey) -> Result<Vec<u8>, String> {
         let bodies = self.component_body_indices(ci);
-        let mesh = self
-            .combined_body_mesh(&bodies)
-            .ok_or_else(|| "no solid geometry to export".to_string())?;
-        Ok(crate::threemf::write_3mf(&self.component_export_name(ci), &mesh))
+        let collected = self.collect_3mf_export(bodies)?;
+        Ok(self.write_3mf_collected(&collected))
     }
 
     /// Resolve a revolve body choice into a concrete [`RevolveMode`]. `AddTouching` with
@@ -6053,7 +6148,6 @@ impl AppState {
                 let contents: Vec<u8> = match format {
                     MeshExportFormat::Stl => crate::stl::write_ascii_stl(name, &m).into_bytes(),
                     MeshExportFormat::Step => crate::step::write_step(name, &m).into_bytes(),
-                    MeshExportFormat::ThreeMf => crate::threemf::write_3mf(name, &m),
                 };
                 match std::fs::write(path, contents) {
                     Ok(()) => {
@@ -8018,26 +8112,39 @@ impl AppState {
                 self.write_stl_file(&path, &name, mesh)
             }
             Action::Export3mf { path, body } => {
-                let (name, mesh) = match &body {
+                // #1294: keep each body as its own coloured object (do not fuse into one mesh).
+                let keys: Result<Vec<crate::model::BodyKey>, String> = match &body {
                     Some(name) => {
                         match self.doc.bodies.iter().find_map(|(k, b)| {
                             (b.name.as_deref() == Some(name.as_str())).then_some(k)
                         }) {
-                            Some(bi) => {
-                                (name.clone(), crate::extrude::body_solid_mesh(&self.doc, bi))
-                            }
-                            None => {
-                                self.status = format!("Export failed: no body named '{name}'");
-                                return ActionResult::Err(self.status.clone());
-                            }
+                            Some(bi) => Ok(vec![bi]),
+                            None => Err(format!("Export failed: no body named '{name}'")),
                         }
                     }
-                    None => (
-                        "bearcad".to_string(),
-                        Some(crate::extrude::document_solid_mesh(&self.doc)),
-                    ),
+                    None => Ok(self
+                        .doc
+                        .bodies
+                        .iter()
+                        .filter(|(_, b)| !b.shadow)
+                        .map(|(k, _)| k)
+                        .collect()),
                 };
-                self.write_3mf_file(&path, &name, mesh)
+                let keys = match keys {
+                    Ok(k) => k,
+                    Err(e) => {
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                };
+                let collected = match self.collect_3mf_export(keys) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        self.status = format!("Export failed: {e}");
+                        return ActionResult::Err(self.status.clone());
+                    }
+                };
+                self.write_3mf_collected_file(&path, &collected)
             }
             Action::ExportDrawingSvg { drawing, path } => {
                 let Some(svg) = crate::drawing::drawing_to_svg(&self.doc, drawing) else {
@@ -8084,16 +8191,18 @@ impl AppState {
                 self.write_stl_file(&path, &name, mesh)
             }
             Action::Export3mfBody { path, body } => {
-                let Some(b) = self.doc.bodies.get(body) else {
+                if self.doc.bodies.get(body).is_none() {
                     self.status = format!("Export failed: no body {body:?}");
                     return ActionResult::Err(self.status.clone());
+                }
+                let collected = match self.collect_3mf_export([body]) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        self.status = format!("Export failed: {e}");
+                        return ActionResult::Err(self.status.clone());
+                    }
                 };
-                let name = b
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| format!("body-{}", body.index()));
-                let mesh = crate::extrude::body_solid_mesh(&self.doc, body);
-                self.write_3mf_file(&path, &name, mesh)
+                self.write_3mf_collected_file(&path, &collected)
             }
             Action::ExportStep { path, body } => match &body {
                 Some(name) => {
@@ -8172,9 +8281,14 @@ impl AppState {
                     self.status = "Export failed: component has no bodies".to_string();
                     return ActionResult::Err(self.status.clone());
                 }
-                let name = self.component_export_name(component);
-                let mesh = self.combined_body_mesh(&bodies);
-                self.write_3mf_file(&path, &name, mesh)
+                let collected = match self.collect_3mf_export(bodies) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        self.status = format!("Export failed: {e}");
+                        return ActionResult::Err(self.status.clone());
+                    }
+                };
+                self.write_3mf_collected_file(&path, &collected)
             }
             Action::ExportComponentStep { path, component } => {
                 let bodies = self.component_body_indices(component);
@@ -19079,6 +19193,96 @@ mod tests {
         assert!(state.component_body_indices(ckey(3)).is_empty());
         assert!(state.export_component_stl_bytes(ckey(3)).is_err());
         assert!(state.export_component_3mf_bytes(ckey(3)).is_err());
+    }
+
+    /// #1294: multi-body 3MF export keeps each body as its own object with basematerials
+    /// colours from the body's material (Bambu Studio multi-filament).
+    #[test]
+    fn export_3mf_preserves_body_colours() {
+        let mut state = two_box_state(false);
+        // Seeded palette: Yellow is index 4, Red is index 3.
+        let yellow = state
+            .doc
+            .materials
+            .iter()
+            .find(|(_, m)| m.name == "Yellow")
+            .map(|(k, _)| k)
+            .expect("Yellow material");
+        let red = state
+            .doc
+            .materials
+            .iter()
+            .find(|(_, m)| m.name == "Red")
+            .map(|(k, _)| k)
+            .expect("Red material");
+        state.apply(Action::SetBodyMaterial {
+            body: bkey(0),
+            material: Some(yellow),
+        });
+        state.apply(Action::SetBodyMaterial {
+            body: bkey(1),
+            material: Some(red),
+        });
+
+        let bytes = state
+            .export_3mf_bytes(None)
+            .expect("document 3MF export");
+        assert_eq!(&bytes[0..4], b"PK\x03\x04");
+
+        // Pull the model XML from the store-method ZIP the same way threemf tests do.
+        let model = {
+            let want = b"3D/3dmodel.model";
+            let mut pos = 0;
+            let archive = &bytes;
+            let mut found = None;
+            while pos + 30 <= archive.len() {
+                let sig = u32::from_le_bytes(archive[pos..pos + 4].try_into().unwrap());
+                if sig != 0x04034b50 {
+                    break;
+                }
+                let method = u16::from_le_bytes(archive[pos + 8..pos + 10].try_into().unwrap());
+                let comp =
+                    u32::from_le_bytes(archive[pos + 18..pos + 22].try_into().unwrap()) as usize;
+                let name_len =
+                    u16::from_le_bytes(archive[pos + 26..pos + 28].try_into().unwrap()) as usize;
+                let extra_len =
+                    u16::from_le_bytes(archive[pos + 28..pos + 30].try_into().unwrap()) as usize;
+                let name_start = pos + 30;
+                let name_end = name_start + name_len;
+                let data_start = name_end + extra_len;
+                let data_end = data_start + comp;
+                if &archive[name_start..name_end] == want {
+                    assert_eq!(method, 0, "store only");
+                    found = Some(String::from_utf8(archive[data_start..data_end].to_vec()).unwrap());
+                    break;
+                }
+                pos = data_end;
+            }
+            found.expect("3D/3dmodel.model in package")
+        };
+
+        assert!(
+            model.contains("<basematerials id=\"1\">"),
+            "must declare basematerials:\n{model}"
+        );
+        assert!(
+            model.contains("name=\"Yellow\" displaycolor=\"#E8C94AFF\""),
+            "yellow material missing:\n{model}"
+        );
+        assert!(
+            model.contains("name=\"Red\" displaycolor=\"#E8615CFF\""),
+            "red material missing:\n{model}"
+        );
+        // Two mesh objects (ids 2 and 3) with distinct material indices.
+        assert!(model.contains("pid=\"1\" pindex=\"0\""), "first colour:\n{model}");
+        assert!(model.contains("pid=\"1\" pindex=\"1\""), "second colour:\n{model}");
+        assert!(model.contains("objectid=\"2\"") && model.contains("objectid=\"3\""));
+        // Not a single fused object.
+        assert_eq!(
+            model.matches("<object ").count(),
+            2,
+            "one object per body, got:\n{model}"
+        );
     }
 
     /// #423: components group elements; membership, nesting, visibility cascade, and

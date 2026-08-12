@@ -30,8 +30,9 @@ bearcad.quit()
 ```
 
 `bearcad.export_stl(path, [body])` and `bearcad.export_3mf(path, [body])` work the same way
-for mesh export. `bearcad.export_preview(path)` writes a Home zoom-to-fit PNG (same image
-embedded on save).
+for mesh export. Whole-document `export_3mf` keeps each body as its own coloured object
+(material → 3MF `basematerials`). `bearcad.export_preview(path)` writes a Home zoom-to-fit
+PNG (same image embedded on save).
 
 ## Sketch, draw, and name elements
 

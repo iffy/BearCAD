@@ -3,21 +3,41 @@
 //! A 3MF package is a ZIP with OPC content types, a root relationship, and a
 //! `3D/3dmodel.model` mesh document. We write store-method (uncompressed) ZIP
 //! entries so the encoder needs no deflate crate — slicers accept store fine.
+//!
+//! Multi-body documents export as separate `<object>` entries sharing a
+//! `<basematerials>` group (`displaycolor` from each body's material) so
+//! Bambu Studio / PrusaSlicer can assign filaments per colour (#1294).
 
 use crate::extrude::SolidMesh;
 use glam::Vec3;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-/// Serialize `mesh` as a 3MF package named `name` (object name in the model XML).
-/// Coordinates are millimetres, matching the rest of BearCAD.
-pub fn write_3mf(name: &str, mesh: &SolidMesh) -> Vec<u8> {
-    let model = model_xml(name, mesh);
-    let content_types = CONTENT_TYPES_XML;
-    let rels = ROOT_RELS_XML;
+/// Default body colour when no material is known (matches Unobtainium / SOLID_FILL).
+pub const DEFAULT_BODY_COLOR: [u8; 3] = [150, 168, 196];
+
+/// One mesh object in a multi-part 3MF package.
+#[derive(Clone, Copy, Debug)]
+pub struct ThreeMfPart<'a> {
+    pub name: &'a str,
+    pub mesh: &'a SolidMesh,
+    /// sRGB body colour.
+    pub color: [u8; 3],
+    /// Label written into `<basematerials>` (material name).
+    pub material_name: &'a str,
+}
+
+/// Serialize one or more coloured mesh parts as a 3MF package (#1284 / #1294).
+///
+/// Coordinates are millimetres. Each part becomes its own `<object>` with
+/// `pid`/`pindex` into a shared `<basematerials>` group. Slicers that understand
+/// standard 3MF materials (Bambu Studio, PrusaSlicer) treat these as separate
+/// filament-assignable parts.
+pub fn write_3mf_parts(parts: &[ThreeMfPart<'_>]) -> Vec<u8> {
+    let model = model_xml_parts(parts);
     zip_store(&[
-        ("[Content_Types].xml", content_types.as_bytes()),
-        ("_rels/.rels", rels.as_bytes()),
+        ("[Content_Types].xml", CONTENT_TYPES_XML.as_bytes()),
+        ("_rels/.rels", ROOT_RELS_XML.as_bytes()),
         ("3D/3dmodel.model", model.as_bytes()),
     ])
 }
@@ -35,9 +55,28 @@ const ROOT_RELS_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 </Relationships>
 "#;
 
-fn model_xml(name: &str, mesh: &SolidMesh) -> String {
-    let (vertices, triangles) = dedupe_mesh(mesh);
-    let mut out = String::with_capacity(256 + vertices.len() * 48 + triangles.len() * 40);
+fn model_xml_parts(parts: &[ThreeMfPart<'_>]) -> String {
+    // Deduplicate basematerials by (name, color); object ids start after the materials group.
+    let mut materials: Vec<(&str, [u8; 3])> = Vec::new();
+    let mut pindex_for: Vec<u32> = Vec::with_capacity(parts.len());
+    for part in parts {
+        let key = (part.material_name, part.color);
+        let idx = materials
+            .iter()
+            .position(|&(n, c)| n == key.0 && c == key.1)
+            .unwrap_or_else(|| {
+                let i = materials.len();
+                materials.push(key);
+                i
+            });
+        pindex_for.push(idx as u32);
+    }
+
+    let mut capacity = 512 + materials.len() * 80;
+    for part in parts {
+        capacity += part.mesh.triangles.len() * 40;
+    }
+    let mut out = String::with_capacity(capacity);
     out.push_str(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
     out.push('\n');
     out.push_str(
@@ -45,37 +84,78 @@ fn model_xml(name: &str, mesh: &SolidMesh) -> String {
     );
     out.push('\n');
     out.push_str("  <resources>\n");
-    let _ = write!(
-        out,
-        "    <object id=\"1\" name=\"{}\" type=\"model\">\n",
-        xml_escape(name)
-    );
-    out.push_str("      <mesh>\n");
-    out.push_str("        <vertices>\n");
-    for v in &vertices {
-        let _ = write!(
-            out,
-            "          <vertex x=\"{}\" y=\"{}\" z=\"{}\"/>\n",
-            v.x, v.y, v.z
-        );
+
+    // basematerials id="1" — objects use pid="1" and pindex into this group.
+    const MATERIALS_ID: u32 = 1;
+    if !materials.is_empty() {
+        let _ = write!(out, "    <basematerials id=\"{MATERIALS_ID}\">\n");
+        for (name, color) in &materials {
+            let _ = write!(
+                out,
+                "      <base name=\"{}\" displaycolor=\"{}\"/>\n",
+                xml_escape(name),
+                display_color(*color)
+            );
+        }
+        out.push_str("    </basematerials>\n");
     }
-    out.push_str("        </vertices>\n");
-    out.push_str("        <triangles>\n");
-    for [a, b, c] in &triangles {
-        let _ = write!(
-            out,
-            "          <triangle v1=\"{a}\" v2=\"{b}\" v3=\"{c}\"/>\n"
-        );
+
+    // Object resource ids: 2, 3, … (1 is reserved for basematerials when present).
+    let first_object_id: u32 = if materials.is_empty() { 1 } else { 2 };
+    let mut object_ids: Vec<u32> = Vec::with_capacity(parts.len());
+    for (i, part) in parts.iter().enumerate() {
+        let object_id = first_object_id + i as u32;
+        object_ids.push(object_id);
+        let (vertices, triangles) = dedupe_mesh(part.mesh);
+        if materials.is_empty() {
+            let _ = write!(
+                out,
+                "    <object id=\"{object_id}\" name=\"{}\" type=\"model\">\n",
+                xml_escape(part.name)
+            );
+        } else {
+            let _ = write!(
+                out,
+                "    <object id=\"{object_id}\" name=\"{}\" type=\"model\" pid=\"{MATERIALS_ID}\" pindex=\"{}\">\n",
+                xml_escape(part.name),
+                pindex_for[i]
+            );
+        }
+        out.push_str("      <mesh>\n");
+        out.push_str("        <vertices>\n");
+        for v in &vertices {
+            let _ = write!(
+                out,
+                "          <vertex x=\"{}\" y=\"{}\" z=\"{}\"/>\n",
+                v.x, v.y, v.z
+            );
+        }
+        out.push_str("        </vertices>\n");
+        out.push_str("        <triangles>\n");
+        for [a, b, c] in &triangles {
+            let _ = write!(
+                out,
+                "          <triangle v1=\"{a}\" v2=\"{b}\" v3=\"{c}\"/>\n"
+            );
+        }
+        out.push_str("        </triangles>\n");
+        out.push_str("      </mesh>\n");
+        out.push_str("    </object>\n");
     }
-    out.push_str("        </triangles>\n");
-    out.push_str("      </mesh>\n");
-    out.push_str("    </object>\n");
+
     out.push_str("  </resources>\n");
     out.push_str("  <build>\n");
-    out.push_str("    <item objectid=\"1\"/>\n");
+    for id in object_ids {
+        let _ = write!(out, "    <item objectid=\"{id}\"/>\n");
+    }
     out.push_str("  </build>\n");
     out.push_str("</model>\n");
     out
+}
+
+/// Core 3MF displaycolor: `#RRGGBBAA` (opaque).
+fn display_color(rgb: [u8; 3]) -> String {
+    format!("#{:02X}{:02X}{:02X}FF", rgb[0], rgb[1], rgb[2])
 }
 
 /// Collapse repeated triangle corners into a vertex table + index triples.
@@ -274,16 +354,25 @@ fn box_mesh() -> SolidMesh {
 mod tests {
     use super::*;
 
+    fn one_part(name: &str, mesh: &SolidMesh) -> Vec<u8> {
+        write_3mf_parts(&[ThreeMfPart {
+            name,
+            mesh,
+            color: DEFAULT_BODY_COLOR,
+            material_name: "Default",
+        }])
+    }
+
     #[test]
     fn write_3mf_is_a_zip_package() {
-        let bytes = write_3mf("part", &box_mesh());
+        let bytes = one_part("part", &box_mesh());
         assert!(bytes.len() > 100, "package too small: {}", bytes.len());
         assert_eq!(&bytes[0..4], b"PK\x03\x04", "local file header magic");
     }
 
     #[test]
     fn write_3mf_contains_required_parts() {
-        let bytes = write_3mf("Block", &box_mesh());
+        let bytes = one_part("Block", &box_mesh());
         let types = zip_entry(&bytes, "[Content_Types].xml").expect("content types");
         let types = String::from_utf8(types).unwrap();
         assert!(types.contains("3dmanufacturing-3dmodel+xml"));
@@ -298,12 +387,16 @@ mod tests {
         assert!(model.contains("name=\"Block\""));
         assert!(model.contains("<vertex "), "vertices");
         assert!(model.contains("<triangle "), "triangles");
-        assert!(model.contains("objectid=\"1\""));
+        // basematerials id=1; the mesh object is id=2 and referenced from build.
+        assert!(model.contains("<basematerials id=\"1\">"));
+        assert!(model.contains("objectid=\"2\""));
+        assert!(model.contains("pid=\"1\""));
+        assert!(model.contains("pindex=\"0\""));
     }
 
     #[test]
     fn write_3mf_dedupes_shared_vertices() {
-        let bytes = write_3mf("cube", &box_mesh());
+        let bytes = one_part("cube", &box_mesh());
         let model = String::from_utf8(zip_entry(&bytes, "3D/3dmodel.model").unwrap()).unwrap();
         let n_verts = model.matches("<vertex ").count();
         let n_tris = model.matches("<triangle ").count();
@@ -313,20 +406,109 @@ mod tests {
 
     #[test]
     fn write_3mf_escapes_object_name() {
-        let bytes = write_3mf("a&b<c>", &box_mesh());
+        let bytes = one_part("a&b<c>", &box_mesh());
         let model = String::from_utf8(zip_entry(&bytes, "3D/3dmodel.model").unwrap()).unwrap();
         assert!(model.contains("name=\"a&amp;b&lt;c&gt;\""));
     }
 
     #[test]
     fn write_3mf_empty_mesh_is_still_valid_package() {
-        let bytes = write_3mf("empty", &SolidMesh::default());
+        let bytes = one_part("empty", &SolidMesh::default());
         assert_eq!(&bytes[0..4], b"PK\x03\x04");
         let model = String::from_utf8(zip_entry(&bytes, "3D/3dmodel.model").unwrap()).unwrap();
         assert!(model.contains("<vertices>"));
         assert!(model.contains("<triangles>"));
         assert_eq!(model.matches("<vertex ").count(), 0);
         assert_eq!(model.matches("<triangle ").count(), 0);
+    }
+
+    /// #1294: each coloured body is its own object with basematerials displaycolor so
+    /// Bambu Studio / PrusaSlicer can assign filaments per colour.
+    #[test]
+    fn write_3mf_parts_emits_basematerials_and_per_colour_objects() {
+        let red = box_mesh();
+        let yellow = {
+            let mut m = box_mesh();
+            for tri in &mut m.triangles {
+                for v in tri {
+                    v.z += 2.0;
+                }
+            }
+            m
+        };
+        let bytes = write_3mf_parts(&[
+            ThreeMfPart {
+                name: "Body 0",
+                mesh: &yellow,
+                color: [0xe8, 0xc9, 0x4a],
+                material_name: "Yellow",
+            },
+            ThreeMfPart {
+                name: "Body 1",
+                mesh: &red,
+                color: [0xe8, 0x61, 0x5c],
+                material_name: "Red",
+            },
+        ]);
+        let model = String::from_utf8(zip_entry(&bytes, "3D/3dmodel.model").unwrap()).unwrap();
+
+        assert!(
+            model.contains("<basematerials id=\"1\">"),
+            "materials group:\n{model}"
+        );
+        assert!(
+            model.contains("name=\"Yellow\" displaycolor=\"#E8C94AFF\""),
+            "yellow material:\n{model}"
+        );
+        assert!(
+            model.contains("name=\"Red\" displaycolor=\"#E8615CFF\""),
+            "red material:\n{model}"
+        );
+        assert!(model.contains("name=\"Body 0\""), "body 0 object");
+        assert!(model.contains("name=\"Body 1\""), "body 1 object");
+        // Two objects, pid into basematerials, distinct pindex.
+        assert!(model.contains("pid=\"1\" pindex=\"0\""));
+        assert!(model.contains("pid=\"1\" pindex=\"1\""));
+        assert!(model.contains("objectid=\"2\""));
+        assert!(model.contains("objectid=\"3\""));
+        // Two cubes → 16 unique verts, 24 triangles.
+        assert_eq!(model.matches("<vertex ").count(), 16);
+        assert_eq!(model.matches("<triangle ").count(), 24);
+    }
+
+    /// Bodies that share a material share one basematerials entry (same pindex).
+    #[test]
+    fn write_3mf_parts_dedupes_shared_materials() {
+        let a = box_mesh();
+        let b = box_mesh();
+        let bytes = write_3mf_parts(&[
+            ThreeMfPart {
+                name: "a",
+                mesh: &a,
+                color: [0xff, 0x00, 0x00],
+                material_name: "Red",
+            },
+            ThreeMfPart {
+                name: "b",
+                mesh: &b,
+                color: [0xff, 0x00, 0x00],
+                material_name: "Red",
+            },
+        ]);
+        let model = String::from_utf8(zip_entry(&bytes, "3D/3dmodel.model").unwrap()).unwrap();
+        assert_eq!(
+            model.matches("<base ").count(),
+            1,
+            "one shared basematerial:\n{model}"
+        );
+        assert_eq!(model.matches("pindex=\"0\"").count(), 2);
+        assert!(!model.contains("pindex=\"1\""));
+    }
+
+    #[test]
+    fn display_color_is_rrggbbaa() {
+        assert_eq!(display_color([0xe8, 0xc9, 0x4a]), "#E8C94AFF");
+        assert_eq!(display_color([0, 0, 0]), "#000000FF");
     }
 
     #[test]

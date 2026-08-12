@@ -1,4 +1,5 @@
 -- Example — extrude a rectangle into a box and export it as a 3MF package.
+-- Multi-body docs export each body as its own coloured object (material → basematerials).
 -- Run: cargo run -- --script examples/export_3mf.lua --exit
 
 bearcad.new()
