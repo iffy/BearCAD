@@ -9207,6 +9207,125 @@ mod tests {
         );
     }
 
+    /// Shared Lua: sketch a circle on the last body's most +Z face and cut-extrude it.
+    fn cut_last_live_body_lua(label: &str) -> String {
+        format!(
+            r#"
+            local live = bearcad.count("body") - 1
+            local v0 = bearcad.body_stats(live).volume
+            assert(v0 > 1000, "{label}: live body should have volume, got " .. v0)
+            local faces = bearcad.body_faces(live)
+            local top
+            local best = -2
+            for i = 1, #faces do
+                local nz = faces[i].normal[3]
+                if nz > best then best = nz; top = faces[i] end
+            end
+            assert(top, "{label}: live body has no faces")
+            local function q(v)
+                return {{
+                    math.floor(v[1] * 100 + 0.5),
+                    math.floor(v[2] * 100 + 0.5),
+                    math.floor(v[3] * 100 + 0.5),
+                }}
+            end
+            bearcad.begin_sketch{{
+                kind = "body_mesh_face",
+                body = live,
+                centroid = q(top.face),
+                normal = q(top.normal),
+            }}
+            bearcad.circle{{ x = 0, y = 0, r = 6 }}
+            bearcad.extrude{{ circle = 0, distance = -30, body = "cut" }}
+            local v1 = bearcad.body_stats(live).volume
+            assert(v1 < v0 - 50, "{label}: cut must remove material: " .. v1 .. " vs " .. v0)
+            "#
+        )
+    }
+
+    /// #1345: a cut into a Move/Slice/Mirror/Repeat/fillet result must subtract, not
+    /// create an orphan extrusion (same class as #1338).
+    #[test]
+    fn lua_cut_extrude_into_op_produced_bodies_subtracts() {
+        let cases: &[(&str, &str, fn(&crate::model::BodySource) -> bool)] = &[
+            (
+                "moved",
+                r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 40, depth = 40, height = 20 }
+            bearcad.move_bodies{ bodies = {0}, x = 30 }
+            "#,
+                |s| matches!(s, crate::model::BodySource::Moved { .. }),
+            ),
+            (
+                "sliced",
+                r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 40, depth = 40, height = 20 }
+            bearcad.plane{ offset = 10 }
+            bearcad.slice{ bodies = {0}, cutters = {{ kind = "construction_plane", index = 3 }} }
+            "#,
+                |s| matches!(s, crate::model::BodySource::Sliced { .. }),
+            ),
+            (
+                "mirrored",
+                r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 40, depth = 40, height = 20 }
+            bearcad.mirror_bodies{
+                plane = { kind = "construction_plane", index = 2 },
+                bodies = {0},
+            }
+            "#,
+                |s| matches!(s, crate::model::BodySource::Mirrored { .. }),
+            ),
+            (
+                "repeated",
+                r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 40, depth = 40, height = 20 }
+            bearcad.repeat_bodies{ bodies = {0}, axis = "x", count = 3, gap = 10 }
+            "#,
+                |s| matches!(s, crate::model::BodySource::Repeated { .. }),
+            ),
+            (
+                "edge_treated",
+                r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 40, depth = 40, height = 20 }
+            bearcad.fillet_edge{
+                primitive = 0,
+                edge = { kind = "cap", face = 0, edge = 0, top = true },
+                radius = 3,
+            }
+            "#,
+                |s| matches!(s, crate::model::BodySource::EdgeTreated { .. }),
+            ),
+        ];
+        for (label, setup, is_kind) in cases {
+            let source = format!("{setup}{}", cut_last_live_body_lua(label));
+            let state = run_lua(&source);
+            let live = state
+                .doc
+                .bodies
+                .iter()
+                .filter(|(_, b)| !b.shadow)
+                .last()
+                .map(|(_, b)| b)
+                .unwrap_or_else(|| panic!("{label}: expected a live body"));
+            assert!(
+                is_kind(&live.source),
+                "{label}: last live body should be the op output, got {:?}",
+                live.source
+            );
+            assert_eq!(
+                live.source.cut_extrusion_indices().len(),
+                1,
+                "{label}: cut must stay on the op-produced body, not become an orphan"
+            );
+        }
+    }
+
     /// #1104/#1105/#1106: shape keeps its pure (shadow) body + face sketch; the combined
     /// body nests under the extrusion as its output.
     #[test]

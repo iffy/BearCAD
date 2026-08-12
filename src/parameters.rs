@@ -541,6 +541,7 @@ fn resolve_derived_body_edge(
             op,
             target,
             instance,
+            ..
         } => {
             let rp = doc.repeat_ops.get(op)?;
             let &input = rp.targets.get(target)?;
@@ -557,7 +558,7 @@ fn resolve_derived_body_edge(
             };
             (input, m, free)
         }
-        crate::model::BodySource::Moved { op, target } => {
+        crate::model::BodySource::Moved { op, target, .. } => {
             let mv = doc.move_ops.get(op)?;
             let &input = mv.targets.get(target)?;
             if input == body {
@@ -566,7 +567,7 @@ fn resolve_derived_body_edge(
             let m = crate::extrude::move_op_transform(doc, mv)?;
             (input, m, None)
         }
-        crate::model::BodySource::Mirrored { op, target } => {
+        crate::model::BodySource::Mirrored { op, target, .. } => {
             let mr = doc.mirror_ops.get(op)?;
             let &input = mr.targets.get(target)?;
             if input == body {

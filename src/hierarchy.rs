@@ -6621,7 +6621,12 @@ mod tests {
             name: None,
         });
         let output = doc.bodies.insert(Body {
-            source: BodySource::EdgeTreated { op, target: 0 },
+            source: BodySource::EdgeTreated {
+                op,
+                target: 0,
+                add: Vec::new(),
+                cut: Vec::new(),
+            },
             material: None,
             name: None,
             shadow: false,
@@ -8464,6 +8469,8 @@ label_hidden: false,
                     op,
                     target: 0,
                     piece,
+                    add: Vec::new(),
+                    cut: Vec::new(),
                 },
                 material: None,
                 name: None,
