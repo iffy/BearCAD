@@ -7646,6 +7646,53 @@ mod tests {
         assert_eq!(state.doc.bodies.len(), 2);
     }
 
+    /// #1342: importing a unit persists `units.document` as a nested `.bearcad` blob.
+    /// Syncing the source replaces that one blob; a second connection still sees the
+    /// last save until ⌘S.
+    #[test]
+    fn lua_unit_document_is_a_nested_blob() {
+        let pid = std::process::id();
+        let source = std::env::temp_dir().join(format!("bearcad_lua_unit_src_{pid}.bearcad"));
+        let host = std::env::temp_dir().join(format!("bearcad_lua_unit_host_{pid}.bearcad"));
+        let source_s = source.to_string_lossy().replace('\\', "\\\\");
+        let host_s = host.to_string_lossy().replace('\\', "\\\\");
+        let _ = std::fs::remove_file(&source);
+        let _ = std::fs::remove_file(&host);
+        let state = run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.parameter("add", "width", "10")
+            bearcad.save("{source_s}")
+            bearcad.new()
+            bearcad.save("{host_s}")
+            bearcad.import_unit{{ path = "{source_s}", link = "static", name = "part" }}
+            bearcad.save()
+            assert(bearcad.sqlite_scalar("SELECT typeof(document) FROM units") == "blob",
+                "units.document must be a blob")
+            assert(bearcad.sqlite_scalar("SELECT CAST(substr(document, 1, 15) AS TEXT) FROM units")
+                == "SQLite format 3", "nested blob must be a .bearcad")
+            bearcad.open("{source_s}")
+            bearcad.parameter("value", 0, "99")
+            bearcad.save()
+            bearcad.open("{host_s}")
+            bearcad.sync_unit(0)
+            local w = bearcad.session_writes()
+            assert(w.units and w.units.updates == 1, "sync replaces the one unit blob")
+            assert(not w.unit_instances, "instances stay rows of their own")
+            assert(
+                bearcad.sqlite_scalar("SELECT CAST(substr(document, 1, 15) AS TEXT) FROM units")
+                    == "SQLite format 3",
+                "committed file still has the last save's blob"
+            )
+            bearcad.save()
+            assert(bearcad.sqlite_scalar("SELECT typeof(document) FROM units") == "blob")
+        "#
+        ));
+        let _ = std::fs::remove_file(&source);
+        let _ = std::fs::remove_file(&host);
+        assert_eq!(state.doc.units.len(), 1);
+    }
+
     /// #46: GUI/UI manipulation lives under `bearcad.ui.*`; modeling stays top-level.
     #[test]
     fn lua_ui_functions_live_under_ui_namespace() {

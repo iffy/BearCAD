@@ -3464,8 +3464,9 @@ health reports it.
   face lists, move points).
 - **`blobs`** for fonts, tracing images, STEP bytes, packed mesh triangles, preview
   PNG/STL. First save of a new path is a full typed write, atomic (`*.tmp` + rename).
-- Undo remains session snapshots (cap 200), not a SQL history. Nested unit blobs
-  and `geometry_cache` come later.
+- Undo remains session snapshots (cap 200), not a SQL history. Nested units
+  store the embedded copy as a `.bearcad` blob in `units.document`.
+  `geometry_cache` comes later.
 
 ### 7.2a Session I/O
 
@@ -3519,7 +3520,7 @@ CREATE TABLE component_members (
   PRIMARY KEY (member_kind, member_id));
 CREATE TABLE units (
   id INTEGER PRIMARY KEY, source_json TEXT NOT NULL, link TEXT NOT NULL,
-  source_mtime INTEGER, source_hash INTEGER, document_json TEXT NOT NULL);
+  source_mtime INTEGER, source_hash INTEGER, document BLOB NOT NULL);
 CREATE TABLE unit_instances (
   id INTEGER PRIMARY KEY, unit_id INTEGER, name TEXT,
   tx TEXT, ty TEXT, tz TEXT, axis_x REAL, axis_y REAL, axis_z REAL, angle TEXT,
@@ -3536,14 +3537,18 @@ Same pattern everywhere: new feature = new table or new columns. Preview PNG/STL
 ### 7.4 Imported units (#719)
 
 A document can embed other BearCAD documents as **units**: `Document.units` holds one
-embedded copy per imported source (`unit` dag rows) — its source (a path relative to the
+embedded copy per imported source — its source (a path relative to the
 importing file, or a library path, §11.z), a link mode (static or dynamic, #732), the
 embedded `Document`, and staleness provenance (source mtime + content hash) — and
-`Document.unit_instances` (`unit_instance` rows) are the placements: unit index, instance
+`Document.unit_instances` are the placements: unit id, instance
 name (for qualified expression references, #729), parameter overrides, and a placement
-transform. Ten instances of one part cost one embedded copy plus ten override lists, and
-the importing file opens and rebuilds with the source file absent. Load refuses import
-cycles (matched on resolved source path) and nesting deeper than `MAX_UNIT_DEPTH`.
+transform. On disk the embedded copy is a nested `.bearcad` blob (`units.document`);
+instances stay rows. Nested units recurse as blobs. Ten instances of one part cost one
+embedded copy plus ten override lists, and the importing file opens and rebuilds with
+the source file absent. Load hydrates the blob back into the in-memory `Document`.
+Load refuses import cycles (matched on resolved source path) and nesting deeper than
+`MAX_UNIT_DEPTH`. Incremental writes insert/replace that one blob when the unit copy
+changes.
 
 **Unit identity (#1055):** `Document.units` is an `arena::Arena` keyed by `UnitKey`, which
 is what an instance's `unit`, `Action::SyncUnit`/`SetUnitLink`/`AddUnitInstance`, the

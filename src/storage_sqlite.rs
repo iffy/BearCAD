@@ -341,7 +341,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             link TEXT NOT NULL,
             source_mtime INTEGER,
             source_hash INTEGER,
-            document_json TEXT NOT NULL
+            document BLOB NOT NULL
         );
         CREATE TABLE IF NOT EXISTS unit_instances (
             id INTEGER PRIMARY KEY,
@@ -1449,7 +1449,7 @@ fn save_joints(tx: &Connection, arena: &Arena<Joint>) -> Result<()> {
 fn save_units(tx: &Connection, arena: &Arena<ImportedUnit>) -> Result<()> {
     for (key, u) in arena.iter() {
         tx.execute(
-            "INSERT INTO units (id, source_json, link, source_mtime, source_hash, document_json)
+            "INSERT INTO units (id, source_json, link, source_mtime, source_hash, document)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 key_bits(key),
@@ -1457,8 +1457,7 @@ fn save_units(tx: &Connection, arena: &Arena<ImportedUnit>) -> Result<()> {
                 to_json(&u.link)?,
                 u.source_mtime,
                 u.source_hash.map(|h| h as i64),
-                // Nested unit blobs land in #1342; this version keeps the embedded Document as JSON.
-                to_json(&u.document)?,
+                document_to_blob(&u.document)?,
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -1614,50 +1613,91 @@ pub fn open(path: &str) -> Result<Document> {
         ));
     }
 
-    let mut doc = Document {
-        parameters: load_parameters(&conn)?,
-        sketches: load_sketches(&conn)?,
-        lines: load_lines(&conn)?,
-        circles: load_circles(&conn)?,
-        constraints: load_constraints(&conn)?,
-        construction_planes: load_planes(&conn)?,
-        extrusions: load_extrusions(&conn)?,
-        bodies: load_bodies(&conn)?,
-        materials: load_materials(&conn)?,
-        imported_meshes: load_imported_meshes(&conn)?,
-        tracing_images: load_tracing_images(&conn)?,
-        lofts: load_lofts(&conn)?,
-        revolutions: load_revolutions(&conn)?,
-        primitives: load_primitives(&conn)?,
-        sweeps: load_sweeps(&conn)?,
-        boolean_ops: load_boolean_ops(&conn)?,
-        move_ops: load_move_ops(&conn)?,
-        mirror_ops: load_mirror_ops(&conn)?,
-        repeat_ops: load_repeat_ops(&conn)?,
-        slice_ops: load_slice_ops(&conn)?,
-        shell_ops: load_shell_ops(&conn)?,
-        edge_treatment_ops: load_edge_treatment_ops(&conn)?,
-        sketch_repeat_ops: load_sketch_repeat_ops(&conn)?,
-        sketch_offset_ops: load_sketch_offset_ops(&conn)?,
-        sketch_mirror_ops: load_sketch_mirror_ops(&conn)?,
-        sketch_vertex_treatment_ops: load_sketch_vertex_treatment_ops(&conn)?,
-        sketch_slice_ops: load_sketch_slice_ops(&conn)?,
-        sketch_texts: load_sketch_texts(&conn)?,
-        drawings: load_drawings(&conn)?,
-        joints: load_joints(&conn)?,
-        shape_order: load_shape_order(&conn)?,
-        undo_groups: load_undo_groups(&conn)?,
-        default_length_unit: load_default_length_unit(&conn),
-        default_angle_unit: load_default_angle_unit(&conn),
-        components: load_components(&conn)?,
-        component_members: load_component_members(&conn)?,
-        units: load_units(&conn)?,
-        unit_instances: load_unit_instances(&conn)?,
-        mesh_rev: 0,
-    };
+    let mut doc = hydrate_document(&conn)?;
     super::fixup_loaded_document(&mut doc)?;
     crate::model::validate_units(&doc, Some(std::path::Path::new(path)))?;
     Ok(doc)
+}
+
+/// Hydrate arenas from a typed `.bearcad` connection. Nested unit blobs use this
+/// without the top-level fixup (cycles / depth are checked on the outer document).
+fn hydrate_document(conn: &Connection) -> Result<Document> {
+    Ok(Document {
+        parameters: load_parameters(conn)?,
+        sketches: load_sketches(conn)?,
+        lines: load_lines(conn)?,
+        circles: load_circles(conn)?,
+        constraints: load_constraints(conn)?,
+        construction_planes: load_planes(conn)?,
+        extrusions: load_extrusions(conn)?,
+        bodies: load_bodies(conn)?,
+        materials: load_materials(conn)?,
+        imported_meshes: load_imported_meshes(conn)?,
+        tracing_images: load_tracing_images(conn)?,
+        lofts: load_lofts(conn)?,
+        revolutions: load_revolutions(conn)?,
+        primitives: load_primitives(conn)?,
+        sweeps: load_sweeps(conn)?,
+        boolean_ops: load_boolean_ops(conn)?,
+        move_ops: load_move_ops(conn)?,
+        mirror_ops: load_mirror_ops(conn)?,
+        repeat_ops: load_repeat_ops(conn)?,
+        slice_ops: load_slice_ops(conn)?,
+        shell_ops: load_shell_ops(conn)?,
+        edge_treatment_ops: load_edge_treatment_ops(conn)?,
+        sketch_repeat_ops: load_sketch_repeat_ops(conn)?,
+        sketch_offset_ops: load_sketch_offset_ops(conn)?,
+        sketch_mirror_ops: load_sketch_mirror_ops(conn)?,
+        sketch_vertex_treatment_ops: load_sketch_vertex_treatment_ops(conn)?,
+        sketch_slice_ops: load_sketch_slice_ops(conn)?,
+        sketch_texts: load_sketch_texts(conn)?,
+        drawings: load_drawings(conn)?,
+        joints: load_joints(conn)?,
+        shape_order: load_shape_order(conn)?,
+        undo_groups: load_undo_groups(conn)?,
+        default_length_unit: load_default_length_unit(conn),
+        default_angle_unit: load_default_angle_unit(conn),
+        components: load_components(conn)?,
+        component_members: load_component_members(conn)?,
+        units: load_units(conn)?,
+        unit_instances: load_unit_instances(conn)?,
+        mesh_rev: 0,
+    })
+}
+
+fn unique_nested_blob_path() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "bearcad_nested_{}_{n}.bearcad",
+        std::process::id()
+    ))
+}
+
+/// Serialize `doc` as a standalone `.bearcad` (SQLite) byte blob.
+fn document_to_blob(doc: &Document) -> Result<Vec<u8>> {
+    let path = unique_nested_blob_path();
+    let path_str = path.to_string_lossy().to_string();
+    let result = save_sqlite(&path_str, doc)
+        .and_then(|_| std::fs::read(&path).map_err(|e| e.to_string()));
+    let _ = std::fs::remove_file(&path);
+    result
+}
+
+/// Hydrate a nested `.bearcad` blob into an in-memory `Document` (no top-level fixup).
+fn document_from_blob(bytes: &[u8]) -> Result<Document> {
+    if bytes.len() < 16 || !bytes.starts_with(b"SQLite format 3") {
+        return Err("unit document is not a nested .bearcad blob".into());
+    }
+    let path = unique_nested_blob_path();
+    let result = (|| {
+        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+        let conn = Connection::open(&path).map_err(|e| e.to_string())?;
+        hydrate_document(&conn)
+    })();
+    let _ = std::fs::remove_file(&path);
+    result
 }
 
 fn load_default_length_unit(conn: &Connection) -> LengthUnit {
@@ -3230,9 +3270,7 @@ fn load_joints(conn: &Connection) -> Result<Arena<Joint>> {
 
 fn load_units(conn: &Connection) -> Result<Arena<ImportedUnit>> {
     let mut stmt = conn
-        .prepare(
-            "SELECT id, source_json, link, source_mtime, source_hash, document_json FROM units",
-        )
+        .prepare("SELECT id, source_json, link, source_mtime, source_hash, document FROM units")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
@@ -3242,20 +3280,20 @@ fn load_units(conn: &Connection) -> Result<Arena<ImportedUnit>> {
                 row.get::<_, String>(2)?,
                 row.get::<_, Option<i64>>(3)?,
                 row.get::<_, Option<i64>>(4)?,
-                row.get::<_, String>(5)?,
+                row.get::<_, Vec<u8>>(5)?,
             ))
         })
         .map_err(|e| e.to_string())?;
     let mut entries = Vec::new();
     for row in rows {
-        let (id, source_json, link, source_mtime, source_hash, document_json) =
+        let (id, source_json, link, source_mtime, source_hash, document) =
             row.map_err(|e| e.to_string())?;
         entries.push((
             id,
             ImportedUnit {
                 source: from_json(&source_json)?,
                 link: from_json(&link).unwrap_or(LinkMode::Static),
-                document: from_json(&document_json)?,
+                document: document_from_blob(&document)?,
                 source_mtime,
                 source_hash: source_hash.map(|h| h as u64),
             },

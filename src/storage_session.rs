@@ -128,6 +128,22 @@ impl DocumentSession {
             .map_err(|e| e.to_string())
     }
 
+    /// First column of the first row as text — sees uncommitted session writes.
+    #[cfg(test)]
+    pub fn query_text(&self, sql: &str) -> Result<String> {
+        self.conn
+            .query_row(sql, [], |row| row.get(0))
+            .map_err(|e| e.to_string())
+    }
+
+    /// First column of the first row as a blob — sees uncommitted session writes.
+    #[cfg(test)]
+    pub fn query_blob(&self, sql: &str) -> Result<Vec<u8>> {
+        self.conn
+            .query_row(sql, [], |row| row.get(0))
+            .map_err(|e| e.to_string())
+    }
+
     fn ensure_txn(&mut self) -> Result<()> {
         if !self.in_txn {
             self.conn
