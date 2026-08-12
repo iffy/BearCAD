@@ -116,6 +116,7 @@ mod ffi {
         ) -> *mut f64;
         pub fn bearcad_tri_free(tris: *mut f64);
         pub fn bearcad_shape_free(shape: *mut BearcadShape);
+        pub fn bearcad_shape_clone(shape: *const BearcadShape) -> *mut BearcadShape;
         pub fn bearcad_shape_split_solids(
             shape: *const BearcadShape,
             out_count: *mut c_ulong,
@@ -245,6 +246,27 @@ pub fn face_boolean_loop(
         .collect();
     unsafe { ffi::bearcad_pts_free(ptr) };
     (out.len() >= 3).then_some(out)
+}
+
+/// How many kernel booleans this process has run. Tests use this to assert that
+/// idle cut-preview frames reuse cached solids instead of rebuilding history
+/// (#1337).
+static BOOLEAN_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn note_boolean_call() {
+    BOOLEAN_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Kernel boolean calls since the last [`reset_boolean_call_count`].
+#[cfg(test)]
+pub fn boolean_call_count() -> u64 {
+    BOOLEAN_CALLS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Reset [`boolean_call_count`]. Tests only.
+#[cfg(test)]
+pub fn reset_boolean_call_count() {
+    BOOLEAN_CALLS.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// An owned OCCT BREP solid. Real geometry, not a mesh: built from profiles,
@@ -415,12 +437,20 @@ impl Shape {
 
     /// Boolean-combine `self` and `other` into a new shape. `None` on failure.
     pub fn boolean(&self, other: &Shape, op: BoolOp) -> Option<Shape> {
+        note_boolean_call();
         let code = match op {
             BoolOp::Fuse => 0,
             BoolOp::Cut => 1,
             BoolOp::Common => 2,
         };
         let raw = unsafe { ffi::bearcad_shape_boolean(self.raw, other.raw, code) };
+        (!raw.is_null()).then_some(Shape { raw })
+    }
+
+    /// Cheap handle copy so a memoized solid can be reused without rebuilding
+    /// the BREP history (#1337). `None` if the kernel refused the copy.
+    pub fn try_clone(&self) -> Option<Shape> {
+        let raw = unsafe { ffi::bearcad_shape_clone(self.raw) };
         (!raw.is_null()).then_some(Shape { raw })
     }
 
@@ -529,8 +559,6 @@ impl Shape {
     }
 
     /// Solid volume, or `None` on a kernel error (negative sentinel).
-    /// (Kernel API; exercised by tests, consumed by app code incrementally.)
-    #[allow(dead_code)]
     pub fn volume(&self) -> Option<f64> {
         let v = unsafe { ffi::bearcad_shape_volume(self.raw) };
         (v >= 0.0).then_some(v)
@@ -633,6 +661,15 @@ mod tests {
         let sh = Shape::prism(&square(0.0, 0.0, 1.0, 1.0), Vec3::new(0.0, 0.0, 5.0))
             .expect("prism built");
         assert!((sh.volume().unwrap() - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn shape_try_clone_preserves_volume() {
+        let sh = Shape::prism(&square(0.0, 0.0, 2.0, 3.0), Vec3::new(0.0, 0.0, 4.0))
+            .expect("prism built");
+        let cloned = sh.try_clone().expect("clone");
+        assert!((cloned.volume().unwrap() - 24.0).abs() < 1e-6);
+        assert!((sh.volume().unwrap() - 24.0).abs() < 1e-6);
     }
 
     #[test]

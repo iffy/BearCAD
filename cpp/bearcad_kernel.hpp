@@ -113,6 +113,10 @@ void bearcad_tri_free(double* tris);
 
 void bearcad_shape_free(BearcadShape* shape);
 
+// Cheap handle copy of an owned shape (TopoDS_Shape is a refcounted handle).
+// NULL on a null input. Used to memoize BREP solids across preview frames.
+BearcadShape* bearcad_shape_clone(const BearcadShape* shape);
+
 // ---------------------------------------------------------------------------
 // STEP (ISO 10303-21) data exchange via OCCT (#65/#71): real BREP, including
 // curved surfaces, not just the hand-rolled faceted subset.
