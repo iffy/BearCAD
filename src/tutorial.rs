@@ -222,7 +222,7 @@ pub struct TutorialRun {
 pub static TUTORIALS: &[Tutorial] = &[
     Tutorial {
         name: "cube",
-        title: "Rectangle to cube",
+        title: "Sketch & Extrude",
         steps: CUBE_STEPS,
     },
     // Second walkthrough (#1269): camera + exploder, with cubes already in the document.
@@ -233,12 +233,12 @@ pub static TUTORIALS: &[Tutorial] = &[
     },
     Tutorial {
         name: "shapes",
-        title: "Place cuboid, sphere & cylinder",
+        title: "3D Bodies",
         steps: SHAPES_STEPS,
     },
     Tutorial {
         name: "dimensioned_box",
-        title: "Dimensioned box, then edit",
+        title: "Dimensions",
         steps: DIMENSIONED_BOX_STEPS,
     },
     // Longer walkthrough last so newcomers start with the short ones (#1251).
@@ -313,6 +313,29 @@ const fn plain_step_enter(
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
+        type_hint: None,
+        phone_narration: None,
+        only_on_phone: false,
+    }
+}
+
+const fn keyed_assist_step(
+    narration: &'static str,
+    done: fn(&AppState) -> bool,
+    key: &'static str,
+    key_why: &'static str,
+    assist: StepAssist,
+) -> Step {
+    Step {
+        narration,
+        anchor: StepAnchor::None,
+        done: Some(done),
+        on_enter: None,
+        assist: Some(assist),
+        needs_shift: None,
+        drag_hint: None,
+        key_hint: Some((key, key_why)),
         marks: None,
         type_hint: None,
         phone_narration: None,
@@ -2847,18 +2870,6 @@ fn ensure_rect_sketch_for_tutorial(app: &mut AppState) {
     ensure_ground_sketch(app);
 }
 
-fn focus_rect_width_field(app: &mut AppState) {
-    let _ = app.apply(Action::FocusRectDimension {
-        axis: crate::actions::RectAxis::Width,
-    });
-}
-
-fn focus_rect_height_field(app: &mut AppState) {
-    let _ = app.apply(Action::FocusRectDimension {
-        axis: crate::actions::RectAxis::Height,
-    });
-}
-
 /// Height typing step: ensure the shape is in the Height phase with the Height field armed
 /// for overwrite typing (#1274). Typing the radius alone used to advance the tutorial while
 /// the tool was still in Base with Radius clinging to the keyboard.
@@ -2910,46 +2921,6 @@ fn wall_plane_cylinder_anchor(app: &AppState) -> Option<glam::Vec3> {
 
 fn ground_anchor_d(app: &AppState) -> Option<glam::Vec3> {
     ground_local(app, 80.0, 0.0)
-}
-
-/// Width field typed to `target` mm while drawing, or the rectangle is already committed.
-fn rect_width_typed(app: &AppState, target: f32) -> bool {
-    if has_closed_rectangle(app) {
-        return true;
-    }
-    app.creating_rect.as_ref().is_some_and(|cr| {
-        cr.user_edited[0]
-            && crate::value::eval_length_mm(&cr.texts[0])
-                .is_some_and(|v| (v - target).abs() < 0.51)
-    })
-}
-
-/// Height field typed to `target` mm while drawing, or the rectangle is already committed.
-fn rect_height_typed(app: &AppState, target: f32) -> bool {
-    if has_closed_rectangle(app) {
-        return true;
-    }
-    app.creating_rect.as_ref().is_some_and(|cr| {
-        cr.user_edited[1]
-            && crate::value::eval_length_mm(&cr.texts[1])
-                .is_some_and(|v| (v - target).abs() < 0.51)
-    })
-}
-
-fn rect_width_10(app: &AppState) -> bool {
-    rect_width_typed(app, 10.0)
-}
-
-fn rect_height_10(app: &AppState) -> bool {
-    rect_height_typed(app, 10.0)
-}
-
-/// Height field has the keyboard (Tab from width), or the square is already sized.
-fn rect_height_field_ready(app: &AppState) -> bool {
-    if has_closed_rectangle(app) || rect_height_10(app) {
-        return true;
-    }
-    app.creating_rect.as_ref().is_some_and(|cr| cr.focused == 1)
 }
 
 /// Extrude face picked (distance field open) or extrusion already committed.
@@ -3135,6 +3106,295 @@ fn ensure_ground_sketch(app: &mut AppState) {
     });
 }
 
+/// Non-construction lines of the tutorial's first sketch, in insertion order
+/// (rectangle: bottom, right, top, left).
+fn first_sketch_rect_lines(app: &AppState) -> Vec<crate::model::LineKey> {
+    let Some(sketch) = app
+        .sketch_session
+        .map(|s| s.sketch)
+        .or_else(|| app.doc.sketches.keys().next())
+    else {
+        return Vec::new();
+    };
+    app.doc
+        .lines
+        .iter()
+        .filter(|(_, l)| l.sketch == sketch && !l.construction)
+        .map(|(k, _)| k)
+        .collect()
+}
+
+fn line_key_has_length_dim(app: &AppState, line: crate::model::LineKey) -> bool {
+    use crate::model::DistanceTarget;
+    live_constraints(app).any(|c| {
+        matches!(
+            &c.kind,
+            ConstraintKind::Distance {
+                target: DistanceTarget::LineLength(i),
+            } if *i == line
+        )
+    })
+}
+
+fn rect_length_dim_count(app: &AppState) -> usize {
+    first_sketch_rect_lines(app)
+        .iter()
+        .filter(|&&line| line_key_has_length_dim(app, line))
+        .count()
+}
+
+fn rect_dim_target_matches(
+    target: &crate::model::DimensionTarget,
+    lines: &[crate::model::LineKey],
+) -> bool {
+    use crate::model::{DimensionTarget, DistanceTarget};
+    matches!(
+        target,
+        DimensionTarget::Distance(DistanceTarget::LineLength(i)) if lines.contains(i)
+    )
+}
+
+fn dimensioning_rect_line(app: &AppState) -> bool {
+    let lines = first_sketch_rect_lines(app);
+    app.placing_dimension
+        .as_ref()
+        .is_some_and(|p| rect_dim_target_matches(&p.target, &lines))
+        || app
+            .editing_committed_dim
+            .as_ref()
+            .and_then(|e| e.target.dimension_target(&app.doc))
+            .is_some_and(|t| rect_dim_target_matches(&t, &lines))
+}
+
+fn dimensioning_new_rect_line(app: &AppState) -> bool {
+    use crate::model::{DimensionTarget, DistanceTarget};
+    let lines = first_sketch_rect_lines(app);
+    let is_new = |target: &DimensionTarget| {
+        matches!(
+            target,
+            DimensionTarget::Distance(DistanceTarget::LineLength(i))
+                if lines.contains(i) && !line_key_has_length_dim(app, *i)
+        )
+    };
+    app.placing_dimension
+        .as_ref()
+        .is_some_and(|p| is_new(&p.target))
+        || matches!(
+            &app.editing_committed_dim.as_ref().map(|e| &e.target),
+            Some(crate::actions::DimEditTarget::New(t)) if is_new(t)
+        )
+}
+
+fn first_rect_side_picked(app: &AppState) -> bool {
+    rect_length_dim_count(app) >= 1 || dimensioning_rect_line(app)
+}
+
+fn first_rect_dim_open(app: &AppState) -> bool {
+    rect_length_dim_count(app) >= 1 || app.editing_committed_dim.is_some()
+}
+
+fn first_rect_dim_is_10(app: &AppState) -> bool {
+    distance_dims_near(app, 10.0, 1)
+}
+
+fn second_rect_side_picked(app: &AppState) -> bool {
+    rect_length_dim_count(app) >= 2 || dimensioning_new_rect_line(app)
+}
+
+fn second_rect_dim_open(app: &AppState) -> bool {
+    rect_length_dim_count(app) >= 2
+        || (rect_length_dim_count(app) >= 1
+            && matches!(
+                app.editing_committed_dim.as_ref().map(|e| &e.target),
+                Some(crate::actions::DimEditTarget::New(_))
+            ))
+}
+
+fn sketch_exited(app: &AppState) -> bool {
+    app.sketch_session.is_none()
+}
+
+fn zoomed_to_fit(app: &AppState) -> bool {
+    app.status.starts_with("Zoomed to")
+}
+
+fn rect_side_mid(app: &AppState, nth: usize) -> Option<glam::Vec3> {
+    let line = *first_sketch_rect_lines(app).get(nth)?;
+    let l = app.doc.lines.get(line)?;
+    let frame = crate::face::sketch_geometry_frame(&app.doc, l.sketch)?;
+    Some(crate::face::local_to_world(
+        &frame,
+        (l.x0 + l.x1) * 0.5,
+        (l.y0 + l.y1) * 0.5,
+    ))
+}
+
+fn rect_side_drop_spot(app: &AppState, nth: usize) -> Option<glam::Vec3> {
+    let line = *first_sketch_rect_lines(app).get(nth)?;
+    let l = app.doc.lines.get(line)?;
+    let frame = crate::face::sketch_geometry_frame(&app.doc, l.sketch)?;
+    let (ua, va, ub, vb) = (l.x0, l.y0, l.x1, l.y1);
+    let mut sum = (0.0f32, 0.0f32);
+    let mut n = 0usize;
+    for ln in app.doc.lines.values().filter(|ln| ln.sketch == l.sketch) {
+        sum.0 += ln.x0 + ln.x1;
+        sum.1 += ln.y0 + ln.y1;
+        n += 2;
+    }
+    let (cx, cy) = if n > 0 {
+        (sum.0 / n as f32, sum.1 / n as f32)
+    } else {
+        (0.0, 0.0)
+    };
+    let (ou, ov) = crate::dimensions::outward_perpendicular_uv(ua, va, ub, vb, cx, cy);
+    const AWAY_MM: f32 = 11.0;
+    Some(crate::face::local_to_world(
+        &frame,
+        (ua + ub) * 0.5 + ou * AWAY_MM,
+        (va + vb) * 0.5 + ov * AWAY_MM,
+    ))
+}
+
+fn next_rect_side_nth(app: &AppState) -> usize {
+    let lines = first_sketch_rect_lines(app);
+    for (i, &line) in lines.iter().take(2).enumerate() {
+        if !line_key_has_length_dim(app, line) {
+            return i;
+        }
+    }
+    0
+}
+
+fn placing_rect_side_nth(app: &AppState) -> Option<usize> {
+    use crate::model::{DimensionTarget, DistanceTarget};
+    let lines = first_sketch_rect_lines(app);
+    let target = match app.placing_dimension.as_ref() {
+        Some(p) => &p.target,
+        None => match app.editing_committed_dim.as_ref().map(|e| &e.target) {
+            Some(crate::actions::DimEditTarget::New(t)) => t,
+            _ => return None,
+        },
+    };
+    let DimensionTarget::Distance(DistanceTarget::LineLength(i)) = target else {
+        return None;
+    };
+    lines.iter().position(|l| l == i)
+}
+
+fn next_rect_side_guide(app: &AppState) -> Option<glam::Vec3> {
+    let nth = next_rect_side_nth(app);
+    rect_side_mid(app, nth).or_else(|| {
+        if nth == 0 {
+            ground_local(app, 40.0, 20.0)
+        } else {
+            ground_local(app, 60.0, 40.0)
+        }
+    })
+}
+
+fn next_rect_drop_guide(app: &AppState) -> Option<glam::Vec3> {
+    if let Some(nth) = placing_rect_side_nth(app) {
+        if let Some(p) = rect_side_drop_spot(app, nth) {
+            return Some(p);
+        }
+    }
+    let nth = next_rect_side_nth(app);
+    rect_side_drop_spot(app, nth).or_else(|| {
+        if nth == 0 {
+            ground_local(app, 40.0, 9.0)
+        } else {
+            ground_local(app, 71.0, 40.0)
+        }
+    })
+}
+
+fn assist_draw_free_square(app: &mut AppState) {
+    if has_rectangle_outline(app) {
+        return;
+    }
+    ensure_ground_sketch(app);
+    let Some(session) = app.sketch_session else {
+        return;
+    };
+    crate::construction::add_line_rectangle(
+        &mut app.doc,
+        session.sketch,
+        20.0,
+        20.0,
+        40.0,
+        40.0,
+        [false; 4],
+    );
+    app.refresh_document_health();
+}
+
+fn dimension_rect_line(app: &mut AppState, nth: usize, expression: &str) {
+    use crate::model::{DimensionTarget, DistanceTarget};
+    let lines = first_sketch_rect_lines(app);
+    let Some(&index) = lines.get(nth) else {
+        return;
+    };
+    let Some(sketch) = app.doc.lines.get(index).map(|l| l.sketch) else {
+        return;
+    };
+    if line_key_has_length_dim(app, index) {
+        let target = app.doc.constraints.iter().find_map(|(key, c)| {
+            matches!(
+                &c.kind,
+                ConstraintKind::Distance {
+                    target: DistanceTarget::LineLength(i),
+                } if *i == index
+            )
+            .then_some(key)
+        });
+        if let Some(key) = target {
+            let _ = crate::constraints::set_constraint_expression(
+                &mut app.doc,
+                key,
+                expression.to_string(),
+            );
+            let _ = crate::constraints::solve_document_constraints(&mut app.doc);
+            app.refresh_document_health();
+        }
+        return;
+    }
+    let _ = crate::constraints::apply_dimension_expression(
+        &mut app.doc,
+        sketch,
+        DimensionTarget::Distance(DistanceTarget::LineLength(index)),
+        expression,
+    );
+    let _ = crate::constraints::solve_document_constraints(&mut app.doc);
+    app.refresh_document_health();
+}
+
+fn assist_dimension_first_side(app: &mut AppState) {
+    if first_rect_dim_is_10(app) {
+        return;
+    }
+    assist_draw_free_square(app);
+    dimension_rect_line(app, 0, "10");
+}
+
+fn assist_dimension_both_sides(app: &mut AppState) {
+    if rect_dims_are_10(app) {
+        return;
+    }
+    assist_dimension_first_side(app);
+    dimension_rect_line(app, 1, "10");
+}
+
+fn assist_exit_sketch(app: &mut AppState) {
+    if app.sketch_session.is_some() {
+        app.apply(Action::ExitSketch);
+    }
+}
+
+fn assist_zoom_to_fit(app: &mut AppState) {
+    assist_exit_sketch(app);
+    let _ = app.apply(Action::ZoomToFit);
+}
+
 fn assist_draw_square(app: &mut AppState) {
     if has_closed_rectangle(app) {
         return;
@@ -3191,28 +3451,11 @@ fn assist_draw_10mm_square(app: &mut AppState) {
     if rect_dims_are_10(app) {
         return;
     }
-    ensure_ground_sketch(app);
-    // Replace a half-drawn sketch if needed.
-    if has_closed_rectangle(app) && !rect_dims_are_10(app) {
-        // Nudge existing dims to 10 rather than rebuilding.
-        let dim_keys: Vec<_> = app
-            .doc
-            .constraints
-            .iter()
-            .filter(|(_, c)| matches!(c.kind, ConstraintKind::Distance { .. }))
-            .map(|(key, _)| key)
-            .collect();
-        for key in dim_keys {
-            let _ = crate::constraints::set_constraint_expression(
-                &mut app.doc,
-                key,
-                "10".to_string(),
-            );
-        }
-        let _ = crate::constraints::solve_document_constraints(&mut app.doc);
-        app.refresh_document_health();
+    if has_rectangle_outline(app) {
+        assist_dimension_both_sides(app);
         return;
     }
+    ensure_ground_sketch(app);
     app.apply(Action::CreateRectangle {
         x: 0.0,
         y: 0.0,
@@ -3748,11 +3991,11 @@ static SHAPES_STEPS: &[Step] = &[
     ),
 ];
 
-/// #1240: 10×10×10 mm box, then edit a sketch dimension to 20 mm.
-/// One action per step (#1253).
+/// #1240 / #1315–#1318: draw a free rectangle, set sizes with the Dimension tool,
+/// extrude, edit a dimension, then Esc and Zoom to Fit. One action per step (#1253).
 static DIMENSIONED_BOX_STEPS: &[Step] = &[
     plain_step(
-        "Hi! We'll make a cube, then change it using parameters.",
+        "Hi! We'll make a cube, then change it with dimensions.",
         StepAnchor::None,
         None,
     ),
@@ -3767,38 +4010,61 @@ static DIMENSIONED_BOX_STEPS: &[Step] = &[
         Some(rect_first_corner_placed),
         ensure_rect_sketch_for_tutorial,
     ),
-    assisted_step_enter(
-        "Type the width: `10`.",
-        StepAnchor::Ui(UiAnchor::RectWidth),
-        Some(rect_width_10),
+    assisted_step(
+        "Click the opposite corner.",
+        StepAnchor::World(rect_opposite_corner_guide),
+        Some(has_rectangle_outline),
         StepAssist {
-            label: "Draw 10×10 for me",
-            run: assist_draw_10mm_square,
+            label: "Draw it for me",
+            run: assist_draw_free_square,
         },
-        Some(TypeHint::Fixed("10")),
-        focus_rect_width_field,
+        None,
     ),
-    // #1311: Tab to the other field is its own step — do not auto-focus height.
-    plain_step(
-        "Press `Tab` to get to the height field.",
-        StepAnchor::Ui(UiAnchor::RectHeight),
-        Some(rect_height_field_ready),
-    ),
-    assisted_step_enter(
-        "Type the height: `10`.",
-        StepAnchor::Ui(UiAnchor::RectHeight),
-        Some(rect_height_10),
-        StepAssist {
-            label: "Draw 10×10 for me",
-            run: assist_draw_10mm_square,
-        },
-        Some(TypeHint::Fixed("10")),
-        focus_rect_height_field,
+    plain_step_enter(
+        "Now exact sizes. Grab the Dimension tool \u{2014} the glowing button, or press `D`.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Dimension)),
+        Some(dimension_tool_active),
+        clear_selection_for_dimensioning,
     ),
     plain_step(
-        "Press Enter \u{2014} or click \u{2014} to place the square.",
-        StepAnchor::Ui(UiAnchor::RectHeight),
+        "Click one side of the square.",
+        StepAnchor::World(next_rect_side_guide),
+        Some(first_rect_side_picked),
+    ),
+    plain_step(
+        "Click to drop the dimension.",
+        StepAnchor::World(next_rect_drop_guide),
+        Some(first_rect_dim_open),
+    ),
+    assisted_step(
+        "Type `10`, then Enter.",
+        StepAnchor::Ui(UiAnchor::DimensionValue),
+        Some(first_rect_dim_is_10),
+        StepAssist {
+            label: "Do it for me",
+            run: assist_dimension_first_side,
+        },
+        Some(TypeHint::Fixed("10")),
+    ),
+    plain_step(
+        "Click another side.",
+        StepAnchor::World(next_rect_side_guide),
+        Some(second_rect_side_picked),
+    ),
+    plain_step(
+        "Click to drop that dimension.",
+        StepAnchor::World(next_rect_drop_guide),
+        Some(second_rect_dim_open),
+    ),
+    assisted_step(
+        "Type `10`, then Enter.",
+        StepAnchor::Ui(UiAnchor::DimensionValue),
         Some(rect_dims_are_10),
+        StepAssist {
+            label: "Do it for me",
+            run: assist_dimension_both_sides,
+        },
+        Some(TypeHint::Fixed("10")),
     ),
     plain_step(
         "Extrude tool \u{2014} glowing button, or `E`.",
@@ -3842,8 +4108,28 @@ static DIMENSIONED_BOX_STEPS: &[Step] = &[
         },
         Some(TypeHint::Fixed("20")),
     ),
+    keyed_assist_step(
+        "Press `Esc` to finish the sketch.",
+        sketch_exited,
+        "Esc",
+        "to finish the sketch",
+        StepAssist {
+            label: "Leave for me",
+            run: assist_exit_sketch,
+        },
+    ),
+    keyed_assist_step(
+        "Press `Z` to Zoom to Fit.",
+        zoomed_to_fit,
+        "Z",
+        "Zoom to Fit",
+        StepAssist {
+            label: "Zoom for me",
+            run: assist_zoom_to_fit,
+        },
+    ),
     plain_step(
-        "That's the parametric loop: dimensions drive the solid. Change numbers, not geometry. \
+        "That's the loop: dimensions drive the solid. Change numbers, not geometry. \
          Nice work!",
         StepAnchor::None,
         None,
@@ -4584,60 +4870,6 @@ mod tests {
             .unwrap_or_else(|| panic!("dimensioned_box step matching {needle:?}"))
     }
 
-    /// #1258: typing steps focus the rect dim fields (dimensioned_box still types).
-    #[test]
-    fn dimensioned_box_typing_steps_target_rect_fields() {
-        let typing: Vec<_> = dimensioned_box()
-            .steps
-            .iter()
-            .filter(|s| {
-                let n = s.narration.to_ascii_lowercase();
-                n.contains("type the width") || n.contains("type the height")
-            })
-            .collect();
-        assert_eq!(typing.len(), 2);
-        assert!(matches!(
-            typing[0].anchor,
-            StepAnchor::Ui(UiAnchor::RectWidth)
-        ));
-        assert!(matches!(
-            typing[1].anchor,
-            StepAnchor::Ui(UiAnchor::RectHeight)
-        ));
-        assert!(typing[0].on_enter.is_some());
-        assert!(typing[1].on_enter.is_some());
-    }
-
-    /// #1311: Tab to the height field is its own step, after width is typed.
-    #[test]
-    fn dimensioned_box_tab_is_its_own_step_before_height() {
-        let width_i = box_step_index("type the width");
-        let tab_i = box_step_index("tab");
-        let height_i = box_step_index("type the height");
-        assert!(
-            width_i < tab_i && tab_i < height_i,
-            "Tab must sit between width and height typing (got {width_i}, {tab_i}, {height_i})"
-        );
-        let width = box_step("type the width");
-        assert!(
-            !width.narration.to_ascii_lowercase().contains("tab"),
-            "width typing should not also ask for Tab: {}",
-            width.narration
-        );
-        let tab = &dimensioned_box().steps[tab_i];
-        assert!(
-            tab.narration.to_ascii_lowercase().contains("height"),
-            "Tab step should name the height field: {}",
-            tab.narration
-        );
-        assert!(
-            matches!(tab.anchor, StepAnchor::Ui(UiAnchor::RectHeight)),
-            "Tab step should point at the height field: {}",
-            tab.narration
-        );
-        assert!(tab.on_enter.is_none(), "Tab step must not auto-focus height");
-    }
-
     /// #1312: the extrude amount is a height, not a depth.
     #[test]
     fn dimensioned_box_extrude_calls_it_height() {
@@ -5050,30 +5282,6 @@ mod tests {
         assert!(one_sketch_dim_is_20(&app));
     }
 
-    /// #1311: Tab step waits until the height field is focused.
-    #[test]
-    fn dimensioned_box_tab_step_advances_when_height_focused() {
-        let mut app = AppState::default();
-        ensure_rect_sketch_for_tutorial(&mut app);
-        app.creating_rect = Some(crate::actions::CreatingRect {
-            origin: glam::Vec3::new(0.0, 0.0, 0.0),
-            texts: ["10".into(), "0".into()],
-            focused: 0,
-            last_mouse: glam::Vec3::new(10.0, 0.0, 0.0),
-            user_edited: [true, false],
-            pending_focus: false,
-            construction: false,
-            anchor: crate::actions::RectAnchor::Corner,
-        });
-        assert!(rect_width_10(&app));
-        assert!(!rect_height_field_ready(&app));
-        app.apply(Action::FocusRectDimension {
-            axis: crate::actions::RectAxis::Height,
-        });
-        assert!(rect_height_field_ready(&app));
-        assert_eq!(app.creating_rect.as_ref().unwrap().focused, 1);
-    }
-
     /// #1314: dim-label step points at a label and advances once the field is open.
     #[test]
     fn dimensioned_box_dim_label_step_tracks_edit() {
@@ -5097,6 +5305,174 @@ mod tests {
         app.apply(Action::BeginEditCommittedDim { target });
         assert!(dim_label_opened_for_edit(&app));
         assert!(app.editing_committed_dim.is_some());
+    }
+
+    /// #1318: "Draw it for me" places an unconstrained rectangle.
+    #[test]
+    fn dimensions_tutorial_free_rect_has_no_dims() {
+        let mut app = AppState::default();
+        assist_draw_free_square(&mut app);
+        assert!(has_rectangle_outline(&app));
+        assert!(
+            !has_closed_rectangle(&app),
+            "free rectangle must not lock width/height yet"
+        );
+        assist_dimension_both_sides(&mut app);
+        assert!(rect_dims_are_10(&app));
+    }
+
+    /// #1315: Escape closes the sketch; Z sets the Zoomed-to-fit status.
+    #[test]
+    fn dimensions_tutorial_esc_and_zoom_predicates() {
+        let mut app = AppState::default();
+        assist_edit_dim_to_20(&mut app);
+        let sketch = app.doc.sketches.keys().next().expect("sketch");
+        app.apply(Action::OpenSketch {
+            sketch,
+            viewport: None,
+        });
+        assert!(!sketch_exited(&app));
+        assert!(!zoomed_to_fit(&app));
+        app.apply(Action::ExitSketch);
+        assert!(sketch_exited(&app));
+        assert!(!zoomed_to_fit(&app));
+        app.apply(Action::ZoomToFit);
+        assert!(zoomed_to_fit(&app));
+    }
+
+    /// #1317: picker titles are short skill names.
+    #[test]
+    fn short_tutorial_titles_are_skill_names() {
+        assert_eq!(
+            TUTORIALS[tutorial_index("cube").unwrap()].title,
+            "Sketch & Extrude"
+        );
+        assert_eq!(
+            TUTORIALS[tutorial_index("shapes").unwrap()].title,
+            "3D Bodies"
+        );
+        assert_eq!(dimensioned_box().title, "Dimensions");
+    }
+
+    /// #1316: the Dimensions tutorial never mentions parameters.
+    #[test]
+    fn dimensions_tutorial_does_not_mention_parameters() {
+        for step in dimensioned_box().steps {
+            let n = step.narration.to_ascii_lowercase();
+            assert!(
+                !n.contains("parameter") && !n.contains("parametric"),
+                "Dimensions tutorial should not mention parameters: {}",
+                step.narration
+            );
+        }
+    }
+
+    /// #1318: draw a free rectangle, then set sizes with the Dimension tool.
+    #[test]
+    fn dimensions_tutorial_draws_free_then_uses_dimension_tool() {
+        let steps = dimensioned_box().steps;
+        assert!(
+            steps.iter().any(|s| {
+                let n = s.narration.to_ascii_lowercase();
+                n.contains("opposite corner")
+            }),
+            "draw the rectangle by clicking corners, not by typing sizes"
+        );
+        assert!(
+            !steps.iter().any(|s| {
+                matches!(
+                    s.anchor,
+                    StepAnchor::Ui(UiAnchor::RectWidth) | StepAnchor::Ui(UiAnchor::RectHeight)
+                )
+            }),
+            "must not type width/height into the rectangle tool"
+        );
+        assert!(
+            !steps.iter().any(|s| {
+                let n = s.narration.to_ascii_lowercase();
+                n.contains("type the width") || n.contains("type the height")
+            }),
+            "must not ask to type rectangle width/height"
+        );
+        let dim_tool = steps
+            .iter()
+            .find(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::Tool(Tool::Dimension))))
+            .expect("should pick the Dimension tool");
+        assert!(
+            dim_tool.narration.to_ascii_lowercase().contains("dimension"),
+            "dimension-tool step: {}",
+            dim_tool.narration
+        );
+        let opp_i = box_step_index("opposite corner");
+        let dim_i = steps
+            .iter()
+            .position(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::Tool(Tool::Dimension))))
+            .expect("Dimension tool step");
+        let extrude_i = steps
+            .iter()
+            .position(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude))))
+            .expect("Extrude tool step");
+        assert!(
+            opp_i < dim_i && dim_i < extrude_i,
+            "draw free, then Dimension tool, then Extrude (got {opp_i}, {dim_i}, {extrude_i})"
+        );
+        assert!(
+            steps.iter().any(|s| {
+                matches!(s.anchor, StepAnchor::Ui(UiAnchor::DimensionValue))
+                    && s.narration.to_ascii_lowercase().contains("10")
+                    && s.narration.to_ascii_lowercase().contains("type")
+            }),
+            "should type a size into the Dimension tool"
+        );
+    }
+
+    /// #1315: after the edit, Escape finishes the sketch, then Z zooms to fit.
+    #[test]
+    fn dimensions_tutorial_escapes_then_zooms_before_the_end() {
+        let steps = dimensioned_box().steps;
+        let last = steps.len() - 1;
+        let change_i = steps
+            .iter()
+            .position(|s| {
+                let n = s.narration.to_ascii_lowercase();
+                (n.contains("10") && n.contains("20"))
+                    || n.contains("to `20`")
+                    || n.contains("to 20")
+            })
+            .expect("change 10 to 20 step");
+        let esc_i = steps
+            .iter()
+            .position(|s| {
+                let n = s.narration.to_ascii_lowercase();
+                n.contains("esc") && (n.contains("finish") || n.contains("exit") || n.contains("leave"))
+            })
+            .expect("Escape to finish the sketch");
+        let zoom_i = steps
+            .iter()
+            .position(|s| {
+                let n = s.narration.to_ascii_lowercase();
+                n.contains('z') && n.contains("zoom")
+            })
+            .expect("Z to Zoom to Fit");
+        assert!(
+            change_i < esc_i && esc_i < zoom_i && zoom_i < last,
+            "edit, then Esc, then Z, then the closer (got {change_i}, {esc_i}, {zoom_i}, last={last})"
+        );
+        let esc = &steps[esc_i];
+        assert!(esc.done.is_some(), "Escape should auto-advance when the sketch closes");
+        assert!(
+            esc.key_hint.is_some_and(|(k, _)| k.eq_ignore_ascii_case("esc")
+                || k.eq_ignore_ascii_case("escape")),
+            "Escape step should show an Esc key hint: {}",
+            esc.narration
+        );
+        let zoom = &steps[zoom_i];
+        assert!(zoom.done.is_some(), "Z should auto-advance when Zoom to Fit lands");
+        assert!(
+            zoom.key_hint.is_some_and(|(k, _)| k.eq_ignore_ascii_case("z")),
+            "Z step should show a Z key hint: {}",
+            zoom.narration
+        );
     }
 
     /// #1269: navigate tutorial sits after cube, seeds cubes, and teaches camera + exploder.

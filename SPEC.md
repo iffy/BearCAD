@@ -5037,10 +5037,12 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
 - **First tutorial (`cube`)** (#1256–#1259/#1262): ultra-short beginner copy, no typing and
   no parameters — click a rectangle on the ground, extrude, Enter. After a tool is selected,
   placement steps use **world** orbs on the ground/face (not the toolbar button again).
-  Tutorials that still type (e.g. `dimensioned_box`) point at the floating dim fields
-  (`UiAnchor::RectWidth` / `RectHeight`) and arm focus so typing lands. Tab to the other
-  field is its own step; reopening a sketch is Elements double-click or right-click →
-  Edit sketch; changing a committed dim is double-click the label, then type.
+  **Dimensions** (`dimensioned_box`, #1315–#1318) draws a free rectangle, then uses the
+  Dimension tool to set sizes — not the rectangle tool's width/height fields. Reopening a
+  sketch is Elements double-click or right-click → Edit sketch; changing a committed dim is
+  double-click the label, then type. After the edit: Esc finishes the sketch, Z zooms to
+  fit. Titles: **Sketch & Extrude**, **3D Bodies**, **Dimensions** (#1317). No parameters
+  in that walkthrough (#1316).
 - **Second tutorial (`navigate`)** (#1269): pan / orbit / zoom, the view-bear HUD (snap a
   view + Home), and the Selection Exploder (Space). Starts with a few cubes already in the
   document; camera steps auto-advance on motion (with "…for me" assists), the exploder step
