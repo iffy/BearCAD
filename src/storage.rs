@@ -1,11 +1,8 @@
 //! `.bearcad` file persistence (SPEC §7).
 //!
-//! A `.bearcad` is a SQLite database. This early version implements only a small
-//! part of the schema from the spec — enough to round-trip sketch primitives —
-//! but keeps the pieces that matter for forward compatibility: a `meta` table
-//! and a `schema_migrations` table, and shapes stored as DAG nodes with a
-//! JSON payload (SPEC §7.3). When real features arrive they slot into the same
-//! `dag_nodes` shape.
+//! Native files are SQLite: one table per arena, typed columns, `blobs` for
+//! binary data. The web build uses the JSON codec (`to_json_bytes` /
+//! `from_json_bytes`); native `open` sniffs the 16-byte SQLite header.
 
 
 use crate::face::default_xy_plane;
@@ -79,553 +76,7 @@ fn ensure_a_ground_plane(doc: &mut Document) {
 /// doesn't compile for wasm32-unknown-unknown).
 #[cfg(not(target_arch = "wasm32"))]
 mod sqlite_format {
-use crate::face::default_xy_plane;
-use crate::model::{
-    Circle, ConstructionPlane, Constraint, Document, Line, Parameter, ShapeKind,
-    Sketch,
-};
-use crate::parameters::validate_document_parameters_no_cycles;
-use crate::value::{AngleUnit, LengthUnit};
-use rusqlite::Connection;
-
-/// Bump when the on-disk schema changes; pair with a migration below.
-const SCHEMA_VERSION: i64 = 1;
-const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
-const CONSTRUCTION_PLANES_META_KEY: &str = "construction_planes";
-const SHAPE_ORDER_META_KEY: &str = "shape_order";
-/// Undo-group sizes (#105); files saved before this key existed load with none and
-/// are reconciled into per-entry groups on the first action.
-const UNDO_GROUPS_META_KEY: &str = "undo_groups";
-/// Components (#423) and their membership, stored as meta JSON like construction planes.
-const COMPONENTS_META_KEY: &str = "components";
-const COMPONENT_MEMBERS_META_KEY: &str = "component_members";
-/// Document-level default length unit (#52); missing for files saved before this change,
-/// which fall back to [`LengthUnit::default`] (mm), matching their pre-existing behaviour.
-const DEFAULT_LENGTH_UNIT_META_KEY: &str = "default_length_unit";
-/// Document-level default angle unit (#52); missing for files saved before this change,
-/// which fall back to [`AngleUnit::default`] (deg), matching their pre-existing behaviour.
-const DEFAULT_ANGLE_UNIT_META_KEY: &str = "default_angle_unit";
-
-use super::Result;
-
-/// Create the tables for a fresh database (idempotent).
-fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(
-        "
-        CREATE TABLE IF NOT EXISTS schema_migrations (
-            id         INTEGER PRIMARY KEY,
-            name       TEXT NOT NULL,
-            applied_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS meta (
-            key   TEXT PRIMARY KEY,
-            value TEXT
-        );
-        CREATE TABLE IF NOT EXISTS dag_nodes (
-            id           INTEGER PRIMARY KEY,
-            component_id INTEGER,
-            kind         TEXT NOT NULL,
-            payload      TEXT NOT NULL
-        );
-        ",
-    )?;
-    Ok(())
-}
-
-/// Save `doc` to `path`, overwriting any existing document content.
-pub fn save(path: &str, doc: &Document) -> Result<()> {
-    validate_document_parameters_no_cycles(doc)?;
-    // A `.json` path saves the web build's JSON codec instead of SQLite — the format the
-    // web app's `?open=<url>` fetches, so a docs scene can publish a loadable document.
-    if path.ends_with(".json") {
-        let bytes = crate::storage::to_json_bytes(doc)?;
-        return std::fs::write(path, bytes).map_err(|e| e.to_string());
-    }
-    let mut conn = Connection::open(path).map_err(|e| e.to_string())?;
-    init_schema(&conn).map_err(|e| e.to_string())?;
-
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-
-    tx.execute(
-        "INSERT OR REPLACE INTO schema_migrations (id, name, applied_at)
-         VALUES (?1, 'initial', datetime('now'))",
-        rusqlite::params![SCHEMA_VERSION],
-    )
-    .map_err(|e| e.to_string())?;
-
-    tx.execute(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES ('app_version', ?1)",
-        rusqlite::params![APP_VERSION],
-    )
-    .map_err(|e| e.to_string())?;
-
-    let planes_payload =
-        serde_json::to_string(&doc.construction_planes).map_err(|e| e.to_string())?;
-    tx.execute(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
-        rusqlite::params![CONSTRUCTION_PLANES_META_KEY, planes_payload],
-    )
-    .map_err(|e| e.to_string())?;
-
-    let shape_order_payload =
-        serde_json::to_string(&doc.shape_order).map_err(|e| e.to_string())?;
-    tx.execute(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
-        rusqlite::params![SHAPE_ORDER_META_KEY, shape_order_payload],
-    )
-    .map_err(|e| e.to_string())?;
-
-    let undo_groups_payload =
-        serde_json::to_string(&doc.undo_groups).map_err(|e| e.to_string())?;
-    tx.execute(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
-        rusqlite::params![UNDO_GROUPS_META_KEY, undo_groups_payload],
-    )
-    .map_err(|e| e.to_string())?;
-
-    let default_length_unit_payload =
-        serde_json::to_string(&doc.default_length_unit).map_err(|e| e.to_string())?;
-    tx.execute(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
-        rusqlite::params![DEFAULT_LENGTH_UNIT_META_KEY, default_length_unit_payload],
-    )
-    .map_err(|e| e.to_string())?;
-
-    let default_angle_unit_payload =
-        serde_json::to_string(&doc.default_angle_unit).map_err(|e| e.to_string())?;
-    tx.execute(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
-        rusqlite::params![DEFAULT_ANGLE_UNIT_META_KEY, default_angle_unit_payload],
-    )
-    .map_err(|e| e.to_string())?;
-
-    let components_payload = serde_json::to_string(&doc.components).map_err(|e| e.to_string())?;
-    tx.execute(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
-        rusqlite::params![COMPONENTS_META_KEY, components_payload],
-    )
-    .map_err(|e| e.to_string())?;
-
-    let component_members_payload =
-        serde_json::to_string(&doc.component_members).map_err(|e| e.to_string())?;
-    tx.execute(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
-        rusqlite::params![COMPONENT_MEMBERS_META_KEY, component_members_payload],
-    )
-    .map_err(|e| e.to_string())?;
-
-    // Every kind is re-inserted below, so clear the whole table: the old hardcoded kind
-    // list silently omitted newer kinds (boolean_op, move_op, sweep, ...), which then
-    // accumulated duplicate rows on every in-place save and loaded back duplicated.
-    tx.execute("DELETE FROM dag_nodes", [])
-        .map_err(|e| e.to_string())?;
-
-    let mut row_id = 0i64;
-    save_arena_nodes(&tx, &mut row_id, "sketch", &doc.sketches)?;
-    save_arena_nodes(&tx, &mut row_id, "line", &doc.lines)?;
-    save_arena_nodes(&tx, &mut row_id, "circle", &doc.circles)?;
-    save_arena_nodes(&tx, &mut row_id, "parameter", &doc.parameters)?;
-    save_arena_nodes(&tx, &mut row_id, "constraint", &doc.constraints)?;
-    save_arena_nodes(&tx, &mut row_id, "extrusion", &doc.extrusions)?;
-    save_arena_nodes(&tx, &mut row_id, "body", &doc.bodies)?;
-    save_arena_nodes(&tx, &mut row_id, "material", &doc.materials)?;
-    save_arena_nodes(&tx, &mut row_id, "imported_mesh", &doc.imported_meshes)?;
-    save_arena_nodes(&tx, &mut row_id, "tracing_image", &doc.tracing_images)?;
-    save_arena_nodes(&tx, &mut row_id, "loft", &doc.lofts)?;
-    save_arena_nodes(&tx, &mut row_id, "revolution", &doc.revolutions)?;
-    save_arena_nodes(&tx, &mut row_id, "primitive", &doc.primitives)?;
-    save_arena_nodes(&tx, &mut row_id, "sweep", &doc.sweeps)?;
-    save_arena_nodes(&tx, &mut row_id, "boolean_op", &doc.boolean_ops)?;
-    save_arena_nodes(&tx, &mut row_id, "move_op", &doc.move_ops)?;
-    save_arena_nodes(&tx, &mut row_id, "mirror_op", &doc.mirror_ops)?;
-    save_arena_nodes(&tx, &mut row_id, "repeat_op", &doc.repeat_ops)?;
-    save_arena_nodes(&tx, &mut row_id, "slice_op", &doc.slice_ops)?;
-    save_arena_nodes(&tx, &mut row_id, "shell_op", &doc.shell_ops)?;
-    save_arena_nodes(&tx, &mut row_id, "edge_treatment_op", &doc.edge_treatment_ops)?;
-    save_arena_nodes(&tx, &mut row_id, "sketch_repeat_op", &doc.sketch_repeat_ops)?;
-    save_arena_nodes(&tx, &mut row_id, "sketch_offset_op", &doc.sketch_offset_ops)?;
-    save_arena_nodes(&tx, &mut row_id, "sketch_mirror_op", &doc.sketch_mirror_ops)?;
-    save_arena_nodes(
-        &tx,
-        &mut row_id,
-        "sketch_vertex_treatment_op",
-        &doc.sketch_vertex_treatment_ops,
-    )?;
-    save_arena_nodes(&tx, &mut row_id, "sketch_slice_op", &doc.sketch_slice_ops)?;
-    save_arena_nodes(&tx, &mut row_id, "sketch_text", &doc.sketch_texts)?;
-    save_arena_nodes(&tx, &mut row_id, "drawing", &doc.drawings)?;
-    save_arena_nodes(&tx, &mut row_id, "joint", &doc.joints)?;
-    save_arena_nodes(&tx, &mut row_id, "unit", &doc.units)?;
-    save_arena_nodes(&tx, &mut row_id, "unit_instance", &doc.unit_instances)?;
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Save an arena's live elements, one row each, keyed by [`crate::arena::Key::to_bits`]
-/// rather than by position (#1055) — position is no longer identity, so the file has to
-/// carry the key itself or a reload would hand every element a different one.
-fn save_arena_nodes<T: serde::Serialize>(
-    tx: &rusqlite::Transaction<'_>,
-    row_id: &mut i64,
-    kind: &str,
-    arena: &crate::arena::Arena<T>,
-) -> Result<()> {
-    for (key, entity) in arena.iter() {
-        let payload = serde_json::to_string(&(key, entity)).map_err(|e| e.to_string())?;
-        tx.execute(
-            "INSERT INTO dag_nodes (id, component_id, kind, payload)
-             VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![*row_id, key.to_bits() as i64, kind, payload],
-        )
-        .map_err(|e| e.to_string())?;
-        *row_id += 1;
-    }
-    Ok(())
-}
-
-/// Rebuild an arena from the rows [`save_arena_nodes`] wrote, keys intact.
-fn load_arena_entities<T: serde::de::DeserializeOwned>(
-    conn: &rusqlite::Connection,
-    kind: &str,
-) -> Result<crate::arena::Arena<T>> {
-    let mut stmt = conn
-        .prepare("SELECT payload FROM dag_nodes WHERE kind = ?1 ORDER BY id")
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([kind], |row| row.get::<_, String>(0))
-        .map_err(|e| e.to_string())?;
-    let mut entries: Vec<(crate::arena::Key<T>, T)> = Vec::new();
-    for row in rows {
-        let payload = row.map_err(|e| e.to_string())?;
-        entries.push(serde_json::from_str(&payload).map_err(|e| e.to_string())?);
-    }
-    crate::arena::Arena::from_keyed(entries)
-}
-
-fn load_shape_order_meta(conn: &Connection) -> Option<Vec<ShapeKind>> {
-    let payload: String = conn
-        .query_row(
-            "SELECT value FROM meta WHERE key = ?1",
-            rusqlite::params![SHAPE_ORDER_META_KEY],
-            |row| row.get(0),
-        )
-        .ok()?;
-    serde_json::from_str(&payload).ok()
-}
-
-/// Undo-group sizes (#105); empty for files saved before the key existed (legacy
-/// content reconciles into per-entry groups).
-/// Load a meta row's JSON payload, `None` if absent or unparsable.
-fn load_meta_json<T: serde::de::DeserializeOwned>(conn: &Connection, key: &str) -> Option<T> {
-    conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |row| {
-        row.get::<_, String>(0)
-    })
-    .ok()
-    .and_then(|payload| serde_json::from_str(&payload).ok())
-}
-
-fn load_undo_groups_meta(conn: &Connection) -> Vec<usize> {
-    conn.query_row(
-        "SELECT value FROM meta WHERE key = ?1",
-        rusqlite::params![UNDO_GROUPS_META_KEY],
-        |row| row.get::<_, String>(0),
-    )
-    .ok()
-    .and_then(|payload| serde_json::from_str(&payload).ok())
-    .unwrap_or_default()
-}
-
-/// Load the document-level default length unit, falling back to mm for files saved before
-/// this key existed (#52).
-fn load_default_length_unit_meta(conn: &Connection) -> LengthUnit {
-    conn.query_row(
-        "SELECT value FROM meta WHERE key = ?1",
-        rusqlite::params![DEFAULT_LENGTH_UNIT_META_KEY],
-        |row| row.get::<_, String>(0),
-    )
-    .ok()
-    .and_then(|payload| serde_json::from_str(&payload).ok())
-    .unwrap_or_default()
-}
-
-/// Load the document-level default angle unit, falling back to degrees for files saved
-/// before this key existed (#52).
-fn load_default_angle_unit_meta(conn: &Connection) -> AngleUnit {
-    conn.query_row(
-        "SELECT value FROM meta WHERE key = ?1",
-        rusqlite::params![DEFAULT_ANGLE_UNIT_META_KEY],
-        |row| row.get::<_, String>(0),
-    )
-    .ok()
-    .and_then(|payload| serde_json::from_str(&payload).ok())
-    .unwrap_or_default()
-}
-
-fn load_indexed_entities<T: serde::de::DeserializeOwned>(
-    conn: &Connection,
-    kind: &str,
-) -> Result<Vec<T>> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT component_id, payload FROM dag_nodes
-             WHERE kind = ?1
-             ORDER BY component_id",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(rusqlite::params![kind], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|e| e.to_string())?;
-    let mut entities = Vec::new();
-    for row in rows {
-        let (index, payload) = row.map_err(|e| e.to_string())?;
-        let index = usize::try_from(index).map_err(|_| format!("bad {kind} index"))?;
-        if index != entities.len() {
-            return Err(format!(
-                "{kind} indices must be dense starting at 0 (expected {}, got {index})",
-                entities.len()
-            ));
-        }
-        let entity: T = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-        entities.push(entity);
-    }
-    Ok(entities)
-}
-
-fn load_construction_planes(
-    conn: &Connection,
-    dag_planes: Vec<ConstructionPlane>,
-) -> Result<crate::arena::Arena<ConstructionPlane>> {
-    if let Ok(payload) = conn.query_row(
-        "SELECT value FROM meta WHERE key = ?1",
-        rusqlite::params![CONSTRUCTION_PLANES_META_KEY],
-        |row| row.get::<_, String>(0),
-    ) {
-        // The planes ride as one whole-collection blob, so the arena's own serde carries the
-        // keys (#1055).
-        if let Ok(planes) =
-            serde_json::from_str::<crate::arena::Arena<ConstructionPlane>>(&payload)
-        {
-            if !planes.is_empty() {
-                return Ok(planes);
-            }
-        }
-    }
-    let mut planes = crate::arena::Arena::new();
-    planes.insert(default_xy_plane());
-    for plane in dag_planes {
-        planes.insert(plane);
-    }
-    Ok(planes)
-}
-
-/// Ensure every sketch-hosted construction-plane index exists after load.
-fn load_legacy_document_nodes(
-    conn: &Connection,
-) -> Result<(
-    crate::arena::Arena<Parameter>,
-    crate::arena::Arena<Sketch>,
-    crate::arena::Arena<Line>,
-    crate::arena::Arena<Circle>,
-    crate::arena::Arena<Constraint>,
-    Vec<ConstructionPlane>,
-    Vec<ShapeKind>,
-)> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT kind, payload FROM dag_nodes
-             WHERE kind IN ('sketch', 'line', 'circle', 'parameter', 'constraint', 'construction_plane')
-             ORDER BY id",
-        )
-        .map_err(|e| e.to_string())?;
-
-    let rows = stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
-        .map_err(|e| e.to_string())?;
-
-    let mut parameters = crate::arena::Arena::new();
-    let mut sketches = crate::arena::Arena::new();
-    let mut lines = crate::arena::Arena::new();
-    let mut circles = crate::arena::Arena::new();
-    let mut constraints = crate::arena::Arena::new();
-    let mut construction_planes = Vec::new();
-    let mut shape_order = Vec::new();
-    for row in rows {
-        let (kind, payload) = row.map_err(|e| e.to_string())?;
-        match kind.as_str() {
-            "sketch" => {
-                let sketch: Sketch = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-                sketches.insert(sketch);
-                shape_order.push(ShapeKind::Sketch);
-            }
-            "line" => {
-                let line: Line = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-                lines.insert(line);
-                shape_order.push(ShapeKind::Line);
-            }
-            "circle" => {
-                let circle: Circle = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-                circles.insert(circle);
-                shape_order.push(ShapeKind::Circle);
-            }
-            "parameter" => {
-                let param: Parameter = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-                parameters.insert(param);
-                shape_order.push(ShapeKind::Parameter);
-            }
-            "constraint" => {
-                let constraint: Constraint =
-                    serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-                constraints.insert(constraint);
-                shape_order.push(ShapeKind::Constraint);
-            }
-            "construction_plane" => {
-                let plane: ConstructionPlane =
-                    serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-                construction_planes.push(plane);
-                shape_order.push(ShapeKind::ConstructionPlane);
-            }
-            _ => {}
-        }
-    }
-    Ok((
-        parameters,
-        sketches,
-        lines,
-        circles,
-        constraints,
-        construction_planes,
-        shape_order,
-    ))
-}
-
-/// Open the document stored at `path`.
-pub fn open(path: &str) -> Result<Document> {
-    // Documents saved by the web build are plain JSON (the browser has no SQLite);
-    // sniff the magic bytes rather than trusting the extension, so either format opens.
-    if let Ok(bytes) = std::fs::read(path) {
-        if !bytes.starts_with(b"SQLite format 3") {
-            let doc = super::from_json_bytes(&bytes)?;
-            crate::model::validate_units(&doc, Some(std::path::Path::new(path)))?;
-            return Ok(doc);
-        }
-    }
-    let conn = Connection::open(path).map_err(|e| e.to_string())?;
-
-    let (
-        parameters,
-        sketches,
-        lines,
-        circles,
-        constraints,
-        construction_planes,
-        shape_order,
-    ) = if let Some(shape_order) = load_shape_order_meta(&conn) {
-        let parameters = load_arena_entities(&conn, "parameter")?;
-        let sketches = load_arena_entities(&conn, "sketch")?;
-        let lines = load_arena_entities(&conn, "line")?;
-        let circles = load_arena_entities(&conn, "circle")?;
-        let constraints = load_arena_entities(&conn, "constraint")?;
-        let dag_planes = load_indexed_entities(&conn, "construction_plane")?;
-        (
-            parameters,
-            sketches,
-            lines,
-            circles,
-            constraints,
-            dag_planes,
-            shape_order,
-        )
-    } else {
-        load_legacy_document_nodes(&conn)?
-    };
-
-    let construction_planes =
-        load_construction_planes(&conn, construction_planes).map_err(|e| e.to_string())?;
-    // Extrusions/bodies (empty for legacy files that predate them).
-    let extrusions = load_arena_entities(&conn, "extrusion")?;
-    let bodies = load_arena_entities(&conn, "body")?;
-    // Materials (#834) — empty for files saved before they existed.
-    let materials = load_arena_entities(&conn, "material")?;
-    let imported_meshes = load_arena_entities(&conn, "imported_mesh")?;
-    let tracing_images = load_arena_entities(&conn, "tracing_image")?;
-    let lofts = load_arena_entities(&conn, "loft")?;
-    let revolutions = load_arena_entities(&conn, "revolution")?;
-    let primitives = load_arena_entities(&conn, "primitive")?;
-    let sweeps = load_arena_entities(&conn, "sweep")?;
-    let boolean_ops = load_arena_entities(&conn, "boolean_op")?;
-    let move_ops = load_arena_entities(&conn, "move_op")?;
-    let mirror_ops = load_arena_entities(&conn, "mirror_op")?;
-    let repeat_ops = load_arena_entities(&conn, "repeat_op")?;
-    let slice_ops = load_arena_entities(&conn, "slice_op")?;
-    let shell_ops = load_arena_entities(&conn, "shell_op")?;
-    let edge_treatment_ops = load_arena_entities(&conn, "edge_treatment_op")?;
-    let sketch_repeat_ops = load_arena_entities(&conn, "sketch_repeat_op")?;
-    let sketch_offset_ops = load_arena_entities(&conn, "sketch_offset_op")?;
-    let sketch_mirror_ops = load_arena_entities(&conn, "sketch_mirror_op")?;
-    let sketch_vertex_treatment_ops =
-        load_arena_entities(&conn, "sketch_vertex_treatment_op")?;
-    let sketch_slice_ops = load_arena_entities(&conn, "sketch_slice_op")?;
-    let sketch_texts = load_arena_entities(&conn, "sketch_text")?;
-    let drawings = load_arena_entities(&conn, "drawing")?;
-    let joints = load_arena_entities(&conn, "joint")?;
-    let units = load_arena_entities(&conn, "unit")?;
-    let unit_instances = load_arena_entities(&conn, "unit_instance")?;
-    let default_length_unit = load_default_length_unit_meta(&conn);
-    let default_angle_unit = load_default_angle_unit_meta(&conn);
-    let undo_groups = load_undo_groups_meta(&conn);
-
-    let components = load_meta_json(&conn, COMPONENTS_META_KEY).unwrap_or_default();
-    let component_members = load_meta_json(&conn, COMPONENT_MEMBERS_META_KEY).unwrap_or_default();
-
-    let mut doc = Document {
-        parameters,
-        sketches,
-        lines,
-        circles,
-        constraints,
-        construction_planes,
-        extrusions,
-        bodies,
-        materials,
-        imported_meshes,
-        tracing_images,
-        lofts,
-        revolutions,
-        primitives,
-        sweeps,
-        boolean_ops,
-        move_ops,
-        mirror_ops,
-        repeat_ops,
-        slice_ops,
-        shell_ops,
-        edge_treatment_ops,
-        sketch_repeat_ops,
-        sketch_offset_ops,
-        sketch_mirror_ops,
-        sketch_vertex_treatment_ops,
-        sketch_slice_ops,
-        sketch_texts,
-        drawings,
-        joints,
-        shape_order,
-        undo_groups,
-        default_length_unit,
-        default_angle_unit,
-        components,
-        component_members,
-        units,
-        unit_instances,
-        // Cache generation starts at 0; open/save bumps it so idle frames stay cheap (#1027).
-        mesh_rev: 0,
-    };
-    super::fixup_loaded_document(&mut doc)?;
-    crate::model::validate_units(&doc, Some(std::path::Path::new(path)))?;
-    Ok(doc)
-}
+include!("storage_sqlite.rs");
 
 #[cfg(test)]
 mod tests {
@@ -2654,8 +2105,8 @@ mod tests {
     #[test]
     fn round_trips_chamfer_fillet_parent_on_a_bridging_line() {
         // #76: `Line::chamfer_fillet_parent` is a `#[serde(default)]` field on an entity
-        // already persisted generically via `dag_nodes` JSON payloads, so it should round-trip
-        // with no `storage.rs` changes — verify that assumption rather than just trusting it.
+        // already persisted via typed `lines` columns plus leftover payload JSON, so it should
+        // round-trip — verify that rather than just trusting it.
         let dir = std::env::temp_dir();
         let path = dir.join("bearcad_chamfer_fillet_parent_roundtrip.bearcad");
         let path = path.to_string_lossy().to_string();
@@ -2946,12 +2397,220 @@ mod tests {
             .expect_err("over-deep nesting must refuse to load");
         assert!(err.contains("nest"), "error should mention nesting: {err}");
     }
+
+    /// #1340: the file is a real schema — `SELECT name FROM parameters` works without
+    /// walking a JSON dump, and `dag_nodes` is gone.
+    #[test]
+    fn parameters_table_is_queryable_without_json_dump() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("bearcad_typed_parameters_test.bearcad");
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        doc.parameters.insert(Parameter {
+            name: "width".to_string(),
+            expression: "24mm".to_string(),
+            primary: true,
+            minimum: None,
+            maximum: None,
+            step: None,
+            source: None,
+        });
+        doc.parameters.insert(Parameter {
+            name: "height".to_string(),
+            expression: "width * 2".to_string(),
+            primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
+            source: None,
+        });
+        doc.shape_order.push(ShapeKind::Parameter);
+        doc.shape_order.push(ShapeKind::Parameter);
+
+        save(&path, &doc).unwrap();
+
+        let conn = Connection::open(&path).unwrap();
+        let names: Vec<String> = conn
+            .prepare("SELECT name FROM parameters ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(names, vec!["height".to_string(), "width".to_string()]);
+
+        let width_expr: String = conn
+            .query_row(
+                "SELECT expression FROM parameters WHERE name = 'width'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(width_expr, "24mm");
+
+        let dag: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'dag_nodes'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(dag, 0, "the dump table must not exist");
+
+        let version: i64 = conn
+            .query_row("SELECT MAX(id) FROM schema_migrations", [], |row| row.get(0))
+            .unwrap();
+        assert!(
+            version >= 2,
+            "schema_migrations must record the typed-tables version, got {version}"
+        );
+
+        if let Ok(out) = std::process::Command::new("sqlite3")
+            .args([&path, "SELECT name FROM parameters ORDER BY name;"])
+            .output()
+        {
+            if out.status.success() {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                assert!(
+                    stdout.contains("width") && stdout.contains("height"),
+                    "sqlite3 CLI should see typed parameter names: {stdout}"
+                );
+            }
+        }
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// #1340: preview PNG/STL live in `blobs`, not base64 meta text.
+    #[test]
+    fn preview_is_stored_as_a_blob() {
+        use crate::model::{Body, BodySource, ImportedMesh};
+        let dir = std::env::temp_dir();
+        let path = dir.join("bearcad_preview_blob_test.bearcad");
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        let p = |x, y, z| glam::Vec3::new(x, y, z);
+        let mesh = doc.imported_meshes.insert(ImportedMesh {
+            triangles: vec![
+                [p(0., 0., 0.), p(10., 0., 0.), p(0., 10., 0.)],
+                [p(0., 0., 0.), p(0., 10., 0.), p(0., 0., 10.)],
+            ],
+            source_name: "tri".into(),
+            step_bytes: None,
+        });
+        doc.bodies.insert(Body {
+            source: BodySource::Imported(mesh),
+            material: None,
+            name: Some("tri".into()),
+            shadow: false,
+        });
+
+        save(&path, &doc).unwrap();
+        crate::file_preview::attach_preview_after_save(&path, &doc);
+
+        let conn = Connection::open(&path).unwrap();
+        let png: Vec<u8> = conn
+            .query_row(
+                "SELECT bytes FROM blobs WHERE kind = 'preview_png'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("preview_png must be a blob row");
+        assert!(png.starts_with(&[0x89, b'P', b'N', b'G']), "PNG magic");
+        assert!(png.len() > 50);
+
+        let stl: Vec<u8> = conn
+            .query_row(
+                "SELECT bytes FROM blobs WHERE kind = 'preview_stl'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("preview_stl must be a blob row");
+        assert!(stl.len() >= 84, "binary STL header + count");
+
+        let meta_png: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM meta WHERE key IN ('preview_png', 'preview_stl')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(meta_png, 0, "preview must not live in meta as base64");
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// #1340: a dangling `lines.sketch_id` must load. Integrity is document health,
+    /// not a FOREIGN KEY refuse.
+    #[test]
+    fn line_whose_sketch_is_gone_reloads_unhealthy() {
+        use crate::document_health::{recompute_document_health, HealthStatus};
+        use crate::hierarchy::SceneElement;
+
+        let dir = std::env::temp_dir();
+        let path = dir.join("bearcad_dangling_sketch_test.bearcad");
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        let sketch = plane_sketch(&mut doc);
+        let line = doc
+            .lines
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.shape_order.push(ShapeKind::Line);
+        assert!(doc.sketches.remove(sketch).is_some());
+
+        save(&path, &doc).expect("dangling sketch_id must save");
+        let loaded = open(&path).expect("dangling sketch_id must load, not be refused");
+        assert!(loaded.lines.contains(line), "the line survived");
+        assert!(!loaded.sketches.contains(sketch), "the sketch stayed gone");
+        assert_eq!(
+            loaded.lines[line].sketch, sketch,
+            "the dangling sketch_id must round-trip, not be healed"
+        );
+
+        let health = recompute_document_health(&loaded);
+        assert_ne!(
+            health.element_status(SceneElement::Line(line)),
+            HealthStatus::Healthy,
+            "a line whose sketch is gone is unhealthy"
+        );
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// #1340: open reads only the 16-byte SQLite header, not the whole file.
+    #[test]
+    fn open_sniffs_sixteen_bytes_not_the_whole_file() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("bearcad_sniff_header_test.bearcad");
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut header = b"SQLite format 3\0".to_vec();
+        header.extend_from_slice(&[0u8; 64]);
+        std::fs::write(&path, &header).unwrap();
+
+        let err = open(&path).expect_err("truncated sqlite should fail as sqlite, not JSON");
+        assert!(
+            !err.contains("expected value") && !err.contains("EOF while parsing"),
+            "must not parse the file as JSON after sniffing sqlite magic: {err}"
+        );
+
+        std::fs::remove_file(&path).unwrap();
+    }
 }
 
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use sqlite_format::{open, save};
+pub use sqlite_format::{delete_preview_blob, open, save, upsert_preview_blob};
+#[cfg(all(not(target_arch = "wasm32"), test))]
+pub use sqlite_format::load_preview_blob;
 
 /// Path-based IO doesn't exist in the browser — the web build opens/saves through the
 /// file-picker byte flows (`to_json_bytes`/`from_json_bytes`). These stubs keep the

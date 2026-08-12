@@ -1,7 +1,7 @@
 // BearCAD QuickLook Preview Extension (#1290).
 //
-// Space-bar QuickLook for `.bearcad` loads the binary STL snapshot embedded in the
-// SQLite `meta` table (`preview_stl`) and displays it in an SCNView with camera control
+// Space-bar QuickLook for `.bearcad` loads the binary STL snapshot from the SQLite
+// `blobs` table (`kind = preview_stl`) and displays it in an SCNView with camera control
 // so the user can rotate/pan/zoom like system STL previews.
 
 import AppKit
@@ -50,7 +50,7 @@ final class PreviewViewController: NSViewController, QLPreviewingController {
 
     private static func loadPreview(from url: URL) -> Result<Payload, Error> {
         // Prefer the interactive mesh snapshot; fall back to the static PNG thumbnail.
-        if let stl = readMetaBytes(path: url.path, key: "preview_stl"), !stl.isEmpty {
+        if let stl = readBlobBytes(path: url.path, kind: "preview_stl"), !stl.isEmpty {
             do {
                 let scene = try sceneFromBinaryStl(stl)
                 return .success(.mesh(scene))
@@ -58,7 +58,7 @@ final class PreviewViewController: NSViewController, QLPreviewingController {
                 // Fall through to PNG.
             }
         }
-        if let png = readMetaBytes(path: url.path, key: "preview_png"),
+        if let png = readBlobBytes(path: url.path, kind: "preview_png"),
            let image = NSImage(data: png)
         {
             return .success(.image(image))
@@ -66,8 +66,8 @@ final class PreviewViewController: NSViewController, QLPreviewingController {
         return .failure(PreviewError.noPreview)
     }
 
-    /// Read a base64-encoded `meta` value from a `.bearcad` SQLite file.
-    private static func readMetaBytes(path: String, key: String) -> Data? {
+    /// Read a `blobs` row from a `.bearcad` SQLite file.
+    private static func readBlobBytes(path: String, kind: String) -> Data? {
         var db: OpaquePointer?
         // Readonly — the previewed file may be on a network share / iCloud; don't write.
         guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else {
@@ -75,19 +75,19 @@ final class PreviewViewController: NSViewController, QLPreviewingController {
         }
         defer { sqlite3_close(db) }
 
-        let sql = "SELECT value FROM meta WHERE key = ?1 LIMIT 1"
+        let sql = "SELECT bytes FROM blobs WHERE kind = ?1 LIMIT 1"
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else {
             return nil
         }
         defer { sqlite3_finalize(stmt) }
 
-        let nsKey = key as NSString
-        sqlite3_bind_text(stmt, 1, nsKey.utf8String, -1, nil)
+        let nsKind = kind as NSString
+        sqlite3_bind_text(stmt, 1, nsKind.utf8String, -1, nil)
         guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
-        guard let cStr = sqlite3_column_text(stmt, 0) else { return nil }
-        let b64 = String(cString: cStr)
-        return Data(base64Encoded: b64)
+        guard let ptr = sqlite3_column_blob(stmt, 0) else { return nil }
+        let len = Int(sqlite3_column_bytes(stmt, 0))
+        return Data(bytes: ptr, count: len)
     }
 
     /// Write the binary STL to a temp file and load via ModelIO → SceneKit.
