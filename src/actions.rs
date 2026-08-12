@@ -3794,6 +3794,9 @@ pub struct AppState {
     /// Viewport width/height, refreshed each frame by the UI — camera framing (ZoomToFit)
     /// needs it to fit the horizontal field of view.
     pub viewport_aspect: f32,
+    /// Viewport height in pixels, refreshed with [`Self::viewport_aspect`]. Used to
+    /// convert screen-pixel dim-label offsets into world millimetres (#1332/#1333).
+    pub viewport_height: f32,
     /// Phone-width layout (`touch::compact`), mirrored each frame: the side panes are
     /// floating windows toggled from the status bar, so the tutorial has extra steps and
     /// different wording there (#828).
@@ -3999,6 +4002,7 @@ impl Default for AppState {
             hovered_drawing_element: None,
             creating_calibration: None,
             viewport_aspect: 16.0 / 9.0,
+            viewport_height: 600.0,
             compact_layout: false,
             draw_construction: false,
             rect_anchor: RectAnchor::default(),
