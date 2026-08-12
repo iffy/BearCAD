@@ -248,25 +248,27 @@ pub fn face_boolean_loop(
     (out.len() >= 3).then_some(out)
 }
 
-/// How many kernel booleans this process has run. Tests use this to assert that
-/// idle cut-preview frames reuse cached solids instead of rebuilding history
-/// (#1337).
-static BOOLEAN_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+// Per-thread so parallel tests that also boolean don't inflate #1337's count.
+#[cfg(test)]
+thread_local! {
+    static BOOLEAN_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
 
 fn note_boolean_call() {
-    BOOLEAN_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(test)]
+    BOOLEAN_CALLS.with(|c| c.set(c.get() + 1));
 }
 
 /// Kernel boolean calls since the last [`reset_boolean_call_count`].
 #[cfg(test)]
 pub fn boolean_call_count() -> u64 {
-    BOOLEAN_CALLS.load(std::sync::atomic::Ordering::Relaxed)
+    BOOLEAN_CALLS.with(|c| c.get())
 }
 
 /// Reset [`boolean_call_count`]. Tests only.
 #[cfg(test)]
 pub fn reset_boolean_call_count() {
-    BOOLEAN_CALLS.store(0, std::sync::atomic::Ordering::Relaxed);
+    BOOLEAN_CALLS.with(|c| c.set(0));
 }
 
 /// An owned OCCT BREP solid. Real geometry, not a mesh: built from profiles,
