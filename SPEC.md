@@ -3464,8 +3464,27 @@ health reports it.
   face lists, move points).
 - **`blobs`** for fonts, tracing images, STEP bytes, packed mesh triangles, preview
   PNG/STL. First save of a new path is a full typed write, atomic (`*.tmp` + rename).
-- Undo remains session snapshots (cap 200), not a SQL history. Incremental
-  INSERT/UPDATE/DELETE, nested unit blobs, and `geometry_cache` come later.
+- Undo remains session snapshots (cap 200), not a SQL history. Nested unit blobs
+  and `geometry_cache` come later.
+
+### 7.2a Session I/O
+
+Once a document has a path, the tab keeps a live SQLite connection. Each
+committed edit (outermost `apply`, plus undo/redo) diffs arenas against the last
+flushed document and `INSERT`/`UPDATE`/`DELETE`s only the changed rows **inside
+one open transaction**. In-progress drags stay RAM-only.
+
+- **Save** (`⌘S` / Save As) = `COMMIT`, then refresh preview PNG/STL + OS
+  thumbnail + unit save-ping, then `BEGIN` a new transaction.
+- **Discard / quit-without-save** = `ROLLBACK`. Dirty `*` means the transaction
+  has uncommitted changes. Untitled has no file until first Save As (full typed
+  write, then `BEGIN`).
+- Another connection (QuickLook, import-as-unit) still sees the last `COMMIT`.
+- First save of a new path is a full typed write (`*.tmp` + rename). Save As to
+  a new path `COMMIT`s the source if dirty, then writes the new file and
+  switches the live connection.
+- **No WAL** sidecars on a user document (`journal_mode=DELETE`).
+- Web JSON still uses `to_json_bytes` / `from_json_bytes`.
 
 ### 7.3 Schema
 ```sql

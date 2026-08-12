@@ -3669,6 +3669,10 @@ pub struct AppState {
     /// Transient session state, never persisted.
     pub saved_snapshot: Document,
     pub dirty: bool,
+    /// Live SQLite session for a pathed document (#1341): incremental writes sit in
+    /// one open transaction until Save `COMMIT`s. Untitled has none. Native only.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub document_session: Option<std::rc::Rc<std::cell::RefCell<crate::storage::DocumentSession>>>,
     /// Auto-zoom (#438): when on, in-progress geometry that outgrows (or shrinks well
     /// inside) the viewport re-frames the camera with a short animation. UI-only state.
     pub auto_zoom: bool,
@@ -3976,6 +3980,8 @@ impl Default for AppState {
             library_directory: None,
             saved_snapshot: Document::default(),
             dirty: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            document_session: None,
             tool: Tool::default(),
             sketch_session: None,
             cam: Camera::default(),
@@ -5107,6 +5113,7 @@ impl AppState {
                     return ActionResult::Err(e);
                 }
                 let n_lines = doc.lines.len();
+                self.drop_document_session();
                 self.doc = doc;
                 self.sketch_session = None;
                 self.cam.set_view_up(None);
@@ -8001,8 +8008,56 @@ impl AppState {
         // imported mesh that walk alone is multi-millisecond every gizmo frame.
         if outermost && doc_changed {
             self.dirty = self.doc != self.saved_snapshot;
+            // Incremental writes go into the open transaction; Save COMMITs.
+            // New/Open replace the session themselves.
+            if !resets_history {
+                self.flush_document_session();
+            }
         }
         result
+    }
+
+    /// Diff the live document into the open SQLite transaction (#1341).
+    /// No-op when untitled or the session is missing. Drags never reach here.
+    fn flush_document_session(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(session) = &self.document_session {
+            if let Err(e) = session.borrow_mut().flush(&self.doc) {
+                crate::diag::warn(format!("incremental document write failed: {e}"));
+                self.status = format!("Document write failed: {e}");
+            }
+        }
+    }
+
+    /// Close the live SQLite session, rolling back any uncommitted edits.
+    fn drop_document_session(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(session) = self.document_session.take() {
+            if let Ok(mut s) = session.try_borrow_mut() {
+                let _ = s.rollback();
+            }
+        }
+    }
+
+    /// Keep a live connection on `path` after a full write or open.
+    fn attach_document_session(&mut self, path: &str) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.drop_document_session();
+            if path.ends_with(".json") {
+                return;
+            }
+            match crate::storage::DocumentSession::attach(path, &self.doc) {
+                Ok(session) => {
+                    self.document_session = Some(std::rc::Rc::new(std::cell::RefCell::new(session)));
+                }
+                Err(e) => {
+                    crate::diag::warn(format!("could not keep live document session on {path}: {e}"));
+                }
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = path;
     }
 
     /// Poll a background boolean job and finish the commit when the kernel is done (#1031).
@@ -8106,6 +8161,7 @@ impl AppState {
         }
         let result = match action {
             Action::NewDocument => {
+                self.drop_document_session();
                 self.doc = Document::default();
                 self.path = None;
                 self.sketch_session = None;
@@ -8129,11 +8185,13 @@ impl AppState {
                         return ActionResult::Err(e);
                     }
                     let n_lines = doc.lines.len();
+                    self.drop_document_session();
                     self.doc = doc;
                     self.sketch_session = None;
                     self.cam.set_view_up(None);
                     self.path = Some(path.clone());
                     self.mark_saved();
+                    self.attach_document_session(&path);
                     // Dynamic links pick up source changes on open (#732): the sync
                     // replaces the embedded copies before the first frame renders (and
                     // leaves the document dirty — the file on disk still holds the old
@@ -16249,6 +16307,25 @@ op,
     }
 
     fn write_to(&mut self, path: &str) -> ActionResult {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if let Some(session) = self.document_session.clone() {
+                let same_path = session.borrow().path() == path;
+                if same_path && !path.ends_with(".json") {
+                    return self.commit_document_session(path);
+                }
+                // Save As: publish the source file first, then write the new path.
+                if let Err(e) = session.borrow_mut().flush(&self.doc) {
+                    self.status = format!("Save failed: {e}");
+                    return ActionResult::Err(e);
+                }
+                if let Err(e) = session.borrow_mut().commit() {
+                    self.status = format!("Save failed: {e}");
+                    return ActionResult::Err(e);
+                }
+                self.document_session = None;
+            }
+        }
         match crate::storage::save(path, &self.doc) {
             Ok(()) => {
                 self.path = Some(path.to_string());
@@ -16260,6 +16337,7 @@ op,
                 // file imported as a dynamic unit picks the change up on its next tick.
                 #[cfg(not(target_arch = "wasm32"))]
                 crate::units::write_save_ping();
+                self.attach_document_session(path);
                 self.status = format!(
                     "Saved {} line(s) to {}",
                     self.doc.lines.len(),
@@ -16272,6 +16350,37 @@ op,
                 ActionResult::Err(e)
             }
         }
+    }
+
+    /// Same-path Save: COMMIT the open transaction, refresh preview, BEGIN again (#1341).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn commit_document_session(&mut self, path: &str) -> ActionResult {
+        let Some(session) = self.document_session.clone() else {
+            return ActionResult::Err("no document session".into());
+        };
+        if let Err(e) = session.borrow_mut().flush(&self.doc) {
+            self.status = format!("Save failed: {e}");
+            return ActionResult::Err(e);
+        }
+        if let Err(e) = session.borrow_mut().commit() {
+            self.status = format!("Save failed: {e}");
+            return ActionResult::Err(e);
+        }
+        self.path = Some(path.to_string());
+        self.mark_saved();
+        crate::file_preview::attach_preview_after_save(path, &self.doc);
+        crate::units::write_save_ping();
+        if let Err(e) = session.borrow_mut().begin() {
+            crate::diag::warn(format!("could not reopen document transaction: {e}"));
+            self.document_session = None;
+            self.attach_document_session(path);
+        }
+        self.status = format!(
+            "Saved {} line(s) to {}",
+            self.doc.lines.len(),
+            path
+        );
+        ActionResult::Ok
     }
 }
 
@@ -19013,6 +19122,104 @@ mod tests {
         assert!(state.dirty);
         state.apply(Action::NewDocument);
         assert!(!state.dirty, "New document starts clean");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// #1341: after Save, an added body is written incrementally (not a full rewrite)
+    /// and stays invisible to a second connection until the next Save.
+    #[test]
+    fn save_then_add_body_is_uncommitted_until_save() {
+        use crate::model::{Primitive, PrimitiveKind};
+        let mut state = AppState::default();
+        state.apply(Action::CreateShape {
+            shape: Primitive {
+                kind: PrimitiveKind::Cuboid,
+                origin: [0.0, 0.0, 0.0],
+                normal: [0.0, 0.0, 1.0],
+                u_axis: [1.0, 0.0, 0.0],
+                width: "10".into(),
+                depth: "8".into(),
+                height: "6".into(),
+                radius: String::new(),
+                name: Some("first".into()),
+            },
+        });
+        let path = std::env::temp_dir()
+            .join(format!("bearcad_incr_app_{}.bearcad", std::process::id()))
+            .to_string_lossy()
+            .into_owned();
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(
+            state.apply(Action::Save {
+                path: Some(path.clone())
+            }),
+            ActionResult::Ok
+        ));
+        let bodies_at_save: i64 = {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.query_row("SELECT COUNT(*) FROM bodies", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(bodies_at_save, 1);
+        let lines_at_save: i64 = {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.query_row("SELECT COUNT(*) FROM lines", [], |r| r.get(0))
+                .unwrap()
+        };
+
+        state.apply(Action::CreateShape {
+            shape: Primitive {
+                kind: PrimitiveKind::Cuboid,
+                origin: [20.0, 0.0, 0.0],
+                normal: [0.0, 0.0, 1.0],
+                u_axis: [1.0, 0.0, 0.0],
+                width: "4".into(),
+                depth: "4".into(),
+                height: "4".into(),
+                radius: String::new(),
+                name: Some("second".into()),
+            },
+        });
+        assert!(state.dirty, "unsaved body keeps the dirty marker");
+        {
+            let session = state.document_session.as_ref().expect("pathed session");
+            let session = session.borrow();
+            let w = session.last_write();
+            assert_eq!(w.inserts("bodies"), 1);
+            assert!(
+                !w.touched("lines"),
+                "existing lines must not be rewritten: {w:?}"
+            );
+            assert_eq!(
+                session.query_i64("SELECT COUNT(*) FROM bodies").unwrap(),
+                bodies_at_save + 1
+            );
+        }
+        let other: i64 = {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.query_row("SELECT COUNT(*) FROM bodies", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(other, bodies_at_save, "another connection sees last commit");
+
+        assert!(matches!(
+            state.apply(Action::Save { path: None }),
+            ActionResult::Ok
+        ));
+        assert!(!state.dirty);
+        let after: i64 = {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.query_row("SELECT COUNT(*) FROM bodies", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(after, bodies_at_save + 1);
+        let lines_after: i64 = {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.query_row("SELECT COUNT(*) FROM lines", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(lines_after, lines_at_save);
 
         let _ = std::fs::remove_file(&path);
     }

@@ -236,11 +236,7 @@ impl Workspace {
 
     /// Open a new tab in `window` showing the same document as `source_tab`, with a fresh
     /// view (camera/tool/selection). Document core is copied from the source.
-    pub fn open_same_document_tab(
-        &mut self,
-        window: WindowId,
-        source_tab: TabId,
-    ) -> Option<usize> {
+    pub fn open_same_document_tab(&mut self, window: WindowId, source_tab: TabId) -> Option<usize> {
         let (swi, sti) = self.find_tab(source_tab)?;
         let doc_id = self.windows[swi].tabs[sti].document_id;
         let mut state = AppState::default();
@@ -466,6 +462,8 @@ struct DocumentCore {
     path: Option<String>,
     saved_snapshot: Document,
     dirty: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    document_session: Option<std::rc::Rc<std::cell::RefCell<crate::storage::DocumentSession>>>,
     undo_stack: Vec<Document>,
     redo_stack: Vec<Document>,
     construction_plane_edit_undo: Vec<crate::arena::Arena<crate::model::ConstructionPlane>>,
@@ -480,6 +478,8 @@ impl DocumentCore {
             path: state.path.clone(),
             saved_snapshot: state.saved_snapshot.clone(),
             dirty: state.dirty,
+            #[cfg(not(target_arch = "wasm32"))]
+            document_session: state.document_session.clone(),
             undo_stack: state.undo_stack.clone(),
             redo_stack: state.redo_stack.clone(),
             construction_plane_edit_undo: state.construction_plane_edit_undo.clone(),
@@ -493,6 +493,10 @@ impl DocumentCore {
         state.path = self.path.clone();
         state.saved_snapshot = self.saved_snapshot.clone();
         state.dirty = self.dirty;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            state.document_session = self.document_session.clone();
+        }
         state.undo_stack = self.undo_stack.clone();
         state.redo_stack = self.redo_stack.clone();
         state.construction_plane_edit_undo = self.construction_plane_edit_undo.clone();
@@ -514,7 +518,10 @@ mod tests {
 
     fn dirty_state() -> AppState {
         let mut state = AppState::default();
-        let plane = state.doc.ground_plane().expect("default doc has ground plane");
+        let plane = state
+            .doc
+            .ground_plane()
+            .expect("default doc has ground plane");
         state.apply(Action::BeginSketch {
             face: FaceId::ConstructionPlane(plane),
             viewport: None,
@@ -666,7 +673,10 @@ mod tests {
         assert_eq!(Workspace::tab_title(&state), "bracket");
 
         // Open a sketch: "{basename} {sketch_name}".
-        let plane = state.doc.ground_plane().expect("default doc has ground plane");
+        let plane = state
+            .doc
+            .ground_plane()
+            .expect("default doc has ground plane");
         state.apply(Action::BeginSketch {
             face: FaceId::ConstructionPlane(plane),
             viewport: None,

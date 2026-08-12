@@ -8,10 +8,10 @@ use crate::model::{
     Body, BodySource, BooleanOperation, Circle, Component, ComponentMember, Constraint,
     ConstraintKind, ConstructionPlane, ConstructionPlaneParent, Document, Drawing,
     EdgeTreatmentOperation, Extrusion, ImportedMesh, ImportedUnit, Joint, JointKind, Line,
-    LinkMode, Loft, Material, MirrorOperation, MoveOperation, Parameter, Primitive, RepeatOperation,
-    Revolution, ShapeKind, ShellOperation, Sketch, SketchMirrorOperation, SketchOffsetOperation,
-    SketchRepeatOperation, SketchSliceOperation, SketchText, SketchVertexTreatmentOperation,
-    SliceOperation, Sweep, TracingImage, UnitInstance,
+    LinkMode, Loft, Material, MirrorOperation, MoveOperation, Parameter, Primitive,
+    RepeatOperation, Revolution, ShapeKind, ShellOperation, Sketch, SketchMirrorOperation,
+    SketchOffsetOperation, SketchRepeatOperation, SketchSliceOperation, SketchText,
+    SketchVertexTreatmentOperation, SliceOperation, Sweep, TracingImage, UnitInstance,
 };
 use crate::parameters::validate_document_parameters_no_cycles;
 use crate::value::{AngleUnit, LengthUnit};
@@ -431,13 +431,22 @@ fn parse_unit<T: DeserializeOwned>(s: Option<String>) -> Result<Option<T>> {
     }
 }
 
-fn put_blob(tx: &Transaction<'_>, id: i64, kind: &str, bytes: &[u8]) -> Result<()> {
+fn put_blob(tx: &Connection, id: i64, kind: &str, bytes: &[u8]) -> Result<()> {
     if bytes.is_empty() {
         return Ok(());
     }
     tx.execute(
-        "INSERT INTO blobs (id, kind, bytes) VALUES (?1, ?2, ?3)",
+        "INSERT OR REPLACE INTO blobs (id, kind, bytes) VALUES (?1, ?2, ?3)",
         params![id, kind, bytes],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn delete_entity_blobs(tx: &Connection, id: i64) -> Result<()> {
+    tx.execute(
+        "DELETE FROM blobs WHERE id = ?1 AND kind NOT IN ('preview_png', 'preview_stl')",
+        params![id],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -478,7 +487,10 @@ fn unpack_triangles(bytes: &[u8]) -> Result<Vec<[glam::Vec3; 3]>> {
     let n = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
     let need = 4 + n * 36;
     if bytes.len() < need {
-        return Err(format!("mesh_triangles blob truncated: {} < {need}", bytes.len()));
+        return Err(format!(
+            "mesh_triangles blob truncated: {} < {need}",
+            bytes.len()
+        ));
     }
     let mut out = Vec::with_capacity(n);
     let mut i = 4;
@@ -531,7 +543,7 @@ fn save_sqlite(path: &str, doc: &Document) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "DELETE")
         .map_err(|e| e.to_string())?;
     init_schema(&conn).map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let tx: Transaction<'_> = conn.transaction().map_err(|e| e.to_string())?;
 
     tx.execute(
         "INSERT OR REPLACE INTO schema_migrations (id, name, applied_at)
@@ -556,48 +568,53 @@ fn save_sqlite(path: &str, doc: &Document) -> Result<()> {
         &to_json(&doc.default_angle_unit)?,
     )?;
 
-    save_parameters(&tx, &doc.parameters)?;
-    save_sketches(&tx, &doc.sketches)?;
-    save_lines(&tx, &doc.lines)?;
-    save_circles(&tx, &doc.circles)?;
-    save_constraints(&tx, &doc.constraints)?;
-    save_planes(&tx, &doc.construction_planes)?;
-    save_extrusions(&tx, &doc.extrusions)?;
-    save_bodies(&tx, &doc.bodies)?;
-    save_materials(&tx, &doc.materials)?;
-    save_imported_meshes(&tx, &doc.imported_meshes)?;
-    save_tracing_images(&tx, &doc.tracing_images)?;
-    save_lofts(&tx, &doc.lofts)?;
-    save_revolutions(&tx, &doc.revolutions)?;
-    save_primitives(&tx, &doc.primitives)?;
-    save_sweeps(&tx, &doc.sweeps)?;
-    save_boolean_ops(&tx, &doc.boolean_ops)?;
-    save_move_ops(&tx, &doc.move_ops)?;
-    save_mirror_ops(&tx, &doc.mirror_ops)?;
-    save_repeat_ops(&tx, &doc.repeat_ops)?;
-    save_slice_ops(&tx, &doc.slice_ops)?;
-    save_shell_ops(&tx, &doc.shell_ops)?;
-    save_edge_treatment_ops(&tx, &doc.edge_treatment_ops)?;
-    save_sketch_repeat_ops(&tx, &doc.sketch_repeat_ops)?;
-    save_sketch_offset_ops(&tx, &doc.sketch_offset_ops)?;
-    save_sketch_mirror_ops(&tx, &doc.sketch_mirror_ops)?;
-    save_sketch_vertex_treatment_ops(&tx, &doc.sketch_vertex_treatment_ops)?;
-    save_sketch_slice_ops(&tx, &doc.sketch_slice_ops)?;
-    save_sketch_texts(&tx, &doc.sketch_texts)?;
-    save_drawings(&tx, &doc.drawings)?;
-    save_joints(&tx, &doc.joints)?;
-    save_units(&tx, &doc.units)?;
-    save_unit_instances(&tx, &doc.unit_instances)?;
-    save_components(&tx, &doc.components)?;
-    save_component_members(&tx, &doc.component_members)?;
-    save_shape_order(&tx, &doc.shape_order)?;
-    save_undo_groups(&tx, &doc.undo_groups)?;
+    save_all(&tx, doc)?;
 
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
 
-fn put_meta(tx: &Transaction<'_>, key: &str, value: &str) -> Result<()> {
+fn save_all(tx: &Connection, doc: &Document) -> Result<()> {
+    save_parameters(tx, &doc.parameters)?;
+    save_sketches(tx, &doc.sketches)?;
+    save_lines(tx, &doc.lines)?;
+    save_circles(tx, &doc.circles)?;
+    save_constraints(tx, &doc.constraints)?;
+    save_planes(tx, &doc.construction_planes)?;
+    save_extrusions(tx, &doc.extrusions)?;
+    save_bodies(tx, &doc.bodies)?;
+    save_materials(tx, &doc.materials)?;
+    save_imported_meshes(tx, &doc.imported_meshes)?;
+    save_tracing_images(tx, &doc.tracing_images)?;
+    save_lofts(tx, &doc.lofts)?;
+    save_revolutions(tx, &doc.revolutions)?;
+    save_primitives(tx, &doc.primitives)?;
+    save_sweeps(tx, &doc.sweeps)?;
+    save_boolean_ops(tx, &doc.boolean_ops)?;
+    save_move_ops(tx, &doc.move_ops)?;
+    save_mirror_ops(tx, &doc.mirror_ops)?;
+    save_repeat_ops(tx, &doc.repeat_ops)?;
+    save_slice_ops(tx, &doc.slice_ops)?;
+    save_shell_ops(tx, &doc.shell_ops)?;
+    save_edge_treatment_ops(tx, &doc.edge_treatment_ops)?;
+    save_sketch_repeat_ops(tx, &doc.sketch_repeat_ops)?;
+    save_sketch_offset_ops(tx, &doc.sketch_offset_ops)?;
+    save_sketch_mirror_ops(tx, &doc.sketch_mirror_ops)?;
+    save_sketch_vertex_treatment_ops(tx, &doc.sketch_vertex_treatment_ops)?;
+    save_sketch_slice_ops(tx, &doc.sketch_slice_ops)?;
+    save_sketch_texts(tx, &doc.sketch_texts)?;
+    save_drawings(tx, &doc.drawings)?;
+    save_joints(tx, &doc.joints)?;
+    save_units(tx, &doc.units)?;
+    save_unit_instances(tx, &doc.unit_instances)?;
+    save_components(tx, &doc.components)?;
+    save_component_members(tx, &doc.component_members)?;
+    save_shape_order(tx, &doc.shape_order)?;
+    save_undo_groups(tx, &doc.undo_groups)?;
+    Ok(())
+}
+
+fn put_meta(tx: &Connection, key: &str, value: &str) -> Result<()> {
     tx.execute(
         "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
         params![key, value],
@@ -606,7 +623,7 @@ fn put_meta(tx: &Transaction<'_>, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn save_parameters(tx: &Transaction<'_>, arena: &Arena<Parameter>) -> Result<()> {
+fn save_parameters(tx: &Connection, arena: &Arena<Parameter>) -> Result<()> {
     for (key, p) in arena.iter() {
         tx.execute(
             "INSERT INTO parameters (id, name, expression, is_primary, minimum, maximum, step, source_json)
@@ -627,7 +644,7 @@ fn save_parameters(tx: &Transaction<'_>, arena: &Arena<Parameter>) -> Result<()>
     Ok(())
 }
 
-fn save_sketches(tx: &Transaction<'_>, arena: &Arena<Sketch>) -> Result<()> {
+fn save_sketches(tx: &Connection, arena: &Arena<Sketch>) -> Result<()> {
     for (key, s) in arena.iter() {
         tx.execute(
             "INSERT INTO sketches (id, name, length_unit, angle_unit, face_json)
@@ -655,7 +672,7 @@ struct LinePayload {
     projection: Option<crate::model::ProjectionSource>,
 }
 
-fn save_lines(tx: &Transaction<'_>, arena: &Arena<Line>) -> Result<()> {
+fn save_lines(tx: &Connection, arena: &Arena<Line>) -> Result<()> {
     for (key, l) in arena.iter() {
         let payload = LinePayload {
             bezier: l.bezier,
@@ -687,7 +704,7 @@ fn save_lines(tx: &Transaction<'_>, arena: &Arena<Line>) -> Result<()> {
     Ok(())
 }
 
-fn save_circles(tx: &Transaction<'_>, arena: &Arena<Circle>) -> Result<()> {
+fn save_circles(tx: &Connection, arena: &Arena<Circle>) -> Result<()> {
     for (key, c) in arena.iter() {
         tx.execute(
             "INSERT INTO circles (id, sketch_id, cx, cy, r, construction, shadow,
@@ -726,7 +743,7 @@ fn constraint_kind_tag(k: &ConstraintKind) -> &'static str {
     }
 }
 
-fn save_constraints(tx: &Transaction<'_>, arena: &Arena<Constraint>) -> Result<()> {
+fn save_constraints(tx: &Connection, arena: &Arena<Constraint>) -> Result<()> {
     for (key, c) in arena.iter() {
         tx.execute(
             "INSERT INTO constraints (id, sketch_id, kind, expression, name, dim_offset, payload_json)
@@ -746,7 +763,7 @@ fn save_constraints(tx: &Transaction<'_>, arena: &Arena<Constraint>) -> Result<(
     Ok(())
 }
 
-fn save_planes(tx: &Transaction<'_>, arena: &Arena<ConstructionPlane>) -> Result<()> {
+fn save_planes(tx: &Connection, arena: &Arena<ConstructionPlane>) -> Result<()> {
     for (key, p) in arena.iter() {
         let (parent_kind, parent_id) = match p.parent {
             ConstructionPlaneParent::Root => ("root", None),
@@ -799,7 +816,7 @@ struct ExtrusionPayload {
     edge_treatments: Vec<crate::model::EdgeTreatment>,
 }
 
-fn save_extrusions(tx: &Transaction<'_>, arena: &Arena<Extrusion>) -> Result<()> {
+fn save_extrusions(tx: &Connection, arena: &Arena<Extrusion>) -> Result<()> {
     for (key, e) in arena.iter() {
         let payload = ExtrusionPayload {
             faces: e.faces.clone(),
@@ -871,7 +888,7 @@ fn body_source_id(src: &BodySource) -> Option<i64> {
     }
 }
 
-fn save_bodies(tx: &Transaction<'_>, arena: &Arena<Body>) -> Result<()> {
+fn save_bodies(tx: &Connection, arena: &Arena<Body>) -> Result<()> {
     for (key, b) in arena.iter() {
         tx.execute(
             "INSERT INTO bodies (id, source_kind, source_id, material_id, name, shadow, source_json)
@@ -891,7 +908,7 @@ fn save_bodies(tx: &Transaction<'_>, arena: &Arena<Body>) -> Result<()> {
     Ok(())
 }
 
-fn save_materials(tx: &Transaction<'_>, arena: &Arena<Material>) -> Result<()> {
+fn save_materials(tx: &Connection, arena: &Arena<Material>) -> Result<()> {
     for (key, m) in arena.iter() {
         tx.execute(
             "INSERT INTO materials (id, name, r, g, b) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -902,7 +919,7 @@ fn save_materials(tx: &Transaction<'_>, arena: &Arena<Material>) -> Result<()> {
     Ok(())
 }
 
-fn save_imported_meshes(tx: &Transaction<'_>, arena: &Arena<ImportedMesh>) -> Result<()> {
+fn save_imported_meshes(tx: &Connection, arena: &Arena<ImportedMesh>) -> Result<()> {
     for (key, m) in arena.iter() {
         let id = key_bits(key);
         tx.execute(
@@ -918,7 +935,7 @@ fn save_imported_meshes(tx: &Transaction<'_>, arena: &Arena<ImportedMesh>) -> Re
     Ok(())
 }
 
-fn save_tracing_images(tx: &Transaction<'_>, arena: &Arena<TracingImage>) -> Result<()> {
+fn save_tracing_images(tx: &Connection, arena: &Arena<TracingImage>) -> Result<()> {
     for (key, img) in arena.iter() {
         let id = key_bits(key);
         tx.execute(
@@ -945,7 +962,7 @@ fn save_tracing_images(tx: &Transaction<'_>, arena: &Arena<TracingImage>) -> Res
     Ok(())
 }
 
-fn save_lofts(tx: &Transaction<'_>, arena: &Arena<Loft>) -> Result<()> {
+fn save_lofts(tx: &Connection, arena: &Arena<Loft>) -> Result<()> {
     for (key, l) in arena.iter() {
         tx.execute(
             "INSERT INTO lofts (id, name, payload_json) VALUES (?1, ?2, ?3)",
@@ -960,7 +977,7 @@ fn save_lofts(tx: &Transaction<'_>, arena: &Arena<Loft>) -> Result<()> {
     Ok(())
 }
 
-fn save_revolutions(tx: &Transaction<'_>, arena: &Arena<Revolution>) -> Result<()> {
+fn save_revolutions(tx: &Connection, arena: &Arena<Revolution>) -> Result<()> {
     for (key, r) in arena.iter() {
         tx.execute(
             "INSERT INTO revolutions (id, sketch_id, angle_deg, pitch_mm, symmetric, name, payload_json)
@@ -984,7 +1001,7 @@ fn save_revolutions(tx: &Transaction<'_>, arena: &Arena<Revolution>) -> Result<(
     Ok(())
 }
 
-fn save_primitives(tx: &Transaction<'_>, arena: &Arena<Primitive>) -> Result<()> {
+fn save_primitives(tx: &Connection, arena: &Arena<Primitive>) -> Result<()> {
     for (key, p) in arena.iter() {
         tx.execute(
             "INSERT INTO primitives (id, kind, ox, oy, oz, nx, ny, nz, ux, uy, uz,
@@ -1014,7 +1031,7 @@ fn save_primitives(tx: &Transaction<'_>, arena: &Arena<Primitive>) -> Result<()>
     Ok(())
 }
 
-fn save_sweeps(tx: &Transaction<'_>, arena: &Arena<Sweep>) -> Result<()> {
+fn save_sweeps(tx: &Connection, arena: &Arena<Sweep>) -> Result<()> {
     for (key, s) in arena.iter() {
         tx.execute(
             "INSERT INTO sweeps (id, sketch_id, name, payload_json) VALUES (?1, ?2, ?3, ?4)",
@@ -1034,7 +1051,7 @@ fn save_sweeps(tx: &Transaction<'_>, arena: &Arena<Sweep>) -> Result<()> {
     Ok(())
 }
 
-fn save_boolean_ops(tx: &Transaction<'_>, arena: &Arena<BooleanOperation>) -> Result<()> {
+fn save_boolean_ops(tx: &Connection, arena: &Arena<BooleanOperation>) -> Result<()> {
     for (key, op) in arena.iter() {
         tx.execute(
             "INSERT INTO boolean_ops (id, kind, keep_b, name, payload_json)
@@ -1056,7 +1073,7 @@ fn save_boolean_ops(tx: &Transaction<'_>, arena: &Arena<BooleanOperation>) -> Re
     Ok(())
 }
 
-fn save_move_ops(tx: &Transaction<'_>, arena: &Arena<MoveOperation>) -> Result<()> {
+fn save_move_ops(tx: &Connection, arena: &Arena<MoveOperation>) -> Result<()> {
     for (key, op) in arena.iter() {
         tx.execute(
             "INSERT INTO move_ops (id, name, keep_inputs, translate_mode, tx, ty, tz, rx, ry, rz,
@@ -1097,7 +1114,7 @@ fn save_move_ops(tx: &Transaction<'_>, arena: &Arena<MoveOperation>) -> Result<(
     Ok(())
 }
 
-fn save_mirror_ops(tx: &Transaction<'_>, arena: &Arena<MirrorOperation>) -> Result<()> {
+fn save_mirror_ops(tx: &Connection, arena: &Arena<MirrorOperation>) -> Result<()> {
     for (key, op) in arena.iter() {
         tx.execute(
             "INSERT INTO mirror_ops (id, name, mode, payload_json) VALUES (?1, ?2, ?3, ?4)",
@@ -1117,7 +1134,7 @@ fn save_mirror_ops(tx: &Transaction<'_>, arena: &Arena<MirrorOperation>) -> Resu
     Ok(())
 }
 
-fn save_repeat_ops(tx: &Transaction<'_>, arena: &Arena<RepeatOperation>) -> Result<()> {
+fn save_repeat_ops(tx: &Connection, arena: &Arena<RepeatOperation>) -> Result<()> {
     for (key, op) in arena.iter() {
         tx.execute(
             "INSERT INTO repeat_ops (id, name, mode, count, spacing, length, around_axis, flip, payload_json)
@@ -1151,7 +1168,7 @@ fn save_repeat_ops(tx: &Transaction<'_>, arena: &Arena<RepeatOperation>) -> Resu
     Ok(())
 }
 
-fn save_slice_ops(tx: &Transaction<'_>, arena: &Arena<SliceOperation>) -> Result<()> {
+fn save_slice_ops(tx: &Connection, arena: &Arena<SliceOperation>) -> Result<()> {
     for (key, op) in arena.iter() {
         tx.execute(
             "INSERT INTO slice_ops (id, name, extend_infinite, payload_json)
@@ -1172,7 +1189,7 @@ fn save_slice_ops(tx: &Transaction<'_>, arena: &Arena<SliceOperation>) -> Result
     Ok(())
 }
 
-fn save_shell_ops(tx: &Transaction<'_>, arena: &Arena<ShellOperation>) -> Result<()> {
+fn save_shell_ops(tx: &Connection, arena: &Arena<ShellOperation>) -> Result<()> {
     for (key, op) in arena.iter() {
         tx.execute(
             "INSERT INTO shell_ops (id, name, thickness, payload_json) VALUES (?1, ?2, ?3, ?4)",
@@ -1192,7 +1209,7 @@ fn save_shell_ops(tx: &Transaction<'_>, arena: &Arena<ShellOperation>) -> Result
     Ok(())
 }
 
-fn save_edge_treatment_ops(tx: &Transaction<'_>, arena: &Arena<EdgeTreatmentOperation>) -> Result<()> {
+fn save_edge_treatment_ops(tx: &Connection, arena: &Arena<EdgeTreatmentOperation>) -> Result<()> {
     for (key, op) in arena.iter() {
         tx.execute(
             "INSERT INTO edge_treatment_ops (id, name, kind, amount, payload_json)
@@ -1214,7 +1231,7 @@ fn save_edge_treatment_ops(tx: &Transaction<'_>, arena: &Arena<EdgeTreatmentOper
     Ok(())
 }
 
-fn save_sketch_repeat_ops(tx: &Transaction<'_>, arena: &Arena<SketchRepeatOperation>) -> Result<()> {
+fn save_sketch_repeat_ops(tx: &Connection, arena: &Arena<SketchRepeatOperation>) -> Result<()> {
     for (key, op) in arena.iter() {
         tx.execute(
             "INSERT INTO sketch_repeat_ops (id, sketch_id, name, dir_u, dir_v, mode, count, spacing, length, payload_json)
@@ -1242,7 +1259,7 @@ fn save_sketch_repeat_ops(tx: &Transaction<'_>, arena: &Arena<SketchRepeatOperat
     Ok(())
 }
 
-fn save_sketch_offset_ops(tx: &Transaction<'_>, arena: &Arena<SketchOffsetOperation>) -> Result<()> {
+fn save_sketch_offset_ops(tx: &Connection, arena: &Arena<SketchOffsetOperation>) -> Result<()> {
     for (key, op) in arena.iter() {
         tx.execute(
             "INSERT INTO sketch_offset_ops (id, sketch_id, name, distance, construction, payload_json)
@@ -1266,7 +1283,7 @@ fn save_sketch_offset_ops(tx: &Transaction<'_>, arena: &Arena<SketchOffsetOperat
     Ok(())
 }
 
-fn save_sketch_mirror_ops(tx: &Transaction<'_>, arena: &Arena<SketchMirrorOperation>) -> Result<()> {
+fn save_sketch_mirror_ops(tx: &Connection, arena: &Arena<SketchMirrorOperation>) -> Result<()> {
     for (key, op) in arena.iter() {
         tx.execute(
             "INSERT INTO sketch_mirror_ops (id, sketch_id, name, line_id, payload_json)
@@ -1291,7 +1308,7 @@ fn save_sketch_mirror_ops(tx: &Transaction<'_>, arena: &Arena<SketchMirrorOperat
 }
 
 fn save_sketch_vertex_treatment_ops(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     arena: &Arena<SketchVertexTreatmentOperation>,
 ) -> Result<()> {
     for (key, op) in arena.iter() {
@@ -1316,7 +1333,7 @@ fn save_sketch_vertex_treatment_ops(
     Ok(())
 }
 
-fn save_sketch_slice_ops(tx: &Transaction<'_>, arena: &Arena<SketchSliceOperation>) -> Result<()> {
+fn save_sketch_slice_ops(tx: &Connection, arena: &Arena<SketchSliceOperation>) -> Result<()> {
     for (key, op) in arena.iter() {
         tx.execute(
             "INSERT INTO sketch_slice_ops (id, sketch_id, name, payload_json)
@@ -1340,7 +1357,7 @@ fn save_sketch_slice_ops(tx: &Transaction<'_>, arena: &Arena<SketchSliceOperatio
     Ok(())
 }
 
-fn save_sketch_texts(tx: &Transaction<'_>, arena: &Arena<SketchText>) -> Result<()> {
+fn save_sketch_texts(tx: &Connection, arena: &Arena<SketchText>) -> Result<()> {
     for (key, t) in arena.iter() {
         let id = key_bits(key);
         tx.execute(
@@ -1372,7 +1389,7 @@ fn save_sketch_texts(tx: &Transaction<'_>, arena: &Arena<SketchText>) -> Result<
     Ok(())
 }
 
-fn save_drawings(tx: &Transaction<'_>, arena: &Arena<Drawing>) -> Result<()> {
+fn save_drawings(tx: &Connection, arena: &Arena<Drawing>) -> Result<()> {
     for (key, d) in arena.iter() {
         tx.execute(
             "INSERT INTO drawings (id, name, page_width_mm, page_height_mm, margin_mm, payload_json)
@@ -1398,7 +1415,7 @@ fn joint_kind_tag(k: &JointKind) -> &'static str {
     k.name()
 }
 
-fn save_joints(tx: &Transaction<'_>, arena: &Arena<Joint>) -> Result<()> {
+fn save_joints(tx: &Connection, arena: &Arena<Joint>) -> Result<()> {
     for (key, j) in arena.iter() {
         tx.execute(
             "INSERT INTO joints (id, name, kind, base, position, position2, position3,
@@ -1429,7 +1446,7 @@ fn save_joints(tx: &Transaction<'_>, arena: &Arena<Joint>) -> Result<()> {
     Ok(())
 }
 
-fn save_units(tx: &Transaction<'_>, arena: &Arena<ImportedUnit>) -> Result<()> {
+fn save_units(tx: &Connection, arena: &Arena<ImportedUnit>) -> Result<()> {
     for (key, u) in arena.iter() {
         tx.execute(
             "INSERT INTO units (id, source_json, link, source_mtime, source_hash, document_json)
@@ -1449,7 +1466,7 @@ fn save_units(tx: &Transaction<'_>, arena: &Arena<ImportedUnit>) -> Result<()> {
     Ok(())
 }
 
-fn save_unit_instances(tx: &Transaction<'_>, arena: &Arena<UnitInstance>) -> Result<()> {
+fn save_unit_instances(tx: &Connection, arena: &Arena<UnitInstance>) -> Result<()> {
     for (key, inst) in arena.iter() {
         tx.execute(
             "INSERT INTO unit_instances (id, unit_id, name, tx, ty, tz, axis_x, axis_y, axis_z, angle, overrides_json)
@@ -1473,7 +1490,7 @@ fn save_unit_instances(tx: &Transaction<'_>, arena: &Arena<UnitInstance>) -> Res
     Ok(())
 }
 
-fn save_components(tx: &Transaction<'_>, arena: &Arena<Component>) -> Result<()> {
+fn save_components(tx: &Connection, arena: &Arena<Component>) -> Result<()> {
     for (key, c) in arena.iter() {
         tx.execute(
             "INSERT INTO components (id, name, parent_id, length_unit, angle_unit)
@@ -1529,19 +1546,26 @@ fn member_id(m: ComponentMember) -> i64 {
     }
 }
 
-fn save_component_members(tx: &Transaction<'_>, members: &[(ComponentMember, crate::model::ComponentKey)]) -> Result<()> {
+fn save_component_members(
+    tx: &Connection,
+    members: &[(ComponentMember, crate::model::ComponentKey)],
+) -> Result<()> {
     for &(member, component) in members {
         tx.execute(
             "INSERT INTO component_members (member_kind, member_id, component_id)
              VALUES (?1, ?2, ?3)",
-            params![member_kind_tag(member), member_id(member), key_bits(component)],
+            params![
+                member_kind_tag(member),
+                member_id(member),
+                key_bits(component)
+            ],
         )
         .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
-fn save_shape_order(tx: &Transaction<'_>, order: &[ShapeKind]) -> Result<()> {
+fn save_shape_order(tx: &Connection, order: &[ShapeKind]) -> Result<()> {
     for (seq, kind) in order.iter().enumerate() {
         tx.execute(
             "INSERT INTO shape_order (seq, kind) VALUES (?1, ?2)",
@@ -1552,7 +1576,7 @@ fn save_shape_order(tx: &Transaction<'_>, order: &[ShapeKind]) -> Result<()> {
     Ok(())
 }
 
-fn save_undo_groups(tx: &Transaction<'_>, groups: &[usize]) -> Result<()> {
+fn save_undo_groups(tx: &Connection, groups: &[usize]) -> Result<()> {
     for (seq, size) in groups.iter().enumerate() {
         tx.execute(
             "INSERT INTO undo_groups (seq, size) VALUES (?1, ?2)",
@@ -2114,7 +2138,9 @@ fn load_imported_meshes(conn: &Connection) -> Result<Arena<ImportedMesh>> {
         .prepare("SELECT id, source_name FROM imported_meshes")
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
         .map_err(|e| e.to_string())?;
     let mut entries = Vec::new();
     for row in rows {
@@ -3204,7 +3230,9 @@ fn load_joints(conn: &Connection) -> Result<Arena<Joint>> {
 
 fn load_units(conn: &Connection) -> Result<Arena<ImportedUnit>> {
     let mut stmt = conn
-        .prepare("SELECT id, source_json, link, source_mtime, source_hash, document_json FROM units")
+        .prepare(
+            "SELECT id, source_json, link, source_mtime, source_hash, document_json FROM units",
+        )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
@@ -3417,3 +3445,5 @@ pub fn load_preview_blob(path: &str, kind: &str) -> Option<Vec<u8>> {
     let conn = Connection::open(path).ok()?;
     get_blob(&conn, PREVIEW_BLOB_ID, kind)
 }
+
+include!("storage_session.rs");
