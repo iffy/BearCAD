@@ -239,18 +239,17 @@ fn fs_axis(input: AxisVertexOutput) -> @location(0) vec4f {
     return vec4f(input.color.rgb * alpha, input.color.a * alpha);
 }
 
-// ---- Ground grid (#1073) ----
+// ---- Ground plane (#1073 / #159 / #1300 / #1301) ----
 //
-// A world-space quad of constant thickness cannot look like a line: seen edge-on it
-// foreshortens into a wedge, and seen close up it swells. So the ground is one quad and the
-// lattice is measured here, per fragment, in pixels — `fwidth` gives world-mm-per-pixel at
-// this exact fragment, whatever the angle or distance, and the line is as many of those
-// across as asked for. That also anti-aliases for free: the coverage ramp is exactly one
-// pixel wide by construction.
+// Grid and solid ground share one footprint-quad path: depth-tested, never depth-writing,
+// so bodies and translucent construction planes composite without coplanar z-fighting
+// (#1301 — no geometric or pipeline bias). Both discard when the eye is under z = 0 so
+// looking up from underneath never paints a floor through the scene (#1300).
 
 struct GridVertexOutput {
     @builtin(position) clip_position: vec4f,
     @location(0) world_xy: vec2f,
+    @location(1) color: vec4f,
 }
 
 @vertex
@@ -258,7 +257,18 @@ fn vs_grid(input: VertexInput) -> GridVertexOutput {
     var out: GridVertexOutput;
     out.clip_position = uniforms.view_proj * vec4f(input.position, 1.0);
     out.world_xy = input.position.xy;
+    out.color = input.color;
     return out;
+}
+
+/// Solid ground fill (#159/#1295/#1301): flat colour, hidden from below (#1300).
+@fragment
+fn fs_solid_ground(input: GridVertexOutput) -> @location(0) vec4f {
+    if (uniforms.eye.z <= 0.0) {
+        discard;
+    }
+    // Premultiplied, matching every other pipeline's blend state.
+    return input.color;
 }
 
 /// Coverage of a lattice of lines every `step` world-mm, `width_px` pixels wide, at `p`.
@@ -285,6 +295,10 @@ fn axis_coverage(p: vec2f, duv: vec2f, width_px: f32) -> f32 {
 
 @fragment
 fn fs_grid(input: GridVertexOutput) -> @location(0) vec4f {
+    // Looking up from under the ground: no lattice (#1300). Axes still draw in their own pass.
+    if (uniforms.eye.z <= 0.0) {
+        discard;
+    }
     // World-mm per pixel along each world axis, at this fragment. Under perspective this
     // grows with distance and with grazing angle, which is exactly the correction wanted.
     let duv = fwidth(input.world_xy);

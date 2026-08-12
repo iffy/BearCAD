@@ -81,8 +81,11 @@ pub struct ViewportGpuResources {
     /// in pixel-measured widths. Depth-tested so bodies occlude it, but never depth-writing
     /// — the gaps between lines must not hide anything below z = 0.
     grid_pipeline: wgpu::RenderPipeline,
-    /// The grid quad's four vertices, rewritten each frame the footprint moves, and its
-    /// two triangles, which never change.
+    /// Solid ground fill (#159/#1295/#1301): same no-depth-write footprint pass as the grid,
+    /// flat colour. Keeps coplanar construction planes from z-fighting without bias.
+    solid_ground_pipeline: wgpu::RenderPipeline,
+    /// Shared footprint quad for grid / solid ground — rewritten each frame the footprint
+    /// moves — and its two triangles, which never change.
     grid_vertex_buffer: wgpu::Buffer,
     grid_index_buffer: wgpu::Buffer,
     /// The origin axes (#1072) and screen-space sketch strokes (#1157), whose vertices carry
@@ -820,20 +823,29 @@ impl ViewportGpuResources {
             cache: None,
         });
 
-        // Ground-grid pipeline (#1073). Alpha-blended and depth-tested but not
-        // depth-writing: the transparent gaps between lines must not occlude geometry
-        // under the ground plane.
+        // Ground footprint pipelines (#1073 / #159 / #1301). Alpha-blended and depth-tested
+        // but not depth-writing: transparent gaps (grid) and coplanar plane fills (solid)
+        // must not fight bodies or each other for depth. Hidden from below in the shader
+        // (#1300).
+        let ground_depth_stencil = wgpu::DepthStencilState {
+            format: VIEWPORT_DEPTH_FORMAT,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        };
+        let ground_vertex_buffers = [wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<GpuVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &SCENE_VERTEX_ATTRS,
+        }];
         let grid_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("bearcad_viewport_grid_pipeline"),
             layout: Some(&scene_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_grid"),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<GpuVertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &SCENE_VERTEX_ATTRS,
-                }],
+                buffers: &ground_vertex_buffers,
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -851,13 +863,36 @@ impl ViewportGpuResources {
                 cull_mode: None,
                 ..Default::default()
             },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: VIEWPORT_DEPTH_FORMAT,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
+            depth_stencil: Some(ground_depth_stencil.clone()),
+            multisample: multisample_state(msaa_sample_count),
+            multiview_mask: None,
+            cache: None,
+        });
+        let solid_ground_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("bearcad_viewport_solid_ground_pipeline"),
+            layout: Some(&scene_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_grid"),
+                buffers: &ground_vertex_buffers,
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_solid_ground"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
             }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(ground_depth_stencil),
             multisample: multisample_state(msaa_sample_count),
             multiview_mask: None,
             cache: None,
@@ -989,6 +1024,7 @@ impl ViewportGpuResources {
             ground_shadow_pipeline,
             scene_transparent_pipeline,
             grid_pipeline,
+            solid_ground_pipeline,
             grid_vertex_buffer,
             grid_index_buffer,
             axis_pipeline,
@@ -1401,13 +1437,19 @@ impl ViewportGpuResources {
                 bytemuck::cast_slice(&scene.stroke_indices),
             );
         }
-        // The grid's four footprint corners (#1073). Colour and normal are unused by
-        // `vs_grid`/`fs_grid` — only the world position matters — but the vertex layout is
-        // shared with the scene pipelines, so they are still filled in.
+        // Footprint corners for grid (#1073) or solid ground (#159/#1301). Solid ground
+        // carries its fill colour in the vertex; the grid lattice reads colour from uniforms.
         if let Some(grid) = &scene.grid {
             let quad: [GpuVertex; 4] = std::array::from_fn(|i| GpuVertex {
                 position: grid.corners[i].to_array(),
                 color: [0.0; 4],
+                normal: [0.0, 0.0, 1.0, 0.0],
+            });
+            queue.write_buffer(&self.grid_vertex_buffer, 0, bytemuck::cast_slice(&quad));
+        } else if let Some(solid) = &scene.solid_ground {
+            let quad: [GpuVertex; 4] = std::array::from_fn(|i| GpuVertex {
+                position: solid.corners[i].to_array(),
+                color: solid.color,
                 normal: [0.0, 0.0, 1.0, 0.0],
             });
             queue.write_buffer(&self.grid_vertex_buffer, 0, bytemuck::cast_slice(&quad));
@@ -1558,9 +1600,16 @@ impl ViewportGpuResources {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            // The grid first, under everything (#1073): it does not write depth, so
-            // drawing it before the scene is what lets bodies occlude it normally.
-            if scene.grid.is_some() {
+            // Ground footprint first, under everything (#1073 / #159 / #1301): no depth
+            // write, so bodies occlude it by overwriting colour and construction planes
+            // composite cleanly later. Hidden from below in the fragment shaders (#1300).
+            if scene.solid_ground.is_some() {
+                pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                pass.set_pipeline(&self.solid_ground_pipeline);
+                pass.set_vertex_buffer(0, self.grid_vertex_buffer.slice(..));
+                pass.set_index_buffer(self.grid_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..6, 0, 0..1);
+            } else if scene.grid.is_some() {
                 pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                 pass.set_pipeline(&self.grid_pipeline);
                 pass.set_vertex_buffer(0, self.grid_vertex_buffer.slice(..));
