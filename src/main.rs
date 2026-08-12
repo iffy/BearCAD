@@ -23,6 +23,7 @@ mod projection;
 mod style_swatches;
 mod app_icon;
 mod camera;
+#[cfg(not(target_arch = "wasm32"))]
 mod cli_install;
 #[cfg(not(target_arch = "wasm32"))]
 mod file_association;

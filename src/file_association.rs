@@ -17,6 +17,7 @@ pub const EXTENSION: &str = "bearcad";
 /// FreeDesktop / Windows MIME type.
 pub const MIME_TYPE: &str = "application/x-bearcad";
 /// macOS UTI exported by the app bundle (`Info.plist` UTExportedTypeDeclarations).
+#[cfg_attr(not(any(test, target_os = "macos")), allow(dead_code))]
 pub const UTI: &str = "com.bearcad.document";
 /// Windows ProgID under `HKCU\Software\Classes`.
 #[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
@@ -31,6 +32,10 @@ static PENDING_OPEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Queue a path the OS wants opened. Callers may pass non-`.bearcad` paths; the app
 /// filters when draining.
+///
+/// Filled by the macOS open-documents handler today; other platforms open via argv.
+/// Kept unconditional so tests can exercise the queue on every OS.
+#[cfg_attr(not(any(test, target_os = "macos")), allow(dead_code))]
 pub fn queue_open_path(path: impl Into<String>) {
     let path = path.into();
     if path.is_empty() {

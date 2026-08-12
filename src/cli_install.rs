@@ -12,11 +12,14 @@
 use std::path::{Path, PathBuf};
 
 /// Default PATH location for the CLI symlink.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub const DEFAULT_INSTALL_DIR: &str = "/usr/local/bin";
 /// Name of the installed command.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub const CLI_NAME: &str = "bearcad";
 
 /// The default symlink path (`/usr/local/bin/bearcad`).
+#[cfg_attr(not(unix), allow(dead_code))]
 pub fn default_target() -> PathBuf {
     Path::new(DEFAULT_INSTALL_DIR).join(CLI_NAME)
 }
@@ -71,12 +74,14 @@ pub fn install_link(source: &Path, target: &Path) -> Result<(), String> {
 }
 
 #[cfg(not(unix))]
+#[allow(dead_code)] // PATH symlink install is unix-only; Windows uses file association only.
 pub fn install_link(_source: &Path, _target: &Path) -> Result<(), String> {
     Err("install-cli is only supported on macOS and Linux".to_string())
 }
 
 /// Remove a CLI symlink previously created by [`install_link`]. Refuses to remove a real
 /// (non-symlink) file at `target`. Succeeds quietly if nothing is there.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub fn uninstall_link(target: &Path) -> Result<(), String> {
     match std::fs::symlink_metadata(target) {
         Ok(meta) => {
