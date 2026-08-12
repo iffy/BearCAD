@@ -162,6 +162,168 @@ pub fn compact_label(label: &str, shortcut: Option<ShortcutHint>) -> String {
     }
 }
 
+/// Script name for `bearcad.ui.tool(...)` / [`Tool::from_name`].
+pub fn tool_script_name(tool: Tool) -> &'static str {
+    match tool {
+        Tool::Select => "select",
+        Tool::Rectangle => "rectangle",
+        Tool::Line => "line",
+        Tool::Circle => "circle",
+        Tool::ConstructionPlane => "construction_plane",
+        Tool::Sketch => "sketch",
+        Tool::Dimension => "dimension",
+        Tool::Project => "project",
+        Tool::Constraint => "constraint",
+        Tool::Extrude => "extrude",
+        Tool::Chamfer => "chamfer",
+        Tool::Fillet => "fillet",
+        Tool::Offset => "offset",
+        Tool::Loft => "loft",
+        Tool::Revolve => "revolve",
+        Tool::Shape => "shape",
+        Tool::Sweep => "sweep",
+        Tool::Combine => "combine",
+        Tool::Move => "move",
+        Tool::Mirror => "mirror",
+        Tool::Repeat => "repeat",
+        Tool::Slice => "slice",
+        Tool::Shell => "shell",
+        Tool::Joint => "joint",
+        Tool::Text => "text",
+        Tool::DrawingAdd => "drawing_add",
+        Tool::DrawingAlign => "drawing_align",
+    }
+}
+
+/// Tools on the current workbench toolbar, left to right.
+pub fn visible_toolbar_tools(drawing: bool, in_sketch: bool) -> Vec<Tool> {
+    if drawing {
+        return vec![
+            Tool::Select,
+            Tool::DrawingAdd,
+            Tool::DrawingAlign,
+            Tool::Dimension,
+            Tool::Text,
+        ];
+    }
+    let mut tools = vec![
+        Tool::Select,
+        Tool::Sketch,
+        Tool::Rectangle,
+        Tool::Line,
+        Tool::Circle,
+        Tool::Shape,
+        Tool::Fillet,
+        Tool::Chamfer,
+        Tool::Offset,
+        Tool::Text,
+    ];
+    if in_sketch {
+        tools.push(Tool::Project);
+    }
+    tools.extend([
+        Tool::ConstructionPlane,
+        Tool::Extrude,
+        Tool::Sweep,
+        Tool::Loft,
+        Tool::Revolve,
+        Tool::Combine,
+        Tool::Move,
+        Tool::Mirror,
+        Tool::Repeat,
+        Tool::Slice,
+        Tool::Shell,
+        Tool::Joint,
+        Tool::Dimension,
+        Tool::Constraint,
+    ]);
+    tools
+}
+
+/// Shortcut labels shown on the toolbar when help mode is on.
+///
+/// Empty when help mode is off. Keys match [`tool_script_name`] / `bearcad.ui.tool`.
+pub fn toolbar_help_shortcuts(
+    help_mode: bool,
+    drawing: bool,
+    in_sketch: bool,
+) -> Vec<(&'static str, String)> {
+    if !help_mode {
+        return Vec::new();
+    }
+    visible_toolbar_tools(drawing, in_sketch)
+        .into_iter()
+        .filter_map(|tool| {
+            tool_shortcut(tool).map(|hint| (tool_script_name(tool), format_shortcut(hint)))
+        })
+        .collect()
+}
+
+/// Paint a small shortcut badge under each toolbar tool that has one (#1319).
+///
+/// Badges sit just below the button, joined by a leader, in the same dark-note
+/// style as the Context pane's help notes. Only tools whose rect was recorded
+/// this frame (they are actually on the bar) get a badge.
+pub fn draw_toolbar_help_shortcuts(
+    ctx: &egui::Context,
+    anchors: &std::collections::HashMap<crate::tutorial::UiAnchor, egui::Rect>,
+    drawing: bool,
+    in_sketch: bool,
+) {
+    let mut i = 0usize;
+    for tool in visible_toolbar_tools(drawing, in_sketch) {
+        let Some(hint) = tool_shortcut(tool) else {
+            continue;
+        };
+        let Some(rect) = anchors.get(&crate::tutorial::UiAnchor::Tool(tool)) else {
+            continue;
+        };
+        draw_toolbar_shortcut_badge(ctx, i, *rect, &format_shortcut(hint));
+        i += 1;
+    }
+}
+
+fn draw_toolbar_shortcut_badge(ctx: &egui::Context, i: usize, tool_rect: egui::Rect, label: &str) {
+    let galley = ctx.fonts_mut(|fonts| {
+        fonts.layout_no_wrap(
+            label.to_string(),
+            egui::FontId::monospace(11.0),
+            egui::Color32::from_gray(225),
+        )
+    });
+    let pad = egui::vec2(6.0, 3.0);
+    let size = galley.size() + pad * 2.0;
+    const GAP: f32 = 6.0;
+    let badge = egui::Rect::from_center_size(
+        egui::pos2(tool_rect.center().x, tool_rect.bottom() + GAP + size.y / 2.0),
+        size,
+    );
+    egui::Area::new(egui::Id::new(("toolbar_help_shortcut", i)))
+        .order(egui::Order::Foreground)
+        .fixed_pos(badge.min)
+        .fade_in(false)
+        .interactable(false)
+        .show(ctx, |ui| {
+            let painter = ui.painter();
+            painter.rect_filled(badge, 3.0, egui::Color32::from_black_alpha(230));
+            painter.rect_stroke(
+                badge,
+                3.0,
+                egui::Stroke::new(1.0, egui::Color32::from_gray(90)),
+                egui::StrokeKind::Inside,
+            );
+            painter.galley(badge.min + pad, galley, egui::Color32::WHITE);
+            painter.line_segment(
+                [
+                    egui::pos2(badge.center().x, badge.top()),
+                    egui::pos2(tool_rect.center().x, tool_rect.bottom()),
+                ],
+                egui::Stroke::new(1.0, egui::Color32::from_gray(110)),
+            );
+            ui.allocate_space(badge.size());
+        });
+}
+
 fn shortcut_rich_text(hint: ShortcutHint) -> RichText {
     RichText::new(format_shortcut(hint))
         .weak()
@@ -548,5 +710,138 @@ mod tests {
             "Sketch (S)"
         );
         assert_eq!(compact_label("Select", None), "Select");
+    }
+
+    /// #1319: help mode off → no toolbar shortcut badges.
+    #[test]
+    fn toolbar_help_shortcuts_empty_when_help_mode_is_off() {
+        assert!(toolbar_help_shortcuts(false, false, false).is_empty());
+        assert!(toolbar_help_shortcuts(false, false, true).is_empty());
+        assert!(toolbar_help_shortcuts(false, true, false).is_empty());
+    }
+
+    /// #1319: Shape's B (and the other toolbar letters) appear when help mode is on.
+    #[test]
+    fn toolbar_help_shortcuts_include_shape_b() {
+        let labels = toolbar_help_shortcuts(true, false, false);
+        assert!(
+            labels.iter().any(|(n, k)| *n == "shape" && k == "B"),
+            "Shape should show B, got {labels:?}"
+        );
+        for (name, key) in [
+            ("sketch", "S"),
+            ("rectangle", "R"),
+            ("line", "L"),
+            ("circle", "O"),
+            ("fillet", "F"),
+            ("chamfer", "K"),
+            ("text", "T"),
+            ("extrude", "E"),
+            ("move", "M"),
+            ("joint", "J"),
+            ("dimension", "D"),
+            ("constraint", "C"),
+        ] {
+            assert!(
+                labels.iter().any(|(n, k)| *n == name && k == key),
+                "{name} should show {key}, got {labels:?}"
+            );
+        }
+    }
+
+    /// #1319: tools without a letter (Select, Offset, …) get no badge.
+    #[test]
+    fn toolbar_help_shortcuts_omit_tools_without_bindings() {
+        let labels = toolbar_help_shortcuts(true, false, false);
+        for name in [
+            "select",
+            "offset",
+            "construction_plane",
+            "sweep",
+            "loft",
+            "revolve",
+            "combine",
+            "mirror",
+            "repeat",
+            "slice",
+            "shell",
+        ] {
+            assert!(
+                !labels.iter().any(|(n, _)| *n == name),
+                "{name} has no shortcut, should not appear: {labels:?}"
+            );
+        }
+    }
+
+    /// #1319: Projection (P) only sits on the toolbar inside a sketch.
+    #[test]
+    fn toolbar_help_shortcuts_include_project_only_in_a_sketch() {
+        let outside = toolbar_help_shortcuts(true, false, false);
+        assert!(
+            !outside.iter().any(|(n, _)| *n == "project"),
+            "Project is sketch-only: {outside:?}"
+        );
+        let inside = toolbar_help_shortcuts(true, false, true);
+        assert!(
+            inside.iter().any(|(n, k)| *n == "project" && k == "P"),
+            "Project should show P in a sketch, got {inside:?}"
+        );
+    }
+
+    /// #1319: every tool letter has a toolbar button to hang its badge on.
+    #[test]
+    fn every_tool_shortcut_has_a_toolbar_home() {
+        let mut tools = Tool::ALL.to_vec();
+        // Tool::ALL is missing Shape (pre-existing); the toolbar still shows it.
+        if !tools.contains(&Tool::Shape) {
+            tools.push(Tool::Shape);
+        }
+        for tool in tools {
+            if tool_shortcut(tool).is_none() {
+                continue;
+            }
+            let on_bar = visible_toolbar_tools(false, true).contains(&tool)
+                || visible_toolbar_tools(true, false).contains(&tool);
+            assert!(
+                on_bar,
+                "{tool:?} has a shortcut but is on no workbench toolbar"
+            );
+        }
+    }
+
+    /// #1319: script names match `bearcad.ui.tool` / `Tool::from_name`.
+    #[test]
+    fn toolbar_tool_script_names_round_trip() {
+        for drawing in [false, true] {
+            for in_sketch in [false, true] {
+                for tool in visible_toolbar_tools(drawing, in_sketch) {
+                    let name = tool_script_name(tool);
+                    assert_eq!(
+                        Tool::from_name(name),
+                        Some(tool),
+                        "{name} should parse back to {tool:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// #1319: the drawing workbench only badges Dimension (D) and Text (T).
+    #[test]
+    fn toolbar_help_shortcuts_on_the_drawing_workbench() {
+        let labels = toolbar_help_shortcuts(true, true, false);
+        assert!(
+            labels.iter().any(|(n, k)| *n == "dimension" && k == "D"),
+            "Dimension should show D, got {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|(n, k)| *n == "text" && k == "T"),
+            "Text should show T, got {labels:?}"
+        );
+        assert_eq!(labels.len(), 2, "only Dimension and Text have letters: {labels:?}");
+        assert!(
+            !labels.iter().any(|(n, _)| *n == "shape" || *n == "sketch"),
+            "modeling tools stay off the drawing bar: {labels:?}"
+        );
     }
 }

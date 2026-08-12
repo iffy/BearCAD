@@ -5328,6 +5328,9 @@ it.
 - With it on, every row of the Context pane that has help text grows a floating note beside
   the pane — outside it, so the pane itself stays controls and values only (§the context pane's
   no-prose rule) — joined to its row by a leader line. Notes that would overlap slide apart.
+- Every toolbar tool that has a keyboard shortcut also grows a small badge with that
+  key (e.g. **B** under Shape), from the same `tool_shortcut()` table the Keyboard
+  Shortcuts window uses. Scripts read the badges as `bearcad.ui.toolbar_shortcuts()`.
 - The help text is per (tool, row label), so the same label reads correctly under different
   tools ("Bodies" means one thing to Move and another to Combine). Rows that mean the same
   thing everywhere (default units, snapping) are matched on the label alone.

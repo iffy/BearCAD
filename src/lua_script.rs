@@ -4399,6 +4399,24 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1319: shortcut badges shown on the toolbar while help mode is on.
+    api.set(
+        "toolbar_shortcuts",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            let table = lua.create_table()?;
+            for (name, label) in crate::shortcuts::toolbar_help_shortcuts(
+                state.help_mode,
+                state.editing_drawing.is_some(),
+                state.sketch_session.is_some(),
+            ) {
+                table.set(name, label)?;
+            }
+            Ok(table)
+        })?,
+    )?;
+
     api.set(
         "tool_mode",
         lua.create_function(|lua, mode: String| {
@@ -6629,7 +6647,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         -- `bearcad.ui.*` sub-namespace so scripts can focus on modeling (#46).
         bearcad.ui = {}
         local ui_funcs = {
-            "tool", "tool_mode", "help", "focus_name", "focus_dim", "pane", "palette", "settings",
+            "tool", "tool_mode", "help", "toolbar_shortcuts", "focus_name", "focus_dim", "pane", "palette", "settings",
             "mcmaster",
             "new_tab", "close_tab", "tab", "tab_count", "window_count", "tabs", "reorder_tab", "detach_tab",
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading", "ground",
@@ -7538,7 +7556,8 @@ mod tests {
             r#"
             assert(bearcad.ui ~= nil, "bearcad.ui table missing")
             for _, name in ipairs({ "move", "click", "tool", "view", "orbit", "pan",
-                                    "key", "type", "pane", "palette", "wait",
+                                    "key", "type", "pane", "palette", "wait", "help",
+                                    "toolbar_shortcuts",
                                     "new_tab", "close_tab", "tab", "tabs", "tab_count",
                                     "window_count", "reorder_tab", "detach_tab" }) do
                 assert(type(bearcad.ui[name]) == "function", "bearcad.ui." .. name .. " missing")
@@ -9672,6 +9691,28 @@ mod tests {
             assert(math.abs((s.bbox.max[2] - s.bbox.min[2]) - 30) < 0.1)
             assert(math.abs((s.bbox.max[3] - s.bbox.min[3]) - 10) < 0.1)
             assert(bearcad.body_stats(5) == nil)
+        "#,
+        );
+    }
+
+    /// #1319: `bearcad.ui.toolbar_shortcuts()` reports help-mode toolbar badges.
+    #[test]
+    fn lua_toolbar_shortcuts_follow_help_mode() {
+        run_lua_expect_ok(
+            r#"
+            local empty = bearcad.ui.toolbar_shortcuts()
+            assert(next(empty) == nil, "no badges while help mode is off")
+            bearcad.ui.help(true)
+            local s = bearcad.ui.toolbar_shortcuts()
+            assert(s.shape == "B", "Shape should show B, got " .. tostring(s.shape))
+            assert(s.sketch == "S")
+            assert(s.select == nil, "Select has no shortcut")
+            assert(s.project == nil, "Project is sketch-only")
+            bearcad.begin_sketch("construction_plane", 0)
+            s = bearcad.ui.toolbar_shortcuts()
+            assert(s.project == "P", "Project should show P in a sketch")
+            bearcad.ui.help(false)
+            assert(next(bearcad.ui.toolbar_shortcuts()) == nil)
         "#,
         );
     }

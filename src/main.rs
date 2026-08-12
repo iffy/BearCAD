@@ -13474,25 +13474,16 @@ impl App {
                         self.state.apply(Action::EditDrawing { drawing: None });
                     }
                     ui.separator();
-                    for (icon, tool, label) in [
-                        (icons::IconId::Select, Tool::Select, "Select"),
-                        (icons::IconId::Project, Tool::DrawingAdd, "Projection"),
-                        (icons::IconId::Projection, Tool::DrawingAlign, "Aligned view"),
-                        (icons::IconId::Dimension, Tool::Dimension, "Dimension"),
-                        (icons::IconId::Text, Tool::Text, "Text"),
-                    ] {
-                        if icons::selectable_icon_button_at(
-                            ui,
-                            icon,
-                            self.state.tool == tool,
-                            shortcuts::compact_label(label, shortcuts::tool_shortcut(tool)),
-                            TOOLBAR_ICON_SIZE,
-                        )
-                        .clicked()
-                        {
-                            self.state.apply(Action::SetTool(tool));
-                        }
-                    }
+                    self.tool_button(ui, icons::IconId::Select, Tool::Select, "Select");
+                    self.tool_button(ui, icons::IconId::Project, Tool::DrawingAdd, "Projection");
+                    self.tool_button(
+                        ui,
+                        icons::IconId::Projection,
+                        Tool::DrawingAlign,
+                        "Aligned view",
+                    );
+                    self.tool_button(ui, icons::IconId::Dimension, Tool::Dimension, "Dimension");
+                    self.tool_button(ui, icons::IconId::Text, Tool::Text, "Text");
                     ui.separator();
                     if icons::selectable_icon_button_at(ui, icons::IconId::Zoom, false, "Zoom to fit (Z)", TOOLBAR_ICON_SIZE)
                         .clicked()
@@ -13668,6 +13659,15 @@ impl App {
             });
             });
         });
+        // Help mode (#1319): a little shortcut badge under every toolbar tool that has one.
+        if self.state.help_mode {
+            shortcuts::draw_toolbar_help_shortcuts(
+                ctx,
+                &self.state.tutorial_anchor_rects,
+                self.state.editing_drawing.is_some(),
+                self.state.sketch_session.is_some(),
+            );
+        }
         // Erase the toolbar's top stroke under the selected filing tab so the baseline
         // break from the tab strip makes the active tab look continuous with this chrome (#1134).
         // Paint on the toolbar's own Middle-order layer (not Foreground): the central ui's

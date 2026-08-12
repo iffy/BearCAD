@@ -104,10 +104,13 @@ bearcad.ui.wait_ms(100)   -- wait 100 milliseconds
 bearcad.ui.help(true)    -- explain every Context-pane control
 bearcad.ui.help(false)
 bearcad.ui.help()        -- toggle
+local keys = bearcad.ui.toolbar_shortcuts()  -- { shape = "B", sketch = "S", ... }
+                                             -- empty while help mode is off
 ```
 
 With help mode on, each row of the Context pane gets a floating note beside it saying what
-it wants. A pane screenshot widens to include the notes, which is how the annotated pane
+it wants, and each toolbar tool that has a shortcut grows a small badge with that key.
+A pane screenshot widens to include the notes, which is how the annotated pane
 pictures in the tool pages are made.
 
 ## Tutorials
