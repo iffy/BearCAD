@@ -581,8 +581,9 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "bearcad_file_assoc_{}_{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            // Clock via `crate::time` — raw `std::time::SystemTime` is banned (#1048).
+            crate::time::SystemTime::now()
+                .duration_since(crate::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
