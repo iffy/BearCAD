@@ -542,17 +542,79 @@ fn clear_os_preview(path: &str) {
     }
 }
 
+/// Build an `NSImage` from straight RGBA8 pixels without ImageIO.
+///
+/// `NSImage::initWithData` (PNG/JPEG) can SIGBUS on some macOS setups when ImageIO loads a
+/// mismatched `libpng` (egui#7155 / #1304). Raw `NSBitmapImageRep` avoids that path entirely.
+#[cfg(target_os = "macos")]
+fn nsimage_from_rgba(rgba: &[u8], width: u32, height: u32) -> Result<objc2::rc::Retained<objc2_app_kit::NSImage>, String> {
+    use objc2::AllocAnyThread;
+    use objc2_app_kit::{NSBitmapImageRep, NSDeviceRGBColorSpace, NSImage};
+    use objc2_foundation::NSSize;
+    use std::ffi::c_uchar;
+    use std::slice;
+
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|n| n.checked_mul(4))
+        .ok_or_else(|| "preview icon dimensions overflow".to_string())?;
+    if rgba.len() != expected {
+        return Err(format!(
+            "preview icon RGBA length {} != {}×{}×4",
+            rgba.len(),
+            width,
+            height
+        ));
+    }
+    if width == 0 || height == 0 {
+        return Err("preview icon has zero size".into());
+    }
+
+    // Allocate the rep's own buffer (null planes), then copy — so the NSImage owns the pixels
+    // after we return (winit cursor path; safer than pointing planes at a temporary Rust slice).
+    let rep = unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(),
+            std::ptr::null_mut::<*mut c_uchar>(),
+            width as isize,
+            height as isize,
+            8,
+            4,
+            true,
+            false,
+            NSDeviceRGBColorSpace,
+            (width as isize) * 4,
+            32,
+        )
+    }
+    .ok_or_else(|| "NSBitmapImageRep init failed for preview icon".to_string())?;
+
+    let dest = rep.bitmapData();
+    if dest.is_null() {
+        return Err("NSBitmapImageRep bitmapData is null".into());
+    }
+    unsafe {
+        slice::from_raw_parts_mut(dest, expected).copy_from_slice(rgba);
+    }
+
+    let image = NSImage::initWithSize(
+        NSImage::alloc(),
+        NSSize::new(width as f64, height as f64),
+    );
+    image.addRepresentation(&rep);
+    Ok(image)
+}
+
 #[cfg(target_os = "macos")]
 fn apply_macos_icon(path: &str, png: &[u8]) -> Result<(), String> {
-    use objc2::AllocAnyThread;
-    use objc2_app_kit::{NSImage, NSWorkspace, NSWorkspaceIconCreationOptions};
-    use objc2_foundation::{NSData, NSString};
+    use objc2_app_kit::{NSWorkspace, NSWorkspaceIconCreationOptions};
+    use objc2_foundation::NSString;
 
-    // Same path muda uses for About-panel icons: pure-Rust PNG → NSData → NSImage.
-    // Avoids the eframe ImageIO path that SIGBUSes on some macOS setups.
-    let data = NSData::with_bytes(png);
-    let image = NSImage::initWithData(NSImage::alloc(), &data)
-        .ok_or_else(|| "NSImage::initWithData failed for preview PNG".to_string())?;
+    // Decode PNG in pure Rust, then feed raw RGBA to AppKit — never NSImage::initWithData (#1304).
+    let img = image::load_from_memory(png).map_err(|e| format!("decode preview PNG: {e}"))?;
+    let rgba = img.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    let image = nsimage_from_rgba(rgba.as_raw(), width, height)?;
     let ns_path = NSString::from_str(path);
     let ok = NSWorkspace::sharedWorkspace().setIcon_forFile_options(
         Some(&image),
@@ -958,5 +1020,40 @@ mod tests {
         let read = std::fs::read(&path).expect("read png");
         assert!(read.starts_with(&[0x89, b'P', b'N', b'G']));
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// #1304: OS preview publish must not use `NSImage::initWithData` (ImageIO SIGBUS).
+    /// Bad PNG yields `Err`, never a process-killing bus error; good PNG must apply.
+    #[cfg(all(not(target_arch = "wasm32"), any(target_os = "macos", target_os = "linux")))]
+    #[test]
+    fn apply_os_preview_rejects_garbage_and_accepts_real_png() {
+        let path = std::env::temp_dir().join("bearcad_os_preview_icon_test.bearcad");
+        let path_s = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+        // Real file so setIcon / thumbnail cache has a target.
+        std::fs::write(&path, b"not-a-sqlite-but-exists").expect("touch target");
+
+        let garbage = apply_os_preview(&path_s, b"not a png at all");
+        assert!(
+            garbage.is_err(),
+            "invalid PNG must soft-fail, got {garbage:?}"
+        );
+
+        let doc = cube_document();
+        let png = document_preview_png(&doc).expect("cube preview png");
+        apply_os_preview(&path_s, &png).expect("valid preview PNG must publish without crashing");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn nsimage_from_rgba_rejects_bad_length() {
+        let err = nsimage_from_rgba(&[0u8; 3], 1, 1).unwrap_err();
+        assert!(err.contains("RGBA length"), "{err}");
+        // 1×1 opaque red — exercises the non-ImageIO bitmap path used by setIcon.
+        let img = nsimage_from_rgba(&[255, 0, 0, 255], 1, 1).expect("1×1 RGBA");
+        assert!(img.size().width >= 1.0);
+        assert!(img.size().height >= 1.0);
     }
 }
