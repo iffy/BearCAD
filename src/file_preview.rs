@@ -98,7 +98,9 @@ pub fn export_preview_png(doc: &Document, path: &str) -> Result<(), String> {
 pub fn attach_preview_after_save(path: &str, doc: &Document) {
     let Some(png) = document_preview_png(doc) else {
         // Empty model: clear any stale custom icon so Finder doesn't show an old thumbnail.
-        clear_os_preview(path);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            clear_os_preview(path);
+        }));
         clear_embedded_preview(path);
         return;
     };
@@ -114,8 +116,12 @@ pub fn attach_preview_after_save(path: &str, doc: &Document) {
         }
         None => clear_embedded_preview_stl(path),
     }
-    if let Err(e) = apply_os_preview(path, &png) {
-        crate::diag::warn(format!("preview OS publish failed for {path}: {e}"));
+    // Icon attach is best-effort: a panic here must not unwind through save (#1339).
+    // SIGBUS from ImageIO cannot be caught — `apply_os_preview` must not call it.
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| apply_os_preview(path, &png))) {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => crate::diag::warn(format!("preview OS publish failed for {path}: {e}")),
+        Err(_) => crate::diag::warn(format!("preview OS publish panicked for {path}")),
     }
 }
 
@@ -542,101 +548,286 @@ fn clear_os_preview(path: &str) {
     }
 }
 
-/// Build an `NSImage` from straight RGBA8 pixels without ImageIO.
-///
-/// `NSImage::initWithData` (PNG/JPEG) can SIGBUS on some macOS setups when ImageIO loads a
-/// mismatched `libpng` (egui#7155 / #1304). Raw `NSBitmapImageRep` avoids that path entirely.
-#[cfg(target_os = "macos")]
-fn nsimage_from_rgba(rgba: &[u8], width: u32, height: u32) -> Result<objc2::rc::Retained<objc2_app_kit::NSImage>, String> {
-    use objc2::AllocAnyThread;
-    use objc2_app_kit::{NSBitmapImageRep, NSDeviceRGBColorSpace, NSImage};
-    use objc2_foundation::NSSize;
-    use std::ffi::c_uchar;
-    use std::slice;
+/// Finder custom-icon resource ID (`kCustomIconResource`).
+#[cfg(any(test, target_os = "macos"))]
+const CUSTOM_ICON_RESOURCE_ID: i16 = -16455;
+/// `FileInfo.finderFlags` bit: this file has a custom icon.
+#[cfg(any(test, target_os = "macos"))]
+const K_HAS_CUSTOM_ICON: u16 = 0x0400;
+#[cfg(any(test, target_os = "macos"))]
+const RESOURCE_DATA_OFFSET: u32 = 256;
+/// Modern ICNS PNG slots Finder scales from (512 / 256 / 128).
+#[cfg(any(test, target_os = "macos"))]
+const ICNS_PNG_SIZES: [(&[u8; 4], u32); 3] = [(b"ic09", 512), (b"ic08", 256), (b"ic07", 128)];
 
-    let expected = (width as usize)
-        .checked_mul(height as usize)
-        .and_then(|n| n.checked_mul(4))
-        .ok_or_else(|| "preview icon dimensions overflow".to_string())?;
-    if rgba.len() != expected {
-        return Err(format!(
-            "preview icon RGBA length {} != {}×{}×4",
-            rgba.len(),
-            width,
-            height
-        ));
-    }
-    if width == 0 || height == 0 {
+/// Pack a PNG (any size) into a modern ICNS. Pure Rust — no ImageIO (#1339).
+#[cfg(any(test, target_os = "macos"))]
+fn encode_icns_from_png(png: &[u8]) -> Result<Vec<u8>, String> {
+    let img = image::load_from_memory(png).map_err(|e| format!("decode preview PNG: {e}"))?;
+    let rgba = img.to_rgba8();
+    if rgba.width() == 0 || rgba.height() == 0 {
         return Err("preview icon has zero size".into());
     }
 
-    // Allocate the rep's own buffer (null planes), then copy — so the NSImage owns the pixels
-    // after we return (winit cursor path; safer than pointing planes at a temporary Rust slice).
-    let rep = unsafe {
-        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
-            NSBitmapImageRep::alloc(),
-            std::ptr::null_mut::<*mut c_uchar>(),
-            width as isize,
-            height as isize,
-            8,
-            4,
-            true,
-            false,
-            NSDeviceRGBColorSpace,
-            (width as isize) * 4,
-            32,
-        )
+    let mut entries: Vec<(&[u8; 4], Vec<u8>)> = Vec::with_capacity(ICNS_PNG_SIZES.len());
+    for &(tag, dim) in &ICNS_PNG_SIZES {
+        let bytes = if rgba.width() == dim && rgba.height() == dim {
+            png.to_vec()
+        } else {
+            let resized = image::imageops::resize(
+                &rgba,
+                dim,
+                dim,
+                image::imageops::FilterType::Triangle,
+            );
+            encode_rgba_png(&resized)?
+        };
+        entries.push((tag, bytes));
     }
-    .ok_or_else(|| "NSBitmapImageRep init failed for preview icon".to_string())?;
-
-    let dest = rep.bitmapData();
-    if dest.is_null() {
-        return Err("NSBitmapImageRep bitmapData is null".into());
-    }
-    unsafe {
-        slice::from_raw_parts_mut(dest, expected).copy_from_slice(rgba);
-    }
-
-    let image = NSImage::initWithSize(
-        NSImage::alloc(),
-        NSSize::new(width as f64, height as f64),
-    );
-    image.addRepresentation(&rep);
-    Ok(image)
+    pack_icns(&entries)
 }
 
+#[cfg(any(test, target_os = "macos"))]
+fn encode_rgba_png(img: &image::RgbaImage) -> Result<Vec<u8>, String> {
+    let mut buf = Vec::new();
+    {
+        let encoder = image::codecs::png::PngEncoder::new(&mut buf);
+        use image::ImageEncoder;
+        encoder
+            .write_image(
+                img.as_raw(),
+                img.width(),
+                img.height(),
+                image::ExtendedColorType::Rgba8,
+            )
+            .map_err(|e| format!("encode icon png: {e}"))?;
+    }
+    Ok(buf)
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn pack_icns(entries: &[(&[u8; 4], Vec<u8>)]) -> Result<Vec<u8>, String> {
+    let mut total = 8u32;
+    for (_, data) in entries {
+        total = total
+            .checked_add(8)
+            .and_then(|t| t.checked_add(data.len() as u32))
+            .ok_or_else(|| "icns too large".to_string())?;
+    }
+    let mut out = Vec::with_capacity(total as usize);
+    out.extend_from_slice(b"icns");
+    out.extend_from_slice(&total.to_be_bytes());
+    for (tag, data) in entries {
+        let elen = 8u32 + data.len() as u32;
+        out.extend_from_slice(*tag);
+        out.extend_from_slice(&elen.to_be_bytes());
+        out.extend_from_slice(data);
+    }
+    debug_assert_eq!(out.len(), total as usize);
+    Ok(out)
+}
+
+/// Resource fork containing a single `icns` resource with ID -16455.
+#[cfg(any(test, target_os = "macos"))]
+fn macos_custom_icon_resource_fork(icns: &[u8]) -> Vec<u8> {
+    let data_len = 4u32 + icns.len() as u32;
+    let map_offset = RESOURCE_DATA_OFFSET + data_len;
+    // 16 reserved + 4 next + 2 refNum + 2 attrs + 2 typeList + 2 nameList
+    // + 2 (type count-1) + 8 (one type) + 12 (one ref) = 50
+    const MAP_LEN: u32 = 50;
+    const TYPE_LIST_OFF: u16 = 28;
+    const NAME_LIST_OFF: u16 = 50;
+    const REF_LIST_OFF: u16 = 10;
+
+    let mut out = vec![0u8; RESOURCE_DATA_OFFSET as usize];
+    out[0..4].copy_from_slice(&RESOURCE_DATA_OFFSET.to_be_bytes());
+    out[4..8].copy_from_slice(&map_offset.to_be_bytes());
+    out[8..12].copy_from_slice(&data_len.to_be_bytes());
+    out[12..16].copy_from_slice(&MAP_LEN.to_be_bytes());
+
+    out.extend_from_slice(&(icns.len() as u32).to_be_bytes());
+    out.extend_from_slice(icns);
+
+    // Resource map. First 16 bytes stay zero (in-memory header copy).
+    out.extend_from_slice(&[0u8; 16]);
+    out.extend_from_slice(&0u32.to_be_bytes());
+    out.extend_from_slice(&0u16.to_be_bytes());
+    out.extend_from_slice(&0u16.to_be_bytes());
+    out.extend_from_slice(&TYPE_LIST_OFF.to_be_bytes());
+    out.extend_from_slice(&NAME_LIST_OFF.to_be_bytes());
+    out.extend_from_slice(&0u16.to_be_bytes()); // number of types − 1
+    out.extend_from_slice(b"icns");
+    out.extend_from_slice(&0u16.to_be_bytes()); // resources of this type − 1
+    out.extend_from_slice(&REF_LIST_OFF.to_be_bytes());
+    out.extend_from_slice(&CUSTOM_ICON_RESOURCE_ID.to_be_bytes());
+    out.extend_from_slice(&0xFFFFu16.to_be_bytes());
+    out.push(0);
+    out.extend_from_slice(&[0, 0, 0]); // data offset inside the data section
+    out.extend_from_slice(&0u32.to_be_bytes());
+    debug_assert_eq!(out.len() as u32, map_offset + MAP_LEN);
+    out
+}
+
+/// 32-byte `com.apple.FinderInfo` with `kHasCustomIcon` set.
+#[cfg(any(test, target_os = "macos"))]
+fn macos_finder_info_with_custom_icon(existing: Option<&[u8]>) -> [u8; 32] {
+    macos_finder_info_set_custom_icon(existing, true)
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn macos_finder_info_set_custom_icon(existing: Option<&[u8]>, on: bool) -> [u8; 32] {
+    let mut info = [0u8; 32];
+    if let Some(e) = existing {
+        let n = e.len().min(32);
+        info[..n].copy_from_slice(&e[..n]);
+    }
+    let mut flags = u16::from_be_bytes([info[8], info[9]]);
+    if on {
+        flags |= K_HAS_CUSTOM_ICON;
+    } else {
+        flags &= !K_HAS_CUSTOM_ICON;
+    }
+    info[8..10].copy_from_slice(&flags.to_be_bytes());
+    info
+}
+
+/// Attach a Finder custom icon without `NSWorkspace.setIcon`.
+///
+/// `setIcon:forFile:` builds an ICNS through ImageIO `PNGWritePlugin` and SIGBUS
+/// (`0xbad4007`) when a bundled libpng collides with ImageIO (#1339 / #1304 / egui#7155).
+/// Write the ICNS ourselves and set the resource fork + FinderInfo flag instead.
 #[cfg(target_os = "macos")]
 fn apply_macos_icon(path: &str, png: &[u8]) -> Result<(), String> {
-    use objc2_app_kit::{NSWorkspace, NSWorkspaceIconCreationOptions};
-    use objc2_foundation::NSString;
-
-    // Decode PNG in pure Rust, then feed raw RGBA to AppKit — never NSImage::initWithData (#1304).
-    let img = image::load_from_memory(png).map_err(|e| format!("decode preview PNG: {e}"))?;
-    let rgba = img.to_rgba8();
-    let (width, height) = rgba.dimensions();
-    let image = nsimage_from_rgba(rgba.as_raw(), width, height)?;
-    let ns_path = NSString::from_str(path);
-    let ok = NSWorkspace::sharedWorkspace().setIcon_forFile_options(
-        Some(&image),
-        &ns_path,
-        NSWorkspaceIconCreationOptions::empty(),
-    );
-    if !ok {
-        return Err("NSWorkspace setIcon returned false".into());
-    }
+    let icns = encode_icns_from_png(png)?;
+    let fork = macos_custom_icon_resource_fork(&icns);
+    write_macos_resource_fork(path, &fork)?;
+    let existing = macos_get_xattr(path, "com.apple.FinderInfo");
+    let info = macos_finder_info_with_custom_icon(existing.as_deref());
+    macos_set_xattr(path, "com.apple.FinderInfo", &info)?;
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
 fn apply_macos_icon_clear(path: &str) -> Result<(), String> {
-    use objc2_app_kit::{NSWorkspace, NSWorkspaceIconCreationOptions};
-    use objc2_foundation::NSString;
-    let ns_path = NSString::from_str(path);
-    let _ = NSWorkspace::sharedWorkspace().setIcon_forFile_options(
-        None,
-        &ns_path,
-        NSWorkspaceIconCreationOptions::empty(),
-    );
+    let rsrc = macos_resource_fork_path(path);
+    let _ = std::fs::remove_file(&rsrc);
+    if let Some(existing) = macos_get_xattr(path, "com.apple.FinderInfo") {
+        let info = macos_finder_info_set_custom_icon(Some(&existing), false);
+        if info.iter().all(|&b| b == 0) {
+            let _ = macos_remove_xattr(path, "com.apple.FinderInfo");
+        } else {
+            let _ = macos_set_xattr(path, "com.apple.FinderInfo", &info);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_resource_fork_path(path: &str) -> std::path::PathBuf {
+    std::path::Path::new(path).join("..namedfork").join("rsrc")
+}
+
+#[cfg(target_os = "macos")]
+fn write_macos_resource_fork(path: &str, data: &[u8]) -> Result<(), String> {
+    std::fs::write(macos_resource_fork_path(path), data)
+        .map_err(|e| format!("write resource fork: {e}"))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_get_xattr(path: &str, name: &str) -> Option<Vec<u8>> {
+    use std::os::raw::{c_char, c_int, c_void};
+    extern "C" {
+        fn getxattr(
+            path: *const c_char,
+            name: *const c_char,
+            value: *mut c_void,
+            size: usize,
+            position: u32,
+            options: c_int,
+        ) -> isize;
+    }
+    let c_path = std::ffi::CString::new(path).ok()?;
+    let c_name = std::ffi::CString::new(name).ok()?;
+    let needed = unsafe {
+        getxattr(
+            c_path.as_ptr(),
+            c_name.as_ptr(),
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+        )
+    };
+    if needed <= 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; needed as usize];
+    let n = unsafe {
+        getxattr(
+            c_path.as_ptr(),
+            c_name.as_ptr(),
+            buf.as_mut_ptr() as *mut c_void,
+            buf.len(),
+            0,
+            0,
+        )
+    };
+    if n <= 0 {
+        return None;
+    }
+    buf.truncate(n as usize);
+    Some(buf)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_set_xattr(path: &str, name: &str, value: &[u8]) -> Result<(), String> {
+    use std::os::raw::{c_char, c_int, c_void};
+    extern "C" {
+        fn setxattr(
+            path: *const c_char,
+            name: *const c_char,
+            value: *const c_void,
+            size: usize,
+            position: u32,
+            options: c_int,
+        ) -> c_int;
+    }
+    let c_path = std::ffi::CString::new(path).map_err(|_| "path contains NUL".to_string())?;
+    let c_name = std::ffi::CString::new(name).map_err(|_| "xattr name contains NUL".to_string())?;
+    let rc = unsafe {
+        setxattr(
+            c_path.as_ptr(),
+            c_name.as_ptr(),
+            value.as_ptr() as *const c_void,
+            value.len(),
+            0,
+            0,
+        )
+    };
+    if rc != 0 {
+        return Err(format!(
+            "setxattr {name}: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_remove_xattr(path: &str, name: &str) -> Result<(), String> {
+    use std::os::raw::{c_char, c_int};
+    extern "C" {
+        fn removexattr(path: *const c_char, name: *const c_char, options: c_int) -> c_int;
+    }
+    let c_path = std::ffi::CString::new(path).map_err(|_| "path contains NUL".to_string())?;
+    let c_name = std::ffi::CString::new(name).map_err(|_| "xattr name contains NUL".to_string())?;
+    let rc = unsafe { removexattr(c_path.as_ptr(), c_name.as_ptr(), 0) };
+    if rc != 0 {
+        return Err(format!(
+            "removexattr {name}: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
     Ok(())
 }
 
@@ -1022,15 +1213,18 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// #1304: OS preview publish must not use `NSImage::initWithData` (ImageIO SIGBUS).
-    /// Bad PNG yields `Err`, never a process-killing bus error; good PNG must apply.
+    /// #1304 / #1339: OS preview publish must never go through ImageIO (SIGBUS).
+    /// Bad PNG yields `Err`; good PNG writes a resource fork + FinderInfo, never setIcon.
     #[cfg(all(not(target_arch = "wasm32"), any(target_os = "macos", target_os = "linux")))]
     #[test]
     fn apply_os_preview_rejects_garbage_and_accepts_real_png() {
-        let path = std::env::temp_dir().join("bearcad_os_preview_icon_test.bearcad");
+        let path = std::env::temp_dir().join(format!(
+            "bearcad_os_preview_icon_test_{}.bearcad",
+            std::process::id()
+        ));
         let path_s = path.to_string_lossy().to_string();
         let _ = std::fs::remove_file(&path);
-        // Real file so setIcon / thumbnail cache has a target.
+        // Real file so the icon / thumbnail cache has a target.
         std::fs::write(&path, b"not-a-sqlite-but-exists").expect("touch target");
 
         let garbage = apply_os_preview(&path_s, b"not a png at all");
@@ -1039,21 +1233,123 @@ mod tests {
             "invalid PNG must soft-fail, got {garbage:?}"
         );
 
-        let doc = cube_document();
-        let png = document_preview_png(&doc).expect("cube preview png");
+        let png = tiny_preview_png();
         apply_os_preview(&path_s, &png).expect("valid preview PNG must publish without crashing");
+
+        #[cfg(target_os = "macos")]
+        {
+            let fork = std::fs::read(macos_resource_fork_path(&path_s))
+                .expect("custom icon lives in the resource fork, not NSWorkspace.setIcon");
+            assert!(
+                fork.windows(8).any(|w| w == b"\x89PNG\r\n\x1a\n"),
+                "resource fork must carry our PNG-in-ICNS payload"
+            );
+            let info = macos_get_xattr(&path_s, "com.apple.FinderInfo").expect("FinderInfo");
+            assert!(info.len() >= 10);
+            let flags = u16::from_be_bytes([info[8], info[9]]);
+            assert_eq!(flags & K_HAS_CUSTOM_ICON, K_HAS_CUSTOM_ICON);
+            // Data fork must be untouched — save already succeeded before icon attach.
+            assert_eq!(
+                std::fs::read(&path).expect("data fork"),
+                b"not-a-sqlite-but-exists"
+            );
+        }
 
         let _ = std::fs::remove_file(&path);
     }
 
+    /// #1339: a missing target is a soft error, not a crash — save already wrote the file.
     #[cfg(target_os = "macos")]
     #[test]
-    fn nsimage_from_rgba_rejects_bad_length() {
-        let err = nsimage_from_rgba(&[0u8; 3], 1, 1).unwrap_err();
-        assert!(err.contains("RGBA length"), "{err}");
-        // 1×1 opaque red — exercises the non-ImageIO bitmap path used by setIcon.
-        let img = nsimage_from_rgba(&[255, 0, 0, 255], 1, 1).expect("1×1 RGBA");
-        assert!(img.size().width >= 1.0);
-        assert!(img.size().height >= 1.0);
+    fn apply_os_preview_missing_path_is_err_not_crash() {
+        let path = std::env::temp_dir().join(format!(
+            "bearcad_missing_icon_{}.bearcad",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let err = apply_os_preview(&path.to_string_lossy(), &tiny_preview_png()).unwrap_err();
+        assert!(!err.is_empty(), "{err}");
+    }
+
+    fn tiny_preview_png() -> Vec<u8> {
+        PreviewRgba {
+            width: 4,
+            height: 4,
+            pixels: [200u8, 40, 40, 255].repeat(16),
+        }
+        .encode_png()
+        .expect("tiny png")
+    }
+
+    /// #1339: ICNS is packed in Rust so AppKit/ImageIO never writes PNG for the Finder icon.
+    #[test]
+    fn icns_from_png_is_well_formed() {
+        let png = tiny_preview_png();
+        let icns = encode_icns_from_png(&png).expect("icns from png");
+        assert_eq!(&icns[0..4], b"icns");
+        let declared = u32::from_be_bytes(icns[4..8].try_into().unwrap()) as usize;
+        assert_eq!(declared, icns.len(), "icns length field must match bytes");
+        assert!(
+            icns.windows(8).any(|w| w == b"\x89PNG\r\n\x1a\n"),
+            "modern ICNS icon types carry a PNG payload"
+        );
+        assert!(
+            icns.windows(4).any(|w| w == b"ic09" || w == b"ic08" || w == b"ic07"),
+            "expected a 128/256/512 PNG icon type, got {} bytes",
+            icns.len()
+        );
+    }
+
+    #[test]
+    fn icns_from_png_rejects_garbage() {
+        let err = encode_icns_from_png(b"not a png at all").unwrap_err();
+        assert!(
+            err.to_ascii_lowercase().contains("png") || err.to_ascii_lowercase().contains("decode"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn custom_icon_resource_fork_holds_icns() {
+        let icns = b"icns\x00\x00\x00\x10........";
+        let fork = macos_custom_icon_resource_fork(icns);
+        assert!(fork.len() > 256, "resource header is 256 bytes plus data");
+        let data_off = u32::from_be_bytes(fork[0..4].try_into().unwrap());
+        let map_off = u32::from_be_bytes(fork[4..8].try_into().unwrap());
+        let data_len = u32::from_be_bytes(fork[8..12].try_into().unwrap());
+        assert_eq!(data_off, 256);
+        assert_eq!(data_len as usize, 4 + icns.len());
+        assert_eq!(map_off, 256 + data_len);
+        let res_len = u32::from_be_bytes(fork[256..260].try_into().unwrap()) as usize;
+        assert_eq!(res_len, icns.len());
+        assert_eq!(&fork[260..260 + icns.len()], icns);
+        assert!(
+            fork[map_off as usize..].windows(4).any(|w| w == b"icns"),
+            "resource map type list must include 'icns'"
+        );
+        // Resource ID -16455 is stored big-endian as 0xBFC9.
+        assert!(
+            fork[map_off as usize..]
+                .windows(2)
+                .any(|w| w == CUSTOM_ICON_RESOURCE_ID.to_be_bytes()),
+            "custom icon resource id -16455"
+        );
+    }
+
+    #[test]
+    fn finder_info_sets_has_custom_icon() {
+        let info = macos_finder_info_with_custom_icon(None);
+        assert_eq!(info.len(), 32);
+        let flags = u16::from_be_bytes([info[8], info[9]]);
+        assert_eq!(flags & K_HAS_CUSTOM_ICON, K_HAS_CUSTOM_ICON);
+
+        let mut existing = [0u8; 32];
+        existing[0..4].copy_from_slice(b"TEST");
+        existing[8..10].copy_from_slice(&0x0100u16.to_be_bytes());
+        let merged = macos_finder_info_with_custom_icon(Some(&existing));
+        assert_eq!(&merged[0..4], b"TEST", "preserve existing type code");
+        let flags = u16::from_be_bytes([merged[8], merged[9]]);
+        assert_eq!(flags & K_HAS_CUSTOM_ICON, K_HAS_CUSTOM_ICON);
+        assert_eq!(flags & 0x0100, 0x0100, "preserve existing Finder flags");
     }
 }
