@@ -11,6 +11,7 @@
 #include <BRepPrimAPI_MakeSphere.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepBuilderAPI_Copy.hxx>
 #include <gp_Ax1.hxx>
 #include <gp_Trsf.hxx>
 #include <gp_Ax2.hxx>
@@ -430,6 +431,10 @@ bool run_boolean(const TopoDS_Shape& a, const TopoDS_Shape& b, int op, double fu
     tools.Append(b);
     algo->SetArguments(args);
     algo->SetTools(tools);
+    // Cached operand solids must stay intact; booleans that mutate their
+    // arguments would corrupt the body-shape memo (#1337).
+    algo->SetNonDestructive(true);
+    algo->SetRunParallel(true);
     if (fuzzy > 0.0) {
         algo->SetFuzzyValue(fuzzy);
     }
@@ -1140,6 +1145,25 @@ extern "C" void bearcad_handles_free(BearcadShape** handles) {
 
 extern "C" void bearcad_shape_free(BearcadShape* shape) {
     delete shape;
+}
+
+extern "C" BearcadShape* bearcad_shape_clone(const BearcadShape* shape) {
+    if (shape == nullptr) {
+        return nullptr;
+    }
+    try {
+        // Deep copy so tessellation / fillets on a returned clone cannot
+        // mutate the memoized TShape (#1337).
+        BRepBuilderAPI_Copy copy(shape->shape, true, false);
+        if (!copy.IsDone()) {
+            return nullptr;
+        }
+        return new BearcadShape{copy.Shape()};
+    } catch (const Standard_Failure&) {
+        return nullptr;
+    } catch (...) {
+        return nullptr;
+    }
 }
 
 extern "C" int bearcad_shape_write_step(const BearcadShape* s, const char* path) {

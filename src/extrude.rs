@@ -783,7 +783,58 @@ fn imported_step_shape(
 /// whose geometry isn't fully kernel-representable (the caller then falls back to the mesh
 /// path). A STEP import that kept its original bytes (#1029) re-reads them here so booleans
 /// and other kernel ops still see a solid.
+///
+/// Memoized per (document fingerprint, body): a cut preview used to rebuild the whole
+/// shell/slice/combine history on every frame (#1337).
 pub fn occt_body_shape(doc: &Document, body_index: crate::model::BodyKey) -> Option<crate::kernel::Shape> {
+    let fingerprint = document_mesh_fingerprint(doc);
+    // `mesh_rev` is the cheap idle-frame key; trial clones keep it and rewrite
+    // geometry in place, so a structural extra tag must agree too (#1337).
+    let extra = if doc.mesh_rev == 0 {
+        0
+    } else {
+        structural_mesh_fingerprint(doc)
+    };
+    let cached = BODY_SHAPE_CACHE.with(|cache| {
+        let cache = cache.try_borrow().ok()?;
+        if cache.0 != fingerprint || cache.1 != extra {
+            return None;
+        }
+        match cache.2.get(&body_index)? {
+            // Clone failed → miss, rebuild rather than pretend the body is gone.
+            Some(shape) => shape.try_clone().map(Some),
+            None => Some(None),
+        }
+    });
+    if let Some(hit) = cached {
+        return hit;
+    }
+    let shape = occt_body_shape_uncached(doc, body_index);
+    BODY_SHAPE_CACHE.with(|cache| {
+        let Ok(mut cache) = cache.try_borrow_mut() else {
+            return;
+        };
+        if cache.0 != fingerprint || cache.1 != extra {
+            cache.0 = fingerprint;
+            cache.1 = extra;
+            cache.2.clear();
+        }
+        let stored = match &shape {
+            Some(s) => match s.try_clone() {
+                Some(clone) => Some(clone),
+                None => return,
+            },
+            None => None,
+        };
+        cache.2.insert(body_index, stored);
+    });
+    shape
+}
+
+fn occt_body_shape_uncached(
+    doc: &Document,
+    body_index: crate::model::BodyKey,
+) -> Option<crate::kernel::Shape> {
     let body = doc.bodies.get(body_index)?;
     if let Some(mi) = body.source.imported_mesh_key() {
         return imported_step_shape(doc, mi);
@@ -4098,6 +4149,11 @@ pub fn kernel_fallback_cut_warning(doc: &Document) -> Option<String> {
 /// faces once those go through the kernel.
 pub const OCCT_DEFLECTION: f32 = 0.05;
 
+/// Live cut/boolean preview tessellation (#1337). Coarser than [`OCCT_DEFLECTION`]
+/// so dragging a cylinder through a shelled/sliced body stays interactive; commit
+/// still uses the fine deflection.
+pub const OCCT_PREVIEW_DEFLECTION: f32 = 0.4;
+
 /// How far a cut tool overshoots each end past its nominal extent so its caps never sit
 /// exactly on a body face (which would leave a coincident seam face; #200). Small enough to
 /// be geometrically irrelevant, large enough to clear float noise at typical mm scale.
@@ -5622,6 +5678,18 @@ thread_local! {
     /// change to the fingerprinted geometry clears the memo.
     static BODY_MESH_CACHE: std::cell::RefCell<(u64, HashMap<crate::model::BodyKey, Option<SolidMesh>>)> =
         std::cell::RefCell::new((0, HashMap::new()));
+    /// Per-thread memo for [`occt_body_shape`] (#1337): the BREP history (shell, slice,
+    /// combine, …) is far more expensive than tessellation. Cut previews clone the cached
+    /// solid and subtract the tool instead of rebuilding the part every frame.
+    ///
+    /// Keyed by `(mesh fingerprint, structural extra)` so a trial `doc.clone()` that
+    /// keeps `mesh_rev` but rewrites geometry (feasibility checks) cannot hit the
+    /// pre-edit solid.
+    static BODY_SHAPE_CACHE: std::cell::RefCell<(
+        u64,
+        u64,
+        HashMap<crate::model::BodyKey, Option<crate::kernel::Shape>>,
+    )> = std::cell::RefCell::new((0, 0, HashMap::new()));
 }
 
 /// Everything the **posed** presentation depends on beyond the un-posed geometry (#897):
@@ -6490,6 +6558,8 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     static PREVIEW_CUT_MESH_CACHE: std::cell::RefCell<Option<((u64, u64), Option<SolidMesh>)>> =
         const { std::cell::RefCell::new(None) };
+    static CUT_TOOL_BITES_CACHE: std::cell::RefCell<Option<((u64, u64), Option<bool>)>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// True when the extrusion contains text-glyph faces (#386): its kernel build is one solid per
@@ -6536,17 +6606,28 @@ pub fn preview_extrusion_mesh(doc: &Document, extrusion: &Extrusion) -> Option<S
 /// silent no-op. `None` when the kernel can't answer (non-`occt` build, unbuildable tool or
 /// body), in which case callers skip the check.
 pub fn cut_tool_bites(doc: &Document, body_index: crate::model::BodyKey, cut: &Extrusion) -> Option<bool> {
-    {
-        let distance = effective_distance(doc, cut);
-        if cut.faces.is_empty() || distance.abs() < 1e-4 {
-            return None;
-        }
-        let tool = occt_extrusion_shape(doc, cut, distance)?;
-        let body = occt_body_shape(doc, body_index)?;
-        let common = body.boolean(&tool, crate::kernel::BoolOp::Common)?;
-        let mesh = SolidMesh { triangles: common.tessellate(OCCT_DEFLECTION as f64) };
-        Some(mesh_signed_volume(&mesh).abs() > 1e-3)
+    let distance = effective_distance(doc, cut);
+    if cut.faces.is_empty() || distance.abs() < 1e-4 {
+        return None;
     }
+    let key = preview_cache_key(doc, cut, body_index);
+    CUT_TOOL_BITES_CACHE.with(|cache| {
+        if let Some((cached_key, bites)) = cache.borrow().as_ref() {
+            if *cached_key == key {
+                return *bites;
+            }
+        }
+        let bites = (|| {
+            let tool = occt_extrusion_shape(doc, cut, distance)?;
+            let body = occt_body_shape(doc, body_index)?;
+            let common = body.boolean(&tool, crate::kernel::BoolOp::Common)?;
+            // Volume of the BREP — tessellating a complex Common just to measure
+            // overlap was both slow and could come back empty (#1337).
+            Some(common.volume().is_some_and(|v| v.abs() > 1e-3))
+        })();
+        *cache.borrow_mut() = Some((key, bites));
+        bites
+    })
 }
 
 /// Live preview mesh of `body_index`'s solid with `cut` additionally subtracted — what the
@@ -6590,7 +6671,7 @@ pub fn preview_cut_body_mesh(doc: &Document, body_index: crate::model::BodyKey, 
                 .or_else(|| {
                     let target = occt_body_shape(doc, body_index)?;
                     let result = occt_subtract_cut_extrusions(&clone, target, &[cut_index])?;
-                    let tris = result.tessellate(OCCT_DEFLECTION as f64);
+                    let tris = result.tessellate(OCCT_PREVIEW_DEFLECTION as f64);
                     (!tris.is_empty()).then_some(SolidMesh { triangles: tris })
                 });
             *cache.borrow_mut() = Some((key, mesh.clone()));
@@ -13602,6 +13683,125 @@ mod tests {
         let after = body_solid_mesh(&state.doc, live).expect("filleted cuboid");
         let v1 = mesh_signed_volume(&after).abs();
         assert!(v1 < v0 - 1.0, "fillet must cut the reported cuboid: {v1} vs {v0}");
+    }
+
+    /// #1337 fixture: combined shelled/sliced body plus the circle sketched on it.
+    fn issue_1337_cut_setup() -> (Document, crate::model::BodyKey, Extrusion) {
+        let bytes = include_bytes!("../tests/fixtures/issue_1337.json");
+        let mut doc = crate::storage::from_json_bytes(bytes).expect("load issue 1337");
+        doc.bump_mesh_rev();
+        let body = doc
+            .bodies
+            .iter()
+            .find_map(|(k, b)| (!b.shadow).then_some(k))
+            .expect("live combined body");
+        let circle = doc.circles.keys().next().expect("circle on the body face");
+        let sketch = doc.circles[circle].sketch;
+        let mut cut = Extrusion {
+            sketch,
+            faces: vec![ExtrudeFace::Circle(circle)],
+            distance: 177.0,
+            target: None,
+            expression: String::new(),
+            symmetric: false,
+            name: None,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
+            edge_treatments: Vec::new(),
+        };
+        // Same inward flip the extrude tool applies (`resolve_cut_direction` / #805).
+        if cut_tool_bites(&doc, body, &cut) == Some(false) {
+            cut.distance = -cut.distance;
+        }
+        (doc, body, cut)
+    }
+
+    /// #1337: cutting the reported body with the sketched circle must remove material.
+    #[test]
+    fn issue_1337_circle_cut_preview_removes_material() {
+        let (doc, body, cut) = issue_1337_cut_setup();
+        let intact = body_solid_mesh(&doc, body).expect("intact combined body");
+        let intact_vol = mesh_signed_volume(&intact).abs();
+        let preview = preview_cut_body_mesh(&doc, body, &cut).expect("cut preview");
+        let preview_vol = mesh_signed_volume(&preview).abs();
+        assert!(
+            preview_vol < intact_vol - 1.0,
+            "circle cut should remove material: {preview_vol} vs {intact_vol}"
+        );
+        assert!(
+            cut_tool_bites(&doc, body, &cut) == Some(true),
+            "177 mm circle extrude must overlap the reported body"
+        );
+    }
+
+    /// #1337: idle frames (same cut, same document) must not re-run kernel booleans.
+    /// The live cut preview used to rebuild the shelled/sliced/combined solid and
+    /// boolean it on every frame — including `cut_tool_bites` — so the tool felt
+    /// frozen while just looking at the gizmo.
+    #[test]
+    fn issue_1337_idle_cut_preview_does_not_reboolean() {
+        let (doc, body, cut) = issue_1337_cut_setup();
+        crate::kernel::reset_boolean_call_count();
+        let t0 = crate::time::Instant::now();
+        let first = preview_cut_body_mesh(&doc, body, &cut).expect("first preview");
+        let _ = cut_tool_bites(&doc, body, &cut);
+        let first_ms = t0.elapsed().as_millis();
+        let after_first = crate::kernel::boolean_call_count();
+        assert!(after_first > 0, "first preview must run the kernel boolean");
+
+        let t1 = crate::time::Instant::now();
+        let second = preview_cut_body_mesh(&doc, body, &cut).expect("cached preview");
+        let _ = cut_tool_bites(&doc, body, &cut);
+        let idle_ms = t1.elapsed().as_millis();
+        let after_idle = crate::kernel::boolean_call_count();
+        eprintln!(
+            "issue_1337 idle: first={first_ms}ms booleans={after_first}, idle={idle_ms}ms extra={}",
+            after_idle - after_first
+        );
+        assert_eq!(
+            first.triangles.len(),
+            second.triangles.len(),
+            "cached preview must match"
+        );
+        assert_eq!(
+            after_idle, after_first,
+            "idle cut-preview frames must not re-run kernel booleans (was {} extra)",
+            after_idle - after_first
+        );
+    }
+
+    /// #1337: dragging the cut distance must not rebuild the target body's history.
+    /// Only the tool solid and the cut/common against the memoized body should run.
+    #[test]
+    fn issue_1337_changing_cut_distance_reuses_target_body() {
+        let (doc, body, mut cut) = issue_1337_cut_setup();
+        crate::kernel::reset_boolean_call_count();
+        let t0 = crate::time::Instant::now();
+        let _ = preview_cut_body_mesh(&doc, body, &cut).expect("preview 177");
+        let _ = cut_tool_bites(&doc, body, &cut);
+        let first_ms = t0.elapsed().as_millis();
+        let after_first = crate::kernel::boolean_call_count();
+
+        cut.distance = 180.0_f32.copysign(cut.distance);
+        crate::kernel::reset_boolean_call_count();
+        let t1 = crate::time::Instant::now();
+        let preview = preview_cut_body_mesh(&doc, body, &cut).expect("preview 180");
+        let bites = cut_tool_bites(&doc, body, &cut);
+        let drag_ms = t1.elapsed().as_millis();
+        let extra = crate::kernel::boolean_call_count();
+        eprintln!(
+            "issue_1337 drag: first={first_ms}ms booleans={after_first}, drag={drag_ms}ms booleans={extra}"
+        );
+        assert!(bites == Some(true), "nudged cut still overlaps");
+        assert!(
+            !preview.triangles.is_empty(),
+            "nudged cut must still produce a mesh"
+        );
+        assert!(
+            extra <= 2,
+            "changing cut distance must reuse the target body (at most Common+Cut), got {extra} booleans"
+        );
     }
 
     #[test]

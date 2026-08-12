@@ -231,12 +231,20 @@ impl Shape {
     }
 
     pub fn boolean(&self, other: &Shape, op: super::BoolOp) -> Option<Shape> {
+        super::note_boolean_call();
         let code = match op {
             super::BoolOp::Fuse => 0,
             super::BoolOp::Cut => 1,
             super::BoolOp::Common => 2,
         };
         Self::from_handle(kernel_boolean(self.handle, other.handle, code))
+    }
+
+    /// Web kernel module has no clone export (prebuilt wasm). Preview caches
+    /// rebuild on this target.
+    pub fn try_clone(&self) -> Option<Shape> {
+        let _ = self;
+        None
     }
 
     pub fn fillet(&self, edges: &[(glam::Vec3, glam::Vec3)], radii: &[f32]) -> Option<Shape> {
