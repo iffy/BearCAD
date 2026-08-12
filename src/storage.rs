@@ -2314,6 +2314,150 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
     }
 
+    /// #1342: `units.document` is a nested `.bearcad` blob (SQLite magic), not JSON.
+    /// The blob opens as a standalone document and hydrates the same embedded copy.
+    #[test]
+    fn unit_document_is_a_nested_bearcad_blob() {
+        use crate::model::{ImportedUnit, LinkMode, UnitInstance, UnitPlacement, UnitSource};
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "bearcad_unit_blob_{}.bearcad",
+            std::process::id()
+        ));
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        doc.units.insert(ImportedUnit {
+            source: UnitSource::RelativePath("missing/bracket.bearcad".to_string()),
+            link: LinkMode::Static,
+            document: unit_source_doc("width"),
+            source_mtime: Some(1_700_000_000),
+            source_hash: Some(crate::model::content_hash(b"bracket bytes")),
+        });
+        doc.unit_instances.insert(UnitInstance {
+            unit: ukey(0),
+            name: Some("bracket1".to_string()),
+            parameter_overrides: vec![("width".to_string(), "20".to_string())],
+            placement: UnitPlacement::default(),
+        });
+
+        save(&path, &doc).unwrap();
+
+        let conn = Connection::open(&path).unwrap();
+        let ty: String = conn
+            .query_row("SELECT typeof(document) FROM units", [], |row| row.get(0))
+            .expect("units.document column");
+        assert_eq!(ty, "blob", "units.document must be a BLOB, not TEXT");
+
+        let blob: Vec<u8> = conn
+            .query_row("SELECT document FROM units", [], |row| row.get(0))
+            .unwrap();
+        assert!(
+            blob.starts_with(b"SQLite format 3"),
+            "nested blob must be a .bearcad (SQLite), got {} bytes starting {:?}",
+            blob.len(),
+            blob.get(..16)
+        );
+
+        // Instances stay rows — the unit id is an integer, not stuffed into the blob.
+        let (unit_id, inst_name): (i64, Option<String>) = conn
+            .query_row(
+                "SELECT unit_id, name FROM unit_instances",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(inst_name.as_deref(), Some("bracket1"));
+        let stored_unit_id: i64 = conn
+            .query_row("SELECT id FROM units", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(unit_id, stored_unit_id);
+
+        let nested_path = dir.join(format!(
+            "bearcad_unit_blob_extract_{}.bearcad",
+            std::process::id()
+        ));
+        std::fs::write(&nested_path, &blob).unwrap();
+        let nested = open(&nested_path.to_string_lossy()).unwrap();
+        assert!(
+            nested.parameters.values().any(|p| p.name == "width"),
+            "extracted blob must hydrate as the embedded Document"
+        );
+        assert_eq!(nested, doc.units.values().next().unwrap().document);
+
+        let _ = std::fs::remove_file(&nested_path);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// #1342: a unit whose copy itself imports a unit stores that inner copy as a
+    /// blob inside the outer blob.
+    #[test]
+    fn nested_unit_blobs_recurse() {
+        use crate::model::{ImportedUnit, LinkMode, UnitSource};
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "bearcad_unit_blob_nest_{}.bearcad",
+            std::process::id()
+        ));
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut mid = Document::default();
+        mid.units.insert(ImportedUnit {
+            source: UnitSource::RelativePath("inner.bearcad".to_string()),
+            link: LinkMode::Static,
+            document: unit_source_doc("inner_w"),
+            source_mtime: None,
+            source_hash: None,
+        });
+        let mut doc = Document::default();
+        doc.units.insert(ImportedUnit {
+            source: UnitSource::RelativePath("mid.bearcad".to_string()),
+            link: LinkMode::Static,
+            document: mid,
+            source_mtime: None,
+            source_hash: None,
+        });
+
+        save(&path, &doc).unwrap();
+        let loaded = open(&path).unwrap();
+        assert_eq!(loaded.units, doc.units);
+
+        let conn = Connection::open(&path).unwrap();
+        let mid_blob: Vec<u8> = conn
+            .query_row("SELECT document FROM units", [], |row| row.get(0))
+            .unwrap();
+        assert!(mid_blob.starts_with(b"SQLite format 3"));
+
+        let mid_path = dir.join(format!(
+            "bearcad_unit_blob_mid_{}.bearcad",
+            std::process::id()
+        ));
+        std::fs::write(&mid_path, &mid_blob).unwrap();
+        let mid_conn = Connection::open(&mid_path).unwrap();
+        let mid_ty: String = mid_conn
+            .query_row("SELECT typeof(document) FROM units", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mid_ty, "blob");
+        let inner_blob: Vec<u8> = mid_conn
+            .query_row("SELECT document FROM units", [], |row| row.get(0))
+            .unwrap();
+        assert!(inner_blob.starts_with(b"SQLite format 3"));
+
+        let inner_path = dir.join(format!(
+            "bearcad_unit_blob_inner_{}.bearcad",
+            std::process::id()
+        ));
+        std::fs::write(&inner_path, &inner_blob).unwrap();
+        let inner = open(&inner_path.to_string_lossy()).unwrap();
+        assert!(inner.parameters.values().any(|p| p.name == "inner_w"));
+
+        let _ = std::fs::remove_file(&inner_path);
+        let _ = std::fs::remove_file(&mid_path);
+        std::fs::remove_file(&path).unwrap();
+    }
+
     /// #719: an existing pre-units document (no `units`/`unit_instances` fields in its
     /// JSON) still loads, with both defaulting to empty.
     #[test]
@@ -2708,6 +2852,102 @@ mod tests {
             committed_count(&path, "SELECT COUNT(*) FROM bodies"),
             bodies_at_save
         );
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    fn unit_param_expr_from_blob(blob: &[u8], name: &str) -> String {
+        let path = std::env::temp_dir().join(format!(
+            "bearcad_unit_blob_probe_{}_{}.bearcad",
+            std::process::id(),
+            name
+        ));
+        std::fs::write(&path, blob).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        let expr: String = conn
+            .query_row(
+                "SELECT expression FROM parameters WHERE name = ?1",
+                [name],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let _ = std::fs::remove_file(&path);
+        expr
+    }
+
+    /// #1342: changing a unit's embedded copy replaces that one blob; other tables
+    /// stay put. Another connection still sees the last COMMIT until Save.
+    #[test]
+    fn incremental_unit_blob_replace_is_invisible_until_commit() {
+        use crate::model::{ImportedUnit, LinkMode, UnitInstance, UnitPlacement, UnitSource};
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "bearcad_incr_unit_{}.bearcad",
+            std::process::id()
+        ));
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        let sketch = plane_sketch(&mut doc);
+        doc.lines
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.shape_order.push(ShapeKind::Line);
+        doc.units.insert(ImportedUnit {
+            source: UnitSource::RelativePath("part.bearcad".to_string()),
+            link: LinkMode::Static,
+            document: unit_source_doc("width"),
+            source_mtime: Some(1),
+            source_hash: Some(1),
+        });
+        doc.unit_instances.insert(UnitInstance {
+            unit: ukey(0),
+            name: Some("p".to_string()),
+            parameter_overrides: Vec::new(),
+            placement: UnitPlacement::default(),
+        });
+        save(&path, &doc).unwrap();
+
+        let mut session = DocumentSession::attach(&path, &doc).unwrap();
+        let unit_key = doc.units.keys().next().unwrap();
+        let param_key = doc.units[unit_key].document.parameters.keys().next().unwrap();
+        doc.units[unit_key].document.parameters[param_key].expression = "99".to_string();
+        let stats = session.flush(&doc).unwrap().clone();
+
+        assert_eq!(stats.updates("units"), 1, "the changed unit row is replaced");
+        assert!(
+            !stats.touched("unit_instances"),
+            "instances are rows of their own: {stats:?}"
+        );
+        assert!(
+            !stats.touched("lines"),
+            "unrelated tables must not be rewritten: {stats:?}"
+        );
+
+        assert_eq!(
+            session.query_text("SELECT typeof(document) FROM units").unwrap(),
+            "blob"
+        );
+        let live_blob = session.query_blob("SELECT document FROM units").unwrap();
+        assert!(live_blob.starts_with(b"SQLite format 3"));
+        assert_eq!(unit_param_expr_from_blob(&live_blob, "width"), "99");
+
+        let committed = Connection::open(&path).unwrap();
+        let committed_blob: Vec<u8> = committed
+            .query_row("SELECT document FROM units", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            unit_param_expr_from_blob(&committed_blob, "width"),
+            "10",
+            "another connection must still see the last save"
+        );
+
+        session.commit().unwrap();
+        let after = Connection::open(&path).unwrap();
+        let after_blob: Vec<u8> = after
+            .query_row("SELECT document FROM units", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(unit_param_expr_from_blob(&after_blob, "width"), "99");
 
         std::fs::remove_file(&path).unwrap();
     }
