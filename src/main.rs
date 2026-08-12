@@ -95,6 +95,7 @@ mod sketch_solver;
 mod snapping;
 mod step;
 mod stl;
+mod threemf;
 mod storage;
 // #282a: consumed by the SketchText element (#282b) and the extrude/context work that follows.
 #[allow(dead_code)]
@@ -4873,6 +4874,21 @@ impl App {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    /// Export all bodies to a 3MF package chosen via a save dialog (File → Export → 3MF…, #1284).
+    fn export_3mf_all(&mut self) {
+        let picked = rfd::FileDialog::new()
+            .add_filter("3MF model", &["3mf"])
+            .set_file_name("model.3mf")
+            .save_file();
+        if let Some(path) = picked {
+            self.state.apply(Action::Export3mf {
+                path: path.to_string_lossy().to_string(),
+                body: None,
+            });
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     /// Export a single body (by index) to an STL file chosen via a save dialog.
     fn export_stl_body(&mut self, body: crate::model::BodyKey) {
         let default_name = self
@@ -4917,6 +4933,28 @@ impl App {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    /// Export a single body (by index) to a 3MF package (#1284).
+    fn export_3mf_body(&mut self, body: crate::model::BodyKey) {
+        let default_name = self
+            .state
+            .doc
+            .bodies
+            .get(body)
+            .and_then(|b| b.name.clone())
+            .unwrap_or_else(|| format!("body-{}", body.index()));
+        let picked = rfd::FileDialog::new()
+            .add_filter("3MF model", &["3mf"])
+            .set_file_name(format!("{default_name}.3mf"))
+            .save_file();
+        if let Some(path) = picked {
+            self.state.apply(Action::Export3mfBody {
+                path: path.to_string_lossy().to_string(),
+                body,
+            });
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     /// Export every body inside a component (and its nested components) to an STL file (#521).
     fn export_stl_component(&mut self, component: model::ComponentKey) {
         if self.state.component_body_indices(component).is_empty() {
@@ -4950,6 +4988,26 @@ impl App {
             .save_file();
         if let Some(path) = picked {
             self.state.apply(Action::ExportComponentStep {
+                path: path.to_string_lossy().to_string(),
+                component,
+            });
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Export every body inside a component (and nested components) to a 3MF package (#1284).
+    fn export_3mf_component(&mut self, component: model::ComponentKey) {
+        if self.state.component_body_indices(component).is_empty() {
+            self.state.status = "This component has no bodies to export".to_string();
+            return;
+        }
+        let default_name = self.state.component_export_name(component);
+        let picked = rfd::FileDialog::new()
+            .add_filter("3MF model", &["3mf"])
+            .set_file_name(format!("{default_name}.3mf"))
+            .save_file();
+        if let Some(path) = picked {
+            self.state.apply(Action::ExportComponent3mf {
                 path: path.to_string_lossy().to_string(),
                 component,
             });
@@ -5315,6 +5373,20 @@ impl App {
     }
 
     #[cfg(target_arch = "wasm32")]
+    fn export_3mf_all(&mut self) {
+        match self.state.export_3mf_bytes(None) {
+            Ok(bytes) => self.web_save_bytes(
+                "3MF model",
+                &["3mf"],
+                "model.3mf".to_string(),
+                bytes,
+                "Exported 3MF".to_string(),
+            ),
+            Err(e) => self.state.status = format!("Export failed: {e}"),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
     fn export_step_all(&mut self) {
         match self.state.export_step_bytes(None) {
             Ok(bytes) => self.web_save_bytes(
@@ -5334,6 +5406,17 @@ impl App {
         match self.state.export_stl_bytes(Some(body)) {
             Ok(bytes) => {
                 self.web_save_bytes("STL mesh", &["stl"], name, bytes, "Exported STL".to_string())
+            }
+            Err(e) => self.state.status = format!("Export failed: {e}"),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn export_3mf_body(&mut self, body: crate::model::BodyKey) {
+        let name = self.web_body_export_name(body, "3mf");
+        match self.state.export_3mf_bytes(Some(body)) {
+            Ok(bytes) => {
+                self.web_save_bytes("3MF model", &["3mf"], name, bytes, "Exported 3MF".to_string())
             }
             Err(e) => self.state.status = format!("Export failed: {e}"),
         }
@@ -5360,6 +5443,17 @@ impl App {
         match self.state.export_component_stl_bytes(component) {
             Ok(bytes) => {
                 self.web_save_bytes("STL mesh", &["stl"], name, bytes, "Exported STL".to_string())
+            }
+            Err(e) => self.state.status = format!("Export failed: {e}"),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn export_3mf_component(&mut self, component: model::ComponentKey) {
+        let name = format!("{}.3mf", self.state.component_export_name(component));
+        match self.state.export_component_3mf_bytes(component) {
+            Ok(bytes) => {
+                self.web_save_bytes("3MF model", &["3mf"], name, bytes, "Exported 3MF".to_string())
             }
             Err(e) => self.state.status = format!("Export failed: {e}"),
         }
@@ -5570,6 +5664,7 @@ impl App {
             MenuCommand::Save => self.save(),
             MenuCommand::SaveAs => self.save_as(),
             MenuCommand::ExportStl => self.export_stl_all(),
+            MenuCommand::Export3mf => self.export_3mf_all(),
             MenuCommand::ExportStep => self.export_step_all(),
             MenuCommand::ImportStl => self.import_stl(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -13407,13 +13502,17 @@ impl App {
                     ui,
                     icons::IconId::Export,
                     false,
-                    "Export all bodies as STL or STEP, or the document as Lua",
+                    "Export all bodies as STL, 3MF, or STEP, or the document as Lua",
                     TOOLBAR_ICON_SIZE,
                 );
                 egui::Popup::menu(&export_btn).show(|ui| {
-                    // Order matches File → Export (#1175): STL, STEP, Lua Script.
+                    // Order matches File → Export (#1175 / #1284): STL, 3MF, STEP, Lua Script.
                     if ui.button("STL…").clicked() {
                         self.export_stl_all();
+                        ui.close();
+                    }
+                    if ui.button("3MF…").clicked() {
+                        self.export_3mf_all();
                         ui.close();
                     }
                     if ui.button("STEP…").clicked() {
@@ -13620,9 +13719,11 @@ impl App {
                 });
             let mut export_body: Option<model::BodyKey> = None;
             let mut export_body_step: Option<model::BodyKey> = None;
+            let mut export_body_3mf: Option<model::BodyKey> = None;
             let mut set_body_shadow: Option<(model::BodyKey, bool)> = None;
             let mut export_component: Option<model::ComponentKey> = None;
             let mut export_component_step: Option<model::ComponentKey> = None;
+            let mut export_component_3mf: Option<model::ComponentKey> = None;
             let mut click_element: Option<(SceneElement, bool)> = None;
             let mut delete_element: Option<SceneElement> = None;
             let mut add_to_drawing: Option<SceneElement> = None;
@@ -13686,11 +13787,17 @@ impl App {
                     let mut queue_export_body_step = |index: model::BodyKey| {
                         export_body_step = Some(index);
                     };
+                    let mut queue_export_body_3mf = |index: model::BodyKey| {
+                        export_body_3mf = Some(index);
+                    };
                     let mut queue_export_component = |index: model::ComponentKey| {
                         export_component = Some(index);
                     };
                     let mut queue_export_component_step = |index: model::ComponentKey| {
                         export_component_step = Some(index);
+                    };
+                    let mut queue_export_component_3mf = |index: model::ComponentKey| {
+                        export_component_3mf = Some(index);
                     };
                     let mut noop_visibility = |_: SceneElement, _: bool| {};
                     let mut queue_click = |element: SceneElement, additive: bool| {
@@ -13807,8 +13914,10 @@ impl App {
                         &mut queue_set_body_shadow,
                         &mut queue_export_body,
                         &mut queue_export_body_step,
+                        &mut queue_export_body_3mf,
                         &mut queue_export_component,
                         &mut queue_export_component_step,
+                        &mut queue_export_component_3mf,
                         &mut noop_visibility,
                         &mut queue_click,
                         &mut queue_hover,
@@ -14025,11 +14134,17 @@ impl App {
             if let Some(index) = export_body_step {
                 self.export_step_body(index);
             }
+            if let Some(index) = export_body_3mf {
+                self.export_3mf_body(index);
+            }
             if let Some(index) = export_component {
                 self.export_stl_component(index);
             }
             if let Some(index) = export_component_step {
                 self.export_step_component(index);
+            }
+            if let Some(index) = export_component_3mf {
+                self.export_3mf_component(index);
             }
         }
 
@@ -26679,6 +26794,7 @@ impl App {
             let mut set_body_shadow: Option<(model::BodyKey, bool)> = None;
             let mut export_body: Option<model::BodyKey> = None;
             let mut export_body_step: Option<model::BodyKey> = None;
+            let mut export_body_3mf: Option<model::BodyKey> = None;
             let mut move_to_component: Option<(SceneElement, Option<model::ComponentKey>)> = None;
             let mut set_rollback: Option<Option<hierarchy::RollbackMarker>> = None;
             let mut delete_element: Option<SceneElement> = None;
@@ -26729,6 +26845,7 @@ impl App {
                             &mut |body, shadow| set_body_shadow = Some((body, shadow)),
                             &mut |body| export_body = Some(body),
                             &mut |body| export_body_step = Some(body),
+                            &mut |body| export_body_3mf = Some(body),
                             &mut |el, component| move_to_component = Some((el, component)),
                             &mut |marker| set_rollback = Some(marker),
                             &mut |el| delete_element = Some(el),
@@ -26764,6 +26881,7 @@ impl App {
                 || set_body_shadow.is_some()
                 || export_body.is_some()
                 || export_body_step.is_some()
+                || export_body_3mf.is_some()
                 || move_to_component.is_some()
                 || set_rollback.is_some()
                 || delete_element.is_some();
@@ -26854,6 +26972,9 @@ impl App {
             }
             if let Some(index) = export_body_step {
                 self.export_step_body(index);
+            }
+            if let Some(index) = export_body_3mf {
+                self.export_3mf_body(index);
             }
             if let Some((element, component)) = move_to_component {
                 self.state.apply(Action::MoveToComponent { element, component });

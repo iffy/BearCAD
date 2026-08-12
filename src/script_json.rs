@@ -283,7 +283,7 @@ pub fn positional_to_named(name: &str, args: &[Value]) -> Result<Value, String> 
         "tool" => &["name"],
         "open" | "import_stl" | "import_step" | "import_lua" => &["path"],
         "save" => &["path"],
-        "export_stl" | "export_step" => &["path", "body"],
+        "export_stl" | "export_step" | "export_3mf" => &["path", "body"],
         "open_sketch" => &["sketch"],
         "begin_sketch" => &["kind", "index"],
         "count" => &["kind"],
@@ -449,6 +449,10 @@ pub fn instruction_from_json(
         "save" => Ok(Instruction::Save(opt_str(o, "path")?)),
         "export_stl" => Ok(Instruction::ExportStl {
             path: req_str(o, "path", "export_stl")?,
+            body: opt_str(o, "body")?,
+        }),
+        "export_3mf" => Ok(Instruction::Export3mf {
+            path: req_str(o, "path", "export_3mf")?,
             body: opt_str(o, "body")?,
         }),
         "export_step" => Ok(Instruction::ExportStep {
@@ -2725,6 +2729,10 @@ mod tests {
             Ok(Instruction::ExportStl { path: "a.stl".into(), body: Some("Plate".into()) })
         );
         assert_eq!(
+            instruction_from_json(&Document::default(), "export_3mf", &json!({ "path": "a.3mf" })),
+            Ok(Instruction::Export3mf { path: "a.3mf".into(), body: None })
+        );
+        assert_eq!(
             instruction_from_json(&Document::default(), "export_step", &json!({ "path": "a.step" })),
             Ok(Instruction::ExportStep { path: "a.step".into(), body: None })
         );
@@ -3278,6 +3286,10 @@ mod tests {
         assert_eq!(
             positional_to_named("export_stl", &[json!("a.stl"), json!("Body")]),
             Ok(json!({ "path": "a.stl", "body": "Body" }))
+        );
+        assert_eq!(
+            positional_to_named("export_3mf", &[json!("a.3mf"), json!("Body")]),
+            Ok(json!({ "path": "a.3mf", "body": "Body" }))
         );
         assert_eq!(
             positional_to_named("orbit", &[json!(10), json!(-5)]),

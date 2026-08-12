@@ -1948,14 +1948,19 @@ pub enum Action {
     /// Export a single body (by index) to an STL file — used by the body row's context menu,
     /// which has the index in hand and works for unnamed bodies too.
     ExportStlBody { path: String, body: crate::model::BodyKey },
+    /// Export bodies to a 3MF package. `body` names a single body; `None` exports all bodies (#1284).
+    Export3mf { path: String, body: Option<String> },
+    /// Export a single body (by index) to a 3MF package — body/component context menu (#1284).
+    Export3mfBody { path: String, body: crate::model::BodyKey },
     /// Export bodies to a STEP file. `body` names a single body; `None` exports all bodies.
     ExportStep { path: String, body: Option<String> },
     /// Export a single body (by index) to a STEP file — used by the body row's context menu.
     ExportStepBody { path: String, body: crate::model::BodyKey },
-    /// Export every body inside a component (and its nested components) to an STL/STEP file
-    /// (#521) — used by the component row's context menu.
+    /// Export every body inside a component (and its nested components) to an STL/STEP/3MF file
+    /// (#521 / #1284) — used by the component row's context menu.
     ExportComponentStl { path: String, component: crate::model::ComponentKey },
     ExportComponentStep { path: String, component: crate::model::ComponentKey },
+    ExportComponent3mf { path: String, component: crate::model::ComponentKey },
     /// Import an STL file (ASCII or binary, #70) as a new body.
     ImportStl { path: String },
     /// Import a PNG/JPEG as a tracing image (#163/#169) on a construction plane (defaults
@@ -4023,6 +4028,7 @@ impl Default for AppState {
 enum MeshExportFormat {
     Stl,
     Step,
+    ThreeMf,
 }
 
 impl MeshExportFormat {
@@ -4030,6 +4036,7 @@ impl MeshExportFormat {
         match self {
             MeshExportFormat::Stl => "STL",
             MeshExportFormat::Step => "STEP",
+            MeshExportFormat::ThreeMf => "3MF",
         }
     }
 }
@@ -4920,6 +4927,16 @@ impl AppState {
         self.write_mesh_file(path, name, mesh, MeshExportFormat::Step)
     }
 
+    /// Write `mesh` to `path` as a 3MF package named `name`, setting `self.status` (#1284).
+    fn write_3mf_file(
+        &mut self,
+        path: &str,
+        name: &str,
+        mesh: Option<crate::extrude::SolidMesh>,
+    ) -> ActionResult {
+        self.write_mesh_file(path, name, mesh, MeshExportFormat::ThreeMf)
+    }
+
     /// Export a single body (by index) to `path` as STEP (#65). In `occt` builds, when the
     /// body has a kernel-representable OCCT solid, write **real BREP** (planar + curved
     /// surfaces) straight to the file via `STEPControl_Writer`; otherwise (non-`occt`, an
@@ -5292,6 +5309,13 @@ impl AppState {
         Ok(crate::stl::write_ascii_stl(&name, &mesh).into_bytes())
     }
 
+    /// 3MF package of one body (or the whole document) as bytes (#1284).
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn export_3mf_bytes(&self, body: Option<crate::model::BodyKey>) -> Result<Vec<u8>, String> {
+        let (name, mesh) = self.export_mesh_for(body)?;
+        Ok(crate::threemf::write_3mf(&name, &mesh))
+    }
+
     /// STEP of one body (or the whole document) as bytes. Web kernel builds write real
     /// BREP through the bridged writer when a single body is exportable (mirroring the
     /// native single-body path); everything else uses the faceted writer.
@@ -5341,6 +5365,16 @@ impl AppState {
             .combined_body_mesh(&bodies)
             .ok_or_else(|| "no solid geometry to export".to_string())?;
         Ok(crate::step::write_step(&self.component_export_name(ci), &mesh).into_bytes())
+    }
+
+    /// 3MF of every body in a component (and nested components) as bytes (#1284).
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn export_component_3mf_bytes(&self, ci: crate::model::ComponentKey) -> Result<Vec<u8>, String> {
+        let bodies = self.component_body_indices(ci);
+        let mesh = self
+            .combined_body_mesh(&bodies)
+            .ok_or_else(|| "no solid geometry to export".to_string())?;
+        Ok(crate::threemf::write_3mf(&self.component_export_name(ci), &mesh))
     }
 
     /// Resolve a revolve body choice into a concrete [`RevolveMode`]. `AddTouching` with
@@ -5999,9 +6033,10 @@ impl AppState {
     ) -> ActionResult {
         match mesh {
             Some(m) if !m.is_empty() => {
-                let contents = match format {
-                    MeshExportFormat::Stl => crate::stl::write_ascii_stl(name, &m),
-                    MeshExportFormat::Step => crate::step::write_step(name, &m),
+                let contents: Vec<u8> = match format {
+                    MeshExportFormat::Stl => crate::stl::write_ascii_stl(name, &m).into_bytes(),
+                    MeshExportFormat::Step => crate::step::write_step(name, &m).into_bytes(),
+                    MeshExportFormat::ThreeMf => crate::threemf::write_3mf(name, &m),
                 };
                 match std::fs::write(path, contents) {
                     Ok(()) => {
@@ -7958,6 +7993,28 @@ impl AppState {
                 };
                 self.write_stl_file(&path, &name, mesh)
             }
+            Action::Export3mf { path, body } => {
+                let (name, mesh) = match &body {
+                    Some(name) => {
+                        match self.doc.bodies.iter().find_map(|(k, b)| {
+                            (b.name.as_deref() == Some(name.as_str())).then_some(k)
+                        }) {
+                            Some(bi) => {
+                                (name.clone(), crate::extrude::body_solid_mesh(&self.doc, bi))
+                            }
+                            None => {
+                                self.status = format!("Export failed: no body named '{name}'");
+                                return ActionResult::Err(self.status.clone());
+                            }
+                        }
+                    }
+                    None => (
+                        "bearcad".to_string(),
+                        Some(crate::extrude::document_solid_mesh(&self.doc)),
+                    ),
+                };
+                self.write_3mf_file(&path, &name, mesh)
+            }
             Action::ExportDrawingSvg { drawing, path } => {
                 let Some(svg) = crate::drawing::drawing_to_svg(&self.doc, drawing) else {
                     self.status = format!("Export failed: no drawing {}", drawing.index());
@@ -8001,6 +8058,18 @@ impl AppState {
                     .unwrap_or_else(|| format!("body-{}", body.index()));
                 let mesh = crate::extrude::body_solid_mesh(&self.doc, body);
                 self.write_stl_file(&path, &name, mesh)
+            }
+            Action::Export3mfBody { path, body } => {
+                let Some(b) = self.doc.bodies.get(body) else {
+                    self.status = format!("Export failed: no body {body:?}");
+                    return ActionResult::Err(self.status.clone());
+                };
+                let name = b
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("body-{}", body.index()));
+                let mesh = crate::extrude::body_solid_mesh(&self.doc, body);
+                self.write_3mf_file(&path, &name, mesh)
             }
             Action::ExportStep { path, body } => match &body {
                 Some(name) => {
@@ -8072,6 +8141,16 @@ impl AppState {
                 let name = self.component_export_name(component);
                 let mesh = self.combined_body_mesh(&bodies);
                 self.write_stl_file(&path, &name, mesh)
+            }
+            Action::ExportComponent3mf { path, component } => {
+                let bodies = self.component_body_indices(component);
+                if bodies.is_empty() {
+                    self.status = "Export failed: component has no bodies".to_string();
+                    return ActionResult::Err(self.status.clone());
+                }
+                let name = self.component_export_name(component);
+                let mesh = self.combined_body_mesh(&bodies);
+                self.write_3mf_file(&path, &name, mesh)
             }
             Action::ExportComponentStep { path, component } => {
                 let bodies = self.component_body_indices(component);
@@ -18921,8 +19000,8 @@ mod tests {
         );
     }
 
-    /// #521: exporting a component gathers every body filed into it and its nested
-    /// components (not bodies in unrelated components), and produces non-empty STL/STEP bytes.
+    /// #521 / #1284: exporting a component gathers every body filed into it and its nested
+    /// components (not bodies in unrelated components), and produces non-empty STL/STEP/3MF bytes.
     #[test]
     fn component_export_gathers_nested_bodies() {
         use crate::model::ComponentMember as CM;
@@ -18962,11 +19041,17 @@ mod tests {
             state.export_component_step_bytes(ckey(0)).is_ok_and(|b| !b.is_empty()),
             "STEP bytes produced"
         );
+        let threemf = state
+            .export_component_3mf_bytes(ckey(0))
+            .expect("frame 3MF export");
+        assert!(!threemf.is_empty(), "3MF bytes produced");
+        assert_eq!(&threemf[0..4], b"PK\x03\x04", "3MF is a ZIP package");
 
         // An empty component reports an error rather than an empty file.
         state.apply(Action::CreateComponent { name: Some("Empty".to_string()), parent: None }); // 3
         assert!(state.component_body_indices(ckey(3)).is_empty());
         assert!(state.export_component_stl_bytes(ckey(3)).is_err());
+        assert!(state.export_component_3mf_bytes(ckey(3)).is_err());
     }
 
     /// #423: components group elements; membership, nesting, visibility cascade, and

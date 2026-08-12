@@ -64,6 +64,10 @@ pub fn bar(ui: &mut egui::Ui, pane_visible: impl Fn(Pane) -> bool) -> Option<Men
                         picked = Some(MenuCommand::ExportStl);
                         ui.close();
                     }
+                    if ui.button("3MF…").clicked() {
+                        picked = Some(MenuCommand::Export3mf);
+                        ui.close();
+                    }
                     if ui.button("STEP…").clicked() {
                         picked = Some(MenuCommand::ExportStep);
                         ui.close();

@@ -14,6 +14,8 @@ pub enum MenuCommand {
     Save,
     SaveAs,
     ExportStl,
+    /// File → Export → 3MF… (#1284).
+    Export3mf,
     ExportStep,
     /// Export the current document as a deterministic Lua script (#1159).
     ExportLua,
@@ -75,6 +77,7 @@ impl MenuCommand {
             MenuCommand::Open | MenuCommand::Save | MenuCommand::SaveAs => None,
             // Needs a file-save dialog, handled in the app frame loop.
             MenuCommand::ExportStl
+            | MenuCommand::Export3mf
             | MenuCommand::ExportStep
             | MenuCommand::ExportLua
             | MenuCommand::ImportStl

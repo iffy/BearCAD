@@ -4093,8 +4093,10 @@ pub fn show_pane(
     on_set_body_shadow: &mut impl FnMut(crate::model::BodyKey, bool),
     on_export_body: &mut impl FnMut(crate::model::BodyKey),
     on_export_body_step: &mut impl FnMut(crate::model::BodyKey),
+    on_export_body_3mf: &mut impl FnMut(crate::model::BodyKey),
     on_export_component: &mut impl FnMut(crate::model::ComponentKey),
     on_export_component_step: &mut impl FnMut(crate::model::ComponentKey),
+    on_export_component_3mf: &mut impl FnMut(crate::model::ComponentKey),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
     on_click_element: &mut impl FnMut(SceneElement, bool),
     on_hover_element: &mut impl FnMut(SceneElement),
@@ -4287,6 +4289,7 @@ pub fn show_pane(
                             on_move_to_component,
                             on_export_component,
                             on_export_component_step,
+                            on_export_component_3mf,
                             on_add_to_drawing,
                         );
                         continue;
@@ -4353,6 +4356,7 @@ pub fn show_pane(
                         on_set_body_shadow,
                         on_export_body,
                         on_export_body_step,
+                        on_export_body_3mf,
                         on_set_rollback,
                         on_toggle_visibility,
                         on_click_element,
@@ -4420,6 +4424,7 @@ pub fn show_pane(
                 on_set_body_shadow,
                 on_export_body,
                 on_export_body_step,
+                on_export_body_3mf,
                 on_move_to_component,
                 on_set_rollback,
                 on_edit_drawing,
@@ -4615,6 +4620,7 @@ fn show_graph_view(
     on_set_body_shadow: &mut impl FnMut(crate::model::BodyKey, bool),
     on_export_body: &mut impl FnMut(crate::model::BodyKey),
     on_export_body_step: &mut impl FnMut(crate::model::BodyKey),
+    on_export_body_3mf: &mut impl FnMut(crate::model::BodyKey),
     on_move_to_component: &mut impl FnMut(SceneElement, Option<crate::model::ComponentKey>),
     on_set_rollback: &mut impl FnMut(Option<RollbackMarker>),
     on_edit_drawing: &mut impl FnMut(crate::model::DrawingKey),
@@ -4924,6 +4930,7 @@ fn show_graph_view(
                             on_set_body_shadow,
                             on_export_body,
                             on_export_body_step,
+                            on_export_body_3mf,
                             on_move_to_component,
                             on_set_rollback,
                             on_delete_element,
@@ -5181,6 +5188,7 @@ fn show_component_row(
     on_move_to_component: &mut impl FnMut(SceneElement, Option<crate::model::ComponentKey>),
     on_export_component: &mut impl FnMut(crate::model::ComponentKey),
     on_export_component_step: &mut impl FnMut(crate::model::ComponentKey),
+    on_export_component_3mf: &mut impl FnMut(crate::model::ComponentKey),
     on_add_to_drawing: &mut impl FnMut(SceneElement),
 ) {
     let element = SceneElement::Component(ci);
@@ -5275,6 +5283,10 @@ fn show_component_row(
                 on_export_component(ci);
                 ui.close();
             }
+            if ui.button("Export 3MF…").clicked() {
+                on_export_component_3mf(ci);
+                ui.close();
+            }
             if ui.button("Export STEP…").clicked() {
                 on_export_component_step(ci);
                 ui.close();
@@ -5356,6 +5368,7 @@ fn show_row(
     on_set_body_shadow: &mut impl FnMut(crate::model::BodyKey, bool),
     on_export_body: &mut impl FnMut(crate::model::BodyKey),
     on_export_body_step: &mut impl FnMut(crate::model::BodyKey),
+    on_export_body_3mf: &mut impl FnMut(crate::model::BodyKey),
     on_set_rollback: &mut impl FnMut(Option<RollbackMarker>),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
     on_click_element: &mut impl FnMut(SceneElement, bool),
@@ -5762,6 +5775,7 @@ fn show_row(
                 on_set_body_shadow,
                 on_export_body,
                 on_export_body_step,
+                on_export_body_3mf,
                 on_move_to_component,
                 on_set_rollback,
                 on_delete_element,
@@ -5831,6 +5845,7 @@ pub(crate) fn element_context_menu(
     on_set_body_shadow: &mut impl FnMut(crate::model::BodyKey, bool),
     on_export_body: &mut impl FnMut(crate::model::BodyKey),
     on_export_body_step: &mut impl FnMut(crate::model::BodyKey),
+    on_export_body_3mf: &mut impl FnMut(crate::model::BodyKey),
     on_move_to_component: &mut impl FnMut(SceneElement, Option<crate::model::ComponentKey>),
     on_set_rollback: &mut impl FnMut(Option<RollbackMarker>),
     on_delete_element: &mut impl FnMut(SceneElement),
@@ -5904,6 +5919,10 @@ pub(crate) fn element_context_menu(
             }
             if ui.button("Export STL…").clicked() {
                 on_export_body(index);
+                ui.close();
+            }
+            if ui.button("Export 3MF…").clicked() {
+                on_export_body_3mf(index);
                 ui.close();
             }
             if ui.button("Export STEP…").clicked() {

@@ -118,6 +118,8 @@ pub enum Instruction {
     Save(Option<String>),
     /// Export bodies to an STL file at `path`; `body` names a single body (`None` = all).
     ExportStl { path: String, body: Option<String> },
+    /// Export bodies to a 3MF package at `path`; `body` names a single body (`None` = all) (#1284).
+    Export3mf { path: String, body: Option<String> },
     /// Export bodies to a STEP file at `path`; `body` names a single body (`None` = all).
     ExportStep { path: String, body: Option<String> },
     /// Write a Home zoom-to-fit PNG preview of the document (#1223).
@@ -953,6 +955,11 @@ impl Instruction {
                 path,
                 body: Some(body),
             } => format!("bearcad.export_stl({path:?}, {body:?})"),
+            Instruction::Export3mf { path, body: None } => format!("bearcad.export_3mf({path:?})"),
+            Instruction::Export3mf {
+                path,
+                body: Some(body),
+            } => format!("bearcad.export_3mf({path:?}, {body:?})"),
             Instruction::ExportStep { path, body: None } => format!("bearcad.export_step({path:?})"),
             Instruction::ExportStep {
                 path,
@@ -2892,6 +2899,10 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         Action::Open { path } => Some(Instruction::Open(path.clone())),
         Action::Save { path } => Some(Instruction::Save(path.clone())),
         Action::ExportStl { path, body } => Some(Instruction::ExportStl {
+            path: path.clone(),
+            body: body.clone(),
+        }),
+        Action::Export3mf { path, body } => Some(Instruction::Export3mf {
             path: path.clone(),
             body: body.clone(),
         }),
@@ -5557,6 +5568,11 @@ impl ScriptRunner {
             }
             Instruction::ExportStl { path, body } => {
                 let r = state.apply(Action::ExportStl { path, body });
+                self.record_action_error(r);
+                StepResult::Continue
+            }
+            Instruction::Export3mf { path, body } => {
+                let r = state.apply(Action::Export3mf { path, body });
                 self.record_action_error(r);
                 StepResult::Continue
             }

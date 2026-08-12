@@ -140,7 +140,7 @@ part rebuilds — bend, holes, countersinks, rounds and all.
 
 ## 11. Export
 
-**File → Export → STL…** (3D printing) or **STEP…** (other CAD apps).
+**File → Export → STL…** / **3MF…** (3D printing) or **STEP…** (other CAD apps).
 
 > Every screenshot on this page is generated automatically from
 > [`docs-site/screenshots/quickstart.lua`](https://github.com/iffy/BearCAD/tree/master/docs-site/screenshots/quickstart.lua).

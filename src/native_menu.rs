@@ -24,6 +24,7 @@ pub struct MenuIds {
     pub save: MenuId,
     pub save_as: MenuId,
     pub export_stl: MenuId,
+    pub export_3mf: MenuId,
     pub export_step: MenuId,
     pub export_lua: MenuId,
     pub import_stl: MenuId,
@@ -111,6 +112,9 @@ pub fn command_for_id(
     }
     if ids.export_stl == id {
         return Some(MenuCommand::ExportStl);
+    }
+    if ids.export_3mf == id {
+        return Some(MenuCommand::Export3mf);
     }
     if ids.export_step == id {
         return Some(MenuCommand::ExportStep);
@@ -306,6 +310,7 @@ impl NativeMenu {
         // Import/Export items live under grouped submenus (#352); their IDs are unchanged so the
         // command dispatch still matches, only the visible labels drop the redundant verb.
         let export_stl = MenuItem::with_id("export_stl", "STL…", true, None);
+        let export_3mf = MenuItem::with_id("export_3mf", "3MF…", true, None);
         let export_step = MenuItem::with_id("export_step", "STEP…", true, None);
         let export_lua = MenuItem::with_id("export_lua", "Lua Script…", true, None);
         let load_script = MenuItem::with_id("load_script", "Load Script…", true, None);
@@ -396,6 +401,7 @@ impl NativeMenu {
         import_menu.append(&import_lua)?;
         let export_menu = Submenu::new("Export", true);
         export_menu.append(&export_stl)?;
+        export_menu.append(&export_3mf)?;
         export_menu.append(&export_step)?;
         export_menu.append(&export_lua)?;
         file_menu.append(&import_menu)?;
@@ -464,6 +470,7 @@ impl NativeMenu {
             save: save.id().clone(),
             save_as: save_as.id().clone(),
             export_stl: export_stl.id().clone(),
+            export_3mf: export_3mf.id().clone(),
             export_step: export_step.id().clone(),
             export_lua: export_lua.id().clone(),
             load_script: load_script.id().clone(),
@@ -587,6 +594,7 @@ mod tests {
             save: MenuId::new("save"),
             save_as: MenuId::new("save_as"),
             export_stl: MenuId::new("export_stl"),
+            export_3mf: MenuId::new("export_3mf"),
             export_step: MenuId::new("export_step"),
             export_lua: MenuId::new("export_lua"),
             load_script: MenuId::new("load_script"),

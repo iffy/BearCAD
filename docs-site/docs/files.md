@@ -52,10 +52,11 @@ The **Import** button on the toolbar offers the same entries.
 
 ## Export
 
-- **File → Export → STL…** — for 3D printing. Right-click a body row in the Elements pane to
-  export just that body, or right-click a **component** to export everything inside it (and its
-  nested components) as one file. **Shadow bodies** (operation inputs, or any body marked
-  **Make shadow body** in the Elements pane) are left out of whole-document and component export.
+- **File → Export → STL…** / **3MF…** — for 3D printing (mesh). Right-click a body row in the
+  Elements pane to export just that body, or right-click a **component** to export everything
+  inside it (and its nested components) as one file. **Shadow bodies** (operation inputs, or any
+  body marked **Make shadow body** in the Elements pane) are left out of whole-document and
+  component export.
 - **File → Export → STEP…** — real BREP (planar and curved surfaces) for other CAD apps.
   Right-click a body or a component row to export just that body or the whole component.
 - **Technical drawings** export as vector **PDF** or **SVG** from the drawing workbench —

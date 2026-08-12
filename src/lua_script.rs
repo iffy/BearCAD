@@ -2055,6 +2055,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     api.set(
+        "export_3mf",
+        lua.create_function(|lua, (path, body): (String, Option<String>)| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::Export3mf { path, body }) }
+        })?,
+    )?;
+
+    api.set(
         "export_step",
         lua.create_function(|lua, (path, body): (String, Option<String>)| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
@@ -7468,8 +7476,8 @@ mod tests {
             end
             -- declarative modeling stays at the top level
             for _, name in ipairs({ "rect", "line", "circle", "extrude", "new", "select",
-                                    "add_constraint", "parameter", "export_stl", "export_step",
-                                    "export_preview",
+                                    "add_constraint", "parameter", "export_stl", "export_3mf",
+                                    "export_step", "export_preview",
                                     "import_stl", "import_step", "import_lua", "chamfer_vertex",
                                     "fillet_vertex", "chamfer_edge", "fillet_edge" }) do
                 assert(type(bearcad[name]) == "function", "bearcad." .. name .. " should stay top-level")
@@ -8346,6 +8354,34 @@ mod tests {
             assert(bearcad.count("body") == 0)
         "#,
         );
+    }
+
+    /// #1284: `bearcad.export_3mf` writes a ZIP package with a 3D model part.
+    #[test]
+    fn lua_export_3mf_writes_a_package() {
+        let path = std::env::temp_dir().join("bearcad_lua_export.3mf");
+        let named = std::env::temp_dir().join("bearcad_lua_export_named.3mf");
+        let path_str = path.to_string_lossy().replace('\\', "\\\\");
+        let named_str = named.to_string_lossy().replace('\\', "\\\\");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&named);
+        run_lua_expect_ok(&format!(
+            r#"
+            bearcad.new()
+            bearcad.rect{{ width = 40, height = 30 }}
+            bearcad.extrude{{ polygon = {{0,1,2,3}}, distance = 10 }}
+            assert(bearcad.count("body") == 1)
+            bearcad.set_name(bearcad.element("body", 0), "Block")
+            bearcad.export_3mf("{path_str}")
+            bearcad.export_3mf("{named_str}", "Block")
+        "#
+        ));
+        for p in [&path, &named] {
+            let bytes = std::fs::read(p).expect("exported 3mf");
+            let _ = std::fs::remove_file(p);
+            assert!(bytes.len() > 100, "3mf too small: {}", bytes.len());
+            assert_eq!(&bytes[0..4], b"PK\x03\x04", "3mf must be a ZIP package");
+        }
     }
 
     /// #106: a single-body document exports real BREP STEP in kernel builds, and a

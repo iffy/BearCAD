@@ -2735,7 +2735,7 @@ static BRACKET_STEPS: &[Step] = &[
     },
     Step {
         // ASCII `->` not U+2192: Ubuntu Light (UI font) lacks that glyph (#1265).
-        narration: "You built it! Export via File -> Export -> STL or STEP. \
+        narration: "You built it! Export via File -> Export -> STL, 3MF, or STEP. \
                     That's the whole loop: sketch, constrain, dimension, extrude, refine \u{2014} \
                     and parameters drive everything. See you around the viewport!",
         anchor: StepAnchor::None,
