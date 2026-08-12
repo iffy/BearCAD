@@ -1411,6 +1411,12 @@ pub enum BodySource {
         op: BooleanOpKey,
         #[serde(default)]
         solid: usize,
+        /// Extrusions fused onto the combined solid after the boolean (#1338).
+        #[serde(default)]
+        add: Vec<ExtrusionKey>,
+        /// Extrusions cut from the combined solid after the boolean (#1338).
+        #[serde(default)]
+        cut: Vec<ExtrusionKey>,
     },
     /// One piece of a slice operation (Slice tool, #181): `op` indexes
     /// `Document::slice_ops`, `target` is the sliced input body's position in the op's
@@ -1493,12 +1499,13 @@ impl BodySource {
         match self {
             Self::Extrusion(index) => std::slice::from_ref(index),
             Self::Extrusions(indices) => indices.as_slice(),
-            Self::Solid { add, .. } | Self::Shelled { add, .. } => add.as_slice(),
+            Self::Solid { add, .. } | Self::Shelled { add, .. } | Self::Boolean { add, .. } => {
+                add.as_slice()
+            }
             Self::Loft(_)
             | Self::Revolve(_)
             | Self::Primitive(_)
             | Self::Sweep(_)
-            | Self::Boolean { .. }
             | Self::Moved { .. }
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
@@ -1511,10 +1518,13 @@ impl BodySource {
     }
 
     /// Extrusions **subtracted** (cut) from the body (#35). Empty for every non-`Solid`
-    /// form except a unit cut (#726) and a shelled body with post-shell cuts (#1168).
+    /// form except a unit cut (#726), a shelled body with post-shell cuts (#1168), and a
+    /// combined body with post-boolean cuts (#1338).
     pub fn cut_extrusion_indices(&self) -> &[ExtrusionKey] {
         match self {
-            Self::Solid { cut, .. } | Self::Shelled { cut, .. } => cut.as_slice(),
+            Self::Solid { cut, .. } | Self::Shelled { cut, .. } | Self::Boolean { cut, .. } => {
+                cut.as_slice()
+            }
             Self::UnitCut { cut, .. } => cut.as_slice(),
             Self::Extrusion(_)
             | Self::Extrusions(_)
@@ -1523,7 +1533,6 @@ impl BodySource {
             | Self::Revolve(_)
             | Self::Primitive(_)
             | Self::Sweep(_)
-            | Self::Boolean { .. }
             | Self::Moved { .. }
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
@@ -1567,7 +1576,9 @@ impl BodySource {
                 *self = Self::Extrusions(vec![*existing, extrusion]);
             }
             Self::Extrusions(indices) => indices.push(extrusion),
-            Self::Solid { add, .. } | Self::Shelled { add, .. } => add.push(extrusion),
+            Self::Solid { add, .. } | Self::Shelled { add, .. } | Self::Boolean { add, .. } => {
+                add.push(extrusion)
+            }
             // A primitive base takes its first added extrusion by becoming a `Solid` whose
             // base is that primitive (#1104); further adds push onto the list.
             Self::Primitive(pi) => {
@@ -1583,7 +1594,6 @@ impl BodySource {
             | Self::Loft(_)
             | Self::Revolve(_)
             | Self::Sweep(_)
-            | Self::Boolean { .. }
             | Self::Moved { .. }
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
@@ -1612,7 +1622,9 @@ impl BodySource {
                     cut: vec![extrusion],
                 };
             }
-            Self::Solid { cut, .. } | Self::Shelled { cut, .. } => cut.push(extrusion),
+            Self::Solid { cut, .. } | Self::Shelled { cut, .. } | Self::Boolean { cut, .. } => {
+                cut.push(extrusion)
+            }
             // A primitive base takes its first cut by becoming a `Solid` whose base is that
             // primitive (#1104); the cut list starts with this extrusion.
             Self::Primitive(pi) => {
@@ -1629,7 +1641,6 @@ impl BodySource {
             | Self::Loft(_)
             | Self::Revolve(_)
             | Self::Sweep(_)
-            | Self::Boolean { .. }
             | Self::Moved { .. }
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
@@ -1676,6 +1687,11 @@ impl BodySource {
                 add.retain(|&ei| ei != extrusion);
                 cut.retain(|&ei| ei != extrusion);
             }
+            // Combined body keeps its form; empty add/cut is the pure boolean (#1338).
+            Self::Boolean { add, cut, .. } => {
+                add.retain(|&ei| ei != extrusion);
+                cut.retain(|&ei| ei != extrusion);
+            }
             // A unit cut keeps its form with an empty list (#726): it then reads as the
             // intact unit; the sync pass re-shadows accordingly.
             Self::UnitCut { cut, .. } => {
@@ -1687,7 +1703,6 @@ impl BodySource {
             | Self::Revolve(_)
             | Self::Primitive(_)
             | Self::Sweep(_)
-            | Self::Boolean { .. }
             | Self::Moved { .. }
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
@@ -1717,6 +1732,8 @@ impl BodySource {
             Self::Solid { add, cut, .. } | Self::Shelled { add, cut, .. } => {
                 add.last().copied().or_else(|| cut.last().copied())
             }
+            // In-place cuts stay under the Combine op; only a fused add re-parents (#1338).
+            Self::Boolean { add, .. } => add.last().copied(),
             _ => None,
         }
     }
@@ -1765,6 +1782,20 @@ impl BodySource {
                     base: *base,
                     add,
                     cut,
+                })
+            }
+            // Peel a fused add; the boolean output remains when add/cut are empty (#1338).
+            Self::Boolean { op, solid, add, cut } => {
+                if add.last().copied() != Some(extrusion) {
+                    return None;
+                }
+                let add: Vec<ExtrusionKey> =
+                    add.iter().copied().filter(|&e| e != extrusion).collect();
+                Some(Self::Boolean {
+                    op: *op,
+                    solid: *solid,
+                    add,
+                    cut: cut.clone(),
                 })
             }
             // Peel the last fused extrusion; pure hollow when add and cut are empty (#1168).
@@ -5723,6 +5754,27 @@ mod tests {
         cut_src.append_cut_extrusion(ei);
         assert_eq!(cut_src.cut_extrusion_indices(), [ei]);
         assert!(cut_src.extrusion_indices().is_empty());
+    }
+
+    /// #1338: a cut into a Combine result must record the extrusion on that boolean body
+    /// instead of silently no-op'ing (which left an orphan extrusion and blocked further cuts).
+    #[test]
+    fn boolean_body_source_records_a_cut_extrusion() {
+        let op = boolean_op_key_for_slot(0);
+        let ei = extrusion_key_for_slot(1);
+        let mut src = BodySource::Boolean {
+            op,
+            solid: 0,
+            add: Vec::new(),
+            cut: Vec::new(),
+        };
+        src.append_cut_extrusion(ei);
+        assert_eq!(
+            src.cut_extrusion_indices(),
+            [ei],
+            "cut into a combined body must stick to that body"
+        );
+        assert!(src.extrusion_indices().is_empty());
     }
 
     /// #1104: adding/cutting an extrusion on a Shape-tool body turns Primitive into Solid
