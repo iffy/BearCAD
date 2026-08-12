@@ -5021,6 +5021,34 @@ mod tests {
         assert!((offset - 10.0).abs() < 1e-3);
     }
 
+    /// #1296: free (non-target) gizmo pulls snap the live offset to 0.1 of the length unit.
+    #[test]
+    fn gizmo_length_drag_snaps_to_one_tenth_of_unit() {
+        use crate::value::{snap_gizmo_length_mm, LengthUnit};
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        // Screen Y maps 1:1 to world Y (mm). Drag 12.34 mm along +Y.
+        let raw = offset_from_normal_drag(
+            Vec3::ZERO,
+            Vec3::Y,
+            &project,
+            0.0,
+            Pos2::new(0.0, 0.0),
+            Pos2::new(0.0, 12.34),
+        );
+        assert!((raw - 12.34).abs() < 1e-3, "raw drag is continuous, got {raw}");
+        let snapped_mm = snap_gizmo_length_mm(raw, LengthUnit::Mm);
+        assert!(
+            (snapped_mm - 12.3).abs() < 1e-4,
+            "mm docs step by 0.1 mm, got {snapped_mm}"
+        );
+        // Inches: 0.1 in = 2.54 mm. A 12.34 mm pull → nearest 5 × 2.54 = 12.7.
+        let snapped_in = snap_gizmo_length_mm(raw, LengthUnit::In);
+        assert!(
+            (snapped_in - 12.7).abs() < 1e-3,
+            "inch docs step by 0.1 in, got {snapped_in}"
+        );
+    }
+
     #[test]
     fn offset_from_normal_drag_allows_negative_values() {
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));

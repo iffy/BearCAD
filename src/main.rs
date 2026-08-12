@@ -6705,13 +6705,16 @@ impl App {
                         } else {
                             self.pending_extrude_target = None;
                             self.state.apply(Action::SetExtrudeTarget { target: None });
-                            let new_distance = construction::offset_from_normal_drag(
-                                origin,
-                                normal,
-                                project,
-                                drag.start_distance,
-                                drag.start_screen,
-                                pp,
+                            let new_distance = crate::value::snap_gizmo_length_mm(
+                                construction::offset_from_normal_drag(
+                                    origin,
+                                    normal,
+                                    project,
+                                    drag.start_distance,
+                                    drag.start_screen,
+                                    pp,
+                                ),
+                                self.state.doc.default_length_unit,
                             );
                             self.state
                                 .apply(Action::SetExtrudeDistance { distance: new_distance });
@@ -7077,22 +7080,25 @@ impl App {
             if let Some(pp) = pointer_screen {
                 // Use the first anchor's axis for the drag projection (all share the amount).
                 if let Some(&(origin, normal)) = anchors.first() {
-                    let new_amount = construction::offset_from_normal_drag(
-                        origin,
-                        normal,
-                        project,
-                        drag.start_amount,
-                        drag.start_screen,
-                        pp,
-                    )
-                    .max(0.0);
+                    let unit = crate::model::effective_length_unit(
+                        &self.state.doc,
+                        session.sketch,
+                    );
+                    let new_amount = crate::value::snap_gizmo_length_mm(
+                        construction::offset_from_normal_drag(
+                            origin,
+                            normal,
+                            project,
+                            drag.start_amount,
+                            drag.start_screen,
+                            pp,
+                        )
+                        .max(0.0),
+                        unit,
+                    );
                     if let Some(cvt) = self.state.creating_vertex_treatment.as_mut() {
                         cvt.amount_live = new_amount;
                         if !cvt.user_edited {
-                            let unit = crate::model::effective_length_unit(
-                                &self.state.doc,
-                                session.sketch,
-                            );
                             cvt.text = crate::value::format_length_display_in(new_amount, unit);
                         }
                     }
@@ -7559,8 +7565,8 @@ impl App {
                     {
                         let (u, v) = world_to_local(&frame, world);
                         let d = (glam::Vec2::new(u, v) - anchor).dot(normal);
-                        let d = (d * 10.0).round() / 10.0;
                         let unit = model::effective_length_unit(&self.state.doc, session.sketch);
+                        let d = crate::value::snap_gizmo_length_mm(d, unit);
                         if let Some(c) = self.state.creating_sketch_offset.as_mut() {
                             c.distance = crate::value::format_length_display_in(d, unit);
                         }
@@ -8139,7 +8145,12 @@ impl App {
                 if let Some(angle) =
                     revolve_arc_angle_from_cursor(pp, center, zero_world, sign_probe, project)
                 {
+                    let angle = crate::value::snap_gizmo_angle_deg(
+                        angle,
+                        self.state.doc.default_angle_unit,
+                    );
                     if let Some(cr) = self.state.creating_revolve.as_mut() {
+                        // #1296: revolve arc handle steps by 0.1 of the document angle unit.
                         cr.angle_live = angle;
                         cr.refresh_angle_text_from_live();
                     }
@@ -8795,9 +8806,13 @@ impl App {
             if let Some(drag) = self.face_spin_drag {
                 if ui.input(|i| i.pointer.primary_down()) {
                     if let Some(angle) = pointer_screen.and_then(cursor_angle) {
-                        let spin = drag.start_spin
-                            + sign * (angle - drag.start_cursor_angle).to_degrees();
+                        let spin = crate::value::snap_gizmo_angle_deg(
+                            drag.start_spin
+                                + sign * (angle - drag.start_cursor_angle).to_degrees(),
+                            self.state.doc.default_angle_unit,
+                        );
                         if let Some(cm) = self.state.creating_move.as_mut() {
+                            // format {:.1} matches the 0.1° (or unit) step after snap (#1296).
                             cm.face_spin = format!("{spin:.1}");
                         }
                     }
@@ -8849,8 +8864,11 @@ impl App {
                         } else {
                             1.0
                         };
-                        let deg = drag.start_angle_deg
-                            + sign * (angle - drag.start_cursor_angle).to_degrees();
+                        let deg = crate::value::snap_gizmo_angle_deg(
+                            drag.start_angle_deg
+                                + sign * (angle - drag.start_cursor_angle).to_degrees(),
+                            self.state.doc.default_angle_unit,
+                        );
                         let name = extrude::free_move_rotation_gizmo_name(drag.axis);
                         crate::actions::set_gizmo(&mut self.state, name, deg.to_radians());
                     }
@@ -8914,13 +8932,16 @@ impl App {
                     if let Some(pp) = pointer_screen {
                         let name = extrude::free_move_translation_gizmo_name(drag.axis);
                         let dir = extrude::free_move_axis_dir(drag.axis);
-                        let value = construction::offset_from_normal_drag(
-                            drag.origin,
-                            dir,
-                            project,
-                            drag.start_translation,
-                            drag.start_screen,
-                            pp,
+                        let value = crate::value::snap_gizmo_length_mm(
+                            construction::offset_from_normal_drag(
+                                drag.origin,
+                                dir,
+                                project,
+                                drag.start_translation,
+                                drag.start_screen,
+                                pp,
+                            ),
+                            self.state.doc.default_length_unit,
                         );
                         crate::actions::set_gizmo(&mut self.state, name, value);
                     }
@@ -10966,15 +10987,18 @@ impl App {
         }
         // Following: track the cursor every frame, no button required.
         if let (Some(pp), Some(drag)) = (pointer_screen, self.repeat_gizmo_drag) {
-            let new_distance = construction::offset_from_normal_drag(
-                anchor,
-                dir,
-                project,
-                drag.start_distance,
-                drag.start_screen,
-                pp,
-            );
             let unit = self.state.doc.default_length_unit;
+            let new_distance = crate::value::snap_gizmo_length_mm(
+                construction::offset_from_normal_drag(
+                    anchor,
+                    dir,
+                    project,
+                    drag.start_distance,
+                    drag.start_screen,
+                    pp,
+                ),
+                unit,
+            );
             if let Some(cr) = self.state.creating_repeat.as_mut() {
                 cr.length = crate::value::format_length_display_in(new_distance.max(0.0), unit);
                 cr.touch_var(model::RepeatVar::Distance);
@@ -11273,22 +11297,25 @@ impl App {
                     }
                     if let Some(drag) = self.shell_gizmo_drag {
                         if let Some(pp) = gizmo_pointer {
-                            let new_t = construction::offset_from_normal_drag(
-                                origin,
-                                normal,
-                                project,
-                                drag.start_distance,
-                                drag.start_screen,
-                                pp,
+                            let unit = self.state.doc.default_length_unit;
+                            let new_t = crate::value::snap_gizmo_length_mm(
+                                construction::offset_from_normal_drag(
+                                    origin,
+                                    normal,
+                                    project,
+                                    drag.start_distance,
+                                    drag.start_screen,
+                                    pp,
+                                )
+                                .max(1e-3),
+                                unit,
                             )
                             .max(1e-3);
                             if let Some(cs) = self.state.creating_shell.as_mut() {
                                 cs.thickness_live = new_t;
                                 if !cs.user_edited {
-                                    cs.thickness_text = crate::value::format_length_display_in(
-                                        new_t,
-                                        self.state.doc.default_length_unit,
-                                    );
+                                    cs.thickness_text =
+                                        crate::value::format_length_display_in(new_t, unit);
                                 }
                             }
                         }
@@ -12523,19 +12550,23 @@ impl App {
             if let Some(drag) = self.edge_treatment_gizmo_drag {
                 gizmo_active = true;
                 if let Some(pp) = pointer_screen {
-                    let new_amount = construction::offset_from_normal_drag(
-                        origin,
-                        normal,
-                        project,
-                        drag.start_amount,
-                        drag.start_screen,
-                        pp,
-                    )
-                    .max(0.0);
+                    let unit = self.state.doc.default_length_unit;
+                    let new_amount = crate::value::snap_gizmo_length_mm(
+                        construction::offset_from_normal_drag(
+                            origin,
+                            normal,
+                            project,
+                            drag.start_amount,
+                            drag.start_screen,
+                            pp,
+                        )
+                        .max(0.0),
+                        unit,
+                    );
                     if let Some(cet) = self.state.creating_edge_treatment.as_mut() {
                         cet.amount_live = new_amount;
                         if !cet.user_edited {
-                            cet.text = crate::value::format_length_display(new_amount);
+                            cet.text = crate::value::format_length_display_in(new_amount, unit);
                         }
                     }
                 }
@@ -22916,13 +22947,25 @@ fn handle_text_width_drag(
                     let (u, v) = world_to_local(&frame, world);
                     let (bx, _) = crate::text::local_to_baseline(text, u, v);
                     let wrap = text.wrap_width.unwrap();
+                    let unit = model::effective_length_unit(&state.doc, session.sketch);
                     let (origin, new_wrap) = if active.left {
                         // Keep the right edge fixed: the origin slides with the handle.
                         let shift = bx.min(wrap - actions::MIN_TEXT_WRAP_MM);
                         let (ou, ov) = crate::text::baseline_to_local(text, shift, 0.0);
-                        ((ou, ov), wrap - shift)
+                        (
+                            (ou, ov),
+                            crate::value::snap_gizmo_length_mm(wrap - shift, unit)
+                                .max(actions::MIN_TEXT_WRAP_MM),
+                        )
                     } else {
-                        (text.origin, bx.max(actions::MIN_TEXT_WRAP_MM))
+                        (
+                            text.origin,
+                            crate::value::snap_gizmo_length_mm(
+                                bx.max(actions::MIN_TEXT_WRAP_MM),
+                                unit,
+                            )
+                            .max(actions::MIN_TEXT_WRAP_MM),
+                        )
                     };
                     let _ = state.apply(Action::ResizeSketchText {
                         index: active.text,
@@ -28254,6 +28297,9 @@ impl App {
                     }
                 }
 
+                // Units read before the mut borrow of `creating_plane` (#1296 gizmo step).
+                let length_unit = self.state.doc.default_length_unit;
+                let angle_unit = self.state.doc.default_angle_unit;
                 if let Some(cp) = &mut self.state.creating_plane {
                     let scroll = raw_scroll_y(ui.ctx());
                     let primary_down = ui.input(|i| i.pointer.primary_down());
@@ -28402,13 +28448,16 @@ impl App {
                                             axis_normal(*direction, drag.start_angle_deg),
                                         ),
                                     };
-                                    cp.offset_live = offset_from_normal_drag(
-                                        origin,
-                                        normal,
-                                        &project,
-                                        drag.start_offset,
-                                        drag.start_screen,
-                                        pp,
+                                    cp.offset_live = crate::value::snap_gizmo_length_mm(
+                                        offset_from_normal_drag(
+                                            origin,
+                                            normal,
+                                            &project,
+                                            drag.start_offset,
+                                            drag.start_screen,
+                                            pp,
+                                        ),
+                                        length_unit,
                                     );
                                 }
                                 AxisGizmoHit::Angle => {
@@ -28421,8 +28470,11 @@ impl App {
                                         if let Some(hit) = cam.ray_plane_hit(
                                             pp, viewport, &vp, *origin, *direction,
                                         ) {
-                                            cp.axis_angle_deg = angle_from_axis_plane_hit(
-                                                *origin, *direction, hit,
+                                            cp.axis_angle_deg = crate::value::snap_gizmo_angle_deg(
+                                                angle_from_axis_plane_hit(
+                                                    *origin, *direction, hit,
+                                                ),
+                                                angle_unit,
                                             );
                                         }
                                     }

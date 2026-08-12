@@ -730,6 +730,38 @@ impl LengthUnit {
     }
 }
 
+/// Gizmo drag step: one tenth of the document's display unit (#1296).
+///
+/// Pulling an extrude / shell / offset / move handle quantizes the live scalar onto this
+/// grid so depths land on clean numbers (0.1 mm when the doc is in mm, 0.1 in when inches).
+pub const GIZMO_STEP: f32 = 0.1;
+
+/// Snap a gizmo-driven length (canonical millimetres) onto a [`GIZMO_STEP`]-of-`unit` grid.
+pub fn snap_gizmo_length_mm(v_mm: f32, unit: LengthUnit) -> f32 {
+    let step_mm = GIZMO_STEP * unit.to_mm();
+    if !(step_mm.is_finite() && step_mm > 0.0) {
+        return v_mm;
+    }
+    (v_mm / step_mm).round() * step_mm
+}
+
+/// Snap a gizmo-driven angle (canonical radians) onto a [`GIZMO_STEP`]-of-`unit` grid.
+pub fn snap_gizmo_angle_rad(v_rad: f32, unit: AngleUnit) -> f32 {
+    let step_rad = GIZMO_STEP * unit.to_rad();
+    if !(step_rad.is_finite() && step_rad > 0.0) {
+        return v_rad;
+    }
+    (v_rad / step_rad).round() * step_rad
+}
+
+/// Snap a degree-stored gizmo angle onto a [`GIZMO_STEP`]-of-`unit` grid, returning degrees.
+pub fn snap_gizmo_angle_deg(v_deg: f32, unit: AngleUnit) -> f32 {
+    match unit {
+        AngleUnit::Deg => (v_deg / GIZMO_STEP).round() * GIZMO_STEP,
+        AngleUnit::Rad => snap_gizmo_angle_rad(v_deg.to_radians(), unit).to_degrees(),
+    }
+}
+
 /// Builtin expression functions (#431/#445).
 fn is_builtin_function(name: &str) -> bool {
     matches!(
@@ -1806,5 +1838,34 @@ mod tests {
         }
         assert_eq!(AngleUnit::from_name("DEG"), Some(AngleUnit::Deg));
         assert_eq!(AngleUnit::from_name("gradians"), None);
+    }
+
+    /// #1296: gizmo drags land on 0.1 of the document length unit (mm / cm / in / …).
+    #[test]
+    fn snap_gizmo_length_steps_by_one_tenth_of_unit() {
+        // mm: 0.1 mm grid.
+        assert!((snap_gizmo_length_mm(12.34, LengthUnit::Mm) - 12.3).abs() < 1e-4);
+        assert!((snap_gizmo_length_mm(12.35, LengthUnit::Mm) - 12.4).abs() < 1e-4);
+        assert!((snap_gizmo_length_mm(-3.27, LengthUnit::Mm) + 3.3).abs() < 1e-4);
+        // Already on-grid stays put.
+        assert!((snap_gizmo_length_mm(5.0, LengthUnit::Mm) - 5.0).abs() < 1e-4);
+        // cm: 0.1 cm = 1 mm.
+        assert!((snap_gizmo_length_mm(5.4, LengthUnit::Cm) - 5.0).abs() < 1e-4);
+        assert!((snap_gizmo_length_mm(5.6, LengthUnit::Cm) - 6.0).abs() < 1e-4);
+        // inches: 0.1 in = 2.54 mm. 3.0 mm → nearest 1×2.54.
+        assert!((snap_gizmo_length_mm(3.0, LengthUnit::In) - 2.54).abs() < 1e-3);
+        assert!((snap_gizmo_length_mm(25.4, LengthUnit::In) - 25.4).abs() < 1e-3);
+    }
+
+    /// #1296: angle gizmos (revolve, free-move rings) step by 0.1 of the angle unit.
+    #[test]
+    fn snap_gizmo_angle_steps_by_one_tenth_of_unit() {
+        // Degrees: 0.1° grid.
+        assert!((snap_gizmo_angle_deg(12.34, AngleUnit::Deg) - 12.3).abs() < 1e-4);
+        assert!((snap_gizmo_angle_deg(90.0, AngleUnit::Deg) - 90.0).abs() < 1e-4);
+        // Radians: 0.1 rad grid (via the rad helper).
+        let want = 0.3_f32;
+        let got = snap_gizmo_angle_rad(0.34, AngleUnit::Rad);
+        assert!((got - want).abs() < 1e-4, "got {got}, want {want}");
     }
 }
