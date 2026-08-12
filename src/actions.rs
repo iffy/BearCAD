@@ -4261,7 +4261,9 @@ impl AppState {
             (Some(bi), ExtrudeBodyMode::NewBody | ExtrudeBodyMode::JoinNew) => {
                 solely_owns(&self.doc, bi)
             }
-            (None, _) => true,
+            // An orphan extrusion (cut into a body type that used to drop the cut, #1338)
+            // has no home yet — attaching is the whole point.
+            (None, _) => false,
         };
         if already_there {
             return;
@@ -11762,7 +11764,11 @@ impl AppState {
                 let Some(extrusion) = self.doc.extrusions.get(index) else {
                     return ActionResult::Err("Extrusion not found".to_string());
                 };
-                let merge_candidate = crate::model::body_index_for_extrusion(&self.doc, index);
+                // Prefer the body that already owns this extrusion; an orphan (a cut that
+                // never attached, #1338) falls back to the sketch's host body so Cut/Add
+                // stay available.
+                let merge_candidate = crate::model::body_index_for_extrusion(&self.doc, index)
+                    .or_else(|| extrude_merge_candidate(&self.doc, extrusion.sketch));
                 // Preserve the extrusion's current role: an extrusion already subtracted from
                 // its body opens in Cut mode (#35), not MergeInto — otherwise re-committing
                 // without touching the choice would silently re-fuse it.
@@ -14090,6 +14096,8 @@ op,
                         source: crate::model::BodySource::Boolean {
                             op: op_index,
                             solid: ordinal,
+                            add: Vec::new(),
+                            cut: Vec::new(),
                         },
                         material: None,
                         name: None,

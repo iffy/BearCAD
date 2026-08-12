@@ -864,7 +864,12 @@ mod tests {
         let kept = doc.boolean_ops.insert(op(crate::model::BooleanOpKind::Cut));
         assert!(doc.boolean_ops.remove(doomed).is_some());
         let out = doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Boolean { op: kept, solid: 0 },
+            source: crate::model::BodySource::Boolean {
+                op: kept,
+                solid: 0,
+                add: Vec::new(),
+                cut: Vec::new(),
+            },
             material: None,
             name: None,
             shadow: false,
@@ -886,7 +891,12 @@ mod tests {
             );
             assert_eq!(
                 loaded.bodies[out].source,
-                crate::model::BodySource::Boolean { op: kept, solid: 0 },
+                crate::model::BodySource::Boolean {
+                    op: kept,
+                    solid: 0,
+                    add: Vec::new(),
+                    cut: Vec::new(),
+                },
                 "{suffix}: its output body still names it"
             );
             let _ = std::fs::remove_file(&path);
@@ -2088,7 +2098,12 @@ mod tests {
             shadow: true,
         });
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Boolean { op: bopkey(0), solid: 0 },
+            source: crate::model::BodySource::Boolean {
+                op: bopkey(0),
+                solid: 0,
+                add: Vec::new(),
+                cut: Vec::new(),
+            },
             material: None,
             name: Some("Result".to_string()),
             shadow: false,

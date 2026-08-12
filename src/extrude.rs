@@ -801,8 +801,14 @@ pub fn occt_body_shape(doc: &Document, body_index: crate::model::BodyKey) -> Opt
         crate::model::BodySource::Loft(li) => {
             occt_loft_shape(doc, doc.lofts.get(li)?)?
         }
-        crate::model::BodySource::Boolean { op, solid } => {
-            return occt_boolean_output_shape(doc, op, solid);
+        crate::model::BodySource::Boolean {
+            op,
+            solid,
+            ref add,
+            ref cut,
+        } => {
+            let base = occt_boolean_output_shape(doc, op, solid)?;
+            return occt_fuse_then_cut_extrusions(doc, base, add, cut);
         }
         crate::model::BodySource::Moved { op, target } => {
             return occt_moved_output_shape(doc, op, target);
@@ -5072,8 +5078,35 @@ pub fn body_face_triangles(
     centroid: [i32; 3],
     normal: [i32; 3],
 ) -> Option<Vec<[Vec3; 3]>> {
-    let solid = body_solid_mesh(doc, body)?;
+    let solid = body_solid_mesh_for_face_key(doc, body)?;
     face_group_matching(&solid, centroid, normal)
+}
+
+/// Mesh used to resolve a [`FaceId::BodyMeshFace`] key. Post-op add/cut extrusions
+/// (#1168/#1338) change the tessellation (and would recurse if a cut's own sketch sits
+/// on this body), so face keys are matched against the base solid they were captured on.
+fn body_solid_mesh_for_face_key(
+    doc: &Document,
+    body: crate::model::BodyKey,
+) -> Option<SolidMesh> {
+    let src = &doc.bodies.get(body)?.source;
+    let base = match src {
+        crate::model::BodySource::Boolean {
+            op,
+            solid,
+            add,
+            cut,
+        } if !add.is_empty() || !cut.is_empty() => occt_boolean_output_shape(doc, *op, *solid),
+        crate::model::BodySource::Shelled {
+            op,
+            target,
+            add,
+            cut,
+        } if !add.is_empty() || !cut.is_empty() => occt_shelled_output_shape(doc, *op, *target),
+        _ => return body_solid_mesh(doc, body),
+    };
+    let tris = base?.tessellate(OCCT_DEFLECTION as f64);
+    (!tris.is_empty()).then_some(SolidMesh { triangles: tris })
 }
 
 /// The coplanar-triangle group of `solid` whose quantized centroid+normal match the key —
@@ -6361,9 +6394,16 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: crate::model::BodyKey) -
             .collect();
         return Some(SolidMesh { triangles });
     }
-    if let crate::model::BodySource::Boolean { op, solid } = body.source {
-        // Boolean outputs are kernel-computed; shadow inputs keep their own meshes.
-        {
+    if let crate::model::BodySource::Boolean {
+        op,
+        solid,
+        ref add,
+        ref cut,
+    } = body.source
+    {
+        // Pure boolean meshes directly; fused add/cut go through `occt_body_shape` below
+        // so a post-combine cut shows up in the viewport (#1338).
+        if add.is_empty() && cut.is_empty() {
             let shape = occt_boolean_output_shape(doc, op, solid)?;
             let tris = shape.tessellate(OCCT_DEFLECTION as f64);
             return (!tris.is_empty()).then_some(SolidMesh { triangles: tris });
@@ -13602,6 +13642,53 @@ mod tests {
         let after = body_solid_mesh(&state.doc, live).expect("filleted cuboid");
         let v1 = mesh_signed_volume(&after).abs();
         assert!(v1 < v0 - 1.0, "fillet must cut the reported cuboid: {v1} vs {v0}");
+    }
+
+    /// #1338: the reported document has a tapered circle extrusion that never landed as a
+    /// cut on the combined body. Editing it to Cut must apply the hole and leave the body
+    /// open to further cuts.
+    #[test]
+    fn issue_1338_pending_cut_on_combined_body_applies() {
+        let bytes = include_bytes!("../tests/fixtures/issue_1338.json");
+        let doc = crate::storage::from_json_bytes(bytes).expect("load issue 1338");
+        let ei = doc.extrusions.keys().next().expect("pending extrusion");
+        assert!(
+            crate::model::body_index_for_extrusion(&doc, ei).is_none(),
+            "the reported extrusion is an orphan — it never attached to a body"
+        );
+        let live = doc
+            .bodies
+            .iter()
+            .find_map(|(k, b)| {
+                (!b.shadow && matches!(b.source, crate::model::BodySource::Boolean { .. }))
+                    .then_some(k)
+            })
+            .expect("live combined body");
+        let v0 = mesh_signed_volume(&body_solid_mesh(&doc, live).expect("combined mesh")).abs();
+
+        let mut state = crate::actions::AppState::default();
+        state.doc = doc;
+        assert!(matches!(
+            state.apply(crate::actions::Action::EditExtrusion { index: ei }),
+            crate::actions::ActionResult::Ok
+        ));
+        assert!(matches!(
+            state.apply(crate::actions::Action::SetExtrudeBodyMode {
+                mode: crate::actions::ExtrudeBodyMode::Cut(live),
+            }),
+            crate::actions::ActionResult::Ok
+        ));
+        assert!(matches!(
+            state.apply(crate::actions::Action::CommitExtrusion),
+            crate::actions::ActionResult::Ok
+        ));
+        assert_eq!(
+            state.doc.bodies[live].source.cut_extrusion_indices(),
+            [ei],
+            "pending cut must attach to the combined body"
+        );
+        let v1 = mesh_signed_volume(&body_solid_mesh(&state.doc, live).expect("cut mesh")).abs();
+        assert!(v1 < v0 - 1.0, "pending cut must remove material: {v1} vs {v0}");
     }
 
     #[test]

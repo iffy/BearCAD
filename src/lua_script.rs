@@ -563,6 +563,20 @@ fn parse_element_table(lua: &Lua, table: Table) -> mlua::Result<SceneElement> {
         .ok_or_else(|| mlua::Error::external(format!("unknown element kind '{kind}'")))
 }
 
+/// A `{x, y, z}` / `{1,2,3}` triple used by `body_mesh_face`: already-quantized integers
+/// (export_lua, |component| > 2) or world millimetres / a unit vector (`body_faces`).
+fn parse_quantized_or_world(table: &Table, key: &str) -> mlua::Result<[i32; 3]> {
+    let t: Table = table.get(key)?;
+    let x: f32 = t.get(1).or_else(|_| t.get("x"))?;
+    let y: f32 = t.get(2).or_else(|_| t.get("y"))?;
+    let z: f32 = t.get(3).or_else(|_| t.get("z"))?;
+    if x.abs() > 2.0 || y.abs() > 2.0 || z.abs() > 2.0 {
+        Ok([x.round() as i32, y.round() as i32, z.round() as i32])
+    } else {
+        Ok(crate::hierarchy::quantize_body_point(glam::Vec3::new(x, y, z)))
+    }
+}
+
 /// Parses a `begin_sketch`/`face = { ... }` table into a `FaceId`. 3D body faces
 /// (`extrude_cap`/`extrude_side`) need extra descriptors (extrusion + profile + which face), so
 /// they can't go through the plain `(kind, index)` `FaceId::from_script` path; everything else
@@ -696,6 +710,20 @@ fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
             drop(tick);
             let face = parse_primitive_face_field(&table)?;
             Ok(FaceId::PrimitiveFace { primitive, face })
+        }
+        // A remaining flat on a treated/boolean/imported body (#1173/#1338).
+        // `centroid`/`normal` are either already-quantized integers (export_lua) or
+        // world millimetres / a unit vector (`body_faces`); |n| > 2 means quantized.
+        "body_mesh_face" => {
+            let body = body_key_from_ordinal(lua, table.get("body")?)?;
+            let centroid = parse_quantized_or_world(&table, "centroid")
+                .or_else(|_| parse_quantized_or_world(&table, "face"))?;
+            let normal = parse_quantized_or_world(&table, "normal")?;
+            Ok(FaceId::BodyMeshFace {
+                body,
+                centroid,
+                normal,
+            })
         }
         _ => {
             let index: usize = table.get("index")?;
@@ -9115,6 +9143,68 @@ mod tests {
         );
         assert!(body.source.extrusion_indices().is_empty());
         assert_eq!(body.source.cut_extrusion_indices(), [xkey(0)]);
+    }
+
+    /// #1338: a tapered cut through a Combine result must actually subtract, and a second
+    /// cut on the same combined body must still be allowed.
+    #[test]
+    fn lua_cut_extrude_into_a_combined_body_subtracts() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 40, depth = 40, height = 20 }
+            bearcad.cuboid{ at = {20, 0, 0}, width = 40, depth = 40, height = 20 }
+            bearcad.combine{ op = "combine", a = {0, 1} }
+            local live = bearcad.count("body") - 1
+            local v0 = bearcad.body_stats(live).volume
+            assert(v0 > 40000, "combined solid should be larger than one cuboid, got " .. v0)
+            local faces = bearcad.body_faces(live)
+            local top
+            for i = 1, #faces do
+                if faces[i].normal[3] > 0.9 then top = faces[i] break end
+            end
+            assert(top, "combined body has a +Z face")
+            local function q(v)
+                return {
+                    math.floor(v[1] * 100 + 0.5),
+                    math.floor(v[2] * 100 + 0.5),
+                    math.floor(v[3] * 100 + 0.5),
+                }
+            end
+            bearcad.begin_sketch{
+                kind = "body_mesh_face",
+                body = live,
+                centroid = q(top.face),
+                normal = q(top.normal),
+            }
+            bearcad.circle{ x = 0, y = 0, r = 6 }
+            bearcad.extrude{ circle = 0, distance = -30, taper = 5, body = "cut" }
+            local v1 = bearcad.body_stats(live).volume
+            assert(v1 < v0 - 50, "first cut must remove material: " .. v1 .. " vs " .. v0)
+            bearcad.begin_sketch{
+                kind = "body_mesh_face",
+                body = live,
+                centroid = q(top.face),
+                normal = q(top.normal),
+            }
+            bearcad.circle{ x = 12, y = 0, r = 4 }
+            bearcad.extrude{ circle = 1, distance = -30, body = "cut" }
+            local v2 = bearcad.body_stats(live).volume
+            assert(v2 < v1 - 20, "second cut must also remove material: " .. v2 .. " vs " .. v1)
+            "#,
+        );
+        let live = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| !b.shadow)
+            .map(|(_, b)| b)
+            .expect("live combined body");
+        assert_eq!(
+            live.source.cut_extrusion_indices().len(),
+            2,
+            "both cuts must stay on the combined body, not become orphan extrusions"
+        );
     }
 
     /// #1104/#1105/#1106: shape keeps its pure (shadow) body + face sketch; the combined
