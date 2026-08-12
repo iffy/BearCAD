@@ -3780,7 +3780,7 @@ fn shape_tool_active_or_past_cylinder(app: &AppState) -> bool {
 mod tests {
     use crate::model::plane_key_for_slot as pkey;
     use super::*;
-    use crate::actions::Action;
+    use crate::actions::{Action, Pane};
 
     fn bracket_index() -> usize {
         tutorial_index("bracket").expect("bracket tutorial is registered")
@@ -4254,20 +4254,15 @@ mod tests {
         assert!(app.tutorial.is_some());
     }
 
-    /// #1241: finishing a tutorial records it for the Confirm-SVG check in the pane (#1260).
-    #[test]
-    fn finishing_a_tutorial_marks_it_completed() {
-        let mut app = AppState::default();
-        assert!(!app.tutorial_completed("cube"));
+    /// Drive a registered tutorial to completion via Next / assist (no predicates).
+    fn finish_tutorial_via_next(app: &mut AppState, name: &str) {
         app.apply(Action::StartTutorial {
-            index: tutorial_index("cube").unwrap(),
+            index: tutorial_index(name).unwrap(),
         });
-        assert!(!app.tutorial_pane_open, "starting a walkthrough closes the pane");
-        // Walk every step via Next / assist until the run ends.
         let mut guard = 0;
         while app.tutorial.is_some() {
             guard += 1;
-            assert!(guard < 50, "tutorial should finish");
+            assert!(guard < 50, "tutorial '{name}' should finish");
             let run = app.tutorial.unwrap();
             let step = &TUTORIALS[run.tutorial].steps[run.step];
             if step.assist.is_some() {
@@ -4277,19 +4272,100 @@ mod tests {
                 app.apply(Action::TutorialNext);
             }
         }
+    }
+
+    /// #1241: finishing a tutorial records it for the Confirm-SVG check in the pane (#1260).
+    #[test]
+    fn finishing_a_tutorial_marks_it_completed() {
+        let mut app = AppState::default();
+        assert!(!app.tutorial_completed("cube"));
+        // Open the pane first so we can assert StartTutorial closes it.
+        app.apply(Action::SetTutorialPane { open: Some(true) });
+        assert!(app.panes.is_visible(Pane::Tutorials));
+        finish_tutorial_via_next(&mut app, "cube");
         assert!(app.tutorial_completed("cube"));
         assert!(app.completed_tutorials_dirty);
+        // #1289 reopens it when more remain; the close-on-start is checked below.
+    }
+
+    /// Starting a walkthrough closes the Tutorials list (#1241).
+    #[test]
+    fn starting_a_tutorial_closes_the_pane() {
+        let mut app = AppState::default();
+        app.apply(Action::SetTutorialPane { open: Some(true) });
+        app.apply(Action::StartTutorial {
+            index: tutorial_index("cube").unwrap(),
+        });
+        assert!(
+            !app.panes.is_visible(Pane::Tutorials),
+            "starting a walkthrough closes the pane"
+        );
+    }
+
+    /// #1289: when a walkthrough finishes and others remain, open the Tutorials pane.
+    #[test]
+    fn finishing_a_tutorial_opens_pane_when_more_remain() {
+        let mut app = AppState::default();
+        assert!(!app.panes.is_visible(Pane::Tutorials));
+        finish_tutorial_via_next(&mut app, "cube");
+        assert!(app.tutorial_completed("cube"));
+        assert!(
+            app.panes.is_visible(Pane::Tutorials),
+            "more unfinished tutorials → list reopens so the user can pick next"
+        );
+    }
+
+    /// #1289: finishing the last incomplete tutorial leaves the pane closed.
+    #[test]
+    fn finishing_the_last_tutorial_does_not_open_pane() {
+        let mut app = AppState::default();
+        // Mark every walkthrough complete except cube.
+        for tut in TUTORIALS.iter().filter(|t| t.name != "cube") {
+            app.mark_tutorial_completed(tut.name);
+        }
+        app.apply(Action::SetTutorialPane { open: Some(false) });
+        finish_tutorial_via_next(&mut app, "cube");
+        assert!(app.tutorial_completed("cube"));
+        assert!(
+            !app.panes.is_visible(Pane::Tutorials),
+            "nothing left to pick → don't reopen the list"
+        );
     }
 
     /// #1241: the Tutorials pane flag is scriptable.
     #[test]
     fn tutorial_pane_toggles() {
         let mut app = AppState::default();
-        assert!(!app.tutorial_pane_open);
+        assert!(!app.panes.is_visible(Pane::Tutorials));
         app.apply(Action::SetTutorialPane { open: Some(true) });
-        assert!(app.tutorial_pane_open);
+        assert!(app.panes.is_visible(Pane::Tutorials));
         app.apply(Action::SetTutorialPane { open: None });
-        assert!(!app.tutorial_pane_open);
+        assert!(!app.panes.is_visible(Pane::Tutorials));
+    }
+
+    /// #1291: Tutorials is a real pane — View ▸ Panes and `bearcad.ui.pane` both toggle it.
+    #[test]
+    fn tutorials_is_a_toggleable_pane() {
+        assert!(
+            Pane::ALL.contains(&Pane::Tutorials),
+            "View ▸ Panes iterates Pane::ALL"
+        );
+        assert_eq!(Pane::Tutorials.label(), "Tutorials");
+        assert_eq!(Pane::Tutorials.script_name(), "tutorials");
+        assert_eq!(Pane::from_name("tutorials"), Some(Pane::Tutorials));
+
+        let mut app = AppState::default();
+        assert!(
+            !app.panes.is_visible(Pane::Tutorials),
+            "closed by default (unlike Elements/Context/Params)"
+        );
+        app.apply(Action::SetPaneVisible {
+            pane: Pane::Tutorials,
+            visible: true,
+        });
+        assert!(app.panes.is_visible(Pane::Tutorials));
+        app.apply(Action::TogglePane(Pane::Tutorials));
+        assert!(!app.panes.is_visible(Pane::Tutorials));
     }
 
     /// #1255: pane title matches Elements / Parameters style.

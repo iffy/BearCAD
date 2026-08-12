@@ -3595,7 +3595,7 @@ impl App {
         if self.state.tutorial.is_some() {
             return;
         }
-        let open = self.state.tutorial_pane_open;
+        let open = self.state.panes.is_visible(Pane::Tutorials);
         let image = egui::Image::new(icons::sized_texture_at(
             ui.ctx(),
             icons::IconId::GraduationCap,
@@ -3615,12 +3615,13 @@ impl App {
         }
     }
 
-    /// The Tutorials pane (#1241): every registered walkthrough, with the same Confirm
-    /// SVG check used by tool commit buttons for ones already finished (#1260). Heading
-    /// matches other panes (#1255); each walkthrough is a full-row button so hover stays
-    /// continuous and the cursor stays a pointer (#1252/#1255).
+    /// The Tutorials pane (#1241 / #1291): every registered walkthrough, with the same
+    /// Confirm SVG check used by tool commit buttons for ones already finished (#1260).
+    /// Heading matches other panes (#1255); each walkthrough is a full-row button so hover
+    /// stays continuous and the cursor stays a pointer (#1252/#1255). Toggleable from
+    /// View ▸ Panes like every other pane.
     fn show_tutorial_pane(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
-        if !self.state.tutorial_pane_open {
+        if !self.state.panes.is_visible(Pane::Tutorials) {
             return;
         }
         let mut start: Option<usize> = None;
@@ -3681,7 +3682,7 @@ impl App {
             self.state.apply(Action::StartTutorial { index });
         }
         if !kept {
-            self.state.tutorial_pane_open = false;
+            self.state.panes.set(Pane::Tutorials, false);
         }
     }
 

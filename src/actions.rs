@@ -3129,11 +3129,19 @@ pub enum Pane {
     Parameters,
     /// Properties for the current tree selection.
     Context,
+    /// Interactive walkthrough list (#1241 / #1291). Closed by default.
+    Tutorials,
 }
 
 impl Pane {
-    /// All panes, in menu order.
-    pub const ALL: &'static [Pane] = &[Pane::Hierarchy, Pane::Context, Pane::Parameters, Pane::ViewCube];
+    /// All panes, in menu order (View ▸ Panes).
+    pub const ALL: &'static [Pane] = &[
+        Pane::Hierarchy,
+        Pane::Context,
+        Pane::Parameters,
+        Pane::Tutorials,
+        Pane::ViewCube,
+    ];
 
     /// Human-readable label for menus.
     pub fn label(self) -> &'static str {
@@ -3142,6 +3150,7 @@ impl Pane {
             Pane::Hierarchy => "Elements",
             Pane::Parameters => "Parameters",
             Pane::Context => "Context",
+            Pane::Tutorials => "Tutorials",
         }
     }
 
@@ -3152,6 +3161,7 @@ impl Pane {
             Pane::Hierarchy => "hierarchy",
             Pane::Parameters => "parameters",
             Pane::Context => "context",
+            Pane::Tutorials => "tutorials",
         }
     }
 
@@ -3163,6 +3173,7 @@ impl Pane {
             "hierarchy" | "tree" | "dag" | "elements" => Some(Pane::Hierarchy),
             "parameters" | "params" | "param" => Some(Pane::Parameters),
             "context" | "properties" | "props" => Some(Pane::Context),
+            "tutorials" | "tutorial" => Some(Pane::Tutorials),
             _ => None,
         }
     }
@@ -3175,6 +3186,9 @@ pub struct PaneVisibility {
     pub hierarchy: bool,
     pub parameters: bool,
     pub context: bool,
+    /// Tutorials list (#1241); off until the user opens it (or a finished walkthrough
+    /// reopens it when more remain, #1289).
+    pub tutorials: bool,
 }
 
 impl Default for PaneVisibility {
@@ -3184,6 +3198,7 @@ impl Default for PaneVisibility {
             hierarchy: true,
             parameters: true,
             context: true,
+            tutorials: false,
         }
     }
 }
@@ -3195,6 +3210,7 @@ impl PaneVisibility {
             Pane::Hierarchy => self.hierarchy,
             Pane::Parameters => self.parameters,
             Pane::Context => self.context,
+            Pane::Tutorials => self.tutorials,
         }
     }
 
@@ -3204,6 +3220,7 @@ impl PaneVisibility {
             Pane::Hierarchy => self.hierarchy = visible,
             Pane::Parameters => self.parameters = visible,
             Pane::Context => self.context = visible,
+            Pane::Tutorials => self.tutorials = visible,
         }
     }
 
@@ -3659,9 +3676,6 @@ pub struct AppState {
     /// The Settings window (#720) is open. Lives here (not on `App`) so scripts can
     /// drive it for docs captures (#737): `bearcad.ui.settings(...)`.
     pub settings_open: bool,
-    /// The Tutorials pane (#1241) is open. Lives here so scripts can drive it:
-    /// `bearcad.ui.tutorial_pane(...)`.
-    pub tutorial_pane_open: bool,
     /// Registry names of finished tutorials (#1241). Mirrored from
     /// [`crate::settings::AppSettings`]; the UI shows a Confirm-SVG check for each (#1260).
     pub completed_tutorials: Vec<String>,
@@ -3916,7 +3930,6 @@ impl Default for AppState {
             move_translate_mode: crate::model::MoveTranslateMode::default(),
             help_mode: false,
             settings_open: false,
-            tutorial_pane_open: false,
             completed_tutorials: Vec::new(),
             completed_tutorials_dirty: false,
             mcmaster_open: false,
@@ -7710,11 +7723,18 @@ impl AppState {
         }
     }
 
-    /// End a finished walkthrough and remember it (#1241).
+    /// End a finished walkthrough and remember it (#1241). When other tutorials are
+    /// still incomplete, open the Tutorials pane so the user can pick the next one (#1289).
     fn finish_tutorial(&mut self, index: usize) {
         self.tutorial = None;
         if let Some(tut) = crate::tutorial::TUTORIALS.get(index) {
             self.mark_tutorial_completed(tut.name);
+        }
+        let more = crate::tutorial::TUTORIALS
+            .iter()
+            .any(|t| !self.tutorial_completed(t.name));
+        if more {
+            self.panes.set(Pane::Tutorials, true);
         }
         self.status = "Tutorial complete — happy modeling!".to_string();
     }
@@ -10171,8 +10191,11 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::SetTutorialPane { open } => {
-                self.tutorial_pane_open = open.unwrap_or(!self.tutorial_pane_open);
-                self.status = if self.tutorial_pane_open {
+                // Same flag as View ▸ Panes ▸ Tutorials (#1291); keep the dedicated
+                // script verb (`bearcad.ui.tutorial_pane`) as a thin wrapper.
+                let visible = open.unwrap_or(!self.panes.is_visible(Pane::Tutorials));
+                self.panes.set(Pane::Tutorials, visible);
+                self.status = if visible {
                     "Tutorials opened".to_string()
                 } else {
                     "Tutorials closed".to_string()
@@ -12738,7 +12761,7 @@ impl AppState {
                 // Same home pose as View → Home so every walkthrough starts oriented the
                 // same way, even if the user had spun/zoomed the camera (#1261).
                 self.cam.start_home_transition(VIEW_TRANSITION_DURATION);
-                self.tutorial_pane_open = false;
+                self.panes.set(Pane::Tutorials, false);
                 self.tutorial =
                     Some(crate::tutorial::TutorialRun { tutorial: index, step: 0, hold: false });
                 // Step 0's on_enter seeds the document (e.g. navigate starts with cubes, #1269).

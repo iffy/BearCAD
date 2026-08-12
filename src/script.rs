@@ -4838,6 +4838,7 @@ fn pane_shell_id(pane: crate::actions::Pane) -> Option<&'static str> {
         Pane::Hierarchy => Some("tree"),
         Pane::Parameters => Some("parameters"),
         Pane::Context => Some("context"),
+        Pane::Tutorials => Some("tutorials"),
         Pane::ViewCube => None,
     }
 }
