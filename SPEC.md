@@ -2856,8 +2856,9 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   definitions) plus the **computed value on its own line inside the box whenever it differs
   from what was typed**, units included: a bare `10` in a length field previews `= 10.0 mm`
   (the default unit made explicit), `1in` previews `= 25.4 mm`, while `12.5 mm` (or any
-  formatting-equivalent like `12.5mm`) previews nothing
-  (`value_input_computed_display`/`canonical_value_text`). **Errors wait for a commit**
+  formatting-equivalent like `12.5mm`, `10mm`, `10.00 mm`) previews nothing
+  (`value_input_computed_display`/`canonical_value_text` — trailing zeros after the
+  decimal are not a difference). **Errors wait for a commit**
   (#824): half-typed text is always invalid — `thick` isn't defined until `= 5mm` lands —
   so the red text and error tooltip stay away while the field has the keyboard, and appear
   once Enter says "I meant that" (and go away again on the next keystroke). The computed value

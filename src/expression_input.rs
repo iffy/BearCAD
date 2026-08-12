@@ -887,7 +887,7 @@ pub enum ValueKind {
 /// variables, expressions, functions, units, and inline `name=value` definitions,
 /// with autocomplete, error tooltips, and the **computed value alongside** whenever
 /// it differs from what was typed (including units — a bare number gains the default
-/// unit in the preview; retyping exactly the computed value hides it).
+/// unit in the preview; retyping the same number, ignoring trailing zeros, hides it).
 pub struct ValueInput<'a> {
     pub id: Id,
     pub kind: ValueKind,
@@ -1008,12 +1008,30 @@ impl<'a> ValueInput<'a> {
 }
 
 /// The computed-value text a [`ValueInput`] shows beside the field, or `None` when the
-/// input already reads identically (ignoring whitespace and case, so `12.5mm` matches
-/// `12.5 mm`).
+/// input already reads identically (ignoring whitespace, case, and trailing zeros after
+/// the decimal, so `12.5mm` and `10.00 mm` match `12.5 mm` / `10.0 mm`).
 pub fn value_input_computed_display(
     text: &str,
     kind: ValueKind,
     doc: &Document,
+) -> Option<String> {
+    value_input_computed_display_in(
+        text,
+        kind,
+        doc,
+        doc.default_length_unit,
+        doc.default_angle_unit,
+    )
+}
+
+/// Like [`value_input_computed_display`], formatting in `length_unit` / `angle_unit`
+/// (sketch fields follow the sketch's unit, not always the document default).
+pub fn value_input_computed_display_in(
+    text: &str,
+    kind: ValueKind,
+    doc: &Document,
+    length_unit: crate::value::LengthUnit,
+    angle_unit: crate::value::AngleUnit,
 ) -> Option<String> {
     let t = text.trim();
     if t.is_empty() {
@@ -1022,11 +1040,11 @@ pub fn value_input_computed_display(
     let display = match kind {
         ValueKind::Length => {
             let v = crate::value::computed_length_in_doc(t, doc)?;
-            crate::value::format_length_display_in(v, doc.default_length_unit)
+            crate::value::format_length_display_in(v, length_unit)
         }
         ValueKind::Angle => {
             let v = crate::value::computed_angle_in_doc(t, doc)?;
-            crate::value::format_angle_display_in(v, doc.default_angle_unit)
+            crate::value::format_angle_display_in(v, angle_unit)
         }
         ValueKind::Count => {
             let v = crate::value::computed_length_in_doc(t, doc)?;
@@ -1050,7 +1068,8 @@ pub fn value_input_computed_display(
 }
 
 /// Canonical form for comparing a typed value against its computed display: lowercase,
-/// whitespace dropped, and the leading number normalized (`45.0 deg` == `45deg`).
+/// whitespace dropped, and the leading number normalized so trailing zeros after the
+/// decimal do not count (`10 mm` == `10.0 mm` == `10.00mm`; `45.0 deg` == `45deg`).
 pub(crate) fn canonical_value_text(s: &str) -> String {
     let squashed: String = s
         .chars()
@@ -1215,8 +1234,9 @@ mod tests {
         assert!(COMPUTED_CHIP_HEIGHT > 0.0);
     }
 
-    /// #456: the computed value shows exactly when it differs from the typed text —
-    /// a bare number gains the default unit, an exact match (modulo spacing/case) hides.
+    /// #456/#1305: the computed value shows exactly when it differs from the typed text —
+    /// a bare number gains the default unit; an exact match (spacing, case, trailing zeros)
+    /// hides.
     #[test]
     fn value_input_computed_display_semantics() {
         let mut doc = Document::default();
@@ -1262,6 +1282,68 @@ mod tests {
         );
         // Empty shows nothing.
         assert_eq!(value_input_computed_display("", ValueKind::Length, &doc), None);
+    }
+
+    /// #1305: trailing zeros after the decimal are not a real difference — `10 mm` and
+    /// `10.00 mm` are the same number as the formatted `10.0 mm`, so hide the computed line.
+    /// A bare number still previews the default unit (`10` → `10.0 mm`).
+    #[test]
+    fn value_input_hides_computed_when_only_trailing_zeros_differ() {
+        let doc = Document::default();
+        assert_eq!(value_input_computed_display("10 mm", ValueKind::Length, &doc), None);
+        assert_eq!(value_input_computed_display("10mm", ValueKind::Length, &doc), None);
+        assert_eq!(value_input_computed_display("10.0 mm", ValueKind::Length, &doc), None);
+        assert_eq!(value_input_computed_display("10.00 mm", ValueKind::Length, &doc), None);
+        assert_eq!(value_input_computed_display("10.50 mm", ValueKind::Length, &doc), None);
+        assert_eq!(value_input_computed_display("12.50mm", ValueKind::Length, &doc), None);
+        // Bare number: the unit is a real difference, even when the digits only add `.0`.
+        assert_eq!(
+            value_input_computed_display("10", ValueKind::Length, &doc),
+            Some("10.0 mm".to_string())
+        );
+        assert_eq!(
+            value_input_computed_display("10.00", ValueKind::Length, &doc),
+            Some("10.0 mm".to_string())
+        );
+        assert_eq!(value_input_computed_display("45.0 deg", ValueKind::Angle, &doc), None);
+        assert_eq!(value_input_computed_display("45.00deg", ValueKind::Angle, &doc), None);
+        assert_eq!(value_input_computed_display("90.0deg", ValueKind::Angle, &doc), None);
+        assert_eq!(value_input_computed_display("4.0", ValueKind::Count, &doc), None);
+        assert_eq!(value_input_computed_display("4.00", ValueKind::Count, &doc), None);
+        assert_eq!(canonical_value_text("10.00 mm"), canonical_value_text("10.0 mm"));
+        assert_eq!(canonical_value_text("10 mm"), canonical_value_text("10.0 mm"));
+        assert_eq!(canonical_value_text("10.50mm"), canonical_value_text("10.5 mm"));
+        // Sketch fields format in the sketch unit; trailing zeros still hide.
+        assert_eq!(
+            value_input_computed_display_in(
+                "1.00 in",
+                ValueKind::Length,
+                &doc,
+                crate::value::LengthUnit::In,
+                crate::value::AngleUnit::Deg,
+            ),
+            None
+        );
+        assert_eq!(
+            value_input_computed_display_in(
+                "1 in",
+                ValueKind::Length,
+                &doc,
+                crate::value::LengthUnit::In,
+                crate::value::AngleUnit::Deg,
+            ),
+            None
+        );
+        assert_eq!(
+            value_input_computed_display_in(
+                "25.4mm",
+                ValueKind::Length,
+                &doc,
+                crate::value::LengthUnit::In,
+                crate::value::AngleUnit::Deg,
+            ),
+            Some("1.0 in".to_string())
+        );
     }
 
     #[test]

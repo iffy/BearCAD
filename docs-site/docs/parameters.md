@@ -57,7 +57,8 @@ bearcad.unit_override{ instance = 0, name = "width" }   -- back to the part's va
 
 The text you type is stored verbatim — reopen the field and `3mm + 2in` is still there.
 Whenever what you typed isn't literally the resulting value, the field shows the computed
-result beside it — `1in` shows `= 25.4 mm`, a bare `10` shows `= 10.0 mm`.
+result beside it — `1in` shows `= 25.4 mm`, a bare `10` shows `= 10.0 mm`. Trailing zeros
+do not count: `10mm` and `10.00 mm` do not preview `10.0 mm`.
 
 While typing a name, autocomplete offers matching parameters: **Space**/**Tab** completes,
 **Enter** completes *and* commits. Unit instances complete too: typing `fo` offers `foo`

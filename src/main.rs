@@ -173,7 +173,6 @@ use script::{ScriptRunner, SyntheticInput};
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 use expression_input::length_expression_field_errors;
-use value::{computed_length_in_doc, shows_computed_length_in_doc};
 
 /// macOS maximize must run after eframe shows the window (post-first-paint).
 fn uses_deferred_launch_maximize() -> bool {
@@ -20877,28 +20876,24 @@ fn show_sketch_dimension_field(
     } else {
         length_expression_field_errors(text, doc, None)
     };
-    let show_computed_row = if angle {
-        crate::value::shows_computed_angle_in_doc(text, doc)
+    // Same hide-when-equivalent rule as pane ValueInputs (#1305): trailing zeros,
+    // spacing, and case are not a difference. Format in the sketch's unit.
+    let kind = if angle {
+        expression_input::ValueKind::Angle
     } else {
-        shows_computed_length_in_doc(text, doc)
+        expression_input::ValueKind::Length
     };
-    // The computed line follows the *sketch's* unit, which is the one being drawn in.
-    let computed = if !field_errors.is_empty() || !show_computed_row {
-        None
-    } else if angle {
-        let unit = match sketch {
-            Some(s) => crate::model::effective_angle_unit(doc, s),
-            None => doc.default_angle_unit,
-        };
-        crate::value::computed_angle_in_doc(text, doc)
-            .map(|v| crate::value::format_angle_display_in(v, unit))
-    } else {
-        let unit = match sketch {
-            Some(s) => crate::model::effective_length_unit(doc, s),
-            None => doc.default_length_unit,
-        };
-        computed_length_in_doc(text, doc).map(|v| crate::value::format_length_display_in(v, unit))
+    let (length_unit, angle_unit) = match sketch {
+        Some(s) => (
+            crate::model::effective_length_unit(doc, s),
+            crate::model::effective_angle_unit(doc, s),
+        ),
+        None => (doc.default_length_unit, doc.default_angle_unit),
     };
+    let computed_raw =
+        expression_input::value_input_computed_display_in(text, kind, doc, length_unit, angle_unit);
+    let reserve_computed = computed_raw.is_some();
+    let computed = computed_raw.filter(|_| field_errors.is_empty());
     let out = expression_input::boxed::show(
         ui,
         id,
@@ -20908,7 +20903,7 @@ fn show_sketch_dimension_field(
         &field_errors,
         &[],
         computed,
-        show_computed_row,
+        reserve_computed,
         None,
     );
     let resp = &out.response;

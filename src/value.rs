@@ -339,8 +339,9 @@ pub fn computed_length_in_doc(text: &str, doc: &Document) -> Option<f32> {
     eval_length_mm_in_doc(t, doc).or_else(|| eval_length_mm(t))
 }
 
-/// Whether the text uses expression syntax (operators, parentheses, or units) and
-/// should show a computed value above the input field.
+/// Whether the text uses expression syntax (operators, parentheses, or units).
+/// Display uses [`crate::expression_input::value_input_computed_display`] (#1305).
+#[cfg(test)]
 pub fn shows_computed_length(text: &str) -> bool {
     let t = text.trim();
     if t.is_empty() {
@@ -356,7 +357,8 @@ pub fn shows_computed_length(text: &str) -> bool {
     has_length_unit_suffix(t)
 }
 
-/// Whether to show a computed value above a dimension field in the document context.
+/// Whether the text looks like a length expression in document context.
+#[cfg(test)]
 pub fn shows_computed_length_in_doc(text: &str, doc: &Document) -> bool {
     let t = text.trim();
     if t.is_empty() {
@@ -606,7 +608,8 @@ pub fn computed_angle_in_doc(text: &str, doc: &Document) -> Option<f32> {
     eval_angle_rad_in_doc(t, doc).or_else(|| eval_angle_rad(t))
 }
 
-/// Whether to show a computed value above an angle dimension field.
+/// Whether the text uses angle-expression syntax.
+#[cfg(test)]
 pub fn shows_computed_angle(text: &str) -> bool {
     let t = text.trim();
     if t.is_empty() {
@@ -621,6 +624,7 @@ pub fn shows_computed_angle(text: &str) -> bool {
     has_angle_unit_suffix(t)
 }
 
+#[cfg(test)]
 pub fn shows_computed_angle_in_doc(text: &str, doc: &Document) -> bool {
     let t = text.trim();
     if t.is_empty() {
@@ -648,6 +652,7 @@ pub fn has_angle_unit_suffix(text: &str) -> bool {
     })
 }
 
+#[cfg(test)]
 fn has_length_unit_suffix(text: &str) -> bool {
     const UNITS: &[&str] = &["mm", "cm", "ft", "in", "m"];
     let lower: String = text
@@ -1553,6 +1558,17 @@ mod tests {
         assert!(shows_computed_length("2in + 5mm / 2"));
         assert!(shows_computed_length("(10 + 5)mm"));
         assert!(shows_computed_length("10 - 5"));
+    }
+
+    #[test]
+    fn shows_computed_angle_detects_syntax() {
+        assert!(!shows_computed_angle(""));
+        assert!(!shows_computed_angle("45"));
+        assert!(shows_computed_angle("45deg"));
+        assert!(shows_computed_angle("45deg + 45deg"));
+        let doc = Document::default();
+        assert!(shows_computed_angle_in_doc("45deg", &doc));
+        assert!(!shows_computed_angle_in_doc("", &doc));
     }
 
     #[test]
