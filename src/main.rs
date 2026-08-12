@@ -6257,7 +6257,7 @@ impl App {
             if self.state.creating_rect.is_none()
                 && self.state.creating_line.is_none()
                 && self.state.sketch_session.is_none()
-                && ctx.input(|i| i.key_pressed(egui::Key::B))
+                && consume_shape_tool_key(ctx)
             {
                 if self.state.tool != Tool::Shape {
                     self.state.apply(Action::SetTool(Tool::Shape));
@@ -17698,6 +17698,13 @@ impl eframe::App for App {
 /// is active.
 fn keyboard_shortcuts_suppressed(ctx: &egui::Context) -> bool {
     ctx.egui_wants_keyboard_input()
+}
+
+/// B arms the Shape tool / cycles cuboid→cylinder→sphere. The key is consumed so a
+/// multipass layout discard cannot fire it again — a second pass would remount the
+/// Context ValueInputs in place and flash them red (#1320).
+fn consume_shape_tool_key(ctx: &egui::Context) -> bool {
+    ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::B))
 }
 
 /// The DEV → Report issue window's state (#627): the description text, the attachment
@@ -34531,6 +34538,47 @@ mod tests {
         ctx.memory_mut(|mem| mem.request_focus(egui::Id::new("test_text_input")));
         assert!(keyboard_shortcuts_suppressed(&ctx));
     }
+
+    /// #1320: B must cycle the Shape tool once per frame. `key_pressed` stays true for
+    /// every pass of a discarded layout, so Width/Depth/Height/Radius remount in place
+    /// and flash red.
+    #[test]
+    fn shape_tool_b_key_fires_once_across_multipass() {
+        let ctx = egui::Context::default();
+        ctx.options_mut(|o| {
+            o.max_passes = std::num::NonZeroUsize::new(2).unwrap();
+        });
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key: egui::Key::B,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let mut fires = 0;
+        let mut passes = 0;
+        let output = ctx.run_ui(input, |ui| {
+            passes += 1;
+            if super::consume_shape_tool_key(ui.ctx()) {
+                fires += 1;
+            }
+            if ui.ctx().current_pass_index() == 0 {
+                ui.ctx().request_discard("force second pass");
+            }
+        });
+        assert!(
+            passes >= 2 || output.platform_output.num_completed_passes >= 2,
+            "need a discarded second pass to reproduce the flash (passes={passes}, completed={})",
+            output.platform_output.num_completed_passes
+        );
+        assert_eq!(
+            fires, 1,
+            "B must cycle only once per frame, not once per layout pass (passes={passes})"
+        );
+    }
+
+
 
     #[test]
     fn should_commit_sketch_on_enter_focused_field_or_unfocused_viewport() {

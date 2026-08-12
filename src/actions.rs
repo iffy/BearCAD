@@ -18552,6 +18552,12 @@ pub fn set_tool_mode(state: &mut AppState, name: &str) -> Result<(), String> {
                 None => Err("the Move tool has nothing in progress to set a mode on".to_string()),
             }
         }
+        Tool::Shape => {
+            let kind = crate::model::PrimitiveKind::from_name(name)
+                .ok_or_else(|| format!("unknown Shape mode '{name}'"))?;
+            state.apply(Action::SetShapeKind { kind });
+            Ok(())
+        }
         other => Err(format!("the {other:?} tool has no modes")),
     }
 }
@@ -18825,6 +18831,21 @@ mod tests {
 
         // A tool with no modes says so.
         state.tool = Tool::Circle;
+        assert!(set_tool_mode(&mut state, "free").is_err());
+
+        // Shape: cuboid / cylinder / sphere (#1320).
+        state.tool = Tool::Shape;
+        state.apply(Action::SetTool(Tool::Shape));
+        assert!(set_tool_mode(&mut state, "cylinder").is_ok());
+        assert_eq!(state.shape_kind, crate::model::PrimitiveKind::Cylinder);
+        assert_eq!(
+            state.creating_shape.as_ref().unwrap().shape.kind,
+            crate::model::PrimitiveKind::Cylinder
+        );
+        assert!(set_tool_mode(&mut state, "sphere").is_ok());
+        assert_eq!(state.shape_kind, crate::model::PrimitiveKind::Sphere);
+        assert!(set_tool_mode(&mut state, "cuboid").is_ok());
+        assert_eq!(state.shape_kind, crate::model::PrimitiveKind::Cuboid);
         assert!(set_tool_mode(&mut state, "free").is_err());
     }
 

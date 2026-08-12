@@ -4618,6 +4618,61 @@ pub fn constraint_button_rect(
     ctx.data(|d| d.get_temp::<egui::Rect>(constraint_button_rect_id(kind)))
 }
 
+/// Stable ValueInput id for a Create Shape dimension row. Kept in the widget layer even
+/// when the current kind hides that row, so switching cuboid/cylinder/sphere does not
+/// flash red ("Widget rect changed id between passes", #1320).
+pub(crate) fn shape_dimension_field_id(label: &str) -> egui::Id {
+    egui::Id::new(("shape_field", label))
+}
+
+/// Which dimension rows the given shape kind shows in the Context pane.
+pub(crate) fn shape_field_visible(
+    kind: crate::model::PrimitiveKind,
+    field: crate::actions::ShapeDimension,
+) -> bool {
+    use crate::actions::ShapeDimension as D;
+    use crate::model::PrimitiveKind as K;
+    match (kind, field) {
+        (K::Cuboid, D::Width | D::Depth | D::Height) => true,
+        (K::Cylinder, D::Radius | D::Height) => true,
+        (K::Sphere, D::Radius) => true,
+        _ => false,
+    }
+}
+
+/// Run `add` for a shape dimension slot. Unused slots stay in the widget layer at
+/// zero size so switching kinds does not flash red (#1320). Visible and hidden
+/// paths share the same id salt so labeled_row ids do not remount.
+fn with_shape_dimension_slot<R>(
+    ui: &mut egui::Ui,
+    kind: crate::model::PrimitiveKind,
+    label: &str,
+    field: crate::actions::ShapeDimension,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    ui.push_id(("shape_dim", label), |ui| {
+        if shape_field_visible(kind, field) {
+            add(ui)
+        } else {
+            let id = shape_dimension_field_id(label);
+            if ui.ctx().memory(|m| m.focused()) == Some(id) {
+                ui.ctx().memory_mut(|m| m.surrender_focus(id));
+            }
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .invisible()
+                    .max_rect(egui::Rect::from_min_size(
+                        ui.min_rect().min,
+                        egui::Vec2::ZERO,
+                    )),
+                add,
+            )
+            .inner
+        }
+    })
+    .inner
+}
+
 /// Egui-memory key for a Create Shape dimension field (Height / Radius) drawn this frame.
 fn shape_field_rect_id(field: crate::actions::ShapeDimension) -> egui::Id {
     use crate::actions::ShapeDimension as D;
@@ -5953,16 +6008,19 @@ pub fn show_pane(
                 }
             }
         });
-        let mut dimension = |ui: &mut egui::Ui, label: &str, field: D, value: &str| {
+        let mut dimension = |ui: &mut egui::Ui, label: &str, field: D, value: &str, visible: bool| {
             labeled_row(ui, label, |ui| {
                 let mut text = value.to_string();
-                let id = egui::Id::new(("shape_field", label));
+                let id = shape_dimension_field_id(label);
                 let resp = crate::expression_input::ValueInput::from_id(
                     id,
                     crate::expression_input::ValueKind::Length,
                 )
                 .width(90.0)
                 .show(ui, &mut text, doc);
+                if !visible {
+                    return;
+                }
                 // Tutorial orb target for typing steps (#1264).
                 ui.ctx().data_mut(|d| {
                     d.insert_temp(shape_field_rect_id(field), resp.rect);
@@ -6037,17 +6095,23 @@ pub fn show_pane(
                 }
             });
         };
-        match control.kind {
-            K::Cuboid => {
-                dimension(ui, "Width", D::Width, &control.width);
-                dimension(ui, "Depth", D::Depth, &control.depth);
-                dimension(ui, "Height", D::Height, &control.height);
-            }
-            K::Cylinder => {
-                dimension(ui, "Radius", D::Radius, &control.radius);
-                dimension(ui, "Height", D::Height, &control.height);
-            }
-            K::Sphere => dimension(ui, "Radius", D::Radius, &control.radius),
+        // Always visit every slot (hide unused) so switching kinds does not remount
+        // a different ValueInput on the same rect — that flashes red (#1320).
+        for (label, field, value) in [
+            ("Width", D::Width, control.width.as_str()),
+            ("Depth", D::Depth, control.depth.as_str()),
+            ("Height", D::Height, control.height.as_str()),
+            ("Radius", D::Radius, control.radius.as_str()),
+        ] {
+            with_shape_dimension_slot(ui, control.kind, label, field, |ui| {
+                dimension(
+                    ui,
+                    label,
+                    field,
+                    value,
+                    shape_field_visible(control.kind, field),
+                );
+            });
         }
         if pending_focus_consumed {
             on_shape_edit(ShapeEdit::FocusConsumed);
@@ -8321,6 +8385,133 @@ mod tests {
             ids[1..].windows(2).all(|w| w[0] == w[1]),
             "labeled_row input id must not renumber after settle: {ids:?}"
         );
+    }
+
+    fn shape_field_painted_id(label: &str) -> egui::Id {
+        shape_dimension_field_id(label).with("painted_this_pass")
+    }
+
+    /// #1320: switching cuboid/cylinder/sphere used to destroy Width/Depth/Radius
+    /// ValueInputs and mount a different one on the same rect, which egui paints red
+    /// ("Widget rect changed id between passes"). Every slot stays in the layer.
+    #[test]
+    fn shape_dimension_field_ids_survive_kind_switch() {
+        use crate::actions::ShapeDimension as D;
+        use crate::model::PrimitiveKind as K;
+        let ctx = egui::Context::default();
+        ctx.options_mut(|o| {
+            o.max_passes = std::num::NonZeroUsize::new(2).unwrap();
+        });
+        let doc = Document::default();
+        let labels = ["Width", "Depth", "Height", "Radius"];
+        let fields = [D::Width, D::Depth, D::Height, D::Radius];
+        for kind in [K::Cuboid, K::Cylinder, K::Sphere, K::Cuboid] {
+            let mut painted = Vec::new();
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                egui::Panel::right("context").default_size(200.0).show(ui, |ui| {
+                    ui.scope_builder(
+                        egui::UiBuilder::new().id(egui::Id::new(("pane_contents", "context"))),
+                        |ui| {
+                            for (label, field) in labels.iter().zip(fields) {
+                                let mut text = "10".to_string();
+                                let id = shape_dimension_field_id(label);
+                                with_shape_dimension_slot(ui, kind, label, field, |ui| {
+                                    labeled_row(ui, *label, |ui| {
+                                        let _ = crate::expression_input::ValueInput::from_id(
+                                            id,
+                                            crate::expression_input::ValueKind::Length,
+                                        )
+                                        .width(90.0)
+                                        .show(ui, &mut text, &doc);
+                                        ui.ctx().data_mut(|d| {
+                                            d.insert_temp(shape_field_painted_id(label), true);
+                                        });
+                                    });
+                                });
+                            }
+                        },
+                    );
+                });
+                painted = labels
+                    .iter()
+                    .filter(|label| {
+                        ui.ctx()
+                            .data(|d| d.get_temp::<bool>(shape_field_painted_id(label)))
+                            .unwrap_or(false)
+                    })
+                    .copied()
+                    .collect();
+            });
+            assert_eq!(
+                painted.as_slice(),
+                labels,
+                "every dimension slot must be created for {kind:?}, got {painted:?}"
+            );
+        }
+    }
+
+    /// Without [`with_shape_dimension_slot`], unused ValueInputs leave the layer and the
+    /// next kind's field lands on the same rect (#1320).
+    #[test]
+    fn shape_dimension_field_ids_vanish_if_slots_are_dropped() {
+        use crate::actions::ShapeDimension as D;
+        use crate::model::PrimitiveKind as K;
+        let ctx = egui::Context::default();
+        let doc = Document::default();
+        let mut painted = Vec::new();
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            for (label, field) in [
+                ("Width", D::Width),
+                ("Depth", D::Depth),
+                ("Height", D::Height),
+                ("Radius", D::Radius),
+            ] {
+                if !shape_field_visible(K::Cylinder, field) {
+                    continue;
+                }
+                let mut text = "10".to_string();
+                labeled_row(ui, label, |ui| {
+                    let _ = crate::expression_input::ValueInput::from_id(
+                        shape_dimension_field_id(label),
+                        crate::expression_input::ValueKind::Length,
+                    )
+                    .width(90.0)
+                    .show(ui, &mut text, &doc);
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(shape_field_painted_id(label), true);
+                    });
+                });
+            }
+            painted = ["Width", "Depth", "Height", "Radius"]
+                .iter()
+                .filter(|label| {
+                    ui.ctx()
+                        .data(|d| d.get_temp::<bool>(shape_field_painted_id(label)))
+                        .unwrap_or(false)
+                })
+                .copied()
+                .collect();
+        });
+        assert_eq!(
+            painted.as_slice(),
+            ["Height", "Radius"],
+            "dropping unused slots unmounts Width/Depth — that is the flash"
+        );
+    }
+
+    #[test]
+    fn shape_field_visible_matches_kind() {
+        use crate::actions::ShapeDimension as D;
+        use crate::model::PrimitiveKind as K;
+        assert!(shape_field_visible(K::Cuboid, D::Width));
+        assert!(shape_field_visible(K::Cuboid, D::Depth));
+        assert!(shape_field_visible(K::Cuboid, D::Height));
+        assert!(!shape_field_visible(K::Cuboid, D::Radius));
+        assert!(shape_field_visible(K::Cylinder, D::Radius));
+        assert!(shape_field_visible(K::Cylinder, D::Height));
+        assert!(!shape_field_visible(K::Cylinder, D::Width));
+        assert!(shape_field_visible(K::Sphere, D::Radius));
+        assert!(!shape_field_visible(K::Sphere, D::Height));
     }
 
     /// #982: with a sketch open, the Select tool's picker view carries the sketch-only rule

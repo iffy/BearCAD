@@ -10441,6 +10441,40 @@ mod tests {
         assert_eq!(cm.rz, "90");
     }
 
+    /// #1320: Shape kinds are scriptable as `bearcad.ui.tool_mode`.
+    #[test]
+    fn lua_shape_tool_mode_cycles_kinds() {
+        let state = run_lua(
+            r#"
+            bearcad.ui.tool("shape")
+            bearcad.ui.tool_mode("cylinder")
+            "#,
+        );
+        assert_eq!(state.tool, crate::actions::Tool::Shape);
+        assert_eq!(state.shape_kind, crate::model::PrimitiveKind::Cylinder);
+        assert_eq!(
+            state.creating_shape.as_ref().unwrap().shape.kind,
+            crate::model::PrimitiveKind::Cylinder
+        );
+        let state = run_lua(
+            r#"
+            bearcad.ui.tool("shape")
+            bearcad.ui.tool_mode("sphere")
+            bearcad.ui.tool_mode("cuboid")
+            "#,
+        );
+        assert_eq!(state.shape_kind, crate::model::PrimitiveKind::Cuboid);
+        let refused = run_lua(
+            r#"
+            bearcad.ui.tool("shape")
+            local ok, err = pcall(bearcad.ui.tool_mode, "free")
+            assert(not ok, "the Shape tool has no Free mode")
+            assert(tostring(err):find("free"), "unexpected error: " .. tostring(err))
+            "#,
+        );
+        assert_eq!(refused.tool, crate::actions::Tool::Shape);
+    }
+
     /// #1076: Free mode's turns are scriptable alongside its amounts, and `set_mode` names all
     /// the modes the Move tool has — but not In place, which is the Joint tool's.
     #[test]

@@ -126,8 +126,8 @@ bearcad.ui.tool_mode("free")   -- put the active tool in one of its modes
 ```
 
 `tool_mode` names the mode a tool's Context pane offers — `"snap"`/`"free"` for Move,
-`"combine"`/`"cut"`/`"intersect"`/`"difference"` for Combine — reaching mode rows that a
-scripted click cannot.
+`"combine"`/`"cut"`/`"intersect"`/`"difference"` for Combine, `"cuboid"`/`"cylinder"`/
+`"sphere"` for Shape — reaching mode rows that a scripted click cannot.
 
 ## Screenshots
 
