@@ -66,6 +66,7 @@ bearcad.ui.elements_view("graph")       -- Elements-pane layout: "list" | "tree"
 ## Tabs
 
 ```lua
+bearcad.ui.os_open("part.bearcad")      -- same path as a Finder / file-manager double-click
 bearcad.ui.new_tab()                    -- blank document tab
 bearcad.ui.new_tab{ same = true }       -- same document, fresh view
 bearcad.ui.tab(1)                       -- activate tab (0-based); bare call returns active index

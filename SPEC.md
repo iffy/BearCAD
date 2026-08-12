@@ -39,8 +39,10 @@ place) and verified with `codesign --verify --deep --strict`. The `.dmg` volume 
 contain an `Applications` symlink (→ `/Applications`) alongside the app so the user can
 drag `BearCAD.app` straight into Applications from the mounted volume. The `Info.plist`
 must declare `.bearcad` as a document type (`CFBundleDocumentTypes` +
-`UTExportedTypeDeclarations` for UTI `com.bearcad.document`) so double-click opens
-BearCAD; the app handles the open-documents Apple Event at runtime (#1285). The bundle
+`UTExportedTypeDeclarations` for UTI `com.bearcad.document`) so double-click *launches*
+BearCAD. The path is not argv: AppKit delivers `application:openURLs:` after
+`applicationWillFinishLaunching:` (winit's delegate does not implement that method; we
+add it, plus an `odoc` Apple Event fallback) (#1285, #1326). The bundle
 ships a QuickLook Preview Extension at `Contents/PlugIns/BearCADQuickLook.appex`
 (`com.bearcad.app.quicklook`) that claims the same UTI and renders the `preview_stl` mesh
 snapshot embedded on save, with SceneKit camera control (rotate/pan/zoom like system STL)

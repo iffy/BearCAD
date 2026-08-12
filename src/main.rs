@@ -25,7 +25,6 @@ mod app_icon;
 mod camera;
 #[cfg(not(target_arch = "wasm32"))]
 mod cli_install;
-#[cfg(not(target_arch = "wasm32"))]
 mod file_association;
 mod command_log;
 mod command_palette;
@@ -690,6 +689,9 @@ fn run_app(script_opts: script::ScriptOptions) -> eframe::Result<()> {
                 native_menu,
                 script_failed_for_app,
             );
+            // Re-attach after EventLoop exists (winit's delegate class is live).
+            file_association::install_repaint_context(cc.egui_ctx.clone());
+            file_association::install_open_documents_handler();
             // `--tutorial <name>` starts that walkthrough on launch (#765), the desktop
             // twin of the web build's `?tutorial=` link.
             if let Some(index) = script_opts
@@ -17371,19 +17373,13 @@ impl eframe::App for App {
         }
         // Everything below still works off the context, so clone it out once.
         let ctx = &ui.ctx().clone();
-        // OS open-documents (Finder double-click while running, or late delivery) (#1285).
+        // OS open-documents (Finder double-click at launch or while running) (#1285, #1326).
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let pending = file_association::drain_pending_open_paths();
+            let pending = file_association::take_os_open_documents();
             for path in pending {
-                if path.ends_with(".bearcad")
-                    || std::path::Path::new(&path)
-                        .extension()
-                        .is_some_and(|e| e == "bearcad")
-                {
-                    self.state.apply(Action::Open { path });
-                    self.rebind_active_document();
-                }
+                self.state.apply(Action::Open { path });
+                self.rebind_active_document();
             }
         }
         // Finish a background combine/cut when the kernel is done (#1031).

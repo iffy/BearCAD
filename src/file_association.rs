@@ -1,13 +1,16 @@
-//! Register BearCAD as the app that opens `.bearcad` files on double-click (#1285).
+//! Register BearCAD as the app that opens `.bearcad` files on double-click (#1285, #1326).
 //!
-//! - **macOS:** document types live in the `.app` `Info.plist` (packaging). This module
-//!   installs an Apple Event handler so Finder-open paths actually reach the app.
+//! - **macOS:** document types live in the `.app` `Info.plist` (packaging). Launch
+//!   Services starts the bundle; Finder then delivers the path as `application:openURLs:`
+//!   (or an `odoc` Apple Event), **not** argv. The handler is attached at
+//!   `applicationWillFinishLaunching:` so the launch-time event is not lost after
+//!   winit creates `NSApplication`.
 //! - **Linux:** FreeDesktop `.desktop` + MIME XML under `~/.local/share/…`.
 //! - **Windows:** per-user `HKCU\Software\Classes` ProgID + open command.
 //!
 //! `bearcad install-cli` also registers associations; the GUI calls
 //! [`ensure_registered`] once at launch so a portable Windows/Linux binary still works
-//! without a separate install step. macOS registration is the bundled plist.
+//! without a separate install step. macOS association is the bundled plist.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -31,13 +34,14 @@ pub const DESKTOP_ID: &str = "com.bearcad.app";
 static PENDING_OPEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Queue a path the OS wants opened. Callers may pass non-`.bearcad` paths; the app
-/// filters when draining.
+/// filters when draining. `file://` URLs are decoded to filesystem paths.
 ///
 /// Filled by the macOS open-documents handler today; other platforms open via argv.
 /// Kept unconditional so tests can exercise the queue on every OS.
 #[cfg_attr(not(any(test, target_os = "macos")), allow(dead_code))]
 pub fn queue_open_path(path: impl Into<String>) {
-    let path = path.into();
+    let raw = path.into();
+    let path = path_from_os_open_spec(&raw).unwrap_or_else(|| raw.trim().to_string());
     if path.is_empty() {
         return;
     }
@@ -46,6 +50,7 @@ pub fn queue_open_path(path: impl Into<String>) {
             q.push(path);
         }
     }
+    wake_ui();
 }
 
 /// Take every path queued since the last drain.
@@ -54,6 +59,92 @@ pub fn drain_pending_open_paths() -> Vec<String> {
         .lock()
         .map(|mut q| std::mem::take(&mut *q))
         .unwrap_or_default()
+}
+
+/// True if `path` is a BearCAD document (`.bearcad`, any case).
+pub fn is_document_path(path: &str) -> bool {
+    let path = path.trim();
+    if path.is_empty() {
+        return false;
+    }
+    Path::new(path)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case(EXTENSION))
+}
+
+/// Decode a Finder / argv / `file://` spec to a filesystem path.
+///
+/// Empty input is `None`. `file://localhost/…` and percent-escapes are unfolded so
+/// Launch Services URLs and a typed path share one opener.
+pub fn path_from_os_open_spec(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if let Some(rest) = raw.strip_prefix("file://") {
+        let decoded = percent_decode(rest);
+        let path = decoded
+            .strip_prefix("localhost")
+            .unwrap_or(decoded.as_str());
+        if path.is_empty() {
+            return None;
+        }
+        Some(path.to_string())
+    } else {
+        Some(raw.to_string())
+    }
+}
+
+/// Pending OS-open paths that are BearCAD documents, already decoded.
+pub fn take_os_open_documents() -> Vec<String> {
+    drain_pending_open_paths()
+        .into_iter()
+        .filter_map(|p| path_from_os_open_spec(&p))
+        .filter(|p| is_document_path(p))
+        .collect()
+}
+
+/// Wake the egui loop so a Finder-open arriving while the app is idle is drained.
+pub fn install_repaint_context(ctx: egui::Context) {
+    if let Ok(mut slot) = EGUI_CTX.lock() {
+        *slot = Some(ctx);
+    }
+}
+
+static EGUI_CTX: Mutex<Option<egui::Context>> = Mutex::new(None);
+
+fn wake_ui() {
+    if let Ok(slot) = EGUI_CTX.lock() {
+        if let Some(ctx) = slot.as_ref() {
+            ctx.request_repaint();
+        }
+    }
+}
+
+/// Minimal percent-decode for `file://` paths (space and common escapes).
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hex = |b: u8| (b as char).to_digit(16);
+                match (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                    (Some(hi), Some(lo)) => {
+                        out.push((hi * 16 + lo) as u8);
+                        i += 3;
+                        continue;
+                    }
+                    _ => out.push(bytes[i]),
+                }
+            }
+            b'+' => out.push(b' '),
+            b => out.push(b),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Register file associations for the running binary. Idempotent.
@@ -109,7 +200,8 @@ pub fn unregister() -> Result<String, String> {
 }
 
 /// Quiet, best-effort registration at GUI launch so double-click works after a portable
-/// install (Windows/Linux). Logs failures; never aborts startup.
+/// install (Windows/Linux). On macOS, re-registers the running `.app` with Launch
+/// Services so a replaced bundle still owns `.bearcad`. Logs failures; never aborts startup.
 pub fn ensure_registered() {
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     {
@@ -117,6 +209,10 @@ pub fn ensure_registered() {
             Ok(msg) => crate::diag::info(format!("file association: {msg}")),
             Err(err) => crate::diag::warn(format!("file association: {err}")),
         }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        register_bundle_with_launch_services();
     }
 }
 
@@ -354,145 +450,333 @@ fn reg_delete(key: &str) -> Result<(), String> {
     Ok(())
 }
 
-// ── macOS open-documents Apple Event ─────────────────────────────────────────
+// ── macOS open-documents (Finder double-click) ───────────────────────────────
 
-/// Install a handler for Finder "open documents" events so double-clicked `.bearcad`
-/// files reach [`queue_open_path`]. Safe to call more than once; keeps the handler alive
-/// for the process lifetime.
+/// Install Finder open-file hooks. Safe to call more than once.
+///
+/// Must be registered **before** `eframe::run_native` so we observe
+/// `NSApplicationWillFinishLaunchingNotification`. winit's `EventLoop::new` creates
+/// `NSApplication` and claims `odoc`; the launch document is dispatched *after*
+/// willFinishLaunching, which is when we add `application:openURLs:` to winit's
+/// delegate (it does not implement that method).
 #[cfg(target_os = "macos")]
 pub fn install_open_documents_handler() {
     use std::sync::Once;
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        if let Err(e) = install_open_documents_handler_inner() {
+        if let Err(e) = register_will_finish_launching_observer() {
             crate::diag::warn(format!("open-documents handler: {e}"));
         }
     });
+    attach_open_file_hooks();
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn install_open_documents_handler() {}
 
 #[cfg(target_os = "macos")]
-fn install_open_documents_handler_inner() -> Result<(), String> {
+fn register_bundle_with_launch_services() {
+    use objc2::runtime::AnyObject;
+    use objc2::msg_send;
+
+    let bundle: *mut AnyObject = unsafe { msg_send![objc2::class!(NSBundle), mainBundle] };
+    if bundle.is_null() {
+        return;
+    }
+    let url: *mut AnyObject = unsafe { msg_send![bundle, bundleURL] };
+    if url.is_null() {
+        return;
+    }
+    let path_ns: *mut AnyObject = unsafe { msg_send![url, path] };
+    let Some(path) = nsstring_to_rust(path_ns) else {
+        return;
+    };
+    if !path.contains(".app") {
+        return;
+    }
+    // NSURL is toll-free bridged to CFURLRef. `inUpdate = true` refreshes bindings
+    // after the user replaces BearCAD.app.
+    #[link(name = "CoreServices", kind = "framework")]
+    extern "C" {
+        fn LSRegisterURL(url: *const std::ffi::c_void, update: u8) -> i32;
+    }
+    let status = unsafe { LSRegisterURL(url.cast(), 1) };
+    if status != 0 {
+        crate::diag::warn(format!("LSRegisterURL failed: {status}"));
+    } else {
+        crate::diag::info(format!("file association: registered bundle {path}"));
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn attach_open_file_hooks() {
+    if add_open_urls_to_app_delegate() {
+        return;
+    }
+    // Fallback if the delegate class is not up yet, or method add failed: steal `odoc`.
+    if objc2::runtime::AnyClass::get(c"WinitApplicationDelegate").is_some() {
+        if let Err(e) = install_odoc_apple_event_handler() {
+            crate::diag::warn(format!("open-documents Apple Event handler: {e}"));
+        }
+    }
+}
+
+/// Add `application:openURLs:` / `openFile:` / `openFiles:` to winit's
+/// `WinitApplicationDelegate`. NSApplication converts the launch `odoc` into those
+/// methods; winit 0.30 does not implement them, so Finder-open was dropped.
+#[cfg(target_os = "macos")]
+fn add_open_urls_to_app_delegate() -> bool {
+    use objc2::ffi::{self as objc_ffi};
+    use objc2::runtime::{AnyClass, AnyObject, Bool, Imp, Sel};
+    use objc2::sel;
+
+    let Some(cls) = AnyClass::get(c"WinitApplicationDelegate") else {
+        return false;
+    };
+    let cls = cls as *const AnyClass as *mut AnyClass;
+
+    unsafe extern "C-unwind" fn application_open_urls(
+        _this: *mut AnyObject,
+        _cmd: Sel,
+        _app: *mut AnyObject,
+        urls: *mut AnyObject,
+    ) {
+        for path in nsarray_urls_to_paths(urls) {
+            queue_open_path(path);
+        }
+    }
+
+    unsafe extern "C-unwind" fn application_open_file(
+        _this: *mut AnyObject,
+        _cmd: Sel,
+        _app: *mut AnyObject,
+        filename: *mut AnyObject,
+    ) -> Bool {
+        if let Some(s) = nsstring_to_rust(filename) {
+            queue_open_path(s);
+        }
+        Bool::YES
+    }
+
+    unsafe extern "C-unwind" fn application_open_files(
+        _this: *mut AnyObject,
+        _cmd: Sel,
+        _app: *mut AnyObject,
+        filenames: *mut AnyObject,
+    ) {
+        for path in nsarray_strings_to_paths(filenames) {
+            queue_open_path(path);
+        }
+    }
+
+    // `application:openURLs:` is the modern Finder path (macOS 10.13+).
+    let added_urls = unsafe {
+        objc_ffi::class_addMethod(
+            cls,
+            sel!(application:openURLs:),
+            std::mem::transmute::<
+                unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject),
+                Imp,
+            >(application_open_urls),
+            c"v@:@@".as_ptr(),
+        )
+    };
+    let _ = unsafe {
+        objc_ffi::class_addMethod(
+            cls,
+            sel!(application:openFile:),
+            std::mem::transmute::<
+                unsafe extern "C-unwind" fn(
+                    *mut AnyObject,
+                    Sel,
+                    *mut AnyObject,
+                    *mut AnyObject,
+                ) -> Bool,
+                Imp,
+            >(application_open_file),
+            c"B@:@@".as_ptr(),
+        )
+    };
+    let _ = unsafe {
+        objc_ffi::class_addMethod(
+            cls,
+            sel!(application:openFiles:),
+            std::mem::transmute::<
+                unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject),
+                Imp,
+            >(application_open_files),
+            c"v@:@@".as_ptr(),
+        )
+    };
+
+    // Success if we just added the method, or it was already added on a prior attach.
+    added_urls.as_bool() || class_has_sel(cls, sel!(application:openURLs:))
+}
+
+#[cfg(target_os = "macos")]
+fn class_has_sel(cls: *const objc2::runtime::AnyClass, sel: objc2::runtime::Sel) -> bool {
+    use objc2::msg_send;
+    if cls.is_null() {
+        return false;
+    }
+    let has: bool = unsafe { msg_send![cls, instancesRespondToSelector: sel] };
+    has
+}
+
+#[cfg(target_os = "macos")]
+fn nsarray_urls_to_paths(arr: *mut objc2::runtime::AnyObject) -> Vec<String> {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    if arr.is_null() {
+        return Vec::new();
+    }
+    let count: usize = unsafe { msg_send![arr, count] };
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let item: *mut AnyObject = unsafe { msg_send![arr, objectAtIndex: i] };
+        if item.is_null() {
+            continue;
+        }
+        let path_ns: *mut AnyObject = unsafe { msg_send![item, path] };
+        if let Some(s) = nsstring_to_rust(path_ns) {
+            out.push(s);
+            continue;
+        }
+        let abs: *mut AnyObject = unsafe { msg_send![item, absoluteString] };
+        if let Some(s) = nsstring_to_rust(abs) {
+            if let Some(p) = path_from_os_open_spec(&s) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+#[cfg(target_os = "macos")]
+fn nsarray_strings_to_paths(arr: *mut objc2::runtime::AnyObject) -> Vec<String> {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    if arr.is_null() {
+        return Vec::new();
+    }
+    let count: usize = unsafe { msg_send![arr, count] };
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let item: *mut AnyObject = unsafe { msg_send![arr, objectAtIndex: i] };
+        if let Some(s) = nsstring_to_rust(item) {
+            if let Some(p) = path_from_os_open_spec(&s) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+#[cfg(target_os = "macos")]
+fn nsstring_to_rust(s: *mut objc2::runtime::AnyObject) -> Option<String> {
+    use objc2::msg_send;
+    if s.is_null() {
+        return None;
+    }
+    let cstr: *const std::ffi::c_char = unsafe { msg_send![s, UTF8String] };
+    if cstr.is_null() {
+        return None;
+    }
+    let s = unsafe { std::ffi::CStr::from_ptr(cstr) };
+    Some(s.to_string_lossy().into_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn register_will_finish_launching_observer() -> Result<(), String> {
     use objc2::rc::Retained;
     use objc2::runtime::AnyObject;
     use objc2::{define_class, msg_send, sel, MainThreadOnly};
     use objc2_foundation::{NSObject, NSObjectProtocol};
 
-    // 'aevt' / 'odoc' / '----' as big-endian FourCCs (AEEventClass / AEEventID / AEKeyword).
-    const K_CORE_EVENT_CLASS: u32 = u32::from_be_bytes(*b"aevt");
-    const K_AE_OPEN_DOCUMENTS: u32 = u32::from_be_bytes(*b"odoc");
-    const KEY_DIRECT_OBJECT: u32 = u32::from_be_bytes(*b"----");
-
     define_class!(
         #[unsafe(super(NSObject))]
         #[thread_kind = MainThreadOnly]
-        #[name = "BearCADOpenDocumentsHandler"]
-        struct OpenDocumentsHandler;
+        #[name = "BearCADOpenFileLaunchObserver"]
+        struct OpenFileLaunchObserver;
 
-        impl OpenDocumentsHandler {
+        impl OpenFileLaunchObserver {
+            #[unsafe(method(appWillFinishLaunching:))]
+            fn app_will_finish_launching(&self, _notification: *mut AnyObject) {
+                // NSApplicationWillFinishLaunchingNotification: NSApp exists, winit's
+                // delegate is set, the queued launch `odoc` has not been dispatched yet.
+                attach_open_file_hooks();
+            }
+
             #[unsafe(method(handleOpenDocuments:withReplyEvent:))]
             fn handle_open_documents(&self, event: *mut AnyObject, _reply: *mut AnyObject) {
                 if event.is_null() {
                     return;
                 }
-                // Safety: AppKit hands a live NSAppleEventDescriptor.
                 let event: &AnyObject = unsafe { &*event };
-                let paths = paths_from_open_event(event, KEY_DIRECT_OBJECT);
-                for path in paths {
+                for path in paths_from_odoc_event(event) {
                     queue_open_path(path);
                 }
             }
         }
 
-        unsafe impl NSObjectProtocol for OpenDocumentsHandler {}
+        unsafe impl NSObjectProtocol for OpenFileLaunchObserver {}
     );
 
-    fn paths_from_open_event(event: &AnyObject, key: u32) -> Vec<String> {
-        // paramDescriptorForKeyword: → list of file descriptors
-        let list: *mut AnyObject =
-            unsafe { msg_send![event, paramDescriptorForKeyword: key] };
-        if list.is_null() {
-            return Vec::new();
-        }
-        let list: &AnyObject = unsafe { &*list };
-        let count: isize = unsafe { msg_send![list, numberOfItems] };
-        let mut out = Vec::new();
-        // Apple Event lists are 1-indexed.
-        for i in 1..=count {
-            let item: *mut AnyObject = unsafe { msg_send![list, descriptorAtIndex: i] };
-            if item.is_null() {
-                continue;
-            }
-            let item: &AnyObject = unsafe { &*item };
-            // Prefer fileURLValue (NSURL), fall back to stringValue.
-            let url: *mut AnyObject = unsafe { msg_send![item, fileURLValue] };
-            if !url.is_null() {
-                let url: &AnyObject = unsafe { &*url };
-                let path: *mut AnyObject = unsafe { msg_send![url, path] };
-                if !path.is_null() {
-                    if let Some(s) = nsstring_to_rust(path) {
-                        out.push(s);
-                        continue;
-                    }
-                }
-            }
-            let s: *mut AnyObject = unsafe { msg_send![item, stringValue] };
-            if !s.is_null() {
-                if let Some(s) = nsstring_to_rust(s) {
-                    // May be a file:// URL or a path.
-                    if let Some(path) = s.strip_prefix("file://") {
-                        out.push(urlencoding_lite_decode(path));
-                    } else {
-                        out.push(s);
-                    }
-                }
-            }
-        }
-        out
-    }
-
-    fn nsstring_to_rust(s: *mut AnyObject) -> Option<String> {
-        let cstr: *const std::ffi::c_char = unsafe { msg_send![s, UTF8String] };
-        if cstr.is_null() {
-            return None;
-        }
-        let s = unsafe { std::ffi::CStr::from_ptr(cstr) };
-        Some(s.to_string_lossy().into_owned())
-    }
-
-    /// Minimal percent-decode for file:// paths (space and common escapes).
-    fn urlencoding_lite_decode(s: &str) -> String {
-        let bytes = s.as_bytes();
-        let mut out = Vec::with_capacity(bytes.len());
-        let mut i = 0;
-        while i < bytes.len() {
-            match bytes[i] {
-                b'%' if i + 2 < bytes.len() => {
-                    let hex = |b: u8| (b as char).to_digit(16);
-                    match (hex(bytes[i + 1]), hex(bytes[i + 2])) {
-                        (Some(hi), Some(lo)) => {
-                            out.push((hi * 16 + lo) as u8);
-                            i += 3;
-                            continue;
-                        }
-                        _ => out.push(bytes[i]),
-                    }
-                }
-                b'+' => out.push(b' '),
-                b => out.push(b),
-            }
-            i += 1;
-        }
-        String::from_utf8_lossy(&out).into_owned()
-    }
-
-    // Allocate the handler on the main thread and leak a retain so AppKit can call it.
     let mtm = objc2::MainThreadMarker::new()
         .ok_or_else(|| "open-documents handler must be installed on the main thread".to_string())?;
-    let handler = OpenDocumentsHandler::alloc(mtm);
-    let handler: Retained<OpenDocumentsHandler> = unsafe { msg_send![handler, init] };
+    let observer = OpenFileLaunchObserver::alloc(mtm);
+    let observer: Retained<OpenFileLaunchObserver> = unsafe { msg_send![observer, init] };
+
+    let center: *mut AnyObject =
+        unsafe { msg_send![objc2::class!(NSNotificationCenter), defaultCenter] };
+    if center.is_null() {
+        return Err("NSNotificationCenter.defaultCenter returned nil".into());
+    }
+    let name: *mut AnyObject = unsafe {
+        msg_send![
+            objc2::class!(NSString),
+            stringWithUTF8String: c"NSApplicationWillFinishLaunchingNotification".as_ptr()
+        ]
+    };
+    let observer_obj: &AnyObject = observer.as_ref();
+    let _: () = unsafe {
+        msg_send![
+            &*center,
+            addObserver: observer_obj,
+            selector: sel!(appWillFinishLaunching:),
+            name: name,
+            object: std::ptr::null::<AnyObject>()
+        ]
+    };
+
+    // Also keep this object as the `odoc` target if we have to steal the Apple Event.
+    if let Ok(mut slot) = ODOC_TARGET.lock() {
+        *slot = Some(observer_obj as *const AnyObject as usize);
+    }
+    std::mem::forget(observer);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+static ODOC_TARGET: Mutex<Option<usize>> = Mutex::new(None);
+
+#[cfg(target_os = "macos")]
+fn install_odoc_apple_event_handler() -> Result<(), String> {
+    use objc2::runtime::AnyObject;
+    use objc2::{msg_send, sel};
+
+    const K_CORE_EVENT_CLASS: u32 = u32::from_be_bytes(*b"aevt");
+    const K_AE_OPEN_DOCUMENTS: u32 = u32::from_be_bytes(*b"odoc");
+
+    let target = ODOC_TARGET
+        .lock()
+        .ok()
+        .and_then(|g| *g)
+        .ok_or_else(|| "open-documents observer was not created".to_string())?;
+    let handler_obj = target as *const AnyObject;
+    if handler_obj.is_null() {
+        return Err("open-documents observer pointer is null".into());
+    }
 
     let manager: *mut AnyObject =
         unsafe { msg_send![objc2::class!(NSAppleEventManager), sharedAppleEventManager] };
@@ -500,7 +784,6 @@ fn install_open_documents_handler_inner() -> Result<(), String> {
         return Err("NSAppleEventManager.sharedAppleEventManager returned nil".into());
     }
     let sel = sel!(handleOpenDocuments:withReplyEvent:);
-    let handler_obj: &AnyObject = handler.as_ref();
     let _: () = unsafe {
         msg_send![
             &*manager,
@@ -510,10 +793,48 @@ fn install_open_documents_handler_inner() -> Result<(), String> {
             andEventID: K_AE_OPEN_DOCUMENTS
         ]
     };
-
-    // Keep the handler alive for the process lifetime.
-    std::mem::forget(handler);
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn paths_from_odoc_event(event: &objc2::runtime::AnyObject) -> Vec<String> {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+
+    const KEY_DIRECT_OBJECT: u32 = u32::from_be_bytes(*b"----");
+    let list: *mut AnyObject =
+        unsafe { msg_send![event, paramDescriptorForKeyword: KEY_DIRECT_OBJECT] };
+    if list.is_null() {
+        return Vec::new();
+    }
+    let list: &AnyObject = unsafe { &*list };
+    let count: isize = unsafe { msg_send![list, numberOfItems] };
+    let mut out = Vec::new();
+    for i in 1..=count {
+        let item: *mut AnyObject = unsafe { msg_send![list, descriptorAtIndex: i] };
+        if item.is_null() {
+            continue;
+        }
+        let item: &AnyObject = unsafe { &*item };
+        let url: *mut AnyObject = unsafe { msg_send![item, fileURLValue] };
+        if !url.is_null() {
+            let url: &AnyObject = unsafe { &*url };
+            let path: *mut AnyObject = unsafe { msg_send![url, path] };
+            if let Some(s) = nsstring_to_rust(path) {
+                out.push(s);
+                continue;
+            }
+        }
+        let s: *mut AnyObject = unsafe { msg_send![item, stringValue] };
+        if let Some(s) = nsstring_to_rust(s) {
+            if let Some(path) = path_from_os_open_spec(&s) {
+                out.push(path);
+            } else {
+                out.push(s);
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -566,6 +887,88 @@ mod tests {
         assert_eq!(UTI, "com.bearcad.document");
         assert_eq!(PROGID, "BearCAD.document");
         assert_eq!(DESKTOP_ID, "com.bearcad.app");
+    }
+
+    #[test]
+    fn is_document_path_accepts_bearcad_only() {
+        assert!(is_document_path("/tmp/part.bearcad"));
+        assert!(is_document_path("/tmp/part.BEARCAD"));
+        assert!(is_document_path("part.bearcad"));
+        assert!(!is_document_path("/tmp/part.bearcad.json"));
+        assert!(!is_document_path("/tmp/part.lua"));
+        assert!(!is_document_path(""));
+        assert!(!is_document_path("/tmp/part"));
+    }
+
+    #[test]
+    fn path_from_os_open_spec_decodes_file_urls() {
+        assert_eq!(
+            path_from_os_open_spec("file:///tmp/part.bearcad").as_deref(),
+            Some("/tmp/part.bearcad")
+        );
+        assert_eq!(
+            path_from_os_open_spec("file:///tmp/My%20Part.bearcad").as_deref(),
+            Some("/tmp/My Part.bearcad")
+        );
+        assert_eq!(
+            path_from_os_open_spec("file://localhost/tmp/part.bearcad").as_deref(),
+            Some("/tmp/part.bearcad")
+        );
+        assert_eq!(
+            path_from_os_open_spec("/tmp/part.bearcad").as_deref(),
+            Some("/tmp/part.bearcad")
+        );
+        assert_eq!(path_from_os_open_spec(""), None);
+        assert_eq!(path_from_os_open_spec("   "), None);
+    }
+
+    /// Finder launch-open is delivered as `application:openURLs:` on the NSApplication
+    /// delegate *after* NSApp exists — not as argv, and not to an Apple Event handler
+    /// installed before `EventLoop::new` (winit's NSApp steals `odoc`). The hooks must
+    /// attach at `applicationWillFinishLaunching:` (before the queued `odoc` is dispatched).
+    #[test]
+    fn macos_open_file_hooks_attach_at_will_finish_launching() {
+        let src = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/file_association.rs"),
+        )
+        .expect("file_association.rs");
+        assert!(
+            src.contains("NSApplicationWillFinishLaunching"),
+            "must observe willFinishLaunching so launch-time odoc is not lost:\n(handler installed only in main() is overwritten when NSApp starts)"
+        );
+        assert!(
+            src.contains("application:openURLs:"),
+            "must implement application:openURLs: on the app delegate; winit's does not"
+        );
+    }
+
+    /// The packaged `.app` Info.plist is what Launch Services uses to *launch* BearCAD
+    /// when a `.bearcad` is double-clicked. Association lives here, not in a per-user
+    /// write (macOS `register()` is a no-op).
+    #[test]
+    fn macos_app_plist_declares_bearcad_document() {
+        let pkg = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/package-release.sh"),
+        )
+        .expect("package-release.sh");
+        for needle in [
+            "CFBundleDocumentTypes",
+            "UTExportedTypeDeclarations",
+            "com.bearcad.document",
+            "CFBundleTypeExtensions",
+            "LSHandlerRank",
+            "Owner",
+            "CFBundleTypeRole",
+            "Editor",
+            "LSItemContentTypes",
+            "public.filename-extension",
+            "application/x-bearcad",
+        ] {
+            assert!(
+                pkg.contains(needle),
+                "macos Info.plist in package-release.sh must contain {needle}"
+            );
+        }
     }
 
     /// #1290: the QuickLook Preview Extension Info.plist must claim the same UTI the

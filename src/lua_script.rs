@@ -2038,6 +2038,16 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Simulate a Finder / file-manager double-click (#1326): same queue as the OS
+    // open-documents handler. Drained on the next script/GUI tick.
+    api.set(
+        "os_open",
+        lua.create_function(|_lua, path: String| {
+            crate::file_association::queue_open_path(path);
+            Ok(())
+        })?,
+    )?;
+
     api.set(
         "save",
         lua.create_function(|lua, path: Option<String>| {
@@ -6630,6 +6640,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "tutorial", "tutorial_next", "tutorial_assist", "tutorial_end", "tutorial_step",
             "tutorial_pane", "tutorials",
             "touch",
+            "os_open",
             "move", "click", "move_ground", "click_ground",
             "drag", "drag_ground", "right_drag", "right_drag_pan",
             "key", "keydown", "keyup", "type",
@@ -7493,6 +7504,31 @@ mod tests {
             "detach_tab should queue: {:?}",
             runner.pending_tab_ops
         );
+    }
+
+    /// #1326: `bearcad.ui.os_open` rides the same pending-open queue as a Finder
+    /// double-click, so the drain path is scriptable.
+    #[test]
+    fn lua_os_open_opens_via_the_finder_queue() {
+        let path = std::env::temp_dir().join(format!(
+            "bearcad_os_open_{}.bearcad",
+            std::process::id()
+        ));
+        let path_s = path.to_string_lossy().replace('\\', "\\\\");
+        let state = run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.rect{{ width = 10, height = 10 }}
+            bearcad.save("{path_s}")
+            bearcad.new()
+            assert(bearcad.count("line") == 0)
+            bearcad.ui.os_open("{path_s}")
+            bearcad.ui.wait(2)
+            assert(bearcad.count("line") == 4, "os_open should load the saved document")
+        "#
+        ));
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(state.doc.lines.len(), 4);
     }
 
     /// #46: GUI/UI manipulation lives under `bearcad.ui.*`; modeling stays top-level.

@@ -5120,6 +5120,13 @@ impl ScriptRunner {
         viewport: Option<egui::Rect>,
         ctx: &egui::Context,
     ) -> bool {
+        // Finder / `bearcad.ui.os_open` queue (#1326): same drain the GUI uses.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            for path in crate::file_association::take_os_open_documents() {
+                let _ = state.apply(Action::Open { path });
+            }
+        }
         if self.repl.is_some() {
             return self.tick_repl_mode(state, synthetic, viewport, ctx);
         }
@@ -7814,11 +7821,12 @@ fn parse_args_from_vec(args: &[String]) -> ScriptOptions {
                         || Path::new(arg).extension().is_some_and(|e| e == "lua"))
                 {
                     opts.script_path = Some(arg.to_string());
-                } else if opts.document_path.is_none()
-                    && (arg.ends_with(".bearcad")
-                        || Path::new(arg).extension().is_some_and(|e| e == "bearcad"))
-                {
-                    opts.document_path = Some(arg.to_string());
+                } else if opts.document_path.is_none() {
+                    if let Some(path) = crate::file_association::path_from_os_open_spec(arg) {
+                        if crate::file_association::is_document_path(&path) {
+                            opts.document_path = Some(path);
+                        }
+                    }
                 }
             }
             _ => {}
@@ -8443,6 +8451,13 @@ mod tests {
         assert_eq!(opts.document_path.as_deref(), Some("/tmp/test.bearcad"));
         assert!(opts.exit_on_complete);
         assert!(opts.script_path.is_none());
+    }
+
+    /// Some launchers pass a `file://` URL instead of a path (#1326).
+    #[test]
+    fn parse_args_decodes_file_url_document() {
+        let opts = parse_args(["bearcad", "file:///tmp/My%20Part.bearcad", "--exit"]);
+        assert_eq!(opts.document_path.as_deref(), Some("/tmp/My Part.bearcad"));
     }
 
     #[test]
