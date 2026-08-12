@@ -124,6 +124,8 @@ pub enum Instruction {
     New,
     Open(String),
     Save(Option<String>),
+    /// Discard persisted tessellation and rebuild (SPEC §4.4 / #1343).
+    RebuildGeometry,
     /// Export bodies to an STL file at `path`; `body` names a single body (`None` = all).
     ExportStl { path: String, body: Option<String> },
     /// Export bodies to a 3MF package at `path`; `body` names a single body (`None` = all) (#1284).
@@ -961,6 +963,7 @@ impl Instruction {
             Instruction::Open(path) => format!("bearcad.open({path:?})"),
             Instruction::Save(None) => "bearcad.save()".to_string(),
             Instruction::Save(Some(path)) => format!("bearcad.save({path:?})"),
+            Instruction::RebuildGeometry => "bearcad.rebuild_geometry()".to_string(),
             Instruction::ExportPreview { path } => format!("bearcad.export_preview({path:?})"),
             Instruction::ExportStl { path, body: None } => format!("bearcad.export_stl({path:?})"),
             Instruction::ExportStl {
@@ -2945,6 +2948,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         Action::NewDocument => Some(Instruction::New),
         Action::Open { path } => Some(Instruction::Open(path.clone())),
         Action::Save { path } => Some(Instruction::Save(path.clone())),
+        Action::ForceRebuildGeometry => Some(Instruction::RebuildGeometry),
         Action::ExportStl { path, body } => Some(Instruction::ExportStl {
             path: path.clone(),
             body: body.clone(),
@@ -5642,6 +5646,11 @@ impl ScriptRunner {
                 self.record_action_error(r);
                 StepResult::Continue
             }
+            Instruction::RebuildGeometry => {
+                let r = state.apply(Action::ForceRebuildGeometry);
+                self.record_action_error(r);
+                StepResult::Continue
+            }
             Instruction::ExportStl { path, body } => {
                 let r = state.apply(Action::ExportStl { path, body });
                 self.record_action_error(r);
@@ -7756,6 +7765,8 @@ pub struct ScriptOptions {
     /// Start a tutorial by registry name on launch (`--tutorial cube`, #765) — the same
     /// thing the web build's `?tutorial=` parameter does.
     pub tutorial: Option<String>,
+    /// Discard `geometry_cache` after opening a document (`--rebuild`, SPEC §4.4).
+    pub rebuild: bool,
 }
 
 /// Parsed command-line outcome.
@@ -7805,6 +7816,7 @@ Options:
   --tutorial <name>     Start a guided tutorial on launch (e.g. `cube`)
   --timeout <seconds>   Force-exit with an error if the app hasn't closed on
                         its own within this many seconds
+  --rebuild             Discard cached tessellation and rebuild geometry
   -h, --help            Show this help and exit
 
 Examples:
@@ -7896,6 +7908,9 @@ fn parse_args_from_vec(args: &[String]) -> ScriptOptions {
                 if i < args.len() {
                     opts.timeout_secs = args[i].parse::<u64>().ok();
                 }
+            }
+            "--rebuild" | "--force-rebuild" => {
+                opts.rebuild = true;
             }
             arg if !arg.starts_with('-') => {
                 if opts.script_path.is_none()
@@ -8493,6 +8508,7 @@ mod tests {
                 timeout_secs: None,
                 repl: false,
                 tutorial: None,
+                rebuild: false,
             })
         );
     }
@@ -8551,6 +8567,15 @@ mod tests {
         assert!(opts.exit_on_complete);
         assert!(opts.script_path.is_none());
         assert!(opts.document_path.is_none());
+    }
+
+    /// #1343: `--rebuild` discards persisted tessellation after open.
+    #[test]
+    fn parse_args_finds_rebuild_flag() {
+        let opts = parse_args(["bearcad", "part.bearcad", "--rebuild"]);
+        assert!(opts.rebuild);
+        assert_eq!(opts.document_path.as_deref(), Some("part.bearcad"));
+        assert!(!parse_args(["bearcad"]).rebuild);
     }
 
     /// #1074: an exported script spells a point on a face by the face's key, and only mentions

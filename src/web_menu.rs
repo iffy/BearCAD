@@ -33,6 +33,10 @@ pub fn bar(ui: &mut egui::Ui, pane_visible: impl Fn(Pane) -> bool) -> Option<Men
                     picked = Some(MenuCommand::Save);
                     ui.close();
                 }
+                if ui.button("Rebuild Geometry").clicked() {
+                    picked = Some(MenuCommand::RebuildGeometry);
+                    ui.close();
+                }
                 if ui.button("Load Script…").clicked() {
                     picked = Some(MenuCommand::LoadScript);
                     ui.close();

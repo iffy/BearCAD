@@ -61,6 +61,7 @@ in the desktop app.
 Other flags:
 
 - `--timeout <seconds>` — force-exit (non-zero) if the app hasn't closed in time.
+- `--rebuild` — discard cached tessellation after open and rebuild geometry.
 - `--show-commands` — echo GUI actions as `bearcad.*` calls on stdout.
 - **File → Export → Lua Script…** — write a deterministic script that recreates the
   current document (no `bearcad.ui`).

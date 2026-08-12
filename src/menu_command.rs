@@ -13,6 +13,8 @@ pub enum MenuCommand {
     Open,
     Save,
     SaveAs,
+    /// File → Rebuild Geometry: discard tessellation cache (SPEC §4.4 / #1343).
+    RebuildGeometry,
     ExportStl,
     /// File → Export → 3MF… (#1284).
     Export3mf,
@@ -77,6 +79,7 @@ impl MenuCommand {
             // Handled in the app frame (workspace-level).
             MenuCommand::NewTab => None,
             MenuCommand::Open | MenuCommand::Save | MenuCommand::SaveAs => None,
+            MenuCommand::RebuildGeometry => Some(Action::ForceRebuildGeometry),
             // Needs a file-save dialog, handled in the app frame loop.
             MenuCommand::ExportStl
             | MenuCommand::Export3mf

@@ -1959,6 +1959,9 @@ pub enum Action {
     NewDocument,
     Open { path: String },
     Save { path: Option<String> },
+    /// Discard persisted tessellation and in-memory mesh caches, then rebuild
+    /// on the next access (SPEC §4.4 / #1343).
+    ForceRebuildGeometry,
     /// Export bodies to an STL file. `body` names a single body; `None` exports all bodies.
     ExportStl { path: String, body: Option<String> },
     /// Export a technical drawing (#180) to a vector SVG file (prints to PDF).
@@ -3118,6 +3121,7 @@ impl Action {
                     | Action::SetTutorialPane { .. }
                     | Action::SetElementsViewMode { .. }
                     | Action::SetHomeView
+                    | Action::ForceRebuildGeometry
             )
     }
 
@@ -8060,6 +8064,31 @@ impl AppState {
         let _ = path;
     }
 
+    /// Seed `BODY_MESH_CACHE` from `geometry_cache` rows whose fingerprint matches (#1343).
+    fn warm_geometry_cache(&self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(session) = &self.document_session {
+            if let Err(e) = session.borrow().warm_mesh_cache(&self.doc) {
+                crate::diag::warn(format!("could not warm geometry cache: {e}"));
+            }
+        }
+    }
+
+    fn discard_geometry_cache(&mut self) {
+        crate::extrude::clear_all_mesh_caches();
+        crate::extrude::reset_mesh_cache_stats();
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(session) = &self.document_session {
+            if let Err(e) = session.borrow_mut().discard_geometry_cache() {
+                crate::diag::warn(format!("could not discard geometry cache: {e}"));
+                self.status = format!("Rebuild failed: {e}");
+                return;
+            }
+        }
+        self.doc.bump_mesh_rev();
+        self.status = "Geometry cache discarded — rebuilding".to_string();
+    }
+
     /// Poll a background boolean job and finish the commit when the kernel is done (#1031).
     /// Returns true when the job completed this call (success or failure).
     pub fn poll_boolean_job(&mut self) -> bool {
@@ -8192,6 +8221,8 @@ impl AppState {
                     self.path = Some(path.clone());
                     self.mark_saved();
                     self.attach_document_session(&path);
+                    crate::extrude::reset_mesh_cache_stats();
+                    self.warm_geometry_cache();
                     // Dynamic links pick up source changes on open (#732): the sync
                     // replaces the embedded copies before the first frame renders (and
                     // leaves the document dirty — the file on disk still holds the old
@@ -8210,6 +8241,10 @@ impl AppState {
                     ActionResult::Err(e)
                 }
             },
+            Action::ForceRebuildGeometry => {
+                self.discard_geometry_cache();
+                ActionResult::Ok
+            }
             Action::Save { path } => {
                 let target = path.or_else(|| self.path.clone());
                 match target {

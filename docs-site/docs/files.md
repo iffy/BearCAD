@@ -31,6 +31,10 @@ way back to the last saved state). Unsaved edits sit in an open SQLite transacti
 another app opening the file still sees the last save. Quitting with unsaved changes
 asks whether to **Save**, **Don't Save**, or **Cancel** so a stray ⌘Q doesn't lose work.
 
+Open shows cached tessellation when the body's fingerprint (inputs + OCCT version)
+still matches. **File → Rebuild Geometry** (or `bearcad --rebuild`) discards that
+cache and rebuilds. `bearcad.rebuild_geometry()` does the same from a script.
+
 ## Tabs
 
 **⌘/Ctrl+T** opens a new tab (blank document). **⌘/Ctrl+W** closes the active tab.

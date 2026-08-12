@@ -1,8 +1,6 @@
 // Live document session: incremental INSERT/UPDATE/DELETE inside one open
 // transaction; COMMIT on Save; ROLLBACK on discard (#1341).
 
-use std::collections::BTreeMap;
-
 /// Per-table counts from one incremental flush.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TableWrite {
@@ -54,6 +52,8 @@ pub struct DocumentSession {
     conn: Connection,
     path: String,
     flushed: Document,
+    /// Last-flushed `geometry_cache` fingerprints (`body_id` → fingerprint).
+    flushed_cache: BTreeMap<i64, u64>,
     in_txn: bool,
     last_write: IncrementalWrite,
 }
@@ -70,11 +70,14 @@ impl DocumentSession {
             .map_err(|e| e.to_string())?;
         conn.pragma_update(None, "busy_timeout", 5_000)
             .map_err(|e| e.to_string())?;
+        init_schema(&conn).map_err(|e| e.to_string())?;
+        let flushed_cache = load_geometry_cache_fingerprints(&conn)?;
         conn.execute_batch("BEGIN").map_err(|e| e.to_string())?;
         Ok(Self {
             conn,
             path: path.to_string(),
             flushed: doc.clone(),
+            flushed_cache,
             in_txn: true,
             last_write: IncrementalWrite::default(),
         })
@@ -91,9 +94,35 @@ impl DocumentSession {
     /// INSERT/UPDATE/DELETE only the rows that changed since the last flush.
     pub fn flush(&mut self, doc: &Document) -> Result<&IncrementalWrite> {
         self.ensure_txn()?;
-        self.last_write = incremental_write(&self.conn, &self.flushed, doc)?;
+        let mut stats = incremental_write(&self.conn, &self.flushed, doc)?;
+        sync_geometry_cache(&self.conn, &mut self.flushed_cache, doc, &mut stats)?;
+        self.last_write = stats;
         self.flushed = doc.clone();
         Ok(&self.last_write)
+    }
+
+    /// DELETE every `geometry_cache` row in the open transaction (#1343).
+    pub fn discard_geometry_cache(&mut self) -> Result<()> {
+        self.ensure_txn()?;
+        let n = self
+            .conn
+            .execute("DELETE FROM geometry_cache", [])
+            .map_err(|e| e.to_string())?;
+        self.flushed_cache.clear();
+        crate::extrude::clear_all_mesh_caches();
+        if n > 0 {
+            self.last_write = IncrementalWrite::default();
+            for _ in 0..n {
+                self.last_write.add_delete("geometry_cache");
+            }
+        }
+        Ok(())
+    }
+
+    /// Load matching `geometry_cache` rows into `BODY_MESH_CACHE` (#1343).
+    pub fn warm_mesh_cache(&self, doc: &Document) -> Result<u32> {
+        let rows = load_geometry_cache_rows(&self.conn)?;
+        Ok(crate::extrude::warm_persisted_meshes(doc, &rows))
     }
 
     pub fn commit(&mut self) -> Result<()> {
@@ -517,5 +546,52 @@ fn rewrite_vec<T: PartialEq>(
         .map_err(|e| e.to_string())?;
     save(conn)?;
     stats.add_update(table);
+    Ok(())
+}
+
+/// Persist committed meshes whose fingerprint still matches. Leave other bodies alone.
+fn sync_geometry_cache(
+    conn: &Connection,
+    flushed: &mut BTreeMap<i64, u64>,
+    doc: &Document,
+    stats: &mut IncrementalWrite,
+) -> Result<()> {
+    let live: std::collections::HashSet<i64> = doc.bodies.keys().map(key_bits).collect();
+    let gone: Vec<i64> = flushed
+        .keys()
+        .copied()
+        .filter(|id| !live.contains(id))
+        .collect();
+    for id in gone {
+        conn.execute(
+            "DELETE FROM geometry_cache WHERE body_id = ?1",
+            params![id],
+        )
+        .map_err(|e| e.to_string())?;
+        flushed.remove(&id);
+        stats.add_delete("geometry_cache");
+    }
+
+    for committed in crate::extrude::committed_meshes() {
+        if !doc.bodies.contains(committed.body) {
+            continue;
+        }
+        let fp = crate::extrude::body_cache_fingerprint(doc, committed.body);
+        if fp != committed.fingerprint {
+            continue;
+        }
+        let id = key_bits(committed.body);
+        if flushed.get(&id) == Some(&fp) {
+            continue;
+        }
+        let bytes = pack_triangles(&committed.mesh.triangles);
+        upsert_geometry_cache_row(conn, id, fp, &bytes)?;
+        if flushed.contains_key(&id) {
+            stats.add_update("geometry_cache");
+        } else {
+            stats.add_insert("geometry_cache");
+        }
+        flushed.insert(id, fp);
+    }
     Ok(())
 }

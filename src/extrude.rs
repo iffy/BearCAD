@@ -4099,8 +4099,9 @@ pub fn warm_body_mesh_cache(doc: &Document, body_index: crate::model::BodyKey, m
             cache.0 = fingerprint;
             cache.1.clear();
         }
-        cache.1.insert(body_index, Some(mesh));
+        cache.1.insert(body_index, Some(mesh.clone()));
     });
+    record_committed_mesh(doc, body_index, &mesh);
 }
 
 
@@ -5771,7 +5772,29 @@ fn structural_mesh_fingerprint(doc: &Document) -> u64 {
     writer.0.finish()
 }
 
+/// Probe counts for persisted mesh cache (#1343). `warmed` is how many bodies
+/// [`warm_persisted_meshes`] seeded; `hits`/`misses` count [`body_solid_mesh_unposed`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MeshCacheStats {
+    pub warmed: u32,
+    pub hits: u32,
+    pub misses: u32,
+}
+
+/// Last committed un-posed mesh for a body, keyed by that body's structural
+/// fingerprint (includes OCCT version). Incremental writes persist these.
+#[derive(Clone, Debug)]
+pub struct CommittedMesh {
+    pub body: crate::model::BodyKey,
+    pub fingerprint: u64,
+    pub mesh: SolidMesh,
+}
+
 thread_local! {
+    static MESH_CACHE_STATS: std::cell::RefCell<MeshCacheStats> =
+        std::cell::RefCell::new(MeshCacheStats::default());
+    static COMMITTED_MESHES: std::cell::RefCell<HashMap<crate::model::BodyKey, CommittedMesh>> =
+        std::cell::RefCell::new(HashMap::new());
     /// Per-thread memo for [`body_solid_mesh`] (#162): `(document fingerprint, body → mesh)`.
     /// The kernel rebuild is expensive (an extrude-to-slanted-plane does OCCT booleans), and
     /// one frame calls `body_solid_mesh` several times per body (scene build, hover picking,
@@ -5791,6 +5814,298 @@ thread_local! {
         u64,
         HashMap<crate::model::BodyKey, Option<crate::kernel::Shape>>,
     )> = std::cell::RefCell::new((0, 0, HashMap::new()));
+}
+
+/// OCCT version mixed into [`body_cache_fingerprint`] and stored on each cache row.
+pub fn cache_occt_version() -> String {
+    crate::kernel::occt_version().unwrap_or_else(|| "none".to_string())
+}
+
+/// Per-body cache key: this body's source tree + parameters + OCCT version.
+/// Independent of `mesh_rev`, so a saved fingerprint still matches after open.
+pub fn body_cache_fingerprint(doc: &Document, body: crate::model::BodyKey) -> u64 {
+    use std::hash::{Hash, Hasher};
+    struct HashWriter(std::collections::hash_map::DefaultHasher);
+    impl std::io::Write for HashWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.write(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = HashWriter(std::collections::hash_map::DefaultHasher::new());
+    cache_occt_version().hash(&mut writer.0);
+    serde_json::to_writer(&mut writer, &doc.parameters).ok();
+    let mut seen = std::collections::HashSet::new();
+    hash_body_deps(doc, body, &mut writer, &mut seen);
+    writer.0.finish()
+}
+
+fn hash_json(writer: &mut impl std::io::Write, v: &impl serde::Serialize) {
+    serde_json::to_writer(writer, v).ok();
+}
+
+fn hash_body_deps(
+    doc: &Document,
+    body: crate::model::BodyKey,
+    writer: &mut impl std::io::Write,
+    seen: &mut std::collections::HashSet<crate::model::BodyKey>,
+) {
+    if !seen.insert(body) {
+        return;
+    }
+    let Some(b) = doc.bodies.get(body) else {
+        return;
+    };
+    hash_json(writer, b);
+    match &b.source {
+        crate::model::BodySource::Extrusion(k) => hash_extrusion(doc, *k, writer),
+        crate::model::BodySource::Extrusions(ks) => {
+            for k in ks {
+                hash_extrusion(doc, *k, writer);
+            }
+        }
+        crate::model::BodySource::Imported(k) => {
+            if let Some(m) = doc.imported_meshes.get(*k) {
+                hash_json(writer, &m.source_name);
+                let _ = std::io::Write::write(
+                    writer,
+                    &(m.triangles.len() as u64).to_le_bytes(),
+                );
+                let _ = std::io::Write::write(
+                    writer,
+                    &(m.step_bytes.as_ref().map(|s| s.len()).unwrap_or(0) as u64)
+                        .to_le_bytes(),
+                );
+            }
+        }
+        crate::model::BodySource::Loft(k) => {
+            if let Some(v) = doc.lofts.get(*k) {
+                hash_json(writer, v);
+                for section in &v.sections {
+                    hash_sketch(doc, section.sketch, writer);
+                }
+            }
+        }
+        crate::model::BodySource::Revolve(k) => {
+            if let Some(v) = doc.revolutions.get(*k) {
+                hash_json(writer, v);
+                hash_sketch(doc, v.sketch, writer);
+            }
+        }
+        crate::model::BodySource::Primitive(k) => {
+            if let Some(v) = doc.primitives.get(*k) {
+                hash_json(writer, v);
+            }
+        }
+        crate::model::BodySource::Sweep(k) => {
+            if let Some(v) = doc.sweeps.get(*k) {
+                hash_json(writer, v);
+                hash_sketch(doc, v.sketch, writer);
+            }
+        }
+        crate::model::BodySource::Boolean { op, .. } => {
+            if let Some(v) = doc.boolean_ops.get(*op) {
+                hash_json(writer, v);
+                for &inp in v.a.iter().chain(v.b.iter()) {
+                    hash_body_deps(doc, inp, writer, seen);
+                }
+            }
+        }
+        crate::model::BodySource::Repeated { op, .. } => {
+            if let Some(v) = doc.repeat_ops.get(*op) {
+                hash_json(writer, v);
+                for &t in &v.targets {
+                    hash_body_deps(doc, t, writer, seen);
+                }
+            }
+        }
+        crate::model::BodySource::Moved { op, .. } => {
+            if let Some(v) = doc.move_ops.get(*op) {
+                hash_json(writer, v);
+                for &t in &v.targets {
+                    hash_body_deps(doc, t, writer, seen);
+                }
+            }
+        }
+        crate::model::BodySource::Mirrored { op, .. } => {
+            if let Some(v) = doc.mirror_ops.get(*op) {
+                hash_json(writer, v);
+                for &t in &v.targets {
+                    hash_body_deps(doc, t, writer, seen);
+                }
+            }
+        }
+        crate::model::BodySource::Sliced { op, .. } => {
+            if let Some(v) = doc.slice_ops.get(*op) {
+                hash_json(writer, v);
+                for &t in &v.targets {
+                    hash_body_deps(doc, t, writer, seen);
+                }
+            }
+        }
+        crate::model::BodySource::Shelled { op, .. } => {
+            if let Some(v) = doc.shell_ops.get(*op) {
+                hash_json(writer, v);
+                for &t in &v.targets {
+                    hash_body_deps(doc, t, writer, seen);
+                }
+            }
+        }
+        crate::model::BodySource::EdgeTreated { op, .. } => {
+            if let Some(v) = doc.edge_treatment_ops.get(*op) {
+                hash_json(writer, v);
+                for &t in &v.targets {
+                    hash_body_deps(doc, t, writer, seen);
+                }
+            }
+        }
+        crate::model::BodySource::Solid { base, add, cut } => {
+            if let Some(pk) = base {
+                if let Some(v) = doc.primitives.get(*pk) {
+                    hash_json(writer, v);
+                }
+            }
+            for k in add.iter().chain(cut.iter()) {
+                hash_extrusion(doc, *k, writer);
+            }
+        }
+        crate::model::BodySource::UnitInstance(k) | crate::model::BodySource::UnitCut { instance: k, .. } => {
+            if let Some(inst) = doc.unit_instances.get(*k) {
+                hash_json(writer, inst);
+                if let Some(unit) = doc.units.get(inst.unit) {
+                    hash_json(writer, unit);
+                }
+            }
+        }
+    }
+    for k in b.source.extrusion_indices() {
+        hash_extrusion(doc, *k, writer);
+    }
+    for k in b.source.cut_extrusion_indices() {
+        hash_extrusion(doc, *k, writer);
+    }
+}
+
+fn hash_extrusion(
+    doc: &Document,
+    key: crate::model::ExtrusionKey,
+    writer: &mut impl std::io::Write,
+) {
+    let Some(ex) = doc.extrusions.get(key) else {
+        return;
+    };
+    hash_json(writer, ex);
+    hash_sketch(doc, ex.sketch, writer);
+}
+
+fn hash_sketch(doc: &Document, sketch: crate::model::SketchId, writer: &mut impl std::io::Write) {
+    if let Some(s) = doc.sketches.get(sketch) {
+        hash_json(writer, s);
+        if let crate::model::FaceId::ConstructionPlane(p) = s.face {
+            if let Some(plane) = doc.construction_planes.get(p) {
+                hash_json(writer, plane);
+            }
+        }
+    }
+    for (k, line) in doc.lines.iter() {
+        if line.sketch == sketch {
+            hash_json(writer, &(k, line));
+        }
+    }
+    for (k, c) in doc.circles.iter() {
+        if c.sketch == sketch {
+            hash_json(writer, &(k, c));
+        }
+    }
+    for (k, c) in doc.constraints.iter() {
+        if c.sketch == sketch {
+            hash_json(writer, &(k, c));
+        }
+    }
+    for (k, t) in doc.sketch_texts.iter() {
+        if t.sketch == sketch {
+            hash_json(writer, &(k, t));
+        }
+    }
+}
+
+pub fn mesh_cache_stats() -> MeshCacheStats {
+    MESH_CACHE_STATS.with(|s| *s.borrow())
+}
+
+pub fn reset_mesh_cache_stats() {
+    MESH_CACHE_STATS.with(|s| *s.borrow_mut() = MeshCacheStats::default());
+}
+
+pub fn committed_meshes() -> Vec<CommittedMesh> {
+    COMMITTED_MESHES.with(|m| m.borrow().values().cloned().collect())
+}
+
+pub fn clear_committed_meshes() {
+    COMMITTED_MESHES.with(|m| m.borrow_mut().clear());
+}
+
+/// Drop in-memory tessellation / BREP memos and the committed-mesh store (#1343).
+pub fn clear_all_mesh_caches() {
+    BODY_MESH_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        c.0 = 0;
+        c.1.clear();
+    });
+    BODY_SHAPE_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        c.0 = 0;
+        c.1 = 0;
+        c.2.clear();
+    });
+    clear_committed_meshes();
+}
+
+fn record_committed_mesh(doc: &Document, body: crate::model::BodyKey, mesh: &SolidMesh) {
+    if mesh.triangles.is_empty() {
+        return;
+    }
+    let fingerprint = body_cache_fingerprint(doc, body);
+    COMMITTED_MESHES.with(|m| {
+        m.borrow_mut().insert(
+            body,
+            CommittedMesh {
+                body,
+                fingerprint,
+                mesh: mesh.clone(),
+            },
+        );
+    });
+}
+
+/// Seed [`BODY_MESH_CACHE`] and the committed-mesh store from persisted rows
+/// whose fingerprint still matches. Misses stay out so that body rebuilds alone.
+pub fn warm_persisted_meshes(
+    doc: &Document,
+    rows: &[(crate::model::BodyKey, u64, SolidMesh)],
+) -> u32 {
+    let fingerprint = document_mesh_fingerprint(doc);
+    let mut warmed = 0u32;
+    BODY_MESH_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.0 != fingerprint {
+            cache.0 = fingerprint;
+            cache.1.clear();
+        }
+        for (body, fp, mesh) in rows {
+            if *fp != body_cache_fingerprint(doc, *body) {
+                continue;
+            }
+            cache.1.insert(*body, Some(mesh.clone()));
+            record_committed_mesh(doc, *body, mesh);
+            warmed += 1;
+        }
+    });
+    MESH_CACHE_STATS.with(|s| s.borrow_mut().warmed += warmed);
+    warmed
 }
 
 /// Everything the **posed** presentation depends on beyond the un-posed geometry (#897):
@@ -5844,17 +6159,29 @@ pub(crate) fn body_solid_mesh_unposed(doc: &Document, body_index: crate::model::
                 cache.1.clear();
             }
             if let Some(mesh) = cache.1.get(&body_index) {
+                MESH_CACHE_STATS.with(|s| s.borrow_mut().hits += 1);
                 return Some(mesh.clone());
             }
+            MESH_CACHE_STATS.with(|s| s.borrow_mut().misses += 1);
             let mesh = body_solid_mesh_uncached(doc, body_index);
             cache.1.insert(body_index, mesh.clone());
+            if let Some(ref m) = mesh {
+                record_committed_mesh(doc, body_index, m);
+            }
             Some(mesh)
         }
         Err(_) => None,
     });
     match outcome {
         Some(mesh) => mesh,
-        None => body_solid_mesh_uncached(doc, body_index),
+        None => {
+            MESH_CACHE_STATS.with(|s| s.borrow_mut().misses += 1);
+            let mesh = body_solid_mesh_uncached(doc, body_index);
+            if let Some(ref m) = mesh {
+                record_committed_mesh(doc, body_index, m);
+            }
+            mesh
+        }
     }
 }
 

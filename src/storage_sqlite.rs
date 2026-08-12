@@ -18,6 +18,7 @@ use crate::value::{AngleUnit, LengthUnit};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 use super::Result;
 
@@ -377,6 +378,13 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             seq INTEGER PRIMARY KEY,
             size INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS geometry_cache (
+            body_id INTEGER PRIMARY KEY,
+            fingerprint INTEGER NOT NULL,
+            occt_version TEXT NOT NULL,
+            mesh BLOB NOT NULL,
+            brep BLOB
+        );
         ",
     )?;
     Ok(())
@@ -611,7 +619,115 @@ fn save_all(tx: &Connection, doc: &Document) -> Result<()> {
     save_component_members(tx, &doc.component_members)?;
     save_shape_order(tx, &doc.shape_order)?;
     save_undo_groups(tx, &doc.undo_groups)?;
+    save_geometry_cache(tx, doc)?;
     Ok(())
+}
+
+fn fingerprint_sql(fp: u64) -> i64 {
+    fp as i64
+}
+
+fn fingerprint_from_sql(fp: i64) -> u64 {
+    fp as u64
+}
+
+fn upsert_geometry_cache_row(
+    conn: &Connection,
+    body_id: i64,
+    fingerprint: u64,
+    mesh: &[u8],
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO geometry_cache (body_id, fingerprint, occt_version, mesh, brep)
+         VALUES (?1, ?2, ?3, ?4, NULL)
+         ON CONFLICT(body_id) DO UPDATE SET
+           fingerprint = excluded.fingerprint,
+           occt_version = excluded.occt_version,
+           mesh = excluded.mesh,
+           brep = excluded.brep",
+        params![
+            body_id,
+            fingerprint_sql(fingerprint),
+            crate::extrude::cache_occt_version(),
+            mesh,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn save_geometry_cache(tx: &Connection, doc: &Document) -> Result<()> {
+    let occt = crate::extrude::cache_occt_version();
+    for committed in crate::extrude::committed_meshes() {
+        if !doc.bodies.contains(committed.body) {
+            continue;
+        }
+        let fp = crate::extrude::body_cache_fingerprint(doc, committed.body);
+        if fp != committed.fingerprint {
+            continue;
+        }
+        let bytes = pack_triangles(&committed.mesh.triangles);
+        tx.execute(
+            "INSERT INTO geometry_cache (body_id, fingerprint, occt_version, mesh, brep)
+             VALUES (?1, ?2, ?3, ?4, NULL)",
+            params![
+                key_bits(committed.body),
+                fingerprint_sql(fp),
+                occt,
+                bytes,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn load_geometry_cache_rows(
+    conn: &Connection,
+) -> Result<Vec<(crate::model::BodyKey, u64, crate::extrude::SolidMesh)>> {
+    let mut stmt = conn
+        .prepare("SELECT body_id, fingerprint, occt_version, mesh FROM geometry_cache")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let want_occt = crate::extrude::cache_occt_version();
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, fp, occt, bytes) = row.map_err(|e| e.to_string())?;
+        if occt != want_occt {
+            continue;
+        }
+        let tris = unpack_triangles(&bytes)?;
+        out.push((
+            key_from(id),
+            fingerprint_from_sql(fp),
+            crate::extrude::SolidMesh { triangles: tris },
+        ));
+    }
+    Ok(out)
+}
+
+fn load_geometry_cache_fingerprints(conn: &Connection) -> Result<BTreeMap<i64, u64>> {
+    let mut stmt = conn
+        .prepare("SELECT body_id, fingerprint FROM geometry_cache")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
+        .map_err(|e| e.to_string())?;
+    let mut out = BTreeMap::new();
+    for row in rows {
+        let (id, fp) = row.map_err(|e| e.to_string())?;
+        out.insert(id, fingerprint_from_sql(fp));
+    }
+    Ok(out)
 }
 
 fn put_meta(tx: &Connection, key: &str, value: &str) -> Result<()> {
@@ -1595,6 +1711,8 @@ pub fn open(path: &str) -> Result<Document> {
         return Ok(doc);
     }
     let conn = Connection::open(path).map_err(|e| e.to_string())?;
+    // CREATE TABLE IF NOT EXISTS — older v2 files gain geometry_cache.
+    init_schema(&conn).map_err(|e| e.to_string())?;
     let version: i64 = conn
         .query_row(
             "SELECT COALESCE(MAX(id), 0) FROM schema_migrations",

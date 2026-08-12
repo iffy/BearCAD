@@ -2716,7 +2716,8 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   fingerprint no longer matches its cached entry is recomputed; everything else loads from
   cache. This keeps cached geometry correct across edits and across OCCT upgrades.
 - Because the DAG fully determines geometry, the cache is always reconstructible: a
-  "force rebuild" command (and CLI flag, §9) discards the cache and replays the DAG.
+  "force rebuild" command (**File → Rebuild Geometry**, `bearcad.rebuild_geometry()`,
+  `--rebuild`) discards `geometry_cache` and replays the DAG.
 - Evaluation must be **deterministic** given the same DAG and the same OCCT version, so
   that a rebuild, a headless CLI run, and the GUI all agree. Record the OCCT version in
   the file (§7).
@@ -3466,14 +3467,17 @@ health reports it.
   PNG/STL. First save of a new path is a full typed write, atomic (`*.tmp` + rename).
 - Undo remains session snapshots (cap 200), not a SQL history. Nested units
   store the embedded copy as a `.bearcad` blob in `units.document`.
-  `geometry_cache` comes later.
+  `geometry_cache` holds per-body tessellation (optional BREP); open warms the
+  in-memory mesh cache on fingerprint match.
 
 ### 7.2a Session I/O
 
 Once a document has a path, the tab keeps a live SQLite connection. Each
 committed edit (outermost `apply`, plus undo/redo) diffs arenas against the last
 flushed document and `INSERT`/`UPDATE`/`DELETE`s only the changed rows **inside
-one open transaction**. In-progress drags stay RAM-only.
+one open transaction**. In-progress drags stay RAM-only. A body's
+`geometry_cache` row is written when that body's mesh exists; other bodies are
+left alone.
 
 - **Save** (`⌘S` / Save As) = `COMMIT`, then refresh preview PNG/STL + OS
   thumbnail + unit save-ping, then `BEGIN` a new transaction.
@@ -3527,6 +3531,12 @@ CREATE TABLE unit_instances (
   overrides_json TEXT);
 CREATE TABLE shape_order (seq INTEGER PRIMARY KEY, kind TEXT NOT NULL);
 CREATE TABLE undo_groups (seq INTEGER PRIMARY KEY, size INTEGER NOT NULL);
+CREATE TABLE geometry_cache (
+  body_id INTEGER PRIMARY KEY,
+  fingerprint INTEGER NOT NULL,   -- source tree + OCCT version
+  occt_version TEXT NOT NULL,
+  mesh BLOB NOT NULL,
+  brep BLOB);
 -- plus one table each for circles, planes, extrusions, materials, meshes, images,
 -- lofts, revolutions, primitives, sweeps, boolean/move/mirror/repeat/slice/shell/
 -- edge-treatment ops, in-sketch ops, sketch texts, drawings, joints.
@@ -3907,6 +3917,8 @@ should be added to the shared action layer so they become available headlessly b
 
 - `--timeout <seconds>` — force-exit (non-zero) if the app hasn't closed on its own within
   the given duration, so an unattended/CI launch can't hang forever (#61).
+- `--rebuild` — discard persisted tessellation (`geometry_cache`) after open and rebuild
+  geometry (SPEC §4.4).
 
 **Launch diagnostics (#978).** A window that comes up blank — title bar and menu present,
 nothing drawn — has several possible causes and no way to tell them apart from the outside.
