@@ -3863,6 +3863,11 @@ tessellation + writers (or dedicated libraries — license-audited per §1).
   their own triangles; if any non-imported body isn't kernel-representable, or the kernel is
   absent, the export falls back to plain per-body concatenation. Single-body and explicit
   per-body exports are never unioned.
+- **STL exports are watertight (#1286):** the whole-document mesh used for STL (and other
+  faceted formats) is accepted only when every undirected edge is shared by exactly two
+  triangles. If the OCCT union tessellation is open or has degenerate poles (e.g. a BREP
+  sphere), export falls back to each body's own solid mesh — hand-rolled primitives and
+  already-validated extrusion meshes — so the file a slicer reads is a closed manifold.
 
 ### 9.3 Instruction scripts (for automation & testing)
 

@@ -6446,9 +6446,24 @@ pub fn document_solid_mesh(doc: &Document) -> SolidMesh {
     // that kept its BREP (#1029) joins the union. If any non-import body isn't representable
     // the whole union is unreliable and we fall back to plain concatenation.
     // Shadow bodies are never deliverables (#1218) — skip them in both paths.
+    //
+    // #1286: only accept the fused OCCT mesh when it is a closed manifold. OCCT's face
+    // triangulation can emit degenerate pole triangles (a BREP sphere is the usual
+    // offender), and a non-watertight STL is worse for slicers than interpenetrating shells.
+    // Fall back to each body's own mesh (hand-rolled primitives, already-validated
+    // extrusions) which is watertight per body.
     if let Some(mesh) = occt_document_union_mesh(doc) {
-        return mesh;
+        if mesh_is_watertight(&mesh) {
+            return mesh;
+        }
     }
+    document_solid_mesh_concat(doc)
+}
+
+/// Per-body solid meshes concatenated into one triangle soup (no boolean union). Shadow
+/// bodies are skipped (#1218). Used as the document-export fallback when the OCCT union is
+/// unavailable or not watertight (#1286).
+fn document_solid_mesh_concat(doc: &Document) -> SolidMesh {
     let mut mesh = SolidMesh::default();
     for (bi, body) in doc.bodies.iter() {
         if body.shadow {
@@ -10231,6 +10246,67 @@ mod tests {
         assert!(
             (vol - 750.0).abs() < 5.0,
             "expected union volume ~750, got {vol} (concatenation would be ~1000)"
+        );
+        assert!(
+            mesh_is_watertight(&document_solid_mesh(&doc)),
+            "unioned export mesh must be watertight (#1286)"
+        );
+    }
+
+    /// #1286: whole-document STL export must be a closed manifold. A BREP sphere's OCCT
+    /// tessellation can emit degenerate pole triangles; the export path must not ship those.
+    #[test]
+    fn document_solid_mesh_of_a_sphere_is_watertight() {
+        let mut doc = Document::default();
+        let mut shape = crate::model::Primitive::new(crate::model::PrimitiveKind::Sphere);
+        shape.radius = "10".into();
+        let pi = doc.primitives.insert(shape);
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let mesh = document_solid_mesh(&doc);
+        assert!(!mesh.is_empty(), "sphere should produce triangles");
+        assert!(
+            mesh_is_watertight(&mesh),
+            "document export of a sphere must be watertight (#1286); got {} tris",
+            mesh.triangles.len()
+        );
+        // Divergence-theorem volume should match a solid ball (hand mesh ≈ 2% of exact).
+        let vol = mesh_signed_volume(&mesh).abs();
+        let exact = 4.0 / 3.0 * std::f32::consts::PI * 1000.0;
+        assert!(
+            (vol - exact).abs() / exact < 0.05,
+            "sphere export volume {vol} vs exact {exact}"
+        );
+    }
+
+    /// #1286: ASCII STL of a whole document (sphere) round-trips as a watertight mesh —
+    /// the bytes a slicer/printer actually reads.
+    #[test]
+    fn stl_export_of_document_sphere_is_watertight() {
+        let mut doc = Document::default();
+        let mut shape = crate::model::Primitive::new(crate::model::PrimitiveKind::Sphere);
+        shape.radius = "10".into();
+        let pi = doc.primitives.insert(shape);
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let mesh = document_solid_mesh(&doc);
+        let text = crate::stl::write_ascii_stl("bearcad", &mesh);
+        let parsed = crate::stl::parse_ascii_stl(&text).expect("round-trip parse");
+        let reimport = SolidMesh {
+            triangles: parsed.iter().map(|t| t.vertices).collect(),
+        };
+        assert!(
+            mesh_is_watertight(&reimport),
+            "re-parsed STL must stay watertight (#1286); {} tris",
+            reimport.triangles.len()
         );
     }
 
