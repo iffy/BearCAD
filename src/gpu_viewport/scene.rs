@@ -1045,7 +1045,11 @@ impl ViewportScene {
         // Extruded solid bodies (3D, depth-tested, flat-shaded).
         for (bi, body) in input.doc.bodies.iter() {
             if let Some(editing) = input.editing_extrusion {
-                if body.source.owns_extrusion(editing) {
+                if body.source.owns_extrusion(editing)
+                    || crate::extrude::body_is_edge_treated_from_extrusion(
+                        input.doc, bi, editing,
+                    )
+                {
                     continue;
                 }
             }

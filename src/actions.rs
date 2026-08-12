@@ -2356,9 +2356,9 @@ pub enum Action {
     /// same face (a vertex miter — this mesh-bevel approximation doesn't attempt to blend
     /// three-or-more bevels together). Atomic and declarative: usable directly from Lua
     /// (`bearcad.chamfer_edge`/`fillet_edge`) as well as from the interactive gizmo tool.
-    /// Apply one chamfer/fillet amount to a whole set of edges (#166) as a single operation —
-    /// not one operation per edge, which would each bevel the same sharp input body and leave
-    /// the outputs overlapping (#672).
+    /// Apply one chamfer/fillet amount to a whole set of edges (#166) as a single operation
+    /// (one undo, one amount). Sequential commits on the same body chain onto the live
+    /// treated output (#1323) rather than forking sibling bodies.
     CommitEdgeTreatments {
         edges: Vec<(crate::model::ExtrusionKey, ExtrusionEdgeRef)>,
         kind: VertexTreatmentKind,
@@ -5527,9 +5527,15 @@ impl AppState {
             return ActionResult::Err("No edges to treat".to_string());
         }
         if !(amount > 0.0) {
-            let e = "Amount must be positive".to_string();
-            self.status = e.clone();
-            return ActionResult::Err(e);
+            // #1321: a zero-radius fillet / zero-distance chamfer is a no-op — not a
+            // feature that deletes geometry, and not an error.
+            self.status = match kind {
+                VertexTreatmentKind::Chamfer => {
+                    "Chamfer distance is 0 — nothing changed".to_string()
+                }
+                VertexTreatmentKind::Fillet => "Fillet radius is 0 — nothing changed".to_string(),
+            };
+            return ActionResult::Ok;
         }
         let mut targets: Vec<crate::model::BodyKey> = Vec::new();
         let mut treated: Vec<TreatedEdge> = Vec::new();
@@ -5581,7 +5587,11 @@ impl AppState {
                 reject("Corner is degenerate".to_string(), &mut first_error);
                 continue;
             }
-            let Some(body) = crate::model::body_index_for_extrusion(&self.doc, extrusion) else {
+            // #1323: treat the live tip of any already-committed fillet/chamfer chain,
+            // not the original (now shadowed) extrusion body — otherwise a second fillet
+            // forks a sibling body instead of stacking on the first.
+            let Some(body) = crate::extrude::live_body_for_treated_extrusion(&self.doc, extrusion)
+            else {
                 reject(
                     format!("Extrusion {} has no body to treat", extrusion.index()),
                     &mut first_error,
@@ -29125,16 +29135,32 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         );
     }
 
+    /// #1321: committing a 0-radius fillet / 0-distance chamfer is a no-op — no operation,
+    /// no extra body, no error. The preview-at-zero path shows the original; commit matches.
     #[test]
-    fn commit_edge_treatment_rejects_nonpositive_amount_and_out_of_range_edge() {
+    fn commit_edge_treatment_zero_amount_is_a_noop() {
         let mut state = box_extrusion_state();
-        let bad_amount = state.apply(Action::CommitEdgeTreatments {
+        let bodies_before = state.doc.bodies.len();
+        let result = state.apply(Action::CommitEdgeTreatments {
             edges: vec![(xkey(0), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })],
-            kind: VertexTreatmentKind::Chamfer,
+            kind: VertexTreatmentKind::Fillet,
             amount: 0.0,
         });
-        assert!(matches!(bad_amount, ActionResult::Err(_)));
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert!(
+            state.doc.edge_treatment_ops.is_empty(),
+            "a zero-radius fillet must not create an operation"
+        );
+        assert_eq!(state.doc.bodies.len(), bodies_before, "body count must not change");
+        assert!(
+            !state.doc.bodies[bkey(0)].shadow,
+            "the original body must stay live"
+        );
+    }
 
+    #[test]
+    fn commit_edge_treatment_rejects_out_of_range_edge() {
+        let mut state = box_extrusion_state();
         let out_of_range = state.apply(Action::CommitEdgeTreatments {
             edges: vec![(xkey(0), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 99 })],
             kind: VertexTreatmentKind::Chamfer,
@@ -29142,6 +29168,63 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         });
         assert!(matches!(out_of_range, ActionResult::Err(_)));
         assert!(state.doc.edge_treatment_ops.is_empty(), "nothing committed");
+    }
+
+    /// #1322/#1323: a second fillet on a different edge of an already-filleted body must
+    /// target that body's live output (not the original sharp extrusion), so the two
+    /// operations chain into one live body with both rounds — not two sibling bodies.
+    #[test]
+    fn commit_edge_treatment_stacks_on_the_already_treated_body() {
+        let mut state = box_extrusion_state();
+        let first = crate::model::ExtrusionEdgeRef::Cap { face: 0, edge: 2, top: true };
+        let second = crate::model::ExtrusionEdgeRef::Cap { face: 0, edge: 0, top: true };
+        assert!(matches!(
+            state.apply(Action::CommitEdgeTreatments {
+                edges: vec![(xkey(0), first)],
+                kind: VertexTreatmentKind::Fillet,
+                amount: 2.0,
+            }),
+            ActionResult::Ok
+        ));
+        assert!(matches!(
+            state.apply(Action::CommitEdgeTreatments {
+                edges: vec![(xkey(0), second)],
+                kind: VertexTreatmentKind::Fillet,
+                amount: 1.0,
+            }),
+            ActionResult::Ok
+        ));
+        assert_eq!(state.doc.edge_treatment_ops.len(), 2, "two sequential operations");
+        let ops: Vec<_> = state.doc.edge_treatment_ops.values().collect();
+        assert_eq!(
+            ops[1].targets,
+            ops[0].outputs,
+            "the second fillet must consume the first fillet's output, not the original extrusion"
+        );
+        let live: Vec<_> = state
+            .doc
+            .bodies
+            .iter()
+            .filter(|(_, b)| !b.shadow)
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(
+            live,
+            ops[1].outputs,
+            "exactly one live body — the second fillet's output, carrying both rounds"
+        );
+        assert!(state.doc.bodies[ops[0].outputs[0]].shadow, "the first fillet's output is consumed");
+        assert!(state.doc.bodies[bkey(0)].shadow, "the original extrusion body stays a shadow");
+
+        // The stacked live mesh must cut more than the first fillet alone (both rounds present).
+        let first_only = crate::extrude::body_solid_mesh(&state.doc, ops[0].outputs[0]).unwrap();
+        let both = crate::extrude::body_solid_mesh(&state.doc, ops[1].outputs[0]).unwrap();
+        let v_first = crate::extrude::mesh_signed_volume(&first_only).abs();
+        let v_both = crate::extrude::mesh_signed_volume(&both).abs();
+        assert!(
+            v_both < v_first - 0.5,
+            "the stacked fillet must cut more than the first fillet alone ({v_both} vs {v_first})"
+        );
     }
 
     /// #103: an edge treatment the OCCT kernel can't actually build (e.g. a fillet radius

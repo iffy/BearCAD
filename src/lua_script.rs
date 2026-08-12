@@ -8170,9 +8170,9 @@ mod tests {
         assert_ne!(mesh.triangles.len(), 12);
     }
 
-    /// #672: `edges = { ... }` treats the whole set in ONE operation. Four separate one-edge
-    /// calls would each bevel the extrusion's own sharp body, leaving four overlapping outputs
-    /// that read as an unfilleted box.
+    /// #672: `edges = { ... }` treats the whole set in ONE operation (one undo, one amount).
+    /// Sequential one-edge calls now chain onto the live body (#1323); a set is still the
+    /// way to apply the same radius to several edges at once.
     #[test]
     fn lua_fillet_edge_treats_an_edge_set_as_one_operation() {
         let state = run_lua(
@@ -8219,6 +8219,65 @@ mod tests {
             state.doc.edge_treatment_ops.values().nth(0).unwrap().edges[0].edge,
             ExtrusionEdgeRef::Cap { face: 0, edge: 1, top: true }
         ));
+    }
+
+    /// #1321: `fillet_edge` with radius 0 is a no-op — no error, no operation, no extra body.
+    #[test]
+    fn lua_fillet_edge_zero_radius_is_a_noop() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ x = 0, y = 0, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.fillet_edge{
+                extrusion = 0,
+                edge = { kind = "vertical", face = 0, edge = 0 },
+                radius = 0,
+            }
+            assert(bearcad.count("body") == 1, "zero-radius fillet must not spawn a body")
+        "#,
+        );
+        assert!(
+            state.doc.edge_treatment_ops.is_empty(),
+            "zero-radius fillet must not create an operation"
+        );
+        assert!(!state.doc.bodies.values().nth(0).unwrap().shadow);
+    }
+
+    /// #1323: two sequential `fillet_edge` calls on different edges of the same body chain —
+    /// the second consumes the first's output — instead of forking two sibling bodies.
+    #[test]
+    fn lua_fillet_edge_stacks_a_second_fillet_on_the_same_body() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ x = 0, y = 0, width = 20, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            bearcad.fillet_edge{
+                extrusion = 0,
+                edge = { kind = "cap", face = 0, edge = 2, top = true },
+                radius = 2.3,
+            }
+            local v1 = bearcad.body_stats(1).volume
+            bearcad.fillet_edge{
+                extrusion = 0,
+                edge = { kind = "cap", face = 0, edge = 0, top = true },
+                radius = 0.5,
+            }
+            -- Body 0 original (shadow), body 1 first fillet (shadow), body 2 both (live).
+            local v2 = bearcad.body_stats(2).volume
+            assert(v2 < v1 - 0.1, "stacked fillet must cut more than the first alone: " .. v2 .. " vs " .. v1)
+        "#,
+        );
+        assert_eq!(state.doc.edge_treatment_ops.len(), 2);
+        let ops: Vec<_> = state.doc.edge_treatment_ops.values().collect();
+        assert_eq!(ops[1].targets, ops[0].outputs);
+        let live: Vec<_> = state
+            .doc
+            .bodies
+            .iter()
+            .filter(|(_, b)| !b.shadow)
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(live, ops[1].outputs);
     }
 
     /// #192/#531: a fillet shows in the Elements pane as its own operation node (with its

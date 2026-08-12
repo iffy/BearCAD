@@ -1791,6 +1791,113 @@ fn occt_moved_output_shape(
     shape.transformed(&mat4_to_rows_3x4(&m))
 }
 
+/// Follow the edge-treatment chain from `body` to its live tip (#1323): each op that consumes
+/// the current body yields its matching output, until nothing further treats it. Sequential
+/// fillets on the same solid stack this way instead of forking sibling bodies.
+pub fn live_edge_treated_body(
+    doc: &Document,
+    body: crate::model::BodyKey,
+) -> crate::model::BodyKey {
+    let mut current = body;
+    let mut seen = std::collections::HashSet::new();
+    while seen.insert(current) {
+        let next = doc.edge_treatment_ops.values().find_map(|op| {
+            op.targets
+                .iter()
+                .position(|&t| t == current)
+                .and_then(|i| op.outputs.get(i).copied())
+        });
+        match next {
+            Some(out) if out != current => current = out,
+            _ => break,
+        }
+    }
+    current
+}
+
+/// The live body that currently carries `extrusion` after any chain of edge-treatment ops
+/// (#1323). Falls back to the extrusion's own body when nothing has treated it yet.
+pub fn live_body_for_treated_extrusion(
+    doc: &Document,
+    extrusion: crate::model::ExtrusionKey,
+) -> Option<crate::model::BodyKey> {
+    Some(live_edge_treated_body(
+        doc,
+        crate::model::body_index_for_extrusion(doc, extrusion)?,
+    ))
+}
+
+/// Treatments already applied along the EdgeTreated chain that produced `body`, oldest first,
+/// restricted to `extrusion` (#1322). A second-fillet preview splices these onto the ghost so
+/// it is based on the already-filleted solid, not the original sharp box.
+pub fn edge_treatments_leading_to(
+    doc: &Document,
+    body: crate::model::BodyKey,
+    extrusion: crate::model::ExtrusionKey,
+) -> Vec<EdgeTreatment> {
+    let mut out = Vec::new();
+    let mut current = body;
+    let mut seen = std::collections::HashSet::new();
+    while seen.insert(current) {
+        let Some(b) = doc.bodies.get(current) else {
+            break;
+        };
+        let crate::model::BodySource::EdgeTreated { op, target } = b.source else {
+            break;
+        };
+        let Some(operation) = doc.edge_treatment_ops.get(op) else {
+            break;
+        };
+        for te in operation
+            .edges
+            .iter()
+            .filter(|e| e.target == target && e.extrusion == extrusion)
+        {
+            out.push(EdgeTreatment {
+                edge: te.edge,
+                kind: operation.kind,
+                amount: operation.amount,
+            });
+        }
+        let Some(&input) = operation.targets.get(target) else {
+            break;
+        };
+        current = input;
+    }
+    out.reverse();
+    out
+}
+
+/// True when `body` is an EdgeTreated output whose input chain traces back to `extrusion`
+/// (#1322). The live fillet preview hides these descendants so only the ghost (original +
+/// every committed treatment + the in-progress one) is drawn.
+pub fn body_is_edge_treated_from_extrusion(
+    doc: &Document,
+    body: crate::model::BodyKey,
+    extrusion: crate::model::ExtrusionKey,
+) -> bool {
+    let mut current = body;
+    let mut seen = std::collections::HashSet::new();
+    while seen.insert(current) {
+        let Some(b) = doc.bodies.get(current) else {
+            return false;
+        };
+        match b.source {
+            crate::model::BodySource::EdgeTreated { op, target } => {
+                let Some(operation) = doc.edge_treatment_ops.get(op) else {
+                    return false;
+                };
+                let Some(&input) = operation.targets.get(target) else {
+                    return false;
+                };
+                current = input;
+            }
+            _ => return b.source.owns_extrusion(extrusion),
+        }
+    }
+    false
+}
+
 /// A clone of `doc` with the edge-treatment op's treatments spliced onto the target input
 /// body's extrusions, together with that input body's index (#531). Building or meshing the
 /// input body in this clone then reuses the whole extrusion chamfer/fillet machinery — so an
@@ -8342,6 +8449,14 @@ pub fn extrusion_with_edge_treatments(
     treatments: impl IntoIterator<Item = EdgeTreatment>,
 ) -> Option<Extrusion> {
     let mut ext = doc.extrusions.get(extrusion)?.clone();
+    // #1322: include treatments already committed on this extrusion's live body so a
+    // second-fillet preview is the already-filleted solid plus the new round.
+    if let Some(live) = live_body_for_treated_extrusion(doc, extrusion) {
+        for t in edge_treatments_leading_to(doc, live, extrusion) {
+            ext.edge_treatments.retain(|e| e.edge != t.edge);
+            ext.edge_treatments.push(t);
+        }
+    }
     for treatment in treatments {
         ext.edge_treatments.retain(|t| t.edge != treatment.edge);
         ext.edge_treatments.push(treatment);

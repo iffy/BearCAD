@@ -19950,7 +19950,15 @@ fn build_viewport_scene_input<'a>(
     // there's no ambiguity about which one is "active".
     let editing_extrusion = creating_extrusion
         .and_then(|ce| ce.edit_index)
-        .or_else(|| creating_edge_treatment.and_then(|cet| Some(cet.primary()?.0)));
+        .or_else(|| {
+            let cet = creating_edge_treatment?;
+            // #1321: a zero-radius fillet must not hide the committed body (the ghost
+            // would be empty / collapsed). Show the original unfilleted solid instead.
+            if cet.evaluated_amount(doc) <= 0.0 {
+                return None;
+            }
+            Some(cet.primary()?.0)
+        });
 
     // Live ghost of the in-progress revolve (#revolve): a temp Revolution meshed with the
     // fallback lathe every frame (cheap, and identical to what a lean commit would build).
@@ -33696,6 +33704,158 @@ mod tests {
         assert_eq!(preview.edge_treatments[0].edge, edge);
         assert_eq!(scene_input.editing_extrusion, Some(xkey(0)));
         assert!(state.doc.extrusions[xkey(0)].edge_treatments.is_empty());
+    }
+
+    fn edge_treatment_preview_scene(
+        state: &crate::actions::AppState,
+    ) -> crate::gpu_viewport::ViewportSceneInput<'_> {
+        build_viewport_scene_input(
+            &state.doc,
+            &state.cam,
+            test_viewport_rect(),
+            None,
+            &state.element_visibility,
+            &state.scene_selection,
+            &state.document_health,
+            None,
+            None,
+            None,
+            None,
+            None,
+            state.creating_edge_treatment.as_ref(),
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+            None,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            &[],
+            None,
+            None,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            std::collections::HashMap::new(),
+        )
+    }
+
+    /// #1321: a zero-radius fillet preview must not hide/collapse the body — no ghost, and
+    /// `editing_extrusion` stays unset so the committed solid keeps drawing.
+    #[test]
+    fn edge_treatment_preview_at_zero_keeps_the_original_body() {
+        use crate::actions::{Action, AppState, CreatingEdgeTreatment, Tool};
+        use crate::model::{ExtrudeFace, ExtrusionEdgeRef, VertexTreatmentKind};
+
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: crate::model::FaceId::ConstructionPlane(pkey(0)),
+            viewport: None,
+        });
+        let sketch = state.sketch_session.unwrap().sketch;
+        crate::construction::add_line_rectangle(&mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace {
+            face: ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)]),
+        });
+        state.apply(Action::SetExtrudeDistance { distance: 5.0 });
+        state.apply(Action::CommitExtrusion);
+
+        state.creating_edge_treatment = Some(CreatingEdgeTreatment {
+            edges: vec![(xkey(0), ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })],
+            kind: VertexTreatmentKind::Fillet,
+            amount_live: 0.0,
+            text: "0".to_string(),
+            user_edited: true,
+            pending_focus: false,
+        });
+
+        let scene_input = edge_treatment_preview_scene(&state);
+        assert!(
+            scene_input.preview_extrusion.is_none(),
+            "a zero-radius fillet must not build a collapsed ghost"
+        );
+        assert_eq!(
+            scene_input.editing_extrusion, None,
+            "the committed body must stay visible at radius 0"
+        );
+    }
+
+    /// #1322: previewing a second fillet on an already-filleted body must include the first
+    /// fillet — the ghost is the live body plus the new round, not the original sharp box.
+    #[test]
+    fn edge_treatment_preview_includes_prior_fillets_on_the_same_body() {
+        use crate::actions::{Action, AppState, CreatingEdgeTreatment, Tool};
+        use crate::model::{ExtrudeFace, ExtrusionEdgeRef, VertexTreatmentKind};
+
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: crate::model::FaceId::ConstructionPlane(pkey(0)),
+            viewport: None,
+        });
+        let sketch = state.sketch_session.unwrap().sketch;
+        crate::construction::add_line_rectangle(&mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace {
+            face: ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)]),
+        });
+        state.apply(Action::SetExtrudeDistance { distance: 5.0 });
+        state.apply(Action::CommitExtrusion);
+
+        let first = ExtrusionEdgeRef::Cap { face: 0, edge: 2, top: true };
+        let second = ExtrusionEdgeRef::Cap { face: 0, edge: 0, top: true };
+        assert!(matches!(
+            state.apply(Action::CommitEdgeTreatments {
+                edges: vec![(xkey(0), first)],
+                kind: VertexTreatmentKind::Fillet,
+                amount: 2.0,
+            }),
+            crate::actions::ActionResult::Ok
+        ));
+
+        state.creating_edge_treatment = Some(CreatingEdgeTreatment {
+            edges: vec![(xkey(0), second)],
+            kind: VertexTreatmentKind::Fillet,
+            amount_live: 1.0,
+            text: "1".to_string(),
+            user_edited: false,
+            pending_focus: false,
+        });
+
+        let scene_input = edge_treatment_preview_scene(&state);
+        let preview = scene_input
+            .preview_extrusion
+            .as_ref()
+            .expect("expected a ghost preview of the second fillet");
+        let edges: Vec<_> = preview.edge_treatments.iter().map(|t| t.edge).collect();
+        assert!(
+            edges.contains(&first),
+            "preview must keep the already-committed fillet, got {edges:?}"
+        );
+        assert!(
+            edges.contains(&second),
+            "preview must include the in-progress fillet, got {edges:?}"
+        );
+        assert_eq!(scene_input.editing_extrusion, Some(xkey(0)));
     }
 
     /// A two-line right-angle corner (10mm + 10mm legs meeting at (10,0)) in a fresh sketch on
