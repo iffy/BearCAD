@@ -7,6 +7,7 @@ on:
       - "docs-site/**"
       - ".github/workflows/docs.yml"
       - "scripts/gen-doc-screenshots.sh"
+      - "scripts/select-doc-screenshots.sh"
       - "scripts/build-web.sh"
       - "scripts/build-occt-wasm.sh"
       - "web/**"
@@ -19,13 +20,35 @@ on:
       - "src/**"
       - "Cargo.toml"
       - "Cargo.lock"
+  pull_request:
+    paths:
+      - "docs-site/screenshots/**"
+      - "scripts/gen-doc-screenshots.sh"
+      - "scripts/select-doc-screenshots.sh"
+      - ".github/workflows/docs.yml"
+      - "src/**"
+      - "cpp/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  # Nightly full suite refreshes the golden PNG cache (#1297).
+  schedule:
+    - cron: "0 6 * * *"
   # Lets us trigger a rebuild manually (e.g. after enabling Pages for the first time)
   # without needing an unrelated docs-site change.
   workflow_dispatch:
+    inputs:
+      screenshot_mode:
+        description: "Screenshot selection mode"
+        type: choice
+        options:
+          - full
+          - affected
+          - missing
+        default: full
 
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: pages-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -33,12 +56,90 @@ permissions:
   id-token: write
 
 jobs:
-  # Build the app and render the documentation screenshots headlessly (xvfb +
-  # software Vulkan via mesa-vulkan-drivers, matching the CI smoke test). The
-  # PNGs are uploaded as a workflow artifact (so they can be downloaded to
-  # confirm rendering worked — this is the validation path) and handed to the
-  # `build` job so the deployed site includes them.
-  screenshots:
+  # Decide full vs incremental and whether goldens alone already cover everything.
+  # Scene list is computed here (with goldens restored) and passed to shards via
+  # BEARCAD_SCREENSHOT_ONLY so empty shard OUT_DIRs don't re-mark everything missing.
+  screenshots-plan:
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      count: ${{ steps.plan.outputs.count }}
+      skip_generate: ${{ steps.plan.outputs.skip_generate }}
+      base: ${{ steps.plan.outputs.base }}
+      only: ${{ steps.plan.outputs.only }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Restore golden screenshots
+        uses: actions/cache/restore@v5
+        with:
+          path: docs-site/static/img/screenshots
+          key: doc-screenshots-goldens-${{ github.sha }}
+          restore-keys: |
+            doc-screenshots-goldens-
+
+      - name: Select scenes
+        id: plan
+        run: |
+          set -euo pipefail
+          mkdir -p docs-site/static/img/screenshots
+
+          # Full suite on master push + nightly; incremental on PRs (#1297).
+          mode="full"
+          case "${{ github.event_name }}" in
+            schedule) mode="full" ;;
+            pull_request) mode="affected" ;;
+            workflow_dispatch) mode="${{ inputs.screenshot_mode || 'full' }}" ;;
+            *) mode="full" ;;
+          esac
+
+          base="origin/master"
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base="origin/${{ github.base_ref }}"
+            git fetch --no-tags origin "${{ github.base_ref }}" || true
+          elif git rev-parse --verify origin/master >/dev/null 2>&1; then
+            base="origin/master"
+          fi
+
+          scenes="$(
+            BEARCAD_SCREENSHOT_MODE="$mode" \
+            BEARCAD_SCREENSHOT_BASE="$base" \
+            BEARCAD_SCREENSHOT_OUT=docs-site/static/img/screenshots \
+            bash scripts/select-doc-screenshots.sh
+          )"
+          # Count non-empty lines.
+          count=0
+          if [[ -n "$scenes" ]]; then
+            count="$(printf '%s\n' "$scenes" | grep -c . || true)"
+          fi
+
+          # Comma-separated allow-list for shards (GHA output must be single-line).
+          only="$(printf '%s\n' "$scenes" | paste -sd, -)"
+
+          echo "mode=$mode base=$base count=$count"
+          if [[ -n "$scenes" ]]; then
+            echo "$scenes" | sed 's/^/  /'
+          fi
+
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "only=$only" >> "$GITHUB_OUTPUT"
+          if [[ "$count" -eq 0 ]]; then
+            echo "skip_generate=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip_generate=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Build the release binary once (+ style swatches). Shards reuse the binary.
+  # Cargo + OCCT caches keep this warm — screenshot time is dominated by build
+  # + boot, not PNG encode (#1297).
+  screenshots-build:
+    needs: screenshots-plan
+    if: needs.screenshots-plan.outputs.skip_generate != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -78,9 +179,7 @@ jobs:
         id: occt-cache
         uses: actions/cache@v5
         with:
-          # build.rs resolves OCCT from this prefix by default (or $OCCT_DIR).
           path: third_party/OCCT/occt-install
-          # Same key as the `occt` CI job so the kernel build is shared, not rebuilt.
           key: occt-install-${{ runner.os }}-v8.0.0-${{ hashFiles('scripts/build-occt.sh') }}
 
       - name: Fetch solvespace submodule (libslvs sketch solver)
@@ -94,12 +193,174 @@ jobs:
           git submodule update --init --depth 1 third_party/OCCT
           scripts/build-occt.sh
 
-      # Default (OCCT kernel) build: letter-b.lua punches its two counters with an
-      # OCCT boolean cut, which needs the kernel; the other screenshot scenes render
-      # under it fine too. gen-doc-screenshots.sh wraps each run in xvfb-run on Linux
-      # and fails if any expected PNG is missing.
-      - name: Generate documentation screenshots
-        run: scripts/gen-doc-screenshots.sh
+      - name: Build bearcad (release)
+        run: cargo build --release
+
+      - name: Generate style swatches
+        run: |
+          mkdir -p docs-site/static/img/screenshots
+          cargo test --release generate_style_swatches -- --ignored
+
+      - name: Upload release binary
+        uses: actions/upload-artifact@v6
+        with:
+          name: bearcad-release-linux
+          path: target/release/bearcad
+          if-no-files-found: error
+          retention-days: 2
+
+      - name: Upload style swatches
+        uses: actions/upload-artifact@v6
+        with:
+          name: doc-screenshot-swatches
+          path: docs-site/static/img/screenshots/styles/
+          if-no-files-found: warn
+          retention-days: 2
+
+  # Shard selected scripts across jobs with a shared golden cache (#1297).
+  screenshots:
+    needs: [screenshots-plan, screenshots-build]
+    if: needs.screenshots-plan.outputs.skip_generate != 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-0 \
+            libwayland-dev \
+            libssl-dev \
+            libvulkan-dev \
+            mesa-vulkan-drivers \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            xvfb
+
+      - name: Download release binary
+        uses: actions/download-artifact@v7
+        with:
+          name: bearcad-release-linux
+          path: target/release
+
+      - name: Make binary executable
+        run: chmod +x target/release/bearcad
+
+      # Do not restore goldens here — shards only upload what they generate so
+      # artifacts stay small. Merge re-applies goldens underneath.
+
+      - name: Fetch PR base (affected mode)
+        if: github.event_name == 'pull_request'
+        run: git fetch --no-tags origin "${{ github.base_ref }}" || true
+
+      - name: Generate screenshot shard
+        env:
+          BEARCAD_SKIP_BUILD: "1"
+          BEARCAD_SKIP_SWATCHES: "1"
+          # Plan already resolved full/affected/missing against goldens; shards
+          # only partition that allow-list (MODE unused when ONLY is set).
+          BEARCAD_SCREENSHOT_ONLY: ${{ needs.screenshots-plan.outputs.only }}
+          BEARCAD_SCREENSHOT_SHARD: ${{ matrix.shard }}/4
+          BEARCAD_SCREENSHOT_BASE: ${{ needs.screenshots-plan.outputs.base }}
+        run: |
+          mkdir -p docs-site/static/img/screenshots
+          if [[ -z "${BEARCAD_SCREENSHOT_ONLY//,/}" ]]; then
+            echo "No scenes assigned"
+            exit 0
+          fi
+          scripts/gen-doc-screenshots.sh
+
+      - name: Upload shard screenshots
+        uses: actions/upload-artifact@v6
+        with:
+          name: doc-screenshots-shard-${{ matrix.shard }}
+          path: docs-site/static/img/screenshots/
+          if-no-files-found: warn
+          retention-days: 2
+
+  screenshots-merge:
+    needs: [screenshots-plan, screenshots]
+    # Goldens-only path (skip generate) or successful shards.
+    if: |
+      always()
+      && needs.screenshots-plan.result == 'success'
+      && (
+        needs.screenshots-plan.outputs.skip_generate == 'true'
+        || needs.screenshots.result == 'success'
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Restore golden screenshots
+        uses: actions/cache/restore@v5
+        with:
+          path: docs-site/static/img/screenshots
+          key: doc-screenshots-goldens-${{ github.sha }}
+          restore-keys: |
+            doc-screenshots-goldens-
+
+      - name: Download shard artifacts
+        if: needs.screenshots-plan.outputs.skip_generate != 'true'
+        uses: actions/download-artifact@v7
+        with:
+          pattern: doc-screenshots-shard-*
+          path: /tmp/shards
+          merge-multiple: false
+
+      - name: Download style swatches
+        if: needs.screenshots-plan.outputs.skip_generate != 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          name: doc-screenshot-swatches
+          path: docs-site/static/img/screenshots/styles
+
+      - name: Merge shards over goldens
+        run: |
+          set -euo pipefail
+          mkdir -p docs-site/static/img/screenshots
+          if [[ -d /tmp/shards ]]; then
+            # download-artifact v5 with pattern: /tmp/shards/<artifact-name>/...
+            find /tmp/shards -type f \( -name '*.png' -o -name '*.json' \) -print0 \
+              | while IFS= read -r -d '' f; do
+                  stripped="$(echo "$f" | sed -E 's|^/tmp/shards/[^/]+/||')"
+                  dest="docs-site/static/img/screenshots/$stripped"
+                  mkdir -p "$(dirname "$dest")"
+                  cp -f "$f" "$dest"
+                done
+          fi
+          echo "Merged file count: $(find docs-site/static/img/screenshots -type f | wc -l | tr -d ' ')"
+
+      - name: Verify every scene has a PNG
+        run: |
+          set -euo pipefail
+          missing="$(
+            BEARCAD_SCREENSHOT_MODE=missing \
+            BEARCAD_SCREENSHOT_OUT=docs-site/static/img/screenshots \
+            bash scripts/select-doc-screenshots.sh || true
+          )"
+          if [[ -n "$missing" ]]; then
+            echo "Missing screenshots for scenes:" >&2
+            echo "$missing" >&2
+            echo "::error::One or more screenshot scenes have no PNG after merge (cold golden cache or failed shard)."
+            exit 1
+          fi
+          echo "All scenes have at least one PNG."
 
       - name: Upload screenshots artifact
         uses: actions/upload-artifact@v6
@@ -108,8 +369,19 @@ jobs:
           path: docs-site/static/img/screenshots/
           if-no-files-found: error
 
+      # Persist goldens externally (not in git). New key each run; restore-keys
+      # prefix match picks the newest on the next PR/push (#1297).
+      - name: Save golden screenshots cache
+        if: github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/master') || github.event_name == 'workflow_dispatch'
+        uses: actions/cache/save@v5
+        with:
+          path: docs-site/static/img/screenshots
+          key: doc-screenshots-goldens-${{ github.sha }}-${{ github.run_id }}
+
   # Build the hosted web app (wasm32) that deploys under /app/ next to the docs.
+  # Skip on pull_request — PRs only validate screenshots (#1297).
   webapp:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -165,7 +437,8 @@ jobs:
           if-no-files-found: error
 
   build:
-    needs: [screenshots, webapp]
+    if: github.event_name != 'pull_request'
+    needs: [screenshots-merge, webapp]
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -211,7 +484,7 @@ jobs:
           path: docs-site/build
 
   deploy:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/master'
     needs: build
     runs-on: ubuntu-latest
     environment:
