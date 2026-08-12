@@ -5079,6 +5079,9 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   double-click the label, then type. After the edit: Esc finishes the sketch, Z zooms to
   fit. Titles: **Sketch & Extrude**, **3D Bodies**, **Dimensions** (#1317). No parameters
   in that walkthrough (#1316).
+- **Parameters** (`parameters`, #1347): add `width` in the Parameters pane, type `width` and
+  `width*2` into the rectangle fields, change `width`, extrude with inline `height=30mm`,
+  then change `height` in the pane. Title: **Parameters**.
 - **Second tutorial (`navigate`)** (#1269): pan / orbit / zoom and the view-bear HUD (snap a
   view + Home). Starts with a few cubes already in the document; camera steps auto-advance
   on motion (with "…for me" assists). Orbs can point at `UiAnchor::ViewCube` / `ViewHome`.

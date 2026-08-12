@@ -6970,6 +6970,35 @@ mod tests {
         );
     }
 
+    /// #1347: the parameters tutorial is scriptable by name and walks with assists.
+    #[test]
+    fn parameters_tutorial_lua_walks_and_builds_a_box() {
+        run_lua_expect_ok(
+            r#"
+            local names = {}
+            for _, t in ipairs(bearcad.ui.tutorials()) do
+              names[t.name] = t.title
+            end
+            assert(names.parameters == "Parameters", "parameters tutorial is listed")
+            bearcad.ui.tutorial("parameters")
+            assert(bearcad.ui.tutorial_step() == 0)
+            local guard = 0
+            while bearcad.ui.tutorial_step() ~= nil do
+              guard = guard + 1
+              assert(guard < 50, "parameters tutorial should finish")
+              bearcad.ui.tutorial_assist()
+              if bearcad.ui.tutorial_step() ~= nil then
+                bearcad.ui.tutorial_next()
+              end
+            end
+            assert(bearcad.parameter("get", "width") == 30, "width changed to 30mm")
+            assert(bearcad.parameter("get", "height") == 50, "height changed to 50mm")
+            assert(bearcad.count("extrusion") == 1, "extruded")
+            assert(bearcad.count("line") >= 4, "rectangle")
+            "#,
+        );
+    }
+
     /// #1306: navigate tutorial starts with cubes and no default datum planes.
     #[test]
     fn navigate_tutorial_lua_has_cubes_and_no_datum_planes() {
