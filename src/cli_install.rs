@@ -1,11 +1,13 @@
-//! Installing the `bearcad` command-line tool onto the user's PATH.
+//! Installing the `bearcad` command-line tool onto the user's PATH, and registering
+//! `.bearcad` file associations (#49, #1285).
 //!
 //! On macOS the app is installed by dragging `BearCAD.app` into `/Applications`, which
 //! runs no install code. To make the bundled `bearcad` executable usable from a terminal
 //! we expose an explicit action — the `bearcad install-cli` subcommand and a matching
 //! Help-menu item — that symlinks the running executable into a directory on PATH
 //! (`/usr/local/bin` by default). `uninstall-cli` removes it again. The same mechanism
-//! works on Linux; on platforms without POSIX symlinks it reports an error. (#49)
+//! works on Linux. On Windows there is no PATH symlink; `install-cli` still registers
+//! the `.bearcad` file association so double-click works.
 
 use std::path::{Path, PathBuf};
 
@@ -92,23 +94,69 @@ pub fn uninstall_link(target: &Path) -> Result<(), String> {
     }
 }
 
-/// Install the CLI to the default location, returning a human-readable status line.
+/// Install the CLI to the default location and register `.bearcad` file associations.
+/// Returns a human-readable status line (may span PATH + association).
 pub fn run_install() -> Result<String, String> {
     let source = current_binary()?;
-    let target = default_target();
-    install_link(&source, &target)?;
-    Ok(format!(
-        "Installed `{CLI_NAME}` -> {} (links to {})",
-        target.display(),
-        source.display()
-    ))
+    let mut parts = Vec::new();
+
+    #[cfg(unix)]
+    {
+        let target = default_target();
+        install_link(&source, &target)?;
+        parts.push(format!(
+            "Installed `{CLI_NAME}` -> {} (links to {})",
+            target.display(),
+            source.display()
+        ));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = &source;
+        // Windows has no POSIX symlink install; file association is the useful half.
+    }
+
+    match crate::file_association::register() {
+        Ok(msg) => parts.push(msg),
+        Err(err) => {
+            if parts.is_empty() {
+                return Err(err);
+            }
+            parts.push(format!("file association: {err}"));
+        }
+    }
+
+    if parts.is_empty() {
+        return Err("install-cli: nothing to install on this platform".into());
+    }
+    Ok(parts.join("; "))
 }
 
-/// Remove the CLI from the default location, returning a human-readable status line.
+/// Remove the CLI symlink and unregister `.bearcad` file associations.
 pub fn run_uninstall() -> Result<String, String> {
-    let target = default_target();
-    uninstall_link(&target)?;
-    Ok(format!("Removed `{CLI_NAME}` ({})", target.display()))
+    let mut parts = Vec::new();
+
+    #[cfg(unix)]
+    {
+        let target = default_target();
+        uninstall_link(&target)?;
+        parts.push(format!("Removed `{CLI_NAME}` ({})", target.display()));
+    }
+
+    match crate::file_association::unregister() {
+        Ok(msg) => parts.push(msg),
+        Err(err) => {
+            if parts.is_empty() {
+                return Err(err);
+            }
+            parts.push(format!("file association: {err}"));
+        }
+    }
+
+    if parts.is_empty() {
+        return Ok("uninstall-cli: nothing to remove".into());
+    }
+    Ok(parts.join("; "))
 }
 
 #[cfg(all(test, unix))]

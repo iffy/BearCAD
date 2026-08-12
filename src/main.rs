@@ -24,6 +24,8 @@ mod style_swatches;
 mod app_icon;
 mod camera;
 mod cli_install;
+#[cfg(not(target_arch = "wasm32"))]
+mod file_association;
 mod command_log;
 mod command_palette;
 mod copy_paste;
@@ -643,6 +645,10 @@ fn run_app(script_opts: script::ScriptOptions) -> eframe::Result<()> {
             exe.display(),
         ));
     }
+    // Finder / Explorer / file-manager double-click of a `.bearcad` (#1285): register as
+    // the handler (Windows/Linux) and listen for open-documents Apple Events (macOS).
+    file_association::ensure_registered();
+    file_association::install_open_documents_handler();
     if let Ok(val) = std::env::var("BEARCAD_WINDOW") {
         diag::info(format!("launch: BEARCAD_WINDOW={val}"));
     }
@@ -17236,6 +17242,21 @@ impl eframe::App for App {
         }
         // Everything below still works off the context, so clone it out once.
         let ctx = &ui.ctx().clone();
+        // OS open-documents (Finder double-click while running, or late delivery) (#1285).
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let pending = file_association::drain_pending_open_paths();
+            for path in pending {
+                if path.ends_with(".bearcad")
+                    || std::path::Path::new(&path)
+                        .extension()
+                        .is_some_and(|e| e == "bearcad")
+                {
+                    self.state.apply(Action::Open { path });
+                    self.rebind_active_document();
+                }
+            }
+        }
         // Finish a background combine/cut when the kernel is done (#1031).
         if self.state.boolean_job.is_some() {
             if self.state.poll_boolean_job() {

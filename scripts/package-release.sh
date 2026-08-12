@@ -12,9 +12,34 @@ version() {
 
 package_linux() {
   local out="bearcad-linux-x86_64.tar.gz"
+  rm -rf dist
   mkdir -p dist
   cp target/release/bearcad dist/
-  tar czvf "$out" -C dist bearcad
+  # FreeDesktop association files (#1285). `bearcad install-cli` (or first GUI launch)
+  # installs copies under ~/.local/share with the real Exec= path; these are the templates
+  # shipped in the tarball so packagers / manual installs have something to place.
+  cat >dist/com.bearcad.app.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=BearCAD
+Comment=Parametric CAD
+Exec=bearcad %F
+Icon=bearcad
+Terminal=false
+Categories=Graphics;Engineering;Science;
+MimeType=application/x-bearcad;
+StartupWMClass=bearcad
+EOF
+  cat >dist/com.bearcad.app.xml <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-bearcad">
+    <comment>BearCAD document</comment>
+    <glob pattern="*.bearcad"/>
+  </mime-type>
+</mime-info>
+EOF
+  tar czvf "$out" -C dist bearcad com.bearcad.app.desktop com.bearcad.app.xml
   echo "Created $out"
 }
 
@@ -57,6 +82,47 @@ package_macos() {
   <string>11.0</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>BearCAD Document</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>com.bearcad.document</string>
+      </array>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>bearcad</string>
+      </array>
+    </dict>
+  </array>
+  <key>UTExportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>com.bearcad.document</string>
+      <key>UTTypeDescription</key>
+      <string>BearCAD Document</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.data</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>bearcad</string>
+        </array>
+        <key>public.mime-type</key>
+        <string>application/x-bearcad</string>
+      </dict>
+    </dict>
+  </array>
 </dict>
 </plist>
 EOF

@@ -37,7 +37,19 @@ unsigned or signature-invalidated bundle on Apple Silicon). The signature must b
 the fully assembled bundle (after the executable, icons, and `Info.plist` are in place) and
 verified with `codesign --verify --deep --strict`. The `.dmg` volume must also contain an
 `Applications` symlink (→ `/Applications`) alongside the app so the user can drag
-`BearCAD.app` straight into Applications from the mounted volume.
+`BearCAD.app` straight into Applications from the mounted volume. The `Info.plist` must
+declare `.bearcad` as a document type (`CFBundleDocumentTypes` +
+`UTExportedTypeDeclarations` for UTI `com.bearcad.document`) so double-click opens
+BearCAD; the app handles the open-documents Apple Event at runtime (#1285).
+
+**Linux packaging:** the tarball ships FreeDesktop `com.bearcad.app.desktop` and
+`com.bearcad.app.xml` (MIME `application/x-bearcad`). First GUI launch and
+`bearcad install-cli` install copies under `~/.local/share/…` with `Exec=` pointing at
+the running binary (#1285).
+
+**Windows packaging:** the portable `.exe` registers a per-user
+`HKCU\Software\Classes` ProgID (`BearCAD.document`) for `.bearcad` on first GUI launch
+and via `bearcad install-cli` (#1285).
 
 ---
 
@@ -3818,10 +3830,12 @@ and automation (including screenshot capture of the live UI).
   second process; it is a real subcommand rather than a private flag so the window can also
   be opened, and its behaviour checked, straight from a terminal.
 - `install-cli` / `uninstall-cli` — symlink the running executable onto PATH as `bearcad`
-  (default `/usr/local/bin/bearcad`), and remove it. Because macOS drag-to-Applications
-  installs run no code, this is how the bundled binary becomes usable from a terminal; it is
-  also exposed as **Help → Install "bearcad" Command in PATH**. Refuses to clobber a
-  non-symlink at the target, and reports a sudo hint on permission errors.
+  (default `/usr/local/bin/bearcad`), and remove it; also register / unregister the
+  `.bearcad` file association so double-click opens BearCAD (#1285). Because macOS
+  drag-to-Applications installs run no code, the PATH half is how the bundled binary
+  becomes usable from a terminal; it is also exposed as **Help → Install "bearcad"
+  Command in PATH**. Refuses to clobber a non-symlink at the target, and reports a sudo
+  hint on permission errors. On Windows only the file-association half applies.
 
 The command set is expected to **grow over time** toward full GUI parity. New GUI actions
 should be added to the shared action layer so they become available headlessly by default.

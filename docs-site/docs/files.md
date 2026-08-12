@@ -12,6 +12,10 @@ fonts ([Text](/docs/tools/text)) and [tracing images](/docs/tools/tracing) trave
 so it opens identically on any machine. In the browser app, saving downloads the file and
 opening picks one from disk.
 
+Double-clicking a `.bearcad` file opens it in BearCAD: the macOS `.app` declares the type
+in its Info.plist; on Windows and Linux the first launch (or `bearcad install-cli`)
+registers the association for the running binary.
+
 On save, BearCAD writes a **Home zoom-to-fit preview** (black outline so it reads on light
 and dark backgrounds) into the file and publishes it as the OS thumbnail — Finder on macOS,
 free-desktop file managers on Linux. `bearcad.export_preview(path)` writes the same PNG.

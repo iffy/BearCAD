@@ -7689,7 +7689,8 @@ Usage:
 Commands:
   install-cli           Symlink this executable onto PATH as `bearcad`
                         (default /usr/local/bin; use sudo if it is not writable)
-  uninstall-cli         Remove the `bearcad` PATH symlink
+                        and register `.bearcad` so double-click opens BearCAD
+  uninstall-cli         Remove the `bearcad` PATH symlink and unregister `.bearcad`
   mcmaster [part]       Browse the McMaster-Carr catalog in a window, printing each CAD
                         file it downloads. The app runs this itself when you import a part
   opsigs [--html]       Print every tool operation's inputs, outputs, and shadows
