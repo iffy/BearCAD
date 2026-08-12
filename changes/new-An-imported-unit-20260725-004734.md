@@ -1,1 +1,0 @@
-An imported unit shows as one row in the Elements pane: rename, hide, or delete the instance; expand it for a read-only look inside; the node graph keeps it opaque unless the Unit contents filter is on

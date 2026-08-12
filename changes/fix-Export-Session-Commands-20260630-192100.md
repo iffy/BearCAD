@@ -1,1 +1,0 @@
-Export Session Commands now captures the interactive rectangle/line/circle/extrude tools (previously silently dropped) and correctly serializes multi-face/merged-body extrudes, so a recorded session replays to the same document

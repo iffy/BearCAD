@@ -1,1 +1,0 @@
-Closed loops of plain lines (e.g. a hand-drawn triangle) are now usable faces: filled/styled like rect and circle profiles, pickable for sketching-on-face, and extrudable via the UI or bearcad.extrude{ polygon = {...} } (#66)

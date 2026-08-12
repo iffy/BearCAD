@@ -1,1 +1,0 @@
-Drawings: with the Dimension tool, hovering an existing dimension (its line, label, or model edge) highlights the whole dimension, making it clear it can be clicked to toggle or dragged to reposition.

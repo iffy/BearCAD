@@ -1,1 +1,0 @@
-Filing-tab style: slight trapezoid chips with rounded top corners, always-visible close, blue top/left/right borders on the selected tab (no blue fill), grey borders on unfocused tabs, and a baseline break under the active tab so it joins the chrome below (#1134)

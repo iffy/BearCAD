@@ -1,1 +1,0 @@
-Laser cut preview and path match: free ends ray-cast to body bounds (no AABB clamp warp); zigzag halfspace is box-split left region so cut follows the drawn line; infinite ≈ finite when path spans the body

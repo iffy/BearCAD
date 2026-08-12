@@ -1,1 +1,0 @@
-Hovering the sketch origin axes with the Constraint (or Select) tool now highlights them; axis picking measures against the drawn line on screen instead of far-away 3D endpoints, which also made axis clicks reliable from any camera angle.

@@ -1,1 +1,0 @@
-Touch: an on-screen keypad (digits, units, operators, parameter chips) types into any focused value field so the OS keyboard never covers the viewport, and a long press opens right-click context menus

@@ -1,1 +1,0 @@
-Snapping during drawing

@@ -1,1 +1,0 @@
-A unit's geometry is a full target: Move snap points, face/edge/vertex pickers, dimensions (analytic — they follow override changes), and export all treat it like the document's own body, drawn in its own tone

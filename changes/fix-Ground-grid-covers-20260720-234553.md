@@ -1,1 +1,0 @@
-The ground grid covers what you're actually looking at: lines follow the visible ground area instead of a fixed box around the origin, so panning far away or zooming in at a glancing angle never leaves the view empty or showing lines in only one direction

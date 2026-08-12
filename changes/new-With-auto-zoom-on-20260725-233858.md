@@ -1,1 +1,0 @@
-With auto-zoom on, selecting something partly off-screen (like a face half in view) glides the camera out until the whole selection is visible — zoom-out only, so small selections never dive the camera in

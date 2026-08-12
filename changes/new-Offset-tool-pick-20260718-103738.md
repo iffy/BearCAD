@@ -1,1 +1,0 @@
-Offset tool: pick sketch edges and circles, set a signed distance with a push-pull handle or expression, and get parallel copies (mitered chains, concentric circles) grouped under an editable Offset element with a construction-output toggle

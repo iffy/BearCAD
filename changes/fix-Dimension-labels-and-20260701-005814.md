@@ -1,1 +1,0 @@
-Dimension labels and the Elements pane now display lengths/angles in the document's or sketch's chosen default unit (in, ft, cm, m, rad) instead of always showing mm/degrees; internal storage is unchanged (still mm/radians).

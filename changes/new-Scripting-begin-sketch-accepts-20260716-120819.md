@@ -1,1 +1,0 @@
-Scripting: begin_sketch accepts boolean-combined cap profiles (profile="boolean" with the extrude-style boolean descriptor), and drawing_page{ drawing, width?, height?, margin? } sets a drawing's page size/margin in mm (omitted keys keep current values).
