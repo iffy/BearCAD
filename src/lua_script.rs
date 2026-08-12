@@ -4267,6 +4267,30 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1288: auto-update channel — "release" (default) or "pre_release".
+    // No arg / nil returns the current channel string.
+    api.set(
+        "update_channel",
+        lua.create_function(|lua, channel: Option<String>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            match channel {
+                None => {
+                    let state = unsafe { tick.state() };
+                    Ok(Some(state.update_channel.as_str().to_string()))
+                }
+                Some(s) => {
+                    let channel = crate::settings::UpdateChannel::parse(&s).ok_or_else(|| {
+                        mlua::Error::external(format!(
+                            "update_channel expects \"release\" or \"pre_release\", got {s:?}"
+                        ))
+                    })?;
+                    unsafe { tick.exec(Instruction::SetUpdateChannel { channel })? };
+                    Ok(None)
+                }
+            }
+        })?,
+    )?;
+
     // Read a line's current endpoints (sketch-local mm) — the assertion hook for
     // interaction regression tests.
     api.set(
@@ -6601,6 +6625,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading", "ground",
             "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance", "fps_scale",
             "camera", "elements_view", "auto_zoom", "animate_joints", "animate_zoom_to_fit",
+            "update_channel",
             "snapping", "picker_focus", "angle_snap",
             "tutorial", "tutorial_next", "tutorial_assist", "tutorial_end", "tutorial_step",
             "tutorial_pane", "tutorials",
@@ -10813,6 +10838,25 @@ mod tests {
         assert!(!state.cam.is_transitioning());
         let expected = glam::Vec3::new(20.0, 15.0, 5.0);
         assert!((state.cam.target - expected).length() < 0.5);
+    }
+
+    /// #1288: `bearcad.ui.update_channel` sets/gets the auto-update stream.
+    #[test]
+    fn lua_update_channel_sets_and_gets() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            assert(bearcad.ui.update_channel() == "release")
+            bearcad.ui.update_channel("pre_release")
+            assert(bearcad.ui.update_channel() == "pre_release")
+            bearcad.ui.update_channel("release")
+            assert(bearcad.ui.update_channel() == "release")
+        "#,
+        );
+        assert_eq!(
+            state.update_channel,
+            crate::settings::UpdateChannel::Release
+        );
     }
 
     /// #108: an empty document leaves the camera alone.

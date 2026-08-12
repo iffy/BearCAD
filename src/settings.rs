@@ -14,6 +14,37 @@ fn default_true() -> bool {
     true
 }
 
+/// Which GitHub release stream the auto-updater watches (#1288).
+///
+/// - **Release** (default): only published non-prerelease releases (`/releases/latest`).
+/// - **Pre-release**: the newest published release of either kind (includes prereleases).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateChannel {
+    #[default]
+    Release,
+    PreRelease,
+}
+
+impl UpdateChannel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Release => "release",
+            Self::PreRelease => "pre_release",
+        }
+    }
+
+    /// Parse a script/UI string: `"release"` / `"stable"`, or `"pre_release"` /
+    /// `"prerelease"` / `"pre-release"`.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim() {
+            "release" | "stable" => Some(Self::Release),
+            "pre_release" | "prerelease" | "pre-release" => Some(Self::PreRelease),
+            _ => None,
+        }
+    }
+}
+
 /// Every persisted setting. Keep each field `#[serde(default)]` so older settings files
 /// keep loading as more land here.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,6 +60,9 @@ pub struct AppSettings {
     /// false, the camera snaps. On by default.
     #[serde(default = "default_true")]
     pub animate_zoom_to_fit: bool,
+    /// Auto-update channel (#1288): release (default) or pre-release.
+    #[serde(default)]
+    pub update_channel: UpdateChannel,
 }
 
 impl Default for AppSettings {
@@ -37,6 +71,7 @@ impl Default for AppSettings {
             library_directory: None,
             completed_tutorials: Vec::new(),
             animate_zoom_to_fit: true,
+            update_channel: UpdateChannel::Release,
         }
     }
 }
@@ -104,6 +139,7 @@ mod tests {
             library_directory: Some(PathBuf::from("/some/library")),
             completed_tutorials: vec!["bracket".into(), "cube".into()],
             animate_zoom_to_fit: false,
+            update_channel: UpdateChannel::PreRelease,
         };
         settings.save_to(&path).unwrap();
         assert_eq!(AppSettings::load_from(&path), settings);
@@ -128,6 +164,38 @@ mod tests {
         let loaded = AppSettings::load_from(&path);
         assert!(loaded.animate_zoom_to_fit);
         std::fs::remove_file(&path).unwrap();
+    }
+
+    /// #1288: older settings files without `update_channel` stay on the release channel.
+    #[test]
+    fn update_channel_defaults_to_release_when_absent() {
+        let path = temp_file("bearcad_settings_no_channel.json");
+        std::fs::write(&path, br#"{"library_directory": null}"#).unwrap();
+        let loaded = AppSettings::load_from(&path);
+        assert_eq!(loaded.update_channel, UpdateChannel::Release);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// #1288: channel strings scripts/UI accept.
+    #[test]
+    fn update_channel_parse() {
+        assert_eq!(UpdateChannel::parse("release"), Some(UpdateChannel::Release));
+        assert_eq!(UpdateChannel::parse("stable"), Some(UpdateChannel::Release));
+        assert_eq!(
+            UpdateChannel::parse("pre_release"),
+            Some(UpdateChannel::PreRelease)
+        );
+        assert_eq!(
+            UpdateChannel::parse("prerelease"),
+            Some(UpdateChannel::PreRelease)
+        );
+        assert_eq!(
+            UpdateChannel::parse("pre-release"),
+            Some(UpdateChannel::PreRelease)
+        );
+        assert_eq!(UpdateChannel::parse("nightly"), None);
+        assert_eq!(UpdateChannel::Release.as_str(), "release");
+        assert_eq!(UpdateChannel::PreRelease.as_str(), "pre_release");
     }
 
     #[test]

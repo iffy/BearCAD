@@ -23,6 +23,12 @@ see [Files, import & export](/docs/files).
 - **Choose…** picks the folder.
 - **✕** clears it.
 
+## Update channel
+
+**Release** (default) only offers published stable builds. **Pre-release** also considers
+GitHub pre-releases. The auto-updater checks only the channel you pick.
+
 ```lua
 bearcad.ui.settings("show")   -- "hide" / "toggle"
+bearcad.ui.update_channel("pre_release")  -- or "release"; no arg returns current
 ```

@@ -4428,6 +4428,11 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "When on, Zoom to Fit (Z) glides the camera the same way Home does. Turn off to \
              snap the view instantly.",
         ),
+        "Update channel" => Some(
+            "Which releases the auto-updater watches. Release (default) only offers \
+             published stable builds; Pre-release also considers GitHub pre-releases so you \
+             get newer bleeding-edge builds.",
+        ),
         _ => None,
     })
 }

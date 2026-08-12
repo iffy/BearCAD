@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::release_artifacts::{GITHUB_REPO, LINUX_ARTIFACT, MACOS_ARTIFACT, WINDOWS_ARTIFACT};
+use crate::settings::UpdateChannel;
 
 /// Result of a completed update attempt, surfaced in the status bar.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,13 +41,16 @@ pub type SharedUpdateState = Arc<Mutex<UpdateState>>;
 
 /// Kick off the background release check. Returns immediately; the shared state fills in
 /// when (and if) the check finds a newer version. Disabled via `BEARCAD_NO_UPDATE_CHECK`.
-pub fn spawn_check(state: SharedUpdateState) {
+///
+/// `channel` (#1288) selects whether only stable releases or also pre-releases are
+/// considered.
+pub fn spawn_check(state: SharedUpdateState, channel: UpdateChannel) {
     if std::env::var_os("BEARCAD_NO_UPDATE_CHECK").is_some() {
         return;
     }
     std::thread::spawn(move || {
         cleanup_leftovers();
-        if let Some(latest) = fetch_latest_version() {
+        if let Some(latest) = fetch_latest_version(channel) {
             if !is_dev_build() && is_newer(&latest, &update_check_version()) {
                 if let Ok(mut s) = state.lock() {
                     s.available = Some(latest);
@@ -56,8 +60,10 @@ pub fn spawn_check(state: SharedUpdateState) {
     });
 }
 
-/// Start the platform-appropriate update in a background thread.
-pub fn spawn_update(state: SharedUpdateState, ctx: egui::Context) {
+/// Start the platform-appropriate update in a background thread. Downloads the artifact
+/// for `version` (the tag the badge reported) so a pre-release channel install does not
+/// silently pull `/latest` (#1288).
+pub fn spawn_update(state: SharedUpdateState, ctx: egui::Context, version: String) {
     {
         let Ok(mut s) = state.lock() else { return };
         if s.in_progress {
@@ -67,7 +73,7 @@ pub fn spawn_update(state: SharedUpdateState, ctx: egui::Context) {
         s.outcome = None;
     }
     std::thread::spawn(move || {
-        let result = perform_update();
+        let result = perform_update(&version);
         if let Ok(mut s) = state.lock() {
             s.in_progress = false;
             s.outcome = Some(result);
@@ -91,9 +97,17 @@ fn cleanup_leftovers() {
     }
 }
 
-/// The latest release's version from the GitHub API, via system curl. `None` on any
-/// failure (offline, no curl, rate limit) — the check is best-effort.
-fn fetch_latest_version() -> Option<String> {
+/// The latest version string for `channel` from the GitHub API, via system curl. `None`
+/// on any failure (offline, no curl, rate limit) — the check is best-effort.
+fn fetch_latest_version(channel: UpdateChannel) -> Option<String> {
+    let url = match channel {
+        // Non-prerelease, non-draft only.
+        UpdateChannel::Release => {
+            "https://api.github.com/repos/iffy/BearCAD/releases/latest"
+        }
+        // Full list so prereleases are included; we pick the first non-draft.
+        UpdateChannel::PreRelease => "https://api.github.com/repos/iffy/BearCAD/releases?per_page=20",
+    };
     let out = std::process::Command::new("curl")
         .args([
             "-fsSL",
@@ -101,15 +115,39 @@ fn fetch_latest_version() -> Option<String> {
             "10",
             "-H",
             "User-Agent: bearcad-update-check",
-            "https://api.github.com/repos/iffy/BearCAD/releases/latest",
+            url,
         ])
         .output()
         .ok()?;
     if !out.status.success() {
         return None;
     }
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
-    json.get("tag_name")
+    parse_latest_version_json(&out.stdout, channel)
+}
+
+/// Pick a version string out of a GitHub releases API body for `channel`.
+///
+/// - **Release**: a single release object (`/releases/latest`).
+/// - **Pre-release**: an array; first non-draft entry wins (GitHub returns newest first),
+///   so stable and prerelease releases both compete.
+///
+/// Public for unit tests (#1288).
+pub fn parse_latest_version_json(bytes: &[u8], channel: UpdateChannel) -> Option<String> {
+    let json: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    match channel {
+        UpdateChannel::Release => tag_name_from_release(&json),
+        UpdateChannel::PreRelease => {
+            let arr = json.as_array()?;
+            arr.iter()
+                .find(|r| r.get("draft").and_then(|d| d.as_bool()) != Some(true))
+                .and_then(tag_name_from_release)
+        }
+    }
+}
+
+fn tag_name_from_release(release: &serde_json::Value) -> Option<String> {
+    release
+        .get("tag_name")
         .and_then(|t| t.as_str())
         .map(|t| t.trim_start_matches('v').to_string())
 }
@@ -153,21 +191,55 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
     false
 }
 
-/// The direct download URL for this platform's release artifact.
-pub fn platform_artifact_url() -> String {
-    let artifact = if cfg!(target_os = "windows") {
+/// This platform's artifact filename.
+fn platform_artifact() -> &'static str {
+    if cfg!(target_os = "windows") {
         WINDOWS_ARTIFACT
     } else if cfg!(target_os = "macos") {
         MACOS_ARTIFACT
     } else {
         LINUX_ARTIFACT
-    };
-    crate::release_artifacts::download_url(artifact)
+    }
+}
+
+/// The direct download URL for this platform's release artifact.
+///
+/// When `version` is set (the tag the update check found, without or with a leading `v`),
+/// the URL targets that exact release so a pre-release install does not pull `/latest`
+/// (#1288). Without a version, falls back to the `/releases/latest/download` shortcut.
+pub fn platform_artifact_url() -> String {
+    platform_artifact_url_for(None)
+}
+
+/// Like [`platform_artifact_url`], optionally pinned to a release version/tag.
+pub fn platform_artifact_url_for(version: Option<&str>) -> String {
+    let artifact = platform_artifact();
+    match version.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(v) => {
+            let tag = if v.starts_with('v') {
+                v.to_string()
+            } else {
+                format!("v{v}")
+            };
+            format!("{GITHUB_REPO}/releases/download/{tag}/{artifact}")
+        }
+        None => crate::release_artifacts::download_url(artifact),
+    }
 }
 
 /// The releases page, the universal fallback.
 pub fn releases_page_url() -> String {
     format!("{GITHUB_REPO}/releases/latest")
+}
+
+/// Releases page for a specific version (browser fallback after a failed stage).
+pub fn release_page_url_for(version: &str) -> String {
+    let tag = if version.starts_with('v') {
+        version.to_string()
+    } else {
+        format!("v{version}")
+    };
+    format!("{GITHUB_REPO}/releases/tag/{tag}")
 }
 
 /// Download and stage the update where the platform allows a clean swap.
@@ -179,16 +251,16 @@ pub fn releases_page_url() -> String {
 ///   bundle can be renamed, so mount the dmg (`hdiutil attach`), copy the new bundle next
 ///   to the installed one, and rename-swap. Falls back to a browser auto-download when the
 ///   app isn't running from a bundle (e.g. a dev build).
-fn perform_update() -> Result<UpdateOutcome, String> {
+fn perform_update(version: &str) -> Result<UpdateOutcome, String> {
     if cfg!(target_os = "macos") {
-        return perform_macos_update();
+        return perform_macos_update(version);
     }
     let exe = std::env::current_exe().map_err(|e| format!("current exe: {e}"))?;
     let dir = std::env::temp_dir().join("bearcad-update");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("temp dir: {e}"))?;
 
-    let url = platform_artifact_url();
+    let url = platform_artifact_url_for(Some(version));
     let staged: std::path::PathBuf = if cfg!(target_os = "windows") {
         let path = dir.join("bearcad-new.exe");
         curl_download(&url, &path)?;
@@ -246,7 +318,7 @@ pub fn app_bundle_of(exe: &Path) -> Option<PathBuf> {
 /// macOS staged update (#427, Squirrel.Mac-style): mount the release dmg, copy the new
 /// `.app` beside the installed bundle, rename the old aside, rename the new into place.
 /// The running app keeps executing from the renamed bundle until restart.
-fn perform_macos_update() -> Result<UpdateOutcome, String> {
+fn perform_macos_update(version: &str) -> Result<UpdateOutcome, String> {
     let exe = std::env::current_exe().map_err(|e| format!("current exe: {e}"))?;
     let Some(bundle) = app_bundle_of(&exe) else {
         // Not running from an .app bundle (dev build / bare binary): auto-download in the
@@ -259,7 +331,7 @@ fn perform_macos_update() -> Result<UpdateOutcome, String> {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("temp dir: {e}"))?;
     let dmg = dir.join("bearcad.dmg");
-    curl_download(&platform_artifact_url(), &dmg)?;
+    curl_download(&platform_artifact_url_for(Some(version)), &dmg)?;
 
     let mount = dir.join("mnt");
     let status = std::process::Command::new("hdiutil")
@@ -431,6 +503,61 @@ mod tests {
         let url = platform_artifact_url();
         assert!(url.starts_with(crate::release_artifacts::RELEASES_BASE));
         assert!(releases_page_url().starts_with(GITHUB_REPO));
+    }
+
+    /// #1288: when a version is known, the download URL pins that release tag.
+    #[test]
+    fn platform_artifact_url_for_version_uses_tag() {
+        let url = platform_artifact_url_for(Some("0.1.0-build.260812-001"));
+        assert!(
+            url.contains("/releases/download/v0.1.0-build.260812-001/"),
+            "{url}"
+        );
+        assert!(url.ends_with(platform_artifact()), "{url}");
+        // Leading `v` is not doubled.
+        let url2 = platform_artifact_url_for(Some("v0.1.0-build.260812-001"));
+        assert_eq!(url, url2);
+        assert_eq!(
+            release_page_url_for("0.1.0-build.1"),
+            format!("{GITHUB_REPO}/releases/tag/v0.1.0-build.1")
+        );
+    }
+
+    /// #1288: release channel reads a single release object; pre-release skips drafts
+    /// and accepts prereleases from a list (newest first).
+    #[test]
+    fn parse_latest_version_respects_channel() {
+        let latest = br#"{
+            "tag_name": "v0.1.0-build.100",
+            "draft": false,
+            "prerelease": false
+        }"#;
+        assert_eq!(
+            parse_latest_version_json(latest, UpdateChannel::Release).as_deref(),
+            Some("0.1.0-build.100")
+        );
+
+        let list = br#"[
+            {"tag_name": "v0.1.0-build.102", "draft": true, "prerelease": false},
+            {"tag_name": "v0.1.0-build.101", "draft": false, "prerelease": true},
+            {"tag_name": "v0.1.0-build.100", "draft": false, "prerelease": false}
+        ]"#;
+        // Pre-release channel: skip the draft, take the prerelease.
+        assert_eq!(
+            parse_latest_version_json(list, UpdateChannel::PreRelease).as_deref(),
+            Some("0.1.0-build.101")
+        );
+        // Release channel is not used with a list body, but a missing tag_name yields None.
+        assert_eq!(parse_latest_version_json(list, UpdateChannel::Release), None);
+
+        // Only drafts → nothing to offer.
+        let drafts = br#"[
+            {"tag_name": "v0.1.0-build.99", "draft": true, "prerelease": false}
+        ]"#;
+        assert_eq!(
+            parse_latest_version_json(drafts, UpdateChannel::PreRelease),
+            None
+        );
     }
 
     #[test]

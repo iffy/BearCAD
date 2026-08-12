@@ -5230,23 +5230,28 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   holds unreleased work, so the check never reports an update and no badge appears,
   however far the published build number has marched on (#764).
 
-Native builds check GitHub's latest release once at startup in a background thread
+Native builds check GitHub once at startup in a background thread
 (`updater::spawn_check`, system `curl` against the releases API — no TLS dependency; the
 check is best-effort and silent on failure; `BEARCAD_NO_UPDATE_CHECK` disables it, and
-the doc-screenshot harness sets it). When a strictly newer version exists
+the doc-screenshot harness sets it). The **update channel** setting (#1288,
+`AppSettings::update_channel`, default **Release**) chooses which stream is watched:
+**Release** hits `/releases/latest` (published non-prerelease only); **Pre-release**
+lists recent releases and takes the newest non-draft (prereleases included). Changing the
+channel in Settings re-runs the check. When a strictly newer version exists
 (`updater::is_newer`, dotted numeric compare), a **bright green badge** appears in the
 status bar's bottom-right corner — no popup, no interruption. Clicking it stages the
-update **in place on every desktop OS**: **Windows** (bare exe artifact) and **Linux**
-(tar.gz) download to a temp dir and swap the running executable via the rename trick
-(old binary moves to `.old`); **macOS** (.dmg) uses the Squirrel.Mac trick — a running
-`.app` bundle can be renamed — so it mounts the dmg (`hdiutil attach`), `ditto`-copies
-the new bundle beside the installed one (same volume, so the final rename is atomic),
-and rename-swaps (`BearCAD-old.app` aside; roll back on failure; dmg detached either
-way). Once staged the badge becomes a **⟳ Restart BearCAD** button
+update **in place on every desktop OS**, downloading the artifact for the reported tag
+(so a pre-release install does not silently pull `/latest`): **Windows** (bare exe
+artifact) and **Linux** (tar.gz) download to a temp dir and swap the running executable
+via the rename trick (old binary moves to `.old`); **macOS** (.dmg) uses the Squirrel.Mac
+trick — a running `.app` bundle can be renamed — so it mounts the dmg (`hdiutil attach`),
+`ditto`-copies the new bundle beside the installed one (same volume, so the final rename
+is atomic), and rename-swaps (`BearCAD-old.app` aside; roll back on failure; dmg detached
+either way). Once staged the badge becomes a **⟳ Restart BearCAD** button
 (`updater::restart_into`: `open -n` for a bundle, plain spawn otherwise, then exit).
 Leftover `.old` binaries/bundles are cleaned on the next startup. Fallbacks: a
 non-bundle macOS run (dev build) auto-downloads the artifact in the browser; a failed
-stage rolls back and opens the releases page.
+stage rolls back and opens the release page for that version.
 
 ### 11.x2 Auto-zoom (#438)
 
@@ -5343,6 +5348,9 @@ Settings:
   **✕** clears it.
 - **Animate zoom to fit** (`animate_zoom_to_fit`, default on) — Zoom to Fit glides like
   Home; off snaps instantly (#1276).
+- **Update channel** (`update_channel`, default **Release**) — **Release** or
+  **Pre-release**; the auto-updater only checks the chosen stream (#1288). Scriptable as
+  `bearcad.ui.update_channel("release"|"pre_release")` (no arg returns the current).
 
 ## 12. Technical drawings & printable schematics
 

@@ -3667,6 +3667,9 @@ pub struct AppState {
     /// [`VIEW_TRANSITION_DURATION`] like Home view; when false, snaps. Mirrored from
     /// [`crate::settings::AppSettings`] and scriptable via `bearcad.ui.animate_zoom_to_fit`.
     pub animate_zoom_to_fit: bool,
+    /// Auto-update channel (#1288): release (default) or pre-release. Mirrored from
+    /// [`crate::settings::AppSettings`]; scriptable via `bearcad.ui.update_channel`.
+    pub update_channel: crate::settings::UpdateChannel,
     /// Help mode (#672): every control in the Context pane gets a floating note beside it
     /// saying what it wants. Off by default — the pane itself stays controls and values only
     /// — and never persisted. The documentation's pane pictures are captured with it on, so
@@ -3926,6 +3929,7 @@ impl Default for AppState {
             auto_zoom: false,
             animate_joints: true,
             animate_zoom_to_fit: true,
+            update_channel: crate::settings::UpdateChannel::Release,
             move_angle_snap_deg: MAX_ANGLE_SNAP_DEG,
             move_translate_mode: crate::model::MoveTranslateMode::default(),
             help_mode: false,

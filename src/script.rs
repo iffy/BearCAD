@@ -709,6 +709,8 @@ pub enum Instruction {
     SetJointAnimation { on: bool },
     /// Toggle Zoom to Fit's glide (#1276). Off snaps instantly.
     SetAnimateZoomToFit { on: bool },
+    /// Auto-update channel (#1288): `"release"` or `"pre_release"`.
+    SetUpdateChannel { channel: crate::settings::UpdateChannel },
     /// Force touch mode on/off (auto-detected from real touches otherwise).
     SetTouchMode { on: bool },
     /// Start / advance / end an interactive tutorial.
@@ -1673,6 +1675,9 @@ impl Instruction {
             }
             Instruction::SetAnimateZoomToFit { on } => {
                 format!("bearcad.ui.animate_zoom_to_fit({on})")
+            }
+            Instruction::SetUpdateChannel { channel } => {
+                format!("bearcad.ui.update_channel({:?})", channel.as_str())
             }
             Instruction::SetTouchMode { on } => {
                 format!("bearcad.ui.touch({on})")
@@ -6845,6 +6850,10 @@ impl ScriptRunner {
             }
             Instruction::SetAnimateZoomToFit { on } => {
                 state.animate_zoom_to_fit = on;
+                StepResult::Continue
+            }
+            Instruction::SetUpdateChannel { channel } => {
+                state.update_channel = channel;
                 StepResult::Continue
             }
             Instruction::SetTouchMode { on } => {

@@ -4343,7 +4343,11 @@ impl App {
                 // The staged update failed; the browser fallback already opened. Keep the
                 // badge so the user can retry.
                 if self.update_badge(ui, version) {
-                    updater::spawn_update(self.update_state.clone(), ctx.clone());
+                    updater::spawn_update(
+                        self.update_state.clone(),
+                        ctx.clone(),
+                        version.clone(),
+                    );
                 }
             }
             (None, true, _) => {
@@ -4352,7 +4356,11 @@ impl App {
             }
             (None, false, Some(version)) => {
                 if self.update_badge(ui, version) {
-                    updater::spawn_update(self.update_state.clone(), ctx.clone());
+                    updater::spawn_update(
+                        self.update_state.clone(),
+                        ctx.clone(),
+                        version.clone(),
+                    );
                 }
             }
             _ => {}
@@ -4364,14 +4372,24 @@ impl App {
         ) && !self.update_fallback_opened
         {
             self.update_fallback_opened = true;
-            ctx.open_url(egui::OpenUrl::new_tab(updater::platform_artifact_url()));
+            let url = snapshot
+                .available
+                .as_deref()
+                .map(|v| updater::platform_artifact_url_for(Some(v)))
+                .unwrap_or_else(updater::platform_artifact_url);
+            ctx.open_url(egui::OpenUrl::new_tab(url));
         }
         // A failed staged update falls back to the browser download once.
         if let Some(Err(err)) = &snapshot.outcome {
             if !self.update_fallback_opened {
                 self.update_fallback_opened = true;
                 self.state.status = format!("Update failed ({err}) — opening the releases page");
-                ctx.open_url(egui::OpenUrl::new_tab(updater::releases_page_url()));
+                let url = snapshot
+                    .available
+                    .as_deref()
+                    .map(updater::release_page_url_for)
+                    .unwrap_or_else(updater::releases_page_url);
+                ctx.open_url(egui::OpenUrl::new_tab(url));
             }
         }
     }
@@ -4426,6 +4444,7 @@ impl App {
             state.library_directory = settings.library_directory.clone();
             state.completed_tutorials = settings.completed_tutorials.clone();
             state.animate_zoom_to_fit = settings.animate_zoom_to_fit;
+            state.update_channel = settings.update_channel;
         }
         if let Some(path) = document_path {
             match state.apply(Action::Open { path }) {
@@ -4535,7 +4554,7 @@ impl App {
             #[cfg(not(target_arch = "wasm32"))]
             update_state: {
                 let state = updater::SharedUpdateState::default();
-                updater::spawn_check(state.clone());
+                updater::spawn_check(state.clone(), settings.update_channel);
                 state
             },
             #[cfg(not(target_arch = "wasm32"))]
@@ -4687,16 +4706,51 @@ impl App {
                     changed = true;
                 }
             });
+            // #1288: release (default) vs pre-release update stream.
+            context::labeled_row(ui, "Update channel", |ui| {
+                let mut channel = self.settings.update_channel;
+                let release = ui
+                    .selectable_value(
+                        &mut channel,
+                        settings::UpdateChannel::Release,
+                        "Release",
+                    )
+                    .changed();
+                let pre = ui
+                    .selectable_value(
+                        &mut channel,
+                        settings::UpdateChannel::PreRelease,
+                        "Pre-release",
+                    )
+                    .changed();
+                if release || pre {
+                    self.settings.update_channel = channel;
+                    changed = true;
+                }
+            });
         });
         if self.state.help_mode {
             context::end_help_notes(ctx);
         }
         if changed {
             // Keep the action layer's library mirror in step (#721) before persisting.
+            let channel_changed = self.state.update_channel != self.settings.update_channel;
             self.state.library_directory = self.settings.library_directory.clone();
             self.state.animate_zoom_to_fit = self.settings.animate_zoom_to_fit;
+            self.state.update_channel = self.settings.update_channel;
             if let Err(err) = self.settings.save() {
                 self.state.status = format!("Could not save settings: {err}");
+            }
+            // Re-check against the newly chosen stream so the badge reflects it without
+            // a restart (#1288).
+            if channel_changed {
+                if let Ok(mut s) = self.update_state.lock() {
+                    s.available = None;
+                    s.outcome = None;
+                    s.in_progress = false;
+                }
+                self.update_fallback_opened = false;
+                updater::spawn_check(self.update_state.clone(), self.settings.update_channel);
             }
         }
         // `show_pane_shell` returns false only in the compact (floating-window) layout,
