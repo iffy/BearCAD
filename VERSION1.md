@@ -73,3 +73,7 @@
 [ ] Shell tool
 
 # Later versions
+
+- Surface modeling
+- Sheet metal
+- PCB? Probably not

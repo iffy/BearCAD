@@ -5,8 +5,10 @@
 //! entries so the encoder needs no deflate crate — slicers accept store fine.
 //!
 //! Multi-body documents export as separate `<object>` entries sharing a
-//! `<basematerials>` group (`displaycolor` from each body's material) so
-//! Bambu Studio / PrusaSlicer can assign filaments per colour (#1294).
+//! materials-extension `<m:colorgroup>` (one `<m:color>` per distinct body
+//! colour). Bambu Studio maps each unique colour to a filament slot and sets
+//! the object's extruder from `pid`/`pindex` (#1294 / #1299). Core
+//! `<basematerials>` is also written so generic 3MF viewers show colours.
 
 use crate::extrude::SolidMesh;
 use glam::Vec3;
@@ -15,6 +17,9 @@ use std::fmt::Write as _;
 
 /// Default body colour when no material is known (matches Unobtainium / SOLID_FILL).
 pub const DEFAULT_BODY_COLOR: [u8; 3] = [150, 168, 196];
+
+/// Materials extension namespace (3MF Materials Spec 1.1) — required for `m:colorgroup`.
+const MATERIALS_NS: &str = "http://schemas.microsoft.com/3dmanufacturing/material/2015/02";
 
 /// One mesh object in a multi-part 3MF package.
 #[derive(Clone, Copy, Debug)]
@@ -27,12 +32,11 @@ pub struct ThreeMfPart<'a> {
     pub material_name: &'a str,
 }
 
-/// Serialize one or more coloured mesh parts as a 3MF package (#1284 / #1294).
+/// Serialize one or more coloured mesh parts as a 3MF package (#1284 / #1294 / #1299).
 ///
 /// Coordinates are millimetres. Each part becomes its own `<object>` with
-/// `pid`/`pindex` into a shared `<basematerials>` group. Slicers that understand
-/// standard 3MF materials (Bambu Studio, PrusaSlicer) treat these as separate
-/// filament-assignable parts.
+/// `pid`/`pindex` into a shared materials-extension `<m:colorgroup>`. Bambu Studio
+/// assigns a filament slot per distinct colour; identical colours share a slot.
 pub fn write_3mf_parts(parts: &[ThreeMfPart<'_>]) -> Vec<u8> {
     let model = model_xml_parts(parts);
     zip_store(&[
@@ -56,40 +60,43 @@ const ROOT_RELS_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 "#;
 
 fn model_xml_parts(parts: &[ThreeMfPart<'_>]) -> String {
-    // Deduplicate basematerials by (name, color); object ids start after the materials group.
-    let mut materials: Vec<(&str, [u8; 3])> = Vec::new();
+    // Distinct colours (order of first appearance) → filament slots / pindex.
+    // Also keep a display name for basematerials (first material name per colour).
+    let mut colors: Vec<[u8; 3]> = Vec::new();
+    let mut color_names: Vec<&str> = Vec::new();
     let mut pindex_for: Vec<u32> = Vec::with_capacity(parts.len());
     for part in parts {
-        let key = (part.material_name, part.color);
-        let idx = materials
-            .iter()
-            .position(|&(n, c)| n == key.0 && c == key.1)
-            .unwrap_or_else(|| {
-                let i = materials.len();
-                materials.push(key);
-                i
-            });
+        let idx = colors.iter().position(|&c| c == part.color).unwrap_or_else(|| {
+            let i = colors.len();
+            colors.push(part.color);
+            color_names.push(part.material_name);
+            i
+        });
         pindex_for.push(idx as u32);
     }
 
-    let mut capacity = 512 + materials.len() * 80;
+    let mut capacity = 512 + colors.len() * 100;
     for part in parts {
         capacity += part.mesh.triangles.len() * 40;
     }
     let mut out = String::with_capacity(capacity);
     out.push_str(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
     out.push('\n');
-    out.push_str(
-        r#"<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">"#,
+    // Materials extension `m:` is what Bambu Studio reads for filament mapping (#1299).
+    let _ = write!(
+        out,
+        r#"<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:m="{MATERIALS_NS}">"#
     );
     out.push('\n');
     out.push_str("  <resources>\n");
 
-    // basematerials id="1" — objects use pid="1" and pindex into this group.
-    const MATERIALS_ID: u32 = 1;
-    if !materials.is_empty() {
-        let _ = write!(out, "    <basematerials id=\"{MATERIALS_ID}\">\n");
-        for (name, color) in &materials {
+    // id=1: basematerials (standard 3MF viewers). id=2: m:colorgroup (Bambu Studio).
+    // Objects `pid` into the colorgroup so Bambu assigns extruders from colour.
+    const BASEMATERIALS_ID: u32 = 1;
+    const COLORGROUP_ID: u32 = 2;
+    if !colors.is_empty() {
+        let _ = write!(out, "    <basematerials id=\"{BASEMATERIALS_ID}\">\n");
+        for (name, color) in color_names.iter().zip(colors.iter()) {
             let _ = write!(
                 out,
                 "      <base name=\"{}\" displaycolor=\"{}\"/>\n",
@@ -98,25 +105,35 @@ fn model_xml_parts(parts: &[ThreeMfPart<'_>]) -> String {
             );
         }
         out.push_str("    </basematerials>\n");
+        let _ = write!(out, "    <m:colorgroup id=\"{COLORGROUP_ID}\">\n");
+        for color in &colors {
+            let _ = write!(
+                out,
+                "      <m:color color=\"{}\"/>\n",
+                display_color(*color)
+            );
+        }
+        out.push_str("    </m:colorgroup>\n");
     }
 
-    // Object resource ids: 2, 3, … (1 is reserved for basematerials when present).
-    let first_object_id: u32 = if materials.is_empty() { 1 } else { 2 };
+    // Object resource ids: 3, 4, … when materials present (1=basematerials, 2=colorgroup).
+    let first_object_id: u32 = if colors.is_empty() { 1 } else { 3 };
     let mut object_ids: Vec<u32> = Vec::with_capacity(parts.len());
     for (i, part) in parts.iter().enumerate() {
         let object_id = first_object_id + i as u32;
         object_ids.push(object_id);
         let (vertices, triangles) = dedupe_mesh(part.mesh);
-        if materials.is_empty() {
+        if colors.is_empty() {
             let _ = write!(
                 out,
                 "    <object id=\"{object_id}\" name=\"{}\" type=\"model\">\n",
                 xml_escape(part.name)
             );
         } else {
+            // pid → m:colorgroup so Bambu Studio sets extruder from pindex (#1299).
             let _ = write!(
                 out,
-                "    <object id=\"{object_id}\" name=\"{}\" type=\"model\" pid=\"{MATERIALS_ID}\" pindex=\"{}\">\n",
+                "    <object id=\"{object_id}\" name=\"{}\" type=\"model\" pid=\"{COLORGROUP_ID}\" pindex=\"{}\">\n",
                 xml_escape(part.name),
                 pindex_for[i]
             );
@@ -153,7 +170,7 @@ fn model_xml_parts(parts: &[ThreeMfPart<'_>]) -> String {
     out
 }
 
-/// Core 3MF displaycolor: `#RRGGBBAA` (opaque).
+/// 3MF colour: `#RRGGBBAA` (opaque). Used for both basematerials displaycolor and m:color.
 fn display_color(rgb: [u8; 3]) -> String {
     format!("#{:02X}{:02X}{:02X}FF", rgb[0], rgb[1], rgb[2])
 }
@@ -387,10 +404,11 @@ mod tests {
         assert!(model.contains("name=\"Block\""));
         assert!(model.contains("<vertex "), "vertices");
         assert!(model.contains("<triangle "), "triangles");
-        // basematerials id=1; the mesh object is id=2 and referenced from build.
+        // basematerials id=1, colorgroup id=2; mesh object is id=3 (pid into colorgroup).
         assert!(model.contains("<basematerials id=\"1\">"));
-        assert!(model.contains("objectid=\"2\""));
-        assert!(model.contains("pid=\"1\""));
+        assert!(model.contains("<m:colorgroup id=\"2\">"));
+        assert!(model.contains("objectid=\"3\""));
+        assert!(model.contains("pid=\"2\""));
         assert!(model.contains("pindex=\"0\""));
     }
 
@@ -422,10 +440,10 @@ mod tests {
         assert_eq!(model.matches("<triangle ").count(), 0);
     }
 
-    /// #1294: each coloured body is its own object with basematerials displaycolor so
-    /// Bambu Studio / PrusaSlicer can assign filaments per colour.
+    /// #1294 / #1299: each coloured body is its own object; basematerials for viewers and
+    /// m:colorgroup (materials extension) so Bambu Studio maps colours → filament slots.
     #[test]
-    fn write_3mf_parts_emits_basematerials_and_per_colour_objects() {
+    fn write_3mf_parts_emits_colorgroup_and_per_colour_objects() {
         let red = box_mesh();
         let yellow = {
             let mut m = box_mesh();
@@ -453,32 +471,49 @@ mod tests {
         let model = String::from_utf8(zip_entry(&bytes, "3D/3dmodel.model").unwrap()).unwrap();
 
         assert!(
+            model.contains("xmlns:m=\"http://schemas.microsoft.com/3dmanufacturing/material/2015/02\""),
+            "materials extension namespace:\n{model}"
+        );
+        assert!(
             model.contains("<basematerials id=\"1\">"),
-            "materials group:\n{model}"
+            "basematerials group:\n{model}"
         );
         assert!(
             model.contains("name=\"Yellow\" displaycolor=\"#E8C94AFF\""),
-            "yellow material:\n{model}"
+            "yellow basematerial:\n{model}"
         );
         assert!(
             model.contains("name=\"Red\" displaycolor=\"#E8615CFF\""),
-            "red material:\n{model}"
+            "red basematerial:\n{model}"
+        );
+        // Bambu Studio reads m:colorgroup / m:color (not basematerials) for extruders.
+        assert!(
+            model.contains("<m:colorgroup id=\"2\">"),
+            "colorgroup:\n{model}"
+        );
+        assert!(
+            model.contains("<m:color color=\"#E8C94AFF\"/>"),
+            "yellow m:color:\n{model}"
+        );
+        assert!(
+            model.contains("<m:color color=\"#E8615CFF\"/>"),
+            "red m:color:\n{model}"
         );
         assert!(model.contains("name=\"Body 0\""), "body 0 object");
         assert!(model.contains("name=\"Body 1\""), "body 1 object");
-        // Two objects, pid into basematerials, distinct pindex.
-        assert!(model.contains("pid=\"1\" pindex=\"0\""));
-        assert!(model.contains("pid=\"1\" pindex=\"1\""));
-        assert!(model.contains("objectid=\"2\""));
+        // Objects pid into colorgroup (id=2), distinct pindex → filament 1 and 2.
+        assert!(model.contains("pid=\"2\" pindex=\"0\""), "fila 1:\n{model}");
+        assert!(model.contains("pid=\"2\" pindex=\"1\""), "fila 2:\n{model}");
         assert!(model.contains("objectid=\"3\""));
+        assert!(model.contains("objectid=\"4\""));
         // Two cubes → 16 unique verts, 24 triangles.
         assert_eq!(model.matches("<vertex ").count(), 16);
         assert_eq!(model.matches("<triangle ").count(), 24);
     }
 
-    /// Bodies that share a material share one basematerials entry (same pindex).
+    /// Bodies that share a colour share one colorgroup entry (same pindex / filament).
     #[test]
-    fn write_3mf_parts_dedupes_shared_materials() {
+    fn write_3mf_parts_dedupes_shared_colours() {
         let a = box_mesh();
         let b = box_mesh();
         let bytes = write_3mf_parts(&[
@@ -492,10 +527,15 @@ mod tests {
                 name: "b",
                 mesh: &b,
                 color: [0xff, 0x00, 0x00],
-                material_name: "Red",
+                material_name: "Also red", // different name, same colour → same filament
             },
         ]);
         let model = String::from_utf8(zip_entry(&bytes, "3D/3dmodel.model").unwrap()).unwrap();
+        assert_eq!(
+            model.matches("<m:color ").count(),
+            1,
+            "one shared m:color:\n{model}"
+        );
         assert_eq!(
             model.matches("<base ").count(),
             1,

@@ -4942,8 +4942,8 @@ impl AppState {
         self.write_mesh_file(path, name, mesh, MeshExportFormat::Step)
     }
 
-    /// Write a multi-object coloured 3MF package (#1284 / #1294). Each part is a separate object
-    /// with basematerials `displaycolor` so Bambu Studio / PrusaSlicer can assign filaments.
+    /// Write a multi-object coloured 3MF package (#1284 / #1294 / #1299). Each part is a separate
+    /// object with `m:colorgroup` colours so Bambu Studio assigns a filament slot per colour.
     fn write_3mf_collected_file(
         &mut self,
         path: &str,
@@ -19195,8 +19195,8 @@ mod tests {
         assert!(state.export_component_3mf_bytes(ckey(3)).is_err());
     }
 
-    /// #1294: multi-body 3MF export keeps each body as its own object with basematerials
-    /// colours from the body's material (Bambu Studio multi-filament).
+    /// #1294 / #1299: multi-body 3MF export keeps each body as its own object with
+    /// m:colorgroup colours so Bambu Studio assigns distinct filament slots.
     #[test]
     fn export_3mf_preserves_body_colours() {
         let mut state = two_box_state(false);
@@ -19266,6 +19266,10 @@ mod tests {
             "must declare basematerials:\n{model}"
         );
         assert!(
+            model.contains("<m:colorgroup id=\"2\">"),
+            "must declare m:colorgroup for Bambu filament mapping:\n{model}"
+        );
+        assert!(
             model.contains("name=\"Yellow\" displaycolor=\"#E8C94AFF\""),
             "yellow material missing:\n{model}"
         );
@@ -19273,10 +19277,18 @@ mod tests {
             model.contains("name=\"Red\" displaycolor=\"#E8615CFF\""),
             "red material missing:\n{model}"
         );
-        // Two mesh objects (ids 2 and 3) with distinct material indices.
-        assert!(model.contains("pid=\"1\" pindex=\"0\""), "first colour:\n{model}");
-        assert!(model.contains("pid=\"1\" pindex=\"1\""), "second colour:\n{model}");
-        assert!(model.contains("objectid=\"2\"") && model.contains("objectid=\"3\""));
+        assert!(
+            model.contains("<m:color color=\"#E8C94AFF\"/>"),
+            "yellow m:color:\n{model}"
+        );
+        assert!(
+            model.contains("<m:color color=\"#E8615CFF\"/>"),
+            "red m:color:\n{model}"
+        );
+        // Objects pid into colorgroup (id=2) with distinct pindex → Fila 1 and 2.
+        assert!(model.contains("pid=\"2\" pindex=\"0\""), "first colour:\n{model}");
+        assert!(model.contains("pid=\"2\" pindex=\"1\""), "second colour:\n{model}");
+        assert!(model.contains("objectid=\"3\"") && model.contains("objectid=\"4\""));
         // Not a single fused object.
         assert_eq!(
             model.matches("<object ").count(),
