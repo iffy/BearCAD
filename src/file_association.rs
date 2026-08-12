@@ -217,8 +217,9 @@ pub fn ensure_registered() {
 }
 
 fn current_binary() -> Result<PathBuf, String> {
-    // Same resolve path as install-cli: canonical so re-runs stay stable.
-    crate::cli_install::current_binary()
+    // Canonical so re-runs stay stable. Kept local so wasm (no installer module) compiles.
+    let exe = std::env::current_exe().map_err(|e| format!("cannot find current executable: {e}"))?;
+    std::fs::canonicalize(&exe).map_err(|e| format!("cannot resolve {}: {e}", exe.display()))
 }
 
 // ── Content generators (unit-tested on every OS; used by the matching platform) ─
@@ -920,6 +921,21 @@ mod tests {
         );
         assert_eq!(path_from_os_open_spec(""), None);
         assert_eq!(path_from_os_open_spec("   "), None);
+    }
+
+    /// Website wasm builds `file_association` but gates `cli_install` out. A call into
+    /// that module fails `cargo build --target wasm32-unknown-unknown` (#1335).
+    #[test]
+    fn register_does_not_depend_on_cli_install() {
+        let src = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/file_association.rs"),
+        )
+        .expect("file_association.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap_or(&src);
+        assert!(
+            !prod.contains("crate::cli_install"),
+            "file_association is compiled for wasm; the installer module is not"
+        );
     }
 
     /// Finder launch-open is delivered as `application:openURLs:` on the NSApplication
