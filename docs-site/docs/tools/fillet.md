@@ -64,6 +64,6 @@ undo like anything else.
 - The radius field takes expressions.
 - A radius that can't physically fit is rejected at commit rather than producing broken
   geometry.
-- Rounding solid edges works on bodies made from sketch profiles.
+- Rounding solid edges works on extruded profiles and Shape-tool cuboids (and cylinder rims).
 - **Edit later:** double-click the fillet operation's Elements pane row (or right-click →
   **Edit fillet**) to bring back its gizmo and amount input, then commit a new radius.

@@ -66,6 +66,7 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
         // geometry-keyed sub-elements; the world origin always does.
         // An extrusion's analytic edge (#952) lives as long as its extrusion.
         SceneElement::ExtrusionEdge { extrusion, .. } => extrusion_alive(doc, extrusion),
+        SceneElement::PrimitiveEdge { primitive, .. } => doc.primitives.contains(primitive),
         // A repeat instance's face (#955) lives as long as both the repeat and the source face.
         SceneElement::RepeatedFace { face, op, .. } => {
             doc.repeat_ops.contains(op)
@@ -261,6 +262,7 @@ pub fn delete_element(doc: &mut Document, element: SceneElement) -> bool {
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
         | SceneElement::ExtrusionEdge { .. }
+        | SceneElement::PrimitiveEdge { .. }
         | SceneElement::RepeatedFace { .. } => {}
         SceneElement::Joint(index) => {
             // The history-tape marker is this joint's place among the live ones (#1055).

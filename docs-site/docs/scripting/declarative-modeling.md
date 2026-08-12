@@ -193,7 +193,8 @@ bearcad.chamfer_vertex{ point = corner, distance = 3 }
 bearcad.fillet_vertex{ point = corner, radius = 3 }
 ```
 
-On a solid, `chamfer_edge`/`fillet_edge` take an analytic edge of an extrusion — a vertical
+On a solid, `chamfer_edge`/`fillet_edge` take an analytic edge of an extrusion or a
+Shape-tool cuboid (`primitive = 0` instead of `extrusion = 0`) — a vertical
 edge between two side walls, or a cap edge where a side wall meets the top or base:
 
 ```lua

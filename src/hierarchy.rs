@@ -267,6 +267,12 @@ pub enum SceneElement {
         extrusion: crate::model::ExtrusionKey,
         edge: crate::model::ExtrusionEdgeRef,
     },
+    /// One analytic edge of a Shape-tool primitive (#1329) — the cuboid/cylinder analogue
+    /// of [`SceneElement::ExtrusionEdge`].
+    PrimitiveEdge {
+        primitive: crate::model::PrimitiveKey,
+        edge: crate::model::ExtrusionEdgeRef,
+    },
     /// A **repeat instance's** face (#452/#955): the source face's plane translated along the
     /// repeat axis by that instance's offset. Parametric — it follows when the repeat's spacing
     /// or the source body changes — and it is not the source face, which is a different plane,
@@ -759,6 +765,9 @@ impl ElementVisibility {
             // An extrusion's analytic edge (#952) shows when its extrusion does.
             SceneElement::ExtrusionEdge { extrusion, .. } => {
                 self.effective_visible(doc, SceneElement::Extrusion(extrusion))
+            }
+            SceneElement::PrimitiveEdge { primitive, .. } => {
+                self.effective_visible(doc, SceneElement::Shape(primitive))
             }
             // A repeat instance's face shows when its repeat does (#955).
             SceneElement::RepeatedFace { op, .. } => {
@@ -1821,6 +1830,7 @@ pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNod
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
         | SceneElement::ExtrusionEdge { .. }
+        | SceneElement::PrimitiveEdge { .. }
         | SceneElement::RepeatedFace { .. }
         // A drawing's items have rows under their page, keyed by the page rather than by a
         // graph node of their own (#967).
@@ -1841,6 +1851,7 @@ pub fn visibility_target_for_element(element: &SceneElement) -> Option<SceneElem
         | SceneElement::BodyCylinder { body, .. }
         | SceneElement::BodyAxis { body, .. } => Some(SceneElement::Body(*body)),
         SceneElement::ExtrusionEdge { extrusion, .. } => Some(SceneElement::Extrusion(*extrusion)),
+        SceneElement::PrimitiveEdge { primitive, .. } => Some(SceneElement::Shape(*primitive)),
         SceneElement::FaceEdge(line) => match line {
             ConstraintLine::FaceEdge { face, .. } => face_owner_element(face),
             ConstraintLine::Line(i) => Some(SceneElement::Line(*i)),
@@ -2982,6 +2993,7 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
         | SceneElement::ExtrusionEdge { .. }
+        | SceneElement::PrimitiveEdge { .. }
         | SceneElement::RepeatedFace { .. } => None,
         // A tracing image nests under its host construction plane (#169).
         SceneElement::Image(index) => doc
@@ -3137,6 +3149,7 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
         | SceneElement::ExtrusionEdge { .. }
+        | SceneElement::PrimitiveEdge { .. }
         | SceneElement::RepeatedFace { .. }
         | SceneElement::SketchText(_)
         // A joint has no outputs — nothing descends from it (#891).
@@ -6599,7 +6612,7 @@ mod tests {
             targets: vec![host],
             edges: vec![TreatedEdge {
                 target: 0,
-                extrusion: xkey(0),
+                solid: crate::model::TreatableSolid::Extrusion(xkey(0)),
                 edge: crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 },
             }],
             kind: VertexTreatmentKind::Fillet,

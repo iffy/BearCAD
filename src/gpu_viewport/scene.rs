@@ -3785,9 +3785,20 @@ impl<'a> SceneMesh<'a> {
             // `Cap` reference but many mesh chords, so drawing one chord would make a circle
             // read as a row of facets (#807).
             SceneElement::ExtrusionEdge { extrusion, edge } => {
+                let solid = crate::model::TreatableSolid::Extrusion(extrusion);
                 for (a, b) in crate::extrude::treatable_edges(doc)
                     .into_iter()
-                    .filter(|(e, r, _, _)| *e == extrusion && *r == edge)
+                    .filter(|(s, r, _, _)| *s == solid && *r == edge)
+                    .map(|(_, _, a, b)| (a, b))
+                {
+                    self.push_polyline_segment(&[a, b], color, 3.0, cam, viewport, view_proj);
+                }
+            }
+            SceneElement::PrimitiveEdge { primitive, edge } => {
+                let solid = crate::model::TreatableSolid::Primitive(primitive);
+                for (a, b) in crate::extrude::treatable_edges(doc)
+                    .into_iter()
+                    .filter(|(s, r, _, _)| *s == solid && *r == edge)
                     .map(|(_, _, a, b)| (a, b))
                 {
                     self.push_polyline_segment(&[a, b], color, 3.0, cam, viewport, view_proj);

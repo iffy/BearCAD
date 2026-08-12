@@ -12556,8 +12556,8 @@ impl App {
         }
 
         let anchor = self.state.creating_edge_treatment.as_ref().and_then(|cet| {
-            let (extrusion, edge) = cet.primary()?;
-            crate::extrude::extrusion_edge_anchor(&self.state.doc, extrusion, edge)
+            let (solid, edge) = cet.primary()?;
+            crate::extrude::treatable_edge_anchor(&self.state.doc, solid, edge)
         });
 
         let following = self.edge_treatment_gizmo_drag.is_some();
@@ -12645,9 +12645,9 @@ impl App {
                 // An edge under the cursor is the pick. Failing that, a **face** is: this
                 // picker takes edges and not faces, so clicking a face means all of that
                 // face's edges (#960) — otherwise it's a dead click with nothing to say why.
-                let picked: Vec<(model::ExtrusionKey, model::ExtrusionEdgeRef)> =
+                let picked: Vec<(model::TreatableSolid, model::ExtrusionEdgeRef)> =
                     match construction::nearest_treatable_edge(pp, project, &self.state.doc) {
-                        Some((extrusion, edge, _, _, _)) => vec![(extrusion, edge)],
+                        Some((solid, edge, _, _, _)) => vec![(solid, edge)],
                         None => crate::face::pick_body_face(
                             pp,
                             project,
@@ -12708,11 +12708,11 @@ impl App {
             let Some(cet) = self.state.creating_edge_treatment.as_ref() else {
                 return;
             };
-            let Some((extrusion, edge)) = cet.primary() else {
+            let Some((solid, edge)) = cet.primary() else {
                 return;
             };
             let Some((origin, normal)) =
-                crate::extrude::extrusion_edge_anchor(&self.state.doc, extrusion, edge)
+                crate::extrude::treatable_edge_anchor(&self.state.doc, solid, edge)
             else {
                 return;
             };
@@ -19960,7 +19960,7 @@ fn build_viewport_scene_input<'a>(
             if cet.evaluated_amount(doc) <= 0.0 {
                 return None;
             }
-            Some(cet.primary()?.0)
+            cet.primary()?.0.as_extrusion()
         });
 
     // Live ghost of the in-progress revolve (#revolve): a temp Revolution meshed with the
@@ -20015,7 +20015,7 @@ fn build_viewport_scene_input<'a>(
             name: None,
         })
     });
-    let preview_replacement: gpu_viewport::PreviewReplacement = creating_sweep
+    let mut preview_replacement: gpu_viewport::PreviewReplacement = creating_sweep
         .zip(sweep_probe.as_ref())
         .filter(|(cf, _)| {
             cf.body_choice == actions::RevolveBodyChoice::Cut && !cf.cut_bodies.is_empty()
@@ -20038,7 +20038,29 @@ fn build_viewport_scene_input<'a>(
     // Live ghost of the shape being placed (#912): the same mesh a commit would build,
     // including the generic one that follows the cursor before the first click.
     let preview_solid = preview_solid
-        .or_else(|| crate::primitives::mesh(doc, &creating_shape?.shape));
+        .or_else(|| crate::primitives::mesh(doc, &creating_shape?.shape))
+        .or_else(|| {
+            let cet = creating_edge_treatment?;
+            let amount = cet.evaluated_amount(doc);
+            if amount <= 0.0 {
+                return None;
+            }
+            let (model::TreatableSolid::Primitive(pi), _) = cet.primary()? else {
+                return None;
+            };
+            let mesh = crate::extrude::primitive_treatment_preview_mesh(
+                doc, pi, &cet.edges, cet.kind, amount,
+            )?;
+            if let Some(body) = crate::extrude::live_body_for_treatable_solid(
+                doc,
+                model::TreatableSolid::Primitive(pi),
+            ) {
+                if !preview_replacement.bodies.contains(&body) {
+                    preview_replacement.bodies.push(body);
+                }
+            }
+            Some(mesh)
+        });
 
     let preview_extrusion = creating_extrusion
         .and_then(|ce| {
@@ -20070,13 +20092,14 @@ fn build_viewport_scene_input<'a>(
             // but only the primary gets a ghost — the single-slot preview mechanism shows
             // one extrusion at a time.
             let (primary, _) = cet.primary()?;
+            let extrusion = primary.as_extrusion()?;
             let treatments: Vec<model::EdgeTreatment> = cet
                 .edges
                 .iter()
-                .filter(|(ei, _)| *ei == primary)
+                .filter(|(s, _)| *s == primary)
                 .map(|(_, edge)| model::EdgeTreatment { edge: *edge, kind: cet.kind, amount })
                 .collect();
-            crate::extrude::extrusion_with_edge_treatments(doc, primary, treatments)
+            crate::extrude::extrusion_with_edge_treatments(doc, extrusion, treatments)
         });
 
     // #142: a cut extrusion previews the finished cut result over the target body, not an
@@ -28832,9 +28855,9 @@ impl App {
                 // Which analytic edges a click here would take: the one under the cursor, or —
                 // over a face, which this picker can't hold — all of that face's (#960), so
                 // what lights up is what the click does.
-                let wanted: Vec<(model::ExtrusionKey, model::ExtrusionEdgeRef)> =
+                let wanted: Vec<(model::TreatableSolid, model::ExtrusionEdgeRef)> =
                     match construction::nearest_treatable_edge(pp, &project, doc) {
-                        Some((extrusion, edge, _, _, _)) => vec![(extrusion, edge)],
+                        Some((solid, edge, _, _, _)) => vec![(solid, edge)],
                         None => crate::face::pick_body_face(pp, &project, doc, cam.eye())
                             .and_then(|kind| match kind {
                                 construction::PickTargetKind::BodyFace {
@@ -29296,8 +29319,8 @@ impl App {
                 vertex_treatment_preview =
                     vertex_treatment_preview_points(doc, session.sketch, cvt);
             } else if let Some(cet) = self.state.creating_edge_treatment.as_ref() {
-                if let Some((origin, normal)) = cet.primary().and_then(|(extrusion, edge)| {
-                    crate::extrude::extrusion_edge_anchor(doc, extrusion, edge)
+                if let Some((origin, normal)) = cet.primary().and_then(|(solid, edge)| {
+                    crate::extrude::treatable_edge_anchor(doc, solid, edge)
                 }) {
                     let handle_offset =
                         construction::gizmo_display_offset(cet.evaluated_amount(doc));
@@ -33642,7 +33665,7 @@ mod tests {
 
         let edge = ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
         state.creating_edge_treatment = Some(CreatingEdgeTreatment {
-            edges: vec![(xkey(0), edge)],
+            edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount_live: 2.0,
             text: "2".to_string(),
@@ -33786,7 +33809,7 @@ mod tests {
         state.apply(Action::CommitExtrusion);
 
         state.creating_edge_treatment = Some(CreatingEdgeTreatment {
-            edges: vec![(xkey(0), ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })],
+            edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })],
             kind: VertexTreatmentKind::Fillet,
             amount_live: 0.0,
             text: "0".to_string(),
@@ -33830,7 +33853,7 @@ mod tests {
         let second = ExtrusionEdgeRef::Cap { face: 0, edge: 0, top: true };
         assert!(matches!(
             state.apply(Action::CommitEdgeTreatments {
-                edges: vec![(xkey(0), first)],
+                edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), first)],
                 kind: VertexTreatmentKind::Fillet,
                 amount: 2.0,
             }),
@@ -33838,7 +33861,7 @@ mod tests {
         ));
 
         state.creating_edge_treatment = Some(CreatingEdgeTreatment {
-            edges: vec![(xkey(0), second)],
+            edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), second)],
             kind: VertexTreatmentKind::Fillet,
             amount_live: 1.0,
             text: "1".to_string(),

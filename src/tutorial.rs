@@ -1849,7 +1849,7 @@ fn fillet_vertical_edge(app: &mut AppState, edge: usize, expression: &str) {
     let Some(plate) = plate_extrusion(app) else { return };
     let amount = crate::value::eval_length_mm_in_doc(expression, &app.doc).unwrap_or(4.0);
     app.apply(Action::CommitEdgeTreatments {
-        edges: vec![(plate, ExtrusionEdgeRef::Vertical { face: 0, edge })],
+        edges: vec![(crate::model::TreatableSolid::Extrusion(plate), ExtrusionEdgeRef::Vertical { face: 0, edge })],
         kind: VertexTreatmentKind::Fillet,
         amount,
     });
@@ -1953,7 +1953,7 @@ fn assist_countersink(app: &mut AppState) {
     let Some(cut) = app.doc.extrusions.keys().last() else { return };
     let faces = app.doc.extrusions[cut].faces.len();
     let edges = (0..faces)
-        .map(|face| (cut, ExtrusionEdgeRef::Cap { face, edge: 0, top: false }))
+        .map(|face| (crate::model::TreatableSolid::Extrusion(cut), ExtrusionEdgeRef::Cap { face, edge: 0, top: false }))
         .collect::<Vec<_>>();
     if edges.is_empty() {
         return;
@@ -1971,7 +1971,7 @@ fn assist_round_corners(app: &mut AppState) {
     let Some(plate) = plate_extrusion(app) else { return };
     let edges = [0usize, 1, 3, 4]
         .into_iter()
-        .map(|edge| (plate, ExtrusionEdgeRef::Vertical { face: 0, edge }))
+        .map(|edge| (crate::model::TreatableSolid::Extrusion(plate), ExtrusionEdgeRef::Vertical { face: 0, edge }))
         .collect::<Vec<_>>();
     app.apply(Action::CommitEdgeTreatments {
         edges,

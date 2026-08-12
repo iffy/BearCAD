@@ -127,6 +127,7 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
         SceneElement::SketchFace(_) => "face",
         SceneElement::MovePoint(_) => "move_point",
         SceneElement::ExtrusionEdge { .. } => "extrusion_edge",
+        SceneElement::PrimitiveEdge { .. } => "primitive_edge",
         SceneElement::RepeatedFace { .. } => "repeated_face",
         SceneElement::Image(_) => "image",
         SceneElement::BooleanOp(_) => "boolean_op",
@@ -210,6 +211,9 @@ pub fn scene_element_selection_index(
         | SceneElement::MovePoint(_) => None,
         SceneElement::ExtrusionEdge { extrusion, .. } => {
             doc.extrusions.keys().position(|k| k == *extrusion)
+        }
+        SceneElement::PrimitiveEdge { primitive, .. } => {
+            doc.primitives.keys().position(|k| k == *primitive)
         }
         SceneElement::RepeatedFace { instance, .. } => Some(*instance),
         // A page item indexes by its place on the page; a dimension has no index of its own,
@@ -1382,8 +1386,8 @@ fn extrusion_edge_from_json(v: &Value) -> Result<ExtrusionEdgeRef, String> {
 fn extrusion_edge_set_from_json(
     o: &serde_json::Map<String, Value>,
     name: &str,
-) -> Result<Vec<(usize, ExtrusionEdgeRef)>, String> {
-    let default_extrusion = opt_usize(o, "extrusion")?;
+) -> Result<Vec<(crate::script::TreatableSolidRef, ExtrusionEdgeRef)>, String> {
+    let default_host = treatable_solid_ref_from_json(o)?;
     if let Some(list) = o.get("edges") {
         let list = list.as_array().ok_or_else(|| format!("{name} `edges` must be an array"))?;
         if list.is_empty() {
@@ -1395,21 +1399,36 @@ fn extrusion_edge_set_from_json(
                 let obj = entry.as_object().ok_or("edge spec must be an object")?;
                 // `edge` is an object in the wrapped form and an index in the bare edge spec,
                 // whose own `edge` field numbers the edge — so the shape, not the key, decides.
-                let (extrusion, edge_value) = match obj.get("edge").filter(|v| v.is_object()) {
-                    Some(inner) => (opt_usize(obj, "extrusion")?, inner),
+                let (host, edge_value) = match obj.get("edge").filter(|v| v.is_object()) {
+                    Some(inner) => (treatable_solid_ref_from_json(obj)?, inner),
                     None => (None, entry),
                 };
-                let extrusion = extrusion
-                    .or(default_extrusion)
-                    .ok_or_else(|| format!("{name} `edges` entry requires an `extrusion`"))?;
-                Ok((extrusion, extrusion_edge_from_json(edge_value)?))
+                let host = host.or(default_host).ok_or_else(|| {
+                    format!("{name} `edges` entry requires an `extrusion` or `primitive`")
+                })?;
+                Ok((host, extrusion_edge_from_json(edge_value)?))
             })
             .collect();
     }
     let edge = extrusion_edge_from_json(
         o.get("edge").ok_or_else(|| format!("{name} requires an `edge`"))?,
     )?;
-    Ok(vec![(req_usize(o, "extrusion", name)?, edge)])
+    let host = default_host
+        .ok_or_else(|| format!("{name} requires an `extrusion` or `primitive`"))?;
+    Ok(vec![(host, edge)])
+}
+
+fn treatable_solid_ref_from_json(
+    o: &serde_json::Map<String, Value>,
+) -> Result<Option<crate::script::TreatableSolidRef>, String> {
+    let extrusion = opt_usize(o, "extrusion")?;
+    let primitive = opt_usize(o, "primitive")?;
+    match (extrusion, primitive) {
+        (Some(i), None) => Ok(Some(crate::script::TreatableSolidRef::Extrusion(i))),
+        (None, Some(i)) => Ok(Some(crate::script::TreatableSolidRef::Primitive(i))),
+        (Some(_), Some(_)) => Err("give `extrusion` or `primitive`, not both".into()),
+        (None, None) => Ok(None),
+    }
 }
 
 /// A distance-constraint target from a `{ kind, index }` object (mirrors
@@ -3527,7 +3546,7 @@ mod tests {
                 &json!({ "extrusion": 0, "edge": { "kind": "vertical", "face": 0, "edge": 2 }, "radius": 1.5 })
             ),
             Ok(Instruction::EdgeTreatment {
-                edges: vec![(0, ExtrusionEdgeRef::Vertical { face: 0, edge: 2 })],
+                edges: vec![(crate::script::TreatableSolidRef::Extrusion(0), ExtrusionEdgeRef::Vertical { face: 0, edge: 2 })],
                 kind: VertexTreatmentKind::Fillet,
                 amount: 1.5,
             })
@@ -3538,7 +3557,7 @@ mod tests {
                 &json!({ "extrusion": 1, "edge": { "kind": "cap", "face": 0, "edge": 3, "top": true }, "distance": 2 })
             ),
             Ok(Instruction::EdgeTreatment {
-                edges: vec![(1, ExtrusionEdgeRef::Cap { face: 0, edge: 3, top: true })],
+                edges: vec![(crate::script::TreatableSolidRef::Extrusion(1), ExtrusionEdgeRef::Cap { face: 0, edge: 3, top: true })],
                 kind: VertexTreatmentKind::Chamfer,
                 amount: 2.0,
             })
@@ -3554,8 +3573,8 @@ mod tests {
             ),
             Ok(Instruction::EdgeTreatment {
                 edges: vec![
-                    (0, ExtrusionEdgeRef::Vertical { face: 0, edge: 0 }),
-                    (1, ExtrusionEdgeRef::Vertical { face: 0, edge: 2 }),
+                    (crate::script::TreatableSolidRef::Extrusion(0), ExtrusionEdgeRef::Vertical { face: 0, edge: 0 }),
+                    (crate::script::TreatableSolidRef::Extrusion(1), ExtrusionEdgeRef::Vertical { face: 0, edge: 2 }),
                 ],
                 kind: VertexTreatmentKind::Fillet,
                 amount: 8.0,

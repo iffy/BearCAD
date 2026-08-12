@@ -408,11 +408,13 @@ impl<'a> EmitCtx<'a> {
                     if !e.edge_treatments.is_empty() {
                         for et in &e.edge_treatments {
                             let edges = vec![(
-                                self.doc
-                                    .extrusions
-                                    .keys()
-                                    .position(|k| k == key)
-                                    .unwrap_or(0),
+                                crate::script::TreatableSolidRef::Extrusion(
+                                    self.doc
+                                        .extrusions
+                                        .keys()
+                                        .position(|k| k == key)
+                                        .unwrap_or(0),
+                                ),
                                 et.edge,
                             )];
                             let instr = Instruction::EdgeTreatment {
@@ -588,12 +590,19 @@ impl<'a> EmitCtx<'a> {
                         .edges
                         .iter()
                         .filter_map(|te| {
-                            let o = self
-                                .doc
-                                .extrusions
-                                .keys()
-                                .position(|k| k == te.extrusion)?;
-                            Some((o, te.edge))
+                            let host = match te.solid {
+                                crate::model::TreatableSolid::Extrusion(e) => {
+                                    crate::script::TreatableSolidRef::Extrusion(
+                                        self.doc.extrusions.keys().position(|k| k == e)?,
+                                    )
+                                }
+                                crate::model::TreatableSolid::Primitive(p) => {
+                                    crate::script::TreatableSolidRef::Primitive(
+                                        self.doc.primitives.keys().position(|k| k == p)?,
+                                    )
+                                }
+                            };
+                            Some((host, te.edge))
                         })
                         .collect();
                     if !edges.is_empty() {

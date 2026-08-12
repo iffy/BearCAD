@@ -1795,7 +1795,7 @@ pub struct CreatingLoft {
 pub struct CreatingEdgeTreatment {
     /// The analytic edges being treated together (#166): one shared amount/gizmo applies to
     /// all of them on commit. Non-empty; the first entry anchors the gizmo.
-    pub edges: Vec<(crate::model::ExtrusionKey, ExtrusionEdgeRef)>,
+    pub edges: Vec<(crate::model::TreatableSolid, ExtrusionEdgeRef)>,
     pub kind: VertexTreatmentKind,
     /// Live amount (mm), gizmo-driven; always clamped non-negative.
     pub amount_live: f32,
@@ -1807,13 +1807,13 @@ pub struct CreatingEdgeTreatment {
 
 impl CreatingEdgeTreatment {
     /// The gizmo-anchoring edge (the first in the set).
-    pub fn primary(&self) -> Option<(crate::model::ExtrusionKey, ExtrusionEdgeRef)> {
+    pub fn primary(&self) -> Option<(crate::model::TreatableSolid, ExtrusionEdgeRef)> {
         self.edges.first().copied()
     }
 
     /// Toggle an edge's membership in the set (#166; shift+click). Removing the last edge
     /// is refused — an in-progress treatment always keeps at least one edge.
-    pub fn toggle_edge(&mut self, entry: (crate::model::ExtrusionKey, ExtrusionEdgeRef)) {
+    pub fn toggle_edge(&mut self, entry: (crate::model::TreatableSolid, ExtrusionEdgeRef)) {
         if let Some(pos) = self.edges.iter().position(|e| *e == entry) {
             if self.edges.len() > 1 {
                 self.edges.remove(pos);
@@ -2360,7 +2360,7 @@ pub enum Action {
     /// (one undo, one amount). Sequential commits on the same body chain onto the live
     /// treated output (#1323) rather than forking sibling bodies.
     CommitEdgeTreatments {
-        edges: Vec<(crate::model::ExtrusionKey, ExtrusionEdgeRef)>,
+        edges: Vec<(crate::model::TreatableSolid, ExtrusionEdgeRef)>,
         kind: VertexTreatmentKind,
         amount: f32,
     },
@@ -5518,11 +5518,13 @@ impl AppState {
     /// skipped; an all-invalid selection is an error. Undo is the standard document checkpoint.
     fn commit_edge_treatment_op(
         &mut self,
-        edges: Vec<(crate::model::ExtrusionKey, ExtrusionEdgeRef)>,
+        edges: Vec<(crate::model::TreatableSolid, ExtrusionEdgeRef)>,
         kind: VertexTreatmentKind,
         amount: f32,
     ) -> ActionResult {
-        use crate::model::{Body, BodySource, EdgeTreatmentOperation, ShapeKind, TreatedEdge};
+        use crate::model::{
+            Body, BodySource, EdgeTreatmentOperation, ShapeKind, TreatableSolid, TreatedEdge,
+        };
         if edges.is_empty() {
             return ActionResult::Err("No edges to treat".to_string());
         }
@@ -5539,41 +5541,54 @@ impl AppState {
         }
         let mut targets: Vec<crate::model::BodyKey> = Vec::new();
         let mut treated: Vec<TreatedEdge> = Vec::new();
-        // Per-extrusion treatment lists, accumulated so an intra-operation corner conflict is
+        // Per-solid treatment lists, accumulated so an intra-operation corner conflict is
         // caught (two treated edges meeting at one corner), mirroring the old in-place check.
-        let mut per_extrusion: std::collections::HashMap<
-            crate::model::ExtrusionKey,
-            Vec<EdgeTreatment>,
-        > =
+        let mut per_solid: std::collections::HashMap<TreatableSolid, Vec<EdgeTreatment>> =
             std::collections::HashMap::new();
         let mut first_error: Option<String> = None;
-        for (extrusion, edge) in edges {
+        for (solid, edge) in edges {
             let reject = |e: String, first: &mut Option<String>| {
                 if first.is_none() {
                     *first = Some(e);
                 }
             };
-            if require_element_editable(&self.document_health, SceneElement::Extrusion(extrusion))
-                .is_err()
-            {
-                reject(format!("Extrusion {} isn't editable", extrusion.index()), &mut first_error);
+            let scene_el = match solid {
+                TreatableSolid::Extrusion(ei) => SceneElement::Extrusion(ei),
+                TreatableSolid::Primitive(pi) => SceneElement::Shape(pi),
+            };
+            if require_element_editable(&self.document_health, scene_el.clone()).is_err() {
+                reject(
+                    format!("{} isn't editable", crate::names::scene_element_label(&self.doc, &scene_el)),
+                    &mut first_error,
+                );
                 continue;
             }
-            if !crate::extrude::extrusion_edge_exists(&self.doc, extrusion, edge) {
+            if !crate::extrude::treatable_edge_exists(&self.doc, solid, edge) {
                 reject(
                     "Edge no longer exists or isn't chamfer/fillet-able".to_string(),
                     &mut first_error,
                 );
                 continue;
             }
-            let n = self
-                .doc
-                .extrusions
-                .get(extrusion)
-                .and_then(|ext| ext.faces.get(edge.face()))
-                .map(crate::extrude::side_face_count)
-                .unwrap_or(0);
-            let existing = per_extrusion.entry(extrusion).or_default();
+            let n = match solid {
+                TreatableSolid::Extrusion(extrusion) => self
+                    .doc
+                    .extrusions
+                    .get(extrusion)
+                    .and_then(|ext| ext.faces.get(edge.face()))
+                    .map(crate::extrude::side_face_count)
+                    .unwrap_or(0),
+                TreatableSolid::Primitive(pi) => self
+                    .doc
+                    .primitives
+                    .get(pi)
+                    .map(|s| match s.kind {
+                        crate::model::PrimitiveKind::Cuboid => 4,
+                        _ => 0,
+                    })
+                    .unwrap_or(0),
+            };
+            let existing = per_solid.entry(solid).or_default();
             if crate::extrude::edge_treatment_conflicts(existing, edge, n) {
                 reject(
                     "Edges share a corner (blending 3+ bevels at one corner isn't supported)"
@@ -5582,20 +5597,15 @@ impl AppState {
                 );
                 continue;
             }
-            if !crate::extrude::edge_treatment_would_bevel(&self.doc, extrusion, edge, kind, amount)
-            {
+            if !crate::extrude::treatable_edge_would_bevel(&self.doc, solid, edge, kind, amount) {
                 reject("Corner is degenerate".to_string(), &mut first_error);
                 continue;
             }
             // #1323: treat the live tip of any already-committed fillet/chamfer chain,
-            // not the original (now shadowed) extrusion body — otherwise a second fillet
+            // not the original (now shadowed) body — otherwise a second fillet
             // forks a sibling body instead of stacking on the first.
-            let Some(body) = crate::extrude::live_body_for_treated_extrusion(&self.doc, extrusion)
-            else {
-                reject(
-                    format!("Extrusion {} has no body to treat", extrusion.index()),
-                    &mut first_error,
-                );
+            let Some(body) = crate::extrude::live_body_for_treatable_solid(&self.doc, solid) else {
+                reject("No body to treat".to_string(), &mut first_error);
                 continue;
             };
             let target = targets.iter().position(|&b| b == body).unwrap_or_else(|| {
@@ -5603,7 +5613,7 @@ impl AppState {
                 targets.len() - 1
             });
             existing.push(EdgeTreatment { edge, kind, amount });
-            treated.push(TreatedEdge { target, extrusion, edge });
+            treated.push(TreatedEdge { target, solid, edge });
         }
         if treated.is_empty() {
             let e = first_error.unwrap_or_else(|| "No treatable edges".to_string());
@@ -7584,6 +7594,9 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::MovePoint(_) => "Point".to_string(),
         SceneElement::ExtrusionEdge { extrusion, .. } => {
             format!("Edge of extrusion {}", extrusion.index())
+        }
+        SceneElement::PrimitiveEdge { primitive, .. } => {
+            format!("Edge of shape {}", primitive.index())
         }
         SceneElement::RepeatedFace { instance, .. } => format!("Repeated face (copy {instance})"),
         // The slot number, which is what the ordinal was before anything was removed (#1055).
@@ -11106,7 +11119,7 @@ impl AppState {
                 // as a first-class operation (#531) rather than duplicating it.
                 self.doc.extrusions[extrusion].edge_treatments.remove(index);
                 self.creating_edge_treatment = Some(CreatingEdgeTreatment {
-                    edges: vec![(extrusion, treatment.edge)],
+                    edges: vec![(crate::model::TreatableSolid::Extrusion(extrusion), treatment.edge)],
                     kind: treatment.kind,
                     amount_live: treatment.amount,
                     text: crate::value::format_length_display(treatment.amount),
@@ -11132,7 +11145,7 @@ impl AppState {
                 let edges = operation
                     .edges
                     .iter()
-                    .map(|te| (te.extrusion, te.edge))
+                    .map(|te| (te.solid, te.edge))
                     .collect();
                 // Tombstone the op (releasing its shadow inputs and beveled outputs) so the
                 // gizmo commit rebuilds it from the reloaded edges/amount.
@@ -28257,7 +28270,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         let mut state = box_extrusion_state();
         let result = state.apply(Action::CommitEdgeTreatments {
             edges: vec![(
-                xkey(0),
+                crate::model::TreatableSolid::Extrusion(xkey(0)),
                 crate::model::ExtrusionEdgeRef::Cap {
                     face: 0,
                     edge: 0,
@@ -28999,8 +29012,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
     fn commit_edge_treatments_applies_the_whole_set_in_one_undo_group() {
         let mut state = box_extrusion_state();
         let edges = vec![
-            (xkey(0), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 }),
-            (xkey(0), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 2 }),
+            (crate::model::TreatableSolid::Extrusion(xkey(0)), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 }),
+            (crate::model::TreatableSolid::Extrusion(xkey(0)), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 2 }),
         ];
         let result = state.apply(Action::CommitEdgeTreatments {
             edges: edges.clone(),
@@ -29038,7 +29051,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         let mut state = box_extrusion_state();
         let edge = crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
         state.apply(Action::CommitEdgeTreatments {
-            edges: vec![(xkey(0), edge)],
+            edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.0,
         });
@@ -29096,7 +29109,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             .triangles
             .len();
         let result = state.apply(Action::CommitEdgeTreatments {
-            edges: vec![(xkey(0), edge)],
+            edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.0,
         });
@@ -29119,7 +29132,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         let mut state = box_extrusion_state();
         let edge = crate::model::ExtrusionEdgeRef::Cap { face: 0, edge: 1, top: true };
         let result = state.apply(Action::CommitEdgeTreatments {
-            edges: vec![(xkey(0), edge)],
+            edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), edge)],
             kind: VertexTreatmentKind::Fillet,
             amount: 1.5,
         });
@@ -29135,7 +29148,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         let mut state = box_extrusion_state();
         let edge = crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
         state.apply(Action::CommitEdgeTreatments {
-            edges: vec![(xkey(0), edge)],
+            edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 3.0,
         });
@@ -29151,14 +29164,14 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             .creating_edge_treatment
             .as_ref()
             .expect("gizmo edit is in progress");
-        assert_eq!(cet.edges, vec![(xkey(0), edge)]);
+        assert_eq!(cet.edges, vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), edge)]);
         assert_eq!(cet.kind, VertexTreatmentKind::Chamfer);
         assert_eq!(cet.amount_live, 3.0);
         assert!(cet.pending_focus);
 
         // Committing a new amount rebuilds the operation (the old one is gone).
         state.apply(Action::CommitEdgeTreatments {
-            edges: vec![(xkey(0), edge)],
+            edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 1.5,
         });
@@ -29178,13 +29191,13 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         let mut state = box_extrusion_state();
         let edge = crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
         state.apply(Action::CommitEdgeTreatments {
-            edges: vec![(xkey(0), edge)],
+            edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 1.0,
         });
         state.apply(Action::EditEdgeTreatmentOp { op: etkey(0) });
         state.apply(Action::CommitEdgeTreatments {
-            edges: vec![(xkey(0), edge)],
+            edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), edge)],
             kind: VertexTreatmentKind::Fillet,
             amount: 2.5,
         });
@@ -29206,8 +29219,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         // Vertical edge 0 and base cap edge 0 share profile vertex 1.
         let result = state.apply(Action::CommitEdgeTreatments {
             edges: vec![
-                (xkey(0), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 }),
-                (xkey(0), crate::model::ExtrusionEdgeRef::Cap { face: 0, edge: 0, top: false }),
+                (crate::model::TreatableSolid::Extrusion(xkey(0)), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 }),
+                (crate::model::TreatableSolid::Extrusion(xkey(0)), crate::model::ExtrusionEdgeRef::Cap { face: 0, edge: 0, top: false }),
             ],
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.0,
@@ -29229,7 +29242,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         let mut state = box_extrusion_state();
         let bodies_before = state.doc.bodies.len();
         let result = state.apply(Action::CommitEdgeTreatments {
-            edges: vec![(xkey(0), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })],
+            edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })],
             kind: VertexTreatmentKind::Fillet,
             amount: 0.0,
         });
@@ -29249,7 +29262,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
     fn commit_edge_treatment_rejects_out_of_range_edge() {
         let mut state = box_extrusion_state();
         let out_of_range = state.apply(Action::CommitEdgeTreatments {
-            edges: vec![(xkey(0), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 99 })],
+            edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 99 })],
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.0,
         });
@@ -29267,7 +29280,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         let second = crate::model::ExtrusionEdgeRef::Cap { face: 0, edge: 0, top: true };
         assert!(matches!(
             state.apply(Action::CommitEdgeTreatments {
-                edges: vec![(xkey(0), first)],
+                edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), first)],
                 kind: VertexTreatmentKind::Fillet,
                 amount: 2.0,
             }),
@@ -29275,7 +29288,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         ));
         assert!(matches!(
             state.apply(Action::CommitEdgeTreatments {
-                edges: vec![(xkey(0), second)],
+                edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), second)],
                 kind: VertexTreatmentKind::Fillet,
                 amount: 1.0,
             }),
@@ -29322,7 +29335,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
     fn commit_edge_treatment_rejects_a_kernel_infeasible_amount() {
         let mut state = box_extrusion_state();
         let result = state.apply(Action::CommitEdgeTreatments {
-            edges: vec![(xkey(0), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })],
+            edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })],
             kind: VertexTreatmentKind::Fillet,
             amount: 500.0,
         });
@@ -29420,7 +29433,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         // valid chamfer on a far edge commits fine: the kernel trial only rejects when the
         // *base* shape builds, and this document's base is already kernel-infeasible.)
         let result = reopened.apply(Action::CommitEdgeTreatments {
-            edges: vec![(xkey(0), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 2 })],
+            edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 2 })],
             kind: VertexTreatmentKind::Chamfer,
             amount: 1.0,
         });
@@ -29457,7 +29470,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
 
         });
         let result = state.apply(Action::CommitEdgeTreatments {
-            edges: vec![(xkey(0), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })],
+            edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })],
             kind: VertexTreatmentKind::Chamfer,
             amount: 1.0,
         });

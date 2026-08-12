@@ -662,6 +662,25 @@ impl ExtrusionEdgeRef {
     }
 }
 
+/// The solid an analytic chamfer/fillet edge belongs to (#1329): an extrusion, or a
+/// Shape-tool primitive. A cuboid has the same 12-edge topology as a rectangular
+/// extrusion; a cylinder's two rims are `Cap { edge: 0, top }`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TreatableSolid {
+    Extrusion(ExtrusionKey),
+    Primitive(PrimitiveKey),
+}
+
+impl TreatableSolid {
+    pub fn as_extrusion(self) -> Option<ExtrusionKey> {
+        match self {
+            Self::Extrusion(k) => Some(k),
+            Self::Primitive(_) => None,
+        }
+    }
+}
+
 /// A parametric chamfer/fillet bevel applied to one analytic edge of an [`Extrusion`]'s solid
 /// (#77): a mesh-bevel approximation, not a true BREP fillet (no tangent-continuous curved
 /// surface, no vertex-miter blending) — see SPEC §3.4. Re-evaluated from the document every
@@ -2174,6 +2193,12 @@ pub fn extrusion_key_for_slot(n: usize) -> ExtrusionKey {
     crate::arena::Key::from_bits((n as u64) << 32)
 }
 
+/// The same for a Shape-tool primitive (#1329) — tests only, same caveat.
+#[cfg(test)]
+pub fn primitive_key_for_slot(n: usize) -> PrimitiveKey {
+    crate::arena::Key::from_bits((n as u64) << 32)
+}
+
 /// The same for an imported unit (#1055) — tests only, same caveat.
 #[cfg(test)]
 pub fn unit_key_for_slot(n: usize) -> UnitKey {
@@ -3518,16 +3543,18 @@ fn default_shell_thickness() -> String {
 pub type ShellOpKey = crate::arena::Key<ShellOperation>;
 
 /// One edge treated by an [`EdgeTreatmentOperation`] (#531): the stable, parametric edge
-/// identity is the extrusion-relative [`ExtrusionEdgeRef`] (a topological face/edge address
-/// that re-resolves to live world coordinates on every rebuild), **not** a coordinate snapshot
-/// — so a chamfer/fillet follows its edge when a parameter reshapes the body. `target` says
-/// which of the op's input bodies the edge lives on.
+/// identity is a [`TreatableSolid`] plus an [`ExtrusionEdgeRef`] (a topological face/edge
+/// address that re-resolves to live world coordinates on every rebuild), **not** a coordinate
+/// snapshot — so a chamfer/fillet follows its edge when a parameter reshapes the body.
+/// `target` says which of the op's input bodies the edge lives on.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TreatedEdge {
     /// Index into the owning op's `targets` list (which input body this edge belongs to).
     pub target: usize,
-    /// The extrusion whose analytic edge is treated.
-    pub extrusion: ExtrusionKey,
+    /// Extrusion or Shape-tool primitive the analytic edge belongs to (#1329). Flattened so
+    /// existing files keep the `extrusion` field; primitives write `primitive` instead.
+    #[serde(flatten)]
+    pub solid: TreatableSolid,
     pub edge: ExtrusionEdgeRef,
 }
 

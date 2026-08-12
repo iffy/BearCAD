@@ -109,6 +109,14 @@ impl ClickMods {
     }
 }
 
+/// Script-level host of a treatable edge (#1329): an extrusion or Shape-tool primitive,
+/// named by its live ordinal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TreatableSolidRef {
+    Extrusion(usize),
+    Primitive(usize),
+}
+
 /// A single script instruction.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Instruction {
@@ -768,7 +776,7 @@ pub enum Instruction {
     /// the same as four one-edge operations: each operation bevels the extrusion's own body, so
     /// a second one would start over from the sharp box and the two outputs would overlap.
     EdgeTreatment {
-        edges: Vec<(usize, crate::model::ExtrusionEdgeRef)>,
+        edges: Vec<(TreatableSolidRef, crate::model::ExtrusionEdgeRef)>,
         kind: VertexTreatmentKind,
         amount: f32,
     },
@@ -1770,18 +1778,23 @@ impl Instruction {
                     VertexTreatmentKind::Chamfer => ("chamfer_edge", "distance"),
                     VertexTreatmentKind::Fillet => ("fillet_edge", "radius"),
                 };
+                let host_lua = |host: TreatableSolidRef| match host {
+                    TreatableSolidRef::Extrusion(i) => format!("extrusion = {i}"),
+                    TreatableSolidRef::Primitive(i) => format!("primitive = {i}"),
+                };
                 // One edge keeps the singular, readable form; a set spells out `edges`.
                 match edges.as_slice() {
-                    [(extrusion, edge)] => format!(
-                        "bearcad.{fname}{{ extrusion = {extrusion}, edge = {}, {amount_key} = {amount} }}",
+                    [(host, edge)] => format!(
+                        "bearcad.{fname}{{ {}, edge = {}, {amount_key} = {amount} }}",
+                        host_lua(*host),
                         extrusion_edge_lua_ref(*edge)
                     ),
                     many => {
                         let list = many
                             .iter()
-                            .map(|(extrusion, edge)| {
+                            .map(|(host, edge)| {
                                 let e = extrusion_edge_lua_ref(*edge);
-                                format!("{{ extrusion = {extrusion}, edge = {e} }}")
+                                format!("{{ {}, edge = {e} }}", host_lua(*host))
                             })
                             .collect::<Vec<_>>()
                             .join(", ");
@@ -2311,6 +2324,11 @@ fn element_script_tokens(
             index: extrusion.index() as usize,
             point: None,
         },
+        SceneElement::PrimitiveEdge { primitive, .. } => ElementScriptTokens {
+            kind: "primitive_edge",
+            index: primitive.index() as usize,
+            point: None,
+        },
         SceneElement::RepeatedFace { instance, .. } => ElementScriptTokens {
             kind: "repeated_face",
             index: instance,
@@ -2510,6 +2528,20 @@ fn extrusion_key(
     ordinal: usize,
 ) -> Option<crate::model::ExtrusionKey> {
     doc.extrusions.keys().nth(ordinal)
+}
+
+fn primitive_ordinal(
+    doc: &crate::model::Document,
+    key: crate::model::PrimitiveKey,
+) -> Option<usize> {
+    doc.primitives.keys().position(|k| k == key)
+}
+
+fn primitive_key(
+    doc: &crate::model::Document,
+    ordinal: usize,
+) -> Option<crate::model::PrimitiveKey> {
+    doc.primitives.keys().nth(ordinal)
 }
 
 /// A line's ordinal among the live ones — what a script writes (#1055).
@@ -3258,7 +3290,17 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         Action::CommitEdgeTreatments { edges, kind, amount } => Some(Instruction::EdgeTreatment {
             edges: edges
                 .iter()
-                .map(|(e, edge)| extrusion_ordinal(doc, *e).map(|o| (o, *edge)))
+                .map(|(solid, edge)| {
+                    let host = match solid {
+                        crate::model::TreatableSolid::Extrusion(e) => {
+                            TreatableSolidRef::Extrusion(extrusion_ordinal(doc, *e)?)
+                        }
+                        crate::model::TreatableSolid::Primitive(p) => {
+                            TreatableSolidRef::Primitive(primitive_ordinal(doc, *p)?)
+                        }
+                    };
+                    Some((host, *edge))
+                })
                 .collect::<Option<Vec<_>>>()?,
             kind: *kind,
             amount: *amount,
@@ -3469,7 +3511,17 @@ pub fn instructions_for_new_edge_treatment_op(
     let Some(edges) = op
         .edges
         .iter()
-        .map(|te| extrusion_ordinal(doc, te.extrusion).map(|o| (o, te.edge)))
+        .map(|te| {
+            let host = match te.solid {
+                crate::model::TreatableSolid::Extrusion(e) => {
+                    TreatableSolidRef::Extrusion(extrusion_ordinal(doc, e)?)
+                }
+                crate::model::TreatableSolid::Primitive(p) => {
+                    TreatableSolidRef::Primitive(primitive_ordinal(doc, p)?)
+                }
+            };
+            Some((host, te.edge))
+        })
         .collect::<Option<Vec<_>>>()
     else {
         return Vec::new();
@@ -6362,10 +6414,24 @@ impl ScriptRunner {
             Instruction::EdgeTreatment { edges, kind, amount } => {
                 let Some(edges) = edges
                     .iter()
-                    .map(|(o, edge)| extrusion_key(&state.doc, *o).map(|k| (k, *edge)))
+                    .map(|(host, edge)| {
+                        let solid = match host {
+                            TreatableSolidRef::Extrusion(o) => {
+                                crate::model::TreatableSolid::Extrusion(extrusion_key(
+                                    &state.doc, *o,
+                                )?)
+                            }
+                            TreatableSolidRef::Primitive(o) => {
+                                crate::model::TreatableSolid::Primitive(primitive_key(
+                                    &state.doc, *o,
+                                )?)
+                            }
+                        };
+                        Some((solid, *edge))
+                    })
                     .collect::<Option<Vec<_>>>()
                 else {
-                    self.last_action_error = Some("No such extrusion".to_string());
+                    self.last_action_error = Some("No such extrusion or primitive".to_string());
                     return StepResult::Continue;
                 };
                 let result = state.apply(Action::CommitEdgeTreatments { edges, kind, amount });
@@ -8316,7 +8382,7 @@ mod tests {
         use crate::model::ExtrusionEdgeRef;
         let edge = ExtrusionEdgeRef::Vertical { face: 0, edge: 2 };
         let chamfer = Instruction::EdgeTreatment {
-            edges: vec![(1, edge)],
+            edges: vec![(TreatableSolidRef::Extrusion(1), edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 3.0,
         };
@@ -8326,7 +8392,7 @@ mod tests {
         );
         let cap_edge = ExtrusionEdgeRef::Cap { face: 1, edge: 3, top: true };
         let fillet = Instruction::EdgeTreatment {
-            edges: vec![(0, cap_edge)],
+            edges: vec![(TreatableSolidRef::Extrusion(0), cap_edge)],
             kind: VertexTreatmentKind::Fillet,
             amount: 1.5,
         };
@@ -8336,7 +8402,10 @@ mod tests {
         );
         // A whole set (#672) renders as the plural `edges` list — one call, one operation.
         let set = Instruction::EdgeTreatment {
-            edges: vec![(0, edge), (0, cap_edge)],
+            edges: vec![
+                (TreatableSolidRef::Extrusion(0), edge),
+                (TreatableSolidRef::Extrusion(0), cap_edge),
+            ],
             kind: VertexTreatmentKind::Fillet,
             amount: 8.0,
         };
@@ -8374,14 +8443,14 @@ mod tests {
         }
         let edge = ExtrusionEdgeRef::Cap { face: 0, edge: 1, top: false };
         let action = Action::CommitEdgeTreatments {
-            edges: vec![(xkey(2), edge)],
+            edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(2)), edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.5,
         };
         assert_eq!(
             instruction_from_action(&action, &doc),
             Some(Instruction::EdgeTreatment {
-                edges: vec![(2, edge)],
+                edges: vec![(TreatableSolidRef::Extrusion(2), edge)],
                 kind: VertexTreatmentKind::Chamfer,
                 amount: 2.5,
             })

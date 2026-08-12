@@ -69,7 +69,7 @@ pub struct ContextInput<'a> {
     /// Selection-picker rows for the active tool (#157/#167): `Some` whenever the tool
     /// collects a selection set (Chamfer/Fillet outside a sketch — one row per edge in the
     /// in-progress treatment, empty while nothing is picked yet), `None` for other tools.
-    pub edge_treatment_edges: Option<Vec<(crate::model::ExtrusionKey, crate::model::ExtrusionEdgeRef)>>,
+    pub edge_treatment_edges: Option<Vec<(crate::model::TreatableSolid, crate::model::ExtrusionEdgeRef)>>,
     /// Selection-picker rows for the Loft tool (#loft): one row per picked cross section,
     /// `Some` (possibly empty) whenever the Loft tool is active outside a sketch.
     pub loft_sections: Option<Vec<crate::model::LoftSection>>,
@@ -2100,8 +2100,13 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         picker.set_focused(true);
         picker.set_picked(
             input.doc,
-            edges.iter().map(|&(extrusion, edge)| {
-                SceneElement::ExtrusionEdge { extrusion, edge }
+            edges.iter().map(|&(solid, edge)| match solid {
+                crate::model::TreatableSolid::Extrusion(extrusion) => {
+                    SceneElement::ExtrusionEdge { extrusion, edge }
+                }
+                crate::model::TreatableSolid::Primitive(primitive) => {
+                    SceneElement::PrimitiveEdge { primitive, edge }
+                }
             }),
         );
         tool_pickers.push(ToolPickerView {
@@ -9043,7 +9048,7 @@ mod tests {
         let edge = crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
         let base = ContextInput {
             tool: Tool::Chamfer,
-            edge_treatment_edges: Some(vec![(xkey(0), edge)]),
+            edge_treatment_edges: Some(vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), edge)]),
             ..input(&doc, &selection)
         };
         let picker = |input: &ContextInput<'_>| {

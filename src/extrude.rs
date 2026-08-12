@@ -9,7 +9,7 @@ use crate::face::{local_to_world, sketch_frame, sketch_geometry_frame, SketchFra
 use crate::geometric_constraints::point_uv;
 use crate::model::{
     vertex_treatment_geometry, Document, EdgeTreatment, ExtrudeFace, ExtrudeTarget, ExtrudeTaperMode,
-    Extrusion, ExtrusionEdgeRef, FaceId, VertexTreatmentKind,
+    Extrusion, ExtrusionEdgeRef, FaceId, TreatableSolid, VertexTreatmentKind,
 };
 use glam::{Vec2, Vec3};
 use std::collections::HashMap;
@@ -1827,6 +1827,21 @@ pub fn live_body_for_treated_extrusion(
     ))
 }
 
+/// The live body that currently carries `solid` after any chain of edge-treatment ops
+/// (#1323/#1329).
+pub fn live_body_for_treatable_solid(
+    doc: &Document,
+    solid: TreatableSolid,
+) -> Option<crate::model::BodyKey> {
+    match solid {
+        TreatableSolid::Extrusion(e) => live_body_for_treated_extrusion(doc, e),
+        TreatableSolid::Primitive(p) => Some(live_edge_treated_body(
+            doc,
+            crate::model::body_index_for_primitive(doc, p)?,
+        )),
+    }
+}
+
 /// Treatments already applied along the EdgeTreated chain that produced `body`, oldest first,
 /// restricted to `extrusion` (#1322). A second-fillet preview splices these onto the ghost so
 /// it is based on the already-filleted solid, not the original sharp box.
@@ -1851,7 +1866,7 @@ pub fn edge_treatments_leading_to(
         for te in operation
             .edges
             .iter()
-            .filter(|e| e.target == target && e.extrusion == extrusion)
+            .filter(|e| e.target == target && e.solid == TreatableSolid::Extrusion(extrusion))
         {
             out.push(EdgeTreatment {
                 edge: te.edge,
@@ -1915,26 +1930,62 @@ fn edge_treated_input_doc(
     }
     let mut clone = doc.clone();
     for te in op.edges.iter().filter(|e| e.target == target) {
-        if let Some(ext) = clone.extrusions.get_mut(te.extrusion) {
-            ext.edge_treatments.push(crate::model::EdgeTreatment {
-                edge: te.edge,
-                kind: op.kind,
-                amount: op.amount,
-            });
+        if let TreatableSolid::Extrusion(ei) = te.solid {
+            if let Some(ext) = clone.extrusions.get_mut(ei) {
+                ext.edge_treatments.push(crate::model::EdgeTreatment {
+                    edge: te.edge,
+                    kind: op.kind,
+                    amount: op.amount,
+                });
+            }
         }
     }
     Some((clone, input))
 }
 
 /// The BREP solid of one edge-treatment output (#531): the input body's shape built with the
-/// op's chamfer/fillet edges spliced onto its extrusions.
+/// op's chamfer/fillet edges spliced onto its extrusions, then any primitive-hosted edges
+/// applied as a kernel post-process (#1329).
 fn occt_edge_treated_output_shape(
     doc: &Document,
     op_index: crate::model::EdgeTreatmentOpKey,
     target: usize,
 ) -> Option<crate::kernel::Shape> {
+    let op = doc.edge_treatment_ops.get(op_index)?;
     let (clone, input) = edge_treated_input_doc(doc, op_index, target)?;
-    occt_body_shape(&clone, input)
+    let mut shape = occt_body_shape(&clone, input)?;
+    let mut fillet_edges: Vec<(Vec3, Vec3)> = Vec::new();
+    let mut fillet_radii: Vec<f32> = Vec::new();
+    let mut chamfer_edges: Vec<(Vec3, Vec3)> = Vec::new();
+    let mut chamfer_dists: Vec<f32> = Vec::new();
+    for te in op.edges.iter().filter(|e| e.target == target) {
+        let TreatableSolid::Primitive(pi) = te.solid else {
+            continue;
+        };
+        if op.amount <= 0.0 {
+            continue;
+        }
+        let Some(endpoints) = primitive_edge_kernel_endpoints(doc, pi, te.edge) else {
+            return None;
+        };
+        match op.kind {
+            VertexTreatmentKind::Fillet => {
+                fillet_edges.push(endpoints);
+                fillet_radii.push(op.amount);
+            }
+            VertexTreatmentKind::Chamfer => {
+                chamfer_edges.push(endpoints);
+                chamfer_dists.push(op.amount);
+            }
+        }
+    }
+    if !fillet_edges.is_empty() {
+        shape = shape.fillet(&fillet_edges, &fillet_radii)?;
+    }
+    if !chamfer_edges.is_empty() {
+        shape = shape.chamfer(&chamfer_edges, &chamfer_dists)?;
+    }
+    Some(shape)
 }
 
 /// World-space reflection (a `Mat4` with determinant −1) across a mirror operation's plane
@@ -5483,6 +5534,7 @@ pub fn selection_world_bounds(
             | SceneElement::MovePoint(_)
             // An analytic edge's bounds come from the extrusion that owns it.
             | SceneElement::ExtrusionEdge { .. }
+            | SceneElement::PrimitiveEdge { .. }
             // A repeat instance's face is framed by the repeat that produced it.
             | SceneElement::RepeatedFace { .. }
             // The in-sketch repeat's own bounds come from its duplicated lines/circles, which are
@@ -6318,9 +6370,15 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: crate::model::BodyKey) -
         }
     }
     if let crate::model::BodySource::EdgeTreated { op, target } = body.source {
-        // A beveled output is exactly its input body meshed with the op's treatments spliced
-        // in — reusing the extrusion chamfer/fillet path (mesh or kernel), so the default
-        // (kernel-off) build still bevels.
+        // Kernel first: primitive-hosted edges have no extrusion to splice onto (#1329),
+        // and an extrusion-hosted op still prefers the true BREP when the kernel can
+        // build it. Mesh-bevel fallback keeps the no-kernel path working.
+        if let Some(shape) = occt_edge_treated_output_shape(doc, op, target) {
+            let tris = shape.tessellate(OCCT_DEFLECTION as f64);
+            if !tris.is_empty() {
+                return Some(SolidMesh { triangles: tris });
+            }
+        }
         let (clone, input) = edge_treated_input_doc(doc, op, target)?;
         return body_solid_mesh_uncached(&clone, input);
     }
@@ -8132,6 +8190,18 @@ pub fn edge_treatment_conflicts(existing: &[EdgeTreatment], new: ExtrusionEdgeRe
     })
 }
 
+/// Whether `edge` names a currently-treatable analytic edge of `solid` (#77/#1329).
+pub fn treatable_edge_exists(
+    doc: &Document,
+    solid: TreatableSolid,
+    edge: ExtrusionEdgeRef,
+) -> bool {
+    match solid {
+        TreatableSolid::Extrusion(extrusion) => extrusion_edge_exists(doc, extrusion, edge),
+        TreatableSolid::Primitive(primitive) => primitive_edge_exists(doc, primitive, edge),
+    }
+}
+
 /// Whether `edge` names a currently-treatable analytic edge: `extrusion` exists and isn't
 /// deleted, `edge.face()` indexes one of its faces, that face has an analytic (`Rect`/
 /// `Polygon`, at least 3 sides) profile — a `Circle` profile has none, see
@@ -8169,15 +8239,15 @@ pub fn treatable_edge_for_selection(
     body: crate::model::BodyKey,
     a: [i32; 3],
     b: [i32; 3],
-) -> Option<(crate::model::ExtrusionKey, ExtrusionEdgeRef)> {
+) -> Option<(TreatableSolid, ExtrusionEdgeRef)> {
     let q = crate::hierarchy::quantize_body_point;
-    for (extrusion, edge, ea, eb) in treatable_edges(doc) {
-        if crate::model::body_index_for_extrusion(doc, extrusion) != Some(body) {
+    for (solid, edge, ea, eb) in treatable_edges(doc) {
+        if live_body_for_treatable_solid(doc, solid) != Some(body) {
             continue;
         }
         let (qa, qb) = (q(ea), q(eb));
         if (qa == a && qb == b) || (qa == b && qb == a) {
-            return Some((extrusion, edge));
+            return Some((solid, edge));
         }
     }
     None
@@ -8189,8 +8259,8 @@ pub fn treatable_edge_for_selection(
 pub fn treatable_edges_in_selection(
     doc: &Document,
     selection: &crate::selection::SceneSelection,
-) -> Vec<(crate::model::ExtrusionKey, ExtrusionEdgeRef)> {
-    let mut out: Vec<(crate::model::ExtrusionKey, ExtrusionEdgeRef)> = Vec::new();
+) -> Vec<(TreatableSolid, ExtrusionEdgeRef)> {
+    let mut out: Vec<(TreatableSolid, ExtrusionEdgeRef)> = Vec::new();
     for element in selection.iter() {
         if let crate::hierarchy::SceneElement::BodyEdge { body, a, b } = element {
             if let Some(resolved) = treatable_edge_for_selection(doc, body, a, b) {
@@ -8209,7 +8279,7 @@ pub fn treatable_edges_in_selection(
 /// just two raw points.
 pub fn treatable_edges(
     doc: &Document,
-) -> Vec<(crate::model::ExtrusionKey, ExtrusionEdgeRef, Vec3, Vec3)> {
+) -> Vec<(TreatableSolid, ExtrusionEdgeRef, Vec3, Vec3)> {
     let mut out = Vec::new();
     for (ei, ext) in doc.extrusions.iter() {
         for (fi, face) in ext.faces.iter().enumerate() {
@@ -8226,13 +8296,13 @@ pub fn treatable_edges(
                         for k in 0..m {
                             let k2 = (k + 1) % m;
                             out.push((
-                                ei,
+                                TreatableSolid::Extrusion(ei),
                                 ExtrusionEdgeRef::Cap { face: fi, edge: 0, top: false },
                                 base[k],
                                 base[k2],
                             ));
                             out.push((
-                                ei,
+                                TreatableSolid::Extrusion(ei),
                                 ExtrusionEdgeRef::Cap { face: fi, edge: 0, top: true },
                                 top[k],
                                 top[k2],
@@ -8248,16 +8318,21 @@ pub fn treatable_edges(
             };
             for edge in 0..n {
                 let v = (edge + 1) % n;
-                out.push((ei, ExtrusionEdgeRef::Vertical { face: fi, edge }, base[v], top[v]));
+                out.push((
+                    TreatableSolid::Extrusion(ei),
+                    ExtrusionEdgeRef::Vertical { face: fi, edge },
+                    base[v],
+                    top[v],
+                ));
                 let e2 = (edge + 1) % n;
                 out.push((
-                    ei,
+                    TreatableSolid::Extrusion(ei),
                     ExtrusionEdgeRef::Cap { face: fi, edge, top: false },
                     base[edge],
                     base[e2],
                 ));
                 out.push((
-                    ei,
+                    TreatableSolid::Extrusion(ei),
                     ExtrusionEdgeRef::Cap { face: fi, edge, top: true },
                     top[edge],
                     top[e2],
@@ -8265,7 +8340,292 @@ pub fn treatable_edges(
             }
         }
     }
+    // Shape-tool primitives (#1329): a cuboid is a 12-edge box; a cylinder offers its two
+    // circular rims. Same `ExtrusionEdgeRef` addresses a rectangular extrusion uses.
+    for (pi, shape) in doc.primitives.iter() {
+        push_primitive_treatable_edges(doc, pi, shape, &mut out);
+    }
     out
+}
+
+fn push_primitive_treatable_edges(
+    doc: &Document,
+    pi: crate::model::PrimitiveKey,
+    shape: &crate::model::Primitive,
+    out: &mut Vec<(TreatableSolid, ExtrusionEdgeRef, Vec3, Vec3)>,
+) {
+    let Some(r) = crate::primitives::resolve(doc, shape) else {
+        return;
+    };
+    let solid = TreatableSolid::Primitive(pi);
+    match shape.kind {
+        crate::model::PrimitiveKind::Cuboid => {
+            let base = r.cuboid_base();
+            let lift = r.normal * r.height;
+            let top: [Vec3; 4] = std::array::from_fn(|i| base[i] + lift);
+            for edge in 0..4 {
+                let v = (edge + 1) % 4;
+                out.push((
+                    solid,
+                    ExtrusionEdgeRef::Vertical { face: 0, edge },
+                    base[v],
+                    top[v],
+                ));
+                out.push((
+                    solid,
+                    ExtrusionEdgeRef::Cap { face: 0, edge, top: false },
+                    base[edge],
+                    base[v],
+                ));
+                out.push((
+                    solid,
+                    ExtrusionEdgeRef::Cap { face: 0, edge, top: true },
+                    top[edge],
+                    top[v],
+                ));
+            }
+        }
+        crate::model::PrimitiveKind::Cylinder => {
+            // Same chord-segment trick as a circle-profile extrusion (#177): pickers work
+            // on the tessellated rim, all naming Cap { edge: 0 }.
+            const N: usize = crate::primitives::RADIAL_SEGMENTS;
+            for top in [false, true] {
+                let center = if top {
+                    r.origin + r.normal * r.height
+                } else {
+                    r.origin
+                };
+                let mut ring = Vec::with_capacity(N);
+                for i in 0..N {
+                    let a = (i as f32) / (N as f32) * std::f32::consts::TAU;
+                    ring.push(center + r.u * r.radius * a.cos() + r.v * r.radius * a.sin());
+                }
+                for k in 0..N {
+                    let k2 = (k + 1) % N;
+                    out.push((
+                        solid,
+                        ExtrusionEdgeRef::Cap { face: 0, edge: 0, top },
+                        ring[k],
+                        ring[k2],
+                    ));
+                }
+            }
+        }
+        crate::model::PrimitiveKind::Sphere => {}
+    }
+}
+
+fn primitive_edge_exists(
+    doc: &Document,
+    primitive: crate::model::PrimitiveKey,
+    edge: ExtrusionEdgeRef,
+) -> bool {
+    let Some(shape) = doc.primitives.get(primitive) else {
+        return false;
+    };
+    let Some(r) = crate::primitives::resolve(doc, shape) else {
+        return false;
+    };
+    match (shape.kind, edge) {
+        (crate::model::PrimitiveKind::Cuboid, ExtrusionEdgeRef::Vertical { edge, .. }) => {
+            edge < 4 && r.width > 1e-4 && r.depth > 1e-4 && r.height > 1e-4
+        }
+        (crate::model::PrimitiveKind::Cuboid, ExtrusionEdgeRef::Cap { edge, .. }) => {
+            edge < 4 && r.width > 1e-4 && r.depth > 1e-4 && r.height > 1e-4
+        }
+        (
+            crate::model::PrimitiveKind::Cylinder,
+            ExtrusionEdgeRef::Cap { edge: 0, .. },
+        ) => r.radius > 1e-4 && r.height > 1e-4,
+        _ => false,
+    }
+}
+
+/// Endpoints the kernel matcher uses for a primitive edge. Cuboid edges are straight
+/// (the two vertices). A cylinder rim is one closed circle — two diametrically opposite
+/// points, same convention as a circle-profile extrusion (#177).
+pub(crate) fn primitive_edge_kernel_endpoints(
+    doc: &Document,
+    primitive: crate::model::PrimitiveKey,
+    edge: ExtrusionEdgeRef,
+) -> Option<(Vec3, Vec3)> {
+    let shape = doc.primitives.get(primitive)?;
+    let r = crate::primitives::resolve(doc, shape)?;
+    match (shape.kind, edge) {
+        (crate::model::PrimitiveKind::Cuboid, ExtrusionEdgeRef::Vertical { edge, .. })
+            if edge < 4 =>
+        {
+            let v = (edge + 1) % 4;
+            let base = r.cuboid_base();
+            Some((base[v], base[v] + r.normal * r.height))
+        }
+        (crate::model::PrimitiveKind::Cuboid, ExtrusionEdgeRef::Cap { edge, top, .. })
+            if edge < 4 =>
+        {
+            let base = r.cuboid_base();
+            let lift = r.normal * r.height;
+            let e2 = (edge + 1) % 4;
+            if top {
+                Some((base[edge] + lift, base[e2] + lift))
+            } else {
+                Some((base[edge], base[e2]))
+            }
+        }
+        (
+            crate::model::PrimitiveKind::Cylinder,
+            ExtrusionEdgeRef::Cap { edge: 0, top, .. },
+        ) => {
+            let center = if top {
+                r.origin + r.normal * r.height
+            } else {
+                r.origin
+            };
+            let a = center + r.u * r.radius;
+            let b = center - r.u * r.radius;
+            Some((a, b))
+        }
+        _ => None,
+    }
+}
+
+fn primitive_edge_anchor(
+    doc: &Document,
+    primitive: crate::model::PrimitiveKey,
+    edge: ExtrusionEdgeRef,
+) -> Option<(Vec3, Vec3)> {
+    let shape = doc.primitives.get(primitive)?;
+    let r = crate::primitives::resolve(doc, shape)?;
+    match (shape.kind, edge) {
+        (crate::model::PrimitiveKind::Cuboid, ExtrusionEdgeRef::Vertical { edge, .. })
+            if edge < 4 =>
+        {
+            let v = (edge + 1) % 4;
+            let base = r.cuboid_base();
+            let mid = (base[v] + base[v] + r.normal * r.height) * 0.5;
+            let axis = r.origin + r.normal * r.height * 0.5;
+            let inward = (axis - mid).normalize_or_zero();
+            (inward.length_squared() > 1e-8).then_some((mid, inward))
+        }
+        (crate::model::PrimitiveKind::Cuboid, ExtrusionEdgeRef::Cap { edge, top, .. })
+            if edge < 4 =>
+        {
+            let base = r.cuboid_base();
+            let lift = r.normal * r.height;
+            let e2 = (edge + 1) % 4;
+            let (a, b) = if top {
+                (base[edge] + lift, base[e2] + lift)
+            } else {
+                (base[edge], base[e2])
+            };
+            let mid = (a + b) * 0.5;
+            let ring_center = if top {
+                r.origin + lift
+            } else {
+                r.origin
+            };
+            let in_plane = (ring_center - mid).normalize_or_zero();
+            let toward_other = if top { -r.normal } else { r.normal };
+            let bisector = (in_plane + toward_other).normalize_or_zero();
+            (bisector.length_squared() > 1e-8).then_some((mid, bisector))
+        }
+        (
+            crate::model::PrimitiveKind::Cylinder,
+            ExtrusionEdgeRef::Cap { edge: 0, top, .. },
+        ) => {
+            let center = if top {
+                r.origin + r.normal * r.height
+            } else {
+                r.origin
+            };
+            let mid = center + r.u * r.radius;
+            let radial = -r.u;
+            let toward_other = if top { -r.normal } else { r.normal };
+            let bisector = (radial + toward_other).normalize_or_zero();
+            (bisector.length_squared() > 1e-8).then_some((mid, bisector))
+        }
+        _ => None,
+    }
+}
+
+/// Live ghost of an in-progress chamfer/fillet on a Shape-tool primitive (#1329):
+/// the primitive's kernel solid with the picked edges treated.
+pub fn primitive_treatment_preview_mesh(
+    doc: &Document,
+    primitive: crate::model::PrimitiveKey,
+    edges: &[(TreatableSolid, ExtrusionEdgeRef)],
+    kind: VertexTreatmentKind,
+    amount: f32,
+) -> Option<SolidMesh> {
+    if amount <= 0.0 {
+        return None;
+    }
+    let body = live_body_for_treatable_solid(doc, TreatableSolid::Primitive(primitive))?;
+    let mut shape = occt_body_shape(doc, body)?;
+    let mut fillet_edges = Vec::new();
+    let mut fillet_radii = Vec::new();
+    let mut chamfer_edges = Vec::new();
+    let mut chamfer_dists = Vec::new();
+    for (solid, edge) in edges {
+        if *solid != TreatableSolid::Primitive(primitive) {
+            continue;
+        }
+        let endpoints = primitive_edge_kernel_endpoints(doc, primitive, *edge)?;
+        match kind {
+            VertexTreatmentKind::Fillet => {
+                fillet_edges.push(endpoints);
+                fillet_radii.push(amount);
+            }
+            VertexTreatmentKind::Chamfer => {
+                chamfer_edges.push(endpoints);
+                chamfer_dists.push(amount);
+            }
+        }
+    }
+    if !fillet_edges.is_empty() {
+        shape = shape.fillet(&fillet_edges, &fillet_radii)?;
+    }
+    if !chamfer_edges.is_empty() {
+        shape = shape.chamfer(&chamfer_edges, &chamfer_dists)?;
+    }
+    let tris = shape.tessellate(OCCT_DEFLECTION as f64);
+    (!tris.is_empty()).then_some(SolidMesh { triangles: tris })
+}
+
+fn primitive_edge_would_bevel(
+    doc: &Document,
+    primitive: crate::model::PrimitiveKey,
+    edge: ExtrusionEdgeRef,
+    amount: f32,
+) -> bool {
+    if !(amount > 0.0) || !primitive_edge_exists(doc, primitive, edge) {
+        return false;
+    }
+    let Some(shape) = doc.primitives.get(primitive) else {
+        return false;
+    };
+    let Some(r) = crate::primitives::resolve(doc, shape) else {
+        return false;
+    };
+    match shape.kind {
+        crate::model::PrimitiveKind::Cuboid => {
+            amount < r.width * 0.5 && amount < r.depth * 0.5 && amount < r.height
+        }
+        crate::model::PrimitiveKind::Cylinder => amount < r.radius && amount < r.height,
+        crate::model::PrimitiveKind::Sphere => false,
+    }
+}
+
+/// World-space origin (edge midpoint) and inward-bisector normal for the chamfer/fillet
+/// gizmo, for either an extrusion or a Shape-tool primitive (#1329).
+pub fn treatable_edge_anchor(
+    doc: &Document,
+    solid: TreatableSolid,
+    edge: ExtrusionEdgeRef,
+) -> Option<(Vec3, Vec3)> {
+    match solid {
+        TreatableSolid::Extrusion(ei) => extrusion_edge_anchor(doc, ei, edge),
+        TreatableSolid::Primitive(pi) => primitive_edge_anchor(doc, pi, edge),
+    }
 }
 
 /// World-space origin (edge midpoint) and normal (inward bisector of the edge's two adjacent
@@ -8350,6 +8710,19 @@ pub fn extrusion_edge_anchor(doc: &Document, extrusion: crate::model::ExtrusionK
 /// own failure mode for the 2D case) before [`crate::actions::Action::CommitEdgeTreatments`]
 /// stores the treatment, rather than relying on the mesh builder's silent per-treatment
 /// fallback (which never panics, but also never reports *why* an edge didn't visibly change).
+pub fn treatable_edge_would_bevel(
+    doc: &Document,
+    solid: TreatableSolid,
+    edge: ExtrusionEdgeRef,
+    kind: VertexTreatmentKind,
+    amount: f32,
+) -> bool {
+    match solid {
+        TreatableSolid::Extrusion(ei) => edge_treatment_would_bevel(doc, ei, edge, kind, amount),
+        TreatableSolid::Primitive(pi) => primitive_edge_would_bevel(doc, pi, edge, amount),
+    }
+}
+
 pub fn edge_treatment_would_bevel(
     doc: &Document,
     extrusion: crate::model::ExtrusionKey,
@@ -13121,7 +13494,9 @@ mod tests {
         let edges = treatable_edges(&doc);
         // 4 vertical + 4 bottom cap + 4 top cap = 12 for a rectangular profile.
         assert_eq!(edges.len(), 12);
-        assert!(edges.iter().all(|(ei, _, _, _)| *ei == xkey(0)));
+        assert!(edges
+            .iter()
+            .all(|(ei, _, _, _)| *ei == TreatableSolid::Extrusion(xkey(0))));
 
         let (mut cdoc, csketch) = sketch_doc();
         cdoc.circles
@@ -13135,6 +13510,98 @@ mod tests {
         assert!(circle_edges
             .iter()
             .all(|(_, e, _, _)| matches!(e, ExtrusionEdgeRef::Cap { edge: 0, .. })));
+    }
+
+    /// #1329: a Shape-tool cuboid is a 12-edge box — the same vertical + cap topology a
+    /// rectangular extrusion exposes. The fillet/chamfer tool must offer those edges.
+    #[test]
+    fn treatable_edges_include_cuboid_primitive_edges() {
+        let mut doc = Document::default();
+        let mut shape = crate::model::Primitive::new(crate::model::PrimitiveKind::Cuboid);
+        shape.width = "40".into();
+        shape.depth = "50".into();
+        shape.height = "22".into();
+        let pi = doc.primitives.insert(shape);
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        assert_eq!(pi, crate::model::primitive_key_for_slot(0));
+        let edges = treatable_edges(&doc);
+        // 4 vertical + 4 bottom cap + 4 top cap.
+        assert_eq!(edges.len(), 12, "a cuboid has 12 treatable edges, got {}", edges.len());
+        let verticals = edges
+            .iter()
+            .filter(|(_, e, _, _)| matches!(e, ExtrusionEdgeRef::Vertical { .. }))
+            .count();
+        let tops = edges
+            .iter()
+            .filter(|(_, e, _, _)| matches!(e, ExtrusionEdgeRef::Cap { top: true, .. }))
+            .count();
+        let bases = edges
+            .iter()
+            .filter(|(_, e, _, _)| matches!(e, ExtrusionEdgeRef::Cap { top: false, .. }))
+            .count();
+        assert_eq!(verticals, 4);
+        assert_eq!(tops, 4);
+        assert_eq!(bases, 4);
+
+        // A selected mesh edge of the cuboid must resolve to that analytic edge.
+        let (_, edge, a, b) = edges
+            .iter()
+            .find(|(_, e, _, _)| matches!(e, ExtrusionEdgeRef::Cap { top: true, edge: 0, .. }))
+            .cloned()
+            .expect("top cap edge 0");
+        let q = crate::hierarchy::quantize_body_point;
+        assert!(
+            treatable_edge_for_selection(&doc, bkey(0), q(a), q(b)).is_some(),
+            "cuboid top edge must resolve from a body-edge pick"
+        );
+        let _ = (pi, edge);
+    }
+
+    /// #1329: the reported document is a lone cuboid; every one of its 12 box edges is
+    /// treatable, including the top front edge the screenshot is hovering.
+    #[test]
+    fn issue_1329_cuboid_edges_are_treatable() {
+        let bytes = include_bytes!("../tests/fixtures/issue_1329.json");
+        let doc = crate::storage::from_json_bytes(bytes).expect("load issue 1329");
+        assert_eq!(doc.primitives.len(), 1);
+        assert!(doc.extrusions.is_empty());
+        let edges = treatable_edges(&doc);
+        assert_eq!(
+            edges.len(),
+            12,
+            "the reported cuboid must expose 12 treatable edges, got {}",
+            edges.len()
+        );
+
+        // The hovered top-front edge in the screenshot is a top cap — filleting it must
+        // produce a live treated body with less volume than the sharp cuboid.
+        let (solid, edge, _, _) = edges
+            .iter()
+            .copied()
+            .find(|(_, e, _, _)| matches!(e, ExtrusionEdgeRef::Cap { top: true, .. }))
+            .expect("top cap edge");
+        let mut state = crate::actions::AppState::default();
+        state.doc = doc;
+        let before = body_solid_mesh(&state.doc, bkey(0)).expect("sharp cuboid");
+        let v0 = mesh_signed_volume(&before).abs();
+        assert!(matches!(
+            state.apply(crate::actions::Action::CommitEdgeTreatments {
+                edges: vec![(solid, edge)],
+                kind: crate::model::VertexTreatmentKind::Fillet,
+                amount: 3.0,
+            }),
+            crate::actions::ActionResult::Ok
+        ));
+        assert_eq!(state.doc.edge_treatment_ops.len(), 1);
+        let live = state.doc.edge_treatment_ops.values().nth(0).unwrap().outputs[0];
+        let after = body_solid_mesh(&state.doc, live).expect("filleted cuboid");
+        let v1 = mesh_signed_volume(&after).abs();
+        assert!(v1 < v0 - 1.0, "fillet must cut the reported cuboid: {v1} vs {v0}");
     }
 
     #[test]
