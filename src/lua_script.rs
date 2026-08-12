@@ -6970,6 +6970,21 @@ mod tests {
         assert!(state.status.contains("Tutorial complete"));
     }
 
+    /// #1306: navigate tutorial starts with cubes and no default datum planes.
+    #[test]
+    fn navigate_tutorial_lua_has_cubes_and_no_datum_planes() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.ui.tutorial("navigate")
+            assert(bearcad.ui.tutorial_step() == 0)
+            assert(bearcad.count("construction_plane") == 0,
+                   "default planes should be gone, got " .. bearcad.count("construction_plane"))
+            assert(bearcad.count("body") >= 2,
+                   "seeded cubes, got " .. bearcad.count("body") .. " bodies")
+            "#,
+        );
+    }
+
     /// An in-sketch offset op parallels a closed rectangle outward, nests the copies
     /// under the op in the pane, tracks source drags, honors the construction toggle,
     /// re-offsets on edit, and deletes with the op.

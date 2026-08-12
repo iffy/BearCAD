@@ -3303,8 +3303,15 @@ fn sphere_kind_ready(app: &AppState) -> bool {
 // --- Navigate tutorial (#1269) -----------------------------------------------------
 
 /// Seed a few overlapping cuboids so the walkthrough starts with geometry to orbit and
-/// something crowded enough for the Selection Exploder.
+/// something crowded enough for the Selection Exploder. Drop the default XY/XZ/YZ
+/// planes first so they don't hide the cubes (#1306).
 fn seed_nav_cubes(app: &mut AppState) {
+    let planes: Vec<_> = app.doc.construction_planes.keys().collect();
+    for index in planes {
+        app.apply(Action::DeleteElement {
+            element: crate::hierarchy::SceneElement::ConstructionPlane(index),
+        });
+    }
     if app.doc.primitives.len() >= 2 {
         return;
     }
@@ -3499,16 +3506,15 @@ static NAVIGATE_STEPS: &[Step] = &[
         None,
     ),
     Step {
-        narration: "When things stack under the cursor, press Space \u{2014} the Selection \
-                    Exploder fans them into loupes. Click a loupe to pick just that face or edge \
-                    (plain Select takes the whole body).",
+        narration: "Pick one face of a cube \u{2014} not the whole body. Hover the pile, press \
+                    Space, and click a loupe. That's the Selection Exploder.",
         anchor: StepAnchor::World(nav_cubes_guide),
         done: None,
         on_enter: None,
         assist: None,
         needs_shift: None,
         drag_hint: None,
-        key_hint: Some(("Space", "Press space over the cubes to fan them out")),
+        key_hint: Some(("Space", "Hover the cubes, press Space, click a loupe")),
         marks: None,
         type_hint: None,
         phone_narration: None,
@@ -4796,7 +4802,42 @@ mod tests {
             app.doc.primitives.len()
         );
         assert!(app.doc.bodies.len() >= 2 || app.doc.primitives.len() >= 2);
+        assert!(
+            app.doc.construction_planes.is_empty(),
+            "#1306: default XY/XZ/YZ planes should be gone, got {}",
+            app.doc.construction_planes.len()
+        );
         assert!(app.tutorial.is_some());
+    }
+
+    /// #1307: the exploder step leads with what to accomplish, not how the fan works.
+    #[test]
+    fn navigate_exploder_step_states_the_goal_first() {
+        let nav = &TUTORIALS[tutorial_index("navigate").unwrap()];
+        let step = nav
+            .steps
+            .iter()
+            .find(|s| s.key_hint.is_some_and(|(k, _)| k.eq_ignore_ascii_case("Space")))
+            .expect("navigate tutorial should introduce Space");
+        let n = step.narration.to_ascii_lowercase();
+        let goal = n
+            .find("pick")
+            .or_else(|| n.find("face"))
+            .expect("exploder step should say to pick a face");
+        let how = n
+            .find("space")
+            .or_else(|| n.find("exploder"))
+            .expect("exploder step should still name Space / exploder");
+        assert!(
+            goal < how,
+            "#1307: lead with the goal (pick a face), not the mechanism: {}",
+            step.narration
+        );
+        assert!(
+            n.contains("body") || n.contains("whole"),
+            "say why: Select would take the whole body: {}",
+            step.narration
+        );
     }
 
     /// #1269: covers orbit, pan, zoom, bear HUD, home, and the Selection Exploder.
