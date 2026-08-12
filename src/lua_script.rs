@@ -8371,6 +8371,53 @@ mod tests {
         assert!((live[0].amount - 2.75).abs() < 1e-4);
     }
 
+    /// #1324: fillets created through the scripted API must not draw a Document spoke
+    /// once they have the treated body as an input.
+    #[test]
+    fn lua_fillet_has_no_document_graph_spoke() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ x = 0, y = 0, width = 20, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            bearcad.fillet_edge{
+                extrusion = 0,
+                edge = { kind = "cap", face = 0, edge = 0, top = true },
+                radius = 2.3,
+            }
+            bearcad.fillet_edge{
+                extrusion = 0,
+                edge = { kind = "cap", face = 0, edge = 1, top = true },
+                radius = 0.5,
+            }
+            bearcad.fillet_edge{
+                extrusion = 0,
+                edge = { kind = "cap", face = 0, edge = 2, top = true },
+                radius = 7.0,
+            }
+            "#,
+        );
+        let tree = crate::hierarchy::build_hierarchy(&state.doc, state.sketch_session);
+        let positions = crate::hierarchy::graph_node_positions(&tree);
+        let parents = crate::hierarchy::graph_parent_edges(&positions, &state.doc);
+        assert_eq!(state.doc.edge_treatment_ops.len(), 3);
+        for (oi, _) in state.doc.edge_treatment_ops.iter() {
+            let fillet = crate::hierarchy::HierarchyNode::EdgeTreatmentOp(oi);
+            assert!(
+                !parents.iter().any(|(p, c)| {
+                    *p == crate::hierarchy::HierarchyNode::Document && *c == fillet
+                }),
+                "fillet {oi:?} must not connect to Document"
+            );
+        }
+        assert!(
+            parents.iter().any(|(p, c)| {
+                *p == crate::hierarchy::HierarchyNode::Document
+                    && matches!(c, crate::hierarchy::HierarchyNode::ConstructionPlane(_))
+            }),
+            "root planes still hang off Document"
+        );
+    }
+
     #[test]
     fn lua_chamfer_edge_rejects_an_out_of_range_edge() {
         // `tick.exec` turns a failed declarative-modeling action into a Lua error

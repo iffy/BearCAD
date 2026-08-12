@@ -1205,6 +1205,30 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
     edges
 }
 
+/// Tree-parent edges the Graph view draws. A Document→element spoke is omitted when that
+/// element already has any other input/parent (#1324) — e.g. a fillet fed by the body it
+/// treats should not also hang off the document root.
+pub fn graph_parent_edges(
+    positions: &[GraphNodePosition],
+    doc: &Document,
+) -> Vec<(HierarchyNode, HierarchyNode)> {
+    let has_other_input: HashSet<HierarchyNode> = graph_dependency_edges(doc)
+        .into_iter()
+        .map(|(_, consumer)| consumer)
+        .collect();
+    positions
+        .iter()
+        .filter_map(|p| {
+            let parent = p.parent?;
+            if parent == HierarchyNode::Document && has_other_input.contains(&p.node) {
+                None
+            } else {
+                Some((parent, p.node))
+            }
+        })
+        .collect()
+}
+
 /// The dot radius, label gap, and minimum breathing room used by [`declutter_label_bands`] and
 /// mirrored by the graph render (`show_graph_view`). Kept here so the physics-free declutter is
 /// unit-testable without pulling in `egui`.
@@ -4812,17 +4836,17 @@ fn show_graph_view(
                 }
             }
 
-            // Edges first, so node dots paint over the line endpoints.
-            for position in &positions {
-                let Some(parent) = position.parent else { continue };
+            // Edges first, so node dots paint over the line endpoints. Document→element
+            // spokes are omitted when the element already has another input (#1324).
+            for (parent, child) in graph_parent_edges(&positions, doc) {
                 let highlighted =
-                    related_nodes.contains(&position.node) && related_nodes.contains(&parent);
+                    related_nodes.contains(&child) && related_nodes.contains(&parent);
                 let stroke = if highlighted {
                     egui::Stroke::new(2.5, GRAPH_RELATED_EDGE)
                 } else {
                     egui::Stroke::new(1.0, Color32::from_gray(110))
                 };
-                painter.line_segment([pos_of(parent), pos_of(position.node)], stroke);
+                painter.line_segment([pos_of(parent), pos_of(child)], stroke);
             }
 
             // Dependency edges (input → consumer): relationships beyond the single tree parent —
@@ -6538,6 +6562,81 @@ mod tests {
         )));
         assert!(edges.contains(&(HierarchyNode::Sketch(sketch), HierarchyNode::Revolution(rev))));
         assert!(edges.contains(&(HierarchyNode::Line(lkey(0)), HierarchyNode::Revolution(rev))));
+    }
+
+    /// #1324: a fillet already fed by its input body must not also draw a Document parent
+    /// spoke — those extra root lines were the reported clutter.
+    #[test]
+    fn graph_omits_document_edge_when_an_element_has_other_inputs() {
+        use crate::model::{
+            Body, BodySource, EdgeTreatmentOperation, ExtrudeFace, Extrusion, TreatedEdge,
+            VertexTreatmentKind,
+        };
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+        let rect =
+            crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
+        doc.extrusions.insert(Extrusion {
+            sketch,
+            faces: vec![ExtrudeFace::Polygon(rect.to_vec())],
+            distance: 5.0,
+            target: None,
+            expression: String::new(),
+            name: None,
+            symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
+            edge_treatments: Vec::new(),
+        });
+        let host = doc.bodies.insert(Body {
+            source: BodySource::Extrusion(xkey(0)),
+            material: None,
+            name: None,
+            shadow: true,
+        });
+        let op = doc.edge_treatment_ops.insert(EdgeTreatmentOperation {
+            targets: vec![host],
+            edges: vec![TreatedEdge {
+                target: 0,
+                extrusion: xkey(0),
+                edge: crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 },
+            }],
+            kind: VertexTreatmentKind::Fillet,
+            amount: 1.5,
+            outputs: Vec::new(),
+            name: None,
+        });
+        let output = doc.bodies.insert(Body {
+            source: BodySource::EdgeTreated { op, target: 0 },
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        doc.edge_treatment_ops[op].outputs = vec![output];
+
+        let tree = build_hierarchy(&doc, None);
+        let positions = graph_node_positions(&tree);
+        let fillet = HierarchyNode::EdgeTreatmentOp(op);
+        let parents = graph_parent_edges(&positions, &doc);
+        assert!(
+            !parents
+                .iter()
+                .any(|(p, c)| *p == HierarchyNode::Document && *c == fillet),
+            "fillet has Body as an input, so it must not also speak to Document"
+        );
+        // World planes have no other inputs — they keep the Document spoke.
+        assert!(
+            parents.iter().any(|(p, c)| *p == HierarchyNode::Document
+                && matches!(c, HierarchyNode::ConstructionPlane(_))),
+            "a root plane still hangs off Document"
+        );
+        assert!(graph_dependency_edges(&doc).contains(&(HierarchyNode::Body(host), fillet)));
+        // The tree still nests the fillet under Document (list/tree unchanged).
+        assert_eq!(
+            positions.iter().find(|p| p.node == fillet).and_then(|p| p.parent),
+            Some(HierarchyNode::Document)
+        );
     }
 
     /// #423: assigned roots nest under their component entry in the built hierarchy, and the
