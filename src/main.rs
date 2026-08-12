@@ -2742,19 +2742,42 @@ fn tutorial_bubble_layout(
     )
 }
 
-/// Glide the tutorial orb toward `goal`. `snap` skips the glide so a camera zoom
-/// cannot leave the ring parked at a mid-animation screen position (#1332).
-fn tutorial_orb_step(prev: Option<egui::Pos2>, goal: egui::Pos2, dt: f32, snap: bool) -> egui::Pos2 {
-    if snap {
+/// Identity of the thing the tutorial orb is pointing at, so a camera zoom of
+/// the *same* world/UI target can ride the projection (#1332) while a *new*
+/// target always interpolates from the previous screen position (#1346).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TutorialOrbKey {
+    Ui(tutorial::UiAnchor),
+    /// World guide on this step index (step change ⇒ new target).
+    World(usize),
+    GuidedWorld(usize),
+}
+
+/// Glide the tutorial orb toward `goal`. A new target always interpolates from
+/// `prev` (#1346). When `same_target`, the previous goal's screen-space delta is
+/// applied first so a camera zoom rides the projection instead of leaving the
+/// ring mid-path (#1332).
+fn tutorial_orb_step(
+    prev: Option<egui::Pos2>,
+    last_goal: Option<egui::Pos2>,
+    goal: egui::Pos2,
+    dt: f32,
+    same_target: bool,
+) -> egui::Pos2 {
+    let Some(prev) = prev else {
         return goal;
-    }
-    match prev {
-        Some(prev) => {
-            let k = 1.0 - (-dt * 9.0).exp();
-            prev + (goal - prev) * k
+    };
+    let from = if same_target {
+        if let Some(last) = last_goal {
+            prev + (goal - last)
+        } else {
+            prev
         }
-        None => goal,
-    }
+    } else {
+        prev
+    };
+    let k = 1.0 - (-dt * 9.0).exp();
+    from + (goal - from) * k
 }
 
 /// World-geometry speech bubble waits until the camera zoom has landed (#1332).
@@ -3342,8 +3365,14 @@ struct App {
     /// The current touch press has already fired its long-press right-click.
     long_press_fired: bool,
     /// The tutorial orb's animated screen position: it glides between anchors so the
-    /// eye can follow it.
+    /// eye can follow it. Kept across steps with no ring so the next target travels
+    /// from here instead of apparating (#1346).
     tutorial_orb_pos: Option<egui::Pos2>,
+    /// Last frame's resolved orb goal, for riding a moving projection of the same
+    /// target (#1332).
+    tutorial_orb_goal: Option<egui::Pos2>,
+    /// Which anchor `tutorial_orb_goal` belonged to.
+    tutorial_orb_key: Option<TutorialOrbKey>,
     /// The tutorial bubble's drawn size, measured each frame so the next one can place it
     /// around the orb (#767/#825). Seeded with the content width plus typical frame chrome.
     tutorial_bubble_size: egui::Vec2,
@@ -3991,12 +4020,15 @@ impl App {
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     ) {
         let Some(run) = self.state.tutorial else {
+            self.state.tutorial_orb_screen = None;
             return;
         };
         let Some(tut) = tutorial::TUTORIALS.get(run.tutorial) else {
+            self.state.tutorial_orb_screen = None;
             return;
         };
         let Some(step) = tut.steps.get(run.step) else {
+            self.state.tutorial_orb_screen = None;
             return;
         };
         let ctx = ui.ctx();
@@ -4050,20 +4082,27 @@ impl App {
         // The box the orb is pointing at, when it's pointing at one: the typing guide only
         // takes over once *that* box has the keyboard (#874).
         let mut orb_field: Option<egui::Rect> = None;
+        let mut orb_key: Option<TutorialOrbKey> = None;
         let target = match step.anchor {
             tutorial::StepAnchor::Ui(anchor) => {
                 orb_on_ui = true;
                 orb_field = ui_anchor_rect(anchor);
+                orb_key = Some(TutorialOrbKey::Ui(anchor));
                 ui_anchor(anchor)
             }
             tutorial::StepAnchor::World(point) => {
+                orb_key = Some(TutorialOrbKey::World(run.step));
                 point(&self.state).and_then(&project).map(|p| (p, 26.0))
             }
             tutorial::StepAnchor::Guided(resolve) => match resolve(&self.state) {
-                Some(tutorial::StepTarget::World(w)) => project(w).map(|p| (p, 26.0)),
+                Some(tutorial::StepTarget::World(w)) => {
+                    orb_key = Some(TutorialOrbKey::GuidedWorld(run.step));
+                    project(w).map(|p| (p, 26.0))
+                }
                 Some(tutorial::StepTarget::Ui(anchor)) => {
                     orb_on_ui = true;
                     orb_field = ui_anchor_rect(anchor);
+                    orb_key = Some(TutorialOrbKey::Ui(anchor));
                     ui_anchor(anchor)
                 }
                 None => None,
@@ -4088,15 +4127,25 @@ impl App {
             }
         }
         let mut orb_radius = 0.0f32;
-        // World-geometry orbs: snap while the camera is still zooming so the
-        // ring is not left at a mid-animation screen position (#1332).
+        // World-geometry orbs: the tooltip waits for zoom (#1332). The ring
+        // itself always travels to a new target (#1346); a moving projection of
+        // the *same* target rides the camera so it is not left mid-path.
         let world_orb = !orb_on_ui && target.is_some();
         if let Some((goal, base)) = target {
             orb_radius = base;
             let dt = ctx.input(|i| i.stable_dt).min(0.1);
-            let snap = world_orb && self.state.cam.transition_active();
-            let pos = tutorial_orb_step(self.tutorial_orb_pos, goal, dt, snap);
+            let same_target = orb_key.is_some() && self.tutorial_orb_key == orb_key;
+            let pos = tutorial_orb_step(
+                self.tutorial_orb_pos,
+                self.tutorial_orb_goal,
+                goal,
+                dt,
+                same_target,
+            );
             self.tutorial_orb_pos = Some(pos);
+            self.tutorial_orb_goal = Some(goal);
+            self.tutorial_orb_key = orb_key;
+            self.state.tutorial_orb_screen = Some(pos);
             // Bounded by the window rather than the viewport: a step's orb can be pointing
             // at a side pane, and its badges have to follow it there (#781).
             let badge_bounds = ctx.content_rect();
@@ -4167,7 +4216,9 @@ impl App {
             }
             ctx.request_repaint(); // keep the pulse and glide animating
         } else {
-            self.tutorial_orb_pos = None;
+            // Keep the last screen position so the next target travels from
+            // here instead of apparating (#1346). The ring is not drawn.
+            self.state.tutorial_orb_screen = None;
         }
 
         // Don't park the bubble at a mid-zoom screen position (#1332). The blue
@@ -4612,6 +4663,8 @@ impl App {
             keypad_focus_gone_frames: 0,
             long_press_fired: false,
             tutorial_orb_pos: None,
+            tutorial_orb_goal: None,
+            tutorial_orb_key: None,
             tutorial_bubble_size: egui::vec2(352.0, 120.0),
             keypad_serves_focus: false,
             debug_focus_requested: false,
@@ -32689,19 +32742,81 @@ mod tests {
         );
     }
 
-    /// #1332: while the camera is still zooming, the orb snaps to the projected
-    /// goal instead of gliding from a mid-zoom screen position.
+    /// #1346: a new orb target always interpolates from the previous screen
+    /// position — even if the camera is mid-zoom (the old #1332 snap path).
     #[test]
-    fn tutorial_orb_snaps_while_camera_zooms() {
+    fn tutorial_orb_glides_even_while_camera_zooms() {
         let prev = egui::pos2(400.0, 80.0);
+        let last_goal = prev;
         let goal = egui::pos2(500.0, 400.0);
-        let snapped = tutorial_orb_step(Some(prev), goal, 0.016, true);
-        assert_eq!(snapped, goal, "must snap during a camera transition");
-        let gliding = tutorial_orb_step(Some(prev), goal, 0.016, false);
+        let traveling = tutorial_orb_step(Some(prev), Some(last_goal), goal, 0.016, false);
+        assert_ne!(traveling, goal, "must not apparate on a new target");
         assert!(
-            (gliding.y - prev.y).abs() > 1.0 && gliding.y < goal.y - 1.0,
-            "without snap the ring still glides: {gliding:?}"
+            (traveling.y - prev.y).abs() > 1.0 && traveling.y < goal.y - 1.0,
+            "a target change still glides: {traveling:?}"
         );
+    }
+
+    /// #1346: first appearance has nowhere to travel from.
+    #[test]
+    fn tutorial_orb_appears_at_goal_when_new() {
+        let goal = egui::pos2(500.0, 400.0);
+        assert_eq!(
+            tutorial_orb_step(None, None, goal, 0.016, false),
+            goal
+        );
+    }
+
+    /// #1346: successive frames close on the goal without jumping there.
+    #[test]
+    fn tutorial_orb_approaches_goal_over_frames() {
+        let goal = egui::pos2(800.0, 600.0);
+        let mut pos = egui::pos2(40.0, 20.0);
+        let start = pos;
+        for _ in 0..8 {
+            let next = tutorial_orb_step(Some(pos), Some(start), goal, 0.016, false);
+            let before = (pos - goal).length();
+            let after = (next - goal).length();
+            assert!(after < before, "must close in: {pos:?} -> {next:?}");
+            assert!(after > 1.0, "must not reach in one 16 ms step: {next:?}");
+            pos = next;
+        }
+        assert!(
+            (pos - start).length() > 20.0,
+            "should have traveled a visible distance: {pos:?}"
+        );
+        assert!(
+            (pos - goal).length() > 10.0,
+            "should still be traveling after 8 frames: {pos:?}"
+        );
+    }
+
+    /// #1332/#1346: an arrived orb rides the same target's moving projection
+    /// (camera zoom) instead of interpolating from a stale screen position.
+    #[test]
+    fn tutorial_orb_tracks_same_target_when_projection_moves() {
+        let prev = egui::pos2(100.0, 100.0);
+        let last_goal = prev;
+        let goal = egui::pos2(180.0, 140.0);
+        let pos = tutorial_orb_step(Some(prev), Some(last_goal), goal, 0.016, true);
+        assert_eq!(pos, goal, "arrived orb stays glued while the camera moves");
+    }
+
+    /// #1346: still traveling toward a target whose projection moved — ride
+    /// the delta, then keep interpolating the remaining distance.
+    #[test]
+    fn tutorial_orb_rides_camera_while_still_traveling() {
+        let prev = egui::pos2(100.0, 100.0);
+        let last_goal = egui::pos2(300.0, 100.0);
+        let goal = egui::pos2(340.0, 100.0);
+        let pos = tutorial_orb_step(Some(prev), Some(last_goal), goal, 0.016, true);
+        assert_ne!(pos, goal, "must not jump to the new projection");
+        // Rode +40 in x, then glided a bit further toward 340.
+        assert!(
+            pos.x > 140.0 && pos.x < goal.x - 1.0,
+            "should ride then glide: {pos:?}"
+        );
+        assert!((pos.y - 100.0).abs() < 0.01, "same row: {pos:?}");
     }
 
     /// #1332: withhold the world-geometry bubble until zoom has finished.

@@ -5065,7 +5065,9 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   drawn as a `LayoutJob`: runs wrapped in **backticks** — parameter names, values, the
   exact letters to type — come out **monospace in their own blue** so they stand out from
   the prose (`tutorial::narration_spans`, #757). The ring is a **pulsing blue
-  orb that glides** between anchors so the eye can follow it. A step that wants a **drag**
+  orb that always glides** between anchors — never teleports when the target
+  changes, including while the camera is still zooming (#1346). The tooltip
+  waits until zoom lands (#1332). A step that wants a **drag**
   rather than a click names the
   button in the pointer badge below and animates it (`Step::drag_hint`, #819/#882) — a
   pointer blown sideways by cartoon wind gusts under the ring. Anything to be **held with the click** — the Shift of a second pick, the right button
@@ -5152,7 +5154,8 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   line, not a broken app.
 - Scriptable: `bearcad.ui.tutorial("cube")`, `bearcad.ui.tutorial_next()`,
   `bearcad.ui.tutorial_assist()` (press the current step's "do it for me" button),
-  `bearcad.ui.tutorial_end()`, `bearcad.ui.tutorial_step()` (current step index or nil).
+  `bearcad.ui.tutorial_end()`, `bearcad.ui.tutorial_step()` (current step index or nil),
+  `bearcad.ui.tutorial_orb()` (`{x, y}` screen position of the guide ring, or nil).
 
 ### 11.x Auto-update (#427)
 - **Build identity (#460, #1129):** `build.rs` bakes `git describe --tags` and the short

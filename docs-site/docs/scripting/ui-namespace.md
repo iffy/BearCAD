@@ -132,6 +132,7 @@ bearcad.ui.tutorial_next()
 bearcad.ui.tutorial_assist()
 bearcad.ui.tutorial_end()
 local step = bearcad.ui.tutorial_step()  -- nil when none running
+local orb = bearcad.ui.tutorial_orb()    -- {x=, y=} screen px, or nil
 ```
 
 ```lua

@@ -3773,6 +3773,8 @@ pub struct AppState {
     /// Screen rects of tutorial-anchorable UI (toolbar buttons, pane buttons), recorded
     /// as the frame renders and read by the tutorial overlay. Cleared every frame.
     pub tutorial_anchor_rects: std::collections::HashMap<crate::tutorial::UiAnchor, egui::Rect>,
+    /// Last drawn tutorial orb screen position (`bearcad.ui.tutorial_orb`, #1346).
+    pub tutorial_orb_screen: Option<egui::Pos2>,
     /// In-progress slice operation (Slice tool).
     pub creating_slice: Option<CreatingSlice>,
     /// In-progress shell operation (Shell tool, #1156).
@@ -4000,6 +4002,7 @@ impl Default for AppState {
             creating_sketch_offset: None,
             tutorial: None,
             tutorial_anchor_rects: std::collections::HashMap::new(),
+            tutorial_orb_screen: None,
             creating_slice: None,
             creating_shell: None,
             creating_sketch_slice: None,
