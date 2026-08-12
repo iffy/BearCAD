@@ -225,10 +225,10 @@ pub static TUTORIALS: &[Tutorial] = &[
         title: "Sketch & Extrude",
         steps: CUBE_STEPS,
     },
-    // Second walkthrough (#1269): camera + exploder, with cubes already in the document.
+    // Second walkthrough (#1269): camera, with cubes already in the document.
     Tutorial {
         name: "navigate",
-        title: "Pan, orbit, zoom & pick",
+        title: "Pan, orbit & zoom",
         steps: NAVIGATE_STEPS,
     },
     Tutorial {
@@ -3599,9 +3599,8 @@ fn sphere_kind_ready(app: &AppState) -> bool {
 
 // --- Navigate tutorial (#1269) -----------------------------------------------------
 
-/// Seed a few overlapping cuboids so the walkthrough starts with geometry to orbit and
-/// something crowded enough for the Selection Exploder. Drop the default XY/XZ/YZ
-/// planes first so they don't hide the cubes (#1306).
+/// Seed a few cuboids so the walkthrough starts with geometry to orbit.
+/// Drop the default XY/XZ/YZ planes first so they don't hide the cubes (#1306).
 fn seed_nav_cubes(app: &mut AppState) {
     let planes: Vec<_> = app.doc.construction_planes.keys().collect();
     for index in planes {
@@ -3735,8 +3734,9 @@ const fn nav_drag_step(
     }
 }
 
-/// #1269: second walkthrough — pan, orbit, zoom, bear HUD, home, Selection Exploder.
+/// #1269: second walkthrough — pan, orbit, zoom, bear HUD, home.
 /// Starts with cubes already in the document. One action per step (#1253).
+/// The Selection Exploder step is gone (#1330): its tooltip covered the loupes.
 static NAVIGATE_STEPS: &[Step] = &[
     plain_step_enter(
         "Here are a few cubes. Let's learn to move around them.",
@@ -3802,24 +3802,8 @@ static NAVIGATE_STEPS: &[Step] = &[
         },
         None,
     ),
-    Step {
-        narration: "Pick one face of a cube \u{2014} not the whole body. Hover the pile, press \
-                    Space, and click a loupe. That's the Selection Exploder.",
-        anchor: StepAnchor::World(nav_cubes_guide),
-        done: None,
-        on_enter: None,
-        assist: None,
-        needs_shift: None,
-        drag_hint: None,
-        key_hint: Some(("Space", "Hover the cubes, press Space, click a loupe")),
-        marks: None,
-        type_hint: None,
-        phone_narration: None,
-        only_on_phone: false,
-    },
     plain_step(
-        "That's the view: orbit, pan, zoom, the bear, Home, and Space for crowded picks. \
-         Nice!",
+        "That's the view: orbit, pan, zoom, the bear, and Home. Nice!",
         StepAnchor::None,
         None,
     ),
@@ -5475,7 +5459,7 @@ mod tests {
         );
     }
 
-    /// #1269: navigate tutorial sits after cube, seeds cubes, and teaches camera + exploder.
+    /// #1269: navigate tutorial sits after cube, seeds cubes, and teaches the camera.
     #[test]
     fn navigate_tutorial_is_second_and_seeds_cubes() {
         let nav = &TUTORIALS[tutorial_index("navigate").unwrap()];
@@ -5507,39 +5491,9 @@ mod tests {
         assert!(app.tutorial.is_some());
     }
 
-    /// #1307: the exploder step leads with what to accomplish, not how the fan works.
+    /// #1330: the tutorial tooltip covered the exploder loupes — drop that step.
     #[test]
-    fn navigate_exploder_step_states_the_goal_first() {
-        let nav = &TUTORIALS[tutorial_index("navigate").unwrap()];
-        let step = nav
-            .steps
-            .iter()
-            .find(|s| s.key_hint.is_some_and(|(k, _)| k.eq_ignore_ascii_case("Space")))
-            .expect("navigate tutorial should introduce Space");
-        let n = step.narration.to_ascii_lowercase();
-        let goal = n
-            .find("pick")
-            .or_else(|| n.find("face"))
-            .expect("exploder step should say to pick a face");
-        let how = n
-            .find("space")
-            .or_else(|| n.find("exploder"))
-            .expect("exploder step should still name Space / exploder");
-        assert!(
-            goal < how,
-            "#1307: lead with the goal (pick a face), not the mechanism: {}",
-            step.narration
-        );
-        assert!(
-            n.contains("body") || n.contains("whole"),
-            "say why: Select would take the whole body: {}",
-            step.narration
-        );
-    }
-
-    /// #1269: covers orbit, pan, zoom, bear HUD, home, and the Selection Exploder.
-    #[test]
-    fn navigate_tutorial_covers_camera_bear_and_exploder() {
+    fn navigate_tutorial_has_no_exploder() {
         let nav = &TUTORIALS[tutorial_index("navigate").unwrap()];
         let joined: String = nav
             .steps
@@ -5547,15 +5501,31 @@ mod tests {
             .map(|s| s.narration.to_ascii_lowercase())
             .collect::<Vec<_>>()
             .join(" ");
-        for needle in [
-            "orbit",
-            "pan",
-            "zoom",
-            "bear",
-            "home",
-            "space",
-            "exploder",
-        ] {
+        for needle in ["exploder", "loupe", "space"] {
+            assert!(
+                !joined.contains(needle),
+                "navigate tutorial should not mention {needle}: {joined}"
+            );
+        }
+        assert!(
+            nav.steps
+                .iter()
+                .all(|s| !s.key_hint.is_some_and(|(k, _)| k.eq_ignore_ascii_case("Space"))),
+            "navigate tutorial should not introduce Space / Selection Exploder"
+        );
+    }
+
+    /// #1269: covers orbit, pan, zoom, bear HUD, and home.
+    #[test]
+    fn navigate_tutorial_covers_camera_and_bear() {
+        let nav = &TUTORIALS[tutorial_index("navigate").unwrap()];
+        let joined: String = nav
+            .steps
+            .iter()
+            .map(|s| s.narration.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join(" ");
+        for needle in ["orbit", "pan", "zoom", "bear", "home"] {
             assert!(
                 joined.contains(needle),
                 "navigate tutorial should mention {needle}"
@@ -5569,13 +5539,9 @@ mod tests {
             nav.steps.iter().any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::ViewHome))),
             "should point at the home button"
         );
-        assert!(
-            nav.steps.iter().any(|s| s.key_hint.is_some_and(|(k, _)| k.eq_ignore_ascii_case("Space"))),
-            "should introduce Space / Selection Exploder"
-        );
     }
 
-    /// #1269: assists drive camera steps; Next covers the exploder teaching step.
+    /// #1269: assists drive camera steps; Next covers the rest.
     #[test]
     fn navigate_tutorial_walks_with_assists() {
         let mut app = AppState::default();
