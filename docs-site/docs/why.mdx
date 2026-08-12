@@ -3,6 +3,13 @@ sidebar_position: 2.5
 title: Why use BearCAD?
 ---
 
+export const Yes = () => (
+  <span className="feat-yes" role="img" aria-label="Yes">✔</span>
+);
+export const No = () => (
+  <span className="feat-no" role="img" aria-label="No">✘</span>
+);
+
 # Why use BearCAD?
 
 **Is BearCAD better than Fusion, SolidWorks, FreeCAD, or TinkerCAD?** No.
@@ -12,8 +19,6 @@ simulation, sheet metal, or a production assembly? Use one of them.
 
 Use BearCAD when a tiny local CAD app that launches instantly and needs no account is
 worth the missing features.
-
-Update the tables below when a BearCAD feature lands.
 
 ## Size, start, cost
 
@@ -39,22 +44,22 @@ feature and document-count limits.
 
 | | BearCAD | Fusion | SolidWorks | FreeCAD | TinkerCAD |
 |---|---|---|---|---|---|
-| Parametric sketches | Yes | Yes | Yes | Yes | No |
-| Constraint solver | Yes | Yes | Yes | Yes | No |
-| Extrude / revolve / loft / sweep | Yes | Yes | Yes | Yes | CSG primitives |
-| Fillet / chamfer / shell | Yes | Yes | Yes | Yes | Limited |
-| Assemblies | Joints only | Yes | Yes | Yes | Groups |
-| Technical drawings | Basic | Yes | Yes | Yes | No |
-| STEP / STL import & export | Yes | Yes | Yes | Yes | STL |
-| CAM | No | Yes | Extra | Yes | No |
-| Simulation / FEA | No | Yes | Extra | Yes | No |
-| Sheet metal | No | Yes | Yes | Addon | No |
-| Surface modeling | No | Yes | Yes | Yes | No |
-| PCB / electronics | No | Yes | Extra | Addon | Circuits |
-| Rendering | No | Yes | Yes | Addon | Basic |
+| Parametric sketches | <Yes /> | <Yes /> | <Yes /> | <Yes /> | <No /> |
+| Constraint solver | <Yes /> | <Yes /> | <Yes /> | <Yes /> | <No /> |
+| Extrude / revolve / loft / sweep | <Yes /> | <Yes /> | <Yes /> | <Yes /> | CSG primitives |
+| Fillet / chamfer / shell | <Yes /> | <Yes /> | <Yes /> | <Yes /> | Limited |
+| Assemblies | Joints only | <Yes /> | <Yes /> | <Yes /> | Groups |
+| Technical drawings | Basic | <Yes /> | <Yes /> | <Yes /> | <No /> |
+| STEP / STL import & export | <Yes /> | <Yes /> | <Yes /> | <Yes /> | STL |
+| CAM | <No /> | <Yes /> | Extra | <Yes /> | <No /> |
+| Simulation / FEA | <No /> | <Yes /> | Extra | <Yes /> | <No /> |
+| Sheet metal | <No /> | <Yes /> | <Yes /> | Addon | <No /> |
+| Surface modeling | <No /> | <Yes /> | <Yes /> | <Yes /> | <No /> |
+| PCB / electronics | <No /> | <Yes /> | Extra | Addon | Circuits |
+| Rendering | <No /> | <Yes /> | <Yes /> | Addon | Basic |
 | Scripting | Lua | API | API | Python | Codeblocks |
-| Local files | Yes | Cloud-first | Yes | Yes | Cloud |
-| Open source | Yes | No | No | Yes | No |
+| Local files | <Yes /> | Cloud-first | <Yes /> | <Yes /> | Cloud |
+| Open source | <Yes /> | <No /> | <No /> | <Yes /> | <No /> |
 
 BearCAD's kernel is OpenCASCADE (same family as FreeCAD) and sketches are solved by
 SolveSpace. Joints pose parts; components are still just folders. Drawings project

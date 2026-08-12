@@ -52,3 +52,17 @@ img[src*="/img/icons/"] {
   vertical-align: middle;
   margin-right: 0.4rem;
 }
+
+/* Why page Features table: yes/no as loud green checks / red Xs. */
+.feat-yes,
+.feat-no {
+  font-size: 1.45rem;
+  font-weight: 900;
+  line-height: 1;
+}
+.feat-yes {
+  color: #00ff00;
+}
+.feat-no {
+  color: #ff0000;
+}
