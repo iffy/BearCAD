@@ -2626,6 +2626,9 @@ fn draw_pick_target_loupe(
 const TUTORIAL_BUBBLE_TAIL: f32 = 12.0;
 /// Clear space between that tail's tip and whatever it points at.
 const TUTORIAL_BUBBLE_GAP: f32 = 14.0;
+/// Extra gap when a world-geometry tooltip parks below the orb with no tail
+/// (#1333): the blue ring marks the click; the bubble must not cover it.
+const TUTORIAL_BUBBLE_PARK_GAP: f32 = 64.0;
 
 /// Which edge of the bubble its tail hangs off — the side facing what it's pointing at.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -2663,6 +2666,7 @@ fn tutorial_bubble_layout(
     bounds: egui::Rect,
     phone_bottom: Option<f32>,
     field: Option<egui::Rect>,
+    park_below: bool,
 ) -> (egui::Pos2, BubbleTail) {
     let clamp = |p: egui::Pos2| {
         egui::pos2(
@@ -2705,6 +2709,20 @@ fn tutorial_bubble_layout(
             return (clamp(above), BubbleTail::Bottom);
         }
     }
+    // World geometry: park the bubble well below the ring with no arrow. The
+    // blue circle + pointer mark the click; a tailed bubble covered it (#1333).
+    if park_below {
+        let clear = radius + TUTORIAL_BUBBLE_PARK_GAP;
+        let below = egui::pos2(orb.x - size.x * 0.5, orb.y + clear);
+        if below.y + size.y <= bounds.bottom() - 8.0 {
+            return (clamp(below), BubbleTail::None);
+        }
+        let above = egui::pos2(orb.x - size.x * 0.5, orb.y - clear - size.y);
+        if above.y >= bounds.top() + 8.0 {
+            return (clamp(above), BubbleTail::None);
+        }
+        return (clamp(below), BubbleTail::None);
+    }
     let clear = radius + TUTORIAL_BUBBLE_TAIL + TUTORIAL_BUBBLE_GAP;
     let below = egui::pos2(orb.x - size.x * 0.5, orb.y + clear);
     if below.y + size.y <= bounds.bottom() - 8.0 {
@@ -2722,6 +2740,26 @@ fn tutorial_bubble_layout(
         clamp(egui::pos2(orb.x + clear, orb.y - size.y * 0.5)),
         BubbleTail::Left,
     )
+}
+
+/// Glide the tutorial orb toward `goal`. `snap` skips the glide so a camera zoom
+/// cannot leave the ring parked at a mid-animation screen position (#1332).
+fn tutorial_orb_step(prev: Option<egui::Pos2>, goal: egui::Pos2, dt: f32, snap: bool) -> egui::Pos2 {
+    if snap {
+        return goal;
+    }
+    match prev {
+        Some(prev) => {
+            let k = 1.0 - (-dt * 9.0).exp();
+            prev + (goal - prev) * k
+        }
+        None => goal,
+    }
+}
+
+/// World-geometry speech bubble waits until the camera zoom has landed (#1332).
+fn tutorial_world_bubble_ready(camera_transitioning: bool) -> bool {
+    !camera_transitioning
 }
 
 /// What a tutorial click needs held alongside it (#759/#851/#877): the same select-arrow
@@ -4050,17 +4088,14 @@ impl App {
             }
         }
         let mut orb_radius = 0.0f32;
+        // World-geometry orbs: snap while the camera is still zooming so the
+        // ring is not left at a mid-animation screen position (#1332).
+        let world_orb = !orb_on_ui && target.is_some();
         if let Some((goal, base)) = target {
             orb_radius = base;
             let dt = ctx.input(|i| i.stable_dt).min(0.1);
-            let pos = match self.tutorial_orb_pos {
-                Some(prev) => {
-                    // Exponential glide toward the goal (~90% of the way per quarter second).
-                    let k = 1.0 - (-dt * 9.0).exp();
-                    prev + (goal - prev) * k
-                }
-                None => goal,
-            };
+            let snap = world_orb && self.state.cam.transition_active();
+            let pos = tutorial_orb_step(self.tutorial_orb_pos, goal, dt, snap);
             self.tutorial_orb_pos = Some(pos);
             // Bounded by the window rather than the viewport: a step's orb can be pointing
             // at a side pane, and its badges have to follow it there (#781).
@@ -4135,6 +4170,12 @@ impl App {
             self.tutorial_orb_pos = None;
         }
 
+        // Don't park the bubble at a mid-zoom screen position (#1332). The blue
+        // ring still tracks the world point; the tooltip waits until the zoom lands.
+        if world_orb && !tutorial_world_bubble_ready(self.state.cam.transition_active()) {
+            return;
+        }
+
         // Bear's speech bubble, off the view cube's **left** side (#760) — under it,
         // the bubble hangs over the Context pane's controls, which is exactly where the
         // tutorial is telling you to look. Its *drawn* width is wider than its content
@@ -4146,7 +4187,8 @@ impl App {
         // The HUD paints a padded panel around the cube; clear that, not just the cube.
         let hud = cube.expand(view_cube::HUD_PANEL_PAD);
         // The bubble follows the orb (#825) — its size comes from last frame's measurement,
-        // and the orb's own glide carries the bubble along with it.
+        // and the orb's own glide carries the bubble along with it. World geometry
+        // parks below the ring with no arrow so the click target stays clear (#1333).
         let (anchor_pos, tail_side) = tutorial_bubble_layout(
             self.tutorial_orb_pos.map(|p| (p, orb_radius)),
             hud,
@@ -4156,6 +4198,7 @@ impl App {
             // status bar's pane buttons.
             touch::compact(ctx).then_some(viewport.bottom()),
             orb_field,
+            world_orb,
         );
         let mut next = false;
         let mut back = false;
@@ -26185,6 +26228,7 @@ impl App {
         let viewport = response.rect;
         self.last_viewport = Some(viewport);
         self.state.viewport_aspect = (viewport.width() / viewport.height().max(1.0)).max(0.01);
+        self.state.viewport_height = viewport.height();
         self.state.compact_layout = touch::compact(ui.ctx());
         self.state.apply_pending_sketch_reframe(viewport);
         let mut inline_parameter_field_results = Vec::<SketchDimFieldResult>::new();
@@ -32479,7 +32523,7 @@ mod tests {
         let size = egui::vec2(352.0, 120.0);
 
         // No orb: left of the HUD, tail pointing right at Bear.
-        let (pos, tail) = tutorial_bubble_layout(None, hud, size, bounds, None, None);
+        let (pos, tail) = tutorial_bubble_layout(None, hud, size, bounds, None, None, false);
         assert_eq!(tail, BubbleTail::Right);
         assert!(
             pos.x + size.x + TUTORIAL_BUBBLE_TAIL <= hud.left(),
@@ -32488,14 +32532,14 @@ mod tests {
 
         // An orb with room underneath: the bubble hangs below it, tail on top, centred.
         let orb = egui::pos2(500.0, 300.0);
-        let (pos, tail) = tutorial_bubble_layout(Some((orb, 26.0)), hud, size, bounds, None, None);
+        let (pos, tail) = tutorial_bubble_layout(Some((orb, 26.0)), hud, size, bounds, None, None, false);
         assert_eq!(tail, BubbleTail::Top);
         assert!(pos.y > orb.y, "below the orb: {pos:?}");
         assert!((pos.x + size.x * 0.5 - orb.x).abs() < 1.0, "centred: {pos:?}");
 
         // An orb near the bottom: it flips above, tail underneath.
         let low = egui::pos2(500.0, 760.0);
-        let (pos, tail) = tutorial_bubble_layout(Some((low, 26.0)), hud, size, bounds, None, None);
+        let (pos, tail) = tutorial_bubble_layout(Some((low, 26.0)), hud, size, bounds, None, None, false);
         assert_eq!(tail, BubbleTail::Bottom);
         assert!(pos.y + size.y < low.y, "above the orb: {pos:?}");
 
@@ -32503,7 +32547,7 @@ mod tests {
         let phone = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(390.0, 844.0));
         let phone_hud = view_cube::cube_rect_in_viewport(phone).expand(view_cube::HUD_PANEL_PAD);
         let small = egui::vec2(330.0, 150.0);
-        let (pos, tail) = tutorial_bubble_layout(None, phone_hud, small, phone, Some(800.0), None);
+        let (pos, tail) = tutorial_bubble_layout(None, phone_hud, small, phone, Some(800.0), None, false);
         assert_eq!(tail, BubbleTail::None, "no tail to point with");
         assert!(pos.y + small.y <= 800.0, "sits above the status bar: {pos:?}");
         assert!(pos.y + small.y > 700.0, "and near the bottom, not floating mid-screen");
@@ -32511,7 +32555,7 @@ mod tests {
 
         // Whatever happens, it stays on screen.
         for orb in [egui::pos2(4.0, 4.0), egui::pos2(1196.0, 796.0)] {
-            let (pos, _) = tutorial_bubble_layout(Some((orb, 26.0)), hud, size, bounds, None, None);
+            let (pos, _) = tutorial_bubble_layout(Some((orb, 26.0)), hud, size, bounds, None, None, false);
             assert!(pos.x >= bounds.left() && pos.x + size.x <= bounds.right() + 0.01, "{pos:?}");
             assert!(pos.y >= bounds.top() && pos.y + size.y <= bounds.bottom() + 0.01, "{pos:?}");
         }
@@ -32533,7 +32577,7 @@ mod tests {
         );
 
         let (pos, tail) =
-            tutorial_bubble_layout(Some((orb, radius)), hud, size, bounds, None, Some(field));
+            tutorial_bubble_layout(Some((orb, radius)), hud, size, bounds, None, Some(field), false);
         assert_eq!(tail, BubbleTail::Top);
         assert!(pos.y >= field.bottom(), "bubble should sit below the field: {pos:?}");
         let max_top = field.bottom() + TUTORIAL_BUBBLE_TAIL + TUTORIAL_BUBBLE_GAP + 1.0;
@@ -32542,6 +32586,51 @@ mod tests {
             "bubble too far below the ValueInput (would point at Default units): {} > {max_top}",
             pos.y
         );
+    }
+
+    /// #1333: a world-geometry tooltip parks below the orb with no arrow, so it
+    /// does not cover the click target — the blue ring and pointer do that job.
+    #[test]
+    fn tutorial_bubble_parks_below_world_orb_without_tail() {
+        let bounds = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0));
+        let hud = view_cube::cube_rect_in_viewport(bounds).expand(view_cube::HUD_PANEL_PAD);
+        let size = egui::vec2(352.0, 120.0);
+        let orb = egui::pos2(500.0, 300.0);
+        let (pos, tail) =
+            tutorial_bubble_layout(Some((orb, 26.0)), hud, size, bounds, None, None, true);
+        assert_eq!(tail, BubbleTail::None, "no arrow callout on a world orb");
+        assert!(
+            pos.y >= orb.y + TUTORIAL_BUBBLE_PARK_GAP - 1.0,
+            "bubble should sit well below the orb: {pos:?}"
+        );
+        let bubble = egui::Rect::from_min_size(pos, size);
+        let click = egui::Rect::from_center_size(orb, egui::vec2(80.0, 48.0));
+        assert!(
+            !bubble.intersects(click),
+            "bubble covered the click target: bubble={bubble:?} click={click:?}"
+        );
+    }
+
+    /// #1332: while the camera is still zooming, the orb snaps to the projected
+    /// goal instead of gliding from a mid-zoom screen position.
+    #[test]
+    fn tutorial_orb_snaps_while_camera_zooms() {
+        let prev = egui::pos2(400.0, 80.0);
+        let goal = egui::pos2(500.0, 400.0);
+        let snapped = tutorial_orb_step(Some(prev), goal, 0.016, true);
+        assert_eq!(snapped, goal, "must snap during a camera transition");
+        let gliding = tutorial_orb_step(Some(prev), goal, 0.016, false);
+        assert!(
+            (gliding.y - prev.y).abs() > 1.0 && gliding.y < goal.y - 1.0,
+            "without snap the ring still glides: {gliding:?}"
+        );
+    }
+
+    /// #1332: withhold the world-geometry bubble until zoom has finished.
+    #[test]
+    fn tutorial_world_bubble_waits_for_zoom() {
+        assert!(!tutorial_world_bubble_ready(true));
+        assert!(tutorial_world_bubble_ready(false));
     }
 
     /// #1308/#1310: typing guide on a right-pane ValueInput sits *beside* it (left),

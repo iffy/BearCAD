@@ -3057,7 +3057,15 @@ fn dim_label_opened_for_edit(app: &AppState) -> bool {
     app.editing_committed_dim.is_some() || one_sketch_dim_is_20(app)
 }
 
-/// Midpoint of the first sketch length-dimension label, offset off the line.
+/// Convert a screen-pixel length at the look-at plane into world millimetres.
+fn pixel_offset_world_mm(app: &AppState, pixels: f32) -> f32 {
+    let h = app.viewport_height.max(1.0);
+    let (_, half_h) = app.cam.viewport_half_extents(app.viewport_aspect.max(0.01));
+    pixels * (2.0 * half_h / h)
+}
+
+/// Midpoint of the first sketch length-dimension label, offset off the line
+/// by the same pixel distance the drawn label uses (#1332/#1333).
 fn first_rect_dim_label(app: &AppState) -> Option<glam::Vec3> {
     use crate::model::DistanceTarget;
     let sketch = app
@@ -3085,11 +3093,15 @@ fn first_rect_dim_label(app: &AppState) -> Option<glam::Vec3> {
         (0.0, 0.0)
     };
     let (ou, ov) = crate::dimensions::outward_perpendicular_uv(ua, va, ub, vb, cx, cy);
-    const AWAY_MM: f32 = 11.0;
+    let away = pixel_offset_world_mm(
+        app,
+        crate::dimensions::effective_dim_offset(line.length_dim_offset)
+            + crate::dimensions::LABEL_OUTSET,
+    );
     Some(crate::face::local_to_world(
         &frame,
-        (ua + ub) * 0.5 + ou * AWAY_MM,
-        (va + vb) * 0.5 + ov * AWAY_MM,
+        (ua + ub) * 0.5 + ou * away,
+        (va + vb) * 0.5 + ov * away,
     ))
 }
 
@@ -5289,6 +5301,81 @@ mod tests {
         app.apply(Action::BeginEditCommittedDim { target });
         assert!(dim_label_opened_for_edit(&app));
         assert!(app.editing_committed_dim.is_some());
+    }
+
+    fn first_length_dim_line_mid(app: &AppState) -> Option<glam::Vec3> {
+        use crate::model::DistanceTarget;
+        let sketch = app
+            .sketch_session
+            .map(|s| s.sketch)
+            .or_else(|| app.doc.sketches.keys().next())?;
+        let frame = crate::face::sketch_geometry_frame(&app.doc, sketch)?;
+        let line = live_constraints(app).find_map(|c| match &c.kind {
+            ConstraintKind::Distance {
+                target: DistanceTarget::LineLength(i),
+            } => app.doc.lines.get(*i).filter(|l| l.sketch == sketch),
+            _ => None,
+        })?;
+        Some(crate::face::local_to_world(
+            &frame,
+            (line.x0 + line.x1) * 0.5,
+            (line.y0 + line.y1) * 0.5,
+        ))
+    }
+
+    /// #1332/#1333: the orb sits on the pixel-offset dim label. A fixed 11 mm
+    /// offset flies off-screen after sketch-entry zoom and covers the label
+    /// when the user zooms out.
+    #[test]
+    fn dim_label_orb_sits_on_the_label_not_eleven_mm_out() {
+        let mut app = AppState::default();
+        assist_extrude_10mm(&mut app);
+        let sketch = app.doc.sketches.keys().next().expect("sketch");
+        app.apply(Action::OpenSketch {
+            sketch,
+            viewport: None,
+        });
+        app.viewport_height = 600.0;
+        app.viewport_aspect = 1.5;
+        // Close enough that a 10 mm square fills most of a 600 px viewport.
+        app.cam.distance = 25.0;
+
+        let mid = first_length_dim_line_mid(&app).expect("line mid");
+        let label = first_rect_dim_label(&app).expect("label");
+        let away = (label - mid).length();
+        assert!(
+            away < 4.0,
+            "zoomed-in dim label should sit a few mm off the line, not {away:.1} mm (#1332)"
+        );
+        assert!(
+            away > 0.05,
+            "label should still sit outside the line, not on it"
+        );
+    }
+
+    /// #1332/#1333: label offset is a screen-pixel distance, so world mm
+    /// grows as the camera zooms out — matching the drawn dimension.
+    #[test]
+    fn dim_label_orb_offset_tracks_camera_zoom() {
+        let mut app = AppState::default();
+        assist_extrude_10mm(&mut app);
+        let sketch = app.doc.sketches.keys().next().expect("sketch");
+        app.apply(Action::OpenSketch {
+            sketch,
+            viewport: None,
+        });
+        app.viewport_height = 600.0;
+        app.viewport_aspect = 1.5;
+        let mid = first_length_dim_line_mid(&app).expect("line mid");
+
+        app.cam.distance = 25.0;
+        let near = (first_rect_dim_label(&app).expect("near") - mid).length();
+        app.cam.distance = 250.0;
+        let far = (first_rect_dim_label(&app).expect("far") - mid).length();
+        assert!(
+            far > near * 2.0,
+            "world offset must grow with camera distance (near={near:.2} far={far:.2})"
+        );
     }
 
     /// #1318: "Draw it for me" places an unconstrained rectangle.

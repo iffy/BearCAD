@@ -7271,6 +7271,7 @@ impl ScriptRunner {
             Instruction::ZoomFit => {
                 if let Some(vp) = viewport {
                     state.viewport_aspect = (vp.width() / vp.height().max(1.0)).max(0.01);
+                    state.viewport_height = vp.height();
                 }
                 // Same path as the Z key / menu: includes in-progress operation previews (#1114).
                 // When animation is on (#1276), wait out the glide like ViewHome does.
