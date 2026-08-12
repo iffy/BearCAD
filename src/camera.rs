@@ -56,6 +56,9 @@ impl StandardView {
 /// Default duration for animated view changes (seconds).
 pub const VIEW_TRANSITION_DURATION: f32 = 0.35;
 
+/// Zoom to Fit glide duration — half of [`VIEW_TRANSITION_DURATION`] so Z feels snappier than Home (#1303).
+pub const ZOOM_TO_FIT_DURATION: f32 = VIEW_TRANSITION_DURATION / 2.0;
+
 /// Startup orbit angles (matches [`Camera::default`]).
 pub const ISOMETRIC_YAW: f32 = 0.8;
 pub const ISOMETRIC_PITCH: f32 = 0.6;

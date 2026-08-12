@@ -5,7 +5,7 @@
 
 use crate::camera::{
     Camera, ProjectionMode, ShadingMode, StandardView, SKETCH_EDIT_FRAME_PADDING_PX,
-    VIEW_TRANSITION_DURATION,
+    VIEW_TRANSITION_DURATION, ZOOM_TO_FIT_DURATION,
 };
 use crate::construction::{
     apply_construction_plane_edit, definition_from_reference, plane_from_definition,
@@ -3664,7 +3664,7 @@ pub struct AppState {
     /// turns it off for every joint — on to begin with. UI-only state, never persisted.
     pub animate_joints: bool,
     /// Zoom to Fit animation (#1276): when true (default), frames over
-    /// [`VIEW_TRANSITION_DURATION`] like Home view; when false, snaps. Mirrored from
+    /// [`ZOOM_TO_FIT_DURATION`] (half Home); when false, snaps. Mirrored from
     /// [`crate::settings::AppSettings`] and scriptable via `bearcad.ui.animate_zoom_to_fit`.
     pub animate_zoom_to_fit: bool,
     /// Auto-update channel (#1288): release (default) or pre-release. Mirrored from
@@ -10266,13 +10266,13 @@ impl AppState {
                 let bounds = union_aabb(base, operation_preview_world_bounds(self));
                 match bounds {
                     Some((min, max)) => {
-                        // #1276: same glide as Home view unless the user turned animation off.
+                        // #1276 / #1303: glide (half Home duration) unless animation is off.
                         if self.animate_zoom_to_fit {
                             self.cam.frame_bounds_animated(
                                 min,
                                 max,
                                 self.viewport_aspect,
-                                VIEW_TRANSITION_DURATION,
+                                ZOOM_TO_FIT_DURATION,
                             );
                         } else {
                             self.cam.frame_bounds_instant(min, max, self.viewport_aspect);
@@ -28811,7 +28811,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         );
     }
 
-    /// #1276: Zoom to Fit glides over `VIEW_TRANSITION_DURATION` by default (same as Home).
+    /// #1276: Zoom to Fit glides by default (half Home duration, #1303).
     #[test]
     fn zoom_to_fit_animates_by_default() {
         let mut state = box_extrusion_state();
@@ -28835,6 +28835,24 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             (state.cam.target - glam::Vec3::new(5.0, 5.0, 2.5)).length() < 0.6,
             "after the glide the camera centers on the body, got {:?}",
             state.cam.target
+        );
+    }
+
+    /// #1303: Zoom to Fit takes half the Home/view-cube transition time.
+    #[test]
+    fn zoom_to_fit_animation_is_half_home_duration() {
+        let mut state = box_extrusion_state();
+        state.apply(Action::ExitSketch);
+        state.cam.target = glam::Vec3::new(999.0, 999.0, 999.0);
+        state.apply(Action::ZoomToFit);
+        assert!(state.cam.is_transitioning());
+        // Just past half of Home's duration: glide must already have finished.
+        let still = state
+            .cam
+            .tick_transition(VIEW_TRANSITION_DURATION * 0.5 + 1e-3);
+        assert!(
+            !still && !state.cam.is_transitioning(),
+            "Zoom to Fit should complete in half VIEW_TRANSITION_DURATION"
         );
     }
 

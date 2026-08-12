@@ -56,8 +56,8 @@ pub struct AppSettings {
     /// the Tutorials pane (#1260); survives restarts.
     #[serde(default)]
     pub completed_tutorials: Vec<String>,
-    /// When true, Zoom to Fit glides over the same duration as Home view (#1276). When
-    /// false, the camera snaps. On by default.
+    /// When true, Zoom to Fit glides over [`crate::camera::ZOOM_TO_FIT_DURATION`]
+    /// (half Home, #1276/#1303). When false, the camera snaps. On by default.
     #[serde(default = "default_true")]
     pub animate_zoom_to_fit: bool,
     /// Auto-update channel (#1288): release (default) or pre-release.

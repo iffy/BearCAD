@@ -4698,7 +4698,7 @@ impl App {
                     }
                 }
             });
-            // #1276: same glide as Home; off snaps Zoom to Fit instantly.
+            // #1276/#1303: half-Home glide; off snaps Zoom to Fit instantly.
             context::labeled_row(ui, "Animate zoom to fit", |ui| {
                 if ui
                     .checkbox(&mut self.settings.animate_zoom_to_fit, "")

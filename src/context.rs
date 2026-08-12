@@ -4425,7 +4425,7 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
              same parts.",
         ),
         "Animate zoom to fit" => Some(
-            "When on, Zoom to Fit (Z) glides the camera the same way Home does. Turn off to \
+            "When on, Zoom to Fit (Z) glides the camera (faster than Home). Turn off to \
              snap the view instantly.",
         ),
         "Update channel" => Some(

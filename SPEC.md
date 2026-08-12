@@ -4703,10 +4703,10 @@ The model in one place:
   stays Undo), the command palette ("Zoom to Fit"), and the View menu. Frames the **current
   selection** (union of the selected elements' world bounds) so it nearly fills the viewport;
   with nothing selected it frames all **non-construction** geometry (bodies plus solid sketch
-  lines/circles — construction scaffolding and datum planes are ignored). Glides over the same
-  duration as Home view (`VIEW_TRANSITION_DURATION`); Settings → **Animate zoom to fit** (on by
-  default) turns the glide off for an instant snap. Scriptable via `bearcad.ui.zoom_fit()` and
-  `bearcad.ui.animate_zoom_to_fit(bool)`.
+  lines/circles — construction scaffolding and datum planes are ignored). Glides over
+  `ZOOM_TO_FIT_DURATION` (half of Home/`VIEW_TRANSITION_DURATION`, #1303); Settings →
+  **Animate zoom to fit** (on by default) turns the glide off for an instant snap. Scriptable via
+  `bearcad.ui.zoom_fit()` and `bearcad.ui.animate_zoom_to_fit(bool)`.
   | Left-drag (with an active draw tool) | Use the tool, e.g. draw a rectangle on the active plane |
   | **X** | Toggle construction/substantial on the in-progress draw op, or on each constructable selected item |
   | Escape | Cancel the in-progress operation; if none, deactivate the current tool (back to *Select*) |
@@ -5358,8 +5358,8 @@ Settings:
 - **Library directory** (`library_directory`) — the folder `Library(...)` unit-import
   sources resolve against (imported units, #719): **Choose…** (folder picker) sets it,
   **✕** clears it.
-- **Animate zoom to fit** (`animate_zoom_to_fit`, default on) — Zoom to Fit glides like
-  Home; off snaps instantly (#1276).
+- **Animate zoom to fit** (`animate_zoom_to_fit`, default on) — Zoom to Fit glides at half
+  Home duration; off snaps instantly (#1276/#1303).
 - **Update channel** (`update_channel`, default **Release**) — **Release** or
   **Pre-release**; the auto-updater only checks the chosen stream (#1288). Scriptable as
   `bearcad.ui.update_channel("release"|"pre_release")` (no arg returns the current).

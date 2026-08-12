@@ -3773,7 +3773,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // #108/#1276: frame selection or document; glides like Home unless animation is off.
+    // #108/#1276/#1303: frame selection or document; half-Home glide unless animation is off.
     // Native name is `_zoom_fit`; the public `zoom_fit` yields until the transition ends.
     api.set(
         "_zoom_fit",
@@ -4257,7 +4257,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // #1276: Zoom to Fit glide (same duration as Home). Off snaps instantly.
+    // #1276/#1303: Zoom to Fit glide (half Home duration). Off snaps instantly.
     api.set(
         "animate_zoom_to_fit",
         lua.create_function(|lua, on: Option<bool>| {
