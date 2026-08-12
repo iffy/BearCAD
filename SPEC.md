@@ -1005,7 +1005,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     the solid.
   - An **End point A** picker (#650/#668) takes the same kinds of point on a body that
     **isn't** moving; the translation is then `end - start`, and the X/Y/Z fields and drag
-    arrows are hidden. Every **end** picker (A, B, C) also takes the **world origin**
+    arrows are hidden. Destination picks ignore the moving bodies (#1336), so a click
+    goes through them as if they were not there. Every **end** picker (A, B, C) also takes the **world origin**
     (`MovePointRef::Origin`, #946) — a fixed point of the document that belongs to no body, so
     it counts as stationary and always resolves. It wins over the geometry under it, the way a
     sketch's origin beats a nearby edge, and reads as "Origin" in the picker. Scripted as
