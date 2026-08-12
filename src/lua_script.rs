@@ -2109,6 +2109,28 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1343: discard persisted tessellation (SPEC §4.4 force-rebuild).
+    api.set(
+        "rebuild_geometry",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::RebuildGeometry) }
+        })?,
+    )?;
+
+    // #1343: `{ warmed, hits, misses }` for geometry_cache / BODY_MESH_CACHE probes.
+    api.set(
+        "mesh_cache",
+        lua.create_function(|lua, ()| {
+            let s = crate::extrude::mesh_cache_stats();
+            let t = lua.create_table()?;
+            t.set("warmed", s.warmed)?;
+            t.set("hits", s.hits)?;
+            t.set("misses", s.misses)?;
+            Ok(t)
+        })?,
+    )?;
+
     // #1341: last incremental flush, so a script can assert only the changed
     // tables were written. `{ bodies = { inserts = 1, updates = 0, deletes = 0 }, ... }`.
     api.set(
@@ -7584,6 +7606,49 @@ mod tests {
         ));
         let _ = std::fs::remove_file(&path);
         assert_eq!(state.doc.bodies.len(), 2);
+    }
+
+    /// #1343: open a boolean-heavy file; first-frame meshes come from geometry_cache.
+    #[test]
+    fn lua_open_boolean_meshes_come_from_cache() {
+        let path = std::env::temp_dir().join(format!(
+            "bearcad_lua_geom_cache_{}.bearcad",
+            std::process::id()
+        ));
+        let path_s = path.to_string_lossy().replace('\\', "\\\\");
+        let _ = std::fs::remove_file(&path);
+        let state = run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{{ width = 20, depth = 20, height = 20 }}
+            bearcad.cuboid{{ width = 8, depth = 8, height = 30, at = {{0, 0, 5}} }}
+            bearcad.combine{{ op = "cut", a = {{0}}, b = {{1}} }}
+            -- Force a committed mesh so Save writes geometry_cache.
+            assert(bearcad.body_stats(2).triangles > 0, "boolean result must mesh")
+            bearcad.save("{path_s}")
+            assert(bearcad.sqlite_scalar("SELECT COUNT(*) FROM geometry_cache") >= 1,
+                "saved file must hold a cache row")
+            bearcad.new()
+            bearcad.open("{path_s}")
+            local s = bearcad.mesh_cache()
+            assert(s.warmed >= 1, "open must warm meshes from geometry_cache")
+            local misses = s.misses
+            assert(bearcad.body_stats(2).triangles > 0)
+            local s2 = bearcad.mesh_cache()
+            assert(s2.misses == misses, "first-frame boolean mesh must come from cache")
+            bearcad.rebuild_geometry()
+            -- discard is in the open txn; another connection still sees the last save
+            assert(bearcad.sqlite_scalar("SELECT COUNT(*) FROM geometry_cache") >= 1)
+            bearcad.save()
+            assert(bearcad.sqlite_scalar("SELECT COUNT(*) FROM geometry_cache") == 0,
+                "Save after rebuild publishes the discarded table")
+        "#
+        ));
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            state.doc.bodies.len() >= 1,
+            "boolean file should still have bodies"
+        );
     }
 
     /// #1342: importing a unit persists `units.document` as a nested `.bearcad` blob.

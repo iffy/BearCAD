@@ -15,6 +15,7 @@ pub enum PaletteCommandId {
     Open,
     Save,
     SaveAs,
+    RebuildGeometry,
     Undo,
     Redo,
     Clear,
@@ -156,6 +157,9 @@ impl PaletteCommand {
             PaletteCommandId::Open => PaletteOutcome::OpenFile,
             PaletteCommandId::Save => PaletteOutcome::SaveFile,
             PaletteCommandId::SaveAs => PaletteOutcome::SaveFileAs,
+            PaletteCommandId::RebuildGeometry => {
+                PaletteOutcome::Action(Action::ForceRebuildGeometry)
+            }
             PaletteCommandId::Undo => PaletteOutcome::Action(Action::UndoLast),
             PaletteCommandId::Redo => PaletteOutcome::Action(Action::RedoLast),
             PaletteCommandId::Clear => PaletteOutcome::Action(Action::Clear),
@@ -487,6 +491,11 @@ const BASE_COMMANDS: &[PaletteCommand] = &[
         PaletteCommandId::SaveAs,
         "Save As…",
         "save as file document export",
+    ),
+    PaletteCommand::new(
+        PaletteCommandId::RebuildGeometry,
+        "Rebuild Geometry",
+        "rebuild geometry cache tessellation force occt",
     ),
     PaletteCommand::new(PaletteCommandId::Undo, "Undo", "undo revert last"),
     PaletteCommand::new(PaletteCommandId::Redo, "Redo", "redo repeat reapply"),

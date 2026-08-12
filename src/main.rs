@@ -690,6 +690,9 @@ fn run_app(script_opts: script::ScriptOptions) -> eframe::Result<()> {
                 native_menu,
                 script_failed_for_app,
             );
+            if script_opts.rebuild {
+                app.state.apply(Action::ForceRebuildGeometry);
+            }
             // Re-attach after EventLoop exists (winit's delegate class is live).
             file_association::install_repaint_context(cc.egui_ctx.clone());
             file_association::install_open_documents_handler();

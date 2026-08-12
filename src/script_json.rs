@@ -451,6 +451,7 @@ pub fn instruction_from_json(
         // path strings; over JSON every argument is named). -----
         "open" => Ok(Instruction::Open(req_str(o, "path", "open")?)),
         "save" => Ok(Instruction::Save(opt_str(o, "path")?)),
+        "rebuild_geometry" => Ok(Instruction::RebuildGeometry),
         "export_stl" => Ok(Instruction::ExportStl {
             path: req_str(o, "path", "export_stl")?,
             body: opt_str(o, "body")?,

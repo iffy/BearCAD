@@ -23,6 +23,7 @@ pub struct MenuIds {
     pub open: MenuId,
     pub save: MenuId,
     pub save_as: MenuId,
+    pub rebuild_geometry: MenuId,
     pub export_stl: MenuId,
     pub export_3mf: MenuId,
     pub export_step: MenuId,
@@ -111,6 +112,9 @@ pub fn command_for_id(
     }
     if ids.save_as == id {
         return Some(MenuCommand::SaveAs);
+    }
+    if ids.rebuild_geometry == id {
+        return Some(MenuCommand::RebuildGeometry);
     }
     if ids.export_stl == id {
         return Some(MenuCommand::ExportStl);
@@ -312,6 +316,7 @@ impl NativeMenu {
                 Code::KeyS,
             )),
         );
+        let rebuild_geometry = MenuItem::with_id("rebuild_geometry", "Rebuild Geometry", true, None);
         // Import/Export items live under grouped submenus (#352); their IDs are unchanged so the
         // command dispatch still matches, only the visible labels drop the redundant verb.
         let export_stl = MenuItem::with_id("export_stl", "STL…", true, None);
@@ -397,6 +402,7 @@ impl NativeMenu {
         file_menu.append(&file_sep)?;
         file_menu.append(&save)?;
         file_menu.append(&save_as)?;
+        file_menu.append(&rebuild_geometry)?;
         file_menu.append(&PredefinedMenuItem::separator())?;
         let import_menu = Submenu::new("Import", true);
         import_menu.append(&import_unit)?;
@@ -476,6 +482,7 @@ impl NativeMenu {
             open: open.id().clone(),
             save: save.id().clone(),
             save_as: save_as.id().clone(),
+            rebuild_geometry: rebuild_geometry.id().clone(),
             export_stl: export_stl.id().clone(),
             export_3mf: export_3mf.id().clone(),
             export_step: export_step.id().clone(),
@@ -601,6 +608,7 @@ mod tests {
             open: MenuId::new("open"),
             save: MenuId::new("save"),
             save_as: MenuId::new("save_as"),
+            rebuild_geometry: MenuId::new("rebuild_geometry"),
             export_stl: MenuId::new("export_stl"),
             export_3mf: MenuId::new("export_3mf"),
             export_step: MenuId::new("export_step"),

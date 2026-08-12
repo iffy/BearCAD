@@ -2951,6 +2951,169 @@ mod tests {
 
         std::fs::remove_file(&path).unwrap();
     }
+
+    fn body_keys(doc: &Document) -> Vec<crate::model::BodyKey> {
+        doc.bodies.keys().collect()
+    }
+
+    /// #1343: a committed mesh is written to `geometry_cache`; open warms
+    /// `BODY_MESH_CACHE` on fingerprint match so the next mesh read is a hit.
+    #[test]
+    fn geometry_cache_persists_mesh_and_open_warms() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "bearcad_geom_cache_{}.bearcad",
+            std::process::id()
+        ));
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        add_cuboid(&mut doc);
+        let body = body_keys(&doc)[0];
+        let mesh = crate::extrude::body_solid_mesh(&doc, body).expect("cuboid mesh");
+        assert!(!mesh.triangles.is_empty());
+        save(&path, &doc).unwrap();
+
+        let conn = Connection::open(&path).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM geometry_cache", [], |row| row.get(0))
+            .expect("geometry_cache table");
+        assert_eq!(n, 1, "one cache row per computed body");
+        let mesh_len: i64 = conn
+            .query_row("SELECT length(mesh) FROM geometry_cache", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(mesh_len > 0, "mesh blob is not empty");
+
+        crate::extrude::clear_all_mesh_caches();
+        crate::extrude::reset_mesh_cache_stats();
+        let mut state = crate::actions::AppState::default();
+        assert!(matches!(
+            state.apply(crate::actions::Action::Open { path: path.clone() }),
+            crate::actions::ActionResult::Ok
+        ));
+        let stats = crate::extrude::mesh_cache_stats();
+        assert!(
+            stats.warmed >= 1,
+            "open must warm BODY_MESH_CACHE from geometry_cache: {stats:?}"
+        );
+        let misses_after_open = stats.misses;
+        let _ = crate::extrude::body_solid_mesh(&state.doc, body).expect("warmed mesh");
+        let after = crate::extrude::mesh_cache_stats();
+        assert_eq!(
+            after.misses, misses_after_open,
+            "first mesh after open must come from cache, not a rebuild: {after:?}"
+        );
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// #1343: incremental write inserts/updates only the body whose mesh was
+    /// computed; other cache rows stay put. Uncommitted until Save.
+    #[test]
+    fn incremental_geometry_cache_updates_one_body() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "bearcad_geom_incr_{}.bearcad",
+            std::process::id()
+        ));
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        add_cuboid(&mut doc);
+        add_cuboid(&mut doc);
+        let keys = body_keys(&doc);
+        for &k in &keys {
+            let _ = crate::extrude::body_solid_mesh(&doc, k);
+        }
+        save(&path, &doc).unwrap();
+        assert_eq!(
+            committed_count(&path, "SELECT COUNT(*) FROM geometry_cache"),
+            2
+        );
+
+        let mut session = DocumentSession::attach(&path, &doc).unwrap();
+        add_cuboid(&mut doc);
+        let new_body = body_keys(&doc)[2];
+        let stats = session.flush(&doc).unwrap().clone();
+        assert!(
+            !stats.touched("geometry_cache"),
+            "no mesh yet for the new body: {stats:?}"
+        );
+        let _ = crate::extrude::body_solid_mesh(&doc, new_body);
+        let stats = session.flush(&doc).unwrap().clone();
+        assert_eq!(
+            stats.inserts("geometry_cache"),
+            1,
+            "only the newly meshed body is inserted: {stats:?}"
+        );
+        assert_eq!(stats.updates("geometry_cache"), 0);
+        assert_eq!(
+            session
+                .query_i64("SELECT COUNT(*) FROM geometry_cache")
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            committed_count(&path, "SELECT COUNT(*) FROM geometry_cache"),
+            2,
+            "another connection still sees the last save"
+        );
+
+        session.commit().unwrap();
+        assert_eq!(
+            committed_count(&path, "SELECT COUNT(*) FROM geometry_cache"),
+            3
+        );
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// #1343: force-rebuild discards the table (in the open transaction).
+    #[test]
+    fn force_rebuild_discards_geometry_cache() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "bearcad_geom_rebuild_{}.bearcad",
+            std::process::id()
+        ));
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        add_cuboid(&mut doc);
+        let body = body_keys(&doc)[0];
+        let _ = crate::extrude::body_solid_mesh(&doc, body);
+        save(&path, &doc).unwrap();
+        assert_eq!(
+            committed_count(&path, "SELECT COUNT(*) FROM geometry_cache"),
+            1
+        );
+
+        let mut session = DocumentSession::attach(&path, &doc).unwrap();
+        session.discard_geometry_cache().unwrap();
+        assert_eq!(
+            session
+                .query_i64("SELECT COUNT(*) FROM geometry_cache")
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            committed_count(&path, "SELECT COUNT(*) FROM geometry_cache"),
+            1,
+            "discard sits in the open transaction"
+        );
+        session.commit().unwrap();
+        assert_eq!(
+            committed_count(&path, "SELECT COUNT(*) FROM geometry_cache"),
+            0
+        );
+
+        std::fs::remove_file(&path).unwrap();
+    }
 }
 
 }
