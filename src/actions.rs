@@ -278,6 +278,25 @@ pub enum ShapePhase {
     Done,
 }
 
+/// Tab from a cylinder's Radius field: leave Base so Height takes the keyboard (#1309).
+pub fn shape_tab_advances_height(kind: crate::model::PrimitiveKind, phase: ShapePhase) -> bool {
+    kind == crate::model::PrimitiveKind::Cylinder && phase == ShapePhase::Base
+}
+
+/// Clicking the Height ValueInput while still in Base advances to Height (#1309).
+pub fn shape_field_click_advances_height(
+    kind: crate::model::PrimitiveKind,
+    phase: ShapePhase,
+    field: ShapeDimension,
+) -> bool {
+    field == ShapeDimension::Height
+        && phase == ShapePhase::Base
+        && matches!(
+            kind,
+            crate::model::PrimitiveKind::Cylinder | crate::model::PrimitiveKind::Cuboid
+        )
+}
+
 /// The Create Shape tool's in-progress shape (#909): the shape as it stands, how far its
 /// placement has got, and which committed shape it re-points (if any).
 #[derive(Clone, Debug, PartialEq)]

@@ -6014,6 +6014,19 @@ pub fn show_pane(
                 }
                 if resp.changed() {
                     pending = Some(ShapeEdit::Dimension(field, text.clone()));
+                } else if (resp.clicked() || resp.gained_focus())
+                    && crate::actions::shape_field_click_advances_height(
+                        control.kind,
+                        if control.focus_field == Some(D::Height) {
+                            crate::actions::ShapePhase::Height
+                        } else {
+                            crate::actions::ShapePhase::Base
+                        },
+                        field,
+                    )
+                {
+                    // Click / Tab landed on Height while Radius still owned the phase (#1309).
+                    pending = Some(ShapeEdit::AdvancePhase);
                 }
                 // Enter in a shape field creates the shape, like the sketch Rectangle's
                 // typed dimensions do (#912) — the field holds the keyboard, so the

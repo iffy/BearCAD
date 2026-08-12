@@ -2636,6 +2636,13 @@ enum BubbleTail {
     None,
 }
 
+/// Ring centre and radius for a UI-widget orb. Wide ValueInputs must not puff the
+/// ring to their width — that parks the speech bubble a field-width below, on
+/// Default units instead of Height/Radius (#1308/#1310).
+fn ui_anchor_orb(rect: egui::Rect) -> (egui::Pos2, f32) {
+    (rect.center(), rect.size().min_elem() * 0.5 + 6.0)
+}
+
 /// Where the tutorial speech bubble goes (#760/#767/#825).
 ///
 /// With an orb on screen the bubble **follows it** — below it by preference, above it when
@@ -2643,12 +2650,16 @@ enum BubbleTail {
 /// and where to look are the same place. With no orb (narration-only steps) it falls back to
 /// the left of the view-cube HUD panel. Always fully inside `bounds` when it fits.
 /// `size` is the bubble's **drawn** size, measured last frame.
+///
+/// `field` is the widget the orb is pointing at (a Context ValueInput). When set, the
+/// bubble sits just below that rect — not a field-width below its centre (#1308/#1310).
 fn tutorial_bubble_layout(
     orb: Option<(egui::Pos2, f32)>,
     hud: egui::Rect,
     size: egui::Vec2,
     bounds: egui::Rect,
     phone_bottom: Option<f32>,
+    field: Option<egui::Rect>,
 ) -> (egui::Pos2, BubbleTail) {
     let clamp = |p: egui::Pos2| {
         egui::pos2(
@@ -2671,6 +2682,26 @@ fn tutorial_bubble_layout(
         let x = hud.left() - size.x - TUTORIAL_BUBBLE_TAIL - TUTORIAL_BUBBLE_GAP;
         return (clamp(egui::pos2(x, hud.top())), BubbleTail::Right);
     };
+    // A pane ValueInput: sit just below the widget, not a ring-radius below its
+    // centre — that radius used to be the field's width and parked the bubble on
+    // Default units (#1308/#1310).
+    if let Some(field) = field {
+        let cx = field.center().x;
+        let below = egui::pos2(
+            cx - size.x * 0.5,
+            field.bottom() + TUTORIAL_BUBBLE_TAIL + TUTORIAL_BUBBLE_GAP,
+        );
+        if below.y + size.y <= bounds.bottom() - 8.0 {
+            return (clamp(below), BubbleTail::Top);
+        }
+        let above = egui::pos2(
+            cx - size.x * 0.5,
+            field.top() - TUTORIAL_BUBBLE_TAIL - TUTORIAL_BUBBLE_GAP - size.y,
+        );
+        if above.y >= bounds.top() + 8.0 {
+            return (clamp(above), BubbleTail::Bottom);
+        }
+    }
     let clear = radius + TUTORIAL_BUBBLE_TAIL + TUTORIAL_BUBBLE_GAP;
     let below = egui::pos2(orb.x - size.x * 0.5, orb.y + clear);
     if below.y + size.y <= bounds.bottom() - 8.0 {
@@ -2880,6 +2911,18 @@ fn typing_guide_rect(
 ) -> egui::Rect {
     const GAP: f32 = 10.0;
     let anchor = field.unwrap_or(egui::Rect::from_center_size(orb, egui::Vec2::splat(8.0)));
+    // Right-pane ValueInputs (Height / Radius): sit to the left, level with the
+    // field, so the guide doesn't cover the row above (#1308/#1310).
+    let left_cx = anchor.left() - GAP - size.x * 0.5;
+    if anchor.center().x > bounds.center().x
+        && left_cx - size.x * 0.5 >= bounds.left() + 6.0
+    {
+        let cy = anchor.center().y.clamp(
+            bounds.top() + size.y * 0.5 + 6.0,
+            (bounds.bottom() - size.y * 0.5 - 6.0).max(bounds.top() + size.y * 0.5 + 6.0),
+        );
+        return egui::Rect::from_center_size(egui::pos2(left_cx, cy), size);
+    }
     let above = anchor.top() - GAP - size.y * 0.5;
     let below = anchor.bottom() + GAP + size.y * 0.5;
     let cy = if above - size.y * 0.5 >= bounds.top() + 6.0 { above } else { below };
@@ -3958,8 +4001,7 @@ impl App {
             }
         };
         let ui_anchor = |anchor: tutorial::UiAnchor| -> Option<(egui::Pos2, f32)> {
-            let rect = ui_anchor_rect(anchor)?;
-            Some((rect.center(), rect.size().max_elem() * 0.5 + 6.0))
+            Some(ui_anchor_orb(ui_anchor_rect(anchor)?))
         };
         // Whether the orb is on a pane/toolbar button rather than on geometry: the
         // crowded-pick hint has nothing to say about a button (#813).
@@ -4110,6 +4152,7 @@ impl App {
             // Phone layout: the default spot is the bottom of the viewport, above the
             // status bar's pane buttons.
             touch::compact(ctx).then_some(viewport.bottom()),
+            orb_field,
         );
         let mut next = false;
         let mut back = false;
@@ -23558,6 +23601,17 @@ impl App {
             return;
         }
 
+        // Cylinder Base: Tab leaves Radius and arms Height (#1309).
+        if self.state.creating_shape.as_ref().is_some_and(|c| {
+            actions::shape_tab_advances_height(c.shape.kind, c.phase)
+        }) {
+            if tab_pressed {
+                ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
+                self.advance_shape_phase();
+            }
+            return;
+        }
+
         if self.state.creating_line.is_some() {
             if tab_pressed {
                 ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
@@ -32370,7 +32424,7 @@ mod tests {
         let size = egui::vec2(352.0, 120.0);
 
         // No orb: left of the HUD, tail pointing right at Bear.
-        let (pos, tail) = tutorial_bubble_layout(None, hud, size, bounds, None);
+        let (pos, tail) = tutorial_bubble_layout(None, hud, size, bounds, None, None);
         assert_eq!(tail, BubbleTail::Right);
         assert!(
             pos.x + size.x + TUTORIAL_BUBBLE_TAIL <= hud.left(),
@@ -32379,14 +32433,14 @@ mod tests {
 
         // An orb with room underneath: the bubble hangs below it, tail on top, centred.
         let orb = egui::pos2(500.0, 300.0);
-        let (pos, tail) = tutorial_bubble_layout(Some((orb, 26.0)), hud, size, bounds, None);
+        let (pos, tail) = tutorial_bubble_layout(Some((orb, 26.0)), hud, size, bounds, None, None);
         assert_eq!(tail, BubbleTail::Top);
         assert!(pos.y > orb.y, "below the orb: {pos:?}");
         assert!((pos.x + size.x * 0.5 - orb.x).abs() < 1.0, "centred: {pos:?}");
 
         // An orb near the bottom: it flips above, tail underneath.
         let low = egui::pos2(500.0, 760.0);
-        let (pos, tail) = tutorial_bubble_layout(Some((low, 26.0)), hud, size, bounds, None);
+        let (pos, tail) = tutorial_bubble_layout(Some((low, 26.0)), hud, size, bounds, None, None);
         assert_eq!(tail, BubbleTail::Bottom);
         assert!(pos.y + size.y < low.y, "above the orb: {pos:?}");
 
@@ -32394,7 +32448,7 @@ mod tests {
         let phone = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(390.0, 844.0));
         let phone_hud = view_cube::cube_rect_in_viewport(phone).expand(view_cube::HUD_PANEL_PAD);
         let small = egui::vec2(330.0, 150.0);
-        let (pos, tail) = tutorial_bubble_layout(None, phone_hud, small, phone, Some(800.0));
+        let (pos, tail) = tutorial_bubble_layout(None, phone_hud, small, phone, Some(800.0), None);
         assert_eq!(tail, BubbleTail::None, "no tail to point with");
         assert!(pos.y + small.y <= 800.0, "sits above the status bar: {pos:?}");
         assert!(pos.y + small.y > 700.0, "and near the bottom, not floating mid-screen");
@@ -32402,10 +32456,58 @@ mod tests {
 
         // Whatever happens, it stays on screen.
         for orb in [egui::pos2(4.0, 4.0), egui::pos2(1196.0, 796.0)] {
-            let (pos, _) = tutorial_bubble_layout(Some((orb, 26.0)), hud, size, bounds, None);
+            let (pos, _) = tutorial_bubble_layout(Some((orb, 26.0)), hud, size, bounds, None, None);
             assert!(pos.x >= bounds.left() && pos.x + size.x <= bounds.right() + 0.01, "{pos:?}");
             assert!(pos.y >= bounds.top() && pos.y + size.y <= bounds.bottom() + 0.01, "{pos:?}");
         }
+    }
+
+    /// #1308/#1310: a Context ValueInput is wide and short. The orb must hug its
+    /// *height*, and the speech bubble must sit just below that field — not a
+    /// field-width below, parked on Default units / Length.
+    #[test]
+    fn tutorial_bubble_sits_by_the_value_input() {
+        let bounds = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1400.0, 900.0));
+        let hud = view_cube::cube_rect_in_viewport(bounds).expand(view_cube::HUD_PANEL_PAD);
+        let size = egui::vec2(352.0, 120.0);
+        let field = egui::Rect::from_min_size(egui::pos2(1040.0, 200.0), egui::vec2(90.0, 24.0));
+        let (orb, radius) = ui_anchor_orb(field);
+        assert!(
+            radius <= field.height() * 0.5 + 6.0 + 0.1,
+            "wide inputs must not puff the ring to their width: radius={radius}"
+        );
+
+        let (pos, tail) =
+            tutorial_bubble_layout(Some((orb, radius)), hud, size, bounds, None, Some(field));
+        assert_eq!(tail, BubbleTail::Top);
+        assert!(pos.y >= field.bottom(), "bubble should sit below the field: {pos:?}");
+        let max_top = field.bottom() + TUTORIAL_BUBBLE_TAIL + TUTORIAL_BUBBLE_GAP + 1.0;
+        assert!(
+            pos.y <= max_top,
+            "bubble too far below the ValueInput (would point at Default units): {} > {max_top}",
+            pos.y
+        );
+    }
+
+    /// #1308/#1310: typing guide on a right-pane ValueInput sits *beside* it (left),
+    /// not above it covering the previous field (Depth when targeting Height).
+    #[test]
+    fn typing_guide_sits_beside_a_right_pane_field() {
+        let bounds = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1400.0, 900.0));
+        let size = egui::vec2(260.0, 30.0);
+        let height = egui::Rect::from_min_size(egui::pos2(1040.0, 228.0), egui::vec2(90.0, 24.0));
+        let depth = egui::Rect::from_min_size(egui::pos2(1040.0, 200.0), egui::vec2(90.0, 24.0));
+        let guide = typing_guide_rect(Some(height), height.center(), size, bounds);
+        assert!(!guide.intersects(height), "guide covered the Height field: {guide:?}");
+        assert!(
+            !guide.intersects(depth),
+            "guide sat on the Depth field above Height: {guide:?}"
+        );
+        assert!(
+            (guide.center().y - height.center().y).abs() < 1.0,
+            "guide should line up with Height, not the row above: {guide:?}"
+        );
+        assert!(guide.right() <= height.left() + 0.1, "guide should sit left of the field");
     }
 
     /// #763: the placed dimension's offset is the cursor's distance from the measured

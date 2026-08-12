@@ -3031,6 +3031,11 @@ fn cylinder_radius_typed_10(app: &AppState) -> bool {
     ) || shape_base_set(app, crate::model::PrimitiveKind::Cylinder)
 }
 
+/// Height owns the keyboard (phase advanced by Tab / click / Enter) or the solid exists.
+fn cylinder_height_ready(app: &AppState) -> bool {
+    shape_base_set(app, crate::model::PrimitiveKind::Cylinder)
+}
+
 fn sphere_anchored(app: &AppState) -> bool {
     shape_anchored(app, crate::model::PrimitiveKind::Sphere)
 }
@@ -3629,7 +3634,7 @@ static SHAPES_STEPS: &[Step] = &[
         Some(cylinder_anchored),
     ),
     assisted_step(
-        "Type the radius: `10`, then Enter.",
+        "Type the radius: `10`, then Tab.",
         StepAnchor::Ui(UiAnchor::ShapeRadius),
         Some(cylinder_radius_typed_10),
         StepAssist {
@@ -3637,6 +3642,17 @@ static SHAPES_STEPS: &[Step] = &[
             run: assist_place_cylinder,
         },
         Some(TypeHint::Fixed("10")),
+    ),
+    // #1309: don't say what to type until Height has the keyboard.
+    assisted_step(
+        "Press `Tab`, or click the Height field.",
+        StepAnchor::Ui(UiAnchor::ShapeHeight),
+        Some(cylinder_height_ready),
+        StepAssist {
+            label: "Place it for me",
+            run: assist_place_cylinder,
+        },
+        None,
     ),
     assisted_step_enter(
         "Type the height: `20`, then Enter.",
@@ -4631,6 +4647,90 @@ mod tests {
             face.narration
         );
         assert!(rectangle_face_guide(&AppState::default()).is_some());
+    }
+
+    /// #1309: after typing the cylinder radius, teach Tab/click Height *before*
+    /// telling the user to type 20. Type-20 is gated on Height being the focused phase.
+    #[test]
+    fn shapes_cylinder_asks_to_tab_before_typing_height() {
+        let shapes = &TUTORIALS[tutorial_index("shapes").unwrap()];
+        let radius_i = shapes
+            .steps
+            .iter()
+            .position(|s| {
+                let n = s.narration.to_ascii_lowercase();
+                n.contains("type the radius") && n.contains("10")
+            })
+            .expect("cylinder radius typing step");
+        let radius = &shapes.steps[radius_i];
+        assert!(
+            radius.narration.to_ascii_lowercase().contains("tab"),
+            "radius step should send the user to Tab, not Enter: {}",
+            radius.narration
+        );
+
+        let tab = &shapes.steps[radius_i + 1];
+        let tab_n = tab.narration.to_ascii_lowercase();
+        assert!(
+            tab_n.contains("tab") && (tab_n.contains("click") || tab_n.contains("height")),
+            "next step should ask for Tab or a Height click: {}",
+            tab.narration
+        );
+        assert!(tab.type_hint.is_none(), "don't say what to type until Height is focused");
+        assert!(
+            matches!(tab.anchor, StepAnchor::Ui(UiAnchor::ShapeHeight)),
+            "Tab step should point at Height: {}",
+            tab.narration
+        );
+        assert!(tab.done.is_some());
+
+        let height = &shapes.steps[radius_i + 2];
+        assert!(
+            height.narration.to_ascii_lowercase().contains("type the height"),
+            "type-20 comes only after Tab: {}",
+            height.narration
+        );
+        assert!(height.type_hint.is_some());
+
+        // Predicate: still in Base (radius focused) is not done; Height phase is.
+        let mut app = AppState::default();
+        app.apply(Action::SetTool(Tool::Shape));
+        if let Some(c) = app.creating_shape.as_mut() {
+            c.shape.kind = crate::model::PrimitiveKind::Cylinder;
+            c.phase = crate::actions::ShapePhase::Base;
+            c.shape.radius = "10".into();
+            c.typed[3] = true;
+        }
+        let done = tab.done.expect("Tab step auto-advances");
+        assert!(
+            !done(&app),
+            "must not ask to type 20 while Radius still owns the keyboard"
+        );
+        if let Some(c) = app.creating_shape.as_mut() {
+            c.phase = crate::actions::ShapePhase::Height;
+        }
+        assert!(done(&app), "Height phase means they Tabbed or clicked Height");
+        assert!(
+            crate::actions::shape_tab_advances_height(
+                crate::model::PrimitiveKind::Cylinder,
+                crate::actions::ShapePhase::Base
+            ),
+            "Tab from cylinder radius should advance to Height"
+        );
+        assert!(!crate::actions::shape_tab_advances_height(
+            crate::model::PrimitiveKind::Cuboid,
+            crate::actions::ShapePhase::Base
+        ));
+        assert!(crate::actions::shape_field_click_advances_height(
+            crate::model::PrimitiveKind::Cylinder,
+            crate::actions::ShapePhase::Base,
+            crate::actions::ShapeDimension::Height,
+        ));
+        assert!(!crate::actions::shape_field_click_advances_height(
+            crate::model::PrimitiveKind::Cylinder,
+            crate::actions::ShapePhase::Base,
+            crate::actions::ShapeDimension::Radius,
+        ));
     }
 
     /// #1239: shapes tutorial assists place all three primitives.
