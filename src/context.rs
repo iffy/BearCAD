@@ -4625,6 +4625,18 @@ pub(crate) fn shape_dimension_field_id(label: &str) -> egui::Id {
     egui::Id::new(("shape_field", label))
 }
 
+/// Context-pane dimension rows in paint order. Radius precedes Height so a cylinder's
+/// first pick sits above the second (#1331).
+pub(crate) fn shape_dimension_slots() -> &'static [(&'static str, crate::actions::ShapeDimension)] {
+    use crate::actions::ShapeDimension as D;
+    &[
+        ("Width", D::Width),
+        ("Depth", D::Depth),
+        ("Radius", D::Radius),
+        ("Height", D::Height),
+    ]
+}
+
 /// Which dimension rows the given shape kind shows in the Context pane.
 pub(crate) fn shape_field_visible(
     kind: crate::model::PrimitiveKind,
@@ -6097,19 +6109,20 @@ pub fn show_pane(
         };
         // Always visit every slot (hide unused) so switching kinds does not remount
         // a different ValueInput on the same rect — that flashes red (#1320).
-        for (label, field, value) in [
-            ("Width", D::Width, control.width.as_str()),
-            ("Depth", D::Depth, control.depth.as_str()),
-            ("Height", D::Height, control.height.as_str()),
-            ("Radius", D::Radius, control.radius.as_str()),
-        ] {
-            with_shape_dimension_slot(ui, control.kind, label, field, |ui| {
+        for (label, field) in shape_dimension_slots() {
+            let value = match field {
+                D::Width => control.width.as_str(),
+                D::Depth => control.depth.as_str(),
+                D::Height => control.height.as_str(),
+                D::Radius => control.radius.as_str(),
+            };
+            with_shape_dimension_slot(ui, control.kind, *label, *field, |ui| {
                 dimension(
                     ui,
                     label,
-                    field,
+                    *field,
                     value,
-                    shape_field_visible(control.kind, field),
+                    shape_field_visible(control.kind, *field),
                 );
             });
         }
@@ -8512,6 +8525,66 @@ mod tests {
         assert!(!shape_field_visible(K::Cylinder, D::Width));
         assert!(shape_field_visible(K::Sphere, D::Radius));
         assert!(!shape_field_visible(K::Sphere, D::Height));
+    }
+
+    fn visible_shape_field_labels(kind: crate::model::PrimitiveKind) -> Vec<&'static str> {
+        shape_dimension_slots()
+            .iter()
+            .filter(|(_, field)| shape_field_visible(kind, *field))
+            .map(|(label, _)| *label)
+            .collect()
+    }
+
+    /// #1331: cylinder placement picks radius, then height — Height sits below Radius.
+    #[test]
+    fn cylinder_fields_are_radius_then_height() {
+        use crate::model::PrimitiveKind as K;
+        assert_eq!(
+            visible_shape_field_labels(K::Cylinder).as_slice(),
+            ["Radius", "Height"]
+        );
+        assert_eq!(
+            visible_shape_field_labels(K::Cuboid).as_slice(),
+            ["Width", "Depth", "Height"]
+        );
+        assert_eq!(visible_shape_field_labels(K::Sphere).as_slice(), ["Radius"]);
+    }
+
+    /// #1331: painted cylinder Height row is below Radius, not above it.
+    #[test]
+    fn cylinder_height_field_is_below_radius() {
+        use crate::actions::ShapeDimension as D;
+        use crate::model::PrimitiveKind as K;
+        let ctx = egui::Context::default();
+        let doc = Document::default();
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            for (label, field) in shape_dimension_slots() {
+                with_shape_dimension_slot(ui, K::Cylinder, label, *field, |ui| {
+                    labeled_row(ui, *label, |ui| {
+                        let mut text = "10".to_string();
+                        let resp = crate::expression_input::ValueInput::from_id(
+                            shape_dimension_field_id(label),
+                            crate::expression_input::ValueKind::Length,
+                        )
+                        .width(90.0)
+                        .show(ui, &mut text, &doc);
+                        if shape_field_visible(K::Cylinder, *field) {
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(shape_field_rect_id(*field), resp.rect);
+                            });
+                        }
+                    });
+                });
+            }
+        });
+        let radius = shape_field_rect(&ctx, D::Radius).expect("radius field painted");
+        let height = shape_field_rect(&ctx, D::Height).expect("height field painted");
+        assert!(
+            height.min.y > radius.min.y,
+            "Height should sit below Radius (radius.y={}, height.y={})",
+            radius.min.y,
+            height.min.y
+        );
     }
 
     /// #982: with a sketch open, the Select tool's picker view carries the sketch-only rule
