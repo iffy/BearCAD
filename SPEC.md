@@ -5047,10 +5047,10 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   double-click the label, then type. After the edit: Esc finishes the sketch, Z zooms to
   fit. Titles: **Sketch & Extrude**, **3D Bodies**, **Dimensions** (#1317). No parameters
   in that walkthrough (#1316).
-- **Second tutorial (`navigate`)** (#1269): pan / orbit / zoom, the view-bear HUD (snap a
-  view + Home), and the Selection Exploder (Space). Starts with a few cubes already in the
-  document; camera steps auto-advance on motion (with "…for me" assists), the exploder step
-  is Next with a Space key hint. Orbs can point at `UiAnchor::ViewCube` / `ViewHome`.
+- **Second tutorial (`navigate`)** (#1269): pan / orbit / zoom and the view-bear HUD (snap a
+  view + Home). Starts with a few cubes already in the document; camera steps auto-advance
+  on motion (with "…for me" assists). Orbs can point at `UiAnchor::ViewCube` / `ViewHome`.
+  No Selection Exploder step (#1330): its tooltip covered the loupes.
 - Each tutorial is a list of **steps**: Bear's narration in a cartoon **speech
   bubble** tucked under the view cube (with a tail pointing at Bear), a **pulsing
   gold ring** on what to click next (toolbar buttons, the Parameters `+`, or a projected
