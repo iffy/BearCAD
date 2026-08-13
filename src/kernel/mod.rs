@@ -889,6 +889,57 @@ mod tests {
         assert!(common < 1e-6, "disjoint solids share no volume, got {common}");
     }
 
+    /// #1355: cutting a fully-enclosed interior solid out of a larger one must leave a
+    /// cavity, not the unsliced outer body. Outer 20³, inner 4³ floating inside.
+    #[test]
+    fn cutting_a_fully_enclosed_solid_leaves_a_cavity() {
+        let outer = Shape::prism(&square(0.0, 0.0, 20.0, 20.0), Vec3::new(0.0, 0.0, 20.0)).unwrap();
+        // [8,12]×[8,12]×[8,12] — no shared faces with the outer box.
+        let inner_base = [
+            Vec3::new(8.0, 8.0, 8.0),
+            Vec3::new(12.0, 8.0, 8.0),
+            Vec3::new(12.0, 12.0, 8.0),
+            Vec3::new(8.0, 12.0, 8.0),
+        ];
+        let inner = Shape::prism(&inner_base, Vec3::new(0.0, 0.0, 4.0)).unwrap();
+        let cut = outer.boolean(&inner, BoolOp::Cut).expect("enclosed cut must build");
+        let vol = cut.volume().expect("cavity volume");
+        assert!(
+            (vol - 7936.0).abs() < 1.0,
+            "enclosed cut should be 20³−4³ = 7936, got {vol}"
+        );
+        let solids = cut.solids();
+        assert_eq!(solids.len(), 1, "a cavity is one solid with an inner shell");
+    }
+
+    /// #1355: A−B is empty when A sits fully inside B — the kernel must not invent a solid.
+    #[test]
+    fn cutting_a_body_wholly_inside_the_cutter_is_empty() {
+        let inner = Shape::prism(&square(0.0, 0.0, 4.0, 4.0), Vec3::new(0.0, 0.0, 4.0)).unwrap();
+        let outer = Shape::prism(&square(0.0, 0.0, 50.0, 50.0), Vec3::new(0.0, 0.0, 50.0)).unwrap();
+        let cut = inner.boolean(&outer, BoolOp::Cut);
+        let vol = cut.as_ref().and_then(|s| s.volume()).unwrap_or(0.0);
+        let n = cut.as_ref().map(|s| s.solids().len()).unwrap_or(0);
+        assert!(
+            vol < 1e-6 && n == 0,
+            "A wholly inside B must yield no solid, got vol={vol} solids={n}"
+        );
+    }
+
+    /// #1356: intersect of disjoint solids is empty — no solid, not a zero-volume leftover.
+    #[test]
+    fn common_of_disjoint_boxes_is_empty() {
+        let a = Shape::prism(&square(0.0, 0.0, 10.0, 10.0), Vec3::new(0.0, 0.0, 10.0)).unwrap();
+        let b = Shape::prism(&square(50.0, 50.0, 60.0, 60.0), Vec3::new(0.0, 0.0, 10.0)).unwrap();
+        let common = a.boolean(&b, BoolOp::Common);
+        let vol = common.as_ref().and_then(|s| s.volume()).unwrap_or(0.0);
+        let n = common.as_ref().map(|s| s.solids().len()).unwrap_or(0);
+        assert!(
+            vol < 1e-6 && n == 0,
+            "disjoint common must yield no solid, got vol={vol} solids={n}"
+        );
+    }
+
     /// #1248/#1249: multi-turn helical revolve must tessellate leanly enough for
     /// interactive orbit while still being a *smooth* BREP (helix pipe), not a
     /// coarse ruled-strip loft that exports faceted STEP.

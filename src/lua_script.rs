@@ -10641,6 +10641,94 @@ mod tests {
         );
     }
 
+    /// #1355 Case A: cutting a cutter that floats fully inside the target must leave a
+    /// cavity (20³ − 4³ ≈ 7936), not an unsliced copy of the target.
+    #[test]
+    fn lua_cut_of_a_fully_enclosed_solid_leaves_a_cavity() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 20, depth = 20, height = 20 }
+            -- 4³ sitting at z=8: [-2,2]×[-2,2]×[8,12] inside the 20³ on the ground.
+            bearcad.cuboid{ width = 4, depth = 4, height = 4, at = {0, 0, 8} }
+            bearcad.combine{ op = "cut", a = {0}, b = {1} }
+            local s = bearcad.body_stats(2)
+            assert(s ~= nil, "enclosed cut must produce a real body")
+            assert(math.abs(s.volume - 7936) < 5,
+                   "cavity volume should be 20^3-4^3=7936, got " .. tostring(s.volume))
+            assert(s.triangles > 0)
+        "#,
+        );
+    }
+
+    /// #1355 Case B: A−B is empty when the target sits wholly inside the cutter. The op
+    /// must error (no phantom body) and leave the document exportable.
+    #[test]
+    fn lua_cut_of_a_body_wholly_inside_the_cutter_errors() {
+        let path = std::env::temp_dir().join(format!(
+            "bearcad_lua_empty_cut_{}.stl",
+            std::process::id()
+        ));
+        let path_s = path.to_string_lossy().replace('\\', "\\\\");
+        let _ = std::fs::remove_file(&path);
+        run_lua_expect_ok(&format!(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{{ width = 4, depth = 4, height = 4 }}
+            bearcad.cuboid{{ width = 50, depth = 50, height = 50 }}
+            local n = bearcad.count("body")
+            local ok, err = pcall(function()
+                bearcad.combine{{ op = "cut", a = {{0}}, b = {{1}} }}
+            end)
+            assert(not ok, "empty cut must raise, got success")
+            assert(tostring(err):lower():find("empty", 1, true),
+                   "error should say the result is empty, got " .. tostring(err))
+            assert(bearcad.count("body") == n, "must not leave a phantom body")
+            assert(bearcad.body_stats(0) ~= nil)
+            assert(bearcad.body_stats(n) == nil)
+            bearcad.export_stl("{path_s}")
+        "#
+        ));
+        assert!(
+            path.is_file(),
+            "export of the remaining real bodies must still work"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// #1356: intersect of disjoint bodies is empty — error, no phantom, export still works.
+    #[test]
+    fn lua_intersect_of_disjoint_bodies_errors() {
+        let path = std::env::temp_dir().join(format!(
+            "bearcad_lua_empty_intersect_{}.stl",
+            std::process::id()
+        ));
+        let path_s = path.to_string_lossy().replace('\\', "\\\\");
+        let _ = std::fs::remove_file(&path);
+        run_lua_expect_ok(&format!(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{{ width = 10, depth = 10, height = 10, at = {{0, 0, 0}} }}
+            bearcad.cuboid{{ width = 10, depth = 10, height = 10, at = {{50, 50, 50}} }}
+            local n = bearcad.count("body")
+            local ok, err = pcall(function()
+                bearcad.combine{{ op = "intersect", a = {{0}}, b = {{1}} }}
+            end)
+            assert(not ok, "empty intersect must raise, got success")
+            assert(tostring(err):lower():find("empty", 1, true),
+                   "error should say the result is empty, got " .. tostring(err))
+            assert(bearcad.count("body") == n, "must not leave a phantom body")
+            assert(bearcad.body_stats(n) == nil)
+            bearcad.export_stl("{path_s}")
+        "#
+        ));
+        assert!(
+            path.is_file(),
+            "export of the remaining real bodies must still work"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// #926: a new body extruded off another body's face is made of the same material.
     #[test]
     fn lua_extrude_off_a_body_face_inherits_its_material() {

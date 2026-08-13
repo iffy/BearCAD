@@ -86,5 +86,7 @@ bearcad.begin_combine{ op = "cut", a = {0}, b = {1} }
 ## Good to know
 
 - All four operations undo as a single step.
+- An empty result (a cut that leaves nothing, or an intersect with no overlap) is
+  refused — the inputs stay as they were.
 - Shadow bodies can't be picked into another operation — edit or delete the operation
   that owns them instead.
