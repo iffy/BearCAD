@@ -346,7 +346,7 @@ pub fn positional_to_named(name: &str, args: &[Value]) -> Result<Value, String> 
 ///
 /// Coverage is every `bearcad.*` verb whose `Instruction` is a pure function of its
 /// arguments: the document/IO actions, tool actions, 2D primitives, and the declarative
-/// modeling ops (revolve, loft, booleans, move, repeat, slice, and their `edit_*` forms).
+/// modeling ops (revolve, loft, booleans, move, repeat, slice, project, and their `edit_*` forms).
 ///
 /// `extrude`/`extrude_face` are intentionally absent: their closures read the live document
 /// to infer the owning sketch (`extrude_face_sketch`) before building the `Instruction`, so
@@ -639,6 +639,9 @@ pub fn instruction_from_json(
             let (targets, cutters, extend_infinite) = slice_op_args(doc, o)?;
             Ok(Instruction::EditSliceOp { op, targets, cutters, extend_infinite })
         }
+        "project" => Ok(Instruction::Project {
+            elements: parse_project_elements(doc, o)?,
+        }),
 
         // ----- Sketch dimensions & constraints. -----
         "set_dim" => {
@@ -2573,6 +2576,80 @@ fn as_index(v: &Value, key: &str) -> Result<usize, String> {
         .ok_or_else(|| format!("`{key}` must be non-negative integers"))
 }
 
+/// Sources `bearcad.project{ ... }` should project (#1351). Empty means the current
+/// scene selection (including un-project).
+fn parse_project_elements(
+    doc: &Document,
+    o: &Map<String, Value>,
+) -> Result<Vec<SceneElement>, String> {
+    let mut elements = Vec::new();
+    if let Some(ents) = o.get("entities") {
+        match ents {
+            Value::Null => {}
+            Value::Array(arr) => {
+                for v in arr {
+                    elements.push(json_scene_element(doc, v)?);
+                }
+            }
+            other => elements.push(json_scene_element(doc, other)?),
+        }
+    }
+    if let Some(i) = opt_usize(o, "body")? {
+        elements.push(SceneElement::Body(body_key_from_ordinal(doc, i)?));
+    }
+    for i in usize_list(o, "bodies")? {
+        elements.push(SceneElement::Body(body_key_from_ordinal(doc, i)?));
+    }
+    if let Some(i) = opt_usize(o, "plane")? {
+        let plane = doc
+            .construction_planes
+            .keys()
+            .nth(i)
+            .ok_or_else(|| format!("no construction plane {i}"))?;
+        elements.push(SceneElement::ConstructionPlane(plane));
+    }
+    for i in usize_list(o, "planes")? {
+        let plane = doc
+            .construction_planes
+            .keys()
+            .nth(i)
+            .ok_or_else(|| format!("no construction plane {i}"))?;
+        elements.push(SceneElement::ConstructionPlane(plane));
+    }
+    if elements.is_empty()
+        && (o.contains_key("kind") || o.contains_key("type") || o.contains_key("name"))
+    {
+        elements.push(json_scene_element(doc, &Value::Object(o.clone()))?);
+    }
+    Ok(elements)
+}
+
+/// A name string or `{ kind, index }` / `{ name }` table — the same values `select` takes.
+fn json_scene_element(doc: &Document, v: &Value) -> Result<SceneElement, String> {
+    match v {
+        Value::String(name) => crate::names::find_element_by_name(doc, name)
+            .ok_or_else(|| format!("no element named '{name}'")),
+        Value::Object(o) => {
+            if let Some(name) = o.get("name").and_then(Value::as_str) {
+                return crate::names::find_element_by_name(doc, name)
+                    .ok_or_else(|| format!("no element named '{name}'"));
+            }
+            let kind = o
+                .get("kind")
+                .or_else(|| o.get("type"))
+                .and_then(Value::as_str)
+                .ok_or("element requires a `kind` or `name`")?;
+            let index = o
+                .get("index")
+                .and_then(Value::as_u64)
+                .ok_or("element requires an `index`")? as usize;
+            scene_element_from_kind(doc, kind, index)
+                .ok_or_else(|| format!("unknown element kind '{kind}'"))
+        }
+        _ => Err("expected an element (name string or {kind, index})".into()),
+    }
+}
+
 /// A list of non-negative integer indices (`bodies`, `a`, `b`, `circles`). Missing/null →
 /// empty (matching the closures' `unwrap_or_default()` on an optional `Vec<usize>`).
 fn usize_list(o: &Map<String, Value>, key: &str) -> Result<Vec<usize>, String> {
@@ -2764,6 +2841,42 @@ mod tests {
         assert!(instruction_from_json(&Document::default(), "frobnicate", &json!({})).is_err());
         assert!(instruction_from_json(&Document::default(), "rect", &json!("not an object")).is_err());
         assert!(instruction_from_json(&Document::default(), "tool", &json!({})).is_err());
+    }
+
+    /// #1351: `bearcad.project` is a pure instruction of its named sources.
+    #[test]
+    fn project_maps_to_instruction() {
+        let doc = Document::default();
+        assert_eq!(
+            instruction_from_json(&doc, "project", &json!({})),
+            Ok(Instruction::Project { elements: vec![] })
+        );
+        assert_eq!(
+            instruction_from_json(&doc, "project", &json!({ "plane": 2 })),
+            Ok(Instruction::Project {
+                elements: vec![SceneElement::ConstructionPlane(pkey(2))],
+            })
+        );
+        assert_eq!(
+            instruction_from_json(
+                &doc,
+                "project",
+                &json!({ "entities": [{ "kind": "construction_plane", "index": 1 }] })
+            ),
+            Ok(Instruction::Project {
+                elements: vec![SceneElement::ConstructionPlane(pkey(1))],
+            })
+        );
+        assert_eq!(
+            instruction_from_json(
+                &doc,
+                "project",
+                &json!({ "kind": "construction_plane", "index": 2 })
+            ),
+            Ok(Instruction::Project {
+                elements: vec![SceneElement::ConstructionPlane(pkey(2))],
+            })
+        );
     }
 
     #[test]

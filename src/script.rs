@@ -226,6 +226,9 @@ pub enum Instruction {
         rotation_deg: f32,
         wrap: Option<f32>,
     },
+    /// Project outside geometry into the active sketch (`bearcad.project{ ... }`, #1351).
+    /// Empty `elements` means the current scene selection (including un-project).
+    Project { elements: Vec<SceneElement> },
     /// Extrude coplanar sketch faces into a solid.
     Extrude {
         sketch: usize,
@@ -1101,6 +1104,18 @@ impl Instruction {
                     args.push_str(&format!(", wrap = {wrap}"));
                 }
                 format!("bearcad.text{{ {args} }}")
+            }
+            Instruction::Project { elements } => {
+                if elements.is_empty() {
+                    "bearcad.project()".to_string()
+                } else {
+                    let ents = elements
+                        .iter()
+                        .map(|e| element_lua_ref(e, doc))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("bearcad.project{{ entities = {{ {ents} }} }}")
+                }
             }
             Instruction::Extrude {
                 faces,
@@ -3319,6 +3334,28 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 .collect::<Option<Vec<_>>>()?,
             kind: *kind,
             amount: *amount,
+        }),
+        Action::ProjectSelection => Some(Instruction::Project { elements: vec![] }),
+        Action::ProjectElement { element } => Some(Instruction::Project {
+            elements: vec![element.clone()],
+        }),
+        Action::ProjectSources { sources } => Some(Instruction::Project {
+            elements: sources
+                .iter()
+                .filter_map(|source| match source {
+                    crate::model::ProjectionSource::BodyEdge { body, a, b } => {
+                        Some(SceneElement::BodyEdge {
+                            body: *body,
+                            a: *a,
+                            b: *b,
+                        })
+                    }
+                    crate::model::ProjectionSource::Plane { plane } => {
+                        Some(SceneElement::ConstructionPlane(*plane))
+                    }
+                    crate::model::ProjectionSource::UnitEdge { .. } => None,
+                })
+                .collect(),
         }),
         _ => None,
     }
@@ -5926,6 +5963,17 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
+            Instruction::Project { elements } => {
+                if !elements.is_empty() {
+                    state.scene_selection.clear();
+                    for el in elements {
+                        state.scene_selection.insert(el);
+                    }
+                }
+                let result = state.apply(Action::ProjectSelection);
+                self.record_action_error(result);
+                StepResult::Continue
+            }
             Instruction::Extrude {
                 sketch,
                 faces,
@@ -8516,6 +8564,42 @@ mod tests {
         let instruction =
             instruction_from_action(&Action::SetTool(Tool::Rectangle), &state.doc).unwrap();
         assert_eq!(instruction, Instruction::Tool(Tool::Rectangle));
+    }
+
+    /// #1351: Project actions replay as `bearcad.project{ ... }`.
+    #[test]
+    fn project_instruction_renders_as_lua() {
+        assert_eq!(
+            Instruction::Project { elements: vec![] }.as_lua(),
+            "bearcad.project()"
+        );
+        assert_eq!(
+            Instruction::Project {
+                elements: vec![SceneElement::ConstructionPlane(pkey(2))],
+            }
+            .as_lua_in(Some(&crate::model::Document::default())),
+            "bearcad.project{ entities = { { kind = \"construction_plane\", index = 2 } } }"
+        );
+    }
+
+    #[test]
+    fn instruction_from_action_maps_project() {
+        let doc = crate::model::Document::default();
+        assert_eq!(
+            instruction_from_action(&Action::ProjectSelection, &doc),
+            Some(Instruction::Project { elements: vec![] })
+        );
+        assert_eq!(
+            instruction_from_action(
+                &Action::ProjectElement {
+                    element: SceneElement::ConstructionPlane(pkey(2)),
+                },
+                &doc
+            ),
+            Some(Instruction::Project {
+                elements: vec![SceneElement::ConstructionPlane(pkey(2))],
+            })
+        );
     }
 
     #[test]

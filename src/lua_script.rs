@@ -1888,6 +1888,63 @@ fn constraint_kind_name(kind: &ConstraintKind) -> &'static str {
     }
 }
 
+/// Sources `bearcad.project{ ... }` should project into the open sketch (#1351).
+/// Empty means "the current scene selection" (including un-project).
+fn parse_project_elements(lua: &Lua, opts: Option<Table>) -> mlua::Result<Vec<SceneElement>> {
+    let Some(opts) = opts else {
+        return Ok(Vec::new());
+    };
+    check_keys(
+        &opts,
+        "project",
+        &[
+            "entities",
+            "body",
+            "bodies",
+            "plane",
+            "planes",
+            "kind",
+            "index",
+            "name",
+            "type",
+        ],
+    )?;
+    let mut elements = Vec::new();
+    if let Some(ents) = opts.get::<Option<Table>>("entities")? {
+        for i in 1..=ents.raw_len() {
+            elements.push(resolve_element(lua, ents.get(i)?)?);
+        }
+    }
+    if let Some(i) = opts.get::<Option<usize>>("body")? {
+        elements.push(SceneElement::Body(body_key_from_ordinal(lua, i)?));
+    }
+    if let Some(bodies) = opts.get::<Option<Table>>("bodies")? {
+        for i in 1..=bodies.raw_len() {
+            let idx: usize = bodies.get(i)?;
+            elements.push(SceneElement::Body(body_key_from_ordinal(lua, idx)?));
+        }
+    }
+    if let Some(i) = opts.get::<Option<usize>>("plane")? {
+        elements.push(SceneElement::ConstructionPlane(plane_key_from_ordinal(
+            lua, i,
+        )?));
+    }
+    if let Some(planes) = opts.get::<Option<Table>>("planes")? {
+        for i in 1..=planes.raw_len() {
+            let idx: usize = planes.get(i)?;
+            elements.push(SceneElement::ConstructionPlane(plane_key_from_ordinal(
+                lua, idx,
+            )?));
+        }
+    }
+    if elements.is_empty()
+        && (opts.contains_key("kind")? || opts.contains_key("type")? || opts.contains_key("name")?)
+    {
+        elements.push(parse_element_table(lua, opts)?);
+    }
+    Ok(elements)
+}
+
 /// Reject unrecognized keys in an options table (#403): a typo like `gap` for `spacing`
 /// used to be silently ignored and fail confusingly downstream ("Repeat doesn't
 /// evaluate…"). The error names every accepted key.
@@ -3091,6 +3148,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         t.set("bezier", handles)?;
                     }
                     t.set("length", line.length())?;
+                    t.set("projected", line.projection.is_some())?;
                     if let Some(name) = &line.name {
                         t.set("name", name.as_str())?;
                     }
@@ -5979,6 +6037,18 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Project outside 3D geometry into the active sketch (#1351): the declarative
+    // equivalent of the Project tool + Enter. Empty / omitted sources use the current
+    // selection (and un-project when that selection is only already-projected lines).
+    api.set(
+        "project",
+        lua.create_function(|lua, opts: Option<Table>| {
+            let elements = parse_project_elements(lua, opts)?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::Project { elements }) }
+        })?,
+    )?;
+
     api.set(
         "revolve",
         lua.create_function(|lua, opts: Table| {
@@ -7801,7 +7871,7 @@ mod tests {
                                     "add_constraint", "parameter", "export_stl", "export_3mf",
                                     "export_step", "export_preview",
                                     "import_stl", "import_step", "import_lua", "chamfer_vertex",
-                                    "fillet_vertex", "chamfer_edge", "fillet_edge" }) do
+                                    "fillet_vertex", "chamfer_edge", "fillet_edge", "project" }) do
                 assert(type(bearcad[name]) == "function", "bearcad." .. name .. " should stay top-level")
             end
         "#,
@@ -12247,6 +12317,175 @@ mod tests {
         assert_eq!(op.name.as_deref(), Some("Halved"));
         assert_eq!(op.outputs.len(), 2, "a mid-plane cut yields two fragments");
         assert!(state.doc.bodies.values().nth(0).unwrap().shadow, "the sliced input becomes a shadow body");
+    }
+
+    /// #1351: `bearcad.project{ body = 0 }` projects a body's edges into the open sketch.
+    #[test]
+    fn lua_project_body_into_a_new_sketch() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.begin_sketch{ kind = "construction_plane", index = 0 }
+            bearcad.project{ body = 0 }
+            "#,
+        );
+        let projected = state
+            .doc
+            .lines
+            .values()
+            .filter(|l| l.projection.is_some())
+            .count();
+        assert!(
+            projected > 0,
+            "projecting a body should create projected lines, status={}",
+            state.status
+        );
+        assert!(
+            state
+                .doc
+                .lines
+                .values()
+                .filter(|l| l.projection.is_some())
+                .all(|l| l.construction),
+            "projected lines are construction-style"
+        );
+    }
+
+    /// #1351: `bearcad.project{ plane = 2 }` projects a construction plane as one reference line.
+    #[test]
+    fn lua_project_plane_into_sketch() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.begin_sketch{ kind = "construction_plane", index = 0 }
+            bearcad.project{ plane = 2 }
+            "#,
+        );
+        let projected: Vec<_> = state
+            .doc
+            .lines
+            .values()
+            .filter(|l| l.projection.is_some())
+            .collect();
+        assert_eq!(
+            projected.len(),
+            1,
+            "YZ into ground is one line, status={}",
+            state.status
+        );
+        assert!(projected[0].construction);
+        assert!(matches!(
+            projected[0].projection,
+            Some(crate::model::ProjectionSource::Plane { .. })
+        ));
+        // YZ (normal X) meets the ground sketch along world Y: local u stays 0.
+        assert!(
+            projected[0].x0.abs() < 1e-3 && projected[0].x1.abs() < 1e-3,
+            "{:?}",
+            projected[0]
+        );
+    }
+
+    /// #1351: `bearcad.project{ entities = { ... } }` accepts the same tables `select` takes.
+    #[test]
+    fn lua_project_entities_table() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.begin_sketch{ kind = "construction_plane", index = 0 }
+            bearcad.project{ entities = { { kind = "construction_plane", index = 2 } } }
+            "#,
+        );
+        assert_eq!(
+            state.doc.lines.values().filter(|l| l.projection.is_some()).count(),
+            1,
+            "{}",
+            state.status
+        );
+    }
+
+    /// #1351: no-arg `bearcad.project()` projects the current selection.
+    #[test]
+    fn lua_project_uses_current_selection() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.begin_sketch{ kind = "construction_plane", index = 0 }
+            bearcad.select{ kind = "construction_plane", index = 2 }
+            bearcad.project()
+            "#,
+        );
+        assert_eq!(
+            state.doc.lines.values().filter(|l| l.projection.is_some()).count(),
+            1,
+            "{}",
+            state.status
+        );
+    }
+
+    /// #1351: project with only projected lines selected un-projects them.
+    #[test]
+    fn lua_project_unprojects_selected_projected_lines() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.begin_sketch{ kind = "construction_plane", index = 0 }
+            bearcad.project{ plane = 2 }
+            bearcad.select{ kind = "line", index = 0 }
+            bearcad.project()
+            "#,
+        );
+        assert_eq!(
+            state.doc.lines.values().filter(|l| l.projection.is_some()).count(),
+            0,
+            "un-project should remove the reference, status={}",
+            state.status
+        );
+    }
+
+    /// #1351: project without an open sketch fails.
+    #[test]
+    fn lua_project_errors_without_a_sketch() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            local ok, err = pcall(function() bearcad.project{ plane = 2 } end)
+            assert(not ok, "project outside a sketch must fail")
+            assert(tostring(err):lower():find("sketch"), tostring(err))
+            "#,
+        );
+    }
+
+    /// #1351: project with nothing selected / nothing projectable fails.
+    #[test]
+    fn lua_project_errors_on_empty_selection() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.begin_sketch{ kind = "construction_plane", index = 0 }
+            local ok, err = pcall(function() bearcad.project() end)
+            assert(not ok, "project with empty selection must fail")
+            assert(tostring(err):lower():find("select") or tostring(err):lower():find("project"),
+                   tostring(err))
+            "#,
+        );
+    }
+
+    /// #1351: unknown option keys are rejected like sibling tools.
+    #[test]
+    fn lua_project_rejects_unknown_keys() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.begin_sketch{ kind = "construction_plane", index = 0 }
+            local ok, err = pcall(function() bearcad.project{ widget = 1 } end)
+            assert(not ok, "unknown key must fail")
+            assert(tostring(err):find("widget"), tostring(err))
+            assert(tostring(err):find("entities"), tostring(err))
+            "#,
+        );
     }
 
     /// #1126: a sketch line on a body face is a laser-style path cutter.

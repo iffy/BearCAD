@@ -339,9 +339,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   which prunes to what the focused picker takes, can never offer a datum plane, world
   axis, or body that a click would refuse. Outside geometry enters a sketch only through
   the Projection tool (#140/#1193).
-- **Projections (#140/#1193/#1197/#1199):** **`Tool::Project`** (shown as **Projection**
+- **Projections (#140/#1193/#1197/#1199/#1351):** **`Tool::Project`** (shown as **Projection**
   since #753 — the verb read as a noun; Lua `"project"`; shortcut **P** in sketch mode) is
-  a toolbar tool that appears only while a sketch is open. With it active, outside body
+  a toolbar tool that appears only while a sketch is open. The declarative form is
+  `bearcad.project{ body = i }` / `{ plane = i }` / `{ entities = { … } }` (empty call =
+  current selection, including un-project). With it active, outside body
   edges/faces and crossing planes hover-glow and **clicks select** them (Shift multi-
   selects); **Enter** or the Context pane's blue commit button projects the selection onto
   the sketch plane along the plane normal through `Action::ProjectSelection` →

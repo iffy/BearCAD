@@ -123,6 +123,15 @@ bearcad.plane{ offset = 5, from = 1 }                              -- offset fro
 bearcad.plane{ offset = 5, origin = {0, 0, 20}, normal = {0, 0, 1} } -- on a body face
 ```
 
+Project outside 3D geometry into the open sketch as associative reference lines
+(the [Projection](/docs/tools/projection) tool):
+
+```lua
+bearcad.project{ body = 0 }     -- every edge of body 0
+bearcad.project{ plane = 2 }    -- where plane 2 crosses the sketch
+bearcad.project()               -- current selection; un-projects if only projected lines
+```
+
 Re-open or leave a sketch without drawing:
 
 ```lua
