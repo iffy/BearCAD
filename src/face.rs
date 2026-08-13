@@ -242,7 +242,12 @@ pub fn sketch_frame(doc: &Document, face: FaceId) -> Option<SketchFrame> {
             .map(|(_, frame, _)| frame),
         FaceId::PrimitiveFace { primitive, face } => {
             let shape = doc.primitives.get(primitive)?;
-            crate::primitives::face_frame(doc, shape, face)
+            let frame = crate::primitives::face_frame(doc, shape, face)?;
+            Some(with_body_joint_pose(
+                doc,
+                crate::model::body_index_for_primitive(doc, primitive),
+                frame,
+            ))
         }
         // Live mesh face (#1173): frame from the coplanar triangle group, normal matching
         // the quantized key so a sketch on a shell's inner wall sits on that wall.
@@ -307,6 +312,28 @@ fn frame_from_polygon(poly: &[Vec3], reference_normal: Vec3) -> Option<SketchFra
         v_axis,
         normal,
     })
+}
+
+/// Apply a body's joint pose to a modelling-space sketch frame (#1358): features on a
+/// jointed part are picked and drawn where the part sits, then un-posed when fused back
+/// onto the un-jointed host solid.
+fn with_body_joint_pose(
+    doc: &Document,
+    body: Option<crate::model::BodyKey>,
+    frame: SketchFrame,
+) -> SketchFrame {
+    let Some(body) = body else {
+        return frame;
+    };
+    let Some(m) = crate::joints::body_joint_pose(doc, body) else {
+        return frame;
+    };
+    SketchFrame {
+        origin: m.transform_point3(frame.origin),
+        u_axis: m.transform_vector3(frame.u_axis).normalize_or_zero(),
+        v_axis: m.transform_vector3(frame.v_axis).normalize_or_zero(),
+        normal: m.transform_vector3(frame.normal).normalize_or_zero(),
+    }
 }
 
 /// Resolve the world-space frame for geometry in a sketch.

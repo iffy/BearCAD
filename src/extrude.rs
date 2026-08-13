@@ -647,7 +647,7 @@ fn occt_fuse_then_cut_extrusions(
         if extrusion.faces.is_empty() || distance.abs() < 1e-4 {
             continue;
         }
-        let added = occt_extrusion_shape(doc, extrusion, distance)?;
+        let added = occt_extrusion_shape_for_host(doc, extrusion, distance)?;
         solid = solid.boolean(&added, BoolOp::Fuse)?;
     }
     occt_subtract_cut_extrusions(doc, solid, cut_indices)
@@ -700,6 +700,10 @@ fn occt_subtract_cut_extrusions(
             }
         });
         let cut = occt_extrusion_shape_overshoot(doc, &tool, distance, CUT_TOOL_OVERSHOOT)?;
+        let cut = match extrusion_host_unpose(doc, extrusion) {
+            Some(inv) => cut.transformed(&mat4_to_rows_3x4(&inv))?,
+            None => cut,
+        };
         solid = solid.boolean(&cut, BoolOp::Cut)?;
         // Repeat-operation replay (#220): any non-deleted repeat op that targets this cut
         // extrusion subtracts the same tool again at each instance offset along its axis —
@@ -6990,7 +6994,21 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: crate::model::BodyKey) -
             continue;
         };
         if let Some(solid) = extrusion_mesh(doc, extrusion) {
-            mesh.triangles.extend(solid.triangles);
+            let triangles = match extrusion_host_unpose(doc, extrusion) {
+                Some(inv) => solid
+                    .triangles
+                    .iter()
+                    .map(|tri| {
+                        [
+                            inv.transform_point3(tri[0]),
+                            inv.transform_point3(tri[1]),
+                            inv.transform_point3(tri[2]),
+                        ]
+                    })
+                    .collect(),
+                None => solid.triangles,
+            };
+            mesh.triangles.extend(triangles);
         }
     }
     for (ri, is_cut) in revolutions_targeting(doc, body_index) {
@@ -7097,7 +7115,7 @@ pub fn cut_tool_bites(doc: &Document, body_index: crate::model::BodyKey, cut: &E
             }
         }
         let bites = (|| {
-            let tool = occt_extrusion_shape(doc, cut, distance)?;
+            let tool = occt_extrusion_shape_for_host(doc, cut, distance)?;
             let body = occt_body_shape(doc, body_index)?;
             let common = body.boolean(&tool, crate::kernel::BoolOp::Common)?;
             // Volume of the BREP — tessellating a complex Common just to measure
@@ -8596,7 +8614,9 @@ pub fn face_boundary_loop_world(doc: &Document, face: &FaceId) -> Option<Vec<Vec
         | FaceId::ConstructionPlane(_) => None,
         FaceId::PrimitiveFace { primitive, face } => {
             let shape = doc.primitives.get(*primitive)?;
-            crate::primitives::face_polygon(doc, shape, *face)
+            let poly = crate::primitives::face_polygon(doc, shape, *face)?;
+            let body = crate::model::body_index_for_primitive(doc, *primitive)?;
+            Some(pose_loop_if_jointed(doc, body, poly))
         }
         FaceId::BodyMeshFace {
             body,
@@ -8609,6 +8629,38 @@ pub fn face_boundary_loop_world(doc: &Document, face: &FaceId) -> Option<Vec<Vec
             let loop_pts = crate::construction::coplanar_face_boundary_loop(&tris);
             (loop_pts.len() >= 3).then_some(loop_pts)
         }
+    }
+}
+
+fn pose_loop_if_jointed(
+    doc: &Document,
+    body: crate::model::BodyKey,
+    pts: Vec<Vec3>,
+) -> Vec<Vec3> {
+    match crate::joints::body_joint_pose(doc, body) {
+        Some(m) => pts.into_iter().map(|p| m.transform_point3(p)).collect(),
+        None => pts,
+    }
+}
+
+/// Inverse of the joint pose the extrusion's sketch host carries, if any (#1358).
+/// Features on a jointed body are built where the part is drawn; fuse/cut against the
+/// un-jointed host needs them back in modelling space.
+fn extrusion_host_unpose(doc: &Document, extrusion: &Extrusion) -> Option<glam::Mat4> {
+    let face = doc.sketch_face(extrusion.sketch)?;
+    let body = crate::model::body_index_for_face(doc, &face)?;
+    crate::joints::body_joint_pose(doc, body).map(|m| m.inverse())
+}
+
+fn occt_extrusion_shape_for_host(
+    doc: &Document,
+    extrusion: &Extrusion,
+    distance: f32,
+) -> Option<crate::kernel::Shape> {
+    let shape = occt_extrusion_shape(doc, extrusion, distance)?;
+    match extrusion_host_unpose(doc, extrusion) {
+        Some(inv) => shape.transformed(&mat4_to_rows_3x4(&inv)),
+        None => Some(shape),
     }
 }
 
