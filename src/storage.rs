@@ -2398,6 +2398,7 @@ mod tests {
         );
         assert_eq!(nested, doc.units.values().next().unwrap().document);
 
+        drop(conn);
         let _ = std::fs::remove_file(&nested_path);
         std::fs::remove_file(&path).unwrap();
     }
@@ -2465,6 +2466,8 @@ mod tests {
         let inner = open(&inner_path.to_string_lossy()).unwrap();
         assert!(inner.parameters.values().any(|p| p.name == "inner_w"));
 
+        drop(mid_conn);
+        drop(conn);
         let _ = std::fs::remove_file(&inner_path);
         let _ = std::fs::remove_file(&mid_path);
         std::fs::remove_file(&path).unwrap();
@@ -2624,6 +2627,7 @@ mod tests {
             }
         }
 
+        drop(conn);
         std::fs::remove_file(&path).unwrap();
     }
 
@@ -2685,6 +2689,7 @@ mod tests {
             .unwrap();
         assert_eq!(meta_png, 0, "preview must not live in meta as base64");
 
+        drop(conn);
         std::fs::remove_file(&path).unwrap();
     }
 
@@ -2836,6 +2841,7 @@ mod tests {
             "unrelated line rows survive commit"
         );
 
+        drop(session);
         std::fs::remove_file(&path).unwrap();
     }
 
@@ -2865,6 +2871,7 @@ mod tests {
             bodies_at_save
         );
 
+        drop(session);
         std::fs::remove_file(&path).unwrap();
     }
 
@@ -2883,6 +2890,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
+        drop(conn);
         let _ = std::fs::remove_file(&path);
         expr
     }
@@ -2961,6 +2969,9 @@ mod tests {
             .unwrap();
         assert_eq!(unit_param_expr_from_blob(&after_blob, "width"), "99");
 
+        drop(committed);
+        drop(after);
+        drop(session);
         std::fs::remove_file(&path).unwrap();
     }
 
@@ -3019,6 +3030,8 @@ mod tests {
             "first mesh after open must come from cache, not a rebuild: {after:?}"
         );
 
+        drop(conn);
+        drop(state);
         std::fs::remove_file(&path).unwrap();
     }
 
@@ -3081,6 +3094,7 @@ mod tests {
             3
         );
 
+        drop(session);
         std::fs::remove_file(&path).unwrap();
     }
 
@@ -3124,7 +3138,37 @@ mod tests {
             0
         );
 
+        drop(session);
         std::fs::remove_file(&path).unwrap();
+    }
+
+    /// Windows refuses `remove_file` while any rusqlite `Connection` still holds
+    /// the path (ERROR_SHARING_VIOLATION). Tests must drop sessions first.
+    #[test]
+    fn temp_bearcad_is_deletable_after_sqlite_handles_close() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "bearcad_win_close_{}.bearcad",
+            std::process::id()
+        ));
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        add_cuboid(&mut doc);
+        save(&path, &doc).unwrap();
+
+        let conn = Connection::open(&path).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM bodies", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+        let session = DocumentSession::attach(&path, &doc).unwrap();
+
+        drop(conn);
+        drop(session);
+        std::fs::remove_file(&path).unwrap();
+        assert!(!std::path::Path::new(&path).exists());
     }
 }
 

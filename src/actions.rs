@@ -19256,6 +19256,7 @@ mod tests {
         };
         assert_eq!(lines_after, lines_at_save);
 
+        drop(state);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -31269,6 +31270,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             crate::document_health::HealthStatus::Unstable
         );
 
+        drop(state);
         std::fs::remove_file(&path).unwrap();
     }
 
