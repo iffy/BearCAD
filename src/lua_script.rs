@@ -1755,13 +1755,31 @@ fn parse_sketch_mirror_op_args(
     Ok((sketch, line, lines, circles))
 }
 
+/// A construction-plane ordinal (`plane = 0`) or a face-spec table (#1354).
+fn parse_mirror_plane(lua: &Lua, opts: &Table) -> mlua::Result<FaceId> {
+    match opts.get::<Value>("plane")? {
+        Value::Integer(i) if i >= 0 => Ok(FaceId::ConstructionPlane(plane_key_from_ordinal(
+            lua,
+            i as usize,
+        )?)),
+        Value::Number(n) if n >= 0.0 => Ok(FaceId::ConstructionPlane(plane_key_from_ordinal(
+            lua,
+            n.round() as usize,
+        )?)),
+        Value::Table(t) => parse_face_id_table(lua, t),
+        _ => Err(mlua::Error::external(
+            "`plane` must be a construction-plane ordinal or a face spec table, \
+             e.g. {kind=\"construction_plane\", index=0}",
+        )),
+    }
+}
+
 /// Parse a `bearcad.mirror_bodies`/`edit_mirror` table into `(plane_face, bodies)` (#523).
 fn parse_mirror_op_args(
     lua: &Lua,
     opts: &Table,
 ) -> mlua::Result<(FaceId, Vec<usize>, crate::model::MirrorMode)> {
-    let plane_table: Table = opts.get("plane")?;
-    let plane = parse_face_id_table(lua, plane_table)?;
+    let plane = parse_mirror_plane(lua, opts)?;
     let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
     // `output` mirrors the pane's Output row (#639); omitted means a new body each.
     let mode = match opts.get::<Option<String>>("output")?.as_deref() {
@@ -11201,6 +11219,37 @@ mod tests {
             end)
             assert(not ok, "unknown output should error")
             assert(tostring(err):find("sideways"), tostring(err))
+            "#,
+        );
+    }
+
+    /// #1354: `plane = 0` is a construction-plane ordinal, same as
+    /// `{ kind = "construction_plane", index = 0 }`. A non-spec value is a clear error,
+    /// not "error converting Lua integer to table".
+    #[test]
+    fn lua_mirror_bodies_accepts_a_bare_plane_ordinal() {
+        let state = run_lua(
+            r#"
+            bearcad.cuboid{ width = 20, depth = 20, height = 10 }
+            bearcad.mirror_bodies{ plane = 0, bodies = {0} }
+            bearcad.edit_mirror{ index = 0, plane = 1, bodies = {0} }
+            "#,
+        );
+        let op = state.doc.mirror_ops.values().next().expect("mirror op");
+        assert_eq!(op.plane, FaceId::ConstructionPlane(pkey(1)));
+        assert_eq!(op.targets.len(), 1);
+        // A string is a clear error listing accepted forms — not a type-conversion dump.
+        run_lua(
+            r#"
+            bearcad.cuboid{ width = 20, depth = 20, height = 10 }
+            local ok, err = pcall(function()
+                bearcad.mirror_bodies{ plane = "xy", bodies = {0} }
+            end)
+            assert(not ok, "a string plane should error")
+            err = tostring(err)
+            assert(not err:find("converting Lua integer to table", 1, true), err)
+            assert(not err:find("converting Lua string to table", 1, true), err)
+            assert(err:find("plane", 1, true) and err:find("construction_plane", 1, true), err)
             "#,
         );
     }

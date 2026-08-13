@@ -1274,9 +1274,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   real BREP, and the mesh path reflects each triangle with **reversed winding** so normals stay
   outward. "Edit mirror" (double-click / the pane button, or a lone selected mirror op) re-opens
   the tool with its plane + bodies loaded; outputs grow/shrink with the target list (removed
-  ones go away). Scripting: `bearcad.mirror_bodies{ plane = <face>, bodies = {…},
+  ones go away). Scripting: `bearcad.mirror_bodies{ plane = <face|plane-ordinal>, bodies = {…},
   output? = "new"|"join"|"cut", name? }` and `bearcad.edit_mirror{ index, plane, bodies,
-  output? }`; the default output stays implicit so existing scripts round-trip unchanged. In the elements graph the plane's body and
+  output? }`; `plane = 0` is construction-plane ordinal 0. The default output stays implicit so existing scripts round-trip unchanged. In the elements graph the plane's body and
   every input body feed the Mirror node, and each reflected body nests beneath it.
   - **In a sketch (#528):** the Mirror tool reflects **sketch geometry** instead. The first
     click picks a **straight sketch line** as the mirror axis; further clicks toggle lines and

@@ -77,6 +77,17 @@ fn unit_instance_key_from_ordinal(
         .ok_or_else(|| format!("no unit instance {ordinal}"))
 }
 
+/// The construction plane a script ordinal names (#1055).
+fn plane_key_from_ordinal(
+    doc: &crate::model::Document,
+    ordinal: usize,
+) -> Result<crate::model::ConstructionPlaneKey, String> {
+    doc.construction_planes
+        .keys()
+        .nth(ordinal)
+        .ok_or_else(|| format!("no construction plane {ordinal}"))
+}
+
 /// A whole scene element from a `(kind, index)` pair (mirrors `lua_script::
 /// scene_element_from_kind`). Used to resolve `select`/`set_name`/`set_visible`/
 /// `set_construction`/`find` element arguments in the stateful dispatch path.
@@ -1967,9 +1978,31 @@ fn mirror_op_args(
     o: &Map<String, Value>,
 ) -> Result<(FaceId, Vec<usize>, crate::model::MirrorMode), String> {
     use crate::model::MirrorMode;
+    // A bare number is a construction-plane ordinal (`plane = 0`); a table is a face spec (#1354).
     let plane = match o.get("plane") {
-        Some(v) if !v.is_null() => face_id_from_json(doc, v)?,
-        _ => return Err("mirror `plane` (a face spec) is required".into()),
+        Some(Value::Number(n)) => {
+            let ordinal = n
+                .as_f64()
+                .filter(|n| *n >= 0.0)
+                .map(|n| n.round() as usize)
+                .ok_or("`plane` must be a non-negative integer")?;
+            FaceId::ConstructionPlane(plane_key_from_ordinal(doc, ordinal)?)
+        }
+        Some(v) if v.is_object() => face_id_from_json(doc, v)?,
+        Some(v) if !v.is_null() => {
+            return Err(
+                "`plane` must be a construction-plane ordinal or a face spec table, \
+                 e.g. {kind=\"construction_plane\", index=0}"
+                    .into(),
+            )
+        }
+        _ => {
+            return Err(
+                "mirror `plane` is required (a construction-plane ordinal or a face spec table, \
+                 e.g. {kind=\"construction_plane\", index=0})"
+                    .into(),
+            )
+        }
     };
     // `output` mirrors the pane's Output row (#639); omitted means a new body each.
     let mode = match o.get("output").and_then(Value::as_str) {
@@ -2906,6 +2939,28 @@ mod tests {
         );
         // A missing plane is an error.
         assert!(instruction_from_json(&Document::default(), "mirror_bodies", &json!({ "bodies": [0] })).is_err());
+        // #1354: a bare construction-plane ordinal, same as the table form above.
+        assert_eq!(
+            instruction_from_json(&Document::default(),
+                "mirror_bodies",
+                &json!({ "plane": 0, "bodies": [0] })
+            ),
+            Ok(Instruction::CreateMirrorOp {
+                plane: FaceId::ConstructionPlane(pkey(0)),
+                targets: vec![0],
+                mode: crate::model::MirrorMode::NewBody,
+            })
+        );
+        let err = instruction_from_json(
+            &Document::default(),
+            "mirror_bodies",
+            &json!({ "plane": "xy", "bodies": [0] }),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("plane") && err.contains("construction_plane"),
+            "{err}"
+        );
     }
 
     /// #894: the web `joint` command builds the same instruction the mlua closure does —
