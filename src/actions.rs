@@ -8101,7 +8101,11 @@ impl AppState {
         let job = self.boolean_job.take().unwrap();
         match result {
             Ok(meshes) => {
-                let solid_count = meshes.len().max(1);
+                if meshes.is_empty() || meshes.iter().all(|m| m.triangles.is_empty()) {
+                    self.status = format!("{} result is empty", job.kind.label());
+                    return true;
+                }
+                let solid_count = meshes.len();
                 let applied = self.apply(Action::CreateBooleanOperation {
                     kind: job.kind,
                     a: job.a,
@@ -14206,14 +14210,28 @@ op,
                     outputs: Vec::new(),
                     name: None,
                 });
-                // Output body count = solids the kernel finds in the result right now
-                // (at least one). A later rebuild that produces more solids folds the
-                // extras into the last output body; fewer leaves trailing outputs empty.
-                // Prefer a precomputed count from the background job (#1031).
-                let solids = solid_count
-                    .or_else(|| crate::extrude::boolean_result_solid_count(&self.doc, op_index))
-                    .unwrap_or(1)
-                    .max(1);
+                // Output body count = solids the kernel finds in the result right now.
+                // A later rebuild that produces more solids folds the extras into the
+                // last output body; fewer leaves trailing outputs empty. Prefer a
+                // precomputed count from the background job (#1031) only when it is a
+                // real non-empty result — never invent a phantom body (#1355/#1356).
+                let kernel_meshes = crate::extrude::boolean_result_meshes(&self.doc, op_index);
+                let solids = match kernel_meshes {
+                    Some(ref m) if m.is_empty() => {
+                        self.doc.boolean_ops.remove(op_index);
+                        let e = format!("{} result is empty", kind.label());
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                    None => {
+                        self.doc.boolean_ops.remove(op_index);
+                        let e = "Boolean failed — one of the bodies may not be kernel-representable"
+                            .to_string();
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                    Some(ref m) => solid_count.filter(|&c| c > 0).unwrap_or(m.len()),
+                };
                 self.doc.shape_order.push(ShapeKind::BooleanOperation);
                 let mut outputs = Vec::with_capacity(solids);
                 for ordinal in 0..solids {
@@ -14259,6 +14277,10 @@ op,
                     return ActionResult::Err(e);
                 }
                 if let Err(e) = validate_boolean_inputs(&self.doc, kind, &a, &b, Some(op)) {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                if let Err(e) = crate::extrude::precompute_boolean(&self.doc, kind, &a, &b, keep_b) {
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
@@ -27813,6 +27835,112 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert_eq!(op.outputs.len(), 1);
         let mesh = crate::extrude::body_solid_mesh(&state.doc, op.outputs[0]);
         assert!(mesh.is_some_and(|m| !m.triangles.is_empty()));
+    }
+
+    /// #1355/#1356: an empty boolean (target wholly inside the cutter, or disjoint
+    /// intersect) must error instead of committing a phantom body.
+    #[test]
+    fn boolean_empty_result_is_rejected() {
+        // Two overlapping boxes: cut the small overlap the wrong way by using a
+        // 10×10×5 as A and a much larger box as B via a third, bigger extrusion.
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        let small = crate::construction::add_line_rectangle(
+            &mut state.doc,
+            sketch,
+            0.0,
+            0.0,
+            4.0,
+            4.0,
+            [false; 4],
+        );
+        let large = crate::construction::add_line_rectangle(
+            &mut state.doc,
+            sketch,
+            -20.0,
+            -20.0,
+            30.0,
+            30.0,
+            [false; 4],
+        );
+        for (rect, h) in [(&small, 4.0), (&large, 50.0)] {
+            state.apply(Action::CreateExtrusion {
+                expression: None,
+                sketch,
+                faces: vec![ExtrudeFace::Polygon(rect.to_vec())],
+                distance: h,
+                body: crate::actions::ExtrudeBodyChoice::New,
+                target: None,
+                symmetric: false,
+                taper: 0.0,
+                taper_mode: crate::model::ExtrudeTaperMode::Distance,
+                taper_expression: None,
+            });
+        }
+        let bodies_before = state.doc.bodies.len();
+        let result = state.apply(Action::CreateBooleanOperation {
+            kind: crate::model::BooleanOpKind::Cut,
+            a: vec![bkey(0)],
+            b: vec![bkey(1)],
+            keep_b: false,
+            solid_count: None,
+        });
+        assert!(
+            matches!(result, ActionResult::Err(ref e) if e.to_ascii_lowercase().contains("empty")),
+            "empty cut must error, got {result:?}"
+        );
+        assert_eq!(state.doc.bodies.len(), bodies_before, "no phantom body");
+        assert!(state.doc.boolean_ops.is_empty());
+
+        let result = state.apply(Action::CreateBooleanOperation {
+            kind: crate::model::BooleanOpKind::Intersect,
+            a: vec![bkey(0)],
+            b: vec![bkey(1)],
+            keep_b: false,
+            solid_count: None,
+        });
+        // These two overlap — intersect is non-empty. Use a far-away third box instead.
+        assert!(
+            matches!(result, ActionResult::Ok),
+            "overlapping intersect should still succeed, got {result:?}"
+        );
+        state.apply(Action::UndoLast);
+
+        let far = crate::construction::add_line_rectangle(
+            &mut state.doc,
+            sketch,
+            80.0,
+            80.0,
+            90.0,
+            90.0,
+            [false; 4],
+        );
+        state.apply(Action::CreateExtrusion {
+            expression: None,
+            sketch,
+            faces: vec![ExtrudeFace::Polygon(far.to_vec())],
+            distance: 10.0,
+            body: crate::actions::ExtrudeBodyChoice::New,
+            target: None,
+            symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+        });
+        let bodies_before = state.doc.bodies.len();
+        let result = state.apply(Action::CreateBooleanOperation {
+            kind: crate::model::BooleanOpKind::Intersect,
+            a: vec![bkey(0)],
+            b: vec![bkey(2)],
+            keep_b: false,
+            solid_count: None,
+        });
+        assert!(
+            matches!(result, ActionResult::Err(ref e) if e.to_ascii_lowercase().contains("empty")),
+            "disjoint intersect must error, got {result:?}"
+        );
+        assert_eq!(state.doc.bodies.len(), bodies_before, "no phantom body");
+        assert!(state.doc.boolean_ops.is_empty());
     }
 
     /// #122: pushing/pulling a bare side wall (no separate sketch) creates an implicit

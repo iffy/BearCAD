@@ -3989,38 +3989,33 @@ fn occt_boolean_output_shape(
     }
 }
 
-/// Number of solids a boolean operation currently produces (commit-time output sizing).
-pub fn boolean_result_solid_count(
-    doc: &Document,
-    op_index: crate::model::BooleanOpKey,
-) -> Option<usize> {
-    Some(occt_boolean_result_shape(doc, op_index)?.solids().len())
-}
-
 /// Kernel solids of a boolean, tessellated — for off-thread precompute so the UI does not
 /// freeze while a heavy cut/fuse runs (#1031). `op` must already be in `doc.boolean_ops`.
-/// Returns one mesh per solid (at least one empty mesh if the kernel produced nothing).
+/// Empty when the boolean built but produced no solid (disjoint intersect, a cut that
+/// consumes the target). `None` when the kernel cannot represent an input.
 pub fn boolean_result_meshes(
     doc: &Document,
     op_index: crate::model::BooleanOpKey,
 ) -> Option<Vec<SolidMesh>> {
     let result = occt_boolean_result_shape(doc, op_index)?;
     let solids = result.solids();
-    if solids.is_empty() {
-        return Some(vec![SolidMesh::default()]);
-    }
-    let meshes = solids
+    let meshes: Vec<SolidMesh> = solids
         .into_iter()
         .map(|s| SolidMesh {
             triangles: s.tessellate(OCCT_DEFLECTION as f64),
         })
+        .filter(|m| !m.triangles.is_empty())
         .collect();
     Some(meshes)
 }
 
+fn boolean_empty_error(kind: crate::model::BooleanOpKind) -> String {
+    format!("{} result is empty", kind.label())
+}
+
 /// Probe a would-be boolean without committing it: clone is the caller's, the op is pushed
 /// temporarily, and the kernel result is tessellated. Used by the background combine job
-/// (#1031).
+/// (#1031). An empty result (no solid) is an error so the caller never inserts a phantom.
 pub fn precompute_boolean(
     doc: &Document,
     kind: crate::model::BooleanOpKind,
@@ -4037,8 +4032,12 @@ pub fn precompute_boolean(
         outputs: Vec::new(),
         name: None,
     });
-    boolean_result_meshes(&probe, op_index)
-        .ok_or_else(|| "Boolean failed — one of the bodies may not be kernel-representable".into())
+    let meshes = boolean_result_meshes(&probe, op_index)
+        .ok_or_else(|| "Boolean failed — one of the bodies may not be kernel-representable".to_string())?;
+    if meshes.is_empty() {
+        return Err(boolean_empty_error(kind));
+    }
+    Ok(meshes)
 }
 
 thread_local! {
