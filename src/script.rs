@@ -8,7 +8,7 @@ use crate::actions::{
     Tool,
 };
 use crate::command_palette::{best_match, commands_for_state, PaletteOutcome};
-use crate::constraints::add_distance_constraint;
+use crate::constraints::apply_dimension_expression;
 use crate::hierarchy::SceneElement;
 use crate::model::{
     ConstraintLine, ConstraintPoint, DistanceTarget, ExtrudeFace, FaceId,
@@ -4275,6 +4275,7 @@ fn dim_label_axis_lua_name(axis: DimLabelAxis) -> &'static str {
         DimLabelAxis::Width => "width",
         DimLabelAxis::Height => "height",
         DimLabelAxis::Length => "length",
+        DimLabelAxis::Diameter => "diameter",
     }
 }
 
@@ -6970,7 +6971,8 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::SetDim { axis, value } => {
-                let _ = state.apply(Action::SetRectDimension { axis, value });
+                let r = state.apply(Action::SetRectDimension { axis, value });
+                self.record_action_error(r);
                 StepResult::Continue
             }
             Instruction::SetDimLabelOffset { axis, offset } => {
@@ -6978,23 +6980,32 @@ impl ScriptRunner {
                     if let Some(target) =
                         dim_label_target_in_sketch(&state.doc, session.sketch, axis)
                     {
-                        let _ = state.apply(Action::SetDimLabelOffset { target, offset });
+                        let r = state.apply(Action::SetDimLabelOffset { target, offset });
+                        self.record_action_error(r);
                     }
                 }
                 StepResult::Continue
             }
             Instruction::BeginEditCommittedDim { axis } => {
-                if let Some(session) = state.sketch_session {
-                    if let Some(target) =
-                        dim_label_target_in_sketch(&state.doc, session.sketch, axis)
-                    {
-                        let _ = state.apply(Action::BeginEditCommittedDim { target });
-                    }
-                }
+                let Some(session) = state.sketch_session else {
+                    self.last_action_error = Some("Not in sketch mode".to_string());
+                    return StepResult::Continue;
+                };
+                let Some(target) = dim_label_target_in_sketch(&state.doc, session.sketch, axis)
+                else {
+                    self.last_action_error = Some(format!(
+                        "No committed {} dimension to edit",
+                        dim_label_axis_lua_name(axis)
+                    ));
+                    return StepResult::Continue;
+                };
+                let r = state.apply(Action::BeginEditCommittedDim { target });
+                self.record_action_error(r);
                 StepResult::Continue
             }
             Instruction::CommitCommittedDim => {
-                let _ = state.apply(Action::CommitCommittedDim);
+                let r = state.apply(Action::CommitCommittedDim);
+                self.record_action_error(r);
                 StepResult::Continue
             }
             Instruction::AddAngleConstraint {
@@ -7051,14 +7062,23 @@ impl ScriptRunner {
                         self.record_action_error(crate::actions::ActionResult::Err(e));
                         return StepResult::Continue;
                     }
-                    match add_distance_constraint(
+                    let existed = crate::constraints::find_distance_constraint(
+                        &state.doc,
+                        target.clone(),
+                    )
+                    .is_some();
+                    match apply_dimension_expression(
                         &mut state.doc,
                         session.sketch,
-                        target,
-                        expression.clone(),
+                        crate::model::DimensionTarget::Distance(target),
+                        &expression,
                     ) {
                         Ok(_) => {
-                            state.status = format!("Added dimension ({expression})");
+                            state.status = if existed {
+                                format!("Updated dimension ({expression})")
+                            } else {
+                                format!("Added dimension ({expression})")
+                            };
                         }
                         Err(e) => {
                             state.status = e.clone();
@@ -7099,11 +7119,13 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::SetLineLength { value } => {
-                let _ = state.apply(Action::SetLineLength { value });
+                let r = state.apply(Action::SetLineLength { value });
+                self.record_action_error(r);
                 StepResult::Continue
             }
             Instruction::SetCircleDiameter { value } => {
-                let _ = state.apply(Action::SetCircleDiameter { value });
+                let r = state.apply(Action::SetCircleDiameter { value });
+                self.record_action_error(r);
                 StepResult::Continue
             }
             Instruction::BeginEditConstructionPlane { index } => {

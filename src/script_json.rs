@@ -3181,6 +3181,10 @@ mod tests {
             Ok(Instruction::BeginEditCommittedDim { axis: DimLabelAxis::Length })
         );
         assert_eq!(
+            instruction_from_json(&Document::default(), "edit_dim", &json!({ "axis": "diameter" })),
+            Ok(Instruction::BeginEditCommittedDim { axis: DimLabelAxis::Diameter })
+        );
+        assert_eq!(
             instruction_from_json(&Document::default(), "commit_dim", &json!({})),
             Ok(Instruction::CommitCommittedDim)
         );

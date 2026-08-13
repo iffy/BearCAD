@@ -8007,6 +8007,104 @@ mod tests {
         );
     }
 
+    /// #1353: a declarative circle locks its diameter. `add_constraint` must update
+    /// that existing dimension instead of erroring "Constraint already exists".
+    #[test]
+    fn lua_add_constraint_updates_declarative_circle_diameter() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.circle{ x = 5, y = 5, r = 4 }
+            bearcad.add_constraint({ kind = "circle", index = 0 }, "d = 15mm")
+            local c = bearcad.get{ kind = "circle", index = 0 }
+            assert(math.abs(c.diameter - 15) < 1e-3, "diameter stayed " .. tostring(c.diameter))
+        "#,
+        );
+        assert!((state.doc.circles[rkey(0)].diameter() - 15.0).abs() < 1e-3);
+        let d = state
+            .doc
+            .parameters
+            .values()
+            .find(|p| p.name == "d")
+            .expect("inline `d = 15mm` defines a parameter");
+        assert_eq!(d.expression, "15mm");
+    }
+
+    /// #1353: a declarative rect locks each edge. `add_constraint` on a side
+    /// updates the existing LineLength instead of erroring.
+    #[test]
+    fn lua_add_constraint_updates_declarative_rect_edge() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 40, height = 20 }
+            bearcad.add_constraint({ kind = "line", index = 0 }, "50")
+            local l = bearcad.get{ kind = "line", index = 0 }
+            assert(math.abs(l.length - 50) < 1e-3, "width stayed " .. tostring(l.length))
+        "#,
+        );
+        assert!((state.doc.lines[lkey(0)].length() - 50.0).abs() < 1e-3);
+    }
+
+    /// #1353: `edit_dim` / `set_dim` / `commit_dim` must reopen and change a
+    /// committed circle diameter, matching the documented (and GUI) path.
+    #[test]
+    fn lua_edit_dim_updates_committed_circle_diameter() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.circle{ x = 0, y = 0, r = 4 }
+            bearcad.edit_dim("diameter")
+            bearcad.set_dim("diameter", "20")
+            bearcad.commit_dim()
+            local c = bearcad.get{ kind = "circle", index = 0 }
+            assert(math.abs(c.diameter - 20) < 1e-3, "diameter stayed " .. tostring(c.diameter))
+        "#,
+        );
+        assert!((state.doc.circles[rkey(0)].diameter() - 20.0).abs() < 1e-3);
+    }
+
+    /// #1353: same reopen path for a rect's committed width and height.
+    #[test]
+    fn lua_edit_dim_updates_committed_rect_size() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 40, height = 20 }
+            bearcad.edit_dim("width")
+            bearcad.set_dim("width", "80")
+            bearcad.commit_dim()
+            bearcad.edit_dim("height")
+            bearcad.set_dim("height", "30")
+            bearcad.commit_dim()
+            local w = bearcad.get{ kind = "line", index = 0 }
+            local h = bearcad.get{ kind = "line", index = 1 }
+            assert(math.abs(w.length - 80) < 1e-3, "width stayed " .. tostring(w.length))
+            assert(math.abs(h.length - 30) < 1e-3, "height stayed " .. tostring(h.length))
+        "#,
+        );
+        assert!((state.doc.lines[lkey(0)].length() - 80.0).abs() < 1e-3);
+        assert!((state.doc.lines[lkey(1)].length() - 30.0).abs() < 1e-3);
+    }
+
+    /// #1353: a committed line length (via `dimension=`) is also editable this way;
+    /// the reopen must not silently no-op.
+    #[test]
+    fn lua_edit_dim_updates_committed_line_length() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.line{ x = 0, y = 0, x1 = 40, y1 = 0, dimension = 40 }
+            bearcad.edit_dim("length")
+            bearcad.set_dim("length", "50")
+            bearcad.commit_dim()
+            local l = bearcad.get{ kind = "line", index = 0 }
+            assert(math.abs(l.length - 50) < 1e-3, "length stayed " .. tostring(l.length))
+        "#,
+        );
+        assert!((state.doc.lines[lkey(0)].length() - 50.0).abs() < 1e-3);
+    }
+
     /// #809: positioning dimensions from scripts — a point off an edge, two points apart,
     /// and the spacing between two parallel lines. The side each is measured on is captured
     /// from the geometry, as it is for an interactive pick.
