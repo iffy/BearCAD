@@ -70,7 +70,7 @@
 [ ] Technical drawing zoom-ins
 [ ] Saved views
 [ ] Module params with limits, steps, etc...
-[ ] Shell tool
+[x] Shell tool
 
 # Later versions
 
