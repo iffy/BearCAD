@@ -9664,6 +9664,72 @@ mod tests {
         );
     }
 
+    /// #1358: fuse-merge onto a slider's moving body keeps the combined solid at the
+    /// jointed location and attached to the host, rather than dropping the part back
+    /// to its pre-joint pose as a disconnected lump.
+    #[test]
+    fn lua_extrude_merge_onto_a_slider_moving_body_stays_joined() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 20, depth = 20, height = 20 }
+            bearcad.cuboid{ at = {40, 0, 0}, width = 20, depth = 20, height = 20 }
+            local function face_facing(body, n)
+              for _, f in ipairs(bearcad.body_faces(body)) do
+                if math.abs(f.normal[1] - n[1]) < 0.01
+                   and math.abs(f.normal[2] - n[2]) < 0.01
+                   and math.abs(f.normal[3] - n[3]) < 0.01 then
+                  return f
+                end
+              end
+            end
+            bearcad.joint{
+              a = 0, b = 1, kind = "slider",
+              face = { moving = face_facing(1, {0, 0, -1}), fixed = face_facing(0, {0, 0, 1}) },
+              position = 30,
+            }
+            local before = bearcad.body_stats(1).bbox
+            bearcad.begin_sketch{ kind = "primitive_face", primitive = 1, face = "top" }
+            bearcad.rect{ x = 5, y = 5, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15, body = "merge" }
+            local live = bearcad.count("body") - 1
+            local after = bearcad.body_stats(live).bbox
+            assert(after.min[3] > before.min[3] - 1,
+              "combined body must not drop back to the pre-joint height")
+            assert(after.max[3] > before.max[3] + 10,
+              "boss must stay on the posed moving body")
+            "#,
+        );
+        let live_bi = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| !b.shadow && b.source.producing_extrusion().is_some())
+            .map(|(k, _)| k)
+            .expect("combined live body");
+        let host = crate::model::fuse_host_of(&state.doc, live_bi).expect("fuse host");
+        assert!(
+            crate::joints::body_joint_pose(&state.doc, live_bi).is_some(),
+            "combined body inherits the slider pose"
+        );
+        assert_eq!(
+            crate::joints::body_joint_pose(&state.doc, live_bi),
+            crate::joints::body_joint_pose(&state.doc, host),
+        );
+        let unposed = crate::extrude::body_solid_mesh_unposed(&state.doc, live_bi)
+            .expect("unposed combined mesh");
+        let (umin, umax) = unposed.bounds().expect("unposed bounds");
+        let span = umax - umin;
+        assert!(
+            span.x < 25.0 && span.y < 25.0 && span.z < 40.0,
+            "fuse must attach the boss to the cuboid in modelling space, span={span:?}"
+        );
+        assert!(
+            crate::extrude::mesh_signed_volume(&unposed).abs() > 20.0 * 20.0 * 20.0 + 10.0 * 10.0 * 10.0,
+            "combined volume includes the boss"
+        );
+    }
+
     /// #1104: `body = "cut"` on a Shape-tool cuboid face still mutates that body into a
     /// Solid with the cut (cut does not use the merge shadow/new-body path).
     #[test]

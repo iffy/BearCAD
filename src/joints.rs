@@ -372,8 +372,17 @@ pub fn body_joint_pose(doc: &Document, body_index: crate::model::BodyKey) -> Opt
         return None;
     }
     let res = joint_resolution(doc);
-    if let Some(m) = res.member_pose(JointRef::Body(body_index)) {
-        return Some(m);
+    // Fuse-merge outputs inherit the host's assembly pose (#1358): the combined solid
+    // is the same part, so it stays where the joint put it.
+    let mut bi = body_index;
+    for _ in 0..doc.bodies.len().saturating_add(1) {
+        if let Some(m) = res.member_pose(JointRef::Body(bi)) {
+            return Some(m);
+        }
+        match crate::model::fuse_host_of(doc, bi) {
+            Some(host) if host != bi => bi = host,
+            _ => break,
+        }
     }
     let body = doc.bodies.get(body_index)?;
     match body.source {
@@ -452,6 +461,16 @@ pub enum BodyDragTarget {
 /// no freedom anywhere up its chain is grounded and refuses the drag.
 pub fn body_drag_joint(doc: &Document, body: crate::model::BodyKey) -> BodyDragTarget {
     let mut refs = vec![JointRef::Body(body)];
+    let mut walk = body;
+    for _ in 0..doc.bodies.len().saturating_add(1) {
+        match crate::model::fuse_host_of(doc, walk) {
+            Some(host) if host != walk => {
+                refs.push(JointRef::Body(host));
+                walk = host;
+            }
+            _ => break,
+        }
+    }
     if let Some(b) = doc.bodies.get(body) {
         match b.source {
             crate::model::BodySource::UnitInstance(ui)
