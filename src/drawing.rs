@@ -1280,7 +1280,9 @@ trait Canvas {
     /// Text is always black in a drawing; `size` is the font size in px.
     fn text(&mut self, x: f32, y: f32, size: f32, anchor: Anchor, content: &str);
     /// Text rotated `angle` radians clockwise about `(x, y)` — dimension labels running along
-    /// their dimension line (#314). Backends override; the default draws it unrotated.
+    /// their dimension line (#314). `(x, y)` is the **visual centre** of the glyphs, matching
+    /// the editor's galley-centred `TextShape`, so a label offset off its dimension line
+    /// stays off it in the export too (#1350). Backends override; the default draws it unrotated.
     fn text_rot(&mut self, x: f32, y: f32, size: f32, anchor: Anchor, content: &str, angle: f32) {
         let _ = angle;
         self.text(x, y, size, anchor, content);
@@ -1292,6 +1294,11 @@ trait Canvas {
 pub fn text_device_width(size: f32, content: &str) -> f32 {
     0.55 * size * content.chars().count() as f32
 }
+
+/// Fraction of em from the alphabetic baseline up to the visual centre of capital
+/// letters in Helvetica / typical sans (used so PDF/SVG `text_rot` matches the editor's
+/// galley-centred labels, #1350).
+pub const DIM_LABEL_MID_EM: f32 = 0.35;
 
 /// Where and how to draw a dimension's label (#314): `(pos, angle_radians)`. If the text fits
 /// along the dimension line it runs centred along it (rotated, kept upright); otherwise it's
@@ -1840,9 +1847,13 @@ impl Canvas for SvgCanvas {
             Anchor::End => "end",
         };
         let deg = angle.to_degrees();
+        // `dominant-baseline="central"` makes `(x, y)` the visual centre, matching the
+        // editor and the PDF backend (#1350). Captions still use `text()`, which stays
+        // baseline-aligned.
         self.body.push_str(&format!(
             "<text x=\"{x:.1}\" y=\"{y:.1}\" font-family=\"sans-serif\" font-size=\"{size}\" \
-             fill=\"black\" text-anchor=\"{anchor}\" transform=\"rotate({deg:.2} {x:.1} {y:.1})\">{}</text>\n",
+             fill=\"black\" text-anchor=\"{anchor}\" dominant-baseline=\"central\" \
+             transform=\"rotate({deg:.2} {x:.1} {y:.1})\">{}</text>\n",
             svg_esc(content)
         ));
     }
@@ -1993,8 +2004,10 @@ impl Canvas for PdfCanvas {
     }
 
     fn text_rot(&mut self, x: f32, y: f32, size: f32, anchor: Anchor, content: &str, angle: f32) {
-        // Rotate about (x, y) via the text matrix. Screen angle is clockwise (y-down); PDF is
-        // y-up, so negate. Centre by shifting half the text width along the rotated baseline.
+        // Rotate about the visual centre `(x, y)` via the text matrix. Screen angle is
+        // clockwise (y-down); PDF is y-up, so negate. Shift half the text width along the
+        // rotated baseline and 0.35em down from the cap-centre so the glyphs sit on the
+        // same point the editor centres its galley on (#314/#1350).
         let width = 0.5 * size * content.chars().count() as f32;
         let half = match anchor {
             Anchor::Middle => width * 0.5,
@@ -2004,8 +2017,9 @@ impl Canvas for PdfCanvas {
         let a = -angle;
         let (c, s) = (a.cos(), a.sin());
         let py = self.height - y;
-        let tx = x - half * c;
-        let ty = py - half * s;
+        let v = DIM_LABEL_MID_EM * size;
+        let tx = x - half * c + s * v;
+        let ty = py - half * s - c * v;
         self.set_fill(BLACK);
         self.push(&format!(
             "BT /F1 {size:.2} Tf {c:.4} {s:.4} {:.4} {c:.4} {tx:.2} {ty:.2} Tm (",
@@ -2374,6 +2388,45 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
         );
         assert!(ang_s.abs() < 1e-3, "short line → horizontal label");
         assert!(pos_s.x > 4.0, "label sits past the far end");
+        // The returned point is the visual centre, offset `gap` off the line so a centred
+        // 11 pt box does not sit on the stroke (#1350).
+        assert!(
+            (pos.y + 5.0).abs() < 1e-3,
+            "fitting label's visual centre is `gap` off the line"
+        );
+    }
+
+    /// #1350: SVG `text_rot` treats `(x, y)` as the visual centre (matching the editor's
+    /// galley-centred `TextShape`), not the alphabetic baseline — otherwise horizontal
+    /// labels land on the dimension line in the PDF/SVG while sitting beside it on screen.
+    #[test]
+    fn svg_text_rot_centers_on_the_layout_point() {
+        let mut c = SvgCanvas { body: String::new() };
+        c.text_rot(100.0, 50.0, 11.0, Anchor::Middle, "80.0 mm", 0.0);
+        assert!(
+            c.body.contains("dominant-baseline=\"central\""),
+            "dimension labels must be vertically centred, got {}",
+            c.body
+        );
+        assert!(
+            c.body.contains("x=\"100.0\"") && c.body.contains("y=\"50.0\""),
+            "layout point is the visual centre, got {}",
+            c.body
+        );
+    }
+
+    /// #1350: PDF `text_rot` shifts the baseline so capital glyphs centre on the layout
+    /// point. For horizontal 11 pt Helvetica that's 0.35em below the given y (PDF y-up).
+    #[test]
+    fn pdf_text_rot_shifts_baseline_to_center_glyphs() {
+        let mut c = PdfCanvas::new(200.0);
+        c.text_rot(100.0, 50.0, 11.0, Anchor::Middle, "80.0 mm", 0.0);
+        let s = String::from_utf8_lossy(&c.ops);
+        // page_h - y - 0.35*size = 200 - 50 - 3.85 = 146.15
+        assert!(
+            s.contains("146.15"),
+            "baseline should sit 0.35em below the layout point so glyphs centre on it, got {s}"
+        );
     }
 
     /// #321: two parallel dimensions on the same side whose spans overlap land on different

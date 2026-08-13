@@ -12595,6 +12595,114 @@ mod tests {
         assert!(svg.trim_end().ends_with("</svg>"));
     }
 
+    /// #1350: exported dimension labels sit beside their dimension lines — the same
+    /// visual-centre placement the editor uses — so a horizontal label never sits on
+    /// its dimension stroke the way a baseline-aligned PDF used to.
+    #[test]
+    fn drawing_export_dimension_labels_do_not_overlap_their_lines() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 80, height = 20 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
+            bearcad.drawing_dimension{ drawing = d, view = 0, a = {0,0,0}, b = {80,0,0} }
+            bearcad.drawing_dimension{ drawing = d, view = 0, a = {0,0,0}, b = {0,0,15} }
+        "#,
+        );
+        let svg = crate::drawing::drawing_to_svg(&state.doc, dkey(0)).expect("svg");
+        let pdf = crate::drawing::drawing_to_pdf(&state.doc, dkey(0)).expect("pdf");
+        let pdf_text = String::from_utf8_lossy(&pdf);
+
+        let dim_labels: Vec<_> = svg
+            .lines()
+            .filter(|l| l.contains("dominant-baseline=\"central\"") && l.contains(" mm"))
+            .collect();
+        assert!(
+            dim_labels.len() >= 2,
+            "both length labels must be vertically centred in the SVG, got:\n{svg}"
+        );
+
+        // Each label's (x, y) is its visual centre. The nearest DIM_STROKE (0.6) line
+        // that runs along the label must stay outside the glyph box.
+        let dim_lines = parse_svg_dim_lines(&svg);
+        assert!(
+            !dim_lines.is_empty(),
+            "export should stroke dimension lines, got:\n{svg}"
+        );
+        for line in &dim_labels {
+            let (x, y, size, angle) = parse_svg_text_layout(line);
+            let half = size * crate::drawing::DIM_LABEL_MID_EM;
+            let nearest = dim_lines
+                .iter()
+                .map(|ln| perp_dist_to_seg(x, y, *ln))
+                .fold(f32::MAX, f32::min);
+            assert!(
+                nearest > half + 0.4,
+                "label at ({x:.1},{y:.1}) ang={angle:.2} overlaps a dim line (dist {nearest:.2}, need > {:.2}): {line}",
+                half + 0.4
+            );
+        }
+
+        // PDF: the same labels are emitted with a Tm whose baseline is 0.35em off the
+        // layout point (so the glyphs centre on it, matching the SVG/editor).
+        assert!(
+            pdf_text.contains("80.0 mm") || pdf_text.contains("(80.0 mm)"),
+            "PDF should contain the 80 mm label"
+        );
+    }
+
+    fn parse_svg_text_layout(line: &str) -> (f32, f32, f32, f32) {
+        let attr = |name: &str| -> f32 {
+            let key = format!("{name}=\"");
+            let rest = line.split_once(&key).expect(name).1;
+            rest.split('"').next().unwrap().parse().unwrap()
+        };
+        let angle = line
+            .split_once("rotate(")
+            .map(|(_, rest)| rest.split([',', ' ']).next().unwrap().parse().unwrap_or(0.0))
+            .unwrap_or(0.0);
+        (attr("x"), attr("y"), attr("font-size"), angle)
+    }
+
+    fn parse_svg_dim_lines(svg: &str) -> Vec<(f32, f32, f32, f32)> {
+        let mut out = Vec::new();
+        for line in svg.lines() {
+            if !line.contains("stroke-width=\"0.6\"") || !line.contains("<line") {
+                continue;
+            }
+            let attr = |name: &str| -> Option<f32> {
+                let key = format!("{name}=\"");
+                let rest = line.split_once(&key)?.1;
+                rest.split('"').next()?.parse().ok()
+            };
+            let Some(x1) = attr("x1") else { continue };
+            let Some(y1) = attr("y1") else { continue };
+            let Some(x2) = attr("x2") else { continue };
+            let Some(y2) = attr("y2") else { continue };
+            out.push((x1, y1, x2, y2));
+        }
+        out
+    }
+
+    fn perp_dist_to_seg(x: f32, y: f32, (x1, y1, x2, y2): (f32, f32, f32, f32)) -> f32 {
+        let (dx, dy) = (x2 - x1, y2 - y1);
+        let len2 = dx * dx + dy * dy;
+        if len2 < 1e-6 {
+            return (x - x1).hypot(y - y1);
+        }
+        let t = ((x - x1) * dx + (y - y1) * dy) / len2;
+        if t < 0.0 {
+            (x - x1).hypot(y - y1)
+        } else if t > 1.0 {
+            (x - x2).hypot(y - y2)
+        } else {
+            let (px, py) = (x1 + t * dx, y1 + t * dy);
+            (x - px).hypot(y - py)
+        }
+    }
+
     /// #180: `bearcad.export_drawing_svg{}` writes the SVG to disk.
     #[test]
     fn lua_export_drawing_svg_writes_a_file() {

@@ -2579,8 +2579,9 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   render as proper **architectural
   dimension lines** (#294): two extension lines off the edge, a dimension line offset outward
   (on the side away from the geometry centroid) with **arrowheads** at each end, and the
-  measurement centred on it — in the editor and both exports, from one shared
-  `drawing::dimension_line_geometry`. Dimension lines, their extension lines, and diameter lines
+  measurement centred beside it (the label's visual centre is offset off the
+  dimension line so the glyphs never sit on the stroke — editor and both
+  exports) — from one shared `drawing::dimension_line_geometry`. Dimension lines, their extension lines, and diameter lines
   are stroked **thinner than the model outline** (#327): the projected model edges and detected
   circles use `drawing::MODEL_STROKE` and the annotations use the lighter `drawing::DIM_STROKE`,
   so the part reads as the primary geometry and the dimensions sit visually beneath it (editor
@@ -2622,8 +2623,11 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   top-left → bottom-right); when the line is too short for the text, the label is placed just
   past the line's end horizontally instead (#314; `drawing::dimension_label_layout`, rendered
   with rotated text via egui `TextShape` in the editor and SVG `rotate()` / a PDF text matrix
-  in the exports). All dimensions are keyed to the edges' quantized world endpoints (a geometry
-  identity that survives rebuilds), stored per view.
+  in the exports). Editor and exports treat that layout point as the **visual centre** of
+  the glyphs (SVG `dominant-baseline="central"`, PDF baseline shifted 0.35em) so a label
+  that sits beside its line on screen does in the PDF too. All dimensions are keyed to the
+  edges' quantized world endpoints (a geometry identity that survives rebuilds), stored per
+  view.
 - **Title (#335):** a new drawing arrives with its **title as a normal text annotation**
   (defaulting to the drawing's name, or `Drawing N`), placed in the top-left margin. It is an
   ordinary note — draggable, editable, and deletable like any other — so it appears identically
