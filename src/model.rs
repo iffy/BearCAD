@@ -1293,7 +1293,7 @@ pub enum ExtrudeTaperMode {
     /// End face grows/shrinks by this many millimetres along each dimension (per side).
     #[default]
     Distance,
-    /// Side wall angle from the normal, in degrees; (−90, +90). Positive flares out.
+    /// Side wall angle from the normal, in degrees; [−90°, 89°]. Positive flares out.
     Angle,
 }
 

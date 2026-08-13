@@ -16,6 +16,7 @@ pub const INVALID_BORDER: egui::Color32 = egui::Color32::from_rgb(220, 100, 90);
 pub const INVALID_BG: egui::Color32 = egui::Color32::from_rgb(52, 30, 30);
 pub const INVALID_TEXT: egui::Color32 = egui::Color32::from_rgb(255, 190, 170);
 pub const ERROR_TOOLTIP_TEXT: egui::Color32 = egui::Color32::from_rgb(255, 180, 120);
+pub const WARNING_TOOLTIP_TEXT: egui::Color32 = egui::Color32::from_rgb(255, 210, 120);
 const AUTOCOMPLETE_MAX: usize = 8;
 
 /// Context for validating a parameter definition expression (cycle detection).
@@ -104,25 +105,45 @@ pub fn length_expression_field_errors(
     errors
 }
 
-pub fn show_expression_error_tooltips_above(ui: &egui::Ui, anchor: &Response, errors: &[String]) {
-    if errors.is_empty() {
+pub fn show_expression_warning_tooltips_above(
+    ui: &egui::Ui,
+    anchor: &Response,
+    warnings: &[String],
+) {
+    if warnings.is_empty() {
+        return;
+    }
+    show_expression_message_tooltips_above(ui, anchor, warnings, WARNING_TOOLTIP_TEXT);
+}
+
+fn show_expression_message_tooltips_above(
+    ui: &egui::Ui,
+    anchor: &Response,
+    messages: &[String],
+    color: egui::Color32,
+) {
+    if messages.is_empty() {
         return;
     }
 
     use egui::{Align2, Area, Frame, Order};
 
-    Area::new(anchor.id.with("expression_error_tooltip"))
+    Area::new(anchor.id.with("expression_message_tooltip"))
         .order(Order::Tooltip)
         .pivot(Align2::LEFT_BOTTOM)
         .fixed_pos(anchor.rect.left_top() - egui::vec2(0.0, ERROR_TOOLTIP_GAP))
         .interactable(false)
         .show(ui.ctx(), |ui| {
             Frame::popup(ui.style()).show(ui, |ui| {
-                for error in errors {
-                    ui.label(egui::RichText::new(error).color(ERROR_TOOLTIP_TEXT));
+                for message in messages {
+                    ui.label(egui::RichText::new(message).color(color));
                 }
             });
         });
+}
+
+pub fn show_expression_error_tooltips_above(ui: &egui::Ui, anchor: &Response, errors: &[String]) {
+    show_expression_message_tooltips_above(ui, anchor, errors, ERROR_TOOLTIP_TEXT);
 }
 
 fn is_identifier_part(c: char) -> bool {
@@ -901,6 +922,11 @@ pub struct ValueInput<'a> {
     pub parameter_context: Option<&'a ParameterExpressionContext>,
     /// Parameter names excluded from autocomplete (e.g. the parameter being edited).
     pub exclude_names: &'a [&'a str],
+    /// Optional lower bound on the computed value (#1352). Length: mm; angle: degrees;
+    /// count: the number. Out-of-range values are clamped and shown with a warning.
+    pub min: Option<f32>,
+    /// Optional upper bound on the computed value (#1352). Same units as [`Self::min`].
+    pub max: Option<f32>,
 }
 
 impl<'a> ValueInput<'a> {
@@ -913,7 +939,19 @@ impl<'a> ValueInput<'a> {
             width: None,
             parameter_context: None,
             exclude_names: &[],
+            min: None,
+            max: None,
         }
+    }
+
+    pub fn min(mut self, min: f32) -> Self {
+        self.min = Some(min);
+        self
+    }
+
+    pub fn max(mut self, max: f32) -> Self {
+        self.max = Some(max);
+        self
     }
 
     /// Like [`ValueInput::new`], with an already-built [`Id`].
@@ -977,7 +1015,14 @@ impl<'a> ValueInput<'a> {
         };
         // Reserve the computed line whenever the expression warrants one (#1281), even if
         // errors hide the text — same rule as the floating sketch-dimension fields.
-        let computed_raw = value_input_computed_display(text, self.kind, doc);
+        let computed_raw = value_input_computed_display_limited(
+            text,
+            self.kind,
+            doc,
+            self.min,
+            self.max,
+        );
+        let limit_warning = value_input_limit_warning(text, self.kind, doc, self.min, self.max);
         let reserve_computed = computed_raw.is_some();
         let computed = computed_raw.filter(|_| shown_errors.is_empty());
         // Autocomplete drops below the computed chip when it's showing (#793).
@@ -996,6 +1041,11 @@ impl<'a> ValueInput<'a> {
             reserve_computed,
             self.width,
         );
+        if shown_errors.is_empty() {
+            if let Some(warning) = limit_warning {
+                show_expression_warning_tooltips_above(ui, &out.response, &[warning]);
+            }
+        }
         // Typing again means "I'm still working on it": complaints wait for the next
         // commit attempt (#824).
         if out.response.changed() {
@@ -1065,6 +1115,108 @@ pub fn value_input_computed_display_in(
         return None;
     }
     Some(display)
+}
+
+/// Like [`value_input_computed_display`], but clamps the evaluated number to `min`/`max`
+/// (length: mm; angle: degrees; count: the number) and shows that clamped value (#1352).
+pub fn value_input_computed_display_limited(
+    text: &str,
+    kind: ValueKind,
+    doc: &Document,
+    min: Option<f32>,
+    max: Option<f32>,
+) -> Option<String> {
+    if min.is_none() && max.is_none() {
+        return value_input_computed_display(text, kind, doc);
+    }
+    let t = text.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let raw = value_input_canonical_number(t, kind, doc)?;
+    let clamped = clamp_canonical_number(raw, min, max);
+    let display = format_canonical_number(
+        clamped,
+        kind,
+        doc.default_length_unit,
+        doc.default_angle_unit,
+    )?;
+    let typed = match t.split_once('=') {
+        Some((_, rhs)) => rhs,
+        None => t,
+    };
+    if canonical_value_text(typed) == canonical_value_text(&display) {
+        return None;
+    }
+    Some(display)
+}
+
+/// Warning when `text` evaluates outside `min`/`max`, or `None` when in range / unparsable.
+pub fn value_input_limit_warning(
+    text: &str,
+    kind: ValueKind,
+    doc: &Document,
+    min: Option<f32>,
+    max: Option<f32>,
+) -> Option<String> {
+    if min.is_none() && max.is_none() {
+        return None;
+    }
+    let t = text.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let raw = value_input_canonical_number(t, kind, doc)?;
+    let clamped = clamp_canonical_number(raw, min, max);
+    if (raw - clamped).abs() <= 1e-4 {
+        return None;
+    }
+    let shown = format_canonical_number(
+        clamped,
+        kind,
+        doc.default_length_unit,
+        doc.default_angle_unit,
+    )?;
+    Some(format!("Limited to {shown}"))
+}
+
+/// Evaluated number in the kind's limit units: mm, degrees, or a bare count.
+fn value_input_canonical_number(text: &str, kind: ValueKind, doc: &Document) -> Option<f32> {
+    match kind {
+        ValueKind::Length | ValueKind::Count => crate::value::computed_length_in_doc(text, doc),
+        ValueKind::Angle => crate::value::computed_angle_in_doc(text, doc).map(|r| r.to_degrees()),
+    }
+}
+
+fn clamp_canonical_number(value: f32, min: Option<f32>, max: Option<f32>) -> f32 {
+    let mut v = value;
+    if let Some(lo) = min {
+        v = v.max(lo);
+    }
+    if let Some(hi) = max {
+        v = v.min(hi);
+    }
+    v
+}
+
+fn format_canonical_number(
+    value: f32,
+    kind: ValueKind,
+    length_unit: crate::value::LengthUnit,
+    angle_unit: crate::value::AngleUnit,
+) -> Option<String> {
+    Some(match kind {
+        ValueKind::Length => crate::value::format_length_display_in(value, length_unit),
+        ValueKind::Angle => crate::value::format_angle_display_in(value.to_radians(), angle_unit),
+        ValueKind::Count => {
+            let rounded = value.round();
+            if (value - rounded).abs() > 1e-4 {
+                format!("{value}")
+            } else {
+                format!("{}", rounded as i64)
+            }
+        }
+    })
 }
 
 /// Canonical form for comparing a typed value against its computed display: lowercase,
@@ -1343,6 +1495,79 @@ mod tests {
                 crate::value::AngleUnit::Deg,
             ),
             Some("1.0 in".to_string())
+        );
+    }
+
+    /// #1352: ValueInput min/max clamp the computed line to the limit and warn.
+    #[test]
+    fn value_input_limits_clamp_computed_display_and_warn() {
+        let doc = Document::default();
+        // Angle ≥ 90° shows as 89° (the max) and warns.
+        assert_eq!(
+            value_input_computed_display_limited(
+                "180deg",
+                ValueKind::Angle,
+                &doc,
+                Some(-90.0),
+                Some(89.0),
+            ),
+            Some("89.0 deg".to_string())
+        );
+        let warn = value_input_limit_warning(
+            "180deg",
+            ValueKind::Angle,
+            &doc,
+            Some(-90.0),
+            Some(89.0),
+        )
+        .expect("over-max angle should warn");
+        assert!(
+            warn.contains("89"),
+            "warning should name the clamped value, got {warn:?}"
+        );
+        // Angle ≤ −90° shows as −90° (the min) and warns.
+        assert_eq!(
+            value_input_computed_display_limited(
+                "-180deg",
+                ValueKind::Angle,
+                &doc,
+                Some(-90.0),
+                Some(89.0),
+            ),
+            Some("-90.0 deg".to_string())
+        );
+        assert!(
+            value_input_limit_warning("-180deg", ValueKind::Angle, &doc, Some(-90.0), Some(89.0))
+                .is_some()
+        );
+        // In-range angle: no clamp, no warning. Exact match hides the computed line.
+        assert_eq!(
+            value_input_computed_display_limited(
+                "45deg",
+                ValueKind::Angle,
+                &doc,
+                Some(-90.0),
+                Some(89.0),
+            ),
+            None
+        );
+        assert!(
+            value_input_limit_warning("45deg", ValueKind::Angle, &doc, Some(-90.0), Some(89.0))
+                .is_none()
+        );
+        // Length limits (mm): 1 m with a 10 mm max shows 10 mm and warns.
+        assert_eq!(
+            value_input_computed_display_limited(
+                "1000",
+                ValueKind::Length,
+                &doc,
+                None,
+                Some(10.0),
+            ),
+            Some("10.0 mm".to_string())
+        );
+        assert!(
+            value_input_limit_warning("1000", ValueKind::Length, &doc, None, Some(10.0)).is_some()
         );
     }
 

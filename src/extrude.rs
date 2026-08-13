@@ -7338,15 +7338,93 @@ pub fn extruded_free_end_point(
     }
 }
 
+/// Angle taper is limited to (−90°, 89°]. −90° collapses immediately (no solid).
+pub const TAPER_ANGLE_MIN_DEG: f32 = -90.0;
+/// Hard ceiling: 90° and above are not a draft (tan blows up).
+pub const TAPER_ANGLE_MAX_DEG: f32 = 89.0;
+/// Max per-side end-face offset (mm). 10 m is huge for a part but still tessellates.
+pub const TAPER_MAX_OFFSET_MM: f32 = 10_000.0;
+
+/// Result of [`clamp_extrude_taper`]: the value to store, and an optional warning.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TaperClamp {
+    pub value: f32,
+    pub warning: Option<String>,
+}
+
+/// Tightest angle (degrees) a taper may use at this extrude height without exceeding
+/// [`TAPER_MAX_OFFSET_MM`]. Never above [`TAPER_ANGLE_MAX_DEG`].
+pub fn taper_angle_max_for_height(height_abs: f32) -> f32 {
+    if height_abs <= 1e-6 {
+        return TAPER_ANGLE_MAX_DEG;
+    }
+    let size_max = (TAPER_MAX_OFFSET_MM / height_abs).atan().to_degrees();
+    size_max.min(TAPER_ANGLE_MAX_DEG)
+}
+
+/// Clamp an extrude taper so the angle stays in range and the solid stays a reasonable size.
+///
+/// Angle mode: [−90°, 89°], then further reduced so `height * tan(angle)` ≤ [`TAPER_MAX_OFFSET_MM`].
+/// Distance mode: the per-side offset is capped at [`TAPER_MAX_OFFSET_MM`].
+pub fn clamp_extrude_taper(
+    taper: f32,
+    mode: ExtrudeTaperMode,
+    height_abs: f32,
+) -> TaperClamp {
+    match mode {
+        ExtrudeTaperMode::Distance => {
+            if taper > TAPER_MAX_OFFSET_MM {
+                TaperClamp {
+                    value: TAPER_MAX_OFFSET_MM,
+                    warning: Some(format!(
+                        "Taper would make a huge solid; limited to {} mm",
+                        TAPER_MAX_OFFSET_MM as i32
+                    )),
+                }
+            } else {
+                TaperClamp {
+                    value: taper,
+                    warning: None,
+                }
+            }
+        }
+        ExtrudeTaperMode::Angle => {
+            let mut v = taper;
+            let mut warning = None;
+            if v > TAPER_ANGLE_MAX_DEG {
+                warning = Some("Taper angle is limited to 89°".to_string());
+                v = TAPER_ANGLE_MAX_DEG;
+            } else if v < TAPER_ANGLE_MIN_DEG {
+                warning = Some("Taper angle is limited to -90°".to_string());
+                v = TAPER_ANGLE_MIN_DEG;
+            }
+            if v > 0.0 && height_abs > 1e-6 {
+                let max_angle = taper_angle_max_for_height(height_abs);
+                if v > max_angle + 1e-3 {
+                    warning = Some(format!(
+                        "Taper would make a huge solid; limited to {max_angle:.1}°"
+                    ));
+                    v = max_angle;
+                }
+            }
+            TaperClamp {
+                value: v,
+                warning,
+            }
+        }
+    }
+}
+
 /// In-plane solid-growth offset (mm) for a free end of height `|h|` under this extrusion's
 /// taper (#1243). Positive grows the end face; negative shrinks it.
 pub fn taper_offset_at_height(extrusion: &Extrusion, height_abs: f32) -> f32 {
     match extrusion.taper_mode {
-        ExtrudeTaperMode::Distance => extrusion.taper,
+        ExtrudeTaperMode::Distance => extrusion.taper.min(TAPER_MAX_OFFSET_MM),
         ExtrudeTaperMode::Angle => {
-            // Clamp away from ±90° so tan stays finite.
-            let deg = extrusion.taper.clamp(-89.999, 89.999);
-            height_abs * deg.to_radians().tan()
+            // Keep tan finite. −90° is handled as an immediate collapse in [`taper_end_plan`].
+            let deg = extrusion.taper.clamp(-89.0, TAPER_ANGLE_MAX_DEG);
+            let offset = height_abs * deg.to_radians().tan();
+            offset.clamp(-TAPER_MAX_OFFSET_MM, TAPER_MAX_OFFSET_MM)
         }
     }
 }
@@ -7514,7 +7592,7 @@ fn taper_end_plan(
         let region = sketch.and_then(|s| extrude_face_uv_region(doc, s, face));
         if let Some(region) = region {
             let max_in = max_inward_offset_uv(&region.outer);
-            let tan = (-taper).clamp(0.0, 89.999).to_radians().tan().max(1e-9);
+            let tan = (-taper).clamp(0.0, TAPER_ANGLE_MAX_DEG).to_radians().tan().max(1e-9);
             let max_h = max_in / tan;
             // Shorten each free end that would overshoot.
             if extrusion.symmetric && extrusion.target.is_none() {
@@ -12879,6 +12957,63 @@ mod tests {
             max.x - min.x
         );
         assert!((max.z - min.z - 10.0).abs() < 0.5);
+    }
+
+    /// #1352: angle tapers outside (−90°, 89°] clamp to the bound and warn.
+    #[test]
+    fn clamp_extrude_taper_angle_bounds() {
+        let over = clamp_extrude_taper(180.0, ExtrudeTaperMode::Angle, 20.0);
+        assert!(
+            (over.value - TAPER_ANGLE_MAX_DEG).abs() < 1e-4,
+            "180° should become 89°, got {}",
+            over.value
+        );
+        assert!(over.warning.is_some(), "over-max angle should warn");
+
+        let under = clamp_extrude_taper(-180.0, ExtrudeTaperMode::Angle, 20.0);
+        assert!(
+            (under.value - TAPER_ANGLE_MIN_DEG).abs() < 1e-4,
+            "−180° should become −90°, got {}",
+            under.value
+        );
+        assert!(under.warning.is_some(), "under-min angle should warn");
+
+        let ok = clamp_extrude_taper(45.0, ExtrudeTaperMode::Angle, 20.0);
+        assert!((ok.value - 45.0).abs() < 1e-4);
+        assert!(ok.warning.is_none(), "in-range angle should not warn");
+
+        let at_max = clamp_extrude_taper(89.0, ExtrudeTaperMode::Angle, 20.0);
+        assert!((at_max.value - 89.0).abs() < 1e-4);
+        assert!(
+            at_max.warning.is_none(),
+            "89° on a short extrude is allowed, got {:?}",
+            at_max.warning
+        );
+    }
+
+    /// #1352: a long extrude at 89° still flares too far; clamp the offset and warn.
+    #[test]
+    fn clamp_extrude_taper_caps_huge_offset() {
+        // 1000 mm high at 89° → offset ≈ 57 m. Cap at TAPER_MAX_OFFSET_MM.
+        let r = clamp_extrude_taper(89.0, ExtrudeTaperMode::Angle, 1000.0);
+        let offset = 1000.0 * r.value.to_radians().tan();
+        assert!(
+            offset <= TAPER_MAX_OFFSET_MM + 1.0,
+            "offset should be capped at {} mm, got {offset} (angle {})",
+            TAPER_MAX_OFFSET_MM,
+            r.value
+        );
+        assert!(r.value < 89.0, "angle should drop below 89°, got {}", r.value);
+        assert!(r.warning.is_some(), "huge flare should warn");
+
+        let dist = clamp_extrude_taper(1_000_000.0, ExtrudeTaperMode::Distance, 20.0);
+        assert!(
+            (dist.value - TAPER_MAX_OFFSET_MM).abs() < 1e-3,
+            "distance taper should cap at {} mm, got {}",
+            TAPER_MAX_OFFSET_MM,
+            dist.value
+        );
+        assert!(dist.warning.is_some());
     }
 
     /// #504: a symmetric extrude of total height `d` spans `[-d/2, +d/2]` along the normal.

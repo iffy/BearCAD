@@ -727,7 +727,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   - **Taper (#1243):** an end-face size change vs the start face — `Extrusion::taper` plus
     `taper_mode` (`distance` | `angle`). Distance mode is millimetres **per side** (a 10×10
     square with taper 5 ends 20×20; circles add to the radius). Angle mode is a draft against
-    the extrusion normal (−90°…+90°); a negative draft that collapses the profile **cuts the
+    the extrusion normal (−90°…89°; values outside that, or that would make a huge solid,
+    clamp and warn); a negative draft that collapses the profile **cuts the
     height** (10×10 at −45° over distance 10 ends as a point at height 5). Past collapse the
     end stays a point (never inverted). With **Symmetric** (#1268) the sketch mid-plane keeps
     the profile size and both free ends take the taper (two half-frustums), not a single
@@ -2875,7 +2876,8 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   box**, so the two never overlap (#793). **Tab** belongs to the autocomplete only while
   there is a name to complete (`autocomplete_has_candidates` gates the field's `lock_focus`);
   with nothing to complete it walks to the **next input** in the pane (#937). Kinds: `Length` (document
-  length unit), `Angle` (document angle unit), `Count` (unitless). The Parameters pane's
+  length unit), `Angle` (document angle unit), `Count` (unitless). Optional **min/max** clamp
+  the computed value and show a warning (extrude taper angle: −90°…89°). The Parameters pane's
   value cells use it with **definitions disallowed** (the row is the definition) and
   cycle checking; the repeat panes (3D + in-sketch), the pane's Move X/Y/Z/Angle,
   sketch-text size/rotation/wrap, and calibration length all use it — the chamfer/fillet amount is also

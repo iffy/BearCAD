@@ -7900,10 +7900,23 @@ pub fn show_pane(
                                 } else {
                                     crate::expression_input::ValueKind::Length
                                 };
-                                let resp =
+                                let mut input =
                                     crate::expression_input::ValueInput::new("extrude_taper", kind)
-                                        .width(90.0)
-                                        .show(ui, &mut text, doc);
+                                        .width(90.0);
+                                if is_angle {
+                                    let height = crate::value::eval_length_mm_in_doc(
+                                        &control.distance,
+                                        doc,
+                                    )
+                                    .unwrap_or(0.0)
+                                    .abs();
+                                    input = input
+                                        .min(crate::extrude::TAPER_ANGLE_MIN_DEG)
+                                        .max(crate::extrude::taper_angle_max_for_height(height));
+                                } else {
+                                    input = input.max(crate::extrude::TAPER_MAX_OFFSET_MM);
+                                }
+                                let resp = input.show(ui, &mut text, doc);
                                 if resp.changed() {
                                     on_extrude_edit(ExtrudeEdit::Taper(text));
                                 }

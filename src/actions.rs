@@ -645,8 +645,8 @@ impl CreatingExtrusion {
         }
     }
 
-    /// Evaluated taper amount (#1243): length mm or angle degrees depending on mode.
-    pub fn evaluated_taper(&self, doc: &Document) -> f32 {
+    /// Raw evaluated taper (no clamp): length mm or angle degrees depending on mode.
+    fn raw_evaluated_taper(&self, doc: &Document) -> f32 {
         if !self.taper_user_edited {
             return self.taper;
         }
@@ -665,6 +665,29 @@ impl CreatingExtrusion {
                     .unwrap_or(self.taper)
             }
         }
+    }
+
+    fn taper_height_abs(&self, doc: &Document) -> f32 {
+        let d = self.evaluated_distance(doc).abs();
+        if self.symmetric && self.target.is_none() {
+            d * 0.5
+        } else {
+            d
+        }
+    }
+
+    /// Evaluated taper, clamped to the angle/size limits (#1352).
+    pub fn evaluated_taper(&self, doc: &Document) -> f32 {
+        self.taper_clamp(doc).value
+    }
+
+    /// Clamp result for the live taper (value + optional warning) (#1352).
+    pub fn taper_clamp(&self, doc: &Document) -> crate::extrude::TaperClamp {
+        crate::extrude::clamp_extrude_taper(
+            self.raw_evaluated_taper(doc),
+            self.taper_mode,
+            self.taper_height_abs(doc),
+        )
     }
 
     /// Expression text stored for taper when the user typed it (#1243).
@@ -11501,6 +11524,14 @@ impl AppState {
                 };
                 let expression = expression.unwrap_or_default();
                 let taper_expression = taper_expression.unwrap_or_default();
+                let taper_height = if symmetric && target.is_none() {
+                    distance.abs() * 0.5
+                } else {
+                    distance.abs()
+                };
+                let taper_clamp =
+                    crate::extrude::clamp_extrude_taper(taper, taper_mode, taper_height);
+                let taper = taper_clamp.value;
                 let mut cut_note = None;
                 let mut extrusion_index = None;
                 for group in &groups {
@@ -11543,6 +11574,13 @@ impl AppState {
                     (None, 1) => format!("Added extrusion ({shown})"),
                     (None, n) => format!("Added {n} extrusions ({shown})"),
                 };
+                if let Some(w) = taper_clamp.warning {
+                    if self.status.is_empty() {
+                        self.status = w;
+                    } else {
+                        self.status = format!("{}. {w}", self.status);
+                    }
+                }
                 ActionResult::Ok
             }
             Action::UpdateExtrusion {
@@ -11970,13 +12008,9 @@ impl AppState {
                 } else {
                     String::new()
                 };
-                let taper = ce.evaluated_taper(&self.doc);
-                // Angle taper must stay in (−90, 90).
-                let taper = if ce.taper_mode == crate::model::ExtrudeTaperMode::Angle {
-                    taper.clamp(-89.999, 89.999)
-                } else {
-                    taper
-                };
+                let taper_clamp = ce.taper_clamp(&self.doc);
+                let taper = taper_clamp.value;
+                let taper_warning = taper_clamp.warning.clone();
                 let taper_expr = ce.taper_expr();
                 let taper_mode = ce.taper_mode;
                 if let Some(idx) = ce.edit_index {
@@ -12004,6 +12038,9 @@ impl AppState {
                             crate::model::effective_length_unit(&self.doc, ce.sketch)
                         )
                     );
+                    if let Some(w) = taper_warning.clone() {
+                        self.status = format!("{}. {w}", self.status);
+                    }
                 } else {
                     let unit = crate::model::effective_length_unit(&self.doc, ce.sketch);
                     // Profiles that don't touch each make their own body under **New body**
@@ -12051,6 +12088,9 @@ impl AppState {
                         (None, 1) => format!("Added extrusion ({shown})"),
                         (None, n) => format!("Added {n} extrusions ({shown})"),
                     };
+                    if let Some(w) = taper_warning {
+                        self.status = format!("{}. {w}", self.status);
+                    }
                 }
                 self.refresh_document_health();
                 ActionResult::Ok
