@@ -2244,8 +2244,11 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         // The Joint tool's two parts (#894/#955). It renders in the Joint block (between the
         // Base row and the kind dropdown), but it belongs here so focus, hover, the handoff
         // and `bearcad.pickers()` can see it (#958).
-        // **Rigid** joins any number of parts and none of them moves, so it keeps a plain list.
-        if matches!(j.kind, crate::model::JointKind::Rigid) {
+        // Every slot stays registered (#1357) so J / the type dropdown does not remount a
+        // different picker on the same rect. Unused ones stay unfocused — Rigid shows the
+        // Parts list; every other kind shows the two named sides (#991).
+        let is_rigid = matches!(j.kind, crate::model::JointKind::Rigid);
+        {
             let mut members = ElementPicker::new(
                 ElementFilter::kinds(&[
                     ElementKind::Body,
@@ -2255,7 +2258,7 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
                 .rule(PickRule::LiveBody),
                 PickLimit::Finite(2),
             );
-            members.set_focused(j.members_focused);
+            members.set_focused(is_rigid && j.members_focused);
             members.set_picked(
                 input.doc,
                 j.members.iter().map(|m| SceneElement::from_joint_ref(*m)),
@@ -2268,14 +2271,7 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
                 render: PickerRender::Inline,
             });
         }
-        // Every other kind joins exactly **two** parts, and which one moves is the whole
-        // meaning of the joint — so those are picked as two named single-slot inputs (#991),
-        // the mobile part first and the part it is held against second. They **replace** the
-        // Parts list rather than sitting beside it: two pickers claiming the same picks would
-        // put two focus rings on the pane and send the click to whichever was registered first.
-        // Registered like every other picker so focus, hover, the handoff and
-        // `bearcad.pickers()` see them (#958).
-        else {
+        {
             let side = |focused: bool, part: Option<crate::model::JointRef>| {
                 let mut p = ElementPicker::new(
                     ElementFilter::kinds(&[
@@ -2292,14 +2288,14 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
             };
             tool_pickers.push(ToolPickerView {
                 heading: "Moving part",
-                picker: side(j.mobile_focused, j.mobile),
+                picker: side(!is_rigid && j.mobile_focused, j.mobile),
                 target: PickerTarget::JointMobile,
                 separator_above: false,
                 render: PickerRender::Inline,
             });
             tool_pickers.push(ToolPickerView {
                 heading: "Fixed part",
-                picker: side(j.fixed_focused, j.fixed),
+                picker: side(!is_rigid && j.fixed_focused, j.fixed),
                 target: PickerTarget::JointFixed,
                 separator_above: false,
                 render: PickerRender::Inline,
@@ -4657,23 +4653,23 @@ pub(crate) fn shape_field_visible(
     }
 }
 
-/// Run `add` for a shape dimension slot. Unused slots stay in the widget layer at
-/// zero size so switching kinds does not flash red (#1320). Visible and hidden
-/// paths share the same id salt so labeled_row ids do not remount.
-fn with_shape_dimension_slot<R>(
+/// Run `add` for a slot that may be hidden. Unused slots stay in the widget layer
+/// at zero size so switching kinds does not flash red (#1320/#1357).
+fn with_optional_slot<R>(
     ui: &mut egui::Ui,
-    kind: crate::model::PrimitiveKind,
-    label: &str,
-    field: crate::actions::ShapeDimension,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    visible: bool,
+    surrender: Option<egui::Id>,
     add: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    ui.push_id(("shape_dim", label), |ui| {
-        if shape_field_visible(kind, field) {
+    ui.push_id(salt, |ui| {
+        if visible {
             add(ui)
         } else {
-            let id = shape_dimension_field_id(label);
-            if ui.ctx().memory(|m| m.focused()) == Some(id) {
-                ui.ctx().memory_mut(|m| m.surrender_focus(id));
+            if let Some(id) = surrender {
+                if ui.ctx().memory(|m| m.focused()) == Some(id) {
+                    ui.ctx().memory_mut(|m| m.surrender_focus(id));
+                }
             }
             ui.scope_builder(
                 egui::UiBuilder::new()
@@ -4688,6 +4684,25 @@ fn with_shape_dimension_slot<R>(
         }
     })
     .inner
+}
+
+/// Run `add` for a shape dimension slot. Unused slots stay in the widget layer at
+/// zero size so switching kinds does not flash red (#1320). Visible and hidden
+/// paths share the same id salt so labeled_row ids do not remount.
+fn with_shape_dimension_slot<R>(
+    ui: &mut egui::Ui,
+    kind: crate::model::PrimitiveKind,
+    label: &str,
+    field: crate::actions::ShapeDimension,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    with_optional_slot(
+        ui,
+        ("shape_dim", label),
+        shape_field_visible(kind, field),
+        Some(shape_dimension_field_id(label)),
+        add,
+    )
 }
 
 /// Egui-memory key for a Create Shape dimension field (Height / Radius) drawn this frame.
@@ -6200,93 +6215,128 @@ pub fn show_pane(
         // Which parts, and which of them moves. Every kind but Rigid joins exactly **two**, and
         // which is held is the whole meaning of the joint — so those are two named slots (#991),
         // the mobile part first and the part holding it second. Rigid keeps the plain list: it
-        // joins any number and nothing moves.
+        // joins any number and nothing moves. Every row stays in the layer (#1357).
+        let is_rigid = matches!(control.kind, crate::model::JointKind::Rigid);
         let side_row = |ui: &mut egui::Ui,
                         pending: &mut Option<JointEdit>,
                         target: PickerTarget,
                         label: &'static str,
                         id: &'static str,
                         on_focus: JointEdit,
-                        on_clear: JointEdit| {
+                        on_clear: JointEdit,
+                        visible: bool| {
             let Some(view) = content.tool_pickers.iter().find(|v| v.target == target) else {
                 return;
             };
-            labeled_row_top(ui, label, |ui| {
-                if let Some(event) = crate::element_picker::show(ui, &view.picker, doc, id) {
-                    *pending = Some(match event {
-                        crate::element_picker::PickerEvent::Focus => on_focus.clone(),
-                        _ => on_clear.clone(),
-                    });
-                }
+            with_optional_slot(ui, ("joint_slot", id), visible, None, |ui| {
+                labeled_row_top(ui, label, |ui| {
+                    if let Some(event) = crate::element_picker::show(ui, &view.picker, doc, id) {
+                        if visible {
+                            *pending = Some(match event {
+                                crate::element_picker::PickerEvent::Focus => on_focus.clone(),
+                                _ => on_clear.clone(),
+                            });
+                        }
+                    }
+                });
             });
         };
-        if matches!(control.kind, crate::model::JointKind::Rigid) {
+        {
             let members = content
                 .tool_pickers
                 .iter()
                 .find(|v| v.target == PickerTarget::JointMembers);
             if let Some(members) = members {
-                labeled_row_top(ui, "Parts", |ui| {
-                    if let Some(event) =
-                        crate::element_picker::show(ui, &members.picker, doc, "joint_members")
-                    {
-                        pending = Some(match event {
-                            crate::element_picker::PickerEvent::Focus => JointEdit::MembersFocus,
-                            crate::element_picker::PickerEvent::Remove(i) => {
-                                JointEdit::RemoveMember(i)
+                with_optional_slot(ui, ("joint_slot", "joint_members"), is_rigid, None, |ui| {
+                    labeled_row_top(ui, "Parts", |ui| {
+                        if let Some(event) =
+                            crate::element_picker::show(ui, &members.picker, doc, "joint_members")
+                        {
+                            if is_rigid {
+                                pending = Some(match event {
+                                    crate::element_picker::PickerEvent::Focus => {
+                                        JointEdit::MembersFocus
+                                    }
+                                    crate::element_picker::PickerEvent::Remove(i) => {
+                                        JointEdit::RemoveMember(i)
+                                    }
+                                    crate::element_picker::PickerEvent::Clear => {
+                                        JointEdit::ClearMembers
+                                    }
+                                });
                             }
-                            crate::element_picker::PickerEvent::Clear => JointEdit::ClearMembers,
-                        });
-                    }
+                        }
+                    });
                 });
             }
-        } else {
-            side_row(
-                ui,
-                &mut pending,
-                PickerTarget::JointMobile,
-                "Moving",
-                "joint_mobile",
-                JointEdit::MobileFocus,
-                JointEdit::ClearMobile,
-            );
-            side_row(
-                ui,
-                &mut pending,
-                PickerTarget::JointFixed,
-                "Fixed",
-                "joint_fixed",
-                JointEdit::FixedFocus,
-                JointEdit::ClearFixed,
-            );
         }
+        side_row(
+            ui,
+            &mut pending,
+            PickerTarget::JointMobile,
+            "Moving",
+            "joint_mobile",
+            JointEdit::MobileFocus,
+            JointEdit::ClearMobile,
+            !is_rigid,
+        );
+        side_row(
+            ui,
+            &mut pending,
+            PickerTarget::JointFixed,
+            "Fixed",
+            "joint_fixed",
+            JointEdit::FixedFocus,
+            JointEdit::ClearFixed,
+            !is_rigid,
+        );
         // The screw's lead (#894): mm of travel per full turn.
-        if let crate::model::JointKind::Screw { lead } = &control.kind {
-            labeled_row(ui, "Lead", |ui| {
-                let mut text = lead.clone();
-                let resp = crate::expression_input::ValueInput::new(
-                    ("joint_field", "Lead"),
-                    crate::expression_input::ValueKind::Length,
-                )
-                .width(90.0)
-                .show(ui, &mut text, doc);
-                if resp.changed() {
-                    pending = Some(JointEdit::Lead(text));
-                }
-            });
+        {
+            let lead = match &control.kind {
+                crate::model::JointKind::Screw { lead } => lead.clone(),
+                _ => String::new(),
+            };
+            let id = egui::Id::new(("joint_field", "Lead"));
+            with_optional_slot(
+                ui,
+                ("joint_slot", "Lead"),
+                matches!(control.kind, crate::model::JointKind::Screw { .. }),
+                Some(id),
+                |ui| {
+                    labeled_row(ui, "Lead", |ui| {
+                        let mut text = lead;
+                        let resp = crate::expression_input::ValueInput::from_id(
+                            id,
+                            crate::expression_input::ValueKind::Length,
+                        )
+                        .width(90.0)
+                        .show(ui, &mut text, doc);
+                        if matches!(control.kind, crate::model::JointKind::Screw { .. })
+                            && resp.changed()
+                        {
+                            pending = Some(JointEdit::Lead(text));
+                        }
+                    });
+                },
+            );
         }
         // Which side is held (#894): the base. Clicking swaps it. Only for **Rigid** now — the
         // other kinds name their two sides outright in the Mobile/Fixed slots above (#991), so
         // a swap button would be a second, vaguer way to say the same thing.
-        if control.members.len() >= 2 && matches!(control.kind, crate::model::JointKind::Rigid) {
-            labeled_row(ui, "Base", |ui| {
-                if ui
-                    .button(&control.base_label)
-                    .on_hover_text("Swap which side is held")
-                    .clicked()
-                {
-                    pending = Some(JointEdit::SwapBase);
-                }
+        {
+            let show_base =
+                control.members.len() >= 2 && matches!(control.kind, crate::model::JointKind::Rigid);
+            with_optional_slot(ui, ("joint_slot", "Base"), show_base, None, |ui| {
+                labeled_row(ui, "Base", |ui| {
+                    if ui
+                        .button(&control.base_label)
+                        .on_hover_text("Swap which side is held")
+                        .clicked()
+                        && show_base
+                    {
+                        pending = Some(JointEdit::SwapBase);
+                    }
+                });
             });
         }
         // Built with the other tool pickers (#958), drawn here. Moving picks sit on the
@@ -6336,32 +6386,46 @@ pub fn show_pane(
             JointEdit::ClearFixedFace,
         );
         // How the face pair lands: which way round, and the gap it's held off by (#1014).
-        if control.moving_face.is_some() || control.fixed_face.is_some() {
-            labeled_row(ui, "Flip", |ui| {
-                let mut flip = control.flip;
-                if ui.checkbox(&mut flip, "").changed() {
-                    pending = Some(JointEdit::Flip(flip));
-                }
+        {
+            let show_mate_opts = control.moving_face.is_some() || control.fixed_face.is_some();
+            with_optional_slot(ui, ("joint_slot", "Flip"), show_mate_opts, None, |ui| {
+                labeled_row(ui, "Flip", |ui| {
+                    let mut flip = control.flip;
+                    if ui.checkbox(&mut flip, "").changed() && show_mate_opts {
+                        pending = Some(JointEdit::Flip(flip));
+                    }
+                });
             });
-            labeled_row(ui, "Offset", |ui| {
-                let mut text = control.offset.clone();
-                let resp = crate::expression_input::ValueInput::new(
-                    ("joint_field", "Offset"),
-                    crate::expression_input::ValueKind::Length,
-                )
-                .width(90.0)
-                .show(ui, &mut text, doc);
-                if resp.changed() {
-                    pending = Some(JointEdit::Offset(text));
-                }
-            });
+            let offset_id = egui::Id::new(("joint_field", "Offset"));
+            with_optional_slot(
+                ui,
+                ("joint_slot", "Offset"),
+                show_mate_opts,
+                Some(offset_id),
+                |ui| {
+                    labeled_row(ui, "Offset", |ui| {
+                        let mut text = control.offset.clone();
+                        let resp = crate::expression_input::ValueInput::from_id(
+                            offset_id,
+                            crate::expression_input::ValueKind::Length,
+                        )
+                        .width(90.0)
+                        .show(ui, &mut text, doc);
+                        if show_mate_opts && resp.changed() {
+                            pending = Some(JointEdit::Offset(text));
+                        }
+                    });
+                },
+            );
         }
         // What this kind of joint can do, under its own name (#997): the freedoms it has and
         // the limits on them. Rigid has neither, so it gets no section at all.
-        if !matches!(control.kind, crate::model::JointKind::Rigid) {
+        with_optional_slot(ui, ("joint_slot", "kind_section"), !is_rigid, None, |ui| {
             section_label(ui, crate::names::joint_kind_label(&control.kind));
-        }
+        });
         // Position fields per kind (#894): what each freedom is called and measures.
+        // Every slot stays mounted (#1357) so J does not remount a different ValueInput
+        // on the same rect.
         {
             use crate::expression_input::ValueKind;
             use crate::model::JointKind as K;
@@ -6369,41 +6433,52 @@ pub fn show_pane(
                              label: &str,
                              value: &str,
                              kind: ValueKind,
+                             visible: bool,
                              make: &dyn Fn(String) -> JointEdit| {
-                labeled_row(ui, label, |ui| {
-                    let mut text = value.to_string();
-                    let resp =
-                        crate::expression_input::ValueInput::new(("joint_field", label), kind)
+                let id = egui::Id::new(("joint_field", label));
+                with_optional_slot(ui, ("joint_slot", label), visible, Some(id), |ui| {
+                    labeled_row(ui, label, |ui| {
+                        let mut text = value.to_string();
+                        let resp = crate::expression_input::ValueInput::from_id(id, kind)
                             .width(90.0)
                             .show(ui, &mut text, doc);
-                    if resp.changed() {
-                        pending = Some(make(text));
-                    }
+                        if visible && resp.changed() {
+                            pending = Some(make(text));
+                        }
+                    });
                 });
             };
-            match &control.kind {
-                K::Rigid => {}
-                K::Slider => {
-                    field(ui, "Slide", &control.position, ValueKind::Length, &JointEdit::Position)
-                }
-                K::Revolute | K::Screw { .. } => {
-                    field(ui, "Angle", &control.position, ValueKind::Angle, &JointEdit::Position)
-                }
-                K::Cylindrical | K::PinSlot => {
-                    field(ui, "Slide", &control.position, ValueKind::Length, &JointEdit::Position);
-                    field(ui, "Angle", &control.position2, ValueKind::Angle, &JointEdit::Position2);
-                }
-                K::Planar => {
-                    field(ui, "U", &control.position, ValueKind::Length, &JointEdit::Position);
-                    field(ui, "V", &control.position2, ValueKind::Length, &JointEdit::Position2);
-                    field(ui, "Spin", &control.position3, ValueKind::Angle, &JointEdit::Position3);
-                }
-                K::Ball => {
-                    field(ui, "Yaw", &control.position, ValueKind::Angle, &JointEdit::Position);
-                    field(ui, "Pitch", &control.position2, ValueKind::Angle, &JointEdit::Position2);
-                    field(ui, "Roll", &control.position3, ValueKind::Angle, &JointEdit::Position3);
-                }
-            }
+            let k = &control.kind;
+            field(
+                ui,
+                "Slide",
+                &control.position,
+                ValueKind::Length,
+                matches!(k, K::Slider | K::Cylindrical | K::PinSlot),
+                &JointEdit::Position,
+            );
+            field(
+                ui,
+                "Angle",
+                if matches!(k, K::Cylindrical | K::PinSlot) {
+                    &control.position2
+                } else {
+                    &control.position
+                },
+                ValueKind::Angle,
+                matches!(k, K::Revolute | K::Screw { .. } | K::Cylindrical | K::PinSlot),
+                &if matches!(k, K::Cylindrical | K::PinSlot) {
+                    JointEdit::Position2
+                } else {
+                    JointEdit::Position
+                },
+            );
+            field(ui, "U", &control.position, ValueKind::Length, matches!(k, K::Planar), &JointEdit::Position);
+            field(ui, "V", &control.position2, ValueKind::Length, matches!(k, K::Planar), &JointEdit::Position2);
+            field(ui, "Spin", &control.position3, ValueKind::Angle, matches!(k, K::Planar), &JointEdit::Position3);
+            field(ui, "Yaw", &control.position, ValueKind::Angle, matches!(k, K::Ball), &JointEdit::Position);
+            field(ui, "Pitch", &control.position2, ValueKind::Angle, matches!(k, K::Ball), &JointEdit::Position2);
+            field(ui, "Roll", &control.position3, ValueKind::Angle, matches!(k, K::Ball), &JointEdit::Position3);
             // Travel limits (#896): slide bounds for the sliding kinds — as expressions
             // or a picked stop face/plane — and turn bounds for the turning kinds.
             let slides = matches!(
@@ -6414,56 +6489,52 @@ pub fn show_pane(
                 control.kind,
                 K::Revolute | K::Cylindrical | K::Ball | K::PinSlot | K::Screw { .. }
             );
-            if slides {
-                field(ui, "Slide min", &control.slide_min, ValueKind::Length, &JointEdit::SlideMin);
-                field(ui, "Slide max", &control.slide_max, ValueKind::Length, &JointEdit::SlideMax);
-            }
-            if turns {
-                field(ui, "Turn min", &control.turn_min, ValueKind::Angle, &JointEdit::TurnMin);
-                field(ui, "Turn max", &control.turn_max, ValueKind::Angle, &JointEdit::TurnMax);
-            }
+            field(ui, "Slide min", &control.slide_min, ValueKind::Length, slides, &JointEdit::SlideMin);
+            field(ui, "Slide max", &control.slide_max, ValueKind::Length, slides, &JointEdit::SlideMax);
+            field(ui, "Turn min", &control.turn_min, ValueKind::Angle, turns, &JointEdit::TurnMin);
+            field(ui, "Turn max", &control.turn_max, ValueKind::Angle, turns, &JointEdit::TurnMax);
             drop(field);
-            if slides {
-                // A stop is a plane or a flat face the travel ends at (#896/#955), built with
-                // the other tool pickers (#958) and drawn here.
-                let mut stop_row = |ui: &mut egui::Ui,
-                                    label: &'static str,
-                                    id: &'static str,
-                                    target: PickerTarget,
-                                    on_focus: JointEdit,
-                                    on_clear: JointEdit| {
-                    let Some(view) = tool_pickers.iter().find(|v| v.target == target) else {
-                        return;
-                    };
+            // A stop is a plane or a flat face the travel ends at (#896/#955), built with
+            // the other tool pickers (#958) and drawn here.
+            let mut stop_row = |ui: &mut egui::Ui,
+                                label: &'static str,
+                                id: &'static str,
+                                target: PickerTarget,
+                                on_focus: JointEdit,
+                                on_clear: JointEdit| {
+                let Some(view) = tool_pickers.iter().find(|v| v.target == target) else {
+                    return;
+                };
+                with_optional_slot(ui, ("joint_slot", id), slides, None, |ui| {
                     labeled_row_top(ui, label, |ui| {
-                        if let Some(event) =
-                            crate::element_picker::show(ui, &view.picker, doc, id)
-                        {
-                            pending = Some(match event {
-                                crate::element_picker::PickerEvent::Focus => on_focus,
-                                crate::element_picker::PickerEvent::Remove(_)
-                                | crate::element_picker::PickerEvent::Clear => on_clear,
-                            });
+                        if let Some(event) = crate::element_picker::show(ui, &view.picker, doc, id) {
+                            if slides {
+                                pending = Some(match event {
+                                    crate::element_picker::PickerEvent::Focus => on_focus,
+                                    crate::element_picker::PickerEvent::Remove(_)
+                                    | crate::element_picker::PickerEvent::Clear => on_clear,
+                                });
+                            }
                         }
                     });
-                };
-                stop_row(
-                    ui,
-                    "Min stop",
-                    "joint_slide_min_stop",
-                    PickerTarget::JointMinStop,
-                    JointEdit::SlideMinStopFocus,
-                    JointEdit::ClearSlideMinStop,
-                );
-                stop_row(
-                    ui,
-                    "Max stop",
-                    "joint_slide_max_stop",
-                    PickerTarget::JointMaxStop,
-                    JointEdit::SlideMaxStopFocus,
-                    JointEdit::ClearSlideMaxStop,
-                );
-            }
+                });
+            };
+            stop_row(
+                ui,
+                "Min stop",
+                "joint_slide_min_stop",
+                PickerTarget::JointMinStop,
+                JointEdit::SlideMinStopFocus,
+                JointEdit::ClearSlideMinStop,
+            );
+            stop_row(
+                ui,
+                "Max stop",
+                "joint_slide_max_stop",
+                PickerTarget::JointMaxStop,
+                JointEdit::SlideMaxStopFocus,
+                JointEdit::ClearSlideMaxStop,
+            );
         }
         // How the joint works (#1079): where its freedoms act and which way they run. The
         // mate seeds these when it names a plane; they are editable whether it did or not,
@@ -6525,12 +6596,13 @@ pub fn show_pane(
         }
         // The rest pose (#898): capture the current position, or go back to it — only
         // meaningful once the joint exists.
-        if control.editing {
+        with_optional_slot(ui, ("joint_slot", "Rest"), control.editing, None, |ui| {
             labeled_row(ui, "Rest", |ui| {
                 if ui
                     .button("Set")
                     .on_hover_text("Set the current position as the rest position")
                     .clicked()
+                    && control.editing
                 {
                     pending = Some(JointEdit::SetRest);
                 }
@@ -6538,11 +6610,12 @@ pub fn show_pane(
                     .button("Revert")
                     .on_hover_text("Put the joint back to its rest position")
                     .clicked()
+                    && control.editing
                 {
                     pending = Some(JointEdit::Revert);
                 }
             });
-        }
+        });
         if let Some(edit) = pending {
             on_joint_edit(edit);
         }
@@ -8605,6 +8678,70 @@ mod tests {
         );
     }
 
+    fn joint_field_painted_id(label: &str) -> egui::Id {
+        egui::Id::new(("joint_field", label)).with("painted_this_pass")
+    }
+
+    /// #1357: switching joint kinds used to destroy Slide/Angle/… ValueInputs and
+    /// remount a different one on the same rect (red flash). Every slot stays mounted.
+    #[test]
+    fn joint_field_ids_survive_kind_switch() {
+        use crate::model::JointKind as K;
+        let ctx = egui::Context::default();
+        ctx.options_mut(|o| {
+            o.max_passes = std::num::NonZeroUsize::new(2).unwrap();
+        });
+        let doc = Document::default();
+        let labels = [
+            "Lead", "Slide", "Angle", "U", "V", "Spin", "Yaw", "Pitch", "Roll", "Slide min",
+            "Slide max", "Turn min", "Turn max",
+        ];
+        for kind in [K::Rigid, K::Slider, K::Revolute, K::Ball, K::Screw { lead: String::new() }, K::Rigid] {
+            let mut painted = Vec::new();
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                egui::Panel::right("context").default_size(200.0).show(ui, |ui| {
+                    ui.scope_builder(
+                        egui::UiBuilder::new().id(egui::Id::new(("pane_contents", "context"))),
+                        |ui| {
+                            for label in labels {
+                                let mut text = "0".to_string();
+                                let id = egui::Id::new(("joint_field", label));
+                                with_optional_slot(ui, ("joint_slot", label), true, Some(id), |ui| {
+                                    labeled_row(ui, label, |ui| {
+                                        let _ = crate::expression_input::ValueInput::from_id(
+                                            id,
+                                            crate::expression_input::ValueKind::Length,
+                                        )
+                                        .width(90.0)
+                                        .show(ui, &mut text, &doc);
+                                        ui.ctx().data_mut(|d| {
+                                            d.insert_temp(joint_field_painted_id(label), true);
+                                        });
+                                    });
+                                });
+                            }
+                            let _ = kind;
+                        },
+                    );
+                });
+                painted = labels
+                    .iter()
+                    .filter(|label| {
+                        ui.ctx()
+                            .data(|d| d.get_temp::<bool>(joint_field_painted_id(label)))
+                            .unwrap_or(false)
+                    })
+                    .copied()
+                    .collect();
+            });
+            assert_eq!(
+                painted.as_slice(),
+                labels,
+                "every joint field slot must be created for {kind:?}, got {painted:?}"
+            );
+        }
+    }
+
     /// #982: with a sketch open, the Select tool's picker view carries the sketch-only rule
     /// (#742) — the one the click path enforces — so the Exploder's fan and every other
     /// picker-driven path refuse a datum plane or outside body exactly as a click does.
@@ -9844,15 +9981,20 @@ mod tests {
             .tool_pickers
         };
 
-        // Rigid: one Parts list, and no side slots at all.
+        // Rigid: Parts list plus hidden Moving/Fixed slots so J does not remount (#1357).
         let rigid = pickers(control(JointKind::Rigid, None, None));
         assert!(rigid.iter().any(|v| v.target == PickerTarget::JointMembers));
+        assert!(
+            rigid.iter().any(|v| v.target == PickerTarget::JointMobile)
+                && rigid.iter().any(|v| v.target == PickerTarget::JointFixed),
+            "hidden side slots stay registered so switching kinds does not flash"
+        );
         assert!(
             !rigid.iter().any(|v| matches!(
                 v.target,
                 PickerTarget::JointMobile | PickerTarget::JointFixed
-            )),
-            "a rigid group has no moving side to name"
+            ) && v.picker.is_focused()),
+            "a rigid group does not focus a moving side"
         );
 
         // A slider names both sides, mobile before fixed.

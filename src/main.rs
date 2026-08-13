@@ -6339,7 +6339,7 @@ impl App {
             if self.state.creating_rect.is_none()
                 && self.state.creating_line.is_none()
                 && self.state.sketch_session.is_none()
-                && ctx.input(|i| i.key_pressed(egui::Key::J))
+                && consume_joint_tool_key(ctx)
             {
                 if self.state.tool != Tool::Joint {
                     self.state.apply(Action::SetTool(Tool::Joint));
@@ -17861,6 +17861,13 @@ fn keyboard_shortcuts_suppressed(ctx: &egui::Context) -> bool {
 /// Context ValueInputs in place and flash them red (#1320).
 fn consume_shape_tool_key(ctx: &egui::Context) -> bool {
     ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::B))
+}
+
+/// J arms the Joint tool / cycles kind. Consumed so a multipass layout discard
+/// cannot fire it again — a second pass remounts Context widgets in place and
+/// flashes them red (#1357 / same as B in #1320).
+fn consume_joint_tool_key(ctx: &egui::Context) -> bool {
+    ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::J))
 }
 
 /// The DEV → Report issue window's state (#627): the description text, the attachment
@@ -34903,7 +34910,44 @@ mod tests {
         );
     }
 
-
+    /// #1357: J must cycle the Joint tool once per frame. `key_pressed` stays true for
+    /// every pass of a discarded layout, so the Context pane remounts in place and
+    /// flashes red.
+    #[test]
+    fn joint_tool_j_key_fires_once_across_multipass() {
+        let ctx = egui::Context::default();
+        ctx.options_mut(|o| {
+            o.max_passes = std::num::NonZeroUsize::new(2).unwrap();
+        });
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key: egui::Key::J,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let mut fires = 0;
+        let mut passes = 0;
+        let output = ctx.run_ui(input, |ui| {
+            passes += 1;
+            if super::consume_joint_tool_key(ui.ctx()) {
+                fires += 1;
+            }
+            if ui.ctx().current_pass_index() == 0 {
+                ui.ctx().request_discard("force second pass");
+            }
+        });
+        assert!(
+            passes >= 2 || output.platform_output.num_completed_passes >= 2,
+            "need a discarded second pass to reproduce the flash (passes={passes}, completed={})",
+            output.platform_output.num_completed_passes
+        );
+        assert_eq!(
+            fires, 1,
+            "J must cycle only once per frame, not once per layout pass (passes={passes})"
+        );
+    }
 
     #[test]
     fn should_commit_sketch_on_enter_focused_field_or_unfocused_viewport() {
