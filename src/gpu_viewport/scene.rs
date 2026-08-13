@@ -3081,7 +3081,10 @@ impl<'a> SceneMesh<'a> {
                 }
                 SceneElement::Point(point) => {
                     if let Some(world) = crate::construction::point_world_position(doc, point) {
+                        let restore = self.index_layer;
+                        self.set_index_layer(MeshIndexLayer::Wireframe);
                         self.push_point_marker(world, color, 6.0, cam, viewport, view_proj);
+                        self.set_index_layer(restore);
                     }
                 }
                 // Selected 3D body sub-elements (#156): drawn depth-test-disabled like their
@@ -5267,8 +5270,7 @@ fn push_screen_disc(
     }
     for i in 0..SEGMENTS {
         let next = (i + 1) % SEGMENTS;
-        mesh.scene
-            .indices
+        mesh.indices_mut()
             .extend_from_slice(&[base, base + 1 + i as u32, base + 1 + next as u32]);
     }
 }
@@ -6600,9 +6602,9 @@ mod tests {
             constraint_graphics: None,
             constraint_connector_color: None,
         });
-            // Every buffer a hover can land in: screen-space discs go to the base mesh, face
-            // fills to the overlay, strokes to the screen-space stroke buffer (#1157),
-            // translucent solids to the plane-fill layer, and pick targets to the
+            // Every buffer a hover can land in: face fills used to go to the overlay, strokes
+            // to the screen-space stroke buffer (#1157), translucent solids to the plane-fill
+            // layer, and pick targets (including point discs, #1359) to the
             // depth-test-disabled wireframe layer (#153). A check for "did this light up?" has
             // to count them all.
             scene.indices.len()
@@ -7006,6 +7008,30 @@ mod tests {
             three.wireframe_indices.len() > one.wireframe_indices.len(),
             "every segment of the edge is highlighted"
         );
+
+        // #1359: a hovered point is a camera-facing disc sitting on a face. If it lands in
+        // the depth-tested base mesh, the body wins the near half of the disc and the
+        // highlight reads as half-buried. Same Wireframe path as the edge above.
+        let point = build(Some(ViewportHoverHighlight::PickTarget(
+            crate::construction::PickTargetKind::BodyVertex {
+                body: bkey(0),
+                position: Vec3::new(25.0, 12.5, 25.0),
+            },
+        )));
+        assert!(
+            point.wireframe_indices.len() > base.wireframe_indices.len(),
+            "hovered point must land in the depth-disabled (wireframe) layer"
+        );
+        assert_eq!(
+            point.indices.len(),
+            base.indices.len(),
+            "hovered point must not draw in the depth-tested base mesh"
+        );
+        assert_eq!(
+            point.overlay_indices.len(),
+            base.overlay_indices.len(),
+            "hovered point must not draw in the depth-tested overlay layer"
+        );
     }
 
     /// #1139: hovering a body-coplanar face (extrude cap/side, or a sketch on one) used to
@@ -7389,7 +7415,7 @@ mod tests {
             constraint_connector_color: None,
         });
         assert!(
-            with_gizmo.indices.len() > base.indices.len(),
+            with_gizmo.gizmo_indices.len() > base.gizmo_indices.len(),
             "plane gizmo should add triangles to the viewport scene"
         );
     }
@@ -7455,7 +7481,7 @@ mod tests {
         });
         let with_gizmo = ViewportScene::build(&input);
         assert!(
-            with_gizmo.indices.len() > base.indices.len(),
+            with_gizmo.gizmo_indices.len() > base.gizmo_indices.len(),
             "extrude gizmo should add triangles to the viewport scene"
         );
     }
