@@ -241,6 +241,7 @@ bearcad.add_geometric_constraint("parallel")
 bearcad.add_constraint({ kind = "line", index = 0 }, "25mm")
 -- `name = value` defines the parameter and dimensions with it, as in any value field:
 bearcad.add_constraint({ kind = "line", index = 1 }, "leg = 40mm")
+-- Repeating `add_constraint` on an already-dimensioned line or circle updates the value.
 
 bearcad.parameter("add", "A", "5mm")
 bearcad.parameter("value", 0, "A + 5in")
@@ -262,7 +263,8 @@ bearcad.set_dim("height", "50")
 bearcad.ui.key("enter")
 ```
 
-`edit_dim("length")` re-opens a committed line's length label:
+`edit_dim` re-opens a committed dimension: `"length"` for a line, `"width"`/`"height"`
+for a rectangle's sides, `"diameter"` for a circle. Then `set_dim` + `commit_dim`:
 
 ```lua
 bearcad.edit_dim("length")

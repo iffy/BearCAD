@@ -36,7 +36,7 @@ use crate::view_cube::{self, CubeCornerId, CubeEdgeId};
 use crate::constraints::{
     add_distance_constraint, apply_dimension_expression, constraint_expression,
     default_dimension_expression, dimension_edit_from_selection, find_dimension_constraint,
-    find_distance_constraint, set_constraint_dim_offset, set_constraint_expression, ConstraintId,
+    set_constraint_dim_offset, set_constraint_expression, ConstraintId,
 };
 use crate::model::{
     independent_corner_handle, smooth_joint_bezier, vertex_treatment_geometry, Circle,
@@ -3261,6 +3261,7 @@ pub enum DimLabelAxis {
     Width,
     Height,
     Length,
+    Diameter,
 }
 
 impl DimLabelAxis {
@@ -3269,6 +3270,7 @@ impl DimLabelAxis {
             "width" | "w" => Some(Self::Width),
             "height" | "h" => Some(Self::Height),
             "length" | "len" | "l" => Some(Self::Length),
+            "diameter" | "diam" | "d" => Some(Self::Diameter),
             _ => None,
         }
     }
@@ -3327,20 +3329,47 @@ pub fn dim_label_target_in_sketch(
     sketch: SketchId,
     axis: DimLabelAxis,
 ) -> Option<DimLabelTarget> {
-    // Rectangle width/height are now ordinary line-length dimensions (#66); only the
-    // `Length` axis resolves to a committed dimension.
-    let target = match axis {
-        DimLabelAxis::Width | DimLabelAxis::Height => None,
-        DimLabelAxis::Length => doc
-            .lines
-            .iter()
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .find(|(_, l)| l.sketch == sketch)
-            .map(|(index, _)| DistanceTarget::LineLength(index)),
-    }?;
-    find_distance_constraint(doc, target)
+    // Most-recent matching committed dimension in this sketch. Rect width/height are
+    // ordinary LineLength constraints (#66); a circle's size is CircleDiameter.
+    doc.constraints
+        .iter()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .find_map(|(id, c)| {
+            if c.sketch != sketch {
+                return None;
+            }
+            match (&c.kind, axis) {
+                (
+                    crate::model::ConstraintKind::Distance {
+                        target: DistanceTarget::CircleDiameter(_),
+                    },
+                    DimLabelAxis::Diameter,
+                ) => Some(id),
+                (
+                    crate::model::ConstraintKind::Distance {
+                        target: DistanceTarget::LineLength(_),
+                    },
+                    DimLabelAxis::Length,
+                ) => Some(id),
+                (
+                    crate::model::ConstraintKind::Distance {
+                        target: DistanceTarget::LineLength(line),
+                    },
+                    DimLabelAxis::Width | DimLabelAxis::Height,
+                ) => {
+                    let l = doc.lines.get(*line)?;
+                    let horizontal = (l.x1 - l.x0).abs() >= (l.y1 - l.y0).abs();
+                    match axis {
+                        DimLabelAxis::Width if horizontal => Some(id),
+                        DimLabelAxis::Height if !horizontal => Some(id),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        })
 }
 
 /// A committed sketch dimension label the user can reposition.
@@ -3375,7 +3404,9 @@ pub fn constraint_is_angle(doc: &Document, target: DimLabelTarget) -> bool {
 }
 
 pub fn dim_label_axis_for_target(doc: &Document, target: DimLabelTarget) -> Option<DimLabelAxis> {
-    if constraint_is_line_length(doc, target) {
+    if constraint_is_circle_diameter(doc, target) {
+        Some(DimLabelAxis::Diameter)
+    } else if constraint_is_line_length(doc, target) {
         Some(DimLabelAxis::Length)
     } else {
         None
@@ -9550,9 +9581,22 @@ impl AppState {
                 }
             }
             Action::SetRectDimension { axis, value } => {
-                // A committed rectangle's width/height are now ordinary line-length dimensions,
-                // edited through the line-dimension path; this action only drives the width/height
-                // fields while the rectangle is still being drawn.
+                // While drawing, this fills the width/height fields. After commit those
+                // sizes are ordinary line-length dimensions (#66); `edit_dim("width")`
+                // reopens one and `set_dim("width", …)` writes into that editor.
+                if let Some(edit) = &mut self.editing_committed_dim {
+                    let matches = match &edit.target {
+                        DimEditTarget::Constraint(id) => constraint_is_line_length(&self.doc, *id),
+                        DimEditTarget::New(DimensionTarget::Distance(
+                            DistanceTarget::LineLength(_),
+                        )) => true,
+                        DimEditTarget::New(_) => false,
+                    };
+                    if matches {
+                        edit.text = value;
+                        return ActionResult::Ok;
+                    }
+                }
                 let Some(cr) = &mut self.creating_rect else {
                     return ActionResult::Err("No rectangle in progress".to_string());
                 };
