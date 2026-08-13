@@ -46,7 +46,8 @@ adjusting the distance or target first.
   (mm added per side — a 10×10 square with taper 5 ends 20×20; circles add to the
   radius) and **angle** (draft against the normal; −45° on a 10-high 10×10 collapses
   to a point at height 5). Negative values shrink; past collapse the end is a point
-  (angle mode also shortens the solid).
+  (angle mode also shortens the solid). Angle taper is limited to −90°…89° — values
+  outside that, or that would make a huge solid, are clamped and the field warns.
 
 ## Help
 

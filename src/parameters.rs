@@ -1197,15 +1197,30 @@ pub fn rebake_extrusion_distances(doc: &mut Document) {
         }
         // Taper expression (#1243): length or angle depending on mode.
         if !taper_expr.trim().is_empty() {
+            let height = {
+                let e = &doc.extrusions[i];
+                let d = e.distance.abs();
+                if e.symmetric && e.target.is_none() {
+                    d * 0.5
+                } else {
+                    d
+                }
+            };
             match taper_mode {
                 crate::model::ExtrudeTaperMode::Distance => {
                     if let Some(v) = crate::value::eval_length_mm_in_doc(&taper_expr, doc) {
-                        doc.extrusions[i].taper = v;
+                        doc.extrusions[i].taper =
+                            crate::extrude::clamp_extrude_taper(v, taper_mode, height).value;
                     }
                 }
                 crate::model::ExtrudeTaperMode::Angle => {
                     if let Some(r) = crate::value::eval_angle_rad_in_doc(&taper_expr, doc) {
-                        doc.extrusions[i].taper = r.to_degrees().clamp(-89.999, 89.999);
+                        doc.extrusions[i].taper = crate::extrude::clamp_extrude_taper(
+                            r.to_degrees(),
+                            taper_mode,
+                            height,
+                        )
+                        .value;
                     }
                 }
             }

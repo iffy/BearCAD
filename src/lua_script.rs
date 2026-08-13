@@ -9167,6 +9167,93 @@ mod tests {
         );
     }
 
+    /// #1352: an over-large angle taper clamps to 89° (not 89.999°) and warns; the
+    /// solid stays a reasonable size instead of spanning kilometres.
+    #[test]
+    fn lua_extrude_taper_angle_180_clamps_to_89_and_warns() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 20, height = 20 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20, taper = 180, taper_mode = "angle" }
+            local s = bearcad.body_stats(0)
+            local span_x = s.bbox.max[1] - s.bbox.min[1]
+            local span_y = s.bbox.max[2] - s.bbox.min[2]
+            assert(span_x < 5000 and span_y < 5000,
+                "bbox should stay under 5 m, got " .. span_x .. " x " .. span_y)
+            local st = bearcad.status()
+            assert(st:find("89") or st:find("limited") or st:find("[Tt]aper"),
+                "status should warn about the clamp, got: " .. st)
+        "#,
+        );
+        let ext = &state.doc.extrusions[xkey(0)];
+        assert_eq!(ext.taper_mode, crate::model::ExtrudeTaperMode::Angle);
+        assert!(
+            (ext.taper - 89.0).abs() < 1e-3,
+            "stored taper should be 89°, got {}",
+            ext.taper
+        );
+        assert!(
+            state.status.to_lowercase().contains("taper")
+                || state.status.contains("89")
+                || state.status.to_lowercase().contains("limited"),
+            "status should carry the warning, got {:?}",
+            state.status
+        );
+    }
+
+    /// #1352: angle tapers ≤ −90° clamp to −90° with a warning.
+    #[test]
+    fn lua_extrude_taper_angle_below_minus_90_clamps() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 20, height = 20 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20, taper = -180, taper_mode = "angle" }
+            local st = bearcad.status()
+            assert(st:find("-90") or st:find("limited") or st:find("[Tt]aper"),
+                "status should warn about the clamp, got: " .. st)
+        "#,
+        );
+        let ext = &state.doc.extrusions[xkey(0)];
+        assert!(
+            (ext.taper - (-90.0)).abs() < 1e-3,
+            "stored taper should be −90°, got {}",
+            ext.taper
+        );
+    }
+
+    /// #1352: 89° on a long extrude still makes a huge solid — further clamp + warn.
+    #[test]
+    fn lua_extrude_taper_long_89_deg_is_size_clamped() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 20, height = 20 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 1000, taper = 89, taper_mode = "angle" }
+            local s = bearcad.body_stats(0)
+            local span_x = s.bbox.max[1] - s.bbox.min[1]
+            assert(span_x < 25000,
+                "long 89° extrude should not flare past the size cap, span=" .. span_x)
+            local st = bearcad.status()
+            assert(st:find("limited") or st:find("[Tt]aper") or st:find("huge"),
+                "status should warn about the size clamp, got: " .. st)
+        "#,
+        );
+        let ext = &state.doc.extrusions[xkey(0)];
+        assert!(
+            ext.taper < 88.5,
+            "89° at 1000 mm should drop below 89°, got {}",
+            ext.taper
+        );
+        let offset = 1000.0 * ext.taper.to_radians().tan();
+        assert!(
+            offset <= crate::extrude::TAPER_MAX_OFFSET_MM + 1.0,
+            "offset {offset} should be ≤ {}",
+            crate::extrude::TAPER_MAX_OFFSET_MM
+        );
+    }
+
     #[test]
     fn lua_extrude_accepts_explicit_polygon_line_list() {
         // The triangle's corners must actually be joined (coincident constraints, #68) for
