@@ -288,6 +288,9 @@ pub struct BooleanControl {
 pub struct MoveControl {
     /// Picked bodies to move (rendered through the unified element picker, #213).
     pub targets: Vec<crate::model::BodyKey>,
+    /// Picked unit instances to move (#735/#1406): like a plane, the instance itself moves
+    /// — its placement transform composes with the move, no output bodies.
+    pub instance_targets: Vec<crate::model::UnitInstanceKey>,
     /// Construction planes (#217) and tracing images (#217) moving with them. They share the
     /// **one** Bodies picker rather than getting rows of their own — a Move takes "the things
     /// that move", and splitting them by kind would be three near-empty inputs (#963).
@@ -2428,6 +2431,7 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
             m.targets
                 .iter()
                 .map(|&bi| SceneElement::Body(bi))
+                .chain(m.instance_targets.iter().map(|&ui| SceneElement::UnitInstance(ui)))
                 .chain(m.plane_targets.iter().map(|&pi| {
                     SceneElement::ConstructionPlane(pi)
                 }))
@@ -9580,6 +9584,7 @@ mod tests {
                 end_c: None,
                 end_c_focused: false,
                 targets: vec![bkey(1)],
+                instance_targets: Vec::new(),
                 tx: String::new(),
                 ty: String::new(),
                 tz: String::new(),
@@ -9675,6 +9680,7 @@ mod tests {
                 end_c: None,
                 end_c_focused: false,
                 targets: vec![bkey(1)],
+                instance_targets: Vec::new(),
                 tx: String::new(),
                 ty: String::new(),
                 tz: String::new(),
@@ -9748,6 +9754,7 @@ mod tests {
                 end_c: None,
                 end_c_focused: false,
                 targets: vec![bkey(1), bkey(4)],
+                instance_targets: Vec::new(),
                 tx: String::new(),
                 ty: String::new(),
                 tz: String::new(),
