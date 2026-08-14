@@ -351,7 +351,8 @@ pub struct ViewportScene {
     /// shader draws the lattice. Thick world-space line quads could not stay thin — one
     /// viewed edge-on foreshortens into a wedge and one viewed close up swells — so the
     /// lines are measured in **pixels**, per fragment, from the screen-space derivative of
-    /// the world position. Hidden when the camera is under the ground (#1300).
+    /// the world position. The grid draws on either side of the ground (#1370); only the
+    /// solid fill is hidden when the camera is under the ground (#1300).
     pub grid: Option<ViewportGrid>,
     /// Solid ground fill (#159/#1295/#1301): one footprint quad drawn by a dedicated shader
     /// pass — depth-tested, no depth write — so coplanar construction planes and body
@@ -2709,8 +2710,6 @@ impl<'a> SceneMesh<'a> {
         hi = hi.max(anchor + glam::Vec2::splat(reach));
         lo -= glam::Vec2::splat(coarse_step);
         hi += glam::Vec2::splat(coarse_step);
-        // Solid / grid ground only when the camera is *above* z = 0 (#1300). Looking up from
-        // underneath must not paint a floor through the scene; axes still draw for orientation.
         // `None` hides the ground entirely (#579).
         //
         // Solid ground (#159/#1295/#1301): one filled plane in a dark grey-blue at exact z = 0
@@ -2718,10 +2717,16 @@ impl<'a> SceneMesh<'a> {
         // the opaque base mesh wrote depth and z-fought coplanar construction planes / body
         // bottoms; a world-space bias mis-places coplanar geometry (#1088/#1121). Body faces
         // resting on the ground still re-draw after plane fills via `body_over_plane` (#1215).
+        //
+        // The *solid* ground is only drawn when the camera is above z = 0 (#1300): looking up
+        // from underneath must not paint a floor through the scene. The *grid*, by contrast,
+        // is independent of the camera side (#1370) — a subdivision lattice reads the same
+        // viewed from under the plane, and its axes still orient the view, so only the solid
+        // fill is suppressed from underneath.
         let above_ground = eye.z > 0.0;
-        if !above_ground || cam.ground_display() == crate::camera::GroundDisplay::None {
+        if cam.ground_display() == crate::camera::GroundDisplay::None {
             // nothing
-        } else if cam.ground_display() == crate::camera::GroundDisplay::Solid {
+        } else if cam.ground_display() == crate::camera::GroundDisplay::Solid && above_ground {
             let fill = sketch_ground_color(SOLID_GROUND_COLOR, dim);
             let corners = [
                 Vec3::new(lo.x, lo.y, 0.0),
@@ -2733,7 +2738,7 @@ impl<'a> SceneMesh<'a> {
                 corners,
                 color: color32_to_gpu(fill),
             });
-        } else {
+        } else if cam.ground_display() == crate::camera::GroundDisplay::Grid {
             // One footprint quad; the lattice is computed per fragment (#1073). The old
             // per-line world-space quads could not hold a constant on-screen width — at a
             // grazing angle each quad foreshortened into a wedge, and up close it swelled —
@@ -7841,8 +7846,9 @@ mod tests {
         );
     }
 
-    /// #1300: looking up from under the ground must not paint the ground fill or lattice,
-    /// whether the mode is solid or grid. Axes still draw for orientation.
+    /// #1300/#1370: looking up from under the ground must not paint the *solid ground fill*,
+    /// but the *grid* lattice still draws for orientation — a grid reads the same viewed
+    /// from under the plane, so only the fill is suppressed (#1370).
     #[test]
     fn ground_is_hidden_when_camera_is_below() {
         use crate::camera::GroundDisplay;
@@ -7861,6 +7867,10 @@ mod tests {
             "solid ground must not show from underneath"
         );
         assert!(
+            solid.grid.is_none(),
+            "solid mode draws no grid (there's no lattice on a solid fill)"
+        );
+        assert!(
             !solid_ground_color_in_base(&solid),
             "solid ground must not appear in the base mesh from underneath"
         );
@@ -7868,8 +7878,12 @@ mod tests {
         state.cam.set_ground_display(GroundDisplay::Grid);
         let grid = build_scene_for_doc(&state);
         assert!(
-            grid.grid.is_none(),
-            "ground grid must not show from underneath"
+            grid.grid.is_some(),
+            "ground grid must still show from underneath (#1370)"
+        );
+        assert!(
+            grid.solid_ground.is_none(),
+            "no solid fill in grid mode from underneath"
         );
 
         // Axes still orient the view.
