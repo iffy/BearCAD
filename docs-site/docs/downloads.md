@@ -19,11 +19,5 @@ the web app. Prefer not to download anything? [Run BearCAD in your browser](path
 
 :::info[Name Your Price]
 BearCAD is free — use it however you like, including paying nothing at all. If you'd like to
-support the project, you can name your own price: pay whatever it's worth to you.
-
-<stripe-buy-button
-  buy-button-id="buy_btn_0U4AFay37Y4GeGGmMrowDbCF"
-  publishable-key="pk_live_Wnk0BnoZxKPUkW03VR06TEq8"
->
-</stripe-buy-button>
+support the project, you can name your own price: [pay whatever it's worth to you](https://buy.stripe.com/4gMbJ39g2gsH4hKd9cdQQ00).
 :::
