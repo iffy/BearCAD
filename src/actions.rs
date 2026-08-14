@@ -29454,6 +29454,33 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         );
     }
 
+    /// #1381: Zoom to Fit ignores shadow bodies (ghost/faded copies consumed by an
+    /// operation) when framing the document — only live geometry sets the bounds.
+    #[test]
+    fn zoom_to_fit_ignores_shadow_bodies() {
+        let mut state = box_extrusion_state();
+        // Solid box spans x/y in [0,10], z in [0,5]; its sketch lines sit on z = 0.
+        assert_eq!(
+            crate::extrude::document_world_bounds(&state.doc),
+            Some((glam::Vec3::new(0.0, 0.0, 0.0), glam::Vec3::new(10.0, 10.0, 5.0)))
+        );
+        // Shadowing the body must drop the solid's height out of the fit: only the 2-D
+        // sketch lines remain (max z becomes 0), proving shadow bodies are excluded.
+        state.apply(Action::SetBodyShadow { body: bkey(0), shadow: true });
+        let (min, max) = crate::extrude::document_world_bounds(&state.doc)
+            .expect("sketch lines still give 2-D bounds");
+        assert!(
+            max.z < 0.01,
+            "zoom-to-fit bounds must ignore the shadow body's height, got {min:?}..{max:?}"
+        );
+        // Clearing the selection and zooming frames the same (shadow-free) bounds, not a
+        // failure.
+        state.apply(Action::ExitSketch);
+        let result = state.apply(Action::ZoomToFit);
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        while state.cam.tick_transition(0.05) {}
+    }
+
     /// #164: Zoom to Fit frames the selection when one exists (camera target lands on the
     /// selected body's center), else the whole document's non-construction geometry.
     #[test]

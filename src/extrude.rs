@@ -174,7 +174,12 @@ pub(crate) fn document_world_bounds(doc: &Document) -> Option<(Vec3, Vec3)> {
             None => (p, p),
         });
     };
-    for (i, _body) in doc.bodies.iter() {
+    for (i, body) in doc.bodies.iter() {
+        // Shadow bodies (#1218) are ghost/faded preview copies consumed by an operation; they
+        // are not real geometry, so zoom-to-fit (#1381) must not try to fit them in.
+        if body.shadow {
+            continue;
+        }
         if let Some((min, max)) = body_solid_mesh(doc, i).and_then(|m| m.bounds()) {
             extend(min);
             extend(max);
