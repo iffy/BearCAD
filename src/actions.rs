@@ -2331,6 +2331,9 @@ pub enum Action {
     /// Add another instance of an already-embedded unit (#736): named like an import's
     /// first instance (the source file stem, uniquified) unless a name is given.
     AddUnitInstance { unit: crate::model::UnitKey, name: Option<String> },
+    /// Clone an existing unit instance (#1404): same unit and parameter overrides, placed
+    /// at the origin with a uniquified name.
+    CloneUnitInstance { instance: crate::model::UnitInstanceKey },
     /// Create a read-only parameter synced to an unconstrained line's length.
     CreateParameterFromLineLength { line_index: crate::model::LineKey, name: Option<String> },
     /// Create a read-only parameter measuring the current selection (#432): a line's
@@ -10754,6 +10757,39 @@ impl AppState {
                     unit,
                     name: Some(instance_name.clone()),
                     parameter_overrides: Vec::new(),
+                    placement: crate::model::UnitPlacement::default(),
+                });
+                self.refresh_document_health();
+                self.status = format!("Added instance {instance_name}");
+                ActionResult::Ok
+            }
+            Action::CloneUnitInstance { instance } => {
+                let Some(source) = self.doc.unit_instances.get(instance) else {
+                    self.status = format!("Unit instance {} not found", instance.index());
+                    return ActionResult::Err(self.status.clone());
+                };
+                let unit = source.unit;
+                if self.doc.units.get(unit).is_none() {
+                    self.status = format!("Unit {} not found", unit.index());
+                    return ActionResult::Err(self.status.clone());
+                }
+                let stem = match &self.doc.units[unit].source {
+                    crate::model::UnitSource::RelativePath(p)
+                    | crate::model::UnitSource::Library(p) => std::path::Path::new(p)
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "unit".to_string()),
+                };
+                let instance_name = unique_instance_name(
+                    &self.doc,
+                    &identifier_name(
+                        source.name.as_deref().unwrap_or(&stem),
+                    ),
+                );
+                self.doc.unit_instances.insert(crate::model::UnitInstance {
+                    unit,
+                    name: Some(instance_name.clone()),
+                    parameter_overrides: source.parameter_overrides.clone(),
                     placement: crate::model::UnitPlacement::default(),
                 });
                 self.refresh_document_health();
@@ -21473,6 +21509,49 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         });
         assert!((height(&state.doc, uikey(0)) - 10.0).abs() < 1e-2, "back to the unit's own value");
         assert!(state.doc.unit_instances[uikey(0)].parameter_overrides.is_empty());
+    }
+
+    /// #1404: cloning a unit instance copies its parameter overrides to the new instance.
+    #[test]
+    fn clone_unit_instance_copies_parameter_overrides() {
+        let unit_path = write_solid_unit_file("bearcad_unit_clone_a.bearcad");
+        let mut state = AppState::default();
+        state.path = Some(
+            std::env::temp_dir().join("bearcad_unit_clone_b.bearcad").to_string_lossy().to_string(),
+        );
+        state.apply(Action::ImportUnit {
+            path: unit_path.to_string_lossy().to_string(),
+            link: None,
+            name: None,
+        });
+        let _ = std::fs::remove_file(&unit_path);
+        state.doc.units[ukey(0)].document.parameters.values_mut().next().unwrap().primary = true;
+        state.apply(Action::SetUnitParameterOverride {
+            instance: uikey(0),
+            name: "width".to_string(),
+            expression: Some("25".to_string()),
+        });
+        assert_eq!(state.doc.unit_instances.len(), 1);
+        let r = state.apply(Action::CloneUnitInstance { instance: uikey(0) });
+        assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
+        assert_eq!(state.doc.unit_instances.len(), 2, "a second instance appears");
+        assert_eq!(
+            state.doc.unit_instances[uikey(1)].unit,
+            state.doc.unit_instances[uikey(0)].unit,
+            "the clone references the same unit"
+        );
+        // The clone carries the same overrides as the source.
+        assert_eq!(
+            state.doc.unit_instances[uikey(0)].parameter_overrides,
+            state.doc.unit_instances[uikey(1)].parameter_overrides,
+            "clone keeps the source's parameter overrides"
+        );
+        assert_eq!(state.doc.unit_instances[uikey(1)].parameter_overrides[0].1, "25");
+        // Different instance names.
+        assert_ne!(
+            state.doc.unit_instances[uikey(0)].name,
+            state.doc.unit_instances[uikey(1)].name
+        );
     }
 
     /// #1176: unit overrides clamp to min/max and snap to step defined on the unit.

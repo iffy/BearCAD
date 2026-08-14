@@ -1822,6 +1822,21 @@ pub fn parameter_edit_enter_pressed(
     enter_pressed && (has_focus || lost_focus)
 }
 
+/// #1403: whether a unit-parameter value edit should commit its draft this frame.
+///
+/// Enter or Tab commits (via [`parameter_edit_enter_pressed`] for Enter; a singleline
+/// [`TextEdit`] surrenders focus on Tab too, so it must not be mistaken for the plain
+/// click-away blur that cancels the draft). Any other focus loss still cancels.
+pub fn unit_parameter_edit_should_commit(
+    enter_pressed: bool,
+    tab_pressed: bool,
+    has_focus: bool,
+    lost_focus: bool,
+) -> bool {
+    parameter_edit_enter_pressed(enter_pressed, has_focus, lost_focus)
+        || (tab_pressed && (has_focus || lost_focus))
+}
+
 /// Whether a gear-options min/max/step field should commit its draft this frame (#1179).
 ///
 /// Enter commits (via [`parameter_edit_enter_pressed`]). Any focus loss also commits —
@@ -1947,6 +1962,7 @@ fn show_unit_parameters_section(ui: &mut egui::Ui, app: &mut AppState) {
         .and_then(|inst| app.doc.units.get(inst.unit))
         .map(|u| (u.document.default_length_unit, u.document.default_angle_unit));
     let enter = ui.input(|i| i.key_pressed(Key::Enter));
+    let tab_pressed = ui.input(|i| i.key_pressed(Key::Tab));
     let mut set_override: Option<(String, Option<String>)> = None;
     egui::Grid::new("unit_parameters_table")
         .num_columns(3)
@@ -2004,7 +2020,13 @@ fn show_unit_parameters_section(ui: &mut egui::Ui, app: &mut AppState) {
                             resp.request_focus();
                             app.parameters_pane.unit_editing_focus = false;
                         }
-                        if parameter_edit_enter_pressed(enter, resp.has_focus(), resp.lost_focus())
+                        let commit = unit_parameter_edit_should_commit(
+                            enter,
+                            tab_pressed,
+                            resp.has_focus(),
+                            resp.lost_focus(),
+                        );
+                        if commit
                         {
                             let draft = app.parameters_pane.unit_draft.trim().to_string();
                             if !draft.is_empty() {
@@ -3104,6 +3126,22 @@ mod tests {
         assert!(parameter_edit_enter_pressed(true, true, false));
         assert!(!parameter_edit_enter_pressed(true, false, false));
         assert!(!parameter_edit_enter_pressed(false, false, true));
+    }
+
+    /// #1403: a unit-parameter value commits on Tab just like Enter — but a plain click-away
+    /// blur (no Enter, no Tab) still cancels the draft.
+    #[test]
+    fn unit_parameter_edit_commits_on_tab_and_enter() {
+        // Tab while focused commits.
+        assert!(unit_parameter_edit_should_commit(false, true, true, false));
+        assert!(unit_parameter_edit_should_commit(false, true, false, true));
+        // Enter still commits.
+        assert!(unit_parameter_edit_should_commit(true, false, true, false));
+        assert!(unit_parameter_edit_should_commit(true, false, false, true));
+        // Plain blur (no Enter, no Tab) cancels — the draft is discarded.
+        assert!(!unit_parameter_edit_should_commit(false, false, false, true));
+        // Nothing pressed, still focused: keep editing.
+        assert!(!unit_parameter_edit_should_commit(false, false, true, false));
     }
 
     /// #1179: min/max/step must commit when the field loses focus, not only on Enter.

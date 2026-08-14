@@ -4138,6 +4138,7 @@ pub fn show_pane(
     on_click_element: &mut impl FnMut(SceneElement, bool),
     on_hover_element: &mut impl FnMut(SceneElement),
     on_delete_element: &mut impl FnMut(SceneElement),
+    on_clone_unit_instance: &mut impl FnMut(crate::model::UnitInstanceKey),
     clipboard_has_items: bool,
     clipboard_has_linkable: bool,
     on_copy: &mut impl FnMut(),
@@ -4399,6 +4400,7 @@ pub fn show_pane(
                         on_click_element,
                         on_hover_element,
                         on_delete_element,
+                        on_clone_unit_instance,
                         clipboard_has_items,
                         clipboard_has_linkable,
                         on_copy,
@@ -4440,6 +4442,7 @@ pub fn show_pane(
                 on_click_element,
                 on_hover_element,
                 on_delete_element,
+                on_clone_unit_instance,
                 clipboard_has_items,
                 clipboard_has_linkable,
                 on_copy,
@@ -4635,6 +4638,7 @@ fn show_graph_view(
     on_click_element: &mut impl FnMut(SceneElement, bool),
     on_hover_element: &mut impl FnMut(SceneElement),
     on_delete_element: &mut impl FnMut(SceneElement),
+    on_clone_unit_instance: &mut impl FnMut(crate::model::UnitInstanceKey),
     clipboard_has_items: bool,
     clipboard_has_linkable: bool,
     on_copy: &mut impl FnMut(),
@@ -4971,6 +4975,7 @@ fn show_graph_view(
                             on_move_to_component,
                             on_set_rollback,
                             on_delete_element,
+                            on_clone_unit_instance,
                             clipboard_has_items,
                             clipboard_has_linkable,
                             crate::copy_paste::copyable_element(&element).is_some(),
@@ -5411,6 +5416,7 @@ fn show_row(
     on_click_element: &mut impl FnMut(SceneElement, bool),
     on_hover_element: &mut impl FnMut(SceneElement),
     on_delete_element: &mut impl FnMut(SceneElement),
+    on_clone_unit_instance: &mut impl FnMut(crate::model::UnitInstanceKey),
     clipboard_has_items: bool,
     clipboard_has_linkable: bool,
     on_copy: &mut impl FnMut(),
@@ -5816,6 +5822,7 @@ fn show_row(
                 on_move_to_component,
                 on_set_rollback,
                 on_delete_element,
+                on_clone_unit_instance,
                 clipboard_has_items,
                 clipboard_has_linkable,
                 crate::copy_paste::copyable_element(&element).is_some(),
@@ -5886,6 +5893,8 @@ pub(crate) fn element_context_menu(
     on_move_to_component: &mut impl FnMut(SceneElement, Option<crate::model::ComponentKey>),
     on_set_rollback: &mut impl FnMut(Option<RollbackMarker>),
     on_delete_element: &mut impl FnMut(SceneElement),
+    // #1404: clone a unit instance (another instance of the same unit, same parameter overrides).
+    on_clone_unit_instance: &mut impl FnMut(crate::model::UnitInstanceKey),
     // Copy / Paste / Paste Linked (#1236).
     clipboard_has_items: bool,
     clipboard_has_linkable: bool,
@@ -5973,6 +5982,16 @@ pub(crate) fn element_context_menu(
         HierarchyNode::UnitInstance(index) => {
             if ui.button("Update from source file").clicked() {
                 on_edit_operation(SceneElement::UnitInstance(index));
+                ui.close();
+            }
+            if ui
+                .button(format!(
+                    "Import another {}",
+                    node_label(doc, HierarchyNode::UnitInstance(index))
+                ))
+                .clicked()
+            {
+                on_clone_unit_instance(index);
                 ui.close();
             }
         }
