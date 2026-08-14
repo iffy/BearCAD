@@ -16,7 +16,7 @@ use egui::{Pos2, Rect};
 use glam::{Mat4, Vec3};
 
 /// Pixel size of the embedded / OS thumbnail (square).
-pub const PREVIEW_SIZE: u32 = 512;
+pub const PREVIEW_SIZE: u32 = 1024;
 /// `blobs.kind` for the Home-orientation PNG thumbnail.
 pub const PREVIEW_PNG_BLOB_KIND: &str = "preview_png";
 /// `blobs.kind` for the binary STL mesh snapshot (#1290 QuickLook).
@@ -516,9 +516,9 @@ const CUSTOM_ICON_RESOURCE_ID: i16 = -16455;
 const K_HAS_CUSTOM_ICON: u16 = 0x0400;
 #[cfg(any(test, target_os = "macos"))]
 const RESOURCE_DATA_OFFSET: u32 = 256;
-/// Modern ICNS PNG slots Finder scales from (512 / 256 / 128).
+/// Modern ICNS PNG slots Finder scales from (1024 / 512 / 256 / 128).
 #[cfg(any(test, target_os = "macos"))]
-const ICNS_PNG_SIZES: [(&[u8; 4], u32); 3] = [(b"ic09", 512), (b"ic08", 256), (b"ic07", 128)];
+const ICNS_PNG_SIZES: [(&[u8; 4], u32); 4] = [(b"ic14", 1024), (b"ic09", 512), (b"ic08", 256), (b"ic07", 128)];
 
 /// Pack a PNG (any size) into a modern ICNS. Pure Rust — no ImageIO (#1339).
 #[cfg(any(test, target_os = "macos"))]
@@ -802,7 +802,7 @@ fn apply_linux_thumbnail(path: &str, png: &[u8]) -> Result<(), String> {
     let hash = md5_hex(uri.as_bytes());
 
     let home = std::env::var_os("HOME").ok_or_else(|| "HOME not set".to_string())?;
-    // Prefer large (256) then normal (128) — write both from our 512 PNG scaled down.
+    // Prefer large (256) then normal (128) — write both from our 1024 PNG scaled down.
     for (subdir, dim) in [("large", 256u32), ("normal", 128u32)] {
         let dir = PathBuf::from(&home)
             .join(".cache/thumbnails")
@@ -1254,8 +1254,8 @@ mod tests {
             "modern ICNS icon types carry a PNG payload"
         );
         assert!(
-            icns.windows(4).any(|w| w == b"ic09" || w == b"ic08" || w == b"ic07"),
-            "expected a 128/256/512 PNG icon type, got {} bytes",
+            icns.windows(4).any(|w| w == b"ic14" || w == b"ic09" || w == b"ic08" || w == b"ic07"),
+            "expected a 128/256/512/1024 PNG icon type, got {} bytes",
             icns.len()
         );
     }
