@@ -8147,15 +8147,26 @@ impl App {
         if seeds.is_empty() {
             return HashMap::new();
         }
-        let descendants = extrude::descendant_bodies(&self.state.doc, &seeds);
-        if descendants.is_empty() {
+        let mut targets = extrude::descendant_bodies(&self.state.doc, &seeds);
+        // A Move edit re-renders the moved output itself (not just its descendants) at the
+        // live pose, so the moving body doesn't stay frozen at its committed destination —
+        // it shows back where it was before the move (#1366).
+        if self
+            .state
+            .creating_move
+            .as_ref()
+            .is_some_and(|cm| cm.editing.is_some())
+        {
+            targets.extend(seeds.iter().copied());
+        }
+        if targets.is_empty() {
             return HashMap::new();
         }
         let mut scratch = self.state.doc.clone();
         if !self.apply_active_edit_to_scratch(&mut scratch) {
             return HashMap::new();
         }
-        descendants
+        targets
             .iter()
             .filter_map(|&bi| extrude::body_solid_mesh_uncached_pub(&scratch, bi).map(|m| (bi, m)))
             .collect()
@@ -8180,9 +8191,26 @@ impl App {
         if let Some(cm) = s.creating_move.as_ref() {
             if let Some(op) = cm.editing {
                 if let Some(mv) = doc.move_ops.get_mut(op) {
+                    // Mirror the in-progress edit into the scratch move so the recomputed
+                    // output shows the pre-move pose when the destination has been reset
+                    // (#1366).
+                    mv.translate_mode = cm.translate_mode;
+                    mv.start_point_a = cm.start_point_a.clone();
+                    mv.end_point_a = cm.end_point_a.clone();
+                    mv.start_point_b = cm.start_point_b.clone();
+                    mv.end_point_b = cm.end_point_b.clone();
+                    mv.start_point_c = cm.start_point_c.clone();
+                    mv.end_point_c = cm.end_point_c.clone();
                     mv.tx = cm.tx.clone();
                     mv.ty = cm.ty.clone();
                     mv.tz = cm.tz.clone();
+                    mv.rx = cm.rx.clone();
+                    mv.ry = cm.ry.clone();
+                    mv.rz = cm.rz.clone();
+                    mv.roll_angle = cm.roll_angle.clone();
+                    mv.face_flip = cm.face_flip;
+                    mv.face_spin = cm.face_spin.clone();
+                    mv.face_offset = cm.face_offset.clone();
                     return true;
                 }
             }
@@ -9589,27 +9617,29 @@ impl App {
                         targets: existing.targets,
                         translate_mode: existing.translate_mode,
                         start_point_a: existing.start_point_a,
-                        end_point_a: existing.end_point_a,
-                        // Re-editing keeps the pairs it was committed with — dropping them
-                        // here made a re-commit silently throw the rotation away.
-                        start_point_b: existing.start_point_b,
-                        end_point_b: existing.end_point_b,
-                        start_point_c: existing.start_point_c,
-                        end_point_c: existing.end_point_c,
+                        // Re-editing shows the moving body back at its pre-move location
+                        // (as if the move hadn't happened yet, #1366): the destination and
+                        // the turn/gap aren't reapplied until the user re-does them. The
+                        // committed Turn is still pre-filled so the pane isn't blank.
+                        end_point_a: None,
+                        end_point_b: None,
+                        end_point_c: None,
+                        start_point_b: None,
+                        start_point_c: None,
                         plane_targets: existing.plane_targets,
                         image_targets: existing.image_targets,
                         instance_targets: existing.instance_targets,
-                        tx: existing.tx,
-                        ty: existing.ty,
-                        tz: existing.tz,
+                        tx: String::new(),
+                        ty: String::new(),
+                        tz: String::new(),
                         editing: Some(op),
                         rx: String::new(),
                         ry: String::new(),
                         rz: String::new(),
                         face_flip: false,
-                        face_spin: String::new(),
+                        face_spin: existing.face_spin.clone(),
                         roll_angle: String::new(),
-                        face_offset: String::new(),
+                        face_offset: existing.face_offset.clone(),
                         pending_face_a: None,
                         pending_face_b: None,
                         pending_gizmo_focus_axis: None,
@@ -19098,6 +19128,7 @@ fn suppress_viewport_pick_hover(
     angle_gizmo_drag_active: bool,
     plane_gizmo_drag_active: bool,
     bezier_handle_drag_active: bool,
+    move_rotation_drag_active: bool,
 ) -> bool {
     // Camera navigation skips hover pick work: secondary/middle drag for orbit/pan,
     // active scroll/zoom for the wheel (#1122), and multi-touch pan/orbit/pinch (#1141).
@@ -19115,6 +19146,7 @@ fn suppress_viewport_pick_hover(
         || angle_gizmo_drag_active
         || plane_gizmo_drag_active
         || bezier_handle_drag_active
+        || move_rotation_drag_active
 }
 
 /// The body mesh corner under the cursor, if one is genuinely pickable: hidden/shadow bodies
@@ -26601,6 +26633,24 @@ impl App {
             None
         };
         let pick_occlusion = pick_occlusion.as_ref();
+        // Hover highlight vs the destination click (#1367): a Move destination pick drops
+        // the moving bodies from hit-testing so the click lands on the geometry behind the part
+        // being moved (#1336), but the cursor should still light up the front (moving) body
+        // itself. So the hover path uses an occlusion context that forgets that ignore.
+        let move_dest_ignore = self.move_destination_ignore_bodies();
+        let hover_occlusion_owned =
+            (!move_dest_ignore.is_empty()).then(|| {
+                construction::PickOcclusion::new(
+                    &self.state.doc,
+                    &self.state.element_visibility,
+                    cam.eye(),
+                )
+            });
+        let hover_occlusion: Option<&construction::PickOcclusion> = if move_dest_ignore.is_empty() {
+            pick_occlusion
+        } else {
+            hover_occlusion_owned.as_ref()
+        };
 
         let sketch_session = self.state.sketch_session;
         let planar_label_view = sketch_session.and_then(|session| {
@@ -27020,6 +27070,11 @@ impl App {
                 .as_ref()
                 .is_some_and(|cp| cp.axis_gizmo_drag.is_some()),
             self.bezier_handle_drag.is_some(),
+            // The Move tool's rotation gizmos (#1365): dragging the Face Snap spin ring or
+            // the Free Move turn ring must not light up geometry under the cursor.
+            self.face_spin_drag.is_some()
+                || self.free_move_rotation_drag.is_some()
+                || self.text_rotation_drag.is_some(),
         );
 
         // Selection Exploder (#551): Space fans the crowd of pickable things under the cursor out
@@ -28861,7 +28916,7 @@ impl App {
             &vp,
             doc,
             &project,
-            pick_occlusion,
+            hover_occlusion,
             tool_pickers,
         );
         // Elements-pane hover wins (#161): the mouse is over the pane, so no viewport pick
@@ -29622,9 +29677,22 @@ impl App {
             if seeds.is_empty() {
                 Vec::new()
             } else {
-                extrude::descendant_bodies(&self.state.doc, &seeds)
-                    .into_iter()
-                    .collect()
+                let mut faded: Vec<model::BodyKey> =
+                    extrude::descendant_bodies(&self.state.doc, &seeds)
+                        .into_iter()
+                        .collect();
+                // A Move edit also re-renders the moved output itself (via its preview mesh at
+                // the live pre-move pose, #1366) rather than leaving it opaque at its
+                // committed destination.
+                if self
+                    .state
+                    .creating_move
+                    .as_ref()
+                    .is_some_and(|cm| cm.editing.is_some())
+                {
+                    faded.extend(seeds.iter().copied());
+                }
+                faded
             }
         };
         // Move tool (#649): once a source point is picked, the moving bodies go translucent so
