@@ -8,7 +8,7 @@ Run `cargo test` to make sure tests pass. Fix warnings from `cargo build` as the
 
 We're in pre-alpha right now, so don't worry about defining schema migrations at this point -- just alter the initial schema. And don't mind backward compatibility. Feel free to make breaking compatibility changes.
 
-For every completed task/feature/fix, record the change with a single, complete sentence via `changer add ...` (see `changer add --help` for more info). Don't record infrastructure changes (docs, CI).
+For every completed task/feature/fix to the app, record the change with a single, complete sentence via `changer add ...` (see `changer add --help` for more info). Do not record changer snippets for docs changes, website changes or CI changes. The changelog is for users to know how the app has changed.
 
 When adding or changing a keyboard shortcut, update `shortcuts::all_shortcuts()` in the same change — it renders the Keyboard Shortcuts window (View/Help menus) and is the single source for the app's binding list (see SPEC §11).
 

@@ -11,12 +11,9 @@ on:
       - "scripts/build-web.sh"
       - "scripts/build-occt-wasm.sh"
       - "web/**"
-      # The web kernel module links these; rebuild + redeploy when they change.
       - "cpp/**"
       - "third_party/OCCT"
       - "third_party/solvespace"
-      # App source affects the rendered screenshots, so regenerate + redeploy the
-      # site when the geometry/UI code changes too.
       - "src/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -30,21 +27,9 @@ on:
       - "cpp/**"
       - "Cargo.toml"
       - "Cargo.lock"
-  # Nightly full suite refreshes the golden PNG cache (#1297).
   schedule:
     - cron: "0 6 * * *"
-  # Lets us trigger a rebuild manually (e.g. after enabling Pages for the first time)
-  # without needing an unrelated docs-site change.
   workflow_dispatch:
-    inputs:
-      screenshot_mode:
-        description: "Screenshot selection mode"
-        type: choice
-        options:
-          - full
-          - affected
-          - missing
-        default: full
 
 concurrency:
   group: pages-${{ github.event_name }}-${{ github.ref }}
@@ -56,367 +41,13 @@ permissions:
   id-token: write
 
 jobs:
-  # Decide full vs incremental and whether goldens alone already cover everything.
-  # Scene list is computed here (with goldens restored) and passed to shards via
-  # BEARCAD_SCREENSHOT_ONLY so empty shard OUT_DIRs don't re-mark everything missing.
-  screenshots-plan:
-    runs-on: ubuntu-latest
-    outputs:
-      mode: ${{ steps.plan.outputs.mode }}
-      count: ${{ steps.plan.outputs.count }}
-      skip_generate: ${{ steps.plan.outputs.skip_generate }}
-      base: ${{ steps.plan.outputs.base }}
-      only: ${{ steps.plan.outputs.only }}
-      # 'build' = regenerate screenshots; 'fetch' = pull the existing ones from the
-      # deployed site instead (#1389).
-      source: ${{ steps.source.outputs.source }}
-      pages_base: ${{ steps.source.outputs.pages_base }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-
-      - name: Restore golden screenshots
-        uses: actions/cache/restore@v5
-        with:
-          path: docs-site/static/img/screenshots
-          key: doc-screenshots-goldens-${{ github.sha }}
-          restore-keys: |
-            doc-screenshots-goldens-
-
-      # Decide whether this run rebuilds screenshots or reuses the deployed ones.
-      # Push/merge website builds never regenerate — they fetch from the site.
-      # Nightly re-does them, but only if the repo changed since the last nightly
-      # (tracked by a .screenshots-commit marker the nightly deploys) (#1389).
-      - name: Compute screenshot source
-        id: source
-        run: |
-          set -euo pipefail
-          pages_base="$(GITHUB_REPOSITORY="$GITHUB_REPOSITORY" bash scripts/pages-base.sh)"
-          echo "pages_base=$pages_base"
-
-          source="build"
-          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-            source="fetch"
-          elif [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
-            marker="$(curl -fsSL --max-time 30 "${pages_base}img/screenshots/.screenshots-commit" 2>/dev/null || true)"
-            if [[ -n "$marker" && "$marker" == "$GITHUB_SHA" ]]; then
-              echo "nightly: repo unchanged since last screenshot build ($marker); reusing site screenshots" >&2
-              source="fetch"
-            else
-              echo "nightly: repo changed since last screenshot build; regenerating" >&2
-            fi
-          fi
-          echo "source=$source" >> "$GITHUB_OUTPUT"
-          echo "pages_base=$pages_base" >> "$GITHUB_OUTPUT"
-
-      - name: Select scenes
-        id: plan
-        run: |
-          set -euo pipefail
-          mkdir -p docs-site/static/img/screenshots
-
-          # Full suite on master push + nightly; incremental on PRs (#1297).
-          mode="full"
-          case "${{ github.event_name }}" in
-            schedule) mode="full" ;;
-            pull_request) mode="affected" ;;
-            workflow_dispatch) mode="${{ inputs.screenshot_mode || 'full' }}" ;;
-            *) mode="full" ;;
-          esac
-
-          base="origin/master"
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            base="origin/${{ github.base_ref }}"
-            git fetch --no-tags origin "${{ github.base_ref }}" || true
-          elif git rev-parse --verify origin/master >/dev/null 2>&1; then
-            base="origin/master"
-          fi
-
-          scenes="$(
-            BEARCAD_SCREENSHOT_MODE="$mode" \
-            BEARCAD_SCREENSHOT_BASE="$base" \
-            BEARCAD_SCREENSHOT_OUT=docs-site/static/img/screenshots \
-            bash scripts/select-doc-screenshots.sh
-          )"
-          # Count non-empty lines.
-          count=0
-          if [[ -n "$scenes" ]]; then
-            count="$(printf '%s\n' "$scenes" | grep -c . || true)"
-          fi
-
-          # Comma-separated allow-list for shards (GHA output must be single-line).
-          only="$(printf '%s\n' "$scenes" | paste -sd, -)"
-
-          echo "mode=$mode base=$base count=$count"
-          if [[ -n "$scenes" ]]; then
-            echo "$scenes" | sed 's/^/  /'
-          fi
-
-          echo "mode=$mode" >> "$GITHUB_OUTPUT"
-          echo "base=$base" >> "$GITHUB_OUTPUT"
-          echo "count=$count" >> "$GITHUB_OUTPUT"
-          echo "only=$only" >> "$GITHUB_OUTPUT"
-          if [[ "$count" -eq 0 ]]; then
-            echo "skip_generate=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip_generate=false" >> "$GITHUB_OUTPUT"
-          fi
-
-  # Build the release binary once. Shards reuse the binary.
-  # Cargo + OCCT caches keep this warm — screenshot time is dominated by build
-  # + boot, not PNG encode (#1297).
-  screenshots-build:
-    needs: screenshots-plan
-    if: |
-      needs.screenshots-plan.outputs.source == 'build'
-      && needs.screenshots-plan.outputs.skip_generate != 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96.0
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-          # Reuse the OCCT CI job's cache — same (default, kernel-linked) build flags.
-          shared-key: occt-linux
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            cmake \
-            libx11-dev \
-            libxcb-render0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev \
-            libxkbcommon-dev \
-            libxkbcommon-x11-0 \
-            libwayland-dev \
-            libssl-dev \
-            libvulkan-dev \
-            mesa-vulkan-drivers \
-            libgtk-3-dev \
-            libwebkit2gtk-4.1-dev \
-            xvfb
-
-      - name: Cache OCCT static build
-        id: occt-cache
-        uses: actions/cache@v5
-        with:
-          path: third_party/OCCT/occt-install
-          key: occt-install-${{ runner.os }}-v8.0.0-${{ hashFiles('scripts/build-occt.sh') }}
-
-      - name: Fetch solvespace submodule (libslvs sketch solver)
-        run: |
-          git submodule update --init --depth 1 third_party/solvespace
-          git -C third_party/solvespace submodule update --init --depth 1 extlib/eigen extlib/mimalloc
-
-      - name: Build OCCT (cache miss only)
-        if: steps.occt-cache.outputs.cache-hit != 'true'
-        run: |
-          git submodule update --init --depth 1 third_party/OCCT
-          scripts/build-occt.sh
-
-      - name: Build bearcad (release)
-        run: cargo build --release
-
-      - name: Upload release binary
-        uses: actions/upload-artifact@v6
-        with:
-          name: bearcad-release-linux
-          path: target/release/bearcad
-          if-no-files-found: error
-          retention-days: 2
-
-  # Shard selected scripts across jobs with a shared golden cache (#1297).
-  screenshots:
-    needs: [screenshots-plan, screenshots-build]
-    if: |
-      needs.screenshots-plan.outputs.source == 'build'
-      && needs.screenshots-plan.outputs.skip_generate != 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libx11-dev \
-            libxcb-render0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev \
-            libxkbcommon-dev \
-            libxkbcommon-x11-0 \
-            libwayland-dev \
-            libssl-dev \
-            libvulkan-dev \
-            mesa-vulkan-drivers \
-            libgtk-3-dev \
-            libwebkit2gtk-4.1-dev \
-            xvfb
-
-      - name: Download release binary
-        uses: actions/download-artifact@v7
-        with:
-          name: bearcad-release-linux
-          path: target/release
-
-      - name: Make binary executable
-        run: chmod +x target/release/bearcad
-
-      # Do not restore goldens here — shards only upload what they generate so
-      # artifacts stay small. Merge re-applies goldens underneath.
-
-      - name: Fetch PR base (affected mode)
-        if: github.event_name == 'pull_request'
-        run: git fetch --no-tags origin "${{ github.base_ref }}" || true
-
-      - name: Generate screenshot shard
-        env:
-          BEARCAD_SKIP_BUILD: "1"
-          # Plan already resolved full/affected/missing against goldens; shards
-          # only partition that allow-list (MODE unused when ONLY is set).
-          BEARCAD_SCREENSHOT_ONLY: ${{ needs.screenshots-plan.outputs.only }}
-          BEARCAD_SCREENSHOT_SHARD: ${{ matrix.shard }}/4
-          BEARCAD_SCREENSHOT_BASE: ${{ needs.screenshots-plan.outputs.base }}
-        run: |
-          mkdir -p docs-site/static/img/screenshots
-          if [[ -z "${BEARCAD_SCREENSHOT_ONLY//,/}" ]]; then
-            echo "No scenes assigned"
-            exit 0
-          fi
-          scripts/gen-doc-screenshots.sh
-
-      - name: Upload shard screenshots
-        uses: actions/upload-artifact@v6
-        with:
-          name: doc-screenshots-shard-${{ matrix.shard }}
-          path: docs-site/static/img/screenshots/
-          if-no-files-found: warn
-          retention-days: 2
-
-  screenshots-merge:
-    needs: [screenshots-plan, screenshots]
-    # Runs only when this run builds screenshots. Push/merge builds (source=fetch)
-    # skip this entirely and reuse the deployed site's screenshots (#1389), so a
-    # cold golden cache can't fail a push.
-    if: |
-      needs.screenshots-plan.outputs.source == 'build'
-      && always()
-      && needs.screenshots-plan.result == 'success'
-      && (
-        needs.screenshots-plan.outputs.skip_generate == 'true'
-        || needs.screenshots.result == 'success'
-      )
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Restore golden screenshots
-        uses: actions/cache/restore@v5
-        with:
-          path: docs-site/static/img/screenshots
-          key: doc-screenshots-goldens-${{ github.sha }}
-          restore-keys: |
-            doc-screenshots-goldens-
-
-      - name: Download shard artifacts
-        if: needs.screenshots-plan.outputs.skip_generate != 'true'
-        uses: actions/download-artifact@v7
-        with:
-          pattern: doc-screenshots-shard-*
-          path: /tmp/shards
-          merge-multiple: false
-
-      - name: Merge shards over goldens
-        run: |
-          set -euo pipefail
-          mkdir -p docs-site/static/img/screenshots
-          if [[ -d /tmp/shards ]]; then
-            # download-artifact v5 with pattern: /tmp/shards/<artifact-name>/...
-            find /tmp/shards -type f \( -name '*.png' -o -name '*.json' \) -print0 \
-              | while IFS= read -r -d '' f; do
-                  stripped="$(echo "$f" | sed -E 's|^/tmp/shards/[^/]+/||')"
-                  dest="docs-site/static/img/screenshots/$stripped"
-                  mkdir -p "$(dirname "$dest")"
-                  cp -f "$f" "$dest"
-                done
-          fi
-          echo "Merged file count: $(find docs-site/static/img/screenshots -type f | wc -l | tr -d ' ')"
-
-      - name: Verify every scene has a PNG
-        run: |
-          set -euo pipefail
-          missing="$(
-            BEARCAD_SCREENSHOT_MODE=missing \
-            BEARCAD_SCREENSHOT_OUT=docs-site/static/img/screenshots \
-            bash scripts/select-doc-screenshots.sh || true
-          )"
-          if [[ -n "$missing" ]]; then
-            echo "Missing screenshots for scenes:" >&2
-            echo "$missing" >&2
-            echo "::error::One or more screenshot scenes have no PNG after merge (cold golden cache or failed shard)."
-            exit 1
-          fi
-          echo "All scenes have at least one PNG."
-
-      # The fetch path (#1389) reads these from the deployed site: .manifest lists
-      # every screenshot asset push builds can pull, and .screenshots-commit is the
-      # SHA they came from so the next nightly can tell whether they're stale.
-      - name: Publish screenshot manifest + commit marker
-        run: |
-          set -euo pipefail
-          find docs-site/static/img/screenshots -type f \
-            | sed 's|^docs-site/static/img/screenshots/||' \
-            | LC_ALL=C sort > docs-site/static/img/screenshots/.manifest
-          printf '%s\n' "$GITHUB_SHA" > docs-site/static/img/screenshots/.screenshots-commit
-          echo "publishing manifest ($(wc -l < docs-site/static/img/screenshots/.manifest | tr -d ' ') files) for commit $GITHUB_SHA"
-
-      - name: Upload screenshots artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: doc-screenshots
-          path: docs-site/static/img/screenshots/
-          if-no-files-found: error
-
-      # Persist goldens externally (not in git). New key each run; restore-keys
-      # prefix match picks the newest on the next PR/push (#1297).
-      - name: Save golden screenshots cache
-        if: github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/master') || github.event_name == 'workflow_dispatch'
-        uses: actions/cache/save@v5
-        with:
-          path: docs-site/static/img/screenshots
-          key: doc-screenshots-goldens-${{ github.sha }}-${{ github.run_id }}
-
-  # The hosted web app (wasm32) deploys under /app/ next to the docs. It's built once
-  # per release by the release CI and published as a bearcad-web.zip release asset; this
-  # job downloads the latest published (non-draft) release instead of rebuilding the
-  # ~30-min wasm app on every docs push (#1387). The local build is the fast-path's
-  # fallback for the window before any release carries the asset yet.
-  # Skip on pull_request — PRs only validate screenshots (#1297).
+  # The hosted web app (wasm32) deploys under /app/ next to the docs.
+  # Skip on pull_request — PRs only validate screenshots.
   webapp:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
 
       - name: Download web app from latest published release
         id: fetch
@@ -433,7 +64,6 @@ jobs:
           path: web/dist/
           if-no-files-found: error
 
-      # Fallback build (no published WASM release yet, e.g. right after this change lands):
       - name: Install Rust toolchain
         if: steps.fetch.outcome == 'failure'
         uses: dtolnay/rust-toolchain@1.96.0
@@ -456,7 +86,6 @@ jobs:
         if: steps.fetch.outcome == 'failure'
         uses: emscripten-core/setup-emsdk@v16
         with:
-          # Match the locally-verified toolchain (the kernel build was validated on 6.0.2).
           version: 6.0.2
 
       - name: Cache OCCT wasm build
@@ -471,9 +100,7 @@ jobs:
         if: steps.fetch.outcome == 'failure' && steps.occt-wasm-cache.outputs.cache-hit != 'true'
         run: git submodule update --init --depth 1 third_party/OCCT
 
-      # libslvs is compiled into the kernel module on every run (unlike the OCCT static
-      # libs, it isn't cached), so its sources are always needed.
-      - name: Fetch solvespace submodule (libslvs sketch solver)
+      - name: Fetch solvespace submodule
         if: steps.fetch.outcome == 'failure'
         run: |
           git submodule update --init --depth 1 third_party/solvespace
@@ -491,19 +118,123 @@ jobs:
           path: web/dist/
           if-no-files-found: error
 
+  # Nightly: builds the app, generates all screenshots, then builds the docs site.
+  # Push: fetches screenshots from the deployed site, then builds the docs site.
   build:
     if: github.event_name != 'pull_request'
-    # screenshots-merge is skipped on push/merge builds (source=fetch); build
-    # still needs it as a dependency so it can branch on whether the artifact exists.
-    needs: [screenshots-plan, screenshots-merge, webapp]
+    needs: webapp
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: docs-site
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
+      # --- Screenshots -----------------------------------------------------------
+      - name: Compute screenshot source
+        id: source
+        run: |
+          pages_base="$(GITHUB_REPOSITORY="$GITHUB_REPOSITORY" bash scripts/pages-base.sh)"
+          echo "pages_base=$pages_base"
+          source="fetch"
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+            source="build"
+          fi
+          echo "source=$source" >> "$GITHUB_OUTPUT"
+          echo "pages_base=$pages_base" >> "$GITHUB_OUTPUT"
+
+      - name: Install system dependencies (nightly)
+        if: steps.source.outputs.source == 'build'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            libx11-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-0 \
+            libwayland-dev \
+            libssl-dev \
+            libvulkan-dev \
+            mesa-vulkan-drivers \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            xvfb
+
+      - name: Install Rust toolchain (nightly)
+        if: steps.source.outputs.source == 'build'
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - name: Cache cargo (nightly)
+        if: steps.source.outputs.source == 'build'
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: occt-linux
+
+      - name: Cache OCCT static build (nightly)
+        if: steps.source.outputs.source == 'build'
+        id: occt-cache
+        uses: actions/cache@v5
+        with:
+          path: third_party/OCCT/occt-install
+          key: occt-install-${{ runner.os }}-v8.0.0-${{ hashFiles('scripts/build-occt.sh') }}
+
+      - name: Fetch solvespace submodule (nightly)
+        if: steps.source.outputs.source == 'build'
+        run: |
+          git submodule update --init --depth 1 third_party/solvespace
+          git -C third_party/solvespace submodule update --init --depth 1 extlib/eigen extlib/mimalloc
+
+      - name: Build OCCT (nightly, cache miss only)
+        if: steps.source.outputs.source == 'build' && steps.occt-cache.outputs.cache-hit != 'true'
+        run: |
+          git submodule update --init --depth 1 third_party/OCCT
+          scripts/build-occt.sh
+
+      - name: Build bearcad (nightly)
+        if: steps.source.outputs.source == 'build'
+        run: cargo build --release
+
+      - name: Generate all screenshots (nightly)
+        if: steps.source.outputs.source == 'build'
+        env:
+          BEARCAD_SKIP_BUILD: "1"
+          BEARCAD_SCREENSHOT_MODE: "full"
+        run: |
+          mkdir -p docs-site/static/img/screenshots
+          scripts/gen-doc-screenshots.sh
+
+      - name: Publish screenshot manifest + commit marker (nightly)
+        if: steps.source.outputs.source == 'build'
+        run: |
+          find docs-site/static/img/screenshots -type f \
+            | sed 's|^docs-site/static/img/screenshots/||' \
+            | LC_ALL=C sort > docs-site/static/img/screenshots/.manifest
+          printf '%s\n' "$GITHUB_SHA" > docs-site/static/img/screenshots/.screenshots-commit
+
+      - name: Save golden screenshots cache (nightly)
+        if: steps.source.outputs.source == 'build'
+        uses: actions/cache/save@v5
+        with:
+          path: docs-site/static/img/screenshots
+          key: doc-screenshots-goldens-${{ github.sha }}-${{ github.run_id }}
+
+      - name: Fetch screenshots from deployed site
+        if: steps.source.outputs.source == 'fetch'
+        run: |
+          PAGES_BASE="${{ steps.source.outputs.pages_base }}" \
+          bash scripts/fetch-doc-screenshots.sh
+
+      # --- Web app ---------------------------------------------------------------
+      - name: Download web app
+        uses: actions/download-artifact@v7
+        with:
+          name: webapp
+          path: docs-site/static/app
+
+      # --- Build & deploy ---------------------------------------------------------
       - name: Install Node.js
         uses: actions/setup-node@v5
         with:
@@ -511,35 +242,13 @@ jobs:
           cache: npm
           cache-dependency-path: docs-site/package-lock.json
 
-      # Pull the generated PNGs into the static dir before building so the
-      # deployed site includes them (they are git-ignored build artifacts).
-      # Push/merge builds don't regenerate them (#1389): they fetch whatever is
-      # already live on the site (missing is OK — never fail the build).
-      - name: Download generated screenshots
-        if: needs.screenshots-plan.outputs.source == 'build'
-        uses: actions/download-artifact@v7
-        with:
-          name: doc-screenshots
-          path: docs-site/static/img/screenshots
-
-      - name: Fetch screenshots from deployed site
-        if: needs.screenshots-plan.outputs.source == 'fetch'
-        run: |
-          PAGES_BASE="${{ needs.screenshots-plan.outputs.pages_base }}" \
-          bash ../scripts/fetch-doc-screenshots.sh
-
-      # The hosted web app deploys as static files under /app/.
-      - name: Download web app
-        uses: actions/download-artifact@v7
-        with:
-          name: webapp
-          path: docs-site/static/app
-
       - name: Install dependencies
         run: npm ci
+        working-directory: docs-site
 
-      - name: Build website (landing page + docs)
+      - name: Build website
         run: npm run build
+        working-directory: docs-site
 
       - name: Configure Pages
         uses: actions/configure-pages@v6
