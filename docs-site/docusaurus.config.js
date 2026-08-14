@@ -146,6 +146,16 @@ const config = {
             label: 'GitHub',
             position: 'right',
           },
+          {
+            href: 'https://buy.stripe.com/28E3ci4Gt60efjO7mn1Jm00',
+            label: 'Pay',
+            position: 'right',
+          },
+          {
+            to: '/docs/downloads',
+            label: 'Download',
+            position: 'right',
+          },
         ],
       },
       footer: {

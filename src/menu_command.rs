@@ -69,6 +69,8 @@ pub enum MenuCommand {
     /// Open the DEV → Report issue window (#627): dev-build-only filing of an issue (with
     /// optional screenshot/document-JSON attachments) into the local todoer db.
     ReportIssue,
+    /// Help → Report Problem… (#1372): open the browser at a new issue form on the repo.
+    ReportProblem,
 }
 
 impl MenuCommand {
@@ -119,6 +121,8 @@ impl MenuCommand {
             }
             // Opens the report window; handled in the app frame loop (#627).
             MenuCommand::ReportIssue => None,
+            // Opens the browser at a new-issue form; handled in the app frame loop (#1372).
+            MenuCommand::ReportProblem => None,
         }
     }
 }

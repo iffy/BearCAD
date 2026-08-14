@@ -56,6 +56,8 @@ pub struct MenuIds {
     pub shortcuts_help: MenuId,
     /// Help ▸ Changelog (#1328).
     pub changelog: MenuId,
+    /// Help ▸ Report Problem… (#1372): open the browser at a new-issue form on the repo.
+    pub report_problem: MenuId,
     /// Settings… (#720): the app menu on macOS, the File menu elsewhere.
     pub settings: MenuId,
     /// Help ▸ Help Mode (#672), a checked toggle with the Cmd/Ctrl+/ accelerator.
@@ -181,6 +183,9 @@ pub fn command_for_id(
     }
     if ids.changelog == id {
         return Some(MenuCommand::ShowChangelog);
+    }
+    if ids.report_problem == id {
+        return Some(MenuCommand::ReportProblem);
     }
     if ids.settings == id {
         return Some(MenuCommand::ShowSettings);
@@ -365,6 +370,8 @@ impl NativeMenu {
         let shortcuts_help =
             MenuItem::with_id("shortcuts_help", "Keyboard Shortcuts", true, None);
         let changelog = MenuItem::with_id("changelog", "Changelog", true, None);
+        // Report Problem… (#1372): open the browser at a new-issue form on the repo.
+        let report_problem = MenuItem::with_id("report_problem", "Report Problem…", true, None);
         // Help mode (#672): the pane-note overlay, toggled from the Help menu or
         // Cmd/Ctrl+/ (a slash — the question mark without reaching for Shift).
         let help_mode = CheckMenuItem::with_id(
@@ -453,6 +460,7 @@ impl NativeMenu {
         help_menu.append(&help_mode)?;
         help_menu.append(&shortcuts_help)?;
         help_menu.append(&changelog)?;
+        help_menu.append(&report_problem)?;
         help_menu.append(&install_cli)?;
         help_menu.append(&PredefinedMenuItem::separator())?;
         help_menu.append(&licenses)?;
@@ -511,6 +519,7 @@ impl NativeMenu {
             shortcuts_view: shortcuts_view.id().clone(),
             shortcuts_help: shortcuts_help.id().clone(),
             changelog: changelog.id().clone(),
+            report_problem: report_problem.id().clone(),
             settings: settings_item.id().clone(),
             help_mode: help_mode.id().clone(),
             report_issue: report_issue.id().clone(),
@@ -637,6 +646,7 @@ mod tests {
             shortcuts_view: MenuId::new("shortcuts_view"),
             shortcuts_help: MenuId::new("shortcuts_help"),
             changelog: MenuId::new("changelog"),
+            report_problem: MenuId::new("report_problem"),
             settings: MenuId::new("settings"),
             help_mode: MenuId::new("help_mode"),
             report_issue: MenuId::new("report_issue"),
@@ -728,6 +738,17 @@ mod tests {
             MenuCommand::ShowChangelog.to_action(),
             Some(Action::SetChangelogWindow { open: Some(true) })
         );
+    }
+
+    #[test]
+    fn maps_report_problem_menu_item() {
+        // #1372: Help ▸ Report Problem… is a browser link, so it has no direct Action.
+        let ids = ids_with_pane("view_cube").0;
+        assert_eq!(
+            command_for_id(&ids.report_problem, &ids, |_| true),
+            Some(MenuCommand::ReportProblem)
+        );
+        assert_eq!(MenuCommand::ReportProblem.to_action(), None);
     }
 
     #[test]

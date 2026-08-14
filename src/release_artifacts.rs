@@ -309,20 +309,23 @@ mod tests {
 
     #[test]
     fn homepage_offers_chromebook_install_next_to_downloads() {
+        // Per-OS downloads (Chromebook included) moved off the hero to a dedicated
+        // page when the landing page gained its four-action layout (#1374); the hero
+        // now just links there.
         let home = include_str!("../docs-site/src/pages/index.js");
         assert!(
-            home.contains("Chromebook"),
-            "landing page download row should name Chromebook"
+            home.contains("Download") && home.contains("/docs/downloads"),
+            "landing page should link to the dedicated download page"
+        );
+        let downloads = include_str!("../docs-site/docs/downloads.md");
+        assert!(
+            downloads.contains("Chromebook"),
+            "download page should name Chromebook"
         );
         // Same relative /app/ path the "Run in your browser" CTA already uses.
         assert!(
-            home.contains("pathname:///app/") || home.contains(WEB_APP_URL),
-            "landing page Chromebook install should point at the hosted web app"
-        );
-        // Must sit with the platform download buttons, not only the primary CTA.
-        assert!(
-            home.contains("Install Chromebook") || home.contains("Download Chromebook"),
-            "landing page should expose an Install/Download Chromebook control"
+            downloads.contains("pathname:///app/") || downloads.contains(WEB_APP_URL),
+            "download page Chromebook install should point at the hosted web app"
         );
     }
 
