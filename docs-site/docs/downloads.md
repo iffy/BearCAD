@@ -5,13 +5,9 @@ title: Download
 
 # Download
 
-BearCAD is a single per-OS executable — download it and run it; there is no installer
-beyond the file itself.
-
-:::info[No install needed]
-Just grab the file for your OS, open it, and you're sketching. On macOS you may need
-to right-click the app and choose **Open** the first time.
-:::
+BearCAD ships as a single per-OS executable — grab the file below for your OS, open it,
+and you're sketching. On macOS you may need to right-click the app and choose **Open**
+the first time.
 
 - **macOS** — [Download bearcad.dmg](https://github.com/iffy/BearCAD/releases/latest/download/bearcad.dmg)
 - **Windows** — [Download bearcad.exe](https://github.com/iffy/BearCAD/releases/latest/download/bearcad.exe)
