@@ -353,6 +353,7 @@ bearcad.import_step("part.step")
 bearcad.import_unit("bracket.bearcad")
 bearcad.import_unit{ path = "bracket.bearcad", link = "static", name = "left_bracket" }
 bearcad.add_unit_instance{ unit = 0, name = "right_bracket" }
+bearcad.clone_unit_instance{ instance = 0 }                 -- another instance, same overrides
 bearcad.set_unit_parameter{ instance = 1, name = "width", expression = "20" }
 bearcad.set_unit_parameter{ instance = 1, name = "width" }   -- back to the part's value
 bearcad.unit_link(0, "dynamic")                              -- or "static"

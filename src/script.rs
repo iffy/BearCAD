@@ -872,6 +872,8 @@ pub enum Instruction {
     SetUnitLink { unit: usize, link: crate::model::LinkMode },
     /// Add another instance of an embedded unit (#736).
     AddUnitInstance { unit: usize, name: Option<String> },
+    /// Clone an existing unit instance with its parameter overrides (#1404).
+    CloneUnitInstance { instance: usize },
     /// Show/hide/toggle the Settings window (#737).
     SetSettingsWindow { open: Option<bool> },
     /// Show/hide/toggle the Changelog window (#1328).
@@ -2014,6 +2016,9 @@ impl Instruction {
                 }
                 None => format!("bearcad.add_unit_instance{{ unit = {unit} }}"),
             },
+            Instruction::CloneUnitInstance { instance } => {
+                format!("bearcad.clone_unit_instance{{ instance = {instance} }}")
+            }
             Instruction::SetUnitLink { unit, link } => format!(
                 "bearcad.unit_link({unit}, \"{}\")",
                 match link {
@@ -3247,6 +3252,9 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 unit: unit_ordinal(doc, *unit)?,
                 name: name.clone(),
             })
+        }
+        Action::CloneUnitInstance { instance } => {
+            Some(Instruction::CloneUnitInstance { instance: unit_instance_ordinal(doc, *instance)? })
         }
         Action::SetSettingsWindow { open } => Some(Instruction::SetSettingsWindow { open: *open }),
         Action::SetChangelogWindow { open } => Some(Instruction::SetChangelogWindow { open: *open }),
@@ -7558,6 +7566,16 @@ impl ScriptRunner {
                 self.record_action_error(r);
                 StepResult::Continue
             }
+            Instruction::CloneUnitInstance { instance } => {
+                let Some(instance) = unit_instance_key(&state.doc, instance) else {
+                    self.last_action_error =
+                        Some(format!("Unit instance {instance} not found"));
+                    return StepResult::Continue;
+                };
+                let r = state.apply(Action::CloneUnitInstance { instance });
+                self.record_action_error(r);
+                StepResult::Continue
+            }
             Instruction::SetMcMasterWindow { open, part } => {
                 state.apply(Action::SetMcMasterWindow { open, part });
                 StepResult::Continue
@@ -8315,6 +8333,10 @@ mod tests {
         assert_eq!(
             Instruction::AddUnitInstance { unit: 0, name: Some("b2".to_string()) }.as_lua(),
             "bearcad.add_unit_instance{ unit = 0, name = \"b2\" }"
+        );
+        assert_eq!(
+            Instruction::CloneUnitInstance { instance: 1 }.as_lua(),
+            "bearcad.clone_unit_instance{ instance = 1 }"
         );
         assert_eq!(
             Instruction::SetUnitParameterOverride {

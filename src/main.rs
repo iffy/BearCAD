@@ -4903,6 +4903,13 @@ impl App {
     /// the library directory when one is set.
     #[cfg(not(target_arch = "wasm32"))]
     fn import_unit(&mut self) {
+        // #1402: check for unsaved document before opening the file dialog.
+        if self.state.path.is_none() {
+            self.state.status =
+                "Import failed: save this document first, so the import can be stored relative to it"
+                    .to_string();
+            return;
+        }
         let mut dialog = rfd::FileDialog::new().add_filter("BearCAD document", &["bearcad"]);
         if let Some(dir) = &self.settings.library_directory {
             dialog = dialog.set_directory(dir);
@@ -14061,6 +14068,7 @@ impl App {
             let mut export_component_3mf: Option<model::ComponentKey> = None;
             let mut click_element: Option<(SceneElement, bool)> = None;
             let mut delete_element: Option<SceneElement> = None;
+            let mut clone_unit_instance: Option<model::UnitInstanceKey> = None;
             let mut add_to_drawing: Option<SceneElement> = None;
             let mut create_drawing_of_body: Option<model::BodyKey> = None;
             let mut rename_drawing: Option<(model::DrawingKey, String)> = None;
@@ -14149,6 +14157,9 @@ impl App {
                     };
                     let mut queue_delete = |element: SceneElement| {
                         delete_element = Some(element);
+                    };
+                    let mut queue_clone_unit_instance = |instance: model::UnitInstanceKey| {
+                        clone_unit_instance = Some(instance);
                     };
                     // Highlight the elements that use the variable hovered or focused in
                     // the Parameters pane (#633; hover state is from the pane's last
@@ -14257,6 +14268,7 @@ impl App {
                         &mut queue_click,
                         &mut queue_hover,
                         &mut queue_delete,
+                        &mut queue_clone_unit_instance,
                         !self.state.clipboard.is_empty(),
                         self.state.clipboard.has_linkable(),
                         &mut || {
@@ -14324,6 +14336,9 @@ impl App {
             }
             if let Some(element) = delete_element {
                 self.state.apply(Action::DeleteElement { element });
+            }
+            if let Some(instance) = clone_unit_instance {
+                self.state.apply(Action::CloneUnitInstance { instance });
             }
             if let (Some(element), Some(drawing)) = (add_to_drawing, self.state.editing_drawing) {
                 let orientation = model::DrawingOrientation::default();
@@ -27334,6 +27349,7 @@ impl App {
             let mut move_to_component: Option<(SceneElement, Option<model::ComponentKey>)> = None;
             let mut set_rollback: Option<Option<hierarchy::RollbackMarker>> = None;
             let mut delete_element: Option<SceneElement> = None;
+            let mut clone_unit_instance: Option<model::UnitInstanceKey> = None;
             let mut do_copy = false;
             let mut do_paste: Option<bool> = None;
             let mut bezier_acted = false;
@@ -27385,6 +27401,7 @@ impl App {
                             &mut |el, component| move_to_component = Some((el, component)),
                             &mut |marker| set_rollback = Some(marker),
                             &mut |el| delete_element = Some(el),
+                            &mut |instance| clone_unit_instance = Some(instance),
                             !self.state.clipboard.is_empty(),
                             self.state.clipboard.has_linkable(),
                             crate::copy_paste::copyable_element(&element).is_some(),
@@ -27420,7 +27437,8 @@ impl App {
                 || export_body_3mf.is_some()
                 || move_to_component.is_some()
                 || set_rollback.is_some()
-                || delete_element.is_some();
+                || delete_element.is_some()
+                || clone_unit_instance.is_some();
             if bezier_acted || element_acted {
                 self.viewport_context_menu = None;
             }
@@ -27520,6 +27538,9 @@ impl App {
             }
             if let Some(element) = delete_element {
                 self.state.apply(Action::DeleteElement { element });
+            }
+            if let Some(instance) = clone_unit_instance {
+                self.state.apply(Action::CloneUnitInstance { instance });
             }
         }
 

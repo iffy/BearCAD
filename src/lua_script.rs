@@ -2393,6 +2393,17 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1404: clone an existing unit instance (same unit and parameter overrides).
+    api.set(
+        "clone_unit_instance",
+        lua.create_function(|lua, opts: Table| {
+            check_keys(&opts, "clone_unit_instance", &["instance"])?;
+            let instance: usize = opts.get("instance")?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::CloneUnitInstance { instance }) }
+        })?,
+    )?;
+
     // #732: re-sync a unit's embedded copy from its source file. Takes the unit index,
     // or `{ unit = n }`.
     api.set(
