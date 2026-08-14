@@ -2756,6 +2756,33 @@ fn body_keys(doc: &crate::model::Document, ordinals: &[usize]) -> Vec<crate::mod
     ordinals.iter().filter_map(|o| body_key(doc, *o)).collect()
 }
 
+/// Split Move targets into body `targets` and unit `instance_targets` (#1406): a unit's
+/// materialized body moves as its instance, the same way the GUI routes it, so the
+/// geometry stays nested under the imported unit rather than producing a detached output.
+fn split_move_bodies(
+    doc: &crate::model::Document,
+    bodies: &[crate::model::BodyKey],
+) -> (Vec<crate::model::BodyKey>, Vec<crate::model::UnitInstanceKey>) {
+    use crate::model::BodySource;
+    let mut body_targets: Vec<crate::model::BodyKey> = Vec::new();
+    let mut instances: Vec<crate::model::UnitInstanceKey> = Vec::new();
+    for &bi in bodies {
+        match doc.bodies.get(bi).map(|b| &b.source) {
+            Some(BodySource::UnitInstance(ui)) => {
+                if !instances.contains(ui) {
+                    instances.push(*ui);
+                }
+            }
+            _ => {
+                if !body_targets.contains(&bi) {
+                    body_targets.push(bi);
+                }
+            }
+        }
+    }
+    (body_targets, instances)
+}
+
 /// A parameter's ordinal among the live ones — what a script writes (#1055).
 fn parameter_ordinal(
     doc: &crate::model::Document,
@@ -6544,7 +6571,7 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::CreateMoveOp { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
-                let targets = body_keys(&state.doc, &targets);
+                let (targets, instance_targets) = split_move_bodies(&state.doc, &body_keys(&state.doc, &targets));
                 let result = state.apply(Action::CreateMoveOperation {
                     translate_mode: move_translate_mode(&start_point_a, &end_point_a, &start_point_b),
                     start_point_a,
@@ -6556,7 +6583,7 @@ impl ScriptRunner {
                     targets,
                     plane_targets: Vec::new(),
                     image_targets: Vec::new(),
-                    instance_targets: Vec::new(),
+                    instance_targets,
                     tx,
                     ty,
                     tz,
@@ -6606,7 +6633,7 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::BeginMoveOp { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
-                let targets = body_keys(&state.doc, &targets);
+                let (targets, instance_targets) = split_move_bodies(&state.doc, &body_keys(&state.doc, &targets));
                 state.apply(crate::actions::Action::SetTool(crate::actions::Tool::Move));
                 state.creating_move = Some(crate::actions::CreatingMove {
                     targets,
@@ -6619,7 +6646,7 @@ impl ScriptRunner {
                     end_point_c,
                     plane_targets: Vec::new(),
                     image_targets: Vec::new(),
-                    instance_targets: Vec::new(),
+                    instance_targets,
                     tx,
                     ty,
                     tz,

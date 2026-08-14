@@ -8979,9 +8979,14 @@ impl AppState {
                     self.creating_move = None;
                 }
                 if tool == Tool::Move && self.creating_move.is_none() {
-                    // Whatever the outgoing picker held that can be moved (#956).
+                    // Whatever the outgoing picker held that can be moved (#956). A unit
+                    // instance (or its materialized body) target the *instance*, not the raw
+                    // body — its placement transform moves, like a plane, so the geometry
+                    // keeps nesting under the imported unit (it stays one element).
+                    let (targets, instance_targets) = move_handoff(&self.doc, &handoff);
                     self.creating_move = Some(CreatingMove {
-                        targets: handoff_bodies(&self.doc, &handoff),
+                        targets,
+                        instance_targets,
                         translate_mode: self.move_translate_mode,
                         ..CreatingMove::default()
                     });
@@ -13745,7 +13750,7 @@ op,
                         targets: cm.targets.clone(),
                         plane_targets: cm.plane_targets.clone(),
                         image_targets: cm.image_targets.clone(),
-                        instance_targets: Vec::new(),
+                        instance_targets: cm.instance_targets.clone(),
                         tx: cm.tx.clone(),
                         ty: cm.ty.clone(),
                         tz: cm.tz.clone(),
@@ -18270,6 +18275,49 @@ fn handoff_bodies(
     out
 }
 
+/// The Move tool's handoff (#1406): split a selection into body `targets` and unit
+/// `instance_targets`. A unit instance — whether handed off as a `UnitInstance` element or
+/// as its materialized `BodySource::UnitInstance` body — moves as an instance (its
+/// placement transform), the same way the click path routes it, so the geometry stays
+/// nested under the imported unit instead of producing a detached Moved output body.
+fn move_handoff(
+    doc: &crate::model::Document,
+    handoff: &[crate::hierarchy::SceneElement],
+) -> (Vec<crate::model::BodyKey>, Vec<crate::model::UnitInstanceKey>) {
+    use crate::model::BodySource;
+    let mut bodies: Vec<crate::model::BodyKey> = Vec::new();
+    let mut instances: Vec<crate::model::UnitInstanceKey> = Vec::new();
+    for element in handoff {
+        match element {
+            crate::hierarchy::SceneElement::Body(bi) => {
+                let Some(body) = doc.bodies.get(*bi) else { continue };
+                if body.shadow {
+                    continue;
+                }
+                match body.source {
+                    BodySource::UnitInstance(ui) => {
+                        if !instances.contains(&ui) {
+                            instances.push(ui);
+                        }
+                    }
+                    _ => {
+                        if !bodies.contains(bi) {
+                            bodies.push(*bi);
+                        }
+                    }
+                }
+            }
+            crate::hierarchy::SceneElement::UnitInstance(ui) => {
+                if !instances.contains(ui) {
+                    instances.push(*ui);
+                }
+            }
+            _ => {}
+        }
+    }
+    (bodies, instances)
+}
+
 /// Make one tool picker the focused one (#963/#968), by setting whichever backing flag its tool
 /// uses to remember which of its sets the next pick feeds. One definition, so a click on a
 /// picker in the pane and a scripted `picker_focus` arm the same thing.
@@ -18689,6 +18737,14 @@ pub fn apply_pick(
         // Everything else the pane can route is a whole body, which the existing per-tool
         // routing already handles — including the unit-instance remapping and the Joint tool's
         // two-part cap.
+        (P::MoveTargets, SceneElement::UnitInstance(ui)) => {
+            // A unit instance row picked into the Move tool targets the *instance* — its
+            // placement transform moves, so the geometry stays nested under the imported
+            // unit (#1406) instead of producing a detached Moved output body.
+            let cm = state.creating_move.get_or_insert_with(CreatingMove::default);
+            crate::element_picker::toggle_picked(&mut cm.instance_targets, *ui);
+            true
+        }
         (_, SceneElement::Body(bi)) => toggle_body_in_active_tool(state, *bi),
         _ => false,
     }
@@ -22040,6 +22096,135 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             &crate::model::MovePointRef::Vertex { body: unit_body, p: corner },
         )
         .is_some());
+    }
+
+    /// #1406: moving a unit through the Move tool must keep its geometry nested under the
+    /// imported unit — handing off a selected unit (or its materialized body) into the Move
+    /// tool must gather the *instance* into `instance_targets`, never the raw body into
+    /// `targets`, so no Moved output body piles up beside the unit.
+    #[test]
+    fn moving_a_unit_via_the_move_tool_targets_the_instance() {
+        let (mut state, unit_body) = state_with_solid_unit(
+            "bearcad_unit_1406_a.bearcad",
+            "bearcad_unit_1406_b.bearcad",
+        );
+        // Select the unit's materialized body (as a viewport/selection handoff would).
+        crate::selection::click_scene_selection(
+            &mut state.scene_selection,
+            SceneElement::Body(unit_body),
+            false,
+        );
+        // Picking up the Move tool hands the selection into the move's targets.
+        state.apply(Action::SetTool(Tool::Move));
+        let cm = state.creating_move.as_ref().expect("the Move tool is armed");
+        assert_eq!(
+            cm.targets,
+            Vec::new(),
+            "the raw unit body must not land in the body targets"
+        );
+        assert_eq!(cm.instance_targets, vec![uikey(0)], "the instance is what moves");
+
+        state.apply(Action::CommitMove);
+        let op = state.doc.move_ops.values().next().expect("one move op committed");
+        assert!(op.targets.is_empty(), "no body targets: {:#?}", op.targets);
+        assert_eq!(op.instance_targets, vec![uikey(0)]);
+        assert!(op.outputs.is_empty(), "no Moved output body is created");
+        assert!(op.plane_targets.is_empty() && op.image_targets.is_empty());
+        // The unit's materialized body stays live (unconsumed) and its geometry still
+        // nests under the unit instance in the hierarchy.
+        assert!(!state.doc.bodies[unit_body].shadow, "the unit body is not consumed");
+        let tree = crate::hierarchy::build_hierarchy(&state.doc, None);
+        let unit_node = tree[0]
+            .children
+            .iter()
+            .find(|e| e.node == crate::hierarchy::HierarchyNode::UnitInstance(uikey(0)))
+            .expect("the unit instance row exists");
+        assert!(!unit_node.children.is_empty(), "the unit's contents stay its children");
+    }
+
+    /// #1406: clicking a unit instance row into the Move tool's Bodies picker (the Elements
+    /// pane route) gathers the instance, not a raw body, so no Moved output body piles up.
+    #[test]
+    fn picking_a_unit_instance_row_into_the_move_tool_targets_the_instance() {
+        let (mut state, _unit_body) = state_with_solid_unit(
+            "bearcad_unit_1406_pick_a.bearcad",
+            "bearcad_unit_1406_pick_b.bearcad",
+        );
+        state.apply(Action::SetTool(Tool::Move));
+        let took = apply_pick(
+            &mut state,
+            crate::context::PickerTarget::MoveTargets,
+            &SceneElement::UnitInstance(uikey(0)),
+        );
+        assert!(took, "the instance row is picked into the move");
+        let cm = state.creating_move.as_ref().expect("the Move tool is armed");
+        assert_eq!(cm.instance_targets, vec![uikey(0)]);
+        assert!(cm.targets.is_empty(), "no raw body target");
+    }
+
+    /// #1406: re-editing a committed move that targeted a unit instance must keep the
+    /// instance targets — committing the edit must not silently drop them (which would
+    /// leave the move with nothing to move and the unit behind).
+    #[test]
+    fn editing_a_unit_move_keeps_the_instance_targets() {
+        let (mut state, _unit_body) = state_with_solid_unit(
+            "bearcad_unit_1406_edit_a.bearcad",
+            "bearcad_unit_1406_edit_b.bearcad",
+        );
+        let r = state.apply(Action::CreateMoveOperation {
+            keep_inputs: false,
+            translate_mode: crate::model::MoveTranslateMode::Free,
+            start_point_a: None,
+            end_point_a: None,
+            start_point_b: None,
+            end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
+            targets: Vec::new(),
+            plane_targets: Vec::new(),
+            image_targets: Vec::new(),
+            instance_targets: vec![uikey(0)],
+            tx: "5".to_string(),
+            ty: String::new(),
+            tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
+            face_flip: false,
+            face_spin: String::new(),
+            roll_angle: String::new(),
+            face_offset: String::new(),
+        });
+        assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
+        let op = crate::model::move_op_key_for_slot(0);
+
+        // Open the move for editing (as `begin_operation_edit` would), then re-commit it.
+        let existing = state.doc.move_ops[op].clone();
+        state.creating_move = Some(crate::actions::CreatingMove {
+            targets: existing.targets.clone(),
+            instance_targets: existing.instance_targets.clone(),
+            plane_targets: existing.plane_targets.clone(),
+            image_targets: existing.image_targets.clone(),
+            translate_mode: existing.translate_mode,
+            editing: Some(op),
+            tx: "6".to_string(),
+            ty: String::new(),
+            tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
+            face_flip: false,
+            face_spin: String::new(),
+            roll_angle: String::new(),
+            face_offset: String::new(),
+            ..CreatingMove::default()
+        });
+        state.apply(Action::CommitMove);
+        let edited = &state.doc.move_ops[op];
+        assert_eq!(edited.instance_targets, vec![uikey(0)], "the instance target survives");
+        assert_eq!(edited.tx, "6");
+        assert!(edited.targets.is_empty());
+        assert!(edited.outputs.is_empty());
     }
 
     /// #1390: a body imported from STL is moveable — in free mode (typed translate)

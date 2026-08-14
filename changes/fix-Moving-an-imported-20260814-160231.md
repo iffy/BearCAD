@@ -1,0 +1,1 @@
+Moving an imported unit now moves the instance itself (not its materialized bodies), so the geometry stays nested under the unit in the Elements pane instead of spawning a detached Moved output body; this also holds when a selected unit is handed into the Move tool and when re-editing a committed unit move.

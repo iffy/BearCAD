@@ -9357,6 +9357,22 @@ impl App {
                 "That body is already consumed by another operation".to_string();
             return;
         }
+        // A unit's materialized body (#735/#1406): what moves is the *instance* — its
+        // placement transform — so the click gathers the instance into the move's
+        // `instance_targets`, not the raw body into `targets` (which would spawn a
+        // detached Moved output body beside the unit in the Elements pane).
+        if let Some(crate::model::BodySource::UnitInstance(instance)) =
+            self.state.doc.bodies.get(bi).map(|b| b.source.clone())
+        {
+            let cm = self
+                .state
+                .creating_move
+                .get_or_insert_with(actions::CreatingMove::default);
+            crate::element_picker::toggle_picked(&mut cm.instance_targets, instance);
+            self.state.status =
+                format!("Move: {} instance(s) picked", cm.instance_targets.len());
+            return;
+        }
         let cm = self
             .state
             .creating_move
@@ -14718,6 +14734,7 @@ impl App {
                 context::MoveControl {
                     angle_snap_deg: self.state.move_angle_snap_deg,
                     targets: cm.map(|c| c.targets.clone()).unwrap_or_default(),
+                    instance_targets: cm.map(|c| c.instance_targets.clone()).unwrap_or_default(),
                     plane_targets: cm.map(|c| c.plane_targets.clone()).unwrap_or_default(),
                     image_targets: cm.map(|c| c.image_targets.clone()).unwrap_or_default(),
                     translate_mode: cm.map(|c| c.translate_mode).unwrap_or_default(),
@@ -14750,7 +14767,7 @@ impl App {
                     face_b: cm.and_then(|c| c.face_pick(false)),
                     editing: cm.map(|c| c.editing.is_some()).unwrap_or(false),
                     can_commit: cm
-                        .map(|c| !c.targets.is_empty() || !c.plane_targets.is_empty() || !c.image_targets.is_empty())
+                        .map(|c| !c.targets.is_empty() || !c.plane_targets.is_empty() || !c.image_targets.is_empty() || !c.instance_targets.is_empty())
                         .unwrap_or(false),
                 }
             }),
