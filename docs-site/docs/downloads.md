@@ -17,7 +17,7 @@ the first time.
 The desktop builds add Lua scripting and a command-line interface on top of everything in
 the web app. Prefer not to download anything? [Run BearCAD in your browser](pathname:///app/) instead.
 
-:::info[Name Your Price]
+:::info[Choose what you want to pay]
 BearCAD is free — use it however you like, including paying nothing at all. If you'd like to
-support the project, you can name your own price: [pay whatever it's worth to you](https://buy.stripe.com/4gMbJ39g2gsH4hKd9cdQQ00).
+support the project, you can choose what you want to pay: [pay whatever it's worth to you](https://buy.stripe.com/4gMbJ39g2gsH4hKd9cdQQ00).
 :::

@@ -13,7 +13,7 @@ import styles from './index.module.css';
 // The hosted web build (wasm), deployed alongside the docs by CI. Chromebooks
 // install this as a PWA (Install app in Chrome); same path as "Run in browser".
 const WEB_APP_PATH = 'pathname:///app/';
-// Name Your Price (Stripe payment link).
+// Choose what you want to pay (Stripe payment link).
 const PAY_URL = 'https://buy.stripe.com/4gMbJ39g2gsH4hKd9cdQQ00';
 // The other three of the four main actions, besides the prominent "Run in your
 // browser" CTA. Download points at a dedicated page so the navbar can reuse it.
@@ -21,7 +21,7 @@ const PAY_URL = 'https://buy.stripe.com/4gMbJ39g2gsH4hKd9cdQQ00';
 const ACTIONS = [
   {label: '▶  Run in your browser', href: WEB_APP_PATH, primary: true},
   {label: 'Read the docs', to: '/docs/intro'},
-  {label: 'Name Your Price', href: PAY_URL},
+  {label: 'Choose what to pay', href: PAY_URL},
   {label: 'Download', to: '/docs/downloads'},
 ];
 
