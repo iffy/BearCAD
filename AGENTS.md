@@ -8,7 +8,7 @@ Run `cargo test` to make sure tests pass. Fix warnings from `cargo build` as the
 
 We're in pre-alpha right now, so don't worry about defining schema migrations at this point -- just alter the initial schema. And don't mind backward compatibility. Feel free to make breaking compatibility changes.
 
-For every completed task/feature/fix, record the change with a single, complete sentence via `changer add ...` (see `changer add --help` for more info)
+For every completed task/feature/fix, record the change with a single, complete sentence via `changer add ...` (see `changer add --help` for more info). Don't record infrastructure changes (docs, CI).
 
 When adding or changing a keyboard shortcut, update `shortcuts::all_shortcuts()` in the same change — it renders the Keyboard Shortcuts window (View/Help menus) and is the single source for the app's binding list (see SPEC §11).
 
