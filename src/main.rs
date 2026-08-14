@@ -14737,7 +14737,6 @@ impl App {
                     roll_angle: cm.map(|c| c.roll_angle.clone()).unwrap_or_default(),
                     face_flip: cm.map(|c| c.face_flip).unwrap_or(false),
                     face_spin: cm.map(|c| c.face_spin.clone()).unwrap_or_default(),
-                    face_offset: cm.map(|c| c.face_offset.clone()).unwrap_or_default(),
                     face_a: cm.and_then(|c| c.face_pick(true)),
                     face_b: cm.and_then(|c| c.face_pick(false)),
                     editing: cm.map(|c| c.editing.is_some()).unwrap_or(false),
@@ -15853,7 +15852,6 @@ impl App {
                             context::MoveEdit::RollAngle(v) => cm.roll_angle = v,
                             context::MoveEdit::FaceFlip(v) => cm.face_flip = v,
                             context::MoveEdit::FaceSpin(v) => cm.face_spin = v,
-                            context::MoveEdit::FaceOffset(v) => cm.face_offset = v,
                             context::MoveEdit::TranslateMode(m) => {
                                 cm.translate_mode = m;
                                 self.state.move_translate_mode = m; // #1086
