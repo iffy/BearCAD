@@ -1100,7 +1100,9 @@ impl CreatingSketchOffset {
             sketch,
             line_targets: Vec::new(),
             circle_targets: Vec::new(),
-            distance: "5".to_string(),
+            // Explicit unit so the 5 mm seed stays 5 mm regardless of the document's
+            // default unit (bare numbers evaluate in the default unit, #1394).
+            distance: "5 mm".to_string(),
             construction: false,
             editing: None,
             pending_focus: false,
