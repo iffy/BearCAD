@@ -1,0 +1,59 @@
+name: Bug report
+description: Something isn't behaving the way you'd expect
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug! Two things help us the most:
+
+        1. **Screenshots** of what you see. Paste an image directly into this form
+           (a screenshot pasted into GitHub is turned into an attached image
+           automatically) or drag a file into it.
+        2. **The exact document state**, via **File → Document JSON…**.
+
+        If an image doesn't reproduce the problem, the Document JSON does.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What's the problem?
+      description: Say what you did, what you expected, and what happened instead.
+      placeholder: "Steps to reproduce: ... Expected: ... Actual: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: What do you see?
+      description: >
+        Paste screenshots below (paste the image right into this box), or drag
+        PNG/JPEG files onto it. Screenshots of the viewport and of the console are
+        usually most useful.
+      placeholder: "Attach or paste screenshots here."
+  - type: markdown
+    attributes:
+      value: |
+        ### Attaching the exact document
+
+        Use **File → Document JSON…** to open a JSON dialog for the current document,
+        click **Copy to clipboard**, then **paste the JSON text** into the box below.
+        Anyone can paste it back into the same dialog and load your document.
+
+        > GitHub does **not** turn pasted text into a file attachment, so pasted JSON
+        > appears as inline text — that's expected and fine. If you'd rather attach a
+        > file, save the JSON as a `.json` file and drag it into the issue instead.
+  - type: textarea
+    id: document
+    attributes:
+      label: Document JSON
+      description: >
+        File → Document JSON… → Copy to clipboard, then paste here (or attach a
+        `.json` file). Leave empty if it's a startup/general problem.
+      placeholder: "{\"format\": ...}"
+  - type: dropdown
+    id: build
+    attributes:
+      label: Where are you running BearCAD?
+      options:
+        - Desktop app (macOS / Windows / Linux)
+        - In the browser (web build)
+      description: Optional, but really helps.
