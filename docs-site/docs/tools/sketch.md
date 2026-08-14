@@ -26,7 +26,7 @@ you're in sketch mode. Press **Esc** (with nothing in progress) to leave the ske
   shapes, its origin and axes, and the sketched-on face's own edges and corners.
 - **Project outside geometry in:** in sketch mode, **P** activates **Projection** — select
   outside edges (or a face/vertex for the whole body), press **Enter** (or the blue commit
-  button), and they land as solid cyan [projected lines](/docs/styles#lines) that follow
+  button), and they land as solid cyan projected lines that follow
   their sources. Select only projected lines and press **Enter** to remove them.
 - When faces overlap under the cursor, the one nearest the camera wins — you never pick a
   hidden face by accident.

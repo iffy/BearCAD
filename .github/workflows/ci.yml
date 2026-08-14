@@ -373,9 +373,72 @@ jobs:
           name: bearcad-${{ matrix.os_slug }}
           path: ${{ matrix.artifact }}
 
+  # Build the WASM web app once so the website CI can pull it from the published
+  # release instead of rebuilding it on every docs push (#1387). Built alongside the
+  # desktop binaries and attached to the same draft release, so "latest published
+  # (non-draft) release" always carries a matching web app.
+  build-web-release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wasm-web
+
+      - name: Install wasm-bindgen-cli
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.125
+
+      - name: Install Emscripten
+        uses: emscripten-core/setup-emsdk@v16
+        with:
+          # Match the locally-verified toolchain (the kernel build was validated on 6.0.2).
+          version: 6.0.2
+
+      - name: Cache OCCT wasm build
+        id: occt-wasm-cache
+        uses: actions/cache@v5
+        with:
+          path: third_party/OCCT/occt-install-wasm
+          key: occt-install-wasm-v8.0.0-${{ hashFiles('scripts/build-occt-wasm.sh') }}
+
+      - name: Fetch OCCT submodule (cache miss only)
+        if: steps.occt-wasm-cache.outputs.cache-hit != 'true'
+        run: git submodule update --init --depth 1 third_party/OCCT
+
+      # libslvs is compiled into the kernel module on every run (unlike the OCCT static
+      # libs, it isn't cached), so its sources are always needed.
+      - name: Fetch solvespace submodule (libslvs sketch solver)
+        run: |
+          git submodule update --init --depth 1 third_party/solvespace
+          git -C third_party/solvespace submodule update --init --depth 1 extlib/eigen extlib/mimalloc
+
+      - name: Build web app (kernel + app)
+        run: scripts/build-web.sh
+
+      - name: Package web app (bearcad-web.zip)
+        run: bash scripts/package-web.sh
+
+      - name: Upload web app release asset
+        uses: actions/upload-artifact@v6
+        with:
+          name: bearcad-web
+          path: web/bearcad-web.zip
+          if-no-files-found: error
+
   release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    needs: [build-release, release-id]
+    needs: [build-release, build-web-release, release-id]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -401,6 +464,7 @@ jobs:
             artifacts/bearcad-linux-x86_64.tar.gz
             artifacts/bearcad.dmg
             artifacts/bearcad.exe
+            artifacts/bearcad-web.zip
 
       - name: Prune old draft releases
         env:

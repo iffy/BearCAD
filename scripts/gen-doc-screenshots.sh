@@ -16,7 +16,6 @@
 #   BEARCAD_SCREENSHOT_SHARD=1/4              # run only this shard of the selection
 #   BEARCAD_SCREENSHOT_SKIP_EXISTING=1        # skip scenes that already have a PNG
 #   BEARCAD_SCREENSHOT_LIST_ONLY=1            # print selected scenes and exit
-#   BEARCAD_SKIP_SWATCHES=1                   # skip style-swatch cargo test
 #   BEARCAD_SCREENSHOT_BASE=origin/master     # git base for affected mode
 #
 # Rendering requirements: capturing a screenshot needs a real rendered GPU
@@ -53,7 +52,6 @@ PER_SHOT_TIMEOUT="${BEARCAD_SHOT_TIMEOUT:-60}"
 CARGO_FLAGS="${BEARCAD_CARGO_FLAGS:-}"
 LIST_ONLY="${BEARCAD_SCREENSHOT_LIST_ONLY:-0}"
 SKIP_EXISTING="${BEARCAD_SCREENSHOT_SKIP_EXISTING:-0}"
-SKIP_SWATCHES="${BEARCAD_SKIP_SWATCHES:-0}"
 SHARD="${BEARCAD_SCREENSHOT_SHARD:-}"
 ONLY="${BEARCAD_SCREENSHOT_ONLY:-}"
 MODE="${BEARCAD_SCREENSHOT_MODE:-full}"
@@ -246,32 +244,6 @@ fi
 
 if [[ ${#selected[@]} -eq 0 ]]; then
   echo "No screenshot scenes selected (mode=$MODE); nothing to generate."
-fi
-
-# --- Style swatches (#160) ------------------------------------------------------
-# Drawn directly from the renderer's color constants into PNGs — no GPU or display
-# needed, so this works everywhere the tests build. Only shard 1 (or a non-sharded
-# run) should do this in CI.
-if [[ "$SKIP_SWATCHES" != "1" ]]; then
-  run_swatches=1
-  if [[ -n "$SHARD" ]]; then
-    shard_i="${SHARD%%/*}"
-    if [[ "$shard_i" != "1" ]]; then
-      run_swatches=0
-    fi
-  fi
-  if [[ "$run_swatches" == "1" ]]; then
-    echo "==> style swatches -> $OUT_DIR/styles/"
-    # shellcheck disable=SC2086
-    cargo test --release $CARGO_FLAGS generate_style_swatches -- --ignored
-  else
-    echo "Skipping style swatches (shard $SHARD; only shard 1 runs them)"
-  fi
-fi
-
-if [[ ${#selected[@]} -eq 0 ]]; then
-  echo "Screenshots generated: 0 ok, 0 failed (selection empty)."
-  exit 0
 fi
 
 # --- Run each selected script and check its PNG --------------------------------

@@ -124,7 +124,7 @@ fi
 
 # --- affected (+ always include missing) -------------------------------------
 # Paths that force the full suite: renderer, theme, harness, kernel/link surface.
-FULL_FORCE_REGEX='^(src/gpu_viewport/|src/gpu_view_cube/|src/theme\.rs|src/style_swatches\.rs|src/icons\.rs|src/main\.rs|src/script\.rs|src/lua_script\.rs|src/web_lua\.rs|cpp/|scripts/gen-doc-screenshots\.sh|scripts/select-doc-screenshots\.sh|Cargo\.toml|Cargo\.lock)'
+FULL_FORCE_REGEX='^(src/gpu_viewport/|src/gpu_view_cube/|src/theme\.rs|src/icons\.rs|src/main\.rs|src/script\.rs|src/lua_script\.rs|src/web_lua\.rs|cpp/|scripts/gen-doc-screenshots\.sh|scripts/select-doc-screenshots\.sh|Cargo\.toml|Cargo\.lock)'
 
 # Print path regexes for a scene (beyond the generic rules applied below).
 deps_for_scene() {
@@ -141,8 +141,8 @@ deps_for_scene() {
   printf '%s\n' "docs-site/screenshots/assets/"
 
   case "$scene" in
-    styles-scene|pane-settings)
-      printf '%s\n' "src/theme\\.rs" "src/settings\\.rs" "src/style_swatches\\.rs"
+    pane-settings)
+      printf '%s\n' "src/settings\\.rs"
       ;;
     command-palette)
       printf '%s\n' "src/command_palette\\.rs" "src/menu_command\\.rs"

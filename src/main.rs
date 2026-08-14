@@ -20,7 +20,6 @@ mod arena;
 #[cfg(not(target_arch = "wasm32"))]
 mod window_probe;
 mod projection;
-mod style_swatches;
 mod app_icon;
 mod camera;
 #[cfg(not(target_arch = "wasm32"))]
