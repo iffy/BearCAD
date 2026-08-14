@@ -54,6 +54,12 @@ const config = {
   projectName: 'BearCAD',
 
   onBrokenLinks: 'throw',
+  scripts: [
+    {
+      src: 'https://js.stripe.com/v3/buy-button.js',
+      async: true,
+    },
+  ],
   markdown: {
     hooks: {
       onBrokenMarkdownLinks: 'warn',
@@ -144,11 +150,6 @@ const config = {
           {
             href: 'https://github.com/iffy/BearCAD',
             label: 'GitHub',
-            position: 'right',
-          },
-          {
-            href: 'https://buy.stripe.com/28E3ci4Gt60efjO7mn1Jm00',
-            label: 'Pay',
             position: 'right',
           },
           {
