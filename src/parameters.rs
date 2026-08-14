@@ -1620,7 +1620,7 @@ pub fn set_parameter_bound(
 }
 
 /// Which optional bound field on a parameter (#1176).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum ParameterBound {
     Minimum,
     Maximum,
@@ -2100,7 +2100,19 @@ fn show_parameter_options_fields(
     set_primary: &mut Option<(ParameterKey, bool)>,
     set_bound: &mut Option<(ParameterKey, ParameterBound, Option<String>)>,
 ) {
-    use egui::{pos2, Stroke, TextEdit};
+    use egui::{pos2, Stroke};
+
+    // Determine the parameter's value kind for the ValueInputs.
+    let value_kind = app
+        .doc
+        .parameters
+        .get(index)
+        .and_then(|p| parameter_value_kind(&app.doc, &p.expression))
+        .map(|k| match k {
+            ParameterValueKind::Length => crate::expression_input::ValueKind::Length,
+            ParameterValueKind::Angle => crate::expression_input::ValueKind::Angle,
+        })
+        .unwrap_or(crate::expression_input::ValueKind::Length);
 
     // Tree rows under the parameter name (#1178): Private, Min, Max, Step.
     // The gutter is a vertical line that turns a corner on the last row.
@@ -2161,11 +2173,16 @@ fn show_parameter_options_fields(
                 ui.label(RichText::new(label).size(11.0));
                 let editing = app.parameters_pane.options_editing == Some((index, which));
                 if editing {
-                    let resp = ui.add(
-                        TextEdit::singleline(&mut app.parameters_pane.options_draft)
-                            .desired_width(96.0)
-                            .hint_text("expression"),
-                    );
+                    let mut draft = app.parameters_pane.options_draft.clone();
+                    let resp = crate::expression_input::ValueInput::new(
+                        (index, which),
+                        value_kind,
+                    )
+                    .hint("expression")
+                    .no_definitions()
+                    .width(96.0)
+                    .show(ui, &mut draft, &app.doc);
+                    app.parameters_pane.options_draft = draft;
                     if app.parameters_pane.options_editing_focus {
                         resp.request_focus();
                         app.parameters_pane.options_editing_focus = false;
