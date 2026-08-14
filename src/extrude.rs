@@ -2288,10 +2288,7 @@ pub fn sketch_repeat_offsets(
             .flatten()
     };
     let count = || -> Option<usize> {
-        let n = crate::value::eval_parameter_in_doc(&op.count, doc).and_then(|v| match v {
-            crate::value::EvaluatedParameter::LengthMm(n) => Some(n),
-            crate::value::EvaluatedParameter::AngleRad(_) => None,
-        })?;
+        let n = crate::value::eval_count_in_doc(&op.count, doc)?;
         (n >= 1.0).then_some((n.round() as usize).min(MAX_REPEAT_INSTANCES))
     };
     spacing_offsets(op.mode, extent, count(), eval(&op.spacing), eval(&op.length))
@@ -2516,10 +2513,7 @@ fn repeat_angles(doc: &Document, op: &crate::model::RepeatOperation) -> Option<V
 
 /// The op's instance count expression, evaluated and clamped.
 fn repeat_count(doc: &Document, op: &crate::model::RepeatOperation) -> Option<usize> {
-    let n = crate::value::eval_parameter_in_doc(&op.count, doc).and_then(|v| match v {
-        crate::value::EvaluatedParameter::LengthMm(n) => Some(n),
-        crate::value::EvaluatedParameter::AngleRad(_) => None,
-    })?;
+    let n = crate::value::eval_count_in_doc(&op.count, doc)?;
     (n >= 1.0).then_some((n.round() as usize).min(MAX_REPEAT_INSTANCES))
 }
 
@@ -2595,10 +2589,7 @@ pub fn repeat_offsets(doc: &Document, op: &crate::model::RepeatOperation) -> Opt
         eval(&op.length)
     };
     let count = || -> Option<usize> {
-        let n = crate::value::eval_parameter_in_doc(&op.count, doc).and_then(|v| match v {
-            crate::value::EvaluatedParameter::LengthMm(n) => Some(n),
-            crate::value::EvaluatedParameter::AngleRad(_) => None,
-        })?;
+        let n = crate::value::eval_count_in_doc(&op.count, doc)?;
         (n >= 1.0).then_some((n.round() as usize).min(MAX_REPEAT_INSTANCES))
     };
     // Fill modes never read `count`, and count modes never read `length`, but evaluating both

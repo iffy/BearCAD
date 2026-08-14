@@ -1,7 +1,9 @@
 //! Length expressions with units (SPEC §5.2–5.3).
 //!
 //! Canonical internal unit is millimetres. Supported length units: mm, cm, m, ft, in.
-//! Bare numbers are interpreted as millimetres. Identifiers refer to document parameters.
+//! With a document context a bare number is interpreted in that document's default
+//! length unit (#1394); without one it defaults to millimetres. Identifiers refer to
+//! document parameters.
 
 use crate::model::Document;
 use serde::{Deserialize, Serialize};
@@ -18,17 +20,36 @@ pub fn eval_length_mm_in_doc(text: &str, doc: &Document) -> Option<f32> {
         .iter()
         .map(|(n, e)| (n.as_str(), e.as_str()))
         .collect();
-    eval_length_mm_with_params(text, &params)
+    // Bare numbers are interpreted in the document's default length unit (#1394): an
+    // inches document reads `1.5` as 1.5 in, not 1.5 mm.
+    eval_length_mm_with_params_in_unit(text, &params, doc.default_length_unit)
 }
 
 /// Evaluate with explicit parameter name → expression bindings.
 pub fn eval_length_mm_with_params(text: &str, params: &[(&str, &str)]) -> Option<f32> {
-    let mut visiting = Vec::new();
-    eval_length_mm_inner(text.trim(), params, &mut visiting)
+    // A bare number with no document context defaults to millimetres (the scripting
+    // numeric API is unit-agnostic-in-mm by design).
+    eval_length_mm_with_params_in_unit(text, params, LengthUnit::Mm)
 }
 
-fn eval_length_mm_inner(text: &str, params: &[(&str, &str)], visiting: &mut Vec<String>) -> Option<f32> {
-    let mut p = Parser::new(text, Some(params), visiting);
+/// Like [`eval_length_mm_with_params`], but a bare number is interpreted in `unit`
+/// rather than always in millimetres.
+pub fn eval_length_mm_with_params_in_unit(
+    text: &str,
+    params: &[(&str, &str)],
+    unit: LengthUnit,
+) -> Option<f32> {
+    let mut visiting = Vec::new();
+    eval_length_mm_inner(text.trim(), params, &mut visiting, unit)
+}
+
+fn eval_length_mm_inner(
+    text: &str,
+    params: &[(&str, &str)],
+    visiting: &mut Vec<String>,
+    default_unit: LengthUnit,
+) -> Option<f32> {
+    let mut p = Parser::new(text, Some(params), visiting, default_unit);
     let value = p.parse_expr().ok()?;
     p.skip_ws();
     if p.at_end() {
@@ -452,12 +473,38 @@ pub fn eval_angle_rad_in_doc(text: &str, doc: &Document) -> Option<f32> {
         .iter()
         .map(|(n, e)| (n.as_str(), e.as_str()))
         .collect();
-    eval_angle_rad_with_params(text, &params)
+    // A bare angle number is interpreted in the document's default angle unit (#1394).
+    eval_angle_rad_with_params_in_unit(text, &params, doc.default_angle_unit)
 }
 
 pub fn eval_angle_rad_with_params(text: &str, params: &[(&str, &str)]) -> Option<f32> {
+    eval_angle_rad_with_params_in_unit(text, params, AngleUnit::Deg)
+}
+
+/// Evaluate a unitless count expression (e.g. a repeat `count`), resolving document
+/// parameters. A bare number is a plain count, unaffected by the document's default
+/// length unit (#1394): `2` means 2, not 2 in.
+pub fn eval_count_in_doc(text: &str, doc: &Document) -> Option<f32> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    let bindings = document_parameter_bindings(doc);
+    let params: Vec<(&str, &str)> = bindings
+        .iter()
+        .map(|(n, e)| (n.as_str(), e.as_str()))
+        .collect();
+    eval_length_mm_with_params(text, &params)
+}
+
+/// Like [`eval_angle_rad_with_params`], but a bare number is interpreted in `unit`
+/// rather than always in degrees.
+pub fn eval_angle_rad_with_params_in_unit(
+    text: &str,
+    params: &[(&str, &str)],
+    unit: AngleUnit,
+) -> Option<f32> {
     let mut visiting = Vec::new();
-    eval_angle_rad_inner(text.trim(), params, &mut visiting)
+    eval_angle_rad_inner(text.trim(), params, &mut visiting, unit)
 }
 
 /// Evaluated parameter value in canonical internal units.
@@ -544,8 +591,13 @@ pub fn valid_parameter_expression_with_params(text: &str, params: &[(&str, &str)
         || eval_angle_rad_with_params(text, params).is_some()
 }
 
-fn eval_angle_rad_inner(text: &str, params: &[(&str, &str)], visiting: &mut Vec<String>) -> Option<f32> {
-    let mut p = AngleParser::new(text, Some(params), visiting);
+fn eval_angle_rad_inner(
+    text: &str,
+    params: &[(&str, &str)],
+    visiting: &mut Vec<String>,
+    default_unit: AngleUnit,
+) -> Option<f32> {
+    let mut p = AngleParser::new(text, Some(params), visiting, default_unit);
     let value = p.parse_expr().ok()?;
     p.skip_ws();
     if p.at_end() {
@@ -797,14 +849,21 @@ struct Parser<'a> {
     chars: std::iter::Peekable<std::str::Chars<'a>>,
     params: Option<&'a [(&'a str, &'a str)]>,
     visiting: &'a mut Vec<String>,
+    default_unit: LengthUnit,
 }
 
 impl<'a> Parser<'a> {
-    fn new(input: &'a str, params: Option<&'a [(&'a str, &'a str)]>, visiting: &'a mut Vec<String>) -> Self {
+    fn new(
+        input: &'a str,
+        params: Option<&'a [(&'a str, &'a str)]>,
+        visiting: &'a mut Vec<String>,
+        default_unit: LengthUnit,
+    ) -> Self {
         Self {
             chars: input.chars().peekable(),
             params,
             visiting,
+            default_unit,
         }
     }
 
@@ -988,7 +1047,9 @@ impl<'a> Parser<'a> {
             .map(|(_, expr)| *expr)
             .ok_or(())?;
         self.visiting.push(name);
-        let value = eval_length_mm_inner(expression, params, self.visiting).ok_or(())?;
+        let value =
+            eval_length_mm_inner(expression, params, self.visiting, self.default_unit)
+                .ok_or(())?;
         self.visiting.pop();
         Ok(value)
     }
@@ -1048,7 +1109,7 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        Ok(LengthUnit::Mm)
+        Ok(self.default_unit)
     }
 }
 
@@ -1106,14 +1167,21 @@ struct AngleParser<'a> {
     chars: std::iter::Peekable<std::str::Chars<'a>>,
     params: Option<&'a [(&'a str, &'a str)]>,
     visiting: &'a mut Vec<String>,
+    default_unit: AngleUnit,
 }
 
 impl<'a> AngleParser<'a> {
-    fn new(input: &'a str, params: Option<&'a [(&'a str, &'a str)]>, visiting: &'a mut Vec<String>) -> Self {
+    fn new(
+        input: &'a str,
+        params: Option<&'a [(&'a str, &'a str)]>,
+        visiting: &'a mut Vec<String>,
+        default_unit: AngleUnit,
+    ) -> Self {
         Self {
             chars: input.chars().peekable(),
             params,
             visiting,
+            default_unit,
         }
     }
 
@@ -1297,7 +1365,9 @@ impl<'a> AngleParser<'a> {
             .map(|(_, expr)| *expr)
             .ok_or(())?;
         self.visiting.push(name);
-        let value = eval_angle_rad_inner(expression, params, self.visiting).ok_or(())?;
+        let value =
+            eval_angle_rad_inner(expression, params, self.visiting, self.default_unit)
+                .ok_or(())?;
         self.visiting.pop();
         Ok(value)
     }
@@ -1351,7 +1421,7 @@ impl<'a> AngleParser<'a> {
                 }
             }
         }
-        Ok(AngleUnit::Deg)
+        Ok(self.default_unit)
     }
 }
 
@@ -1780,6 +1850,64 @@ mod tests {
         });
         doc.default_length_unit = LengthUnit::In;
         assert_eq!(interpolate_text("{foo}", &doc), "3.0 in");
+    }
+
+    /// #1394: a bare number in a doc-aware length expression is interpreted in the
+    /// document's default length unit (here inches), not millimetres.
+    #[test]
+    fn bare_number_uses_document_default_length_unit() {
+        let mut doc = Document::default();
+        doc.default_length_unit = LengthUnit::In;
+        doc.parameters.insert(crate::model::Parameter {
+            name: "width".to_string(),
+            expression: "3".to_string(),
+            primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
+            source: None,
+        });
+        assert_eq!(eval_length_mm_in_doc("1.5", &doc), Some(1.5 * 25.4));
+        assert_eq!(computed_length_in_doc("1.5", &doc), Some(1.5 * 25.4));
+        assert_eq!(
+            eval_length_mm_in_doc("width", &doc),
+            Some(3.0 * 25.4),
+            "parameter definitions in an inches doc read bare numbers as inches"
+        );
+        // Explicit units still win over the default.
+        assert_eq!(eval_length_mm_in_doc("1.5mm", &doc), Some(1.5));
+        // The doc-agnostic eval keeps its millimetre contract.
+        assert_eq!(eval_length_mm("1.5"), Some(1.5));
+    }
+
+    /// #1394: mirror behaviour for angles — a bare angle number in a rad document is
+    /// radians, not degrees.
+    #[test]
+    fn bare_angle_uses_document_default_angle_unit() {
+        let mut doc = Document::default();
+        doc.default_angle_unit = AngleUnit::Rad;
+        assert_eq!(eval_angle_rad_in_doc("1.5", &doc), Some(1.5));
+        assert_eq!(eval_angle_rad_in_doc("1.5deg", &doc), Some(1.5f32.to_radians()));
+        assert_eq!(eval_angle_rad("1.5"), Some(1.5f32.to_radians()));
+    }
+
+    /// #1394: a repeat count is a unitless number, unaffected by the document's default
+    /// length unit — `2` is 2 in an inches document, not 2 in.
+    #[test]
+    fn eval_count_is_unaffected_by_document_default_unit() {
+        let mut doc = Document::default();
+        doc.default_length_unit = LengthUnit::In;
+        doc.parameters.insert(crate::model::Parameter {
+            name: "n".to_string(),
+            expression: "3".to_string(),
+            primary: false,
+            minimum: None,
+            maximum: None,
+            step: None,
+            source: None,
+        });
+        assert_eq!(eval_count_in_doc("2", &doc), Some(2.0));
+        assert_eq!(eval_count_in_doc("n", &doc), Some(3.0));
     }
 
     #[test]
