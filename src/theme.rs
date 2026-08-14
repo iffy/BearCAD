@@ -48,6 +48,11 @@ pub const MOVE_END_POINT: Color32 = Color32::from_rgb(230, 80, 80);
 pub const MOVE_CONNECTOR: Color32 = Color32::from_rgb(245, 220, 80);
 pub const MOVE_CANDIDATE: Color32 = Color32::from_rgb(110, 165, 245);
 pub const MOVE_CANDIDATE_HOVER: Color32 = Color32::from_rgb(255, 210, 90);
+/// Face Snap's moving-face highlight (#1361): cyan, so the face the user is moving reads apart
+/// from the blue of the one it lands on.
+pub const MOVE_MOVING_FACE: Color32 = Color32::from_rgb(80, 215, 215);
+/// Face Snap's fixed (landing) face highlight (#1361): blue.
+pub const MOVE_FIXED_FACE: Color32 = Color32::from_rgb(96, 150, 226);
 /// Input-like control background (matches text inputs' `extreme_bg_color`).
 pub const INPUT_BG: Color32 = Color32::from_gray(18);
 /// Resting outline for an input-like control.
