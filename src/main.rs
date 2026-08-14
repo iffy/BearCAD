@@ -6378,6 +6378,18 @@ impl App {
                 }
             }
 
+            // Y cycles the active tool's Output mode — new body → add to body → cut → …
+            // (#1397). No-op except on the tools with an Output row (Extrude/Revolve/Sweep/
+            // Loft/Mirror); `consume_key(NONE, …)` never catches a plain typing key.
+            if self.state.creating_rect.is_none()
+                && self.state.creating_line.is_none()
+                && self.state.creating_circle.is_none()
+                && self.state.creating_plane.is_none()
+                && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Y))
+            {
+                self.cycle_tool_output_mode();
+            }
+
             if self.state.creating_rect.is_none()
                 && self.state.creating_line.is_none()
                 && self.state.creating_circle.is_none()
@@ -6525,6 +6537,61 @@ impl App {
         }
         if !matches!(self.state.tool, Tool::Select | Tool::Dimension) {
             self.state.editing_committed_dim = None;
+        }
+    }
+
+    /// The `Y` shortcut (#1397): cycle the active tool's Output mode — new body → add to
+    /// body → cut → new body. Only the tools that offer an Output row do anything; the
+    /// normalized cycle is applied back onto each tool's own mode enum.
+    fn cycle_tool_output_mode(&mut self) {
+        use actions::ToolOutputMode;
+        let name = |m: ToolOutputMode| match m {
+            ToolOutputMode::NewBody => "new body",
+            ToolOutputMode::AddToBody => "add to body",
+            ToolOutputMode::Cut => "cut",
+        };
+        match self.state.tool {
+            Tool::Extrude => {
+                let Some(ce) = self.state.creating_extrusion.as_mut() else {
+                    return;
+                };
+                let next = ToolOutputMode::from(ce.body_mode).next();
+                ce.body_mode = next.as_extrude_mode(ce.merge_candidate);
+                self.state.status = format!("Extrude output: {}", name(next));
+            }
+            Tool::Revolve => {
+                let Some(cr) = self.state.creating_revolve.as_mut() else {
+                    return;
+                };
+                let next = ToolOutputMode::from(cr.body_choice).next();
+                cr.body_choice = next.into();
+                self.state.status = format!("Revolve output: {}", name(next));
+            }
+            Tool::Sweep => {
+                let Some(cf) = self.state.creating_sweep.as_mut() else {
+                    return;
+                };
+                let next = ToolOutputMode::from(cf.body_choice).next();
+                cf.body_choice = next.into();
+                self.state.status = format!("Sweep output: {}", name(next));
+            }
+            Tool::Loft => {
+                let Some(cl) = self.state.creating_loft.as_mut() else {
+                    return;
+                };
+                let next = ToolOutputMode::from(cl.body_choice).next();
+                cl.body_choice = next.into();
+                self.state.status = format!("Loft output: {}", name(next));
+            }
+            Tool::Mirror => {
+                let Some(cm) = self.state.creating_mirror.as_mut() else {
+                    return;
+                };
+                let next = ToolOutputMode::from(cm.mode).next();
+                cm.mode = next.into();
+                self.state.status = format!("Mirror output: {}", name(next));
+            }
+            _ => {}
         }
     }
 
