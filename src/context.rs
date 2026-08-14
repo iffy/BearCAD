@@ -308,7 +308,6 @@ pub struct MoveControl {
     /// normal through the mate point, and a gap held off it.
     pub face_flip: bool,
     pub face_spin: String,
-    pub face_offset: String,
     /// The face each Face Snap side has settled on (#1075) — shown while its point is still
     /// being picked, and implied by the point once that lands.
     pub face_a: Option<crate::model::MateRef>,
@@ -358,10 +357,9 @@ pub enum MoveEdit {
     Rz(String),
     /// Point Snap's third pair set as an angle instead of a target point (#1078).
     RollAngle(String),
-    /// Face Snap's side flip, its turn about the target normal (#1077), and its gap (#1079).
+    /// Face Snap's side flip and its turn about the target normal (#1077).
     FaceFlip(bool),
     FaceSpin(String),
-    FaceOffset(String),
     /// Arm / clear the source-point picker (#649).
     StartAFocus,
     ClearStartA,
@@ -5810,23 +5808,9 @@ pub fn show_pane(
             // Assigned into a local rather than `pending`: the picker rows above and below
             // hold a mutable borrow of it for as long as their closure is alive.
             let mut flip = control.face_flip;
-            labeled_row(ui, "Side", |ui| {
-                if ui.checkbox(&mut flip, "Flip").changed() {
-                    face_edit = Some(MoveEdit::FaceFlip(flip));
-                }
-            });
-            labeled_row(ui, "Gap", |ui| {
-                let mut text = control.face_offset.clone();
-                crate::expression_input::ValueInput::new(
-                    "move_face_offset",
-                    crate::expression_input::ValueKind::Length,
-                )
-                .width(90.0)
-                .show(ui, &mut text, doc);
-                if text != control.face_offset {
-                    face_edit = Some(MoveEdit::FaceOffset(text));
-                }
-            });
+            if checkbox_row(ui, "Flip", &mut flip, None) {
+                face_edit = Some(MoveEdit::FaceFlip(flip));
+            }
             labeled_row(ui, "Turn", |ui| {
                 let mut text = control.face_spin.clone();
                 crate::expression_input::ValueInput::new(
@@ -9597,7 +9581,6 @@ mod tests {
                 roll_angle: String::new(),
                 face_flip: false,
                 face_spin: String::new(),
-                face_offset: String::new(),
                 face_a: None,
                 face_b: None,
                 editing: false,
@@ -9693,7 +9676,6 @@ mod tests {
                 roll_angle: String::new(),
                 face_flip: false,
                 face_spin: String::new(),
-                face_offset: String::new(),
                 face_a: None,
                 face_b: None,
                 editing: false,
@@ -9767,7 +9749,6 @@ mod tests {
                 roll_angle: String::new(),
                 face_flip: false,
                 face_spin: String::new(),
-                face_offset: String::new(),
                 face_a: None,
                 face_b: None,
                 editing: false,
