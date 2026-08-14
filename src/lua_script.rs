@@ -2581,6 +2581,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 entry.set("kind", g.kind)?;
                 entry.set("name", g.name)?;
                 entry.set("value", g.value)?;
+                if let Some(p) = g.position {
+                    let pos = lua.create_table()?;
+                    pos.set("x", p.x)?;
+                    pos.set("y", p.y)?;
+                    pos.set("z", p.z)?;
+                    entry.set("position", pos)?;
+                }
                 arr.set(i + 1, entry)?;
             }
             Ok(arr)

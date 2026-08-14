@@ -29876,6 +29876,14 @@ impl App {
         // The Face Snap turn gizmo's live angle, painted just above its handle (#1360).
         let mut move_turn_labels: Vec<(egui::Pos2, String, egui::Color32)> = Vec::new();
         if let Some((center, radius)) = self.free_move_rotation_geom() {
+            let cm = self.state.creating_move.as_ref();
+            // The handles follow the preview (#1414): the whole set rotates by the live
+            // composed Free turn, so turning one ring sweeps the others along with the body.
+            let q =
+                cm.and_then(|cm| extrude::move_op_free_rotation_quat(
+                    &self.state.doc, &cm.rx, &cm.ry, &cm.rz,
+                ))
+                .unwrap_or(glam::Quat::IDENTITY);
             for axis in 0..3 {
                 let dir = extrude::free_move_axis_dir(axis);
                 let hovered = self.free_move_rotation_drag.is_some_and(|d| d.axis == axis)
@@ -29883,18 +29891,8 @@ impl App {
                         && pointer_screen.is_some_and(|pp| {
                             rotation_ring_hit(pp, &project, center, dir, radius)
                         }));
-                // Unify with the Face Snap turn gizmo's single handle (#1380): a zero radial
-                // and the current turn from it, so Free Move's rings draw the same center→start
-                // line, yellow arc and handle dial as Face Snap, staying RGB-coloured.
-                let zero_dir = match axis {
-                    0 => Vec3::Y,
-                    1 => Vec3::X,
-                    _ => Vec3::X,
-                };
-                let angle_deg = self
-                    .state
-                    .creating_move
-                    .as_ref()
+                // The turn this ring is mid-way through (signed, #1415).
+                let angle_deg = cm
                     .map(|cm| {
                         let expr = [&cm.rx, &cm.ry, &cm.rz][axis].as_str();
                         if expr.trim().is_empty() {
@@ -29906,6 +29904,11 @@ impl App {
                         }
                     })
                     .unwrap_or(0.0);
+                // The handle floats on a deterministic, non-overlapping reference (#1413),
+                // rotated to follow the preview: the ring's own angle is unwound here because
+                // the renderer re-applies it to place the handle exactly at `Q·base`.
+                let base = extrude::free_move_rotation_base_dir(axis);
+                let zero_dir = glam::Quat::from_axis_angle(dir, -angle_deg.to_radians()) * (q * base);
                 let color = [col::X_AXIS, col::Y_AXIS, col::Z_AXIS][axis];
                 move_rotation_gizmos.push(gpu_viewport::MoveRotationGizmo {
                     center,
@@ -29918,8 +29921,8 @@ impl App {
                 });
                 // The amount turned, above the ring's handle (#1360) — same as Face Snap.
                 if angle_deg.abs() > 1e-3 {
-                    let handle_dir = glam::Quat::from_axis_angle(dir, angle_deg.to_radians())
-                        * zero_dir;
+                    // `Q·base` is where the renderer places the handle, so the label tracks it.
+                    let handle_dir = q * base;
                     if let Some(sp) = project(center + handle_dir * radius) {
                         move_turn_labels.push((sp, format!("{angle_deg:.0}°"), color));
                     }

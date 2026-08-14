@@ -18938,6 +18938,9 @@ pub struct GizmoInfo {
     pub name: &'static str,
     /// The gizmo's live scalar (mm for push/pull and offset, radians for rotate).
     pub value: f32,
+    /// The grip handle's world position for rotation gizmos, when it can be derived from the
+    /// current state alone (#1413/#1414). `None` for the other gizmo kinds.
+    pub position: Option<glam::Vec3>,
 }
 
 /// Minimum wrap width (mm) a text box can be resized down to (#409).
@@ -19009,7 +19012,7 @@ fn treatment_gizmo_name(kind: crate::model::VertexTreatmentKind) -> &'static str
 pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
     let mut gizmos = Vec::new();
     if let Some(ce) = &state.creating_extrusion {
-        gizmos.push(GizmoInfo { kind: "push_pull", name: "extrude", value: ce.distance });
+        gizmos.push(GizmoInfo { kind: "push_pull", name: "extrude", value: ce.distance, position: None });
     }
     // 2D (sketch vertex) and 3D (body edge) chamfer/fillet share a name by kind; only one runs.
     if let Some(cvt) = &state.creating_vertex_treatment {
@@ -19017,6 +19020,7 @@ pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
             kind: "push_pull",
             name: treatment_gizmo_name(cvt.kind),
             value: cvt.amount_live,
+            position: None,
         });
     }
     if let Some(cet) = &state.creating_edge_treatment {
@@ -19024,13 +19028,14 @@ pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
             kind: "push_pull",
             name: treatment_gizmo_name(cet.kind),
             value: cet.amount_live,
+            position: None,
         });
     }
     if let Some(cr) = &state.creating_revolve {
-        gizmos.push(GizmoInfo { kind: "rotate", name: "revolve", value: cr.angle_live.to_radians() });
+        gizmos.push(GizmoInfo { kind: "rotate", name: "revolve", value: cr.angle_live.to_radians(), position: None });
     }
     if let Some(cp) = &state.creating_plane {
-        gizmos.push(GizmoInfo { kind: "offset", name: "offset", value: cp.offset_live });
+        gizmos.push(GizmoInfo { kind: "offset", name: "offset", value: cp.offset_live, position: None });
     }
     // Shell tool (#1164): wall-thickness push/pull once at least one body is targeted.
     if let Some(cs) = &state.creating_shell {
@@ -19039,6 +19044,7 @@ pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
                 kind: "push_pull",
                 name: "shell",
                 value: cs.thickness_live,
+                position: None,
             });
         }
     }
@@ -19053,21 +19059,52 @@ pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
                 crate::value::eval_angle_rad_in_doc(s, &state.doc).unwrap_or(0.0)
             }
         };
-        gizmos.push(GizmoInfo { kind: "offset", name: "move_x", value: mm(&cm.tx) });
-        gizmos.push(GizmoInfo { kind: "offset", name: "move_y", value: mm(&cm.ty) });
-        gizmos.push(GizmoInfo { kind: "offset", name: "move_z", value: mm(&cm.tz) });
+        gizmos.push(GizmoInfo { kind: "offset", name: "move_x", value: mm(&cm.tx), position: None });
+        gizmos.push(GizmoInfo { kind: "offset", name: "move_y", value: mm(&cm.ty), position: None });
+        gizmos.push(GizmoInfo { kind: "offset", name: "move_z", value: mm(&cm.tz), position: None });
         // Rotation rings only apply in Free mode (#1234); snap modes turn via point pairs.
         if cm.translate_mode == crate::model::MoveTranslateMode::Free {
-            gizmos.push(GizmoInfo { kind: "rotate", name: "move_rx", value: rad(&cm.rx) });
-            gizmos.push(GizmoInfo { kind: "rotate", name: "move_ry", value: rad(&cm.ry) });
-            gizmos.push(GizmoInfo { kind: "rotate", name: "move_rz", value: rad(&cm.rz) });
+            // The handles' world positions (#1413/#1414): deterministic non-overlapping
+            // references rotated to follow the preview's composed turn.
+            let shift = glam::Vec3::new(mm(&cm.tx), mm(&cm.ty), mm(&cm.tz));
+            let handles =
+                crate::extrude::free_move_targets_bounds(&state.doc, &cm.targets, &cm.plane_targets)
+                    .and_then(|(lo, hi)| {
+                        crate::extrude::free_move_rotation_handles(
+                            &state.doc,
+                            lo,
+                            hi,
+                            shift,
+                            &cm.rx,
+                            &cm.ry,
+                            &cm.rz,
+                        )
+                    });
+            gizmos.push(GizmoInfo {
+                kind: "rotate",
+                name: "move_rx",
+                value: rad(&cm.rx),
+                position: handles.map(|h| h[0]),
+            });
+            gizmos.push(GizmoInfo {
+                kind: "rotate",
+                name: "move_ry",
+                value: rad(&cm.ry),
+                position: handles.map(|h| h[1]),
+            });
+            gizmos.push(GizmoInfo {
+                kind: "rotate",
+                name: "move_rz",
+                value: rad(&cm.rz),
+                position: handles.map(|h| h[2]),
+            });
         }
     }
     // A selected wrapped text exposes its box width (#409) — the value the edge drag
     // handles control.
     if let Some(i) = single_selected_sketch_text(state) {
         if let Some(wrap) = state.doc.sketch_texts[i].wrap_width {
-            gizmos.push(GizmoInfo { kind: "offset", name: "text_width", value: wrap });
+            gizmos.push(GizmoInfo { kind: "offset", name: "text_width", value: wrap, position: None });
         }
     }
     gizmos

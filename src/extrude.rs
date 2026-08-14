@@ -1706,9 +1706,35 @@ fn move_op_free_rotation(
         return None;
     }
     Some(
-        glam::Mat3::from_rotation_z(z)
-            * glam::Mat3::from_rotation_y(y)
-            * glam::Mat3::from_rotation_x(x),
+        glam::Mat3::from_quat(
+            glam::Quat::from_rotation_z(z)
+                * glam::Quat::from_rotation_y(y)
+                * glam::Quat::from_rotation_x(x),
+        ),
+    )
+}
+
+/// Free mode's typed turns as one unit quaternion (#1414): X, then Y, then Z about the world
+/// axes — the same rotation [`move_op_free_rotation`] builds, exposed so the rotation gizmos
+/// can rotate their base references along with the preview. `None` when a turn expression
+/// doesn't evaluate (an all-zero turn still yields the identity).
+pub fn move_op_free_rotation_quat(
+    doc: &Document,
+    rx: &str,
+    ry: &str,
+    rz: &str,
+) -> Option<glam::Quat> {
+    let eval = |expr: &str| -> Option<f32> {
+        if expr.trim().is_empty() {
+            return Some(0.0);
+        }
+        crate::value::eval_angle_rad_in_doc(expr, doc)
+    };
+    let (x, y, z) = (eval(rx)?, eval(ry)?, eval(rz)?);
+    Some(
+        glam::Quat::from_rotation_z(z)
+            * glam::Quat::from_rotation_y(y)
+            * glam::Quat::from_rotation_x(x),
     )
 }
 
@@ -1814,6 +1840,41 @@ pub fn free_move_axis_dir(axis: usize) -> Vec3 {
         1 => Vec3::Y,
         _ => Vec3::Z,
     }
+}
+
+/// Deterministic base reference each Free-move rotation ring's handle floats on (#1413).
+/// The three rings' handle starting positions spread around the body so they never overlap:
+/// the X ring (turning about X, its ring spanning the YZ plane) starts on +Y, the Y ring on
+/// +Z, and the Z ring on +X.
+pub fn free_move_rotation_base_dir(axis: usize) -> Vec3 {
+    match axis {
+        0 => Vec3::Y,
+        1 => Vec3::Z,
+        _ => Vec3::X,
+    }
+}
+
+/// The three Free-move rotation-gizmo handle world positions (#1413/#1414): one per ring at a
+/// deterministic, non-overlapping base reference (see [`free_move_rotation_base_dir`]) rotated
+/// by the live composed Free turn, so every handle follows the moving body's preview when any
+/// single ring is rotated. `(min, max)` are the targets' resting bounds, `translation` the live
+/// Free translation; `None` when a typed turn doesn't evaluate.
+pub fn free_move_rotation_handles(
+    doc: &Document,
+    min: Vec3,
+    max: Vec3,
+    translation: Vec3,
+    rx: &str,
+    ry: &str,
+    rz: &str,
+) -> Option<[Vec3; 3]> {
+    let (center, radius) = free_move_rotation_ring(min + translation, max + translation);
+    let q = move_op_free_rotation_quat(doc, rx, ry, rz)?;
+    let mut out = [Vec3::ZERO; 3];
+    for axis in 0..3 {
+        out[axis] = center + q * free_move_rotation_base_dir(axis) * radius;
+    }
+    Some(out)
 }
 
 /// Gizmo script names for Free-move translation axes.
@@ -11349,6 +11410,84 @@ mod tests {
             free_move_rotation_ring(min + shift, max + shift);
         assert!((moved_center - (rest_center + shift)).length() < 1e-4);
         assert!((moved_radius - rest_radius).abs() < 1e-4);
+    }
+
+    /// #1413: Free-move rotation rings each get a deterministic handle reference, and the
+    /// three starting positions spread around the body rather than overlapping.
+    #[test]
+    fn free_move_rotation_handles_are_distinct_and_follow_the_preview() {
+        let (mut doc, _sketch, ext) = box_doc(); // 10x10 footprint, 5 tall
+        doc.extrusions.insert(ext);
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(xkey(0)),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let bodies = [bkey(0)];
+        let (min, max) = free_move_targets_bounds(&doc, &bodies, &[]).unwrap();
+
+        // The three base references are pairwise-distinct.
+        let (b0, b1, b2) = (free_move_rotation_base_dir(0), free_move_rotation_base_dir(1), free_move_rotation_base_dir(2));
+        assert_ne!(b0, b1);
+        assert_ne!(b0, b2);
+        assert_ne!(b1, b2);
+
+        // At rest, the three handles sit at distinct spots around the ring.
+        let zero = glam::Vec3::ZERO;
+        let rest = free_move_rotation_handles(&doc, min, max, zero, "", "", "").unwrap();
+        for i in 0..3 {
+            for j in (i + 1)..3 {
+                assert!(
+                    (rest[i] - rest[j]).length() > 1e-3,
+                    "handles {i} and {j} overlap at rest: {rest:?}"
+                );
+            }
+        }
+
+        // #1414: rotating one ring (here 90° about Z) rotates all three handles along with the
+        // preview, including the ring being turned — every base direction follows the composed
+        // Free turn. Each handle ends at the ring centre plus Q·(rest offset).
+        let rz90 = free_move_rotation_handles(&doc, min, max, zero, "", "", "90").unwrap();
+        let about_z = glam::Quat::from_rotation_z(90f32.to_radians());
+        let c = (min + max) * 0.5 + zero;
+        for i in 0..3 {
+            let expected = c + about_z * (rest[i] - c);
+            assert!(
+                rz90[i].distance(expected) < 1e-3,
+                "ring {i} handle should follow the preview turn: {} vs {expected}",
+                rz90[i]
+            );
+        }
+        // The handles whose bases aren't on the turned axis (X ring's +Y and Z ring's +X) move
+        // with the body; the Y ring's base (+Z) sits on the Z axis and rightly stays put.
+        assert!((rz90[0] - rest[0]).length() > 1e-3, "X ring handle should have moved");
+        assert!((rz90[2] - rest[2]).length() > 1e-3, "Z ring handle should have moved");
+    }
+
+    /// #1415: the Free-move turn expressions stay signed — a negative typed turn reads back
+    /// negative rather than wrapping to a 0-360 value.
+    #[test]
+    fn free_move_turns_stay_signed() {
+        let (mut doc, _sketch, ext) = box_doc();
+        doc.extrusions.insert(ext);
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(xkey(0)),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let bodies = [bkey(0)];
+        let (min, max) = free_move_targets_bounds(&doc, &bodies, &[]).unwrap();
+        // A -5° typed turn must evaluate to -5°, not 355°.
+        let got = crate::value::eval_angle_rad_in_doc("-5", &doc).unwrap().to_degrees();
+        assert!((got - -5.0).abs() < 1e-3, "typed -5° should stay -5°, got {got}");
+        let handles = free_move_rotation_handles(&doc, min, max, glam::Vec3::ZERO, "", "", "-5").unwrap();
+        // And the labelled handle position still follows the signed turn.
+        let q = glam::Quat::from_rotation_z((-5f32).to_radians());
+        let c = (min + max) * 0.5;
+        let expected = c + q * free_move_rotation_base_dir(2) * free_move_rotation_ring(min, max).1;
+        assert!(handles[2].distance(expected) < 1e-3, "Z handle should sit at the signed -5° position");
     }
 
     /// #186: a repeat's fill length can be bound to a target's extended plane (like an
