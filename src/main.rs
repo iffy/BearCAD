@@ -225,6 +225,12 @@ const LAUNCH_SETTLE: std::time::Duration = std::time::Duration::from_secs(5);
 /// decision.
 static SETTLE_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static SETTLE_ENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// One-shot: the app-level activation (set policy, activate, order front/make key) has
+/// been asked for at launch. It is deliberately done only once, like a normal macOS app,
+/// then we relinquish — repeating it each frame for the whole settle is what stole the
+/// window and cursor focus for the first few seconds after `cargo run` (#1375).
+static LAUNCH_ACTIVATION_ASKED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Whether the launch should still be asking for frames: the countdown is running, or the
 /// settle window hasn't closed. Pure, because it is the whole decision and the rest is egui.
@@ -262,16 +268,15 @@ fn tick_launch_maximize(
         }
         return;
     }
-    // Keep painting through the settle window even after the countdown is done.
-    // Bring the window to the front on every frame during the settle period (#1091).
-    // The first call (frame 10) orders the window front, but the Maximized(true) command
-    // that follows may cause the window server to lose the frontmost state. macOS 14+
-    // activation is cooperative, so the app can't force itself to frontmost — but
-    // `orderFrontRegardless` (called inside `activate_app`) orders the window, not the
-    // app, and the window server honours that regardless of focus. Repeated calls keep
-    // the window front through the maximize and any surface reconfigure (#1032).
+    // Keep painting through the settle window even after the countdown is done. We no
+    // longer re-raise the app every frame for the whole settle — that is what made
+    // `cargo run` grab the window and cursor focus for the first few seconds after launch
+    // (#1375). Instead the app asks for activation only once at launch, like a normal
+    // macOS app, then relinquishes. The settle window still repaints below so the
+    // freshly-launched surface gets a presented frame (#978/#1023) without repeatedly
+    // calling `activate_app` (set activation policy, activate, order front/make key).
     #[cfg(not(target_arch = "wasm32"))]
-    {
+    if !LAUNCH_ACTIVATION_ASKED.swap(true, std::sync::atomic::Ordering::Relaxed) {
         // Log the AppKit state only when it changes (#1108): a per-frame "asked the
         // window server" line drowned the trace in a thousand identical entries and hid
         // the transitions that are the whole reason the settle exists. The first sample
@@ -3551,7 +3556,8 @@ impl App {
         });
         let dragging = ctx.input(|i| i.pointer.any_down());
         let mut arm = self.auto_zoom_arm;
-        if arm.step(is_input, dragging, now) {
+        let fire = arm.step(is_input, dragging, now);
+        if fire {
             // Zoom-to-fit the whole document, exactly like the Z toolbar button.
             if let Some((min, max)) = extrude::document_world_bounds(&self.state.doc) {
                 let aspect = (viewport.width() / viewport.height().max(1.0)).max(0.1);
@@ -3559,6 +3565,20 @@ impl App {
             }
         }
         self.auto_zoom_arm = arm;
+        // Wake a frame exactly when the settle deadline elapses. Once the user stops
+        // interacting, eframe stops repainting, so without this the debounced zoom
+        // would only ever fire on a frame the input itself happened to schedule — i.e.
+        // never, leaving a freshly-extruded face un-zoomed (#1378). Outside a drag,
+        // schedule the next check for the remaining quiet period.
+        if !dragging {
+            if let Some(dl) = arm.deadline {
+                if !arm.fired {
+                    ctx.request_repaint_after(std::time::Duration::from_secs_f64(
+                        (dl - now).max(0.0),
+                    ));
+                }
+            }
+        }
     }
 
     /// The status bar's update badge (#427): appears only when a newer release exists;
