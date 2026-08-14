@@ -1975,12 +1975,14 @@ fn face_snap_picker_view(
     point: Option<crate::model::MovePointRef>,
     rule: PickRule,
     focused: bool,
+    color: egui::Color32,
 ) -> ToolPickerView {
     const FACE_KINDS: [ElementKind; 2] = [ElementKind::Face, ElementKind::Plane];
     let mut picker = ElementPicker::face_then_point(
         ElementFilter::kinds(&FACE_KINDS).rule(rule.clone()),
         ElementFilter::kind(ElementKind::Vertex).rule(rule),
-    );
+    )
+    .with_selected_color(color);
     picker.set_focused(focused);
     if let Some(face) = face {
         picker.push(SceneElement::from_mate_ref(&face));
@@ -2181,6 +2183,7 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
                 point,
                 rule,
                 focused,
+                crate::theme::FOCUS_ACCENT,
             ));
         }
         // The joint's frame (#1079). An axis input takes anything with a **direction** — a
@@ -2479,6 +2482,11 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
                     point,
                     rule,
                     focused,
+                    if on_moving {
+                        crate::theme::MOVE_MOVING_FACE
+                    } else {
+                        crate::theme::MOVE_FIXED_FACE
+                    },
                 ));
             }
         }

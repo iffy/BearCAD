@@ -13,6 +13,7 @@ pub use scene::{
     solid_mesh_unique_edges,
     PreviewRect, PreviewReplacement, ViewportHoverHighlight, BODY_SILHOUETTE_COLOR, SOLID_FILL, SOLID_FILL_HOVERED,
     SOLID_FILL_JOINT_FIXED, SOLID_FILL_JOINT_MOBILE, SOLID_FILL_SELECTED,
+    MOVE_ROTATION_GIZMO,
     ViewportPalette, ViewportExtrudeGizmo, MoveRotationGizmo, RevolveArcGizmo, ViewportPlaneGizmo, ViewportPlanePreview,
     ViewportScene, ViewportSceneInput, VertexTreatmentPreviewGeom,
     DEFAULT_CONSTRUCTION_PLANE_OPACITY, GRID_EXTENT, GRID_STEP, SKETCH_DIMMED,

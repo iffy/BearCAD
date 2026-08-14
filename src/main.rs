@@ -8710,7 +8710,12 @@ impl App {
     /// Face Snap's spin ring (#1077): centred on the **mate point**, normal to the target
     /// face, so dragging it turns the moving face exactly where the mate happens. `None`
     /// until both faces are picked and both resolve.
-    fn face_spin_ring_geom(&self) -> Option<(Vec3, Vec3, f32)> {
+    ///
+    /// Returns `(center, axis, radius, zero_dir, angle_deg)` where `zero_dir` and `angle_deg`
+    /// feed the rotation gizmo's single handle (#1360/#1361): `zero_dir` is the direction the
+    /// moving face comes in from (the radial the gizmo "started" at), and `angle_deg` the
+    /// current signed turn from it.
+    fn face_spin_ring_geom(&self) -> Option<(Vec3, Vec3, f32, Option<Vec3>, f32)> {
         if self.state.tool != Tool::Move || self.state.sketch_session.is_some() {
             return None;
         }
@@ -8720,8 +8725,24 @@ impl App {
         }
         let end = cm.end_point_a.as_ref()?;
         let axis = extrude::move_point_face_normal(&self.state.doc, end)?;
-        extrude::move_point_face_normal(&self.state.doc, cm.start_point_a.as_ref()?)?;
+        let start = cm.start_point_a.as_ref()?;
+        // Both sides must be face points for the ring to be meaningful.
+        extrude::move_point_face_normal(&self.state.doc, start)?;
         let center = extrude::move_point_world(&self.state.doc, end)?;
+        // The gizmo's "start" is where the moving face comes in from: project the direction
+        // from the fixed point back to the moving point onto the ring plane.
+        let start_world = extrude::move_point_world(&self.state.doc, start)?;
+        let n = axis.normalize_or_zero();
+        let zero_dir = if n == Vec3::ZERO {
+            None
+        } else {
+            let d = start_world - center;
+            let radial = d - n * n.dot(d);
+            Some(radial.normalize_or_zero())
+        };
+        let angle_deg = crate::value::eval_angle_rad_in_doc(&cm.face_spin, &self.state.doc)
+            .map(|rad| rad.to_degrees())
+            .unwrap_or(0.0);
         // Sized to the moving bodies, so the ring reads against what it turns.
         let mut reach: f32 = 0.0;
         for &body in &cm.targets {
@@ -8729,7 +8750,7 @@ impl App {
                 reach = reach.max((hi - lo).length() * 0.5);
             }
         }
-        Some((center, axis, reach.max(5.0)))
+        Some((center, axis, reach.max(5.0), zero_dir, angle_deg))
     }
 
     /// The in-sketch Move gizmo (#306): centred at the selected geometry's bbox centre on the
@@ -8943,18 +8964,24 @@ impl App {
 
         // Face Snap's spin ring (#1077): the same grab-and-drag as the text ring, writing the
         // Turn field live so the typed value and the drag are the one control.
-        if let Some((center, axis, radius)) = self.face_spin_ring_geom() {
+        if let Some((center, axis, radius, ..)) = self.face_spin_ring_geom() {
             let cursor_angle =
                 |pp: egui::Pos2| project(center).map(|c| (pp.y - c.y).atan2(pp.x - c.x));
             let sign = if axis.dot(cam.eye() - center) > 0.0 { -1.0 } else { 1.0 };
             if let Some(drag) = self.face_spin_drag {
                 if ui.input(|i| i.pointer.primary_down()) {
                     if let Some(angle) = pointer_screen.and_then(cursor_angle) {
-                        let spin = crate::value::snap_gizmo_angle_deg(
-                            drag.start_spin
-                                + sign * (angle - drag.start_cursor_angle).to_degrees(),
-                            self.state.doc.default_angle_unit,
-                        );
+                        let raw = drag.start_spin
+                            + sign * (angle - drag.start_cursor_angle).to_degrees();
+                        // Holding Control snaps the turn to whole 5° steps (#1360).
+                        let spin = if ui.input(|i| i.modifiers.command) {
+                            (raw / 5.0).round() * 5.0
+                        } else {
+                            crate::value::snap_gizmo_angle_deg(
+                                raw,
+                                self.state.doc.default_angle_unit,
+                            )
+                        };
                         if let Some(cm) = self.state.creating_move.as_mut() {
                             // format {:.1} matches the 0.1° (or unit) step after snap (#1296).
                             cm.face_spin = format!("{spin:.1}");
@@ -9008,11 +9035,17 @@ impl App {
                         } else {
                             1.0
                         };
-                        let deg = crate::value::snap_gizmo_angle_deg(
-                            drag.start_angle_deg
-                                + sign * (angle - drag.start_cursor_angle).to_degrees(),
-                            self.state.doc.default_angle_unit,
-                        );
+                        let raw = drag.start_angle_deg
+                            + sign * (angle - drag.start_cursor_angle).to_degrees();
+                        // Holding Control snaps the turn to whole 5° steps (#1360).
+                        let deg = if ui.input(|i| i.modifiers.command) {
+                            (raw / 5.0).round() * 5.0
+                        } else {
+                            crate::value::snap_gizmo_angle_deg(
+                                raw,
+                                self.state.doc.default_angle_unit,
+                            )
+                        };
                         let name = extrude::free_move_rotation_gizmo_name(drag.axis);
                         crate::actions::set_gizmo(&mut self.state, name, deg.to_radians());
                     }
@@ -18772,6 +18805,10 @@ fn picker_highlights(
     for view in views {
         let color = view.picker.selected_color(crate::theme::FOCUS_ACCENT);
         let destructive = color == crate::theme::CUT_ACCENT;
+        // A picker with its own highlight colour (Face Snap's cyan moving / blue fixed face,
+        // #1361) draws that colour through the element highlight rather than folding into the
+        // shared selection blue — exactly how a destructive picker's elements already do.
+        let individually_coloured = color != crate::theme::FOCUS_ACCENT;
         for element in view.picker.picked() {
             match element {
                 // A solid takes a fill, so a destructive body goes down the body-fill path.
@@ -18779,7 +18816,9 @@ fn picker_highlights(
                 // Everything else a destructive picker holds — a Slice cutter's plane or
                 // face, an in-sketch cutter line — has no fill to recolour, so it draws in
                 // the picker's colour through the element highlight instead.
-                other if destructive => coloured.push((other.clone(), color)),
+                _ if destructive => coloured.push((element.clone(), color)),
+                // A picker that colours its own picked elements (not the shared blue).
+                _ if individually_coloured => coloured.push((element.clone(), color)),
                 other => folded.push(other.clone()),
             }
         }
@@ -19034,6 +19073,65 @@ fn move_c_path_points(
             start_a + translation * t + spun
         })
         .collect()
+}
+
+/// The start-A → end-A connector (#668/#1362), split into line segments for the scene mesh.
+///
+/// A plain move draws the straight translation vector. When Face Snap also rotates the moving
+/// body to meet its face the path is no longer a straight shot, so it's sampled as a curve that
+/// enters the fixed point along the moving face's own normal — the direction the part comes in —
+/// and sits in close as it travels, passing through the translucent ghost preview overhead.
+fn move_a_connector_segments(
+    doc: &model::Document,
+    cm: &crate::actions::CreatingMove,
+    a: Vec3,
+    b: Vec3,
+) -> Option<Vec<(Vec3, Vec3, egui::Color32, bool)>> {
+    let straight = vec![(a, b, theme::MOVE_CONNECTOR, false)];
+    if cm.translate_mode != model::MoveTranslateMode::FaceSnap {
+        return Some(straight);
+    }
+    // A pure translation stays straight; only a turn bends the path.
+    let angle = if cm.face_spin.as_str().trim().is_empty() {
+        0.0
+    } else {
+        crate::value::eval_angle_rad_in_doc(&cm.face_spin, doc).unwrap_or(0.0)
+    };
+    if angle.abs() < 1e-3 {
+        return Some(straight);
+    }
+    let approach = cm
+        .start_point_a
+        .as_ref()
+        .and_then(|p| extrude::move_point_face_normal(doc, p))
+        .unwrap_or_else(|| Vec3::ZERO)
+        .normalize_or_zero();
+    let e = if approach == Vec3::ZERO {
+        (b - a).normalize_or_zero()
+    } else {
+        approach
+    };
+    if e == Vec3::ZERO {
+        return Some(straight);
+    }
+    // A symmetric cubic with a tangent along the approach direction at both ends: it leaves the
+    // moving point along (and enters the fixed point from) the direction the face comes in, and
+    // swings through the middle of the ghost preview on the way.
+    let dist = (b - a).length();
+    let c1 = a + e * (dist * 0.35);
+    let c2 = b - e * (dist * 0.35);
+    let tip = |t: f32| {
+        let u = 1.0 - t;
+        a * (u * u * u) + c1 * (3.0 * u * u * t) + c2 * (3.0 * u * t * t) + b * (t * t * t)
+    };
+    const SEGS: usize = 24;
+    let mut out = Vec::with_capacity(SEGS);
+    for i in 0..SEGS {
+        let t0 = i as f32 / SEGS as f32;
+        let t1 = (i + 1) as f32 / SEGS as f32;
+        out.push((tip(t0), tip(t1), theme::MOVE_CONNECTOR, false));
+    }
+    Some(out)
 }
 
 /// Order-independent fingerprint of the scene selection set, so auto-zoom's selection
@@ -29262,11 +29360,17 @@ impl App {
         // the two points. The Joint tool mates the same way (#997), so its Mate pickers preview
         // the motion exactly as the Move tool's do.
         let snap_points = self.snap_preview_points();
-        let mut move_connector: Vec<(Vec3, Vec3, egui::Color32, bool)> = snap_points
-            .as_ref()
-            .and_then(|p| p.connector(&self.state.doc))
-            .map(|(a, b)| vec![(a, b, theme::MOVE_CONNECTOR, false)])
-            .unwrap_or_default();
+        let mut move_connector: Vec<(Vec3, Vec3, egui::Color32, bool)> =
+            if let Some(p) = snap_points.as_ref() {
+                match (p.connector(&self.state.doc), self.state.creating_move.as_ref()) {
+                    (Some((a, b)), Some(cm)) => move_a_connector_segments(&self.state.doc, cm, a, b)
+                        .unwrap_or_default(),
+                    (Some((a, b)), None) => vec![(a, b, theme::MOVE_CONNECTOR, false)],
+                    (None, _) => Vec::new(),
+                }
+            } else {
+                Vec::new()
+            };
         // The rotation surface itself (#920): the sphere translucent, the circle as an
         // outline ring in candidate blue.
         let mut move_surface_solid: Option<extrude::SolidMesh> = None;
@@ -29699,6 +29803,8 @@ impl App {
         // Rotation rings: Free Move's three world-axis rings (#1234), Face Snap's spin
         // (#1077), and a selected sketch text's turn about its origin (#216/#286).
         let mut move_rotation_gizmos: Vec<gpu_viewport::MoveRotationGizmo> = Vec::new();
+        // The Face Snap turn gizmo's live angle, painted just above its handle (#1360).
+        let mut move_turn_labels: Vec<(egui::Pos2, String)> = Vec::new();
         if let Some((center, radius)) = self.free_move_rotation_geom() {
             for axis in 0..3 {
                 let dir = extrude::free_move_axis_dir(axis);
@@ -29713,9 +29819,13 @@ impl App {
                     radius,
                     color: [col::X_AXIS, col::Y_AXIS, col::Z_AXIS][axis],
                     hovered,
+                    zero_dir: None,
+                    angle_deg: None,
                 });
             }
-        } else if let Some((center, axis, radius)) = self.face_spin_ring_geom() {
+        } else if let Some((center, axis, radius, zero_dir, angle_deg)) =
+            self.face_spin_ring_geom()
+        {
             let hovered = self.face_spin_drag.is_some()
                 || pointer_screen.is_some_and(|pp| {
                     rotation_ring_hit(pp, &project, center, axis, radius)
@@ -29724,9 +29834,21 @@ impl App {
                 center,
                 axis,
                 radius,
-                color: col::PREVIEW,
+                color: gpu_viewport::MOVE_ROTATION_GIZMO,
                 hovered,
+                zero_dir,
+                angle_deg: zero_dir.and_then(|_| Some(angle_deg)),
             });
+            // The amount turned, above the handle (#1360) — only while there is a turn to show.
+            if angle_deg.abs() > 1e-3 {
+                if let Some(zd) = zero_dir.filter(|z| *z != Vec3::ZERO) {
+                    let n = axis.normalize_or_zero();
+                    let hdir = glam::Quat::from_axis_angle(n, angle_deg.to_radians()) * zd;
+                    if let Some(sp) = project(center + hdir * radius) {
+                        move_turn_labels.push((sp, format!("{angle_deg:.0}°")));
+                    }
+                }
+            }
         } else if self.state.tool == Tool::Move {
             if let Some((_, center, axis, radius)) = self.text_rotation_geom() {
                 let hovered = self.text_rotation_drag.is_some()
@@ -29739,6 +29861,8 @@ impl App {
                     radius,
                     color: col::PREVIEW,
                     hovered,
+                    zero_dir: None,
+                    angle_deg: None,
                 });
             }
         }
@@ -30142,6 +30266,17 @@ impl App {
                 text,
                 egui::FontId::proportional(13.0),
                 theme::MOVE_CANDIDATE_HOVER,
+            );
+        }
+        // The Face Snap turn gizmo's live angle (#1360), on top of the scene beside its handle.
+        for (at, text) in &move_turn_labels {
+            paint_bold_text(
+                &painter,
+                *at + egui::vec2(10.0, -14.0),
+                egui::Align2::CENTER_CENTER,
+                text,
+                egui::FontId::proportional(13.0),
+                gpu_viewport::MOVE_ROTATION_GIZMO,
             );
         }
 

@@ -162,6 +162,12 @@ pub const SOLID_FILL_JOINT_FIXED: Color32 = Color32::from_rgb(96, 150, 226);
 pub const SOLID_PREVIEW_FILL: Color32 = Color32::from_rgb(120, 215, 230);
 /// Opacity of the in-progress extrusion preview body (before it is committed).
 pub const SOLID_PREVIEW_OPACITY: f32 = 0.4;
+/// The Move tool's Face Snap rotation gizmo line color (#1361): green, so it reads apart from
+/// the yellow arc highlight and the cyan moving-face preview around it.
+pub const MOVE_ROTATION_GIZMO: Color32 = Color32::from_rgb(104, 200, 128);
+/// The arc between the rotation gizmo's start line and its current handle (#1361): yellow, the
+/// "how far you have turned" reading that everything else in the Move tool shares.
+pub const MOVE_ROTATION_ARC: Color32 = Color32::from_rgb(255, 225, 90);
 /// Fill opacity for committed bodies in `ShadingMode::TransparentSolid` (#33).
 pub const TRANSPARENT_SOLID_OPACITY: f32 = 0.45;
 /// Opacity for a faded descendant body while its ancestor operation is being edited (#260).
@@ -592,6 +598,12 @@ pub struct MoveRotationGizmo {
     pub radius: f32,
     pub color: Color32,
     pub hovered: bool,
+    /// Single-handle dial (#1360/#1361): the unit radial marking 0°, and the current signed
+    /// turn from it (degrees). When both are present the gizmo draws a line centre→start, a
+    /// yellow arc up to the handle, a line centre→handle and a disc at the handle. `None` for
+    /// the plain ring gizmos (Free Move's three world rings, a selected text's turn ring).
+    pub zero_dir: Option<Vec3>,
+    pub angle_deg: Option<f32>,
 }
 
 /// The Revolve tool's arc gizmo (#262): an arc from the 0° direction (`zero_dir`) around
@@ -1908,8 +1920,63 @@ impl ViewportScene {
         }
         for ring in &input.move_rotation_gizmos {
             let points = ring_points(ring.center, ring.axis, ring.radius, 64);
-            let width = if ring.hovered { 4.0 } else { 2.5 };
+            let width = if ring.hovered { 3.0 } else { 1.5 };
             mesh.push_polyline_segment(&points, ring.color, width, input.cam, input.viewport, &vp);
+            if let (Some(zero), Some(angle_deg)) = (ring.zero_dir, ring.angle_deg) {
+                let n = ring.axis.normalize_or_zero();
+                let start_dir = zero.normalize_or_zero();
+                if n != Vec3::ZERO && start_dir != Vec3::ZERO {
+                    let handle_dir =
+                        glam::Quat::from_axis_angle(n, angle_deg.to_radians()) * start_dir;
+                    mesh.push_line_segment(
+                        ring.center,
+                        ring.center + start_dir * ring.radius,
+                        ring.color,
+                        1.5,
+                        input.cam,
+                        input.viewport,
+                        &vp,
+                    );
+                    // The yellow arc between the start line and the current rotation (#1361).
+                    if angle_deg.abs() > 1e-3 {
+                        let arc = revolve_arc_points(
+                            ring.center,
+                            n,
+                            start_dir,
+                            ring.radius,
+                            angle_deg,
+                            64,
+                        );
+                        mesh.push_polyline_segment(
+                            &arc,
+                            MOVE_ROTATION_ARC,
+                            2.5,
+                            input.cam,
+                            input.viewport,
+                            &vp,
+                        );
+                    }
+                    mesh.push_line_segment(
+                        ring.center,
+                        ring.center + handle_dir * ring.radius,
+                        ring.color,
+                        2.0,
+                        input.cam,
+                        input.viewport,
+                        &vp,
+                    );
+                    let project = |w: Vec3| input.cam.project(w, input.viewport, &vp);
+                    push_gizmo_handle(
+                        &mut mesh,
+                        ring.center + handle_dir * ring.radius,
+                        ring.color,
+                        input.cam,
+                        input.viewport,
+                        &vp,
+                        &project,
+                    );
+                }
+            }
         }
         if let Some(arc) = input.revolve_arc_gizmo.as_ref() {
             // The swept arc from 0° to the current angle, plus a push/pull disc handle at its
