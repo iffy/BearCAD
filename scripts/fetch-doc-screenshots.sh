@@ -38,8 +38,15 @@ MANIFEST_URL="${PAGES_BASE}img/screenshots/.manifest"
 manifest="$(curl -fsSL --max-time 30 "$MANIFEST_URL" 2>/dev/null)" || {
   echo "warning: could not fetch screenshot manifest from $MANIFEST_URL;" >&2
   echo "         deploying with only whatever is already in $OUT_DIR (missing is OK)." >&2
+  if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    echo "skipped=9999"  >> "$GITHUB_OUTPUT"
+    echo "downloaded=0"  >> "$GITHUB_OUTPUT"
+    echo "manifest_total=0" >> "$GITHUB_OUTPUT"
+  fi
   exit 0
 }
+
+manifest_total="$(echo "$manifest" | wc -l | tr -d ' ')"
 
 downloaded=0
 skipped=0
@@ -68,3 +75,9 @@ find "$OUT_DIR" -type f 2>/dev/null \
   > "$OUT_DIR/.manifest"
 
 echo "Fetched $downloaded screenshot asset(s) from $PAGES_BASE; $skipped missing/omitted (not a failure)."
+
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+  echo "skipped=$skipped"       >> "$GITHUB_OUTPUT"
+  echo "downloaded=$downloaded" >> "$GITHUB_OUTPUT"
+  echo "manifest_total=$manifest_total" >> "$GITHUB_OUTPUT"
+fi

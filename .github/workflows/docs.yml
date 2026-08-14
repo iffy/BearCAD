@@ -142,8 +142,25 @@ jobs:
           echo "source=$source" >> "$GITHUB_OUTPUT"
           echo "pages_base=$pages_base" >> "$GITHUB_OUTPUT"
 
+      - name: Fetch screenshots from deployed site
+        id: fetch
+        if: steps.source.outputs.source == 'fetch'
+        run: |
+          PAGES_BASE="${{ steps.source.outputs.pages_base }}" \
+          bash scripts/fetch-doc-screenshots.sh
+
+      - name: Fallback if too many screenshots missing
+        id: fallback
+        if: steps.source.outputs.source == 'fetch'
+        run: |
+          skipped="${{ steps.fetch.outputs.skipped }}"
+          if [[ -n "$skipped" && "$skipped" -gt 10 ]]; then
+            echo "fallback=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # --- Screenshots (from source, either nightly or fetch-fallback) ----------
       - name: Install system dependencies (nightly)
-        if: steps.source.outputs.source == 'build'
+        if: steps.source.outputs.source == 'build' || steps.fallback.outputs.fallback == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -164,17 +181,17 @@ jobs:
             xvfb
 
       - name: Install Rust toolchain (nightly)
-        if: steps.source.outputs.source == 'build'
+        if: steps.source.outputs.source == 'build' || steps.fallback.outputs.fallback == 'true'
         uses: dtolnay/rust-toolchain@1.96.0
 
       - name: Cache cargo (nightly)
-        if: steps.source.outputs.source == 'build'
+        if: steps.source.outputs.source == 'build' || steps.fallback.outputs.fallback == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: occt-linux
 
       - name: Cache OCCT static build (nightly)
-        if: steps.source.outputs.source == 'build'
+        if: steps.source.outputs.source == 'build' || steps.fallback.outputs.fallback == 'true'
         id: occt-cache
         uses: actions/cache@v5
         with:
@@ -182,23 +199,23 @@ jobs:
           key: occt-install-${{ runner.os }}-v8.0.0-${{ hashFiles('scripts/build-occt.sh') }}
 
       - name: Fetch solvespace submodule (nightly)
-        if: steps.source.outputs.source == 'build'
+        if: steps.source.outputs.source == 'build' || steps.fallback.outputs.fallback == 'true'
         run: |
           git submodule update --init --depth 1 third_party/solvespace
           git -C third_party/solvespace submodule update --init --depth 1 extlib/eigen extlib/mimalloc
 
       - name: Build OCCT (nightly, cache miss only)
-        if: steps.source.outputs.source == 'build' && steps.occt-cache.outputs.cache-hit != 'true'
+        if: (steps.source.outputs.source == 'build' || steps.fallback.outputs.fallback == 'true') && steps.occt-cache.outputs.cache-hit != 'true'
         run: |
           git submodule update --init --depth 1 third_party/OCCT
           scripts/build-occt.sh
 
       - name: Build bearcad (nightly)
-        if: steps.source.outputs.source == 'build'
+        if: steps.source.outputs.source == 'build' || steps.fallback.outputs.fallback == 'true'
         run: cargo build --release
 
       - name: Generate all screenshots (nightly)
-        if: steps.source.outputs.source == 'build'
+        if: steps.source.outputs.source == 'build' || steps.fallback.outputs.fallback == 'true'
         env:
           BEARCAD_SKIP_BUILD: "1"
           BEARCAD_SCREENSHOT_MODE: "full"
@@ -207,7 +224,7 @@ jobs:
           scripts/gen-doc-screenshots.sh
 
       - name: Publish screenshot manifest + commit marker (nightly)
-        if: steps.source.outputs.source == 'build'
+        if: steps.source.outputs.source == 'build' || steps.fallback.outputs.fallback == 'true'
         run: |
           find docs-site/static/img/screenshots -type f \
             | sed 's|^docs-site/static/img/screenshots/||' \
@@ -215,17 +232,11 @@ jobs:
           printf '%s\n' "$GITHUB_SHA" > docs-site/static/img/screenshots/.screenshots-commit
 
       - name: Save golden screenshots cache (nightly)
-        if: steps.source.outputs.source == 'build'
+        if: steps.source.outputs.source == 'build' || steps.fallback.outputs.fallback == 'true'
         uses: actions/cache/save@v5
         with:
           path: docs-site/static/img/screenshots
           key: doc-screenshots-goldens-${{ github.sha }}-${{ github.run_id }}
-
-      - name: Fetch screenshots from deployed site
-        if: steps.source.outputs.source == 'fetch'
-        run: |
-          PAGES_BASE="${{ steps.source.outputs.pages_base }}" \
-          bash scripts/fetch-doc-screenshots.sh
 
       # --- Web app ---------------------------------------------------------------
       - name: Download web app
