@@ -475,12 +475,14 @@ fn parse_hex_color(text: &str) -> mlua::Result<[u8; 3]> {
 }
 
 /// The optional `{ shift = true }` table a scripted click can carry (#835).
-/// A scripted click's `{ shift = …, ctrl = … }` options table (#835/#984).
+/// A scripted click's `{ shift = …, ctrl = …, cmd = … }` options table (#835/#984).
+/// `cmd` (#1408) is the platform primary modifier (⌘/Ctrl) that the copy/paste shortcuts read.
 fn click_mods(opts: Option<Table>) -> mlua::Result<crate::script::ClickMods> {
     match opts {
         Some(t) => Ok(crate::script::ClickMods {
             shift: t.get::<Option<bool>>("shift")?.unwrap_or(false),
             ctrl: t.get::<Option<bool>>("ctrl")?.unwrap_or(false),
+            cmd: t.get::<Option<bool>>("cmd")?.unwrap_or(false),
         }),
         None => Ok(crate::script::ClickMods::default()),
     }

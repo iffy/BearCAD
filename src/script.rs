@@ -75,10 +75,16 @@ impl ScreenshotRegion {
 /// tools read for their second role (multi-select, the in-sketch repeat direction);
 /// **Control** narrows an edge pick to the one edge under the cursor rather than its whole
 /// tangent-continuous run.
+///
+/// **Cmd** is the platform primary modifier (⌘ on macOS, Ctrl elsewhere). It is spelled out
+/// separately because a scripted `ctrl` stays literally Ctrl — egui's `command` field follows
+/// Mac's Cmd, not Ctrl (#984) — so the copy/paste shortcuts (which read `Modifiers::COMMAND`)
+/// need a dedicated option (#1408).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ClickMods {
     pub shift: bool,
     pub ctrl: bool,
+    pub cmd: bool,
 }
 
 impl ClickMods {
@@ -92,6 +98,9 @@ impl ClickMods {
         if self.ctrl {
             parts.push("ctrl = true");
         }
+        if self.cmd {
+            parts.push("cmd = true");
+        }
         match parts.is_empty() {
             true => String::new(),
             false => format!(", {{ {} }}", parts.join(", ")),
@@ -102,8 +111,11 @@ impl ClickMods {
         Modifiers {
             shift: self.shift,
             ctrl: self.ctrl,
-            // On macOS egui's `command` follows Mac's Cmd, not Ctrl — so a scripted Ctrl
-            // stays Ctrl and never reads as the additive-click modifier (#984).
+            // #1408: the `command` flag is the platform primary (⌘ on macOS, Ctrl
+            // elsewhere) that the copy/paste shortcuts match on. Set separately from
+            // `ctrl` so a scripted cmd reads as `command` — a scripted Ctrl stays Ctrl and
+            // never doubles as the primary (#984).
+            command: self.cmd,
             ..Modifiers::NONE
         }
     }
