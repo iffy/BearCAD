@@ -256,6 +256,13 @@ const GIZMO_ANGLE_CIRCLE_SEGMENTS: usize = 48;
 const GIZMO_ANGLE_STROKE_PX: f32 = 1.5;
 const GIZMO_ANGLE_STROKE_HOVER_PX: f32 = 2.5;
 const GIZMO_HANDLE_RING_STROKE_PX: f32 = 1.5;
+/// Fading arcs either side of a rotation gizmo's handle (#1405): each extends this many
+/// degrees out from the handle around the circle of rotation, fading out toward its tip.
+const GIZMO_ROTATION_FADE_ARC_DEG: f32 = 30.0;
+/// How many screen segments sample each fading rotation arc (#1405).
+const GIZMO_ROTATION_FADE_ARC_SEGMENTS: usize = 20;
+/// How far off each side of the rotation handle its direction arrows sit (#1405), in px.
+const GIZMO_ROTATION_ARROW_OFFSET_PX: f32 = 11.0;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
@@ -659,24 +666,6 @@ fn revolve_arc_points(
             let t = total * i as f32 / segments as f32;
             let rot = glam::Quat::from_axis_angle(n, t);
             center + (rot * zero_dir) * radius
-        })
-        .collect()
-}
-
-/// A closed circle of `segments` points, centred at `center` in the plane perpendicular to
-/// `axis`, for the rotation-ring gizmo (#216). Empty if the axis is degenerate.
-fn ring_points(center: Vec3, axis: Vec3, radius: f32, segments: usize) -> Vec<Vec3> {
-    let n = axis.normalize_or_zero();
-    if n == Vec3::ZERO {
-        return Vec::new();
-    }
-    let reference = if n.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
-    let u = n.cross(reference).normalize_or_zero();
-    let v = n.cross(u);
-    (0..=segments)
-        .map(|i| {
-            let t = i as f32 / segments as f32 * std::f32::consts::TAU;
-            center + (u * t.cos() + v * t.sin()) * radius
         })
         .collect()
 }
@@ -1917,64 +1906,15 @@ impl ViewportScene {
             );
         }
         for ring in &input.move_rotation_gizmos {
-            let points = ring_points(ring.center, ring.axis, ring.radius, 64);
-            let width = if ring.hovered { 3.0 } else { 1.5 };
-            mesh.push_polyline_segment(&points, ring.color, width, input.cam, input.viewport, &vp);
-            if let (Some(zero), Some(angle_deg)) = (ring.zero_dir, ring.angle_deg) {
-                let n = ring.axis.normalize_or_zero();
-                let start_dir = zero.normalize_or_zero();
-                if n != Vec3::ZERO && start_dir != Vec3::ZERO {
-                    let handle_dir =
-                        glam::Quat::from_axis_angle(n, angle_deg.to_radians()) * start_dir;
-                    mesh.push_line_segment(
-                        ring.center,
-                        ring.center + start_dir * ring.radius,
-                        ring.color,
-                        1.5,
-                        input.cam,
-                        input.viewport,
-                        &vp,
-                    );
-                    // The yellow arc between the start line and the current rotation (#1361).
-                    if angle_deg.abs() > 1e-3 {
-                        let arc = revolve_arc_points(
-                            ring.center,
-                            n,
-                            start_dir,
-                            ring.radius,
-                            angle_deg,
-                            64,
-                        );
-                        mesh.push_polyline_segment(
-                            &arc,
-                            MOVE_ROTATION_ARC,
-                            2.5,
-                            input.cam,
-                            input.viewport,
-                            &vp,
-                        );
-                    }
-                    mesh.push_line_segment(
-                        ring.center,
-                        ring.center + handle_dir * ring.radius,
-                        ring.color,
-                        2.0,
-                        input.cam,
-                        input.viewport,
-                        &vp,
-                    );
-                    let project = |w: Vec3| input.cam.project(w, input.viewport, &vp);
-                    push_gizmo_handle(
-                        &mut mesh,
-                        ring.center + handle_dir * ring.radius,
-                        ring.color,
-                        input.cam,
-                        input.viewport,
-                        &vp,
-                        &project,
-                    );
-                }
-            }
+            let project = |w: Vec3| input.cam.project(w, input.viewport, &vp);
+            push_rotation_gizmo(
+                &mut mesh,
+                ring,
+                input.cam,
+                input.viewport,
+                &vp,
+                &project,
+            );
         }
         if let Some(arc) = input.revolve_arc_gizmo.as_ref() {
             // The swept arc from 0° to the current angle, plus a push/pull disc handle at its
@@ -5264,6 +5204,162 @@ fn push_gizmo_arrowhead(
         view_proj,
     );
 }
+/// The deterministic ring-plane reference for a rotation gizmo with no pinned zero direction:
+/// the ring's own `u` basis vector used to sample a full circle (#1405).
+fn ring_reference(axis: Vec3) -> Vec3 {
+    let n = axis.normalize_or_zero();
+    if n == Vec3::ZERO {
+        return Vec3::ZERO;
+    }
+    let reference = if n.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
+    n.cross(reference).normalize_or_zero()
+}
+
+/// The rotation gizmo dial (#1405): instead of a full circle, two fading arcs extend 30° in
+/// each direction from the handle, the handle floats at its (rotated) reference with a
+/// direction arrow on each side pointing along an arc. When a live turn is set, the fade arcs
+/// follow the handle but are painted underneath the sweep arc (drawn first, so it reads on
+/// top). Replaces [`ring_points`] for the Move-tool rotation gizmos.
+#[allow(clippy::too_many_arguments)]
+fn push_rotation_gizmo(
+    mesh: &mut SceneMesh<'_>,
+    gizmo: &MoveRotationGizmo,
+    cam: &Camera,
+    viewport: UiRect,
+    view_proj: &Mat4,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+) {
+    let n = gizmo.axis.normalize_or_zero();
+    let start_dir = gizmo
+        .zero_dir
+        .map(|z| z.normalize_or_zero())
+        .filter(|z| *z != Vec3::ZERO)
+        .unwrap_or_else(|| ring_reference(n));
+    if n == Vec3::ZERO || start_dir == Vec3::ZERO {
+        return;
+    }
+    let angle_deg = gizmo.angle_deg.unwrap_or(0.0);
+    let handle_dir = glam::Quat::from_axis_angle(n, angle_deg.to_radians()) * start_dir;
+    let handle_pos = gizmo.center + handle_dir * gizmo.radius;
+    let stroke = if gizmo.hovered { 3.0 } else { 1.5 };
+
+    // The fading arcs either side of the handle, drawn first so a live sweep stays on top.
+    push_rotation_fade_arcs(
+        mesh,
+        gizmo.center,
+        n,
+        handle_dir,
+        gizmo.radius,
+        gizmo.color,
+        stroke,
+        cam,
+        viewport,
+        view_proj,
+    );
+
+    // The 0° reference radial and, once turned off 0, the yellow sweep up to the handle — both
+    // painted on top of the fading arcs.
+    if gizmo.zero_dir.is_some() && gizmo.angle_deg.is_some() {
+        mesh.push_line_segment(
+            gizmo.center,
+            gizmo.center + start_dir * gizmo.radius,
+            gizmo.color,
+            1.5,
+            cam,
+            viewport,
+            view_proj,
+        );
+        if angle_deg.abs() > 1e-3 {
+            let arc = revolve_arc_points(
+                gizmo.center,
+                n,
+                start_dir,
+                gizmo.radius,
+                angle_deg,
+                64,
+            );
+            mesh.push_polyline_segment(&arc, MOVE_ROTATION_ARC, 2.5, cam, viewport, view_proj);
+            mesh.push_line_segment(
+                gizmo.center,
+                handle_pos,
+                gizmo.color,
+                2.0,
+                cam,
+                viewport,
+                view_proj,
+            );
+        }
+    }
+
+    // One direction arrow on each side of the handle, pointing along an arc.
+    let tangent = n.cross(handle_dir).normalize_or_zero();
+    if tangent != Vec3::ZERO {
+        for sign in [1.0f32, -1.0] {
+            let dir = tangent * sign;
+            let offset =
+                crate::dimensions::pixels_to_world_distance(project, handle_pos, dir, GIZMO_ROTATION_ARROW_OFFSET_PX);
+            let tip = handle_pos + dir * offset;
+            push_gizmo_arrowhead(
+                mesh,
+                tip,
+                dir,
+                GIZMO_ARROW_HEAD_PX,
+                GIZMO_ARROW_WING_PX,
+                stroke,
+                gizmo.color,
+                cam,
+                viewport,
+                view_proj,
+                project,
+            );
+        }
+    }
+
+    push_gizmo_handle(mesh, handle_pos, gizmo.color, cam, viewport, view_proj, project);
+}
+
+/// Two arcs through `±GIZMO_ROTATION_FADE_ARC_DEG` from `handle_dir`, fading from `color`
+/// at the handle out to transparent at their tips (#1405).
+#[allow(clippy::too_many_arguments)]
+fn push_rotation_fade_arcs(
+    mesh: &mut SceneMesh<'_>,
+    center: Vec3,
+    axis: Vec3,
+    handle_dir: Vec3,
+    radius: f32,
+    color: Color32,
+    stroke_px: f32,
+    cam: &Camera,
+    viewport: UiRect,
+    view_proj: &Mat4,
+) {
+    let n = axis.normalize_or_zero();
+    let hdir = handle_dir.normalize_or_zero();
+    if n == Vec3::ZERO || hdir == Vec3::ZERO || radius <= 0.0 {
+        return;
+    }
+    let half = GIZMO_ROTATION_FADE_ARC_DEG.to_radians();
+    let segments = GIZMO_ROTATION_FADE_ARC_SEGMENTS.max(1);
+    for sign in [1.0f32, -1.0] {
+        let mut prev: Option<Vec3> = None;
+        for i in 0..=segments {
+            let frac = i as f32 / segments as f32;
+            let dt = sign * half * frac;
+            let dir = glam::Quat::from_axis_angle(n, dt) * hdir;
+            let pt = center + dir * radius;
+            if let Some(p0) = prev {
+                let alpha = (color.a() as f32 * (1.0 - frac)).round() as u8;
+                if alpha > 0 {
+                    let c =
+                        Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha);
+                    mesh.push_line_segment(p0, pt, c, stroke_px, cam, viewport, view_proj);
+                }
+            }
+            prev = Some(pt);
+        }
+    }
+}
+
 fn push_gizmo_handle(
     mesh: &mut SceneMesh<'_>,
     center: Vec3,

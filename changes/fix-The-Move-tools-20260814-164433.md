@@ -1,0 +1,1 @@
+The Move tool's rotation gizmos now draw two fading 30° arcs out from the handle instead of a full circle, keep the handle floating on a deterministic reference with a direction arrow on each side of it, and paint the fade arcs underneath the live rotation sweep; a live turn stays signed (negative angles no longer read as 355°).
