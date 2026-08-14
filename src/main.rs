@@ -3384,17 +3384,10 @@ struct App {
     keypad_serves_focus: bool,
     /// One-shot: the input-debug harness focus request was sent.
     debug_focus_requested: bool,
-    /// Last frame's live-bounds diagonal, so auto-zoom only reacts to actual growth
-    /// or shrinkage (#463) rather than to a shape merely being small.
-    auto_zoom_last_extent: Option<f32>,
-    /// Last observed committed-document diagonal, so auto-zoom also frames geometry
-    /// that appears via a commit (#624) — e.g. a 20 m extrusion confirmed from the
-    /// context pane — not just live previews.
-    auto_zoom_doc_extent: Option<f32>,
-    /// Fingerprint of the last-seen scene selection, so auto-zoom's selection watch
-    /// fires once per selection change: picking something that pokes off-screen (e.g.
-    /// a face half in view) glides the camera out to take the whole thing in.
-    auto_zoom_selection: Option<u64>,
+    /// Sleep-till-we-zoom state for auto-zoom (#1371): the repaint-clock time (seconds) at
+    /// which it fires a zoom-to-fit, plus whether that fire has already happened for the
+    /// current quiet stretch (so it doesn't re-fire every idle frame).
+    auto_zoom_arm: AutoZoomArm,
     /// The Move ghost's displayed rigid pose (translation, rotation), easing toward the
     /// live probe's pose so hopping the hover between candidate end points reads as the
     /// body sweeping over — not teleporting.
@@ -3525,11 +3518,14 @@ enum WebIoEvent {
 type WebIoQueue = std::rc::Rc<std::cell::RefCell<Vec<WebIoEvent>>>;
 
 impl App {
-    /// Auto-zoom (#438): while enabled and a shape/extrusion is in progress, keep its
-    /// live bounds framed — glide out when geometry leaves the viewport, glide back in
-    /// when it shrinks well inside. Runs before `tick_transition` each frame; triggers
-    /// only between animations so it never fights an in-flight glide.
-    fn tick_auto_zoom(&mut self) {
+    /// Auto-zoom (#1371): while enabled, perform a zoom-to-fit 500 ms after the user
+    /// stops interacting — whether that's mouse movement, clicks, or keyboard input.
+    /// The 500 ms is a debounce: continuous input keeps pushing the deadline out, so a
+    /// zoom only fires once the user has been quiet for half a second. A drag (pointer
+    /// held) pauses the countdown instead of restarting it — see [`AutoZoomArm::step`].
+    /// Runs before `tick_transition`; frames the whole committed document and glides,
+    /// like the Zoom to Fit toolbar button.
+    fn tick_auto_zoom(&mut self, ctx: &egui::Context) {
         if !self.state.auto_zoom
             || self.state.fps.is_some()
             || self.state.cam.transition_active()
@@ -3538,150 +3534,31 @@ impl App {
             return;
         }
         let Some(viewport) = self.last_viewport else { return };
-        // A joint drag moves the part under the cursor every frame (#905), and the part is
-        // meant to travel — auto-zoom chasing it would swing the camera out from under the
-        // drag. It stands down for the duration, keeping its baselines current so the
-        // landing edit doesn't read as a sudden jump either.
-        if self.joint_select_drag.is_some() {
-            self.auto_zoom_selection = scene_selection_fingerprint(&self.state.scene_selection);
-            self.auto_zoom_last_extent = None;
-            self.auto_zoom_doc_extent = extrude::document_world_bounds(&self.state.doc)
-                .map(|(min, max)| (max - min).length());
-            return;
-        }
-        if self.tick_auto_zoom_selection(viewport) {
-            return;
-        }
-        let Some((min, max)) = self.auto_zoom_live_bounds() else {
-            self.auto_zoom_last_extent = None;
-            self.tick_auto_zoom_committed(viewport);
-            return;
-        };
-        let extent = (max - min).length();
-        let (grew, shrank) = match self.auto_zoom_last_extent {
-            Some(prev) => (extent > prev * 1.02 + 1e-3, extent < prev * 0.98 - 1e-3),
-            None => (false, false),
-        };
-        self.auto_zoom_last_extent = Some(extent);
-        // A shape is "deliberately sized" once a dimension was typed for it, or when
-        // an extrusion is being set — mid-drag mouse sizing never zooms in (#463).
-        let deliberately_sized = self.state.creating_extrusion.is_some()
-            || self
-                .state
-                .creating_rect
-                .as_ref()
-                .is_some_and(|cr| cr.user_edited.iter().any(|e| *e));
-        let (offscreen, too_small) = auto_zoom_screen_state(&self.state.cam, viewport, min, max);
-        if auto_zoom_should_frame(offscreen, too_small, grew, shrank, deliberately_sized) {
-            let aspect = (viewport.width() / viewport.height().max(1.0)).max(0.1);
-            self.state
-                .cam
-                .frame_bounds_animated(min, max, aspect, 0.22);
-        }
-    }
 
-    /// Selection auto-zoom: the moment the selection changes to something that pokes
-    /// off-screen — e.g. a face picked while half of it sits outside the view — the
-    /// camera glides out to take the whole selection in. Framing is **zoom-out only**
-    /// ([`camera::Camera::frame_bounds_zoom_out_animated`]), so picking a small fully
-    /// framable element pans over without diving in, and a fully visible selection does
-    /// nothing at all. Returns whether a glide was started.
-    fn tick_auto_zoom_selection(&mut self, viewport: egui::Rect) -> bool {
-        let fingerprint = scene_selection_fingerprint(&self.state.scene_selection);
-        let changed = self.auto_zoom_selection != fingerprint;
-        self.auto_zoom_selection = fingerprint;
-        if !changed || fingerprint.is_none() {
-            return false;
-        }
-        let Some((min, max)) =
-            extrude::selection_world_bounds(&self.state.doc, &self.state.scene_selection)
-        else {
-            return false;
-        };
-        let (offscreen, _) = auto_zoom_screen_state(&self.state.cam, viewport, min, max);
-        if !offscreen {
-            return false;
-        }
-        let aspect = (viewport.width() / viewport.height().max(1.0)).max(0.1);
-        self.state
-            .cam
-            .frame_bounds_zoom_out_animated(min, max, aspect, 0.22);
-        true
-    }
-
-    /// Committed-geometry auto-zoom (#624): with no live preview in progress, watch the
-    /// document bounds themselves, so a commit that lands new geometry (e.g. an extrusion
-    /// confirmed straight from the context pane before any preview tick ran) still glides
-    /// the view out to fit — and an undo that shrinks the model glides back in.
-    fn tick_auto_zoom_committed(&mut self, viewport: egui::Rect) {
-        let Some((min, max)) = extrude::document_world_bounds(&self.state.doc) else {
-            self.auto_zoom_doc_extent = None;
-            return;
-        };
-        let extent = (max - min).length();
-        let (grew, shrank) = match self.auto_zoom_doc_extent {
-            Some(prev) => (extent > prev * 1.02 + 1e-3, extent < prev * 0.98 - 1e-3),
-            None => (false, false),
-        };
-        self.auto_zoom_doc_extent = Some(extent);
-        let (offscreen, too_small) = auto_zoom_screen_state(&self.state.cam, viewport, min, max);
-        // Committed geometry is always deliberately sized — the user confirmed it.
-        if auto_zoom_should_frame(offscreen, too_small, grew, shrank, true) {
-            let aspect = (viewport.width() / viewport.height().max(1.0)).max(0.1);
-            self.state
-                .cam
-                .frame_bounds_animated(min, max, aspect, 0.22);
-        }
-    }
-
-    /// The world bounds auto-zoom keeps framed (#438): the document plus the in-progress
-    /// rectangle and extrusion previews. `None` when nothing relevant is in progress.
-    fn auto_zoom_live_bounds(&self) -> Option<(Vec3, Vec3)> {
-        let doc = &self.state.doc;
-        let mut bounds: Option<(Vec3, Vec3)> = None;
-        let mut extend = |p: Vec3| {
-            bounds = Some(match bounds {
-                Some((lo, hi)) => (lo.min(p), hi.max(p)),
-                None => (p, p),
-            });
-        };
-        let mut active = false;
-        if let (Some(cr), Some(session)) = (self.state.creating_rect.as_ref(), self.state.sketch_session)
-        {
-            if let Some(frame) = sketch_geometry_frame(doc, session.sketch) {
-                active = true;
-                let (c0, c1) = cr.corners(&frame, doc);
-                let (ou, ov) = world_to_local(&frame, c0);
-                let (eu, ev) = world_to_local(&frame, c1);
-                for (u, v) in [(ou, ov), (eu, ov), (ou, ev), (eu, ev)] {
-                    extend(local_to_world(&frame, u, v));
-                }
+        let now = ctx.input(|i| i.time);
+        // Any user input re-arms the countdown — pointer moves, button presses, keyboard
+        // (down *or* up) — so continuous interaction debounces it: it only ever fires once
+        // the user has been quiet for 500 ms (#1371). While the pointer is held, `step`
+        // pauses instead (see [`AutoZoomArm::step`]), so a drag never re-frames.
+        let is_input = ctx.input(|i| {
+            i.events.iter().any(|e| match e {
+                egui::Event::PointerMoved(_)
+                | egui::Event::PointerButton { .. }
+                | egui::Event::Key { .. }
+                | egui::Event::Text(_) => true,
+                _ => false,
+            })
+        });
+        let dragging = ctx.input(|i| i.pointer.any_down());
+        let mut arm = self.auto_zoom_arm;
+        if arm.step(is_input, dragging, now) {
+            // Zoom-to-fit the whole document, exactly like the Z toolbar button.
+            if let Some((min, max)) = extrude::document_world_bounds(&self.state.doc) {
+                let aspect = (viewport.width() / viewport.height().max(1.0)).max(0.1);
+                self.state.cam.frame_bounds_animated(min, max, aspect, 0.22);
             }
         }
-        if let Some(ce) = self.state.creating_extrusion.as_ref() {
-            let normal = extrude::faces_anchor(doc, &ce.faces).map(|(_, n)| n);
-            if let Some(normal) = normal {
-                active = true;
-                for face in &ce.faces {
-                    if let Some((profile, _)) = extrude::face_profile_world(doc, face) {
-                        for p in profile {
-                            extend(p);
-                            extend(p + normal * ce.distance);
-                        }
-                    }
-                }
-            }
-        }
-        if !active {
-            return None;
-        }
-        // Keep the rest of the document in frame too, so zooming to the live shape never
-        // crops committed geometry.
-        if let Some((lo, hi)) = extrude::document_world_bounds(doc) {
-            extend(lo);
-            extend(hi);
-        }
-        bounds
+        self.auto_zoom_arm = arm;
     }
 
     /// The status bar's update badge (#427): appears only when a newer release exists;
@@ -4671,9 +4548,7 @@ impl App {
             tutorial_bubble_size: egui::vec2(352.0, 120.0),
             keypad_serves_focus: false,
             debug_focus_requested: false,
-            auto_zoom_last_extent: None,
-            auto_zoom_doc_extent: None,
-            auto_zoom_selection: None,
+            auto_zoom_arm: AutoZoomArm::new(),
             move_ghost_pose: None,
             #[cfg(target_arch = "wasm32")]
             agent_inputmode_none: None,
@@ -5923,6 +5798,19 @@ impl App {
                 Some(window) => window.focus = true,
                 None => self.report_issue = Some(ReportIssueWindow::open()),
             },
+            // Help → Report Problem… (#1372): open the browser at a new-issue form on the repo.
+            MenuCommand::ReportProblem => {
+                let url = "https://github.com/iffy/BearCAD/issues/new";
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.state.status = match open_in_browser(url) {
+                        Ok(()) => "Opened a new-issue form in your browser".to_string(),
+                        Err(err) => format!("Could not open browser: {err}"),
+                    };
+                }
+                #[cfg(target_arch = "wasm32")]
+                ctx.open_url(egui::OpenUrl::new_tab(url));
+            }
             MenuCommand::InstallCli => {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
@@ -13765,13 +13653,13 @@ impl App {
                 {
                     self.state.apply(Action::ZoomToFit);
                 }
-                // Auto-zoom toggle (#438): while on, in-progress geometry that outgrows
-                // (or shrinks well inside) the view re-frames the camera automatically.
+                // Auto-zoom toggle (#438/#1371): while on, the view re-frames to fit the whole
+                // document 500 ms after the user stops interacting.
                 if icons::selectable_icon_button_at(
                     ui,
                     icons::IconId::AutoZoom,
                     self.state.auto_zoom,
-                    "Auto-zoom — keep in-progress geometry framed while drawing/extruding",
+                    "Auto-zoom — zoom to fit 500 ms after you stop interacting",
                     TOOLBAR_ICON_SIZE,
                 )
                 .clicked()
@@ -17629,7 +17517,7 @@ impl eframe::App for App {
         }
 
         let dt = ctx.input(|i| i.stable_dt);
-        self.tick_auto_zoom();
+        self.tick_auto_zoom(ctx);
         let transition_active = self.state.cam.tick_transition(dt);
         if transition_active {
             ctx.request_repaint();
@@ -18901,22 +18789,55 @@ fn viewport_pointer_pos(
         .or(viewport_owns_pointer.then_some(response.interact_pointer_pos()).flatten())
 }
 
-/// True while orbiting/panning or dragging sketch geometry — pick hover is distracting then.
-/// Whether auto-zoom should re-frame (#438): the bounds poke outside the viewport (any
-/// corner off-screen or behind the camera), or they occupy less than a third of it (the
-/// extrusion was dragged back down). Pure so it's unit-testable.
-/// Whether auto-zoom should re-frame (#438, tempered by #463): zoom **out** only when
-/// the live geometry has actually *grown* out of the view, and zoom **in** only when it
-/// has actually *shrunk* well inside — and only once its size is deliberate (a typed
-/// dimension or an extrusion), never mid-drag of a fresh shape.
-fn auto_zoom_should_frame(
-    offscreen: bool,
-    too_small: bool,
-    grew: bool,
-    shrank: bool,
-    deliberately_sized: bool,
-) -> bool {
-    (offscreen && grew) || (too_small && shrank && deliberately_sized)
+/// Auto-zoom's debounce state (#1371). [`AutoZoomArm::step`] is called every frame with
+/// whether this frame carried any user input, whether the pointer is currently down, and
+/// the repaint-clock time; it returns `true` once 500 ms have passed since the last input
+/// (so a drag — held down with moves — keeps pausing it). Pure so it's unit-testable.
+#[derive(Clone, Copy, Debug)]
+pub struct AutoZoomArm {
+    /// Repaint-clock time (seconds) at which the zoom-to-fit fires, if armed.
+    deadline: Option<f64>,
+    /// Whether the armed zoom already fired, so it doesn't re-fire every idle frame.
+    fired: bool,
+}
+
+/// How long the user must be quiet before auto-zoom re-frames the view (#1371).
+pub const AUTO_ZOOM_SETTLE_SECS: f64 = 0.5;
+
+impl AutoZoomArm {
+    pub fn new() -> Self {
+        Self {
+            deadline: None,
+            fired: false,
+        }
+    }
+
+    /// Advance one frame. `input` is true when this frame carried *any* user input —
+    /// pointer move, button press/release, or key press/release. Continuous input keeps
+    /// re-arming the 500 ms countdown, so it debounces: the zoom only fires once the user
+    /// has been quiet for half a second. `dragging` is true while the pointer is held
+    /// down; during a drag the countdown is *paused* — it neither fires nor re-arms — so
+    /// dragging never yanks the camera out from under the pointer (#1371). Returns whether
+    /// a zoom-to-fit should fire *this* frame.
+    pub fn step(&mut self, input: bool, dragging: bool, now: f64) -> bool {
+        if dragging {
+            // A drag pauses the timer: the ask is literally "dragging pauses the timer",
+            // so while a button is held we neither fire nor refresh the countdown.
+            return false;
+        }
+        if input {
+            self.deadline = Some(now + AUTO_ZOOM_SETTLE_SECS);
+            self.fired = false;
+            return false;
+        }
+        if let Some(dl) = self.deadline {
+            if now >= dl && !self.fired {
+                self.fired = true;
+                return true;
+            }
+        }
+        false
+    }
 }
 
 /// The transform the Move preview ghost draws with (#660/#748): the in-progress move as a
@@ -19160,59 +19081,6 @@ fn move_a_connector_segments(
         out.push((tip(t0), tip(t1), theme::MOVE_CONNECTOR, false));
     }
     Some(out)
-}
-
-/// Order-independent fingerprint of the scene selection set, so auto-zoom's selection
-/// watch fires exactly once per selection change. `None` for an empty selection —
-/// clearing never frames. XOR-folded per-element hashes, since `SceneSelection` iterates
-/// its `HashSet` in arbitrary order.
-fn scene_selection_fingerprint(selection: &selection::SceneSelection) -> Option<u64> {
-    use std::hash::{Hash, Hasher};
-    let mut combined = None;
-    for element in selection.iter() {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        element.hash(&mut hasher);
-        combined = Some(combined.unwrap_or(0u64) ^ hasher.finish());
-    }
-    combined
-}
-
-/// How the live bounds sit in the current view: (pokes off-screen, occupies < ⅓ of it).
-fn auto_zoom_screen_state(
-    cam: &camera::Camera,
-    viewport: egui::Rect,
-    min: Vec3,
-    max: Vec3,
-) -> (bool, bool) {
-    let vp = cam.view_proj(viewport);
-    let corners = [
-        Vec3::new(min.x, min.y, min.z),
-        Vec3::new(max.x, min.y, min.z),
-        Vec3::new(min.x, max.y, min.z),
-        Vec3::new(max.x, max.y, min.z),
-        Vec3::new(min.x, min.y, max.z),
-        Vec3::new(max.x, min.y, max.z),
-        Vec3::new(min.x, max.y, max.z),
-        Vec3::new(max.x, max.y, max.z),
-    ];
-    let mut any_offscreen = false;
-    let mut screen_min = egui::pos2(f32::MAX, f32::MAX);
-    let mut screen_max = egui::pos2(f32::MIN, f32::MIN);
-    for c in corners {
-        match cam.project(c, viewport, &vp) {
-            Some(p) => {
-                screen_min = screen_min.min(p);
-                screen_max = screen_max.max(p);
-                if !viewport.shrink(8.0).contains(p) {
-                    any_offscreen = true;
-                }
-            }
-            None => any_offscreen = true,
-        }
-    }
-    let extent = (screen_max - screen_min).max_elem();
-    let too_small = extent > 0.0 && extent < viewport.width().min(viewport.height()) * 0.33;
-    (any_offscreen, too_small)
 }
 
 fn suppress_viewport_pick_hover(
@@ -33076,26 +32944,6 @@ mod tests {
         );
     }
 
-    /// #438: the screen-state probe sees overflow and underfill; comfortable fits
-    /// report neither.
-    #[test]
-    fn auto_zoom_screen_state_reports_overflow_and_underfill() {
-        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0));
-        let mut cam = camera::Camera::default();
-        cam.frame_bounds_instant(Vec3::splat(-50.0), Vec3::splat(50.0), 1000.0 / 800.0);
-        assert_eq!(
-            auto_zoom_screen_state(&cam, viewport, Vec3::splat(-50.0), Vec3::splat(50.0)),
-            (false, false),
-            "comfortable fit"
-        );
-        let (offscreen, _) =
-            auto_zoom_screen_state(&cam, viewport, Vec3::splat(-1000.0), Vec3::splat(1000.0));
-        assert!(offscreen, "20x growth pokes off-screen");
-        let (_, too_small) =
-            auto_zoom_screen_state(&cam, viewport, Vec3::splat(-2.0), Vec3::splat(2.0));
-        assert!(too_small, "a sliver underfills the view");
-    }
-
     /// #748: the B-pair path curve blends the slide and the turn together — it starts at
     /// the original start B, lands exactly on end B, and half way along it has turned half
     /// the angle about the travelling pivot.
@@ -33278,45 +33126,30 @@ mod tests {
         assert!(!element_in_sketch(&doc, model::sketch_key_for_slot(0), &SceneElement::BodyVertex { body: bkey(0), p: [0; 3] }));
     }
 
-    /// Auto-zoom's selection watch keys off an order-independent fingerprint of the
-    /// selection set: same set → same value regardless of iteration order, a changed
-    /// set → a different value, empty → `None` (clearing never frames).
+    /// Auto-zoom (#1371) fires 500 ms after any user input, debounced (the countdown
+    /// restarts on each input), and never fires while the pointer is down — it pauses
+    /// during a drag.
     #[test]
-    fn scene_selection_fingerprint_is_set_keyed() {
-        use hierarchy::SceneElement;
-        let mut a = selection::SceneSelection::default();
-        assert_eq!(scene_selection_fingerprint(&a), None);
-        a.insert(SceneElement::Body(bkey(0)));
-        a.insert(SceneElement::Body(bkey(1)));
-        let mut b = selection::SceneSelection::default();
-        b.insert(SceneElement::Body(bkey(1)));
-        b.insert(SceneElement::Body(bkey(0)));
-        assert_eq!(
-            scene_selection_fingerprint(&a),
-            scene_selection_fingerprint(&b)
-        );
-        b.insert(SceneElement::Body(bkey(2)));
-        assert_ne!(
-            scene_selection_fingerprint(&a),
-            scene_selection_fingerprint(&b)
-        );
-    }
-
-    /// #463: auto-zoom only zooms out on actual growth, only zooms in on actual
-    /// shrinkage — and zooming in additionally needs a deliberate size (typed
-    /// dimension / extrusion), so mid-drag rectangle sizing never yanks the camera.
-    #[test]
-    fn auto_zoom_decision_is_direction_and_intent_gated() {
-        // Off-screen but not grown (e.g. the user orbited): stay put.
-        assert!(!auto_zoom_should_frame(true, false, false, false, true));
-        // Grew off-screen: zoom out, typed or not.
-        assert!(auto_zoom_should_frame(true, false, true, false, false));
-        // Small but not shrinking (drag just started): stay put.
-        assert!(!auto_zoom_should_frame(false, true, false, false, true));
-        // Shrinking mid-drag with no typed size: stay put.
-        assert!(!auto_zoom_should_frame(false, true, false, true, false));
-        // Shrunk deliberately (typed a small dimension): zoom in.
-        assert!(auto_zoom_should_frame(false, true, false, true, true));
+    fn auto_zoom_arm_debounces_and_pauses_on_drag() {
+        let mut arm = AutoZoomArm::new();
+        // Nothing armed, nothing fires even after a delay.
+        assert!(!arm.step(false, false, 1000.0));
+        assert!(!arm.step(false, false, 1000.0 + AUTO_ZOOM_SETTLE_SECS));
+        // Any input arms it; it does not fire immediately.
+        assert!(!arm.step(true, false, 0.0));
+        // Still not 500 ms later.
+        assert!(!arm.step(false, false, AUTO_ZOOM_SETTLE_SECS * 0.5));
+        // Exactly at the deadline it fires, then only once until new input re-arms.
+        assert!(arm.step(false, false, AUTO_ZOOM_SETTLE_SECS));
+        assert!(!arm.step(false, false, AUTO_ZOOM_SETTLE_SECS + 100.0));
+        // Dragging pauses: input while the pointer is down neither fires nor re-arms,
+        // so a drag beyond the deadline still stays put.
+        assert!(!arm.step(true, true, 200.0));
+        assert!(!arm.step(false, true, 200.0 + 10.0 * AUTO_ZOOM_SETTLE_SECS));
+        // Letting go and staying quiet: the deadline was never pushed during the drag,
+        // but a fresh input on release re-arms from downstream.
+        assert!(!arm.step(true, false, 300.0));
+        assert!(arm.step(false, false, 300.0 + AUTO_ZOOM_SETTLE_SECS));
     }
 
     use super::actions::CreatingRect;

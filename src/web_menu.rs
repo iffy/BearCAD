@@ -159,6 +159,10 @@ pub fn bar(ui: &mut egui::Ui, pane_visible: impl Fn(Pane) -> bool) -> Option<Men
                     picked = Some(MenuCommand::ShowChangelog);
                     ui.close();
                 }
+                if ui.button("Report Problem…").clicked() {
+                    picked = Some(MenuCommand::ReportProblem);
+                    ui.close();
+                }
                 if ui.button("About").clicked() {
                     picked = Some(MenuCommand::About);
                     ui.close();

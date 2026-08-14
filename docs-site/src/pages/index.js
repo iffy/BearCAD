@@ -8,16 +8,21 @@ import HomepageFeatures from '@site/src/components/HomepageFeatures';
 import Heading from '@theme/Heading';
 import styles from './index.module.css';
 
-// Latest-release asset URLs — same names as src/release_artifacts.rs and the repo README.
-const RELEASES_BASE = 'https://github.com/iffy/BearCAD/releases/latest/download';
+// Latest-release asset URLs live on the /docs/downloads page (same names as
+// src/release_artifacts.rs); the navbar and hero only link there.
 // The hosted web build (wasm), deployed alongside the docs by CI. Chromebooks
 // install this as a PWA (Install app in Chrome); same path as "Run in browser".
 const WEB_APP_PATH = 'pathname:///app/';
-const DOWNLOADS = [
-  {label: 'Download macOS', href: `${RELEASES_BASE}/bearcad.dmg`},
-  {label: 'Download Windows', href: `${RELEASES_BASE}/bearcad.exe`},
-  {label: 'Download Linux', href: `${RELEASES_BASE}/bearcad-linux-x86_64.tar.gz`},
-  {label: 'Install Chromebook', href: WEB_APP_PATH},
+// Sponsor the project (Stripe payment link).
+const PAY_URL = 'https://buy.stripe.com/28E3ci4Gt60efjO7mn1Jm00';
+// The other three of the four main actions, besides the prominent "Run in your
+// browser" CTA. Download points at a dedicated page so the navbar can reuse it.
+// `to` (not `href`) marks an internal route so it navigates without a reload.
+const ACTIONS = [
+  {label: '▶  Run in your browser', href: WEB_APP_PATH, primary: true},
+  {label: 'Read the docs', to: '/docs/intro'},
+  {label: 'Pay to support', href: PAY_URL},
+  {label: 'Download', to: '/docs/downloads'},
 ];
 
 function HomepageHeader() {
@@ -39,24 +44,19 @@ function HomepageHeader() {
         <div className={styles.ctaRow}>
           <Link
             className={clsx('button button--lg', styles.ctaButton)}
-            href={WEB_APP_PATH}>
-            ▶&nbsp;&nbsp;Run in your browser
+            href={ACTIONS[0].href}>
+            {ACTIONS[0].label}
           </Link>
         </div>
         <div className={styles.buttons}>
-          {DOWNLOADS.map(({label, href}) => (
+          {ACTIONS.slice(1).map(({label, href, to}) => (
             <Link
               key={label}
               className={clsx('button button--lg', styles.downloadButton)}
-              href={href}>
+              {...(to ? {to} : {href})}>
               {label}
             </Link>
           ))}
-          <Link
-            className={clsx('button button--lg', styles.downloadButton)}
-            to="/docs/intro">
-            Read the docs
-          </Link>
         </div>
       </div>
     </header>
