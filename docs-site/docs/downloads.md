@@ -8,7 +8,7 @@ title: Download
 BearCAD is a single per-OS executable — download it and run it; there is no installer
 beyond the file itself.
 
-:::info No install needed
+:::info[No install needed]
 Just grab the file for your OS, open it, and you're sketching. On macOS you may need
 to right-click the app and choose **Open** the first time.
 :::
@@ -20,3 +20,9 @@ to right-click the app and choose **Open** the first time.
 
 The desktop builds add Lua scripting and a command-line interface on top of everything in
 the web app. Prefer not to download anything? [Run BearCAD in your browser](pathname:///app/) instead.
+
+<stripe-buy-button
+  buy-button-id="buy_btn_0U4AFay37Y4GeGGmMrowDbCF"
+  publishable-key="pk_live_Wnk0BnoZxKPUkW03VR06TEq8"
+>
+</stripe-buy-button>
