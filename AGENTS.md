@@ -14,7 +14,7 @@ When adding or changing a keyboard shortcut, update `shortcuts::all_shortcuts()`
 
 When writing docs, I really *really* **REALLY** prefer brevity. Be as succinct as possible in the docs, but also thorough. Follow the "Writing style" principles in `docs-site/README.md` — the app is the documentation; docs only cover what the app can't show. Don't reference todoer issue numbers in the docs, but please reference them in the Git Commits.
 
-Always work directly on the `master` branch. Do not create feature branches unless I specifically tell you to — commit your work straight to `master` and push to `origin` when a task is complete.
+Always work directly on the `master` branch. Before starting, merge in `origin/master`. Do not create feature branches unless I specifically tell you to — commit your work straight to `master` and push to `origin` when a task is complete.
 
 Never, ever install software on a computer — not you, not subagents, not any agent you spawn. You can ask me to, but you do not do that.
 
