@@ -1,1 +1,0 @@
-Release CI now publishes a wasm web build as a release asset and the website CI downloads the latest published non-draft release instead of rebuilding the webapp on every docs push, cutting website build time.

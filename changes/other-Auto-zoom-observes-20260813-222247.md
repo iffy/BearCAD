@@ -1,1 +1,0 @@
-Auto-zoom now performs a zoom-to-fit 500 ms after the user stops interacting (mouse movement, clicks, or keyboard input), debounced so it never fires mid-gesture, and pauses while a drag is in progress.

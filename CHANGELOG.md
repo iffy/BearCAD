@@ -1,3 +1,15 @@
+# v0.3.0 - 2026-08-14
+
+- **BREAKING CHANGE:** Remove the Viewport-styles documentation page and its CI build process (style-swatch generator, screenshot scene, and workflow steps).
+- **NEW:** Add a dedicated /docs/downloads page with just the per-OS download links, linkable from the site.
+- **NEW:** Release CI now publishes a wasm web build as a release asset and the website CI downloads the latest published non-draft release instead of rebuilding the webapp on every docs push, cutting website build time.
+- **NEW:** Add Help ▸ Report Problem…, which opens the user's browser at a new-issue form on the GitHub repo.
+- **FIX:** Move: fix three drag/hover/display bugs (#1365, #1366, #1367)
+- CI no longer rebuilds doc screenshots on every push: push/merge website builds fetch the existing screenshots from the deployed GitHub Pages site, and only the nightly re-captures them (and only when the repo changed since the last nightly) (#1389)
+- Website payment verbiage now reads "Name Your Price": the landing-page action and the downloads-page note explain that BearCAD is free (pay nothing), and that supporters can name their own price via the existing Stripe button.
+- Landing page now offers four main actions (Run in your browser, Read the docs, Pay to support, Download), with Pay and Download also mirrored into the top navbar next to the GitHub link.
+- Auto-zoom now performs a zoom-to-fit 500 ms after the user stops interacting (mouse movement, clicks, or keyboard input), debounced so it never fires mid-gesture, and pauses while a drag is in progress.
+
 # v0.2.0 - 2026-08-14
 
 - **NEW:** Pathed documents write only changed rows in an open transaction; Save COMMITs

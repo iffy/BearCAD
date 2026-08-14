@@ -1,1 +1,0 @@
-CI no longer rebuilds doc screenshots on every push: push/merge website builds fetch the existing screenshots from the deployed GitHub Pages site, and only the nightly re-captures them (and only when the repo changed since the last nightly) (#1389)
