@@ -255,9 +255,6 @@ const GIZMO_HOVER_OUTER_RADIUS_PX: f32 = 14.0;
 const GIZMO_ANGLE_CIRCLE_SEGMENTS: usize = 48;
 const GIZMO_ANGLE_STROKE_PX: f32 = 1.5;
 const GIZMO_ANGLE_STROKE_HOVER_PX: f32 = 2.5;
-const GIZMO_ANGLE_ARROW_GAP_PX: f32 = 12.0;
-const GIZMO_ANGLE_ARROW_PX: f32 = 5.0;
-const GIZMO_ANGLE_WING_PX: f32 = 3.0;
 const GIZMO_HANDLE_RING_STROKE_PX: f32 = 1.5;
 
 #[repr(C)]
@@ -5144,12 +5141,55 @@ impl<'a> SceneMesh<'a> {
 
         let handle = axis_angle_handle(origin, direction, angle_deg);
         let handle_dir = (handle - origin).normalize_or_zero();
-        let tangent = axis.cross(handle_dir).normalize_or_zero();
         let angle_color = if angle_hovered {
             GIZMO_HANDLE_HOVER_RGBA
         } else {
             color
         };
+        // Unify with the Face Snap / Free Move rotation dial (#1384): a radial line from
+        // the centre to the 0° reference, the yellow arc up to the current angle, a radial
+        // line centre→handle and a single disc at the handle.
+        let start_dir = perp.normalize_or_zero();
+        if axis != Vec3::ZERO && start_dir != Vec3::ZERO {
+            self.push_line_segment(
+                origin,
+                origin + start_dir * AXIS_ANGLE_GIZMO_RADIUS_MM,
+                angle_color,
+                1.5,
+                cam,
+                viewport,
+                view_proj,
+            );
+            if angle_deg.abs() > 1e-3 {
+                let arc = revolve_arc_points(
+                    origin,
+                    axis,
+                    start_dir,
+                    AXIS_ANGLE_GIZMO_RADIUS_MM,
+                    angle_deg,
+                    GIZMO_ANGLE_CIRCLE_SEGMENTS,
+                );
+                self.push_polyline_segment(
+                    &arc,
+                    MOVE_ROTATION_ARC,
+                    2.5,
+                    cam,
+                    viewport,
+                    view_proj,
+                );
+            }
+            if handle_dir != Vec3::ZERO {
+                self.push_line_segment(
+                    origin,
+                    handle,
+                    angle_color,
+                    2.0,
+                    cam,
+                    viewport,
+                    view_proj,
+                );
+            }
+        }
         if angle_hovered {
             push_gizmo_handle_hover(
                 self,
@@ -5162,30 +5202,6 @@ impl<'a> SceneMesh<'a> {
             );
         } else {
             push_gizmo_handle(self, handle, color, cam, viewport, view_proj, project);
-        }
-        // The angle handle drags along the circle both ways: one arrow along each
-        // tangent direction, stood off from the handle disc.
-        for sign in [-1.0f32, 1.0] {
-            let along = tangent * sign;
-            let gap = pixels_to_world_distance(
-                project,
-                handle,
-                along,
-                GIZMO_ANGLE_ARROW_GAP_PX + GIZMO_ANGLE_ARROW_PX,
-            );
-            push_gizmo_arrowhead(
-                self,
-                handle + along * gap,
-                along,
-                GIZMO_ANGLE_ARROW_PX,
-                GIZMO_ANGLE_WING_PX,
-                2.0,
-                angle_color,
-                cam,
-                viewport,
-                view_proj,
-                project,
-            );
         }
     }
 }

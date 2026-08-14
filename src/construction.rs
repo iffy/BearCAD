@@ -58,6 +58,9 @@ pub const AXIS_ANGLE_GIZMO_RADIUS_MM: f32 = 25.0;
 /// Screen-space hit radius for axis gizmo drag handles (pixels).
 pub const AXIS_GIZMO_HANDLE_HIT_RADIUS_PX: f32 = 14.0;
 
+/// Yellow arc colour for the axis angle dial, matching the Face Snap rotation arc (#1384).
+pub const AXIS_ANGLE_ARC: egui::Color32 = egui::Color32::from_rgb(255, 225, 90);
+
 /// What the user picked as the plane reference on the first click.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlaneReference {
@@ -1308,28 +1311,46 @@ pub fn draw_axis_plane_gizmo(
 
     let handle = axis_angle_handle(origin, direction, angle_deg);
     let handle_dir = (handle - origin).normalize_or_zero();
-    let tangent = axis.cross(handle_dir).normalize_or_zero();
     let angle_color = if angle_hovered {
         GIZMO_HANDLE_HOVER_RGBA
     } else {
         color
     };
+    // Unify with the Face Snap / Free Move rotation dial (#1384): a radial line from the
+    // origin to the 0° reference, the yellow arc up to the current angle, a radial line
+    // origin→handle and a single disc at the handle.
+    if let Some(center) = project(origin) {
+        if angle_deg.abs() > 1e-3 {
+            let segs = 48;
+            let mut arc_pts = Vec::with_capacity(segs + 1);
+            for i in 0..=segs {
+                let t = angle_deg.to_radians() * i as f32 / segs as f32;
+                let dir = Quat::from_axis_angle(axis, t) * perp;
+                if let Some(sp) = project(origin + dir * AXIS_ANGLE_GIZMO_RADIUS_MM) {
+                    arc_pts.push(sp);
+                }
+            }
+            if arc_pts.len() >= 2 {
+                painter.add(egui::Shape::line(
+                    arc_pts,
+                    egui::Stroke::new(2.5, AXIS_ANGLE_ARC),
+                ));
+            }
+        }
+        if let Some(start) = project(origin + perp * AXIS_ANGLE_GIZMO_RADIUS_MM) {
+            painter.line_segment([center, start], egui::Stroke::new(1.5, angle_color));
+        }
+    }
     if let Some(sp) = project(handle) {
+        if handle_dir != Vec3::ZERO {
+            if let Some(center) = project(origin) {
+                painter.line_segment([center, sp], egui::Stroke::new(2.0, angle_color));
+            }
+        }
         if angle_hovered {
             draw_gizmo_handle_hover(painter, sp, GIZMO_HANDLE_HOVER_RGBA);
         } else {
             painter.circle_filled(sp, 6.0, color);
-        }
-        if let (Some(ta), Some(tb)) = (
-            project(handle + tangent * 6.0),
-            project(handle - tangent * 6.0),
-        ) {
-            let t_screen = (ta - tb).normalized();
-            if t_screen.length_sq() > 1e-4 {
-                for sign in [-1.0f32, 1.0] {
-                    draw_gizmo_arrow_2d(painter, sp, t_screen * sign, 12.0, 5.0, 3.0, angle_color);
-                }
-            }
         }
     }
 }
