@@ -768,10 +768,10 @@ pub fn sketch_fully_constrained_lines(
     Ok(out)
 }
 
-/// All fully-constrained lines across every sketch (#172), memoized per document state —
-/// the DOF analysis builds a solver system per sketch, far too heavy to run per line per
-/// frame. Any change to sketch geometry or constraints invalidates the memo.
-pub fn fully_constrained_lines(doc: &Document) -> std::collections::HashSet<crate::model::LineKey> {
+/// A structural hash of the sketch inputs [`fully_constrained_lines`] depends on — the
+/// path taken only while `mesh_rev` is still 0 (test fixtures that write fields directly
+/// instead of going through `apply`), so a live frame never pays for it (#1398).
+fn structural_constraint_fingerprint(doc: &Document) -> u64 {
     use std::hash::Hasher;
     struct HashWriter(std::collections::hash_map::DefaultHasher);
     impl std::io::Write for HashWriter {
@@ -789,7 +789,24 @@ pub fn fully_constrained_lines(doc: &Document) -> std::collections::HashSet<crat
         &(&doc.lines, &doc.circles, &doc.constraints, &doc.sketches),
     )
     .ok();
-    let fingerprint = writer.0.finish();
+    writer.0.finish()
+}
+
+/// All fully-constrained lines across every sketch (#172), memoized per document state —
+/// the DOF analysis builds a solver system per sketch, far too heavy to run per line per
+/// frame. Any change to sketch geometry or constraints invalidates the memo.
+///
+/// The memo key is the same cheap integer the mesh caches use ([`crate::model::Document::mesh_rev`]):
+/// `apply` bumps it on every geometry/constraint mutation, so a live frame decides with a
+/// single integer compare instead of re-serializing the whole sketch model to JSON (#1398).
+/// Only test fixtures that write fields directly (never `apply`) keep `mesh_rev == 0` and
+/// fall back to a structural hash.
+pub fn fully_constrained_lines(doc: &Document) -> std::collections::HashSet<crate::model::LineKey> {
+    let fingerprint = if doc.mesh_rev != 0 {
+        doc.mesh_rev
+    } else {
+        structural_constraint_fingerprint(doc)
+    };
 
     thread_local! {
         static CONSTRAINED: std::cell::RefCell<(u64, std::collections::HashSet<crate::model::LineKey>)> =
@@ -1000,6 +1017,63 @@ mod tests {
         solve_document_sketches(&mut doc, &[]).expect("solve");
         let all = fully_constrained_lines(&doc);
         assert!(!all.contains(&lkey(0)), "removing the dimension must drop the line from the set");
+    }
+
+    /// #1398: in live documents the memo keys on `mesh_rev` — the same integer the mesh
+    /// caches use — so a constraint edit invalidates it exactly when `apply` bumps the rev,
+    /// rather than re-serializing the sketch model to JSON on every frame.
+    #[test]
+    fn fully_constrained_memo_follows_mesh_rev() {
+        use crate::model::{ConstraintEntity, ConstraintPoint, DistanceTarget, LineEnd};
+
+        let (mut doc, sketch) = sketch_doc();
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 30.0, 5.0, 42.0, 9.0));
+        doc.bump_mesh_rev(); // leave the mesh_rev-keyed path (what a live document uses)
+        let mut push = |kind: ConstraintKind| {
+            doc.constraints.insert(Constraint {
+                sketch,
+                kind,
+                expression: String::new(),
+                dim_offset: None,
+                name: None,
+            });
+        };
+        push(ConstraintKind::Coincident {
+            a: ConstraintEntity::Origin,
+            b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                line: lkey(0),
+                end: LineEnd::Start,
+            }),
+        });
+        push(ConstraintKind::Parallel {
+            line_a: crate::model::ConstraintLine::Line(lkey(0)),
+            line_b: crate::model::ConstraintLine::OriginAxis(crate::model::SketchAxis::X),
+        });
+        doc.constraints.insert(Constraint {
+            sketch,
+            kind: ConstraintKind::Distance {
+                target: DistanceTarget::LineLength(lkey(0)),
+            },
+            expression: "10".to_string(),
+            dim_offset: None,
+            name: None,
+        });
+        solve_document_sketches(&mut doc, &[]).expect("solve");
+        let all = fully_constrained_lines(&doc);
+        assert!(all.contains(&lkey(0)) && !all.contains(&lkey(1)));
+
+        // `apply` bumps the rev alongside the mutation; the memo must follow.
+        let dist = doc
+            .constraints
+            .iter()
+            .find_map(|(key, c)| matches!(c.kind, ConstraintKind::Distance { .. }).then_some(key))
+            .unwrap();
+        doc.constraints.remove(dist);
+        doc.bump_mesh_rev();
+        solve_document_sketches(&mut doc, &[]).expect("solve");
+        let all = fully_constrained_lines(&doc);
+        assert!(!all.contains(&lkey(0)), "a bump + edit refreshes the memo on the mesh_rev path");
     }
 
     /// #137: chaining relational constraints across a closed quad (two `Equal` pairs plus a
