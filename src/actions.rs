@@ -21940,11 +21940,137 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         .is_some());
     }
 
+    /// #1390: a body imported from STL is moveable — in free mode (typed translate)
+    /// and in point-snap mode — just like any other body.
+    #[test]
+    fn imported_stl_body_is_moveable() {
+        let mut state = AppState::default();
+        // A tiny triangle mesh imported exactly as STL import would store it.
+        let mesh = state.doc.imported_meshes.insert(crate::model::ImportedMesh {
+            triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]],
+            source_name: "tri".to_string(),
+            step_bytes: None,
+        });
+        let body = state.doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Imported(mesh),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let before = crate::extrude::body_solid_mesh(&state.doc, body)
+            .unwrap()
+            .bounds()
+            .unwrap();
+
+        // Free mode: typed +5 in X produces a moved output whose mesh sits 5 further along X.
+        let r = state.apply(Action::CreateMoveOperation {
+            keep_inputs: false,
+            translate_mode: crate::model::MoveTranslateMode::Free,
+            start_point_a: None,
+            end_point_a: None,
+            start_point_b: None,
+            end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
+            targets: vec![body],
+            plane_targets: Vec::new(),
+            image_targets: Vec::new(),
+            instance_targets: Vec::new(),
+            tx: "5".to_string(),
+            ty: String::new(),
+            tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
+            face_flip: false,
+            face_spin: String::new(),
+            roll_angle: String::new(),
+            face_offset: String::new(),
+        });
+        assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
+        assert!(state.doc.bodies[body].shadow, "the input is consumed");
+        let moved_body = state.doc.move_ops.values().nth(0).unwrap().outputs[0];
+        let after = crate::extrude::body_solid_mesh(&state.doc, moved_body)
+            .unwrap()
+            .bounds()
+            .unwrap();
+        assert!(
+            (after.0.x - (before.0.x + 5.0)).abs() < 1e-2,
+            "free move should shift the mesh +5 in X: {before:?} -> {after:?}"
+        );
+    }
+
+    /// #1390: point-snap move of an imported STL body — snap a corner onto the
+    /// world origin.
+    #[test]
+    fn imported_stl_body_is_moveable_in_point_snap_mode() {
+        use crate::hierarchy::quantize_body_point as q;
+        use crate::model::{MoveOperation, MovePointRef, MoveTranslateMode};
+        let mut doc = Document::default();
+        let (o, x, y) = (
+            Vec3::ZERO,
+            Vec3::new(10.0, 0.0, 0.0),
+            Vec3::new(0.0, 10.0, 0.0),
+        );
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
+            triangles: vec![[o, x, y]],
+            source_name: "tri".to_string(),
+            step_bytes: None,
+        });
+        let body = doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Imported(mesh),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+
+        // Snap the body corner at (10, 0, 0) onto the world origin.
+        let op = MoveOperation {
+            keep_inputs: false,
+            targets: vec![body],
+            translate_mode: MoveTranslateMode::PointSnap,
+            start_point_a: Some(MovePointRef::Vertex { body, p: q(x) }),
+            end_point_a: Some(MovePointRef::Origin),
+            start_point_b: None,
+            end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
+            plane_targets: Vec::new(),
+            image_targets: Vec::new(),
+            instance_targets: Vec::new(),
+            tx: String::new(),
+            ty: String::new(),
+            tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
+            outputs: Vec::new(),
+            name: None,
+            face_flip: false,
+            face_spin: String::new(),
+            roll_angle: String::new(),
+            face_offset: String::new(),
+        };
+        let m = crate::extrude::move_op_transform(&doc, &op).expect("transform");
+        // The body corner at (10, 0, 0) lands on the origin: translation = -10 X.
+        let moved_o = m.transform_point3(o);
+        assert!(
+            (moved_o.x + 10.0).abs() < 1e-3,
+            "origin should move to -10 in X, got {moved_o:?}"
+        );
+        let moved_x = m.transform_point3(x);
+        assert!(
+            moved_x.length() < 1e-3,
+            "the start corner should land on the origin, got {moved_x:?}"
+        );
+    }
+
     /// #735: a nested unit builds — B imports A, which itself imports C — and reads as
     /// one opaque row inside A's contents. (The depth cap's clean error is covered by
     /// `unit_nesting_deeper_than_cap_is_refused`.)
     #[test]
     fn nested_units_build() {
+
         // C: a solid box.
         let c_path = write_solid_unit_file("bearcad_unit_nested_c.bearcad");
         // A imports C.
