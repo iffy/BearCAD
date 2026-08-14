@@ -10274,6 +10274,25 @@ mod tests {
         assert_eq!(state.doc.default_angle_unit, AngleUnit::Rad);
     }
 
+    /// #1394: a bare number in an expression is interpreted in the document's default
+    /// length unit (here inches), not millimetres.
+    #[test]
+    fn lua_parameter_bare_number_uses_document_default_unit() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.set_units{ length = "in" }
+            bearcad.parameter("add", "A", "1.5")
+            local v = bearcad.parameter("get", "A")
+            local want = 1.5 * 25.4
+            assert(math.abs(v - want) < 1e-4, "bare 1.5 in inches doc should be " .. want .. " mm, got " .. tostring(v))
+            -- Explicit mm still works as expected.
+            bearcad.parameter("add", "B", "10mm")
+            local b = bearcad.parameter("get", "B")
+            assert(math.abs(b - 10) < 1e-4, "10mm should be 10 mm, got " .. tostring(b))
+        "#);
+    }
+
     #[test]
     fn lua_set_units_partial_document_call_keeps_other_axis() {
         let state = run_lua(
