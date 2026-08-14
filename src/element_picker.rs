@@ -470,6 +470,15 @@ pub fn element_in_sketch(
     let circle_in = |ci: crate::model::CircleKey| doc.circles.get(ci).is_some_and(|c| c.sketch == sketch);
     let text_in = |ti: crate::model::SketchTextKey| doc.sketch_texts.get(ti).is_some_and(|t| t.sketch == sketch);
     let host_face = doc.sketch_face(sketch);
+    let host_body = host_face.as_ref().and_then(|face| {
+        face.extrusion_index()
+            .and_then(|e| crate::model::body_index_for_extrusion(doc, e))
+            .or_else(|| {
+                face.revolution_key()
+                    .and_then(|r| crate::model::body_index_for_revolution(doc, r))
+            })
+    });
+    let body_in_sketch = |body: &crate::model::BodyKey| host_body.is_some_and(|hb| hb == *body);
     let constraint_line_in = |cl: &crate::model::ConstraintLine| match cl {
         crate::model::ConstraintLine::Line(li) => line_in(*li),
         crate::model::ConstraintLine::FaceEdge { face, .. } => Some(face) == host_face.as_ref(),
@@ -488,6 +497,9 @@ pub fn element_in_sketch(
             crate::model::ConstraintPoint::ImageCalibrationPoint { .. } => true,
         },
         SceneElement::FaceEdge(cl) => constraint_line_in(cl),
+        SceneElement::BodyEdge { body, .. }
+        | SceneElement::BodyFace { body, .. }
+        | SceneElement::BodyVertex { body, .. } => body_in_sketch(body),
         SceneElement::Origin => true,
         SceneElement::Constraint(ci) => doc.constraints.get(*ci).is_some_and(|c| c.sketch == sketch),
         _ => false,

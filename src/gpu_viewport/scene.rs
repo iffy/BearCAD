@@ -3089,6 +3089,11 @@ impl<'a> SceneMesh<'a> {
                     }
                     if let Some(line) = doc.lines.get(index) {
                         if let Some(points) = line_world_polyline(doc, line) {
+                            // Depth-disabled (#1409): a selected sketch line on a body face
+                            // must never be occluded by extrusion geometry. Always use
+                            // Wireframe like selected circles already do.
+                            let restore = self.index_layer;
+                            self.set_index_layer(MeshIndexLayer::Wireframe);
                             if dashed {
                                 self.push_dashed_polyline_segment(
                                     &points, color, 3.0, cam, viewport, view_proj,
@@ -3096,6 +3101,7 @@ impl<'a> SceneMesh<'a> {
                             } else {
                                 self.push_polyline_segment(&points, color, 3.0, cam, viewport, view_proj);
                             }
+                            self.set_index_layer(restore);
                         }
                     }
                 }
@@ -9195,6 +9201,15 @@ mod tests {
             .count()
     }
 
+    fn count_wireframe_vertices_with_color(scene: &ViewportScene, color: Color32) -> usize {
+        let target = color32_to_gpu(color);
+        scene
+            .wireframe_indices
+            .iter()
+            .filter(|&&index| scene.vertices[index as usize].color == target)
+            .count()
+    }
+
     #[test]
     fn selected_line_uses_highlight_color_only() {
         use crate::model::{FaceId, Line, ShapeKind};
@@ -9316,8 +9331,11 @@ mod tests {
             count_stroke_indices_with_color(&unselected, palette.rect_line);
         let selected_base =
             count_stroke_indices_with_color(&selected_scene, palette.rect_line);
-        // Selection highlight is also a screen-space stroke (overlay layer → stroke buffer).
+        // Selection highlight uses the Wireframe layer (depth-disabled world ribbons)
+        // so selected lines show through bodies (#1409).
         let selected_highlight =
+            count_wireframe_vertices_with_color(&selected_scene, palette.dim_edge_highlight);
+        let selected_highlight_stroke =
             count_stroke_indices_with_color(&selected_scene, palette.dim_edge_highlight);
 
         assert!(
@@ -9330,7 +9348,11 @@ mod tests {
         );
         assert!(
             selected_highlight > 0,
-            "selected line should render with highlight color"
+            "selected line should render with highlight color in wireframe layer"
+        );
+        assert_eq!(
+            selected_highlight_stroke, 0,
+            "selected line should not render in stroke buffer"
         );
     }
 

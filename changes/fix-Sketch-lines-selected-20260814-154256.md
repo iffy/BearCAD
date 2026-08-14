@@ -1,0 +1,1 @@
+Sketch lines selected in edit mode render in the depth-disabled Wireframe layer so extrusion geometry never occludes them (#1409); body edges and vertices of the sketch\u2019s host face are accepted by the InSketch pick filter, making them selectable and visible in the explosion selector (#1410, #1411).
