@@ -29756,7 +29756,7 @@ impl App {
         // (#1077), and a selected sketch text's turn about its origin (#216/#286).
         let mut move_rotation_gizmos: Vec<gpu_viewport::MoveRotationGizmo> = Vec::new();
         // The Face Snap turn gizmo's live angle, painted just above its handle (#1360).
-        let mut move_turn_labels: Vec<(egui::Pos2, String)> = Vec::new();
+        let mut move_turn_labels: Vec<(egui::Pos2, String, egui::Color32)> = Vec::new();
         if let Some((center, radius)) = self.free_move_rotation_geom() {
             for axis in 0..3 {
                 let dir = extrude::free_move_axis_dir(axis);
@@ -29765,15 +29765,47 @@ impl App {
                         && pointer_screen.is_some_and(|pp| {
                             rotation_ring_hit(pp, &project, center, dir, radius)
                         }));
+                // Unify with the Face Snap turn gizmo's single handle (#1380): a zero radial
+                // and the current turn from it, so Free Move's rings draw the same center→start
+                // line, yellow arc and handle dial as Face Snap, staying RGB-coloured.
+                let zero_dir = match axis {
+                    0 => Vec3::Y,
+                    1 => Vec3::X,
+                    _ => Vec3::X,
+                };
+                let angle_deg = self
+                    .state
+                    .creating_move
+                    .as_ref()
+                    .map(|cm| {
+                        let expr = [&cm.rx, &cm.ry, &cm.rz][axis].as_str();
+                        if expr.trim().is_empty() {
+                            0.0
+                        } else {
+                            crate::value::eval_angle_rad_in_doc(expr, &self.state.doc)
+                                .unwrap_or(0.0)
+                                .to_degrees()
+                        }
+                    })
+                    .unwrap_or(0.0);
+                let color = [col::X_AXIS, col::Y_AXIS, col::Z_AXIS][axis];
                 move_rotation_gizmos.push(gpu_viewport::MoveRotationGizmo {
                     center,
                     axis: dir,
                     radius,
-                    color: [col::X_AXIS, col::Y_AXIS, col::Z_AXIS][axis],
+                    color,
                     hovered,
-                    zero_dir: None,
-                    angle_deg: None,
+                    zero_dir: Some(zero_dir),
+                    angle_deg: Some(angle_deg),
                 });
+                // The amount turned, above the ring's handle (#1360) — same as Face Snap.
+                if angle_deg.abs() > 1e-3 {
+                    let handle_dir = glam::Quat::from_axis_angle(dir, angle_deg.to_radians())
+                        * zero_dir;
+                    if let Some(sp) = project(center + handle_dir * radius) {
+                        move_turn_labels.push((sp, format!("{angle_deg:.0}°"), color));
+                    }
+                }
             }
         } else if let Some((center, axis, radius, zero_dir, angle_deg)) =
             self.face_spin_ring_geom()
@@ -29797,7 +29829,11 @@ impl App {
                     let n = axis.normalize_or_zero();
                     let hdir = glam::Quat::from_axis_angle(n, angle_deg.to_radians()) * zd;
                     if let Some(sp) = project(center + hdir * radius) {
-                        move_turn_labels.push((sp, format!("{angle_deg:.0}°")));
+                        move_turn_labels.push((
+                            sp,
+                            format!("{angle_deg:.0}°"),
+                            gpu_viewport::MOVE_ROTATION_GIZMO,
+                        ));
                     }
                 }
             }
@@ -30221,14 +30257,14 @@ impl App {
             );
         }
         // The Face Snap turn gizmo's live angle (#1360), on top of the scene beside its handle.
-        for (at, text) in &move_turn_labels {
+        for (at, text, color) in &move_turn_labels {
             paint_bold_text(
                 &painter,
                 *at + egui::vec2(10.0, -14.0),
                 egui::Align2::CENTER_CENTER,
                 text,
                 egui::FontId::proportional(13.0),
-                gpu_viewport::MOVE_ROTATION_GIZMO,
+                *color,
             );
         }
 
