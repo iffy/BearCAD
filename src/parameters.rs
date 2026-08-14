@@ -2233,10 +2233,11 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
         // own section; the document's parameters follow below.
         show_unit_parameters_section(ui, app);
         Grid::new("parameters_table")
-            .num_columns(3)
+            .num_columns(4)
             .spacing([8.0, 4.0])
             .min_col_width(72.0)
             .show(ui, |ui| {
+                ui.label("");
                 ui.label("Name");
                 ui.label("Value");
                 ui.label("");
@@ -2298,6 +2299,24 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                         app.parameters_pane.editing,
                         Some(ParameterEditCell::Value(i)) if i == index
                     );
+
+                    let options_open = app.parameters_pane.options_open.contains(&index);
+
+                    // Gear cog toggles this parameter's options panel (#1176); leads the row,
+                    // left of the name (#1401), so it stays far from the delete button.
+                    let gear = crate::icons::icon_button_hover_gold(
+                        ui,
+                        IconId::Gear,
+                        if options_open {
+                            "Hide parameter options"
+                        } else {
+                            "Parameter options (min, max, step, private)"
+                        },
+                    );
+                    crate::context::note_help_rect(ui, "Parameter options", gear.rect);
+                    if gear.clicked() {
+                        toggle_options = Some(index);
+                    }
 
                     let name_cell = ui.horizontal(|ui| {
                         // A derived (read-only) parameter shows a lock left of its name
@@ -2420,24 +2439,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                         crate::tutorial::UiAnchor::ParametersExistingValue,
                         value_cell.rect,
                     );
-                    let options_open = app.parameters_pane.options_open.contains(&index);
                     let extras_cell = ui.horizontal(|ui| {
-                        // Gear cog toggles this parameter's options panel (#1176). Multiple
-                        // can be open at once; each gear only affects its own row.
-                        let gear = crate::icons::icon_button_hover_gold(
-                            ui,
-                            IconId::Gear,
-                            if options_open {
-                                "Hide parameter options"
-                            } else {
-                                "Parameter options (min, max, step, private)"
-                            },
-                        );
-                        crate::context::note_help_rect(ui, "Parameter options", gear.rect);
-                        if gear.clicked() {
-                            toggle_options = Some(index);
-                        }
-                        // Delete button (#270): a muted-red ✕ that removes the parameter.
                         let remove = ui.add(
                             egui::Button::new(
                                 egui::Image::new(crate::icons::sized_texture(
@@ -2468,7 +2470,8 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                         }
                     });
                     // Pointer over any of the row's cells marks the parameter hovered (#620).
-                    if name_cell.response.contains_pointer()
+                    if gear.contains_pointer()
+                        || name_cell.response.contains_pointer()
                         || value_cell.contains_pointer()
                         || extras_cell.response.contains_pointer()
                     {
@@ -2497,6 +2500,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                         });
                         ui.label("");
                         ui.label("");
+                        ui.label("");
                         if options_cell.response.contains_pointer() {
                             hovered_name = Some(param_name.clone());
                         }
@@ -2504,6 +2508,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                     }
                 }
 
+                ui.label("");
                 let name_response = ui.add(
                     TextEdit::singleline(&mut app.parameters_pane.new_name)
                         .id(Id::new(NEW_NAME_ID))
