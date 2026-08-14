@@ -54,12 +54,6 @@ const config = {
   projectName: 'BearCAD',
 
   onBrokenLinks: 'throw',
-  scripts: [
-    {
-      src: 'https://js.stripe.com/v3/buy-button.js',
-      async: true,
-    },
-  ],
   markdown: {
     hooks: {
       onBrokenMarkdownLinks: 'warn',
