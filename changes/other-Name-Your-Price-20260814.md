@@ -1,0 +1,1 @@
+Website payment verbiage now reads "Name Your Price": the landing-page action and the downloads-page note explain that BearCAD is free (pay nothing), and that supporters can name their own price via the existing Stripe button.
