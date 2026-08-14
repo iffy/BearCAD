@@ -770,6 +770,99 @@ pub enum RevolveBodyChoice {
     Cut,
 }
 
+/// A tool's **Output** choice normalized across every tool that offers one — Extrude,
+/// Revolve, Sweep, Loft, Mirror (#1397). Each tool's own mode enum carries extra data
+/// (e.g. which body to merge into), but the three-way new-body / add-to-body / cut choice
+/// is shared, and the `Y` shortcut cycles through it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ToolOutputMode {
+    #[default]
+    NewBody,
+    AddToBody,
+    Cut,
+}
+
+impl ToolOutputMode {
+    /// The next choice in the cycle the `Y` shortcut walks: new body → add to body →
+    /// cut → new body (…#1397).
+    pub fn next(self) -> Self {
+        match self {
+            Self::NewBody => Self::AddToBody,
+            Self::AddToBody => Self::Cut,
+            Self::Cut => Self::NewBody,
+        }
+    }
+}
+
+impl From<RevolveBodyChoice> for ToolOutputMode {
+    fn from(c: RevolveBodyChoice) -> Self {
+        match c {
+            RevolveBodyChoice::NewBody => Self::NewBody,
+            RevolveBodyChoice::AddTouching => Self::AddToBody,
+            RevolveBodyChoice::Cut => Self::Cut,
+        }
+    }
+}
+
+impl From<ToolOutputMode> for RevolveBodyChoice {
+    fn from(m: ToolOutputMode) -> Self {
+        match m {
+            ToolOutputMode::NewBody => RevolveBodyChoice::NewBody,
+            ToolOutputMode::AddToBody => RevolveBodyChoice::AddTouching,
+            ToolOutputMode::Cut => RevolveBodyChoice::Cut,
+        }
+    }
+}
+
+impl From<crate::model::MirrorMode> for ToolOutputMode {
+    fn from(m: crate::model::MirrorMode) -> Self {
+        match m {
+            crate::model::MirrorMode::NewBody => Self::NewBody,
+            crate::model::MirrorMode::Join => Self::AddToBody,
+            crate::model::MirrorMode::Cut => Self::Cut,
+        }
+    }
+}
+
+impl From<ToolOutputMode> for crate::model::MirrorMode {
+    fn from(m: ToolOutputMode) -> Self {
+        match m {
+            ToolOutputMode::NewBody => crate::model::MirrorMode::NewBody,
+            ToolOutputMode::AddToBody => crate::model::MirrorMode::Join,
+            ToolOutputMode::Cut => crate::model::MirrorMode::Cut,
+        }
+    }
+}
+
+impl From<ExtrudeBodyMode> for ToolOutputMode {
+    fn from(m: ExtrudeBodyMode) -> Self {
+        match m {
+            ExtrudeBodyMode::NewBody => Self::NewBody,
+            ExtrudeBodyMode::MergeInto(_) | ExtrudeBodyMode::JoinNew => Self::AddToBody,
+            ExtrudeBodyMode::Cut(_) => Self::Cut,
+        }
+    }
+}
+
+impl ToolOutputMode {
+    /// Materialize this normalized choice as an [`ExtrudeBodyMode`]. `merge_candidate` is the
+    /// host body an add/cut can target (`None` means the sketch has no host, so add degrades
+    /// to a profile join and cut is unavailable and wraps to a new body).
+    pub fn as_extrude_mode(self, merge_candidate: Option<crate::model::BodyKey>) -> ExtrudeBodyMode {
+        match self {
+            Self::NewBody => ExtrudeBodyMode::NewBody,
+            Self::AddToBody => match merge_candidate {
+                Some(bi) => ExtrudeBodyMode::MergeInto(bi),
+                None => ExtrudeBodyMode::JoinNew,
+            },
+            Self::Cut => match merge_candidate {
+                Some(bi) => ExtrudeBodyMode::Cut(bi),
+                None => ExtrudeBodyMode::NewBody,
+            },
+        }
+    }
+}
+
 /// State for the in-progress (pre-Enter) revolve: picked profile faces, the axis, the
 /// live sweep angle (degrees; the text field also accepts `rad` expressions), and how
 /// the result lands.
@@ -32087,5 +32180,62 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         });
         assert_eq!(state.apply(Action::FocusElementName), ActionResult::Ok);
         assert!(state.context_pane.focus_name_field);
+    }
+
+    /// #1397: the `Y` shortcut cycles a tool's Output mode new body → add to body → cut →
+    /// new body, and each tool's own mode enum maps onto that shared choice and back.
+    #[test]
+    fn tool_output_mode_cycles_three_ways() {
+        use super::ToolOutputMode as O;
+        assert_eq!(O::NewBody.next(), O::AddToBody);
+        assert_eq!(O::AddToBody.next(), O::Cut);
+        assert_eq!(O::Cut.next(), O::NewBody);
+    }
+
+    #[test]
+    fn tool_output_mode_round_trips_revolve_choice() {
+        use super::RevolveBodyChoice as C;
+        use super::ToolOutputMode as O;
+        for (choice, mode) in [
+            (C::NewBody, O::NewBody),
+            (C::AddTouching, O::AddToBody),
+            (C::Cut, O::Cut),
+        ] {
+            assert_eq!(O::from(choice), mode);
+            assert_eq!(C::from(mode), choice);
+        }
+    }
+
+    #[test]
+    fn tool_output_mode_round_trips_mirror_mode() {
+        use crate::model::MirrorMode as M;
+        use super::ToolOutputMode as O;
+        for (mode, choice) in [
+            (M::NewBody, O::NewBody),
+            (M::Join, O::AddToBody),
+            (M::Cut, O::Cut),
+        ] {
+            assert_eq!(O::from(mode), choice);
+            assert_eq!(M::from(choice), mode);
+        }
+    }
+
+    #[test]
+    fn tool_output_mode_maps_extrude_body_mode() {
+        use super::ExtrudeBodyMode as E;
+        use super::ToolOutputMode as O;
+        let bi = bkey(3);
+        assert_eq!(O::from(E::NewBody), O::NewBody);
+        assert_eq!(O::from(E::MergeInto(bi)), O::AddToBody);
+        assert_eq!(O::from(E::JoinNew), O::AddToBody);
+        assert_eq!(O::from(E::Cut(bi)), O::Cut);
+
+        // Materializing back: an add-to-body targets the merge candidate, or becomes a
+        // profile join when there's no host; a cut needs a candidate (else wraps to new).
+        assert_eq!(O::NewBody.as_extrude_mode(Some(bi)), E::NewBody);
+        assert_eq!(O::AddToBody.as_extrude_mode(Some(bi)), E::MergeInto(bi));
+        assert_eq!(O::AddToBody.as_extrude_mode(None), E::JoinNew);
+        assert_eq!(O::Cut.as_extrude_mode(Some(bi)), E::Cut(bi));
+        assert_eq!(O::Cut.as_extrude_mode(None), E::NewBody);
     }
 }

@@ -451,12 +451,22 @@ pub fn all_shortcuts() -> Vec<ShortcutSection> {
     sections.push(ShortcutSection {
         title: "Tools",
         scope: Some("3D modeling workbench"),
-        entries: tools
-            .iter()
-            .filter_map(|(tool, label)| {
-                tool_shortcut(*tool).map(|hint| (format_shortcut(hint), label.to_string()))
-            })
-            .collect(),
+        entries: {
+            let mut entries: Vec<(String, String)> = tools
+                .iter()
+                .filter_map(|(tool, label)| {
+                    tool_shortcut(*tool).map(|hint| (format_shortcut(hint), label.to_string()))
+                })
+                .collect();
+            // #1397: Y cycles the active tool's Output choice (new body / add to body / cut)
+            // on the tools that have one — Extrude, Revolve, Sweep, Loft, Mirror.
+            entries.push((
+                "Y".to_string(),
+                "Cycle the Output choice of the active tool (new body / add to body / cut)"
+                    .to_string(),
+            ));
+            entries
+        },
     });
 
     sections.push(ShortcutSection {
