@@ -9554,33 +9554,31 @@ impl App {
         match element {
             SE::MoveOp(op) => {
                 if let Some(existing) = self.state.doc.move_ops.get(op).cloned() {
+                    // Re-editing restores every input exactly as they were when the move was
+                    // committed (#1376), so the pane and preview come back fully filled in.
                     self.state.creating_move = Some(actions::CreatingMove {
                         targets: existing.targets,
                         translate_mode: existing.translate_mode,
                         start_point_a: existing.start_point_a,
-                        // Re-editing shows the moving body back at its pre-move location
-                        // (as if the move hadn't happened yet, #1366): the destination and
-                        // the turn/gap aren't reapplied until the user re-does them. The
-                        // committed Turn is still pre-filled so the pane isn't blank.
-                        end_point_a: None,
-                        end_point_b: None,
-                        end_point_c: None,
-                        start_point_b: None,
-                        start_point_c: None,
+                        end_point_a: existing.end_point_a,
+                        end_point_b: existing.end_point_b,
+                        end_point_c: existing.end_point_c,
+                        start_point_b: existing.start_point_b,
+                        start_point_c: existing.start_point_c,
                         plane_targets: existing.plane_targets,
                         image_targets: existing.image_targets,
                         instance_targets: existing.instance_targets,
-                        tx: String::new(),
-                        ty: String::new(),
-                        tz: String::new(),
+                        tx: existing.tx,
+                        ty: existing.ty,
+                        tz: existing.tz,
                         editing: Some(op),
-                        rx: String::new(),
-                        ry: String::new(),
-                        rz: String::new(),
-                        face_flip: false,
-                        face_spin: existing.face_spin.clone(),
-                        roll_angle: String::new(),
-                        face_offset: existing.face_offset.clone(),
+                        rx: existing.rx,
+                        ry: existing.ry,
+                        rz: existing.rz,
+                        face_flip: existing.face_flip,
+                        face_spin: existing.face_spin,
+                        roll_angle: existing.roll_angle,
+                        face_offset: existing.face_offset,
                         pending_face_a: None,
                         pending_face_b: None,
                         pending_gizmo_focus_axis: None,
