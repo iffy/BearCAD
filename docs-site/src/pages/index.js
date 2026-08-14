@@ -14,7 +14,7 @@ import styles from './index.module.css';
 // install this as a PWA (Install app in Chrome); same path as "Run in browser".
 const WEB_APP_PATH = 'pathname:///app/';
 // Name Your Price (Stripe payment link).
-const PAY_URL = 'https://buy.stripe.com/28E3ci4Gt60efjO7mn1Jm00';
+const PAY_URL = 'https://buy.stripe.com/4gMbJ39g2gsH4hKd9cdQQ00';
 // The other three of the four main actions, besides the prominent "Run in your
 // browser" CTA. Download points at a dedicated page so the navbar can reuse it.
 // `to` (not `href`) marks an internal route so it navigates without a reload.
