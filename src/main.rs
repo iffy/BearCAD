@@ -8549,7 +8549,10 @@ impl App {
         let (min, max) = extrude::free_move_targets_bounds(doc, &cm.targets, &cm.plane_targets)?;
         let mm = |s: &str| crate::value::eval_length_mm_in_doc(s, doc).unwrap_or(0.0);
         let translations = [mm(&cm.tx), mm(&cm.ty), mm(&cm.tz)];
-        let handles = extrude::free_move_translation_handles(min, max);
+        // The arrows ride the preview: shift the anchor AABB by the live Free translation so
+        // the gizmos travel with the moving body instead of staying on the original (#1379).
+        let shift = Vec3::new(translations[0], translations[1], translations[2]);
+        let handles = extrude::free_move_translation_handles(min + shift, max + shift);
         Some(std::array::from_fn(|i| {
             let h = handles[i];
             (
@@ -8572,7 +8575,11 @@ impl App {
         }
         let (min, max) =
             extrude::free_move_targets_bounds(&self.state.doc, &cm.targets, &cm.plane_targets)?;
-        Some(extrude::free_move_rotation_ring(min, max))
+        // The rings ride the preview too (#1379): shift the centre by the live Free
+        // translation so they orbit the moving body rather than the original.
+        let mm = |s: &str| crate::value::eval_length_mm_in_doc(s, &self.state.doc).unwrap_or(0.0);
+        let shift = Vec3::new(mm(&cm.tx), mm(&cm.ty), mm(&cm.tz));
+        Some(extrude::free_move_rotation_ring(min + shift, max + shift))
     }
 
     /// Small outward display offset so Free Move face handles sit just outside the AABB
@@ -29686,15 +29693,22 @@ impl App {
         // Move tool (#649): once a source point is picked, the moving bodies go translucent so
         // the gizmos and the points on them stay visible through the solid.
         if self.state.tool == Tool::Move {
-            if let Some(cm) = self
-                .state
-                .creating_move
-                .as_ref()
-                .filter(|cm| cm.start_point_a.is_some())
-            {
-                for &bi in &cm.targets {
-                    if !faded_bodies.contains(&bi) {
-                        faded_bodies.push(bi);
+            // Free move (#1379): there is no point pick to signal "moving", so fade those
+            // targets too once the user actually starts moving them — a gizmo drag in flight or
+            // a non-zero live translation/rotation — matching the point-snap fade.
+            let move_active = self.state.creating_move.as_ref().is_some_and(|cm| {
+                cm.start_point_a.is_some()
+                    || (cm.translate_mode == crate::model::MoveTranslateMode::Free
+                        && (self.move_gizmo_drag.is_some()
+                            || self.free_move_rotation_drag.is_some()
+                            || move_ghost_target_transform(&self.state.doc, cm).is_some()))
+            });
+            if move_active {
+                if let Some(cm) = self.state.creating_move.as_ref() {
+                    for &bi in &cm.targets {
+                        if !faded_bodies.contains(&bi) {
+                            faded_bodies.push(bi);
+                        }
                     }
                 }
             }

@@ -11313,6 +11313,48 @@ mod tests {
         assert!(max.z - min.z < 1e-3, "the cap is flat");
     }
 
+    /// #1379: shifting a Free-move selection's bounds by the live translation shifts every
+    /// translation-handle origin and the rotation-ring centre by the same amount — the gizmos
+    /// travel with the preview rather than staying anchored on the original body.
+    #[test]
+    fn free_move_gizmos_travel_with_the_live_translation() {
+        let (mut doc, _sketch, ext) = box_doc(); // 10x10 footprint, 5 tall
+        doc.extrusions.insert(ext);
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(xkey(0)),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let bodies = [bkey(0)];
+        let shift = glam::Vec3::new(3.0, -2.0, 7.0);
+
+        // The translation arrow origins ride the AABB, so translating the bounds carries them.
+        let (min, max) = free_move_targets_bounds(&doc, &bodies, &[]).unwrap();
+        let at_rest = free_move_translation_handles(min, max);
+        let travelled =
+            free_move_translation_handles(min + shift, max + shift);
+        for (rest, moved) in at_rest.iter().zip(travelled.iter()) {
+            assert!(
+                (moved.origin - (rest.origin + shift)).length() < 1e-4,
+                "arrow {} should follow the preview, origin {:?} vs {:?}",
+                moved.axis,
+                moved.origin,
+                rest.origin + shift
+            );
+            assert_eq!(rest.axis, moved.axis);
+            assert!((rest.outward - moved.outward).length() < 1e-4);
+        }
+
+        // And the rotation-ring centre follows the preview too (radius is unchanged by a pure
+        // translation).
+        let (rest_center, rest_radius) = free_move_rotation_ring(min, max);
+        let (moved_center, moved_radius) =
+            free_move_rotation_ring(min + shift, max + shift);
+        assert!((moved_center - (rest_center + shift)).length() < 1e-4);
+        assert!((moved_radius - rest_radius).abs() < 1e-4);
+    }
+
     /// #186: a repeat's fill length can be bound to a target's extended plane (like an
     /// The extracted spacing-mode math (#222) is input-only and covers every mode: count×gap
     /// steps by extent+gap; the fit modes divide the span; the fill modes count how many fit.
