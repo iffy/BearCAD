@@ -12950,7 +12950,11 @@ impl AppState {
                 self.doc.shape_order.push(ShapeKind::RepeatOperation);
                 let mut outputs = Vec::new();
                 for instance in 1..=offsets.len() {
-                    for (ti, _) in targets.iter().enumerate() {
+                    for (ti, &target) in targets.iter().enumerate() {
+                        // Name each copy off its source body's name (#1396): "Jim" → "Jim1",
+                        // "Jim2"; a base ending in a number gets the "-N" form ("Jim1-1").
+                        let name = element_name(&self.doc, SceneElement::Body(target))
+                            .map(|base| crate::names::repeat_copy_name(base, instance));
                         outputs.push(self.doc.bodies.insert(crate::model::Body {
                             source: crate::model::BodySource::Repeated {
                                 op: op_index,
@@ -12960,7 +12964,7 @@ impl AppState {
                                 cut: Vec::new(),
                             },
                             material: None,
-                            name: None,
+                            name,
                             shadow: false,
                         }));
                         self.doc.shape_order.push(ShapeKind::Body);
@@ -17261,6 +17265,11 @@ pub fn rebuild_body_repeat(
             } else {
                 slot % targets.len()
             };
+            // Name each newly-grown copy off its source body's name (#1396), "Jim1"/"Jim1-1".
+            let name = targets
+                .get(ti)
+                .and_then(|&t| element_name(doc, SceneElement::Body(t)))
+                .map(|base| crate::names::repeat_copy_name(base, instance));
             outputs.push(doc.bodies.insert(crate::model::Body {
                 source: crate::model::BodySource::Repeated {
                     op,
@@ -17270,7 +17279,7 @@ pub fn rebuild_body_repeat(
                     cut: Vec::new(),
                 },
                 material: None,
-                name: None,
+                name,
                 shadow: false,
             }));
             doc.shape_order.push(crate::model::ShapeKind::Body);
@@ -25047,6 +25056,76 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         state.apply(Action::UndoLast);
         assert!(state.doc.repeat_ops.is_empty());
         assert_eq!(state.doc.bodies.len(), 2);
+    }
+
+    /// #1396: a repeat's copies carry incrementing numbers off the source body's name. A base
+    /// named "Jim" whose copies are drawn from shows up as Jim1, Jim2, …; a base whose name
+    /// already ends in a number ("Jim1") uses the "-N" form: Jim1-1, Jim1-2, ….
+    #[test]
+    fn repeat_copies_number_off_the_base_body_name() {
+        let mut state = two_box_state(false);
+        set_element_name(&mut state.doc, SceneElement::Body(bkey(0)), "Jim".into()).unwrap();
+        state.apply(Action::CreateRepeatOperation {
+            targets: vec![bkey(0)],
+            plane_targets: Vec::new(),
+            extrusion_targets: Vec::new(),
+            sketch_targets: Vec::new(),
+            axis: crate::model::RevolveAxis::X,
+            path_circle: None,
+            around_axis: false,
+            flip: false,
+            mode: crate::model::RepeatMode::CountGap,
+            count: "3".to_string(),
+            spacing: "5".to_string(),
+            length: String::new(),
+            length_target: None,
+        });
+        let op = state.doc.repeat_ops.values().next().unwrap().clone();
+        assert_eq!(op.outputs.len(), 2, "3 instances = original + 2 outputs");
+        let names: Vec<_> = op
+            .outputs
+            .iter()
+            .map(|b| state.doc.bodies[*b].name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            vec![Some("Jim1".to_string()), Some("Jim2".to_string())]
+        );
+    }
+
+    /// #1396: a base named "Jim1" (already ending in a number) uses the "-N" form.
+    #[test]
+    fn repeat_copies_use_dash_notation_when_base_ends_in_a_number() {
+        let mut state = two_box_state(false);
+        set_element_name(&mut state.doc, SceneElement::Body(bkey(0)), "Jim1".into()).unwrap();
+        state.apply(Action::CreateRepeatOperation {
+            targets: vec![bkey(0)],
+            plane_targets: Vec::new(),
+            extrusion_targets: Vec::new(),
+            sketch_targets: Vec::new(),
+            axis: crate::model::RevolveAxis::X,
+            path_circle: None,
+            around_axis: false,
+            flip: false,
+            mode: crate::model::RepeatMode::CountGap,
+            count: "3".to_string(),
+            spacing: "5".to_string(),
+            length: String::new(),
+            length_target: None,
+        });
+        let op = state.doc.repeat_ops.values().next().unwrap().clone();
+        let names: Vec<_> = op
+            .outputs
+            .iter()
+            .map(|b| state.doc.bodies[*b].name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                Some("Jim1-1".to_string()),
+                Some("Jim1-2".to_string())
+            ]
+        );
     }
 
     /// The stud-spacing mode lands the last instance at the end of L with pitch <= D.

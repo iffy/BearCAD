@@ -688,6 +688,18 @@ fn sketch_vertex_treatment_label(
     }
 }
 
+/// The incrementing name for the `index`-th copy (1-based) of a repeated thing whose source
+/// is named `base` (#1396). A base that already ends in a number ("Jim1") gets the "-N"
+/// form ("Jim1-1", "Jim1-2"); otherwise the index is appended directly ("Jim" → "Jim1",
+/// "Jim2").
+pub fn repeat_copy_name(base: &str, index: usize) -> String {
+    if base.chars().last().is_some_and(|c| c.is_ascii_digit()) {
+        format!("{base}-{index}")
+    } else {
+        format!("{base}{index}")
+    }
+}
+
 /// A body's user-visible name, or `Body N` when it hasn't been renamed. Sub-element labels
 /// ("Corner of …", "Edge midpoint of …") read better against the name the user chose.
 fn body_label(doc: &Document, body: crate::model::BodyKey) -> String {
