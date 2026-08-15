@@ -4715,6 +4715,158 @@ fn with_shape_dimension_slot<R>(
     )
 }
 
+/// Stable ValueInput id for a Move tool field. Kept in the widget layer even when
+/// the current mode hides that row, so switching Translate modes does not flash
+/// red ("Widget rect changed id between passes", #1416).
+pub(crate) fn move_field_id(salt: &str) -> egui::Id {
+    egui::Id::new(("move_field", salt))
+}
+
+/// ValueInput slots the Move pane always mounts (#1416).
+#[cfg(test)]
+pub(crate) fn move_value_slots() -> &'static [&'static str] {
+    &[
+        "face_spin",
+        "angle_snap",
+        "roll",
+        "tx",
+        "ty",
+        "tz",
+        "rx",
+        "ry",
+        "rz",
+    ]
+}
+
+/// Which Move ValueInput rows the given translate mode shows.
+/// `end_c_picked` hides Point Snap's Roll once a third target point answers (#1078).
+pub(crate) fn move_value_slot_visible(
+    mode: crate::model::MoveTranslateMode,
+    salt: &str,
+    end_c_picked: bool,
+) -> bool {
+    use crate::model::MoveTranslateMode as M;
+    match (mode, salt) {
+        (M::FaceSnap, "face_spin") => true,
+        (M::PointSnap, "angle_snap") => true,
+        (M::PointSnap, "roll") => !end_c_picked,
+        (M::Free, "tx" | "ty" | "tz" | "rx" | "ry" | "rz") => true,
+        _ => false,
+    }
+}
+
+/// Inline picker slots the Move pane always mounts (#1416). Unused ones stay
+/// hidden in the layer and stay off the registered list (#1081).
+#[cfg(test)]
+pub(crate) fn move_picker_slots() -> &'static [(&'static str, PickerTarget, &'static str)] {
+    &[
+        ("move_face_moving", PickerTarget::MoveFaceMoving, "Moving face"),
+        ("move_face_fixed", PickerTarget::MoveFaceFixed, "Fixed face"),
+        (
+            "move_reference_point",
+            PickerTarget::MoveStartA,
+            "Reference Point",
+        ),
+        ("move_start_point_a", PickerTarget::MoveStartA, "Start point A"),
+        ("move_end_point_a", PickerTarget::MoveEndA, "End point A"),
+        ("move_start_point_b", PickerTarget::MoveStartB, "Start point B"),
+        ("move_end_point_b", PickerTarget::MoveEndB, "End point B"),
+        ("move_start_point_c", PickerTarget::MoveStartC, "Start point C"),
+        ("move_end_point_c", PickerTarget::MoveEndC, "End point C"),
+    ]
+}
+
+/// Which Move picker rows the given translate mode shows.
+pub(crate) fn move_picker_slot_visible(
+    mode: crate::model::MoveTranslateMode,
+    id: &str,
+) -> bool {
+    use crate::model::MoveTranslateMode as M;
+    match (mode, id) {
+        (M::FaceSnap, "move_face_moving" | "move_face_fixed") => true,
+        (M::Free, "move_reference_point") => true,
+        (
+            M::PointSnap,
+            "move_start_point_a"
+            | "move_end_point_a"
+            | "move_start_point_b"
+            | "move_end_point_b"
+            | "move_start_point_c"
+            | "move_end_point_c",
+        ) => true,
+        _ => false,
+    }
+}
+
+/// One Move picker row. Hidden modes still mount the widget at zero size (#1416).
+fn show_move_picker_row(
+    ui: &mut egui::Ui,
+    doc: &Document,
+    tool_pickers: &[ToolPickerView],
+    dummy: &ElementPicker,
+    mode: crate::model::MoveTranslateMode,
+    label: &'static str,
+    id: &'static str,
+    target: PickerTarget,
+    on_focus: MoveEdit,
+    on_clear: MoveEdit,
+) -> Option<MoveEdit> {
+    let visible = move_picker_slot_visible(mode, id);
+    let picker = if visible {
+        tool_pickers
+            .iter()
+            .find(|v| v.target == target)
+            .map(|v| &v.picker)
+            .unwrap_or(dummy)
+    } else {
+        dummy
+    };
+    let mut edit = None;
+    with_optional_slot(ui, ("move_slot", id), visible, Some(egui::Id::new(id)), |ui| {
+        labeled_row_top(ui, label, |ui| {
+            if let Some(event) = crate::element_picker::show(ui, picker, doc, id) {
+                if visible {
+                    edit = Some(match event {
+                        crate::element_picker::PickerEvent::Focus => on_focus,
+                        crate::element_picker::PickerEvent::Remove(_)
+                        | crate::element_picker::PickerEvent::Clear => on_clear,
+                    });
+                }
+            }
+        });
+    });
+    edit
+}
+
+/// One Move ValueInput row. Hidden modes still mount the widget at zero size (#1416).
+fn show_move_value_row(
+    ui: &mut egui::Ui,
+    doc: &Document,
+    mode: crate::model::MoveTranslateMode,
+    label: &str,
+    salt: &str,
+    value: &str,
+    kind: crate::expression_input::ValueKind,
+    end_c_picked: bool,
+    make: impl FnOnce(String) -> MoveEdit,
+) -> Option<MoveEdit> {
+    let visible = move_value_slot_visible(mode, salt, end_c_picked);
+    let id = move_field_id(salt);
+    let mut edit = None;
+    with_optional_slot(ui, ("move_slot", salt), visible, Some(id), |ui| {
+        labeled_row(ui, label, |ui| {
+            let mut text = value.to_string();
+            let resp = crate::expression_input::ValueInput::from_id(id, kind)
+                .width(90.0)
+                .show(ui, &mut text, doc);
+            if visible && resp.changed() {
+                edit = Some(make(text));
+            }
+        });
+    });
+    edit
+}
+
 /// Egui-memory key for a Create Shape dimension field (Height / Radius) drawn this frame.
 fn shape_field_rect_id(field: crate::actions::ShapeDimension) -> egui::Id {
     use crate::actions::ShapeDimension as D;
@@ -5771,225 +5923,223 @@ pub fn show_pane(
                 pending = Some(MoveEdit::TranslateMode(mode));
             }
         }
-        // The A-pair start handle (#649/#668) — Point Snap's **Start point A**, Free's
-        // **Reference Point** (#1235). Same picker target; the heading depends on the mode.
-        // Each point picker is built with the other tool pickers (#958) and drawn here, where
-        // it belongs among the tool's controls — between the Rotation heading and the
-        // Angle-snap slider, which is why it can't be hoisted into the shared block. Its rule
-        // (a **start** point on one of the moving bodies, an **end** point on anything else,
-        // #953) lives in the picker, so pane, hover and click path agree.
+        // Every mode-specific row stays in the widget layer (#1416) so switching
+        // Translate modes does not remount a different input on the same rect
+        // (egui paints that red). Unused pickers stay unregistered (#1081).
+        // Paint order keeps each mode's visible rows in the same sequence as
+        // before: Face Snap's mate, then Free's reference + XYZ, then Rotation.
         let tool_pickers = &content.tool_pickers;
-        let mut picker_row = |ui: &mut egui::Ui,
-                              label: &'static str,
-                              id: &'static str,
-                              target: PickerTarget,
-                              on_focus: MoveEdit,
-                              on_clear: MoveEdit| {
-            let Some(view) = tool_pickers.iter().find(|v| v.target == target) else {
-                return;
-            };
-            labeled_row_top(ui, label, |ui| {
-                if let Some(event) = crate::element_picker::show(ui, &view.picker, doc, id) {
-                    pending = Some(match event {
-                        crate::element_picker::PickerEvent::Focus => on_focus,
-                        crate::element_picker::PickerEvent::Remove(_)
-                        | crate::element_picker::PickerEvent::Clear => on_clear,
-                    });
-                }
-            });
+        let dummy_picker = ElementPicker::new(
+            ElementFilter::kind(ElementKind::Vertex),
+            PickLimit::Finite(1),
+        );
+        let mode = control.translate_mode;
+        let is_face = mode == crate::model::MoveTranslateMode::FaceSnap;
+        let is_point = mode == crate::model::MoveTranslateMode::PointSnap;
+        let is_free = mode == crate::model::MoveTranslateMode::Free;
+        let end_c_picked = control.end_c.is_some();
+        let mut take = |edit: Option<MoveEdit>| {
+            if let Some(edit) = edit {
+                pending = Some(edit);
+            }
         };
-        // Face Snap (#1077): two staged pickers — a face and a point on it, per side — then
-        // which side to land on and how far round to turn.
-        if control.translate_mode == crate::model::MoveTranslateMode::FaceSnap {
-            picker_row(
-                ui,
-                "Moving face",
-                "move_face_moving",
-                PickerTarget::MoveFaceMoving,
-                MoveEdit::StartAFocus,
-                MoveEdit::ClearStartA,
-            );
-            picker_row(
-                ui,
-                "Fixed face",
-                "move_face_fixed",
-                PickerTarget::MoveFaceFixed,
-                MoveEdit::EndAFocus,
-                MoveEdit::ClearEndA,
-            );
-            // Assigned into a local rather than `pending`: the picker rows above and below
-            // hold a mutable borrow of it for as long as their closure is alive.
+        take(show_move_picker_row(
+            ui,
+            doc,
+            tool_pickers,
+            &dummy_picker,
+            mode,
+            "Moving face",
+            "move_face_moving",
+            PickerTarget::MoveFaceMoving,
+            MoveEdit::StartAFocus,
+            MoveEdit::ClearStartA,
+        ));
+        take(show_move_picker_row(
+            ui,
+            doc,
+            tool_pickers,
+            &dummy_picker,
+            mode,
+            "Fixed face",
+            "move_face_fixed",
+            PickerTarget::MoveFaceFixed,
+            MoveEdit::EndAFocus,
+            MoveEdit::ClearEndA,
+        ));
+        with_optional_slot(ui, ("move_slot", "flip"), is_face, None, |ui| {
             let mut flip = control.face_flip;
-            if checkbox_row(ui, "Flip", &mut flip, None) {
+            if checkbox_row(ui, "Flip", &mut flip, None) && is_face {
                 face_edit = Some(MoveEdit::FaceFlip(flip));
             }
-            labeled_row(ui, "Turn", |ui| {
-                let mut text = control.face_spin.clone();
-                crate::expression_input::ValueInput::new(
-                    "move_face_spin",
-                    crate::expression_input::ValueKind::Angle,
-                )
-                .width(90.0)
-                .show(ui, &mut text, doc);
-                if text != control.face_spin {
-                    face_edit = Some(MoveEdit::FaceSpin(text));
-                }
-            });
-        }
-        // In place (#1076) has nothing to pick and nothing to type — the mate is the identity.
-        // Offering no rows is how the pane says so; there is no prose to say it with.
-        // Free (#1235): **Reference Point**. Point Snap: **Start point A**. Same target.
-        match control.translate_mode {
-            crate::model::MoveTranslateMode::Free => {
-                picker_row(
-                    ui,
-                    "Reference Point",
-                    "move_start_point_a",
-                    PickerTarget::MoveStartA,
-                    MoveEdit::StartAFocus,
-                    MoveEdit::ClearStartA,
-                );
-            }
-            crate::model::MoveTranslateMode::PointSnap => {
-                picker_row(
-                    ui,
-                    "Start point A",
-                    "move_start_point_a",
-                    PickerTarget::MoveStartA,
-                    MoveEdit::StartAFocus,
-                    MoveEdit::ClearStartA,
-                );
-            }
-            _ => {}
-        }
-        // Snap (#650/#668): end point A on stationary geometry; the offset is derived from
-        // the pair, so there are no X/Y/Z fields. The optional B pair below it adds the
-        // rotation (#669) — start B on a moving body, end B on the constraint sphere.
-        if control.translate_mode == crate::model::MoveTranslateMode::PointSnap {
-            picker_row(
-                ui,
-                "End point A",
-                "move_end_point_a",
-                PickerTarget::MoveEndA,
-                MoveEdit::EndAFocus,
-                MoveEdit::ClearEndA,
-            );
-            // The B and C pairs are the rotation (#915): the label says so, since the
-            // four points after it turn the part rather than move it.
+        });
+        take(show_move_value_row(
+            ui,
+            doc,
+            mode,
+            "Turn",
+            "face_spin",
+            &control.face_spin,
+            crate::expression_input::ValueKind::Angle,
+            end_c_picked,
+            MoveEdit::FaceSpin,
+        ));
+        // Free (#1235): **Reference Point**. Point Snap: **Start point A**. Same
+        // target, two slots — a shared row would remount when the label flips.
+        take(show_move_picker_row(
+            ui,
+            doc,
+            tool_pickers,
+            &dummy_picker,
+            mode,
+            "Reference Point",
+            "move_reference_point",
+            PickerTarget::MoveStartA,
+            MoveEdit::StartAFocus,
+            MoveEdit::ClearStartA,
+        ));
+        take(show_move_picker_row(
+            ui,
+            doc,
+            tool_pickers,
+            &dummy_picker,
+            mode,
+            "Start point A",
+            "move_start_point_a",
+            PickerTarget::MoveStartA,
+            MoveEdit::StartAFocus,
+            MoveEdit::ClearStartA,
+        ));
+        take(show_move_picker_row(
+            ui,
+            doc,
+            tool_pickers,
+            &dummy_picker,
+            mode,
+            "End point A",
+            "move_end_point_a",
+            PickerTarget::MoveEndA,
+            MoveEdit::EndAFocus,
+            MoveEdit::ClearEndA,
+        ));
+        use crate::expression_input::ValueKind;
+        // Free's typed slide sits above Rotation so the heading still groups the
+        // turns, not the translation.
+        take(show_move_value_row(
+            ui, doc, mode, "X", "tx", &control.tx, ValueKind::Length, end_c_picked, MoveEdit::Tx,
+        ));
+        take(show_move_value_row(
+            ui, doc, mode, "Y", "ty", &control.ty, ValueKind::Length, end_c_picked, MoveEdit::Ty,
+        ));
+        take(show_move_value_row(
+            ui, doc, mode, "Z", "tz", &control.tz, ValueKind::Length, end_c_picked, MoveEdit::Tz,
+        ));
+        with_optional_slot(ui, ("move_slot", "rotation"), is_point || is_free, None, |ui| {
             section_label(ui, "Rotation");
-            // How far apart the candidate dots sit on the sphere/circle (#917): a slider
-            // and a value field, both clamped to 0–90°.
+        });
+        {
+            let snap_id = move_field_id("angle_snap");
             let mut angle_snap: Option<f32> = None;
-            labeled_row(ui, "Angle snap", |ui| {
-                let mut degrees = control.angle_snap_deg;
-                // Both controls have to fit the pane's right column beside each other.
-                ui.spacing_mut().slider_width = 46.0;
-                let slider = ui.add(
-                    egui::Slider::new(&mut degrees, 0.0..=crate::actions::MAX_ANGLE_SNAP_DEG)
-                        .show_value(false),
-                );
-                let mut text = format!("{}", (degrees * 100.0).round() / 100.0);
-                let typed = crate::expression_input::ValueInput::new(
-                    ("move_field", "Angle snap"),
-                    crate::expression_input::ValueKind::Angle,
-                )
-                .width(62.0)
-                .show(ui, &mut text, doc);
-                if typed.changed() {
-                    if let Some(v) = crate::value::eval_angle_rad_in_doc(&text, doc) {
-                        degrees = v.to_degrees();
+            with_optional_slot(ui, ("move_slot", "angle_snap"), is_point, Some(snap_id), |ui| {
+                labeled_row(ui, "Angle snap", |ui| {
+                    let mut degrees = control.angle_snap_deg;
+                    ui.spacing_mut().slider_width = 46.0;
+                    let slider = ui.add(
+                        egui::Slider::new(&mut degrees, 0.0..=crate::actions::MAX_ANGLE_SNAP_DEG)
+                            .show_value(false),
+                    );
+                    let mut text = format!("{}", (degrees * 100.0).round() / 100.0);
+                    let typed = crate::expression_input::ValueInput::from_id(
+                        snap_id,
+                        ValueKind::Angle,
+                    )
+                    .width(62.0)
+                    .show(ui, &mut text, doc);
+                    if typed.changed() {
+                        if let Some(v) = crate::value::eval_angle_rad_in_doc(&text, doc) {
+                            degrees = v.to_degrees();
+                        }
                     }
-                }
-                if slider.changed() || typed.changed() {
-                    angle_snap = Some(degrees.clamp(0.0, crate::actions::MAX_ANGLE_SNAP_DEG));
-                }
+                    if is_point && (slider.changed() || typed.changed()) {
+                        angle_snap = Some(degrees.clamp(0.0, crate::actions::MAX_ANGLE_SNAP_DEG));
+                    }
+                });
             });
             if let Some(degrees) = angle_snap {
                 on_move_edit(MoveEdit::AngleSnap(degrees));
             }
-            picker_row(
-                ui,
-                "Start point B",
-                "move_start_point_b",
-                PickerTarget::MoveStartB,
-                MoveEdit::StartBFocus,
-                MoveEdit::ClearStartB,
-            );
-            picker_row(
-                ui,
-                "End point B",
-                "move_end_point_b",
-                PickerTarget::MoveEndB,
-                MoveEdit::EndBFocus,
-                MoveEdit::ClearEndB,
-            );
-            picker_row(
-                ui,
-                "Start point C",
-                "move_start_point_c",
-                PickerTarget::MoveStartC,
-                MoveEdit::StartCFocus,
-                MoveEdit::ClearStartC,
-            );
-            picker_row(
-                ui,
-                "End point C",
-                "move_end_point_c",
-                PickerTarget::MoveEndC,
-                MoveEdit::EndCFocus,
-                MoveEdit::ClearEndC,
-            );
         }
-        drop(picker_row);
-        {
-            // `id_salt` must be unique across Free's translation and rotation rows — both use
-            // labels X/Y/Z, and a shared salt collides egui widget ids (#1233).
-            let mut field = |ui: &mut egui::Ui,
-                             label: &str,
-                             id_salt: &str,
-                             value: &str,
-                             kind: crate::expression_input::ValueKind,
-                             make: &dyn Fn(String) -> MoveEdit| {
-                labeled_row(ui, label, |ui| {
-                    let mut text = value.to_string();
-                    let resp =
-                        crate::expression_input::ValueInput::new(("move_field", id_salt), kind)
-                            .width(90.0)
-                            .show(ui, &mut text, doc);
-                    if resp.changed() {
-                        pending = Some(make(text));
-                    }
-                });
-            };
-            use crate::expression_input::ValueKind;
-            // The third pair can be set as an **angle** instead of a target point (#1078).
-            // Both rows are offered; whichever is filled first is the one that answers, and a
-            // picked end point C wins if somehow both are — it says where the part faces,
-            // where a number only says how far to turn it.
-            if control.translate_mode == crate::model::MoveTranslateMode::PointSnap
-                && control.end_c.is_none()
-            {
-                field(
-                    ui,
-                    "Roll",
-                    "roll",
-                    &control.roll_angle,
-                    ValueKind::Angle,
-                    &MoveEdit::RollAngle,
-                );
-            }
-            if control.translate_mode == crate::model::MoveTranslateMode::Free {
-                field(ui, "X", "tx", &control.tx, ValueKind::Length, &MoveEdit::Tx);
-                field(ui, "Y", "ty", &control.ty, ValueKind::Length, &MoveEdit::Ty);
-                field(ui, "Z", "tz", &control.tz, ValueKind::Length, &MoveEdit::Tz);
-                // Free turns too (#1076), about the part's own centre — so Free is a whole
-                // placement in its own right and not only a slide.
-                section_label(ui, "Rotation");
-                field(ui, "X", "rx", &control.rx, ValueKind::Angle, &MoveEdit::Rx);
-                field(ui, "Y", "ry", &control.ry, ValueKind::Angle, &MoveEdit::Ry);
-                field(ui, "Z", "rz", &control.rz, ValueKind::Angle, &MoveEdit::Rz);
-            }
-        }
+        take(show_move_picker_row(
+            ui,
+            doc,
+            tool_pickers,
+            &dummy_picker,
+            mode,
+            "Start point B",
+            "move_start_point_b",
+            PickerTarget::MoveStartB,
+            MoveEdit::StartBFocus,
+            MoveEdit::ClearStartB,
+        ));
+        take(show_move_picker_row(
+            ui,
+            doc,
+            tool_pickers,
+            &dummy_picker,
+            mode,
+            "End point B",
+            "move_end_point_b",
+            PickerTarget::MoveEndB,
+            MoveEdit::EndBFocus,
+            MoveEdit::ClearEndB,
+        ));
+        take(show_move_picker_row(
+            ui,
+            doc,
+            tool_pickers,
+            &dummy_picker,
+            mode,
+            "Start point C",
+            "move_start_point_c",
+            PickerTarget::MoveStartC,
+            MoveEdit::StartCFocus,
+            MoveEdit::ClearStartC,
+        ));
+        take(show_move_picker_row(
+            ui,
+            doc,
+            tool_pickers,
+            &dummy_picker,
+            mode,
+            "End point C",
+            "move_end_point_c",
+            PickerTarget::MoveEndC,
+            MoveEdit::EndCFocus,
+            MoveEdit::ClearEndC,
+        ));
+        // The third pair can be set as an **angle** instead of a target point (#1078).
+        // Both rows stay mounted; a picked end point C still wins — it says where
+        // the part faces, where a number only says how far to turn it.
+        take(show_move_value_row(
+            ui,
+            doc,
+            mode,
+            "Roll",
+            "roll",
+            &control.roll_angle,
+            ValueKind::Angle,
+            end_c_picked,
+            MoveEdit::RollAngle,
+        ));
+        take(show_move_value_row(
+            ui, doc, mode, "X", "rx", &control.rx, ValueKind::Angle, end_c_picked, MoveEdit::Rx,
+        ));
+        take(show_move_value_row(
+            ui, doc, mode, "Y", "ry", &control.ry, ValueKind::Angle, end_c_picked, MoveEdit::Ry,
+        ));
+        take(show_move_value_row(
+            ui, doc, mode, "Z", "rz", &control.rz, ValueKind::Angle, end_c_picked, MoveEdit::Rz,
+        ));
         if let Some(edit) = pending.or(face_edit) {
             on_move_edit(edit);
         }
@@ -8736,6 +8886,244 @@ mod tests {
                 "every joint field slot must be created for {kind:?}, got {painted:?}"
             );
         }
+    }
+
+    fn move_field_painted_id(salt: &str) -> egui::Id {
+        move_field_id(salt).with("painted_this_pass")
+    }
+
+    fn move_picker_painted_id(id: &str) -> egui::Id {
+        egui::Id::new(("move_picker", id)).with("painted_this_pass")
+    }
+
+    /// #1416: switching Face Snap / Point Snap / Free used to destroy Turn / Angle snap /
+    /// X/Y/Z ValueInputs and remount a different one on the same rect (red flash).
+    /// Every slot stays mounted.
+    #[test]
+    fn move_field_ids_survive_mode_switch() {
+        use crate::model::MoveTranslateMode as M;
+        let ctx = egui::Context::default();
+        ctx.options_mut(|o| {
+            o.max_passes = std::num::NonZeroUsize::new(2).unwrap();
+        });
+        let doc = Document::default();
+        let slots = move_value_slots();
+        for mode in [M::FaceSnap, M::PointSnap, M::Free, M::InPlace, M::FaceSnap] {
+            let mut painted = Vec::new();
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                egui::Panel::right("context").default_size(200.0).show(ui, |ui| {
+                    ui.scope_builder(
+                        egui::UiBuilder::new().id(egui::Id::new(("pane_contents", "context"))),
+                        |ui| {
+                            for salt in slots {
+                                let mut text = "0".to_string();
+                                let id = move_field_id(salt);
+                                with_optional_slot(
+                                    ui,
+                                    ("move_slot", *salt),
+                                    move_value_slot_visible(mode, salt, false),
+                                    Some(id),
+                                    |ui| {
+                                        labeled_row(ui, *salt, |ui| {
+                                            let _ = crate::expression_input::ValueInput::from_id(
+                                                id,
+                                                crate::expression_input::ValueKind::Length,
+                                            )
+                                            .width(90.0)
+                                            .show(ui, &mut text, &doc);
+                                            ui.ctx().data_mut(|d| {
+                                                d.insert_temp(move_field_painted_id(salt), true);
+                                            });
+                                        });
+                                    },
+                                );
+                            }
+                        },
+                    );
+                });
+                painted = slots
+                    .iter()
+                    .filter(|salt| {
+                        ui.ctx()
+                            .data(|d| d.get_temp::<bool>(move_field_painted_id(salt)))
+                            .unwrap_or(false)
+                    })
+                    .copied()
+                    .collect();
+            });
+            assert_eq!(
+                painted.as_slice(),
+                slots,
+                "every move field slot must be created for {mode:?}, got {painted:?}"
+            );
+        }
+    }
+
+    /// Without [`with_optional_slot`], unused ValueInputs leave the layer and the
+    /// next mode's field lands on the same rect (#1416).
+    #[test]
+    fn move_field_ids_vanish_if_slots_are_dropped() {
+        use crate::model::MoveTranslateMode as M;
+        let ctx = egui::Context::default();
+        let doc = Document::default();
+        let mut painted = Vec::new();
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            for salt in move_value_slots() {
+                if !move_value_slot_visible(M::FaceSnap, salt, false) {
+                    continue;
+                }
+                let mut text = "0".to_string();
+                labeled_row(ui, *salt, |ui| {
+                    let _ = crate::expression_input::ValueInput::from_id(
+                        move_field_id(salt),
+                        crate::expression_input::ValueKind::Length,
+                    )
+                    .width(90.0)
+                    .show(ui, &mut text, &doc);
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(move_field_painted_id(salt), true);
+                    });
+                });
+            }
+            painted = move_value_slots()
+                .iter()
+                .filter(|salt| {
+                    ui.ctx()
+                        .data(|d| d.get_temp::<bool>(move_field_painted_id(salt)))
+                        .unwrap_or(false)
+                })
+                .copied()
+                .collect();
+        });
+        assert_eq!(
+            painted.as_slice(),
+            ["face_spin"],
+            "dropping unused slots unmounts Angle snap / X/Y/Z — that is the flash"
+        );
+    }
+
+    /// #1416: the two picker rows under Translate remounted onto each other when the
+    /// mode changed (Moving face / Fixed face ↔ Start A / End A), which egui paints
+    /// red. Every picker slot stays in the layer; unused ones stay unregistered (#1081).
+    #[test]
+    fn move_picker_ids_survive_mode_switch() {
+        use crate::model::MoveTranslateMode as M;
+        let ctx = egui::Context::default();
+        ctx.options_mut(|o| {
+            o.max_passes = std::num::NonZeroUsize::new(2).unwrap();
+        });
+        let doc = Document::default();
+        let dummy = ElementPicker::new(
+            ElementFilter::kind(ElementKind::Vertex),
+            PickLimit::Finite(1),
+        );
+        let slots = move_picker_slots();
+        for mode in [M::FaceSnap, M::PointSnap, M::Free, M::InPlace, M::FaceSnap] {
+            let mut painted = Vec::new();
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                egui::Panel::right("context").default_size(200.0).show(ui, |ui| {
+                    ui.scope_builder(
+                        egui::UiBuilder::new().id(egui::Id::new(("pane_contents", "context"))),
+                        |ui| {
+                            for (id, _, label) in slots {
+                                with_optional_slot(
+                                    ui,
+                                    ("move_slot", *id),
+                                    move_picker_slot_visible(mode, id),
+                                    Some(egui::Id::new(*id)),
+                                    |ui| {
+                                        labeled_row_top(ui, *label, |ui| {
+                                            let _ = crate::element_picker::show(
+                                                ui, &dummy, &doc, *id,
+                                            );
+                                            ui.ctx().data_mut(|d| {
+                                                d.insert_temp(move_picker_painted_id(id), true);
+                                            });
+                                        });
+                                    },
+                                );
+                            }
+                        },
+                    );
+                });
+                painted = slots
+                    .iter()
+                    .filter(|(id, _, _)| {
+                        ui.ctx()
+                            .data(|d| d.get_temp::<bool>(move_picker_painted_id(id)))
+                            .unwrap_or(false)
+                    })
+                    .map(|(id, _, _)| *id)
+                    .collect();
+            });
+            let expected: Vec<&str> = slots.iter().map(|(id, _, _)| *id).collect();
+            assert_eq!(
+                painted, expected,
+                "every move picker slot must be created for {mode:?}, got {painted:?}"
+            );
+        }
+    }
+
+    /// Without [`with_optional_slot`], unused pickers leave the layer and the next
+    /// mode's first two rows land on the same rects (#1416).
+    #[test]
+    fn move_picker_ids_vanish_if_slots_are_dropped() {
+        use crate::model::MoveTranslateMode as M;
+        let ctx = egui::Context::default();
+        let doc = Document::default();
+        let dummy = ElementPicker::new(
+            ElementFilter::kind(ElementKind::Vertex),
+            PickLimit::Finite(1),
+        );
+        let mut painted = Vec::new();
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            for (id, _, label) in move_picker_slots() {
+                if !move_picker_slot_visible(M::FaceSnap, id) {
+                    continue;
+                }
+                labeled_row_top(ui, *label, |ui| {
+                    let _ = crate::element_picker::show(ui, &dummy, &doc, *id);
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(move_picker_painted_id(id), true);
+                    });
+                });
+            }
+            painted = move_picker_slots()
+                .iter()
+                .filter(|(id, _, _)| {
+                    ui.ctx()
+                        .data(|d| d.get_temp::<bool>(move_picker_painted_id(id)))
+                        .unwrap_or(false)
+                })
+                .map(|(id, _, _)| *id)
+                .collect();
+        });
+        assert_eq!(
+            painted.as_slice(),
+            ["move_face_moving", "move_face_fixed"],
+            "dropping unused slots unmounts Point Snap's first two rows — that is the flash"
+        );
+    }
+
+    #[test]
+    fn move_slot_visible_matches_mode() {
+        use crate::model::MoveTranslateMode as M;
+        assert!(move_value_slot_visible(M::FaceSnap, "face_spin", false));
+        assert!(!move_value_slot_visible(M::FaceSnap, "tx", false));
+        assert!(move_value_slot_visible(M::PointSnap, "angle_snap", false));
+        assert!(move_value_slot_visible(M::PointSnap, "roll", false));
+        assert!(!move_value_slot_visible(M::PointSnap, "roll", true));
+        assert!(!move_value_slot_visible(M::PointSnap, "face_spin", false));
+        assert!(move_value_slot_visible(M::Free, "tx", false));
+        assert!(move_value_slot_visible(M::Free, "rz", false));
+        assert!(!move_value_slot_visible(M::InPlace, "tx", false));
+        assert!(move_picker_slot_visible(M::FaceSnap, "move_face_moving"));
+        assert!(!move_picker_slot_visible(M::FaceSnap, "move_start_point_a"));
+        assert!(move_picker_slot_visible(M::PointSnap, "move_start_point_a"));
+        assert!(!move_picker_slot_visible(M::PointSnap, "move_reference_point"));
+        assert!(move_picker_slot_visible(M::Free, "move_reference_point"));
+        assert!(!move_picker_slot_visible(M::Free, "move_end_point_a"));
+        assert!(!move_picker_slot_visible(M::InPlace, "move_face_moving"));
     }
 
     /// #982: with a sketch open, the Select tool's picker view carries the sketch-only rule
