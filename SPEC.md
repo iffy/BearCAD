@@ -992,9 +992,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   the side — the default opposes the two normals so the surfaces touch, which is what "put
   this face on that face" nearly always means; flipped, they point the same way and the part
   sits behind the face. `face_spin` is the turn, a degree expression, set either in the pane
-  or by dragging a **ring gizmo centred on the mate point and normal to the target face** —
-  the same control, two ways in. The A→A connector and the ghost preview work exactly as they
-  do for Point Snap. Scripted as `flip? = true` and `spin? =` on `move_bodies`; a move naming
+  or by dragging a **yellow ring gizmo** centred on the mate point and normal to the target
+  face, with its 0° handle on a world axis in that plane — the same control, two ways in.
+  The A→A connector is a **smooth bezier** that leaves each face along its outward normal
+  (even with no extra turn). The ghost preview works as it does for Point Snap. Scripted as `flip? = true` and `spin? =` on `move_bodies`; a move naming
   two `on_face` points and no B pair *is* a Face Snap, while a B pair says the turn comes from
   a second point pair, so a script written before Face Snap existed still means Point Snap.
 

@@ -62,8 +62,8 @@ Move slides whole bodies to a new place, producing moved copies.
      on offer, and what highlights is always what a click takes. The part lands with the one
      point on the other and the two surfaces together. **Flip** puts it on the
      other side instead, and **Turn** spins it about the fixed face — type a value or drag the
-     ring that appears at the mate point. A **yellow line** connects the two spots, and the
-     ghost shows where the part lands.
+     yellow ring at the mate point (0° sits on a world axis). A **yellow curve** leaves each
+     face along its normal and meets the other, and the ghost shows where the part lands.
    - **Free** — optionally pick a **Reference Point** on a moving body, then type the
      **X / Y / Z** amounts, or drag the coloured arrows on each face of the selection's tight
      bounding cuboid (all six sides; each axis has a value box beside its +face handle).

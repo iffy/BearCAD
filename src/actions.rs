@@ -19083,6 +19083,25 @@ pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
         gizmos.push(GizmoInfo { kind: "offset", name: "move_x", value: mm(&cm.tx), position: None });
         gizmos.push(GizmoInfo { kind: "offset", name: "move_y", value: mm(&cm.ty), position: None });
         gizmos.push(GizmoInfo { kind: "offset", name: "move_z", value: mm(&cm.tz), position: None });
+        // Face Snap's spin ring (#1077/#1426): the turn about the target face's normal.
+        if cm.translate_mode == crate::model::MoveTranslateMode::FaceSnap {
+            if let (Some(start), Some(end)) = (cm.start_point_a.as_ref(), cm.end_point_a.as_ref()) {
+                let ring = crate::extrude::face_spin_ring(
+                    &state.doc, start, end, &cm.targets, &cm.face_spin,
+                );
+                let position = ring.map(|(center, axis, radius, zero_dir, angle_deg)| {
+                    let n = axis.normalize_or_zero();
+                    let handle = glam::Quat::from_axis_angle(n, angle_deg.to_radians()) * zero_dir;
+                    center + handle * radius
+                });
+                gizmos.push(GizmoInfo {
+                    kind: "rotate",
+                    name: "move_spin",
+                    value: rad(&cm.face_spin),
+                    position,
+                });
+            }
+        }
         // Rotation rings only apply in Free mode (#1234); snap modes turn via point pairs.
         if cm.translate_mode == crate::model::MoveTranslateMode::Free {
             // The handles' world positions (#1413/#1414): deterministic non-overlapping
@@ -19275,6 +19294,18 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
                     "move_ry" => cm.ry = text,
                     _ => cm.rz = text,
                 }
+                true
+            } else {
+                false
+            }
+        }
+        // Face Snap's spin about the target face normal (#1077/#1426): radians in, degrees stored.
+        "move_spin" => {
+            if let Some(cm) = state.creating_move.as_mut() {
+                if cm.translate_mode != crate::model::MoveTranslateMode::FaceSnap {
+                    return false;
+                }
+                cm.face_spin = format!("{:.1}", value.to_degrees());
                 true
             } else {
                 false
@@ -20831,7 +20862,57 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         let snap_names: Vec<&str> = available_gizmos(&state).iter().map(|g| g.name).collect();
         assert!(snap_names.contains(&"move_x"));
         assert!(!snap_names.contains(&"move_rx"));
+        assert!(!snap_names.contains(&"move_spin"));
         assert!(!set_gizmo(&mut state, "move_rz", 1.0));
+    }
+
+    /// #1426: Face Snap exposes the spin ring as `move_spin`, and at 0° its handle sits
+    /// on a world axis in the landing-face plane.
+    #[test]
+    fn face_snap_spin_gizmo_is_scriptable_and_axis_aligned() {
+        use crate::mate::tests::{cube_body, face_ref};
+        let mut state = AppState::default();
+        let moving = cube_body(&mut state.doc, glam::Vec3::new(40.0, 0.0, 0.0), glam::Vec3::splat(4.0));
+        let fixed = cube_body(&mut state.doc, glam::Vec3::ZERO, glam::Vec3::splat(10.0));
+        let point = |doc: &crate::model::Document, body, near| match face_ref(doc, body, near) {
+            crate::model::MateRef::Face { body, centroid, normal } => {
+                crate::model::MovePointRef::OnFace { body, centroid, normal, uv: [0, 0] }
+            }
+            other => panic!("expected a face, got {other:?}"),
+        };
+        state.creating_move = Some(CreatingMove {
+            translate_mode: crate::model::MoveTranslateMode::FaceSnap,
+            targets: vec![moving],
+            start_point_a: Some(point(&state.doc, moving, glam::Vec3::new(42.0, 2.0, 4.0))),
+            end_point_a: Some(point(&state.doc, fixed, glam::Vec3::new(5.0, 5.0, 10.0))),
+            ..Default::default()
+        });
+        let gizmos = available_gizmos(&state);
+        let spin = gizmos
+            .iter()
+            .find(|g| g.name == "move_spin")
+            .expect("Face Snap exposes move_spin");
+        assert_eq!(spin.kind, "rotate");
+        assert!(spin.value.abs() < 1e-5, "0° at rest");
+        let pos = spin.position.expect("handle has a world position");
+        let end = crate::extrude::move_point_world(
+            &state.doc,
+            state.creating_move.as_ref().unwrap().end_point_a.as_ref().unwrap(),
+        )
+        .expect("end resolves");
+        let radial = (pos - end).normalize_or_zero();
+        // Landing face is +Z, so the handle is in XY and on a world axis.
+        assert!(radial.z.abs() < 0.05, "in the landing plane: {radial}");
+        assert!(
+            radial.x.abs() < 0.05 || radial.y.abs() < 0.05,
+            "0° handle on a world axis, got {radial}"
+        );
+
+        assert!(set_gizmo(&mut state, "move_spin", 20f32.to_radians()));
+        assert_eq!(state.creating_move.as_ref().unwrap().face_spin, "20.0");
+        assert!(
+            (gizmo_value(&state, "move_spin").unwrap() - 20f32.to_radians()).abs() < 1e-3
+        );
     }
     use crate::face::SketchFrame;
 
