@@ -3392,9 +3392,10 @@ struct App {
     /// which it fires a zoom-to-fit, plus whether that fire has already happened for the
     /// current quiet stretch (so it doesn't re-fire every idle frame).
     auto_zoom_arm: AutoZoomArm,
-    /// The Move ghost's displayed rigid pose (translation, rotation), easing toward the
-    /// live probe's pose so hopping the hover between candidate end points reads as the
-    /// body sweeping over — not teleporting.
+    /// The Move ghost's displayed rigid pose (translation, rotation). Eases toward the
+    /// live probe's pose so hopping the hover between candidate end points (or typing a
+    /// number) reads as the body sweeping over — not teleporting. A live gizmo drag
+    /// snaps this onto the handle instead (#1424).
     move_ghost_pose: Option<(Vec3, glam::Quat)>,
     /// The last `inputmode` applied to eframe's hidden text agent (web).
     #[cfg(target_arch = "wasm32")]
@@ -19063,6 +19064,34 @@ fn move_ghost_target_transform(
 /// exponential ease — quick, but smooth.
 const MOVE_GHOST_EASE_SECS: f32 = 0.06;
 
+/// Advance the Move preview ghost one frame toward `target`.
+///
+/// Gizmo drags snap immediately so the body stays glued to the handle (#1424).
+/// Typed inspector edits and point-snap hover still ease — the body sweeps
+/// rather than teleporting.
+fn step_move_ghost_pose(
+    pose: &mut (Vec3, glam::Quat),
+    target: (Vec3, glam::Quat),
+    dt: f32,
+    snap: bool,
+) -> bool {
+    let (t_pos, t_rot) = target;
+    if snap {
+        *pose = (t_pos, t_rot);
+        return false;
+    }
+    let dt = dt.min(0.05);
+    let k = 1.0 - (-dt / MOVE_GHOST_EASE_SECS).exp();
+    pose.0 = pose.0.lerp(t_pos, k);
+    pose.1 = pose.1.slerp(t_rot, k).normalize();
+    if (pose.0 - t_pos).length() > 0.05 || pose.1.angle_between(t_rot) > 1e-3 {
+        true
+    } else {
+        *pose = (t_pos, t_rot);
+        false
+    }
+}
+
 /// Where a sketch-axis label sits (#751, #1216): the point where the infinite axis line
 /// meets `rect`'s boundary. Of the (up to two) line–rect intersections, pick the one
 /// **nearer the origin in screen space** so the label stays next to the visible axis when
@@ -30064,7 +30093,9 @@ impl App {
         };
         // The ghost glides between destinations: its pose eases toward the live (or
         // hovered) probe transform — quick, but smooth — so hopping the hover between
-        // candidate points reads as the body sweeping over, not teleporting.
+        // candidate points (or typing a number) reads as the body sweeping over, not
+        // teleporting. A live gizmo drag snaps instead (#1424) so the preview stays
+        // glued to the handle.
         let move_ghost_override = {
             let live = move_hover_preview
                 .as_ref()
@@ -30095,15 +30126,12 @@ impl App {
                         None => (t_pos, None),
                     };
                     let pose = self.move_ghost_pose.get_or_insert((t_pos, t_rot));
-                    let dt = ui.input(|i| i.stable_dt).min(0.05);
-                    let k = 1.0 - (-dt / MOVE_GHOST_EASE_SECS).exp();
-                    pose.0 = pose.0.lerp(t_pos, k);
-                    pose.1 = pose.1.slerp(t_rot, k).normalize();
-                    if (pose.0 - t_pos).length() > 0.05 || pose.1.angle_between(t_rot) > 1e-3
-                    {
+                    let dt = ui.input(|i| i.stable_dt);
+                    let snap = self.move_gizmo_drag.is_some()
+                        || self.free_move_rotation_drag.is_some()
+                        || self.face_spin_drag.is_some();
+                    if step_move_ghost_pose(pose, (t_pos, t_rot), dt, snap) {
                         ui.ctx().request_repaint();
-                    } else {
-                        *pose = (t_pos, t_rot);
                     }
                     Some(match rebuild {
                         Some(start) => {
@@ -32921,6 +32949,47 @@ mod tests {
         // With no field to go by, it still hangs above the orb.
         let fallback = typing_guide_rect(None, orb, size, bounds);
         assert!(fallback.bottom() < orb.y, "the fallback guide should sit above the orb");
+    }
+
+    /// #1424: dragging a free-move gizmo must land the preview ghost on the handle this
+    /// frame. Typing a number in the inspector may still ease toward the new pose.
+    #[test]
+    fn move_ghost_snaps_for_gizmo_and_eases_for_typed_values() {
+        let from = (Vec3::ZERO, glam::Quat::IDENTITY);
+        let to = (
+            Vec3::new(40.0, 25.0, 5.0),
+            glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+        );
+        let dt = 1.0 / 60.0;
+
+        let mut typed = from;
+        let still_easing = super::step_move_ghost_pose(&mut typed, to, dt, false);
+        assert!(still_easing, "typed edits should ease, not jump");
+        assert!(
+            (typed.0 - to.0).length() > 1.0,
+            "one frame of ease should still be short of a large jump: {:?}",
+            typed.0
+        );
+        assert!(
+            typed.1.angle_between(to.1) > 0.1,
+            "typed rotation should still be turning after one frame"
+        );
+
+        let mut gizmo = from;
+        let still_easing = super::step_move_ghost_pose(&mut gizmo, to, dt, true);
+        assert!(!still_easing, "gizmo drag should land this frame");
+        assert!(
+            (gizmo.0 - to.0).length() < 1e-5,
+            "gizmo preview should sit on the handle: {:?}",
+            gizmo.0
+        );
+        let turned = gizmo.1 * Vec3::X;
+        let want = to.1 * Vec3::X;
+        assert!(
+            (turned - want).length() < 1e-5,
+            "gizmo preview rotation should match the handle: {turned:?} vs {want:?} (angle {})",
+            gizmo.1.angle_between(to.1)
+        );
     }
 
     /// #826: mid-animation the Move ghost keeps start point A exactly on end point A — the
