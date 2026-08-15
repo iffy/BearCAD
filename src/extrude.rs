@@ -1854,6 +1854,91 @@ pub fn free_move_rotation_base_dir(axis: usize) -> Vec3 {
     }
 }
 
+/// One Free-move rotation ring's visual geometry (#1413/#1414/#1422): the handle follows the
+/// preview (`Q · base`) and the circle is the object's current equator around that ring's
+/// axis (`Q · world_axis`), so a multi-axis turn still wraps the body instead of shrinking
+/// off-plane.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FreeMoveRotationRing {
+    pub center: Vec3,
+    pub axis: Vec3,
+    pub radius: f32,
+    pub handle: Vec3,
+    pub zero_dir: Vec3,
+    pub angle_deg: f32,
+}
+
+/// The three Free-move rotation rings (#1413/#1414/#1422). `(min, max)` are the targets'
+/// resting bounds, `translation` the live Free translation; `None` when a typed turn
+/// doesn't evaluate.
+pub fn free_move_rotation_rings(
+    doc: &Document,
+    min: Vec3,
+    max: Vec3,
+    translation: Vec3,
+    rx: &str,
+    ry: &str,
+    rz: &str,
+) -> Option<[FreeMoveRotationRing; 3]> {
+    let (center, radius) = free_move_rotation_ring(min + translation, max + translation);
+    let q = move_op_free_rotation_quat(doc, rx, ry, rz)?;
+    let angles = [
+        eval_free_move_angle_deg(doc, rx),
+        eval_free_move_angle_deg(doc, ry),
+        eval_free_move_angle_deg(doc, rz),
+    ];
+    let mut out = [FreeMoveRotationRing {
+        center,
+        axis: Vec3::Z,
+        radius,
+        handle: center,
+        zero_dir: Vec3::X,
+        angle_deg: 0.0,
+    }; 3];
+    for axis in 0..3 {
+        let world_axis = free_move_axis_dir(axis);
+        // The circle is the object's current equator around this ring (#1422): Q
+        // takes the world axis with the preview, and the handle (`Q · base`) sits
+        // on that plane at full radius. Unwind this ring's own angle around the
+        // object axis so the renderer can re-apply it for the sweep.
+        let ring_axis = (q * world_axis).normalize_or_zero();
+        let handle_dir = q * free_move_rotation_base_dir(axis);
+        let angle_deg = angles[axis];
+        let zero_dir = glam::Quat::from_axis_angle(ring_axis, -angle_deg.to_radians()) * handle_dir;
+        out[axis] = FreeMoveRotationRing {
+            center,
+            axis: ring_axis,
+            radius,
+            handle: center + handle_dir * radius,
+            zero_dir,
+            angle_deg,
+        };
+    }
+    Some(out)
+}
+
+fn eval_free_move_angle_deg(doc: &Document, expr: &str) -> f32 {
+    if expr.trim().is_empty() {
+        0.0
+    } else {
+        crate::value::eval_angle_rad_in_doc(expr, doc)
+            .unwrap_or(0.0)
+            .to_degrees()
+    }
+}
+
+/// Which fade-arc sides to draw from the handle (#1420): `+1` is the +angle direction.
+/// The unused side drops once the handle has been pulled off the start.
+pub fn rotation_fade_arc_signs(angle_deg: f32) -> &'static [f32] {
+    if angle_deg > 1e-3 {
+        &[1.0]
+    } else if angle_deg < -1e-3 {
+        &[-1.0]
+    } else {
+        &[1.0, -1.0]
+    }
+}
+
 /// The three Free-move rotation-gizmo handle world positions (#1413/#1414): one per ring at a
 /// deterministic, non-overlapping base reference (see [`free_move_rotation_base_dir`]) rotated
 /// by the live composed Free turn, so every handle follows the moving body's preview when any
@@ -1868,13 +1953,7 @@ pub fn free_move_rotation_handles(
     ry: &str,
     rz: &str,
 ) -> Option<[Vec3; 3]> {
-    let (center, radius) = free_move_rotation_ring(min + translation, max + translation);
-    let q = move_op_free_rotation_quat(doc, rx, ry, rz)?;
-    let mut out = [Vec3::ZERO; 3];
-    for axis in 0..3 {
-        out[axis] = center + q * free_move_rotation_base_dir(axis) * radius;
-    }
-    Some(out)
+    Some(free_move_rotation_rings(doc, min, max, translation, rx, ry, rz)?.map(|r| r.handle))
 }
 
 /// Gizmo script names for Free-move translation axes.
@@ -11488,6 +11567,63 @@ mod tests {
         let c = (min + max) * 0.5;
         let expected = c + q * free_move_rotation_base_dir(2) * free_move_rotation_ring(min, max).1;
         assert!(handles[2].distance(expected) < 1e-3, "Z handle should sit at the signed -5° position");
+    }
+
+    /// #1422: after more than one axis is turned, each ring's circle is the object's
+    /// current equator (`Q · world_axis` through the centre at full radius) — not a
+    /// smaller off-plane circle around the world axis.
+    #[test]
+    fn free_move_rotation_circles_stay_on_object_equators() {
+        let (mut doc, _sketch, ext) = box_doc();
+        doc.extrusions.insert(ext);
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(xkey(0)),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let (min, max) = free_move_targets_bounds(&doc, &[bkey(0)], &[]).unwrap();
+        let rings =
+            free_move_rotation_rings(&doc, min, max, glam::Vec3::ZERO, "30", "40", "50").unwrap();
+        let q = move_op_free_rotation_quat(&doc, "30", "40", "50").unwrap();
+        for i in 0..3 {
+            let expected_axis = (q * free_move_axis_dir(i)).normalize();
+            let axis = rings[i].axis.normalize();
+            assert!(
+                axis.dot(expected_axis) > 0.99,
+                "ring {i} should circle the object's current axis, got {} want {expected_axis}",
+                rings[i].axis
+            );
+            let offset = rings[i].handle - rings[i].center;
+            assert!(
+                offset.dot(axis).abs() < 1e-3 * rings[i].radius.max(1.0),
+                "ring {i} handle must sit on the equator, offset {offset} axis {axis}"
+            );
+            assert!(
+                (offset.length() - rings[i].radius).abs() < 1e-3,
+                "ring {i} handle must sit at full radius, got {} want {}",
+                offset.length(),
+                rings[i].radius
+            );
+            assert!(
+                rings[i].zero_dir.dot(axis).abs() < 1e-3,
+                "ring {i} 0° reference must lie in the equator plane"
+            );
+        }
+        // The Z ring is no longer the world-XY circle once X/Y have turned.
+        assert!(
+            rings[2].axis.dot(Vec3::Z).abs() < 0.95,
+            "Z ring should tilt with the object after X/Y turns, axis {}",
+            rings[2].axis
+        );
+    }
+
+    /// #1420: pulling the handle off 0° drops the fade on the unused side.
+    #[test]
+    fn rotation_fade_drops_the_unused_side() {
+        assert_eq!(rotation_fade_arc_signs(0.0), &[1.0, -1.0]);
+        assert_eq!(rotation_fade_arc_signs(21.5), &[1.0]);
+        assert_eq!(rotation_fade_arc_signs(-11.5), &[-1.0]);
     }
 
     /// #186: a repeat's fill length can be bound to a target's extended plane (like an
