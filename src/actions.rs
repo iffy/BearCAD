@@ -6844,6 +6844,16 @@ fn transform_aabb(m: glam::Mat4, min: Vec3, max: Vec3) -> (Vec3, Vec3) {
     (tmin, tmax)
 }
 
+/// Bounds auto-zoom frames (#1429): committed document ∪ live operation previews.
+/// Same as Zoom-to-Fit when nothing is selected, so a move's original and destination
+/// both fit — not only the committed (non-shadow) solids.
+pub(crate) fn auto_zoom_world_bounds(state: &AppState) -> Option<(Vec3, Vec3)> {
+    union_aabb(
+        crate::extrude::document_world_bounds(&state.doc),
+        operation_preview_world_bounds(state),
+    )
+}
+
 /// World bounds of every live tool preview (#1114): mirror/repeat/move ghosts, extrude/
 /// revolve/loft/sweep/boolean previews — the same solids the viewport draws translucent
 /// before commit. Used by Zoom-to-fit so Z frames the whole preview, not only committed
@@ -6946,9 +6956,18 @@ fn operation_preview_world_bounds(state: &AppState) -> Option<(Vec3, Vec3)> {
         }
     }
 
-    // Move-tool destination ghosts.
+    // Move-tool original + destination ghosts (#1429). The original is a shadow
+    // once the move is committed, so document bounds skip it; Z and auto-zoom
+    // still need that pose in view next to the previewed destination.
     if let Some(cm) = state.creating_move.as_ref() {
         if !cm.targets.is_empty() {
+            for &bi in &cm.targets {
+                if let Some((min, max)) =
+                    crate::extrude::body_solid_mesh(doc, bi).and_then(|mesh| mesh.bounds())
+                {
+                    extend(&mut bounds, min, max);
+                }
+            }
             let probe = crate::model::MoveOperation {
                 keep_inputs: false,
                 targets: cm.targets.clone(),
@@ -30177,6 +30196,154 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             (state.cam.target - glam::Vec3::new(5.0, 5.0, 2.5)).length() < 0.6,
             "instant frame centers on the body, got {:?}",
             state.cam.target
+        );
+    }
+
+    /// Two cuboids (no leftover sketch lines) and a committed +100 mm X move of the first,
+    /// reopened in the Move tool. The original is a shadow at x in [0, 10]; dest is [100, 110].
+    fn editing_moved_cuboid_state() -> AppState {
+        use crate::model::{Primitive, PrimitiveKind};
+        let mut state = AppState::default();
+        state.apply(Action::CreateShape {
+            shape: Primitive {
+                kind: PrimitiveKind::Cuboid,
+                origin: [0.0, 0.0, 0.0],
+                normal: [0.0, 0.0, 1.0],
+                u_axis: [1.0, 0.0, 0.0],
+                width: "10".into(),
+                depth: "10".into(),
+                height: "10".into(),
+                radius: String::new(),
+                name: None,
+            },
+        });
+        state.apply(Action::CreateShape {
+            shape: Primitive {
+                kind: PrimitiveKind::Cuboid,
+                origin: [40.0, 0.0, 0.0],
+                normal: [0.0, 0.0, 1.0],
+                u_axis: [1.0, 0.0, 0.0],
+                width: "10".into(),
+                depth: "10".into(),
+                height: "10".into(),
+                radius: String::new(),
+                name: None,
+            },
+        });
+        let result = state.apply(Action::CreateMoveOperation {
+            keep_inputs: false,
+            translate_mode: crate::model::MoveTranslateMode::Free,
+            start_point_a: None,
+            end_point_a: None,
+            start_point_b: None,
+            end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
+            targets: vec![bkey(0)],
+            plane_targets: vec![],
+            image_targets: vec![],
+            instance_targets: Vec::new(),
+            tx: "100".to_string(),
+            ty: String::new(),
+            tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
+            face_flip: false,
+            face_spin: String::new(),
+            roll_angle: String::new(),
+            face_offset: String::new(),
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        let op = state.doc.move_ops.keys().next().expect("move was committed");
+        let mut cm = CreatingMove::from_op(&state.doc.move_ops[op]);
+        cm.editing = Some(op);
+        state.creating_move = Some(cm);
+        state.apply(Action::ClearSceneSelection);
+        state
+    }
+
+    /// #1429: Zoom to Fit must frame both the original position of a moving body and
+    /// its previewed destination — even when the original is a shadow of a committed move.
+    #[test]
+    fn zoom_to_fit_includes_move_original_and_destination() {
+        let mut state = editing_moved_cuboid_state();
+        let (dmin, dmax) = crate::extrude::document_world_bounds(&state.doc)
+            .expect("committed dest + the unmoved cuboid");
+        assert!(
+            dmin.x > 15.0,
+            "document bounds skip the shadowed original, got {dmin:?}..{dmax:?}"
+        );
+
+        state.animate_zoom_to_fit = false;
+        state.cam.target = glam::Vec3::new(999.0, 999.0, 999.0);
+        let result = state.apply(Action::ZoomToFit);
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        // Cuboid origin is the centre: original x −5..5, unmoved 35..45, dest 95..105.
+        // Union centres near x = 50. Document-only (35..105) would centre near x = 70.
+        let target = state.cam.target;
+        assert!(
+            (target.x - 50.0).abs() < 2.0,
+            "zoom-to-fit should include the original (x=-5) and dest (x=105), centre ~50, got {target:?}"
+        );
+    }
+
+    /// #1429: auto-zoom must frame the same content as Zoom to Fit (empty selection)
+    /// while a move preview is active — original + destination, not just committed bodies.
+    #[test]
+    fn auto_zoom_frames_the_same_move_preview_as_zoom_to_fit() {
+        let state = editing_moved_cuboid_state();
+        let auto = super::auto_zoom_world_bounds(&state).expect("move preview has bounds");
+        let ztf = {
+            let base = crate::extrude::selection_world_bounds(&state.doc, &state.scene_selection)
+                .or_else(|| crate::extrude::document_world_bounds(&state.doc));
+            super::union_aabb(base, super::operation_preview_world_bounds(&state))
+        }
+        .expect("zoom-to-fit has bounds");
+        assert_eq!(
+            auto, ztf,
+            "auto-zoom must use the same bounds as zoom-to-fit"
+        );
+        assert!(
+            auto.0.x < -4.0 && auto.1.x > 104.0,
+            "shared bounds must cover original (x=-5) and dest (x=105), got {auto:?}"
+        );
+    }
+
+    /// #1429: an in-progress (not yet committed) move puts the destination only in the
+    /// preview — auto-zoom must still frame it, same as Zoom to Fit.
+    #[test]
+    fn auto_zoom_includes_in_progress_move_destination() {
+        use crate::model::{Primitive, PrimitiveKind};
+        let mut state = AppState::default();
+        state.apply(Action::CreateShape {
+            shape: Primitive {
+                kind: PrimitiveKind::Cuboid,
+                origin: [0.0, 0.0, 0.0],
+                normal: [0.0, 0.0, 1.0],
+                u_axis: [1.0, 0.0, 0.0],
+                width: "10".into(),
+                depth: "10".into(),
+                height: "10".into(),
+                radius: String::new(),
+                name: None,
+            },
+        });
+        state.creating_move = Some(CreatingMove {
+            targets: vec![bkey(0)],
+            translate_mode: crate::model::MoveTranslateMode::Free,
+            tx: "100".to_string(),
+            ..CreatingMove::default()
+        });
+        let (dmin, dmax) = crate::extrude::document_world_bounds(&state.doc).unwrap();
+        assert!(
+            dmax.x < 10.0,
+            "committed cuboid stays at the origin, got {dmin:?}..{dmax:?}"
+        );
+        let auto = super::auto_zoom_world_bounds(&state).unwrap();
+        assert!(
+            auto.0.x < -4.0 && auto.1.x > 104.0,
+            "auto-zoom must cover original and dest, got {auto:?}"
         );
     }
 
