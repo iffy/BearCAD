@@ -1238,6 +1238,67 @@ pub fn graph_parent_edges(
         .collect()
 }
 
+/// Whether `node` is a shadow body or a consumed (shadowed) sketch edge.
+fn is_shadow_hierarchy_node(doc: &Document, node: HierarchyNode) -> bool {
+    match node {
+        HierarchyNode::Body(bi) => doc.bodies.get(bi).is_some_and(|b| b.shadow),
+        HierarchyNode::Line(li) => doc.lines.get(li).is_some_and(|l| l.shadow),
+        HierarchyNode::Circle(ci) => doc.circles.get(ci).is_some_and(|c| c.shadow),
+        _ => false,
+    }
+}
+
+/// Walk `parent_of` from `node` to the nearest ancestor that is currently on screen.
+fn visible_ancestor_of(
+    node: HierarchyNode,
+    parent_of: &HashMap<HierarchyNode, HierarchyNode>,
+    present: &HashSet<HierarchyNode>,
+) -> Option<HierarchyNode> {
+    let mut current = node;
+    let mut seen = HashSet::new();
+    while let Some(&parent) = parent_of.get(&current) {
+        if !seen.insert(parent) {
+            break;
+        }
+        if present.contains(&parent) {
+            return Some(parent);
+        }
+        current = parent;
+    }
+    None
+}
+
+/// Dashed skip-edges for hidden shadow dependencies (#1425): when a visible node is fed by a
+/// shadow element that is not on screen, connect the shadow's visible parent to that consumer
+/// — skipping the hidden shadow node. Endpoints are both on-screen [`HierarchyNode`]s.
+pub fn graph_shadow_skip_edges(
+    doc: &Document,
+    present: &HashSet<HierarchyNode>,
+) -> Vec<(HierarchyNode, HierarchyNode)> {
+    let full = graph_node_positions(&build_hierarchy(doc, None));
+    let parent_of: HashMap<HierarchyNode, HierarchyNode> = full
+        .iter()
+        .filter_map(|p| p.parent.map(|parent| (p.node, parent)))
+        .collect();
+
+    let mut edges = Vec::new();
+    let mut seen = HashSet::new();
+    for (source, consumer) in graph_dependency_edges(doc) {
+        if !present.contains(&consumer) || present.contains(&source) {
+            continue;
+        }
+        if !is_shadow_hierarchy_node(doc, source) {
+            continue;
+        }
+        if let Some(parent) = visible_ancestor_of(source, &parent_of, present) {
+            if parent != consumer && seen.insert((parent, consumer)) {
+                edges.push((parent, consumer));
+            }
+        }
+    }
+    edges
+}
+
 /// The dot radius, label gap, and minimum breathing room used by [`declutter_label_bands`] and
 /// mirrored by the graph render (`show_graph_view`). Kept here so the physics-free declutter is
 /// unit-testable without pulling in `egui`.
@@ -4769,7 +4830,11 @@ fn show_graph_view(
         .iter()
         .filter_map(|p| p.parent.map(|parent| (parent, p.node)))
         .collect();
-    for (input, consumer) in graph_dependency_edges(doc) {
+    let present_for_layers: HashSet<HierarchyNode> = positions.iter().map(|p| p.node).collect();
+    for (input, consumer) in graph_dependency_edges(doc)
+        .into_iter()
+        .chain(graph_shadow_skip_edges(doc, &present_for_layers))
+    {
         if final_y.contains_key(&input) && final_y.contains_key(&consumer) {
             layer_edges.push((input, consumer));
         }
@@ -4870,12 +4935,13 @@ fn show_graph_view(
             // a drawing projection to its source (#281), and a boolean operation to its shadow
             // input bodies (#266). Drawn dashed in an accent colour so they read apart from the
             // neutral parent edges. (A step toward the full element graph, #252.)
+            // Hidden shadow inputs skip to the shadow's visible parent (#1425).
             let present: std::collections::HashSet<HierarchyNode> =
                 positions.iter().map(|p| p.node).collect();
-            for (source, consumer) in graph_dependency_edges(doc) {
-                if !present.contains(&source) || !present.contains(&consumer) {
-                    continue;
-                }
+            let dep_edges = graph_dependency_edges(doc).into_iter().filter(|(source, consumer)| {
+                present.contains(source) && present.contains(consumer)
+            });
+            for (source, consumer) in dep_edges.chain(graph_shadow_skip_edges(doc, &present)) {
                 let (a, b) = (pos_of(source), pos_of(consumer));
                 // Manual dashes so it's visually distinct without a dashed-line primitive.
                 let delta = b - a;
@@ -6838,6 +6904,171 @@ mod tests {
         assert!(edges.contains(&(HierarchyNode::Body(bkey(1)), HierarchyNode::BooleanOp(bopkey(0)))));
         // The output body is a tree child, not a dependency input.
         assert!(!edges.contains(&(HierarchyNode::Body(bkey(2)), HierarchyNode::BooleanOp(bopkey(0)))));
+    }
+
+    /// Visible graph nodes after the pane's default filter — shadows pruned (#1109).
+    fn default_graph_present(doc: &Document) -> (Vec<HierarchyEntry>, HashSet<HierarchyNode>) {
+        let filter = ElementFilter::default();
+        let mut tree = filter_hierarchy(&build_hierarchy(doc, None), &filter);
+        prune_shadow_bodies(&mut tree, doc);
+        if !filter.unit_contents {
+            prune_unit_children(&mut tree);
+        }
+        let present = graph_node_positions(&tree).into_iter().map(|p| p.node).collect();
+        (tree, present)
+    }
+
+    /// #1425: a Move that consumes a hidden shadow body draws a dashed skip-edge from the
+    /// shadow's parent (the Shape) to the Move — the shadow itself is not on screen.
+    #[test]
+    fn hidden_shadow_dependency_skips_to_the_shadows_parent() {
+        use crate::model::{Body, BodySource, MoveOperation, Primitive, PrimitiveKind};
+        let mut doc = Document::default();
+        let shape = doc.primitives.insert(Primitive::new(PrimitiveKind::Cuboid));
+        let shadow = doc.bodies.insert(Body {
+            source: BodySource::Primitive(shape),
+            material: None,
+            name: None,
+            shadow: true,
+        });
+        let live = doc.bodies.insert(Body {
+            source: BodySource::Moved {
+                op: mopkey(0),
+                target: 0,
+                add: Vec::new(),
+                cut: Vec::new(),
+            },
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        doc.move_ops.insert(MoveOperation {
+            targets: vec![shadow],
+            outputs: vec![live],
+            ..MoveOperation::default()
+        });
+
+        let (_tree, present) = default_graph_present(&doc);
+        assert!(
+            !present.contains(&HierarchyNode::Body(shadow)),
+            "the consumed cuboid body is a hidden shadow"
+        );
+        assert!(present.contains(&HierarchyNode::Shape(shape)));
+        assert!(present.contains(&HierarchyNode::MoveOp(mopkey(0))));
+
+        let skips = graph_shadow_skip_edges(&doc, &present);
+        assert!(
+            skips.contains(&(HierarchyNode::Shape(shape), HierarchyNode::MoveOp(mopkey(0)))),
+            "hidden shadow's parent (the cuboid) should dash to the move that consumed it: {skips:?}"
+        );
+        // The ordinary dependency still names the hidden body — the renderer skips that pair.
+        assert!(graph_dependency_edges(&doc)
+            .contains(&(HierarchyNode::Body(shadow), HierarchyNode::MoveOp(mopkey(0)))));
+
+        // With shadows shown, the ordinary Body→Move dash is enough; no skip.
+        let all_present: HashSet<HierarchyNode> = graph_node_positions(&build_hierarchy(&doc, None))
+            .into_iter()
+            .map(|p| p.node)
+            .collect();
+        assert!(all_present.contains(&HierarchyNode::Body(shadow)));
+        assert!(
+            graph_shadow_skip_edges(&doc, &all_present).is_empty(),
+            "visible shadows use the ordinary dependency edge, not a skip"
+        );
+    }
+
+    /// #1425: a fillet whose host body is a hidden shadow skips from that body's parent
+    /// (the extrusion) to the fillet — otherwise the fillet floats off Document.
+    #[test]
+    fn hidden_shadow_host_skips_from_extrusion_to_fillet() {
+        use crate::model::{
+            Body, BodySource, EdgeTreatmentOperation, ExtrudeFace, Extrusion, TreatedEdge,
+            VertexTreatmentKind,
+        };
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+        let rect =
+            crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
+        doc.extrusions.insert(Extrusion {
+            sketch,
+            faces: vec![ExtrudeFace::Polygon(rect.to_vec())],
+            distance: 5.0,
+            target: None,
+            expression: String::new(),
+            name: None,
+            symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
+            edge_treatments: Vec::new(),
+        });
+        let host = doc.bodies.insert(Body {
+            source: BodySource::Extrusion(xkey(0)),
+            material: None,
+            name: None,
+            shadow: true,
+        });
+        let op = doc.edge_treatment_ops.insert(EdgeTreatmentOperation {
+            targets: vec![host],
+            edges: vec![TreatedEdge {
+                target: 0,
+                solid: crate::model::TreatableSolid::Extrusion(xkey(0)),
+                edge: crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 },
+            }],
+            kind: VertexTreatmentKind::Fillet,
+            amount: 1.5,
+            outputs: Vec::new(),
+            name: None,
+        });
+        let output = doc.bodies.insert(Body {
+            source: BodySource::EdgeTreated {
+                op,
+                target: 0,
+                add: Vec::new(),
+                cut: Vec::new(),
+            },
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        doc.edge_treatment_ops[op].outputs = vec![output];
+
+        let (_tree, present) = default_graph_present(&doc);
+        assert!(!present.contains(&HierarchyNode::Body(host)));
+        let skips = graph_shadow_skip_edges(&doc, &present);
+        assert!(
+            skips.contains(&(HierarchyNode::Extrusion(xkey(0)), HierarchyNode::EdgeTreatmentOp(op))),
+            "fillet should dash to the extrusion that produced its hidden shadow host: {skips:?}"
+        );
+    }
+
+    /// #1425: a hidden *live* (non-shadow) source does not invent a skip — only shadows do.
+    #[test]
+    fn hidden_live_body_does_not_skip() {
+        let mut doc = Document::default();
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        doc.boolean_ops.insert(crate::model::BooleanOperation {
+            kind: crate::model::BooleanOpKind::Cut,
+            a: vec![bkey(0)],
+            b: Vec::new(),
+            keep_b: false,
+            outputs: Vec::new(),
+            name: None,
+        });
+        // Pretend the live input is off-screen (bodies filter off) while the op stays.
+        let present: HashSet<HierarchyNode> =
+            [HierarchyNode::Document, HierarchyNode::BooleanOp(bopkey(0))]
+                .into_iter()
+                .collect();
+        assert!(
+            graph_shadow_skip_edges(&doc, &present).is_empty(),
+            "a hidden live body is not a shadow skip"
+        );
     }
 
     /// #281: each placed drawing view is a "projection" child of its drawing node, labelled by

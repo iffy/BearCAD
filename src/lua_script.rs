@@ -8885,6 +8885,51 @@ mod tests {
         );
     }
 
+    /// #1425: moving a cuboid shadows its body; with shadows hidden (the default graph
+    /// filter) the Move must still dash to the cuboid Shape that produced that body.
+    #[test]
+    fn lua_hidden_shadow_move_skips_to_the_shape() {
+        use crate::hierarchy::{
+            build_hierarchy, filter_hierarchy, graph_node_positions, graph_shadow_skip_edges,
+            prune_shadow_bodies, ElementFilter, HierarchyNode,
+        };
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 20, depth = 20, height = 20 }
+            bearcad.cuboid{ width = 30, depth = 10, height = 40 }
+            bearcad.move_bodies{ bodies = {0}, x = 10 }
+            "#,
+        );
+        let filter = ElementFilter::default();
+        assert!(!filter.shadow_bodies);
+        let mut tree = filter_hierarchy(&build_hierarchy(&state.doc, None), &filter);
+        prune_shadow_bodies(&mut tree, &state.doc);
+        let present: std::collections::HashSet<HierarchyNode> =
+            graph_node_positions(&tree).into_iter().map(|p| p.node).collect();
+
+        let (shadow_bi, _) = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| b.shadow)
+            .expect("move shadows the first cuboid");
+        let shape = match &state.doc.bodies[shadow_bi].source {
+            crate::model::BodySource::Primitive(pi) => *pi,
+            other => panic!("shadowed body should be the cuboid primitive, got {other:?}"),
+        };
+        let (move_op, _) = state.doc.move_ops.iter().next().expect("one move");
+        assert!(
+            !present.contains(&HierarchyNode::Body(shadow_bi)),
+            "default graph hides the shadow body"
+        );
+        let skips = graph_shadow_skip_edges(&state.doc, &present);
+        assert!(
+            skips.contains(&(HierarchyNode::Shape(shape), HierarchyNode::MoveOp(move_op))),
+            "Move should dash to the cuboid that produced the hidden shadow: {skips:?}"
+        );
+    }
+
     #[test]
     fn lua_chamfer_edge_rejects_an_out_of_range_edge() {
         // `tick.exec` turns a failed declarative-modeling action into a Lua error
