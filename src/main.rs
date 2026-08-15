@@ -3527,8 +3527,8 @@ impl App {
     /// The 500 ms is a debounce: continuous input keeps pushing the deadline out, so a
     /// zoom only fires once the user has been quiet for half a second. A drag (pointer
     /// held) pauses the countdown instead of restarting it — see [`AutoZoomArm::step`].
-    /// Runs before `tick_transition`; frames the whole committed document and glides,
-    /// like the Zoom to Fit toolbar button.
+    /// Runs before `tick_transition`; frames the committed document ∪ live previews
+    /// and glides, like the Zoom to Fit toolbar button with an empty selection (#1429).
     fn tick_auto_zoom(&mut self, ctx: &egui::Context) {
         if !self.state.auto_zoom
             || self.state.fps.is_some()
@@ -3557,8 +3557,9 @@ impl App {
         let mut arm = self.auto_zoom_arm;
         let fire = arm.step(is_input, dragging, now);
         if fire {
-            // Zoom-to-fit the whole document, exactly like the Z toolbar button.
-            if let Some((min, max)) = extrude::document_world_bounds(&self.state.doc) {
+            // Same bounds as Zoom to Fit with an empty selection: committed
+            // document ∪ in-progress previews (move original + dest, …) (#1429).
+            if let Some((min, max)) = actions::auto_zoom_world_bounds(&self.state) {
                 let aspect = (viewport.width() / viewport.height().max(1.0)).max(0.1);
                 self.state.cam.frame_bounds_animated(min, max, aspect, 0.22);
             }
