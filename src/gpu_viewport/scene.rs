@@ -261,8 +261,17 @@ const GIZMO_HANDLE_RING_STROKE_PX: f32 = 1.5;
 const GIZMO_ROTATION_FADE_ARC_DEG: f32 = 30.0;
 /// How many screen segments sample each fading rotation arc (#1405).
 const GIZMO_ROTATION_FADE_ARC_SEGMENTS: usize = 20;
-/// How far off each side of the rotation handle its direction arrows sit (#1405), in px.
-const GIZMO_ROTATION_ARROW_OFFSET_PX: f32 = 11.0;
+/// How far off each side of the rotation handle its direction arrows sit (#1405/#1421), in px.
+/// Same stand-off as the Move translation arrows: gap from the disc plus the arrowhead.
+const GIZMO_ROTATION_ARROW_OFFSET_PX: f32 = GIZMO_ARROW_GAP_PX + GIZMO_ARROW_HEAD_PX;
+/// Radial line from the body centre to a rotation handle (#1419): thinner than the fade arcs.
+const GIZMO_ROTATION_RADIAL_STROKE_PX: f32 = 1.0;
+
+/// Original-position radial is dashed; the handle's current radial is solid (#1419).
+#[cfg(test)]
+fn rotation_radial_is_dashed(original: bool) -> bool {
+    original
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
@@ -609,6 +618,9 @@ pub struct MoveRotationGizmo {
     /// the plain ring gizmos (Free Move's three world rings, a selected text's turn ring).
     pub zero_dir: Option<Vec3>,
     pub angle_deg: Option<f32>,
+    /// True while this ring's handle is being dragged (#1420): draw the full thin
+    /// circle of rotation, then drop it on release.
+    pub dragging: bool,
 }
 
 /// The Revolve tool's arc gizmo (#262): an arc from the 0° direction (`zero_dir`) around
@@ -5243,7 +5255,24 @@ fn push_rotation_gizmo(
     let handle_pos = gizmo.center + handle_dir * gizmo.radius;
     let stroke = if gizmo.hovered { 3.0 } else { 1.5 };
 
+    // While the handle is held, the full thin circle of rotation (#1420).
+    if gizmo.dragging {
+        push_rotation_full_circle(
+            mesh,
+            gizmo.center,
+            n,
+            start_dir,
+            gizmo.radius,
+            gizmo.color.gamma_multiply(0.7),
+            1.0,
+            cam,
+            viewport,
+            view_proj,
+        );
+    }
+
     // The fading arcs either side of the handle, drawn first so a live sweep stays on top.
+    // Pulling off 0° drops the fade on the unused side (#1420).
     push_rotation_fade_arcs(
         mesh,
         gizmo.center,
@@ -5252,43 +5281,43 @@ fn push_rotation_gizmo(
         gizmo.radius,
         gizmo.color,
         stroke,
+        crate::extrude::rotation_fade_arc_signs(angle_deg),
         cam,
         viewport,
         view_proj,
     );
 
-    // The 0° reference radial and, once turned off 0, the yellow sweep up to the handle — both
-    // painted on top of the fading arcs.
-    if gizmo.zero_dir.is_some() && gizmo.angle_deg.is_some() {
-        mesh.push_line_segment(
+    // The 0° reference radial (dashed) and, once turned off 0, the yellow sweep plus the
+    // solid handle radial — both painted on top of the fading arcs (#1419).
+    if gizmo.zero_dir.is_some() && gizmo.angle_deg.is_some() && angle_deg.abs() > 1e-3 {
+        let original = gizmo.center + start_dir * gizmo.radius;
+        mesh.push_dashed_line_segment(
             gizmo.center,
-            gizmo.center + start_dir * gizmo.radius,
+            original,
             gizmo.color,
-            1.5,
+            GIZMO_ROTATION_RADIAL_STROKE_PX,
             cam,
             viewport,
             view_proj,
         );
-        if angle_deg.abs() > 1e-3 {
-            let arc = revolve_arc_points(
-                gizmo.center,
-                n,
-                start_dir,
-                gizmo.radius,
-                angle_deg,
-                64,
-            );
-            mesh.push_polyline_segment(&arc, MOVE_ROTATION_ARC, 2.5, cam, viewport, view_proj);
-            mesh.push_line_segment(
-                gizmo.center,
-                handle_pos,
-                gizmo.color,
-                2.0,
-                cam,
-                viewport,
-                view_proj,
-            );
-        }
+        let arc = revolve_arc_points(
+            gizmo.center,
+            n,
+            start_dir,
+            gizmo.radius,
+            angle_deg,
+            64,
+        );
+        mesh.push_polyline_segment(&arc, MOVE_ROTATION_ARC, 2.5, cam, viewport, view_proj);
+        mesh.push_line_segment(
+            gizmo.center,
+            handle_pos,
+            gizmo.color,
+            GIZMO_ROTATION_RADIAL_STROKE_PX,
+            cam,
+            viewport,
+            view_proj,
+        );
     }
 
     // One direction arrow on each side of the handle, pointing along an arc.
@@ -5315,11 +5344,52 @@ fn push_rotation_gizmo(
         }
     }
 
+    if gizmo.hovered {
+        push_gizmo_handle_hover(
+            mesh,
+            handle_pos,
+            GIZMO_HANDLE_HOVER_RGBA,
+            cam,
+            viewport,
+            view_proj,
+            project,
+        );
+    }
     push_gizmo_handle(mesh, handle_pos, gizmo.color, cam, viewport, view_proj, project);
 }
 
-/// Two arcs through `±GIZMO_ROTATION_FADE_ARC_DEG` from `handle_dir`, fading from `color`
-/// at the handle out to transparent at their tips (#1405).
+/// Full thin circle of rotation, shown only while a handle is held (#1420).
+#[allow(clippy::too_many_arguments)]
+fn push_rotation_full_circle(
+    mesh: &mut SceneMesh<'_>,
+    center: Vec3,
+    axis: Vec3,
+    start_dir: Vec3,
+    radius: f32,
+    color: Color32,
+    stroke_px: f32,
+    cam: &Camera,
+    viewport: UiRect,
+    view_proj: &Mat4,
+) {
+    let n = axis.normalize_or_zero();
+    let dir0 = start_dir.normalize_or_zero();
+    if n == Vec3::ZERO || dir0 == Vec3::ZERO || radius <= 0.0 {
+        return;
+    }
+    let mut prev: Option<Vec3> = None;
+    for i in 0..=GIZMO_ANGLE_CIRCLE_SEGMENTS {
+        let a = i as f32 / GIZMO_ANGLE_CIRCLE_SEGMENTS as f32 * std::f32::consts::TAU;
+        let pt = center + (glam::Quat::from_axis_angle(n, a) * dir0) * radius;
+        if let Some(p0) = prev {
+            mesh.push_line_segment(p0, pt, color, stroke_px, cam, viewport, view_proj);
+        }
+        prev = Some(pt);
+    }
+}
+
+/// Arcs through `±GIZMO_ROTATION_FADE_ARC_DEG` from `handle_dir` along `signs`, fading
+/// from `color` at the handle out to transparent at their tips (#1405/#1420).
 #[allow(clippy::too_many_arguments)]
 fn push_rotation_fade_arcs(
     mesh: &mut SceneMesh<'_>,
@@ -5329,6 +5399,7 @@ fn push_rotation_fade_arcs(
     radius: f32,
     color: Color32,
     stroke_px: f32,
+    signs: &[f32],
     cam: &Camera,
     viewport: UiRect,
     view_proj: &Mat4,
@@ -5340,7 +5411,7 @@ fn push_rotation_fade_arcs(
     }
     let half = GIZMO_ROTATION_FADE_ARC_DEG.to_radians();
     let segments = GIZMO_ROTATION_FADE_ARC_SEGMENTS.max(1);
-    for sign in [1.0f32, -1.0] {
+    for &sign in signs {
         let mut prev: Option<Vec3> = None;
         for i in 0..=segments {
             let frac = i as f32 / segments as f32;
@@ -5891,6 +5962,23 @@ mod tests {
 
     fn test_viewport() -> UiRect {
         UiRect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0))
+    }
+
+    /// #1421: rotation-handle arrows stand off as far as the Move translation arrows.
+    #[test]
+    fn rotation_arrow_offset_matches_translation_gizmo() {
+        assert_eq!(
+            GIZMO_ROTATION_ARROW_OFFSET_PX,
+            GIZMO_ARROW_GAP_PX + GIZMO_ARROW_HEAD_PX
+        );
+    }
+
+    /// #1419: the original radial is dashed and both radials are thinner than the fade stroke.
+    #[test]
+    fn rotation_radials_are_thin_and_original_is_dashed() {
+        assert!(rotation_radial_is_dashed(true));
+        assert!(!rotation_radial_is_dashed(false));
+        assert!(GIZMO_ROTATION_RADIAL_STROKE_PX < 1.5);
     }
 
     /// #1247: multi-turn revolve angles must not feed the full multi-turn into a fixed

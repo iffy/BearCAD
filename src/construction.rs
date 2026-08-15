@@ -1105,6 +1105,19 @@ pub enum AxisGizmoHit {
     Angle,
 }
 
+/// Hit-test a rotation gizmo's disc handle at a screen position (#1418). The fade arcs
+/// and the rest of the ring are not grab targets.
+pub fn rotation_handle_hit(
+    screen: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    handle: Vec3,
+) -> bool {
+    let Some(sp) = project(handle) else {
+        return false;
+    };
+    (screen - sp).length() <= crate::touch::hit(AXIS_GIZMO_HANDLE_HIT_RADIUS_PX)
+}
+
 /// Hit-test the offset arrow handle at a screen position.
 pub fn offset_gizmo_hit(
     screen: egui::Pos2,
@@ -5247,6 +5260,18 @@ mod tests {
                 "deg={deg} got={angle}"
             );
         }
+    }
+
+    /// #1418: rotation gizmos grab only at the handle disc, not along the ring.
+    #[test]
+    fn rotation_handle_hit_is_the_disc_not_the_ring() {
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let handle = Vec3::new(20.0, 0.0, 0.0);
+        assert!(rotation_handle_hit(Pos2::new(20.0, 0.0), &project, handle));
+        assert!(rotation_handle_hit(Pos2::new(22.0, 1.0), &project, handle));
+        // A point on the same circle, well away from the handle, is not a grab.
+        assert!(!rotation_handle_hit(Pos2::new(0.0, 20.0), &project, handle));
+        assert!(!rotation_handle_hit(Pos2::new(14.1, 14.1), &project, handle));
     }
 
     #[test]

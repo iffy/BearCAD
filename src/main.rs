@@ -132,7 +132,7 @@ use construction::{
     axis_offset_handle, draw_axis_plane_gizmo, draw_circle_face_highlight, draw_offset_gizmo,
     draw_polygon_face_highlight, draw_quad_face_highlight, draw_region_face_highlight,
     nearest_sketch_line_in_sketch, nearest_sketch_point_in_sketch, offset_from_normal_drag,
-    offset_gizmo_hit, offset_handle,
+    offset_gizmo_hit, offset_handle, rotation_handle_hit,
     parent_from_pick_target, plane_corners, point_world_position, preview_plane_edit_dependents,
     resolve_pick_target, scene_element_from_pick, AxisGizmoDrag,
     AxisGizmoHit, PlaneDim, PlaneReference, AXIS_GIZMO_HANDLE_HIT_RADIUS_PX,
@@ -8658,6 +8658,30 @@ impl App {
         Some(extrude::free_move_rotation_ring(min + shift, max + shift))
     }
 
+    /// Free-move rotation rings with object-equator axes and handle positions (#1413/#1422).
+    fn free_move_rotation_rings(&self) -> Option<[extrude::FreeMoveRotationRing; 3]> {
+        let cm = self.state.creating_move.as_ref()?;
+        if cm.translate_mode != crate::model::MoveTranslateMode::Free {
+            return None;
+        }
+        if cm.targets.is_empty() && cm.plane_targets.is_empty() {
+            return None;
+        }
+        let (min, max) =
+            extrude::free_move_targets_bounds(&self.state.doc, &cm.targets, &cm.plane_targets)?;
+        let mm = |s: &str| crate::value::eval_length_mm_in_doc(s, &self.state.doc).unwrap_or(0.0);
+        let shift = Vec3::new(mm(&cm.tx), mm(&cm.ty), mm(&cm.tz));
+        extrude::free_move_rotation_rings(
+            &self.state.doc,
+            min,
+            max,
+            shift,
+            &cm.rx,
+            &cm.ry,
+            &cm.rz,
+        )
+    }
+
     /// Small outward display offset so Free Move face handles sit just outside the AABB
     /// (#1233), independent of the live translation amount.
     fn free_move_handle_display_offset() -> f32 {
@@ -8983,7 +9007,7 @@ impl App {
 
         // Face Snap's spin ring (#1077): the same grab-and-drag as the text ring, writing the
         // Turn field live so the typed value and the drag are the one control.
-        if let Some((center, axis, radius, ..)) = self.face_spin_ring_geom() {
+        if let Some((center, axis, radius, zero_dir, angle_deg)) = self.face_spin_ring_geom() {
             let cursor_angle =
                 |pp: egui::Pos2| project(center).map(|c| (pp.y - c.y).atan2(pp.x - c.x));
             let sign = if axis.dot(cam.eye() - center) > 0.0 { -1.0 } else { 1.0 };
@@ -9013,7 +9037,9 @@ impl App {
             }
             if ui.input(|i| i.pointer.primary_pressed()) {
                 if let Some(pp) = pointer_screen {
-                    if rotation_ring_hit(pp, &project, center, axis, radius) {
+                    // Handle only (#1418): the ring itself is not a grab target.
+                    let handle = face_spin_handle_pos(center, axis, radius, zero_dir, angle_deg);
+                    if rotation_handle_hit(pp, &project, handle) {
                         if let Some(angle) = cursor_angle(pp) {
                             let start_spin = self
                                 .state
@@ -9042,7 +9068,7 @@ impl App {
 
         // Free-move rotation rings (#1234): drag before translation so a ring grab isn't
         // stolen by a nearby face handle.
-        if let Some((center, radius)) = self.free_move_rotation_geom() {
+        if let Some((center, _)) = self.free_move_rotation_geom() {
             let cursor_angle =
                 |pp: egui::Pos2| project(center).map(|c| (pp.y - c.y).atan2(pp.x - c.x));
             if let Some(drag) = self.free_move_rotation_drag {
@@ -9075,17 +9101,22 @@ impl App {
             }
             if ui.input(|i| i.pointer.primary_pressed()) {
                 if let Some(pp) = pointer_screen {
-                    // Prefer the ring whose plane faces the camera (axis · view largest).
-                    let view = (cam.eye() - center).normalize_or_zero();
+                    // Grab only the handle discs (#1418) — the closest handle wins so
+                    // overlapping rings no longer steal the drag (red used to start blue).
+                    let rings = self.free_move_rotation_rings();
                     let mut best: Option<(usize, f32)> = None;
-                    for axis in 0..3 {
-                        let dir = extrude::free_move_axis_dir(axis);
-                        if !rotation_ring_hit(pp, project, center, dir, radius) {
-                            continue;
-                        }
-                        let face_on = dir.dot(view).abs();
-                        if best.is_none_or(|(_, s)| face_on > s) {
-                            best = Some((axis, face_on));
+                    if let Some(rings) = rings {
+                        for (axis, ring) in rings.iter().enumerate() {
+                            if !rotation_handle_hit(pp, project, ring.handle) {
+                                continue;
+                            }
+                            let Some(sp) = project(ring.handle) else {
+                                continue;
+                            };
+                            let dist = sp.distance(pp);
+                            if best.is_none_or(|(_, d)| dist < d) {
+                                best = Some((axis, dist));
+                            }
                         }
                     }
                     if let Some((axis, _)) = best {
@@ -18739,6 +18770,26 @@ fn build_gpu_dimension_labels(
 const SIDE_PANEL_IDS: &[&str] = &["tree", "parameters", "context"];
 
 /// True while the pointer is on a side-panel resize grip (don't override its cursor).
+/// World position of Face Snap's spin-gizmo handle (#1360/#1418).
+fn face_spin_handle_pos(
+    center: Vec3,
+    axis: Vec3,
+    radius: f32,
+    zero_dir: Option<Vec3>,
+    angle_deg: f32,
+) -> Vec3 {
+    let n = axis.normalize_or_zero();
+    let start = zero_dir
+        .map(|z| z.normalize_or_zero())
+        .filter(|z| *z != Vec3::ZERO)
+        .unwrap_or_else(|| {
+            let reference = if n.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
+            n.cross(reference).normalize_or_zero()
+        });
+    let handle_dir = glam::Quat::from_axis_angle(n, angle_deg.to_radians()) * start;
+    center + handle_dir * radius
+}
+
 /// Whether the cursor is near the Move rotation ring's projected circle (#216): sample the
 /// circle and test the cursor's distance to the projected polyline.
 fn rotation_ring_hit(
@@ -29896,66 +29947,37 @@ impl App {
         let mut move_rotation_gizmos: Vec<gpu_viewport::MoveRotationGizmo> = Vec::new();
         // The Face Snap turn gizmo's live angle, painted just above its handle (#1360).
         let mut move_turn_labels: Vec<(egui::Pos2, String, egui::Color32)> = Vec::new();
-        if let Some((center, radius)) = self.free_move_rotation_geom() {
-            let cm = self.state.creating_move.as_ref();
-            // The handles follow the preview (#1414): the whole set rotates by the live
-            // composed Free turn, so turning one ring sweeps the others along with the body.
-            let q =
-                cm.and_then(|cm| extrude::move_op_free_rotation_quat(
-                    &self.state.doc, &cm.rx, &cm.ry, &cm.rz,
-                ))
-                .unwrap_or(glam::Quat::IDENTITY);
-            for axis in 0..3 {
-                let dir = extrude::free_move_axis_dir(axis);
+        if let Some(rings) = self.free_move_rotation_rings() {
+            for (axis, ring) in rings.iter().enumerate() {
                 let hovered = self.free_move_rotation_drag.is_some_and(|d| d.axis == axis)
                     || (self.free_move_rotation_drag.is_none()
                         && pointer_screen.is_some_and(|pp| {
-                            rotation_ring_hit(pp, &project, center, dir, radius)
+                            rotation_handle_hit(pp, &project, ring.handle)
                         }));
-                // The turn this ring is mid-way through (signed, #1415).
-                let angle_deg = cm
-                    .map(|cm| {
-                        let expr = [&cm.rx, &cm.ry, &cm.rz][axis].as_str();
-                        if expr.trim().is_empty() {
-                            0.0
-                        } else {
-                            crate::value::eval_angle_rad_in_doc(expr, &self.state.doc)
-                                .unwrap_or(0.0)
-                                .to_degrees()
-                        }
-                    })
-                    .unwrap_or(0.0);
-                // The handle floats on a deterministic, non-overlapping reference (#1413),
-                // rotated to follow the preview: the ring's own angle is unwound here because
-                // the renderer re-applies it to place the handle exactly at `Q·base`.
-                let base = extrude::free_move_rotation_base_dir(axis);
-                let zero_dir = glam::Quat::from_axis_angle(dir, -angle_deg.to_radians()) * (q * base);
                 let color = [col::X_AXIS, col::Y_AXIS, col::Z_AXIS][axis];
                 move_rotation_gizmos.push(gpu_viewport::MoveRotationGizmo {
-                    center,
-                    axis: dir,
-                    radius,
+                    center: ring.center,
+                    axis: ring.axis,
+                    radius: ring.radius,
                     color,
                     hovered,
-                    zero_dir: Some(zero_dir),
-                    angle_deg: Some(angle_deg),
+                    zero_dir: Some(ring.zero_dir),
+                    angle_deg: Some(ring.angle_deg),
+                    dragging: self.free_move_rotation_drag.is_some_and(|d| d.axis == axis),
                 });
                 // The amount turned, above the ring's handle (#1360) — same as Face Snap.
-                if angle_deg.abs() > 1e-3 {
-                    // `Q·base` is where the renderer places the handle, so the label tracks it.
-                    let handle_dir = q * base;
-                    if let Some(sp) = project(center + handle_dir * radius) {
-                        move_turn_labels.push((sp, format!("{angle_deg:.0}°"), color));
+                if ring.angle_deg.abs() > 1e-3 {
+                    if let Some(sp) = project(ring.handle) {
+                        move_turn_labels.push((sp, format!("{:.0}°", ring.angle_deg), color));
                     }
                 }
             }
         } else if let Some((center, axis, radius, zero_dir, angle_deg)) =
             self.face_spin_ring_geom()
         {
+            let handle = face_spin_handle_pos(center, axis, radius, zero_dir, angle_deg);
             let hovered = self.face_spin_drag.is_some()
-                || pointer_screen.is_some_and(|pp| {
-                    rotation_ring_hit(pp, &project, center, axis, radius)
-                });
+                || pointer_screen.is_some_and(|pp| rotation_handle_hit(pp, &project, handle));
             move_rotation_gizmos.push(gpu_viewport::MoveRotationGizmo {
                 center,
                 axis,
@@ -29964,6 +29986,7 @@ impl App {
                 hovered,
                 zero_dir,
                 angle_deg: zero_dir.and_then(|_| Some(angle_deg)),
+                dragging: self.face_spin_drag.is_some(),
             });
             // The amount turned, above the handle (#1360) — only while there is a turn to show.
             if angle_deg.abs() > 1e-3 {
@@ -29993,6 +30016,7 @@ impl App {
                     hovered,
                     zero_dir: None,
                     angle_deg: None,
+                    dragging: self.text_rotation_drag.is_some(),
                 });
             }
         }
