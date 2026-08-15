@@ -8603,6 +8603,15 @@ impl App {
     /// Move tool (#176/#183): click bodies to toggle them into the move set; clicking a
     /// line picks it as the rotation axis. Enter commits.
     #[allow(clippy::too_many_arguments)]
+    /// Whether Free Move's rotation/translation handles are on screen (#1423): Free
+    /// mode with at least one body or plane to move.
+    fn free_move_gizmos_live(&self) -> bool {
+        self.state.creating_move.as_ref().is_some_and(|cm| {
+            cm.translate_mode == crate::model::MoveTranslateMode::Free
+                && (!cm.targets.is_empty() || !cm.plane_targets.is_empty())
+        })
+    }
+
     /// Free Move translation-arrow geometry (#215/#1233): one handle on each face of the
     /// selection's tight AABB. Each entry is `(handle, gizmo name, current translation mm
     /// along the positive world axis)`. `None` when nothing is picked.
@@ -8612,10 +8621,7 @@ impl App {
         let cm = self.state.creating_move.as_ref()?;
         // Only Free translation has X/Y/Z to drag (#648); a snap's offset comes from its
         // two picked points.
-        if cm.targets.is_empty() && cm.plane_targets.is_empty() {
-            return None;
-        }
-        if cm.translate_mode != crate::model::MoveTranslateMode::Free {
+        if !self.free_move_gizmos_live() {
             return None;
         }
         let doc = &self.state.doc;
@@ -8639,13 +8645,10 @@ impl App {
     /// Free Move rotation-ring geometry (#1234): centre, radius, and the three world axes.
     /// `None` outside Free mode or with no extent.
     fn free_move_rotation_geom(&self) -> Option<(Vec3, f32)> {
+        if !self.free_move_gizmos_live() {
+            return None;
+        }
         let cm = self.state.creating_move.as_ref()?;
-        if cm.translate_mode != crate::model::MoveTranslateMode::Free {
-            return None;
-        }
-        if cm.targets.is_empty() && cm.plane_targets.is_empty() {
-            return None;
-        }
         let (min, max) =
             extrude::free_move_targets_bounds(&self.state.doc, &cm.targets, &cm.plane_targets)?;
         // The rings ride the preview too (#1379): shift the centre by the live Free
@@ -9194,6 +9197,12 @@ impl App {
             return;
         };
         let focus = self.move_focus();
+        // Free Move with gizmos up (#1423): only the rotation/translation handles
+        // (handled above) are selectable. The optional Reference Point picker still
+        // takes a click; everything else — construction planes, extra bodies — does not.
+        if self.free_move_gizmos_live() && focus != MoveFocus::StartPointA {
+            return;
+        }
         // Point pick (#649/#650/#651): the focused picker takes a body corner or edge midpoint
         // instead of toggling a body. Start point A must sit on a moving body and end point A
         // target on a stationary one; the rotation point may be either. Free mode labels the
@@ -19545,6 +19554,9 @@ enum MovePickHover {
     MateFace,
     /// Face Snap stage two: only the candidate points on the face already chosen.
     MateFacePoint(crate::model::MateRef),
+    /// Free Move with gizmos up (#1423): only rotation/translation handles are live,
+    /// so scene hover stands down entirely.
+    Gizmos,
 }
 
 /// The face's candidate points and the one nearest the cursor (#1083), within the same hit
@@ -20040,6 +20052,10 @@ fn resolve_viewport_hover_highlight(
         // their own; the generic corner/edge/face hover would light up unpickable
         // geometry, so it stands down entirely.
         Tool::Move if move_pick == MovePickHover::EndB && sketch_session.is_none() => None,
+        // Free Move (#1423): only the rotation/translation handles take the pointer.
+        // The Bodies picker also accepts construction planes, so without this arm
+        // the datum plane behind the gizmos lights up as if a click would take it.
+        Tool::Move if move_pick == MovePickHover::Gizmos && sketch_session.is_none() => None,
         // The body-set tools (#227) and Repeat's axis (#643) used to be two hand-written arms
         // here, and between them they got the *secondary* pickers wrong: Slice's cutters, and
         // Combine's B side, hovered exactly like their tools' body sets because the match only
@@ -28985,19 +29001,24 @@ impl App {
             suppress_hover_highlight,
             self.state.tool,
             sketch_session,
-            self.mate_pick_hover().unwrap_or_else(|| match self.move_focus() {
-                MoveFocus::Bodies => MovePickHover::Bodies,
-                MoveFocus::StartPointA
-                | MoveFocus::EndPointA
-                | MoveFocus::StartPointB
-                | MoveFocus::StartPointC
-                | MoveFocus::EndPointC => {
-                    MovePickHover::Point
+            self.mate_pick_hover().unwrap_or_else(|| {
+                // Free Move with gizmos up (#1423): only the rotation/translation handles
+                // are live. The optional Reference Point picker still hovers points.
+                if self.free_move_gizmos_live() && self.move_focus() != MoveFocus::StartPointA {
+                    return MovePickHover::Gizmos;
                 }
-                // End point B takes only the sphere candidates (#744), which mark and
-                // hover-glow on their own — generic corner/edge hover would light up
-                // unpickable geometry.
-                MoveFocus::EndPointB => MovePickHover::EndB,
+                match self.move_focus() {
+                    MoveFocus::Bodies => MovePickHover::Bodies,
+                    MoveFocus::StartPointA
+                    | MoveFocus::EndPointA
+                    | MoveFocus::StartPointB
+                    | MoveFocus::StartPointC
+                    | MoveFocus::EndPointC => MovePickHover::Point,
+                    // End point B takes only the sphere candidates (#744), which mark and
+                    // hover-glow on their own — generic corner/edge hover would light up
+                    // unpickable geometry.
+                    MoveFocus::EndPointB => MovePickHover::EndB,
+                }
             }),
             self.state.creating_plane.is_some(),
             self.state.editing_committed_dim.is_some(),
@@ -36231,6 +36252,105 @@ mod tests {
                 Some(gpu_viewport::ViewportHoverHighlight::Element(SceneElement::Body(b))) if b == bkey(0)
             ),
             "the Bodies picker hovers whole bodies, got {on_body:?}"
+        );
+    }
+
+    /// #1423: Free Move with gizmos up must not hover-highlight bodies or construction
+    /// planes — only the rotation/translation handles are live.
+    #[test]
+    fn free_move_gizmos_do_not_hover_scene_objects() {
+        use super::gpu_viewport;
+        use super::resolve_viewport_hover_highlight;
+        use crate::hierarchy::SceneElement;
+
+        let mut doc = crate::model::Document::default();
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
+            triangles: vec![[
+                glam::Vec3::new(-20.0, -20.0, 0.0),
+                glam::Vec3::new(20.0, -20.0, 0.0),
+                glam::Vec3::new(0.0, 20.0, 0.0),
+            ]],
+            source_name: "tri".to_string(),
+            step_bytes: None,
+        });
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Imported(mesh),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+
+        let cam = crate::camera::Camera::default();
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let vp = cam.view_proj(viewport);
+        let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
+        let pickers = test_pickers(
+            crate::element_picker::ElementFilter::kinds(&[
+                crate::element_picker::ElementKind::Body,
+                crate::element_picker::ElementKind::Plane,
+            ]),
+            context::PickerTarget::MoveTargets,
+            crate::element_picker::PickLimit::Infinite,
+        );
+        let hover = |cursor: egui::Pos2| {
+            resolve_viewport_hover_highlight(
+                false,
+                crate::actions::Tool::Move,
+                None,
+                MovePickHover::Gizmos,
+                false,
+                false,
+                false,
+                false,
+                Some(cursor),
+                &cam,
+                viewport,
+                &vp,
+                &doc,
+                &project,
+                None,
+                &pickers,
+            )
+        };
+
+        let on_body = hover(project(glam::Vec3::new(0.0, -20.0 / 3.0, 0.0)).unwrap());
+        assert!(
+            on_body.is_none(),
+            "Free Move gizmos must not hover the body, got {on_body:?}"
+        );
+        // Interior of the XY datum (gap 5..105), away from the triangle.
+        let on_plane = hover(project(glam::Vec3::new(70.0, 70.0, 0.0)).unwrap());
+        assert!(
+            on_plane.is_none(),
+            "Free Move gizmos must not hover a construction plane, got {on_plane:?}"
+        );
+        // The same cursor still hovers a plane when the Bodies picker is armed.
+        let plane_as_body = resolve_viewport_hover_highlight(
+            false,
+            crate::actions::Tool::Move,
+            None,
+            MovePickHover::Bodies,
+            false,
+            false,
+            false,
+            false,
+            Some(project(glam::Vec3::new(70.0, 70.0, 0.0)).unwrap()),
+            &cam,
+            viewport,
+            &vp,
+            &doc,
+            &project,
+            None,
+            &pickers,
+        );
+        assert!(
+            matches!(
+                plane_as_body,
+                Some(gpu_viewport::ViewportHoverHighlight::Element(
+                    SceneElement::ConstructionPlane(_)
+                ))
+            ),
+            "Bodies-picker hover still lights a plane, got {plane_as_body:?}"
         );
     }
 
