@@ -1019,6 +1019,129 @@ mod tests {
         );
     }
 
+    /// Release `.app` / `.dmg` must be Developer ID signed, notarized, and stapled
+    /// when packaging on CI. Local builds without a cert still ad-hoc sign.
+    #[test]
+    fn macos_release_is_developer_id_signed_notarized_and_stapled() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let sign = std::fs::read_to_string(root.join("scripts/sign-macos.sh"))
+            .expect("scripts/sign-macos.sh must exist");
+        for needle in [
+            "Developer ID Application",
+            "notarytool",
+            "stapler staple",
+            "--options runtime",
+            "APPLE_CODESIGN_IDENTITY",
+            "APPLE_API_KEY_ID",
+            "APPLE_API_ISSUER_ID",
+            "APPLE_API_KEY_P8",
+            "APPLE_DEVELOPER_ID_APPLICATION_P12",
+            "BEARCAD_REQUIRE_SIGN",
+            "BEARCAD_REQUIRE_NOTARIZE",
+        ] {
+            assert!(
+                sign.contains(needle),
+                "sign-macos.sh must mention {needle}"
+            );
+        }
+
+        let pkg = std::fs::read_to_string(root.join("scripts/package-release.sh"))
+            .expect("package-release.sh");
+        assert!(
+            pkg.contains("sign-macos.sh"),
+            "package-release.sh must invoke scripts/sign-macos.sh"
+        );
+        assert!(
+            !pkg.contains("codesign --force --deep --sign -"),
+            "package-release.sh must not ad-hoc-sign the assembled app itself; sign-macos.sh owns signing"
+        );
+
+        let entitlements = root.join("macos/BearCAD.entitlements");
+        assert!(
+            entitlements.is_file(),
+            "macos/BearCAD.entitlements must exist for hardened-runtime signing"
+        );
+
+        let ci = std::fs::read_to_string(root.join(".github/workflows/ci.yml"))
+            .expect("ci.yml");
+        for needle in [
+            "APPLE_DEVELOPER_ID_APPLICATION_P12",
+            "APPLE_DEVELOPER_ID_APPLICATION_PASSWORD",
+            "APPLE_DEVELOPER_ID_INSTALLER_P12",
+            "APPLE_DEVELOPER_ID_INSTALLER_PASSWORD",
+            "APPLE_CODESIGN_IDENTITY",
+            "APPLE_API_KEY_ID",
+            "APPLE_API_ISSUER_ID",
+            "APPLE_API_KEY_P8",
+            "BEARCAD_REQUIRE_SIGN",
+            "BEARCAD_REQUIRE_NOTARIZE",
+            "sign-macos.sh",
+        ] {
+            assert!(
+                ci.contains(needle),
+                "ci.yml must wire {needle} into the macOS release job"
+            );
+        }
+    }
+
+    /// Local/CI-without-cert path: `sign-macos.sh sign-app` ad-hoc signs a bundle.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sign_macos_sh_adhoc_signs_a_dummy_app() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let tmp = std::env::temp_dir().join(format!(
+            "bearcad-sign-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let app = tmp.join("BearCAD.app");
+        std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        std::fs::write(
+            app.join("Contents/MacOS/bearcad"),
+            b"#!/bin/sh\necho ok\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let bin = app.join("Contents/MacOS/bearcad");
+            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&bin, perms).unwrap();
+        }
+        std::fs::write(
+            app.join("Contents/Info.plist"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleExecutable</key><string>bearcad</string>
+  <key>CFBundleIdentifier</key><string>com.bearcad.app.test</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+</dict></plist>
+"#,
+        )
+        .unwrap();
+
+        let status = std::process::Command::new(root.join("scripts/sign-macos.sh"))
+            .args(["sign-app"])
+            .arg(&app)
+            .env("BEARCAD_FORCE_ADHOC", "1")
+            .env_remove("APPLE_CODESIGN_IDENTITY")
+            .env_remove("BEARCAD_REQUIRE_SIGN")
+            .env_remove("BEARCAD_REQUIRE_NOTARIZE")
+            .env_remove("APPLE_API_KEY_P8")
+            .status()
+            .expect("run sign-macos.sh");
+        assert!(status.success(), "sign-macos.sh sign-app failed: {status}");
+        let verify = std::process::Command::new("codesign")
+            .args(["--verify", "--deep", "--strict"])
+            .arg(&app)
+            .status()
+            .expect("codesign --verify");
+        assert!(verify.success(), "ad-hoc signature did not verify");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     #[test]
     fn queue_and_drain_pending_open_paths() {
         // Isolate from other tests: drain first.

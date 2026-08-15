@@ -30,14 +30,17 @@ be bundled with the distributable). The executable launches the GUI by default a
 as a CLI when given a subcommand (see §9).
 
 **macOS packaging:** the `.app` bundle inside the distributed `.dmg` must be code-signed.
-Absent a paid Apple Developer certificate, it must at minimum be **ad-hoc signed**
-(`codesign --force --deep --sign -`) so that a quarantined download is not rejected by
-Gatekeeper as *"'BearCAD' is damaged and can't be opened"* (the message macOS shows for an
-unsigned or signature-invalidated bundle on Apple Silicon). The signature must be applied to
-the fully assembled bundle (after the executable, icons, `Info.plist`, and PlugIns are in
-place) and verified with `codesign --verify --deep --strict`. The `.dmg` volume must also
-contain an `Applications` symlink (→ `/Applications`) alongside the app so the user can
-drag `BearCAD.app` straight into Applications from the mounted volume. The `Info.plist`
+Release builds (CI) sign the assembled app and the `.dmg` with a **Developer ID
+Application** identity, hardened runtime (`codesign --options runtime`), then **notarize**
+both with `notarytool` and **staple** the tickets (`stapler staple`). Local packaging
+without a Developer ID certificate **ad-hoc signs** the app so a quarantined download is
+not rejected by Gatekeeper as *"'BearCAD' is damaged and can't be opened"* (the message
+macOS shows for an unsigned or signature-invalidated bundle on Apple Silicon). Sign inside
+out (QuickLook `.appex` first, then the app, then the `.dmg`) after the executable, icons,
+`Info.plist`, and PlugIns are in place, and verify with `codesign --verify --deep --strict`.
+The `.dmg` volume must also contain an `Applications` symlink (→ `/Applications`)
+alongside the app so the user can drag `BearCAD.app` straight into Applications from the
+mounted volume. The `Info.plist`
 must declare `.bearcad` as a document type (`CFBundleDocumentTypes` +
 `UTExportedTypeDeclarations` for UTI `com.bearcad.document`) so double-click *launches*
 BearCAD. The path is not argv: AppKit delivers `application:openURLs:` after

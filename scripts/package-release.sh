@@ -132,17 +132,10 @@ EOF
   mkdir -p "${app_dir}/Contents/PlugIns"
   bash scripts/build-macos-quicklook.sh "${app_dir}/Contents/PlugIns/BearCADQuickLook.appex"
 
-  # Ad-hoc code-sign the bundle. Apple Silicon requires every executable to carry
-  # at least an ad-hoc signature; an unsigned (or signature-invalidated) bundle that
-  # has been quarantined after download is reported by Gatekeeper as "damaged and
-  # can't be opened". Signing the assembled bundle deeply produces a valid signature
-  # so the app launches (after the user clears quarantine / right-click → Open).
-  # Sign nested PlugIns first, then the outer app (deep sign can re-seal children).
-  codesign --force --sign - --timestamp=none \
-    --entitlements macos/quicklook/BearCADQuickLook.entitlements \
-    "${app_dir}/Contents/PlugIns/BearCADQuickLook.appex"
-  codesign --force --deep --sign - --timestamp=none "$app_dir"
-  codesign --verify --deep --strict "$app_dir"
+  # Developer ID + notarize + staple when a signing identity is available
+  # (CI); otherwise ad-hoc sign so Apple Silicon will still launch the bundle.
+  # See scripts/sign-macos.sh.
+  bash scripts/sign-macos.sh sign-app "$app_dir"
 
   # Stage the .dmg contents: the app plus an /Applications symlink so the user can
   # drag BearCAD.app straight into Applications from the mounted volume.
@@ -154,6 +147,7 @@ EOF
 
   rm -f "$dmg"
   hdiutil create -volname "$app_name" -srcfolder "$stage" -ov -format UDZO "$dmg"
+  bash scripts/sign-macos.sh sign-dmg "$dmg"
   echo "Created $dmg"
 }
 

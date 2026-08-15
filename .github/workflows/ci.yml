@@ -358,9 +358,30 @@ jobs:
         if: matrix.os_slug == 'linux-x86_64'
         run: bash scripts/package-release.sh linux
 
+      - name: Import Apple signing certificates
+        if: matrix.os_slug == 'macos-aarch64'
+        env:
+          BEARCAD_REQUIRE_SIGN: "1"
+          APPLE_DEVELOPER_ID_APPLICATION_P12: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_P12 }}
+          APPLE_DEVELOPER_ID_APPLICATION_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_PASSWORD }}
+          APPLE_DEVELOPER_ID_INSTALLER_P12: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_P12 }}
+          APPLE_DEVELOPER_ID_INSTALLER_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_PASSWORD }}
+        run: bash scripts/sign-macos.sh import-keychain
+
       - name: Package macOS release
         if: matrix.os_slug == 'macos-aarch64'
+        env:
+          BEARCAD_REQUIRE_SIGN: "1"
+          BEARCAD_REQUIRE_NOTARIZE: "1"
+          APPLE_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
         run: bash scripts/package-release.sh macos
+
+      - name: Delete signing keychain
+        if: always() && matrix.os_slug == 'macos-aarch64'
+        run: bash scripts/sign-macos.sh delete-keychain
 
       - name: Package Windows release
         if: matrix.os_slug == 'windows-x86_64'
