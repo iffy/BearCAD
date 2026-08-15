@@ -1688,6 +1688,119 @@ pub fn move_face_snap_rotation(
     Some(glam::Mat3::from_axis_angle(to, spin) * align)
 }
 
+/// Face Snap spin-gizmo 0° radial (#1426): a world-axis direction in the ring plane.
+///
+/// `hint` is the incoming direction (start → mate, projected onto the plane) used only to
+/// pick which of the in-plane axes — and which sign — the handle sits on. Without a hint
+/// the first available +axis wins (X, then Y, then Z).
+pub fn face_spin_zero_dir(axis: Vec3, hint: Option<Vec3>) -> Vec3 {
+    let n = axis.normalize_or_zero();
+    if n == Vec3::ZERO {
+        return Vec3::ZERO;
+    }
+    let hint_in_plane = hint
+        .map(|h| (h - n * n.dot(h)).normalize_or_zero())
+        .filter(|h| *h != Vec3::ZERO);
+    let axes = [Vec3::X, Vec3::NEG_X, Vec3::Y, Vec3::NEG_Y, Vec3::Z, Vec3::NEG_Z];
+    let mut best = Vec3::ZERO;
+    let mut best_score = f32::NEG_INFINITY;
+    for a in axes {
+        let radial = (a - n * n.dot(a)).normalize_or_zero();
+        if radial == Vec3::ZERO {
+            continue;
+        }
+        // Longest in-plane projection is the most "axis-like"; a hint picks the side.
+        let in_plane = (a - n * n.dot(a)).length();
+        let align = hint_in_plane.map(|h| radial.dot(h)).unwrap_or(0.0);
+        let score = align * 2.0 + in_plane;
+        if score > best_score {
+            best_score = score;
+            best = radial;
+        }
+    }
+    if best == Vec3::ZERO {
+        let reference = if n.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
+        n.cross(reference).normalize_or_zero()
+    } else {
+        best
+    }
+}
+
+/// Samples along the Face Snap A→A connector (#1427/#1428). Dense enough that the cubic
+/// reads as a smooth curve rather than a chain of chords.
+pub const FACE_SNAP_CONNECTOR_SEGMENTS: usize = 64;
+
+/// Cubic-bezier samples from `start` to `end` that leave along `start_normal` and arrive
+/// from outside along `end_normal` — the yellow line comes out of both faces, even when
+/// there is no extra turn (#1427) and without visible corners (#1428).
+pub fn face_snap_connector_points(
+    start: Vec3,
+    end: Vec3,
+    start_normal: Vec3,
+    end_normal: Vec3,
+) -> Vec<Vec3> {
+    let dist = (end - start).length();
+    if dist < 1e-6 {
+        return vec![start, end];
+    }
+    let sn = start_normal.normalize_or_zero();
+    let en = end_normal.normalize_or_zero();
+    if sn == Vec3::ZERO && en == Vec3::ZERO {
+        return vec![start, end];
+    }
+    let handle = dist * 0.35;
+    let along = (end - start).normalize_or_zero();
+    let c1 = start + if sn == Vec3::ZERO { along } else { sn } * handle;
+    let c2 = end + if en == Vec3::ZERO { -along } else { en } * handle;
+    (0..=FACE_SNAP_CONNECTOR_SEGMENTS)
+        .map(|i| {
+            let t = i as f32 / FACE_SNAP_CONNECTOR_SEGMENTS as f32;
+            cubic_bezier3(start, c1, c2, end, t)
+        })
+        .collect()
+}
+
+fn cubic_bezier3(p0: Vec3, c1: Vec3, c2: Vec3, p3: Vec3, t: f32) -> Vec3 {
+    let u = 1.0 - t;
+    p0 * (u * u * u) + c1 * (3.0 * u * u * t) + c2 * (3.0 * u * t * t) + p3 * (t * t * t)
+}
+
+/// Face Snap spin ring (#1077/#1426): centred on the mate point, axis along the target
+/// face normal. `zero_dir` is the world-axis radial the handle sits on at 0°.
+///
+/// Returns `(center, axis, radius, zero_dir, angle_deg)`. `None` until both sides are
+/// faces that still resolve.
+pub fn face_spin_ring(
+    doc: &Document,
+    start: &crate::model::MovePointRef,
+    end: &crate::model::MovePointRef,
+    targets: &[crate::model::BodyKey],
+    face_spin: &str,
+) -> Option<(Vec3, Vec3, f32, Vec3, f32)> {
+    let axis = move_point_face_normal(doc, end)?;
+    // Both sides must be face points for the ring to be meaningful.
+    move_point_face_normal(doc, start)?;
+    let center = move_point_world(doc, end)?;
+    let start_world = move_point_world(doc, start)?;
+    let n = axis.normalize_or_zero();
+    let hint = if n == Vec3::ZERO {
+        None
+    } else {
+        Some(start_world - center)
+    };
+    let zero_dir = face_spin_zero_dir(axis, hint);
+    let angle_deg = crate::value::eval_angle_rad_in_doc(face_spin, doc)
+        .map(|rad| rad.to_degrees())
+        .unwrap_or(0.0);
+    let mut reach: f32 = 0.0;
+    for &body in targets {
+        if let Some((lo, hi)) = body_solid_mesh(doc, body).and_then(|m| m.bounds()) {
+            reach = reach.max((hi - lo).length() * 0.5);
+        }
+    }
+    Some((center, axis, reach.max(5.0), zero_dir, angle_deg))
+}
+
 /// Free mode's typed turns as one rotation (#1076): X, then Y, then Z, about the world axes.
 /// `None` when nothing is typed (so the caller can skip the pivot work) or an expression
 /// doesn't evaluate.
@@ -14872,6 +14985,103 @@ mod tests {
         // still falls back to the mesh-bevel path.
         doc.bodies.values_mut().nth(0).unwrap().source = crate::model::BodySource::Solid { base: None, add: vec![xkey(0)], cut: vec![] };
         assert_eq!(kernel_fallback_cut_warning(&doc), None);
+    }
+
+    /// #1426: Face Snap's spin handle at 0° sits on a world axis in the ring plane, not
+    /// along the diagonal toward the moving part.
+    #[test]
+    fn face_spin_zero_dir_is_a_world_axis_in_the_ring_plane() {
+        // A Z-normal landing face: 0° must be ±X or ±Y, never the incoming diagonal.
+        let hint = Vec3::new(-2.0, 1.0, 0.0);
+        let zero = face_spin_zero_dir(Vec3::Z, Some(hint));
+        assert!((zero.length() - 1.0).abs() < 1e-5, "unit radial, got {zero}");
+        assert!(zero.z.abs() < 1e-5, "in the ring plane: {zero}");
+        let axis_aligned = zero.x.abs() < 1e-5 || zero.y.abs() < 1e-5;
+        assert!(axis_aligned, "0° should lie on a world axis, got {zero}");
+        // Prefer the axis on the incoming side (hint is mostly −X).
+        assert!(zero.x < 0.0, "same half as the incoming hint: {zero}");
+
+        // A Y-normal face: 0° is ±X or ±Z.
+        let zero = face_spin_zero_dir(Vec3::Y, Some(Vec3::X));
+        assert!(zero.y.abs() < 1e-5, "{zero}");
+        assert!(zero.x.abs() < 1e-5 || zero.z.abs() < 1e-5, "{zero}");
+
+        // No hint still yields an axis-aligned radial.
+        let zero = face_spin_zero_dir(Vec3::Z, None);
+        assert!(zero.x.abs() < 1e-5 || zero.y.abs() < 1e-5, "{zero}");
+        assert!((zero.length() - 1.0).abs() < 1e-5);
+    }
+
+    /// #1427: the Face Snap connector leaves each face along that face's own outward
+    /// normal — even when the two faces are parallel and there is no extra turn.
+    #[test]
+    fn face_snap_connector_leaves_along_both_face_normals() {
+        let start = Vec3::new(0.0, 0.0, 10.0);
+        let end = Vec3::new(80.0, 20.0, 40.0);
+        let pts = face_snap_connector_points(start, end, Vec3::Z, Vec3::Z);
+        assert!(pts.len() > 16, "a curve, not a single chord");
+        assert!((pts[0] - start).length() < 1e-4);
+        assert!((pts[pts.len() - 1] - end).length() < 1e-4);
+        let first = (pts[1] - pts[0]).normalize_or_zero();
+        let last = (pts[pts.len() - 1] - pts[pts.len() - 2]).normalize_or_zero();
+        assert!(
+            first.dot(Vec3::Z) > 0.95,
+            "leaves the start face along +Z, got {first}"
+        );
+        assert!(
+            last.dot(-Vec3::Z) > 0.95,
+            "arrives along the end face's outward normal (from outside), got {last}"
+        );
+
+        // Orthogonal faces: leave the start along +X, arrive along −Z (end's +Z outward).
+        let pts = face_snap_connector_points(start, end, Vec3::X, Vec3::Z);
+        let first = (pts[1] - pts[0]).normalize_or_zero();
+        let last = (pts[pts.len() - 1] - pts[pts.len() - 2]).normalize_or_zero();
+        assert!(first.dot(Vec3::X) > 0.95, "start +X, got {first}");
+        assert!(last.dot(-Vec3::Z) > 0.95, "end −Z, got {last}");
+    }
+
+    /// #1428: the connector is a densely sampled cubic bezier, not a handful of chords
+    /// with visible corners.
+    #[test]
+    fn face_snap_connector_is_a_smooth_cubic_bezier() {
+        let start = Vec3::new(0.0, 0.0, 10.0);
+        let end = Vec3::new(100.0, 0.0, 50.0);
+        let pts = face_snap_connector_points(start, end, Vec3::Z, Vec3::Z);
+        assert!(
+            pts.len() >= 49,
+            "enough samples to read as a smooth curve, got {}",
+            pts.len()
+        );
+        // Consecutive turning angles stay small — a 3-segment polyline kinks at ~45°+.
+        let mut max_turn = 0.0_f32;
+        for w in pts.windows(3) {
+            let a = (w[1] - w[0]).normalize_or_zero();
+            let b = (w[2] - w[1]).normalize_or_zero();
+            if a == Vec3::ZERO || b == Vec3::ZERO {
+                continue;
+            }
+            max_turn = max_turn.max(a.dot(b).clamp(-1.0, 1.0).acos().to_degrees());
+        }
+        assert!(
+            max_turn < 12.0,
+            "bezier should not show segmented corners, max turn {max_turn:.1}°"
+        );
+        // The samples really are a cubic bezier (midpoint matches the control polygon).
+        let dist = (end - start).length();
+        let c1 = start + Vec3::Z * (dist * 0.35);
+        let c2 = end + Vec3::Z * (dist * 0.35);
+        let mid_t = 0.5;
+        let u = 1.0 - mid_t;
+        let expected = start * (u * u * u)
+            + c1 * (3.0 * u * u * mid_t)
+            + c2 * (3.0 * u * mid_t * mid_t)
+            + end * (mid_t * mid_t * mid_t);
+        let mid = pts[pts.len() / 2];
+        assert!(
+            (mid - expected).length() < 1e-3,
+            "sample is the cubic bezier, got {mid} vs {expected}"
+        );
     }
 }
 

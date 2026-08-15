@@ -8731,9 +8731,9 @@ impl App {
     /// until both faces are picked and both resolve.
     ///
     /// Returns `(center, axis, radius, zero_dir, angle_deg)` where `zero_dir` and `angle_deg`
-    /// feed the rotation gizmo's single handle (#1360/#1361): `zero_dir` is the direction the
-    /// moving face comes in from (the radial the gizmo "started" at), and `angle_deg` the
-    /// current signed turn from it.
+    /// feed the rotation gizmo's single handle (#1360/#1361/#1426): `zero_dir` is a world-axis
+    /// radial in the ring plane (the handle's 0° seat), and `angle_deg` the current signed
+    /// turn from it.
     fn face_spin_ring_geom(&self) -> Option<(Vec3, Vec3, f32, Option<Vec3>, f32)> {
         if self.state.tool != Tool::Move || self.state.sketch_session.is_some() {
             return None;
@@ -8742,34 +8742,14 @@ impl App {
         if cm.translate_mode != model::MoveTranslateMode::FaceSnap {
             return None;
         }
-        let end = cm.end_point_a.as_ref()?;
-        let axis = extrude::move_point_face_normal(&self.state.doc, end)?;
-        let start = cm.start_point_a.as_ref()?;
-        // Both sides must be face points for the ring to be meaningful.
-        extrude::move_point_face_normal(&self.state.doc, start)?;
-        let center = extrude::move_point_world(&self.state.doc, end)?;
-        // The gizmo's "start" is where the moving face comes in from: project the direction
-        // from the fixed point back to the moving point onto the ring plane.
-        let start_world = extrude::move_point_world(&self.state.doc, start)?;
-        let n = axis.normalize_or_zero();
-        let zero_dir = if n == Vec3::ZERO {
-            None
-        } else {
-            let d = start_world - center;
-            let radial = d - n * n.dot(d);
-            Some(radial.normalize_or_zero())
-        };
-        let angle_deg = crate::value::eval_angle_rad_in_doc(&cm.face_spin, &self.state.doc)
-            .map(|rad| rad.to_degrees())
-            .unwrap_or(0.0);
-        // Sized to the moving bodies, so the ring reads against what it turns.
-        let mut reach: f32 = 0.0;
-        for &body in &cm.targets {
-            if let Some((lo, hi)) = extrude::body_solid_mesh(&self.state.doc, body).and_then(|m| m.bounds()) {
-                reach = reach.max((hi - lo).length() * 0.5);
-            }
-        }
-        Some((center, axis, reach.max(5.0), zero_dir, angle_deg))
+        let (center, axis, radius, zero_dir, angle_deg) = extrude::face_spin_ring(
+            &self.state.doc,
+            cm.start_point_a.as_ref()?,
+            cm.end_point_a.as_ref()?,
+            &cm.targets,
+            &cm.face_spin,
+        )?;
+        Some((center, axis, radius, Some(zero_dir), angle_deg))
     }
 
     /// The in-sketch Move gizmo (#306): centred at the selected geometry's bbox centre on the
@@ -19158,10 +19138,10 @@ fn move_c_path_points(
 
 /// The start-A → end-A connector (#668/#1362), split into line segments for the scene mesh.
 ///
-/// A plain move draws the straight translation vector. When Face Snap also rotates the moving
-/// body to meet its face the path is no longer a straight shot, so it's sampled as a curve that
-/// enters the fixed point along the moving face's own normal — the direction the part comes in —
-/// and sits in close as it travels, passing through the translucent ghost preview overhead.
+/// A plain move draws the straight translation vector. Face Snap always draws a cubic
+/// bezier that leaves the start face (and arrives at the end face) along each plane's
+/// outward normal (#1427), sampled densely enough to read as a smooth curve (#1428) —
+/// whether or not there is an extra turn.
 fn move_a_connector_segments(
     doc: &model::Document,
     cm: &crate::actions::CreatingMove,
@@ -19172,45 +19152,26 @@ fn move_a_connector_segments(
     if cm.translate_mode != model::MoveTranslateMode::FaceSnap {
         return Some(straight);
     }
-    // A pure translation stays straight; only a turn bends the path.
-    let angle = if cm.face_spin.as_str().trim().is_empty() {
-        0.0
-    } else {
-        crate::value::eval_angle_rad_in_doc(&cm.face_spin, doc).unwrap_or(0.0)
-    };
-    if angle.abs() < 1e-3 {
-        return Some(straight);
-    }
-    let approach = cm
+    let start_n = cm
         .start_point_a
         .as_ref()
         .and_then(|p| extrude::move_point_face_normal(doc, p))
-        .unwrap_or_else(|| Vec3::ZERO)
-        .normalize_or_zero();
-    let e = if approach == Vec3::ZERO {
-        (b - a).normalize_or_zero()
-    } else {
-        approach
-    };
-    if e == Vec3::ZERO {
+        .unwrap_or(Vec3::ZERO);
+    let end_n = cm
+        .end_point_a
+        .as_ref()
+        .and_then(|p| extrude::move_point_face_normal(doc, p))
+        .unwrap_or(Vec3::ZERO);
+    if start_n == Vec3::ZERO && end_n == Vec3::ZERO {
         return Some(straight);
     }
-    // A symmetric cubic with a tangent along the approach direction at both ends: it leaves the
-    // moving point along (and enters the fixed point from) the direction the face comes in, and
-    // swings through the middle of the ghost preview on the way.
-    let dist = (b - a).length();
-    let c1 = a + e * (dist * 0.35);
-    let c2 = b - e * (dist * 0.35);
-    let tip = |t: f32| {
-        let u = 1.0 - t;
-        a * (u * u * u) + c1 * (3.0 * u * u * t) + c2 * (3.0 * u * t * t) + b * (t * t * t)
-    };
-    const SEGS: usize = 24;
-    let mut out = Vec::with_capacity(SEGS);
-    for i in 0..SEGS {
-        let t0 = i as f32 / SEGS as f32;
-        let t1 = (i + 1) as f32 / SEGS as f32;
-        out.push((tip(t0), tip(t1), theme::MOVE_CONNECTOR, false));
+    let pts = extrude::face_snap_connector_points(a, b, start_n, end_n);
+    if pts.len() < 2 {
+        return Some(straight);
+    }
+    let mut out = Vec::with_capacity(pts.len().saturating_sub(1));
+    for pair in pts.windows(2) {
+        out.push((pair[0], pair[1], theme::MOVE_CONNECTOR, false));
     }
     Some(out)
 }
@@ -34059,6 +34020,58 @@ mod tests {
 
         // The two marks are visibly different colours — go and stop.
         assert_ne!(crate::theme::MOVE_START_POINT, crate::theme::MOVE_END_POINT);
+    }
+
+    /// #1427/#1428: Face Snap's A→A connector is a bezier that leaves each face along its
+    /// normal even when the turn is 0 — never a single straight chord.
+    #[test]
+    fn face_snap_connector_curves_without_a_turn() {
+        use crate::mate::tests::{cube_body, face_ref};
+        let mut doc = crate::model::Document::default();
+        let moving = cube_body(&mut doc, glam::Vec3::new(40.0, 0.0, 0.0), glam::Vec3::splat(4.0));
+        let fixed = cube_body(&mut doc, glam::Vec3::ZERO, glam::Vec3::splat(10.0));
+        let point = |body, near| match face_ref(&doc, body, near) {
+            model::MateRef::Face { body, centroid, normal } => {
+                model::MovePointRef::OnFace { body, centroid, normal, uv: [0, 0] }
+            }
+            other => panic!("expected a face, got {other:?}"),
+        };
+        let start = point(moving, glam::Vec3::new(42.0, 2.0, 4.0));
+        let end = point(fixed, glam::Vec3::new(5.0, 5.0, 10.0));
+        let a = extrude::move_point_world(&doc, &start).expect("start");
+        let b = extrude::move_point_world(&doc, &end).expect("end");
+        let cm = actions::CreatingMove {
+            translate_mode: model::MoveTranslateMode::FaceSnap,
+            targets: vec![moving],
+            start_point_a: Some(start),
+            end_point_a: Some(end),
+            face_spin: String::new(),
+            ..Default::default()
+        };
+        let segs = move_a_connector_segments(&doc, &cm, a, b).expect("a connector");
+        assert!(
+            segs.len() > 16,
+            "0° Face Snap still draws a curve, got {} segments",
+            segs.len()
+        );
+        let first = (segs[0].1 - segs[0].0).normalize_or_zero();
+        let last = {
+            let s = segs.last().unwrap();
+            (s.1 - s.0).normalize_or_zero()
+        };
+        assert!(first.dot(Vec3::Z) > 0.95, "leaves the start top along +Z: {first}");
+        assert!(last.dot(-Vec3::Z) > 0.95, "arrives from above the landing top: {last}");
+        // Consecutive turns stay small — a 3-chord polyline would kink.
+        let mut max_turn = 0.0_f32;
+        for w in segs.windows(2) {
+            let d0 = (w[0].1 - w[0].0).normalize_or_zero();
+            let d1 = (w[1].1 - w[1].0).normalize_or_zero();
+            if d0 == Vec3::ZERO || d1 == Vec3::ZERO {
+                continue;
+            }
+            max_turn = max_turn.max(d0.dot(d1).clamp(-1.0, 1.0).acos().to_degrees());
+        }
+        assert!(max_turn < 12.0, "smooth bezier, max turn {max_turn:.1}°");
     }
 
     /// #180: drawing-view projection axes are orthonormal and orient as expected — a Front

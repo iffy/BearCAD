@@ -162,9 +162,9 @@ pub const SOLID_FILL_JOINT_FIXED: Color32 = Color32::from_rgb(96, 150, 226);
 pub const SOLID_PREVIEW_FILL: Color32 = Color32::from_rgb(120, 215, 230);
 /// Opacity of the in-progress extrusion preview body (before it is committed).
 pub const SOLID_PREVIEW_OPACITY: f32 = 0.4;
-/// The Move tool's Face Snap rotation gizmo line color (#1361): green, so it reads apart from
-/// the yellow arc highlight and the cyan moving-face preview around it.
-pub const MOVE_ROTATION_GIZMO: Color32 = Color32::from_rgb(104, 200, 128);
+/// The Move tool's Face Snap rotation gizmo (#1426): yellow, matching the A→A connector
+/// so the whole Face Snap preview reads as one motion.
+pub const MOVE_ROTATION_GIZMO: Color32 = crate::theme::MOVE_CONNECTOR;
 /// The arc between the rotation gizmo's start line and its current handle (#1361): yellow, the
 /// "how far you have turned" reading that everything else in the Move tool shares.
 pub const MOVE_ROTATION_ARC: Color32 = Color32::from_rgb(255, 225, 90);
@@ -11320,6 +11320,16 @@ mod tests {
             !point_in_stroke_capsule(outside, a, b, half)
                 && !point_in_stroke_capsule(outside, b, c, half),
             "nothing past the joint's circular silhouette should paint"
+        );
+    }
+
+    /// #1426: Face Snap's rotation gizmo is yellow, matching the A→A connector.
+    #[test]
+    fn face_snap_rotation_gizmo_is_yellow() {
+        assert_eq!(
+            MOVE_ROTATION_GIZMO,
+            crate::theme::MOVE_CONNECTOR,
+            "the Face Snap spin gizmo should be the same yellow as the connector"
         );
     }
 }
