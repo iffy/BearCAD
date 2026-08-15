@@ -23,8 +23,8 @@ Move slides whole bodies to a new place, producing moved copies.
 ## How to use it
 
 1. Pick the **Move** tool and click one or more bodies. Re-clicking removes one.
-   Pressing **M** again steps through the Translate modes.
-2. Choose how to **Translate**:
+   Pressing **M** again steps through the Move modes.
+2. Choose a **Move mode**:
    - **Point Snap** (the default) — pick a **Start point A** on a moving body, then an **End point
      A** on something that isn't moving, and the bodies slide so the first lands on the
      second. Destination picks ignore the moving bodies, so you can click through them. Either point can be a corner, the midpoint of an edge, or the middle of a flat

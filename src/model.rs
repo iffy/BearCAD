@@ -2755,7 +2755,7 @@ pub struct BooleanOperation {
 /// How anything names a boolean operation (#1055).
 pub type BooleanOpKey = crate::arena::Key<BooleanOperation>;
 
-/// How a [`MoveOperation`]'s translation is specified (#648), the Move pane's Translate
+/// How a [`MoveOperation`]'s translation is specified (#648), the Move pane's Move mode
 /// dropdown.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

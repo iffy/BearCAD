@@ -296,7 +296,7 @@ pub struct MoveControl {
     /// that move", and splitting them by kind would be three near-empty inputs (#963).
     pub plane_targets: Vec<crate::model::ConstructionPlaneKey>,
     pub image_targets: Vec<crate::model::TracingImageKey>,
-    /// Which of the move modes (#648/#1076) — the Translate dropdown.
+    /// Which of the move modes (#648/#1076) — the Move mode dropdown.
     pub translate_mode: crate::model::MoveTranslateMode,
     /// Whether **In place** is on offer (#1076): the Joint tool's mate may legitimately be a
     /// no-op, but a Move that moves nothing is not a mode.
@@ -352,7 +352,7 @@ pub enum MoveEdit {
     Tx(String),
     Ty(String),
     Tz(String),
-    /// Translate dropdown (#648).
+    /// Move mode dropdown (#648).
     TranslateMode(crate::model::MoveTranslateMode),
     /// Free-mode turns about the world X/Y/Z axes (#1076).
     Rx(String),
@@ -3787,6 +3787,8 @@ fn section_label(ui: &mut egui::Ui, text: impl Into<String>) {
 /// two-column row — the label left-aligned in this fixed column, the input in the aligned
 /// right column — so inputs line up down the whole pane.
 const FIELD_LABEL_W: f32 = 78.0;
+/// Inspector label for the Move/Joint mode dropdown (#1417).
+const MOVE_MODE_ROW_LABEL: &str = "Move mode";
 
 // --- Help mode (#672) --------------------------------------------------------------------
 //
@@ -3942,7 +3944,7 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         (Some(Tool::Move), "Bodies") => {
             Some("The bodies that will move. Click one to add it, click it again to drop it.")
         }
-        (Some(Tool::Move), "Translate") => Some(
+        (Some(Tool::Move), MOVE_MODE_ROW_LABEL) => Some(
             "How you say where the bodies go: Snap lands a point on a point, Free takes X/Y/Z \
              amounts. M switches between them.",
         ),
@@ -5909,7 +5911,7 @@ pub fn show_pane(
         {
             use crate::model::MoveTranslateMode as M;
             let mut mode = control.translate_mode;
-            labeled_row(ui, "Translate", |ui| {
+            labeled_row(ui, MOVE_MODE_ROW_LABEL, |ui| {
                 egui::ComboBox::from_id_salt("move_translate_mode")
                     .selected_text(mode.label())
                     .width(110.0)
@@ -10781,6 +10783,17 @@ mod tests {
     fn rows_without_help_text_get_no_note() {
         assert_eq!(row_help(Some(Tool::Move), "Nonexistent row"), None);
         assert_eq!(row_help(None, "Bodies"), None);
+    }
+
+    /// #1417: the Move inspector names the mode dropdown "Move mode", not "Translate".
+    #[test]
+    fn move_inspector_mode_row_is_labeled_move_mode() {
+        assert_eq!(MOVE_MODE_ROW_LABEL, "Move mode");
+        assert!(
+            row_help(Some(Tool::Move), MOVE_MODE_ROW_LABEL).is_some(),
+            "help is keyed by the painted row label"
+        );
+        assert_eq!(row_help(Some(Tool::Move), "Translate"), None);
     }
 
     #[test]
