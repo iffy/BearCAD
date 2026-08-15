@@ -4382,7 +4382,11 @@ retina machine renders the same composition at 2x, just sharper.
   sketches, and a drawing projection's source body/sketch (#281) — the input edges of the
   eventual full element graph (#252). A Document→element tree-parent spoke is omitted
   when that element already has any other input (`graph_parent_edges`, #1324) — a fillet
-  fed by the body it treats does not also hang off the document root. Nodes are **draggable** (#451): a per-node offset
+  fed by the body it treats does not also hang off the document root. When a visible node
+  is fed by a **shadow element that is not shown** (shadow bodies are hidden by default,
+  #1109), the graph draws a dashed **skip-edge** from the shadow's visible parent to the
+  consumer (`graph_shadow_skip_edges`, #1425) so the chain stays connected without
+  resurrecting the hidden node. Nodes are **draggable** (#451): a per-node offset
   (`GraphLayout::drag_offsets`, UI state) adds on top of the physics/declutter layout, so
   the user can rearrange without fighting the sim. **Layering is enforced at all times
   (#622):** every input renders strictly above its consumer and every output below its
