@@ -62,7 +62,7 @@ function Hero() {
             <span className={styles.titleSoft}>Fun CAD</span>
             <br />
             <span className={styles.titleName}>
-              BearCAD<span className={styles.titleDot}>.</span>
+              BearCAD
             </span>
           </Heading>
           <p className={styles.sub}>
