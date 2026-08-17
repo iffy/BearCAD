@@ -10,7 +10,7 @@ export default function GetBearCAD() {
         <div className={styles.payCopy}>
           <p className={styles.payTitle}>Name your price</p>
           <p className={styles.payHint}>
-            BearCAD is free. Paying is optional, but helps further BearCAD's development.
+            Pay what you want, or skip it. Paying helps further BearCAD's development.
           </p>
         </div>
         <Link className={styles.payButton} href={PAY_URL}>
