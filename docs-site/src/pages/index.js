@@ -56,13 +56,13 @@ function Hero() {
         </div>
         <div className={styles.heroCopy}>
           <Heading as="h1" className={styles.title}>
-            <span className={styles.titleSoft}>Small CAD.</span>
+            <span className={styles.titleSoft}>Small CAD</span>
             <br />
-            <span className={styles.titleSoft}>Quick CAD.</span>
+            <span className={styles.titleSoft}>Quick CAD</span>
             <br />
-            <span className={styles.titleSoft}>Fun CAD.</span>
+            <span className={styles.titleSoft}>Fun CAD</span>
             <br />
-            <span className={styles.titleName}>BearCAD</span>
+            <span className={styles.titleName}>BearCAD.</span>
           </Heading>
           <p className={styles.sub}>
             Design a part, print it, or export STEP. Half-second launch. No
