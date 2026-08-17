@@ -4030,14 +4030,14 @@ directory named by `$BEARCAD_SCREENSHOT_OUT`. `scripts/gen-doc-screenshots.sh` r
 missing. Selection/sharding (#1297): `scripts/select-doc-screenshots.sh` picks scenes
 (`full` / `missing` / `affected`); the harness accepts `BEARCAD_SCREENSHOT_MODE`,
 `BEARCAD_SCREENSHOT_SHARD=N/M`, `BEARCAD_SCREENSHOT_ONLY`, and `BEARCAD_SKIP_BUILD`.
-Website CI (`.github/workflows/docs.yml`) builds the release binary once, shards scripts across
-jobs under `xvfb` + software Vulkan, and restores goldens from the Actions cache (not git). Only
-the nightly job rebuilds screenshots, and only when the repo changed since the last nightly build
-(a `.screenshots-commit` marker the nightly deploys). Push/merge website builds never regenerate:
-they fetch the existing screenshots from the deployed GitHub Pages site (via a `.manifest` the
-nightly publishes) and deploy what's there — a missing screenshot never fails the build (#1389).
-PRs use `affected` mode (only changed deps + missing goldens) just to validate. Goldens are never
-committed. This reuses §9.3's determinism guarantees (fixed view, no animation waits).
+Website CI (`.github/workflows/docs.yml`) never rebuilds the app or recaptures shots on a
+normal push: it restores the Actions golden cache and fetches the live site's files (via
+`img/screenshots/manifest.txt`; Docusaurus does not copy dotfiles, so these are not
+`.manifest`). Only the nightly schedule — or a `workflow_dispatch` with "generate
+screenshots" — rebuilds them, and nightly skips when the repo SHA still matches the
+deployed `screenshots-commit.txt`. A missing screenshot never fails the site build
+(#1389, #1446). Goldens are never committed. This reuses §9.3's determinism guarantees
+(fixed view, no animation waits).
 
 **Annotated pane pictures (#672).** Every tool's documentation page shows its Context pane —
 one shot per mode where the tool has modes — captured with **help mode** on, so each control

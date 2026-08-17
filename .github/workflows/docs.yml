@@ -1,39 +1,31 @@
 name: Website
 
+# Push / docs edits: fetch (or restore) existing screenshots and deploy the site.
+# Do not rebuild the app or recapture shots on every commit (#1446).
+# Nightly (or workflow_dispatch with generate_screenshots): recapture, then deploy.
+# Nightly no-ops when the repo SHA still matches the deployed screenshots-commit.txt.
+
 on:
   push:
     branches: [master]
     paths:
       - "docs-site/**"
       - ".github/workflows/docs.yml"
-      - "scripts/gen-doc-screenshots.sh"
-      - "scripts/select-doc-screenshots.sh"
-      - "scripts/build-web.sh"
-      - "scripts/build-occt-wasm.sh"
-      - "web/**"
-      - "cpp/**"
-      - "third_party/OCCT"
-      - "third_party/solvespace"
-      - "src/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-  pull_request:
-    paths:
-      - "docs-site/screenshots/**"
-      - "scripts/gen-doc-screenshots.sh"
-      - "scripts/select-doc-screenshots.sh"
-      - ".github/workflows/docs.yml"
-      - "src/**"
-      - "cpp/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
+      - "scripts/fetch-doc-screenshots.sh"
+      - "scripts/pages-base.sh"
+      - "scripts/fetch-web-release.sh"
   schedule:
     - cron: "0 6 * * *"
   workflow_dispatch:
+    inputs:
+      generate_screenshots:
+        description: "Regenerate documentation screenshots (slow: build app + capture)"
+        type: boolean
+        default: false
 
 concurrency:
   group: pages-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -41,10 +33,68 @@ permissions:
   id-token: write
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      generate: ${{ steps.plan.outputs.generate }}
+      run_site: ${{ steps.plan.outputs.run_site }}
+      pages_base: ${{ steps.plan.outputs.pages_base }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Decide screenshot + site work
+        id: plan
+        env:
+          DISPATCH_GENERATE: ${{ inputs.generate_screenshots }}
+        run: |
+          set -euo pipefail
+          pages_base="$(GITHUB_REPOSITORY="$GITHUB_REPOSITORY" bash scripts/pages-base.sh)"
+          echo "pages_base=$pages_base" >> "$GITHUB_OUTPUT"
+
+          generate=false
+          run_site=true
+
+          case "$GITHUB_EVENT_NAME" in
+            schedule)
+              marker=""
+              for url in \
+                "${pages_base}img/screenshots/screenshots-commit.txt" \
+                "${pages_base}img/screenshots/.screenshots-commit"
+              do
+                body="$(curl -fsSL --max-time 30 "$url" 2>/dev/null || true)"
+                if [[ -n "$body" && "$body" != *"<html"* && "$body" != *"<!DOCTYPE"* ]]; then
+                  marker="$(printf '%s' "$body" | tr -d '[:space:]')"
+                  break
+                fi
+              done
+              if [[ -n "$marker" && "$marker" == "$GITHUB_SHA" ]]; then
+                echo "nightly: repo unchanged since last screenshot build ($marker); skip"
+                run_site=false
+              else
+                echo "nightly: regenerating screenshots (marker='${marker:-none}')"
+                generate=true
+              fi
+              ;;
+            workflow_dispatch)
+              if [[ "$DISPATCH_GENERATE" == "true" ]]; then
+                echo "workflow_dispatch: generating screenshots"
+                generate=true
+              else
+                echo "workflow_dispatch: site build only (no screenshot generation)"
+              fi
+              ;;
+            *)
+              echo "push: fetch/cache screenshots; do not generate"
+              ;;
+          esac
+
+          echo "generate=$generate" >> "$GITHUB_OUTPUT"
+          echo "run_site=$run_site" >> "$GITHUB_OUTPUT"
+
   # The hosted web app (wasm32) deploys under /app/ next to the docs.
-  # Skip on pull_request — PRs only validate screenshots.
   webapp:
-    if: github.event_name != 'pull_request'
+    if: needs.plan.outputs.run_site == 'true'
+    needs: plan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -118,49 +168,34 @@ jobs:
           path: web/dist/
           if-no-files-found: error
 
-  # Nightly: builds the app, generates all screenshots, then builds the docs site.
-  # Push: fetches screenshots from the deployed site, then builds the docs site.
+  # generate=true: build the app and recapture every screenshot (nightly / dispatch).
+  # generate=false: restore goldens + fetch from the live site; never recapture.
   build:
-    if: github.event_name != 'pull_request'
-    needs: webapp
+    if: needs.plan.outputs.run_site == 'true'
+    needs: [plan, webapp]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
 
-      # --- Screenshots -----------------------------------------------------------
-      - name: Compute screenshot source
-        id: source
-        run: |
-          pages_base="$(GITHUB_REPOSITORY="$GITHUB_REPOSITORY" bash scripts/pages-base.sh)"
-          echo "pages_base=$pages_base"
-          source="fetch"
-          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
-            source="build"
-          fi
-          echo "source=$source" >> "$GITHUB_OUTPUT"
-          echo "pages_base=$pages_base" >> "$GITHUB_OUTPUT"
+      # --- Screenshots (reuse) ---------------------------------------------------
+      - name: Restore golden screenshots
+        if: needs.plan.outputs.generate != 'true'
+        uses: actions/cache/restore@v5
+        with:
+          path: docs-site/static/img/screenshots
+          key: doc-screenshots-goldens-${{ github.sha }}
+          restore-keys: |
+            doc-screenshots-goldens-
 
       - name: Fetch screenshots from deployed site
-        id: fetch
-        if: steps.source.outputs.source == 'fetch'
+        if: needs.plan.outputs.generate != 'true'
         run: |
-          PAGES_BASE="${{ steps.source.outputs.pages_base }}" \
+          PAGES_BASE="${{ needs.plan.outputs.pages_base }}" \
           bash scripts/fetch-doc-screenshots.sh
 
-      - name: Fallback if too many screenshots missing
-        id: fallback
-        if: steps.source.outputs.source == 'fetch'
-        run: |
-          skipped="${{ steps.fetch.outputs.skipped }}"
-          if [[ -n "$skipped" && "$skipped" -gt 10 ]]; then
-            echo "fallback=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      # --- Screenshots (from source, either nightly or fetch-fallback) ----------
-      - name: Install system dependencies (nightly)
-        if: steps.source.outputs.source == 'build' || steps.fallback.outputs.fallback == 'true'
+      # --- Screenshots (nightly / explicit generate) -----------------------------
+      - name: Install system dependencies (generate)
+        if: needs.plan.outputs.generate == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -180,42 +215,42 @@ jobs:
             libwebkit2gtk-4.1-dev \
             xvfb
 
-      - name: Install Rust toolchain (nightly)
-        if: steps.source.outputs.source == 'build' || steps.fallback.outputs.fallback == 'true'
+      - name: Install Rust toolchain (generate)
+        if: needs.plan.outputs.generate == 'true'
         uses: dtolnay/rust-toolchain@1.96.0
 
-      - name: Cache cargo (nightly)
-        if: steps.source.outputs.source == 'build' || steps.fallback.outputs.fallback == 'true'
+      - name: Cache cargo (generate)
+        if: needs.plan.outputs.generate == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: occt-linux
 
-      - name: Cache OCCT static build (nightly)
-        if: steps.source.outputs.source == 'build' || steps.fallback.outputs.fallback == 'true'
+      - name: Cache OCCT static build (generate)
+        if: needs.plan.outputs.generate == 'true'
         id: occt-cache
         uses: actions/cache@v5
         with:
           path: third_party/OCCT/occt-install
           key: occt-install-${{ runner.os }}-v8.0.0-${{ hashFiles('scripts/build-occt.sh') }}
 
-      - name: Fetch solvespace submodule (nightly)
-        if: steps.source.outputs.source == 'build' || steps.fallback.outputs.fallback == 'true'
+      - name: Fetch solvespace submodule (generate)
+        if: needs.plan.outputs.generate == 'true'
         run: |
           git submodule update --init --depth 1 third_party/solvespace
           git -C third_party/solvespace submodule update --init --depth 1 extlib/eigen extlib/mimalloc
 
-      - name: Build OCCT (nightly, cache miss only)
-        if: (steps.source.outputs.source == 'build' || steps.fallback.outputs.fallback == 'true') && steps.occt-cache.outputs.cache-hit != 'true'
+      - name: Build OCCT (generate, cache miss only)
+        if: needs.plan.outputs.generate == 'true' && steps.occt-cache.outputs.cache-hit != 'true'
         run: |
           git submodule update --init --depth 1 third_party/OCCT
           scripts/build-occt.sh
 
-      - name: Build bearcad (nightly)
-        if: steps.source.outputs.source == 'build' || steps.fallback.outputs.fallback == 'true'
+      - name: Build bearcad (generate)
+        if: needs.plan.outputs.generate == 'true'
         run: cargo build --release
 
-      - name: Generate all screenshots (nightly)
-        if: steps.source.outputs.source == 'build' || steps.fallback.outputs.fallback == 'true'
+      - name: Generate all screenshots
+        if: needs.plan.outputs.generate == 'true'
         env:
           BEARCAD_SKIP_BUILD: "1"
           BEARCAD_SCREENSHOT_MODE: "full"
@@ -223,16 +258,22 @@ jobs:
           mkdir -p docs-site/static/img/screenshots
           scripts/gen-doc-screenshots.sh
 
-      - name: Publish screenshot manifest + commit marker (nightly)
-        if: steps.source.outputs.source == 'build' || steps.fallback.outputs.fallback == 'true'
+      - name: Publish screenshot manifest + commit marker
+        if: needs.plan.outputs.generate == 'true'
         run: |
-          find docs-site/static/img/screenshots -type f \
-            | sed 's|^docs-site/static/img/screenshots/||' \
-            | LC_ALL=C sort > docs-site/static/img/screenshots/.manifest
-          printf '%s\n' "$GITHUB_SHA" > docs-site/static/img/screenshots/.screenshots-commit
+          out=docs-site/static/img/screenshots
+          mkdir -p "$out"
+          # Non-dot names: Docusaurus does not copy dotfiles from static/.
+          find "$out" -type f \
+            ! -name 'manifest.txt' ! -name '.manifest' \
+            ! -name 'screenshots-commit.txt' ! -name '.screenshots-commit' \
+            | sed "s|^$out/||" \
+            | LC_ALL=C sort > "$out/manifest.txt"
+          printf '%s\n' "$GITHUB_SHA" > "$out/screenshots-commit.txt"
+          rm -f "$out/.manifest" "$out/.screenshots-commit"
 
-      - name: Save golden screenshots cache (nightly)
-        if: steps.source.outputs.source == 'build' || steps.fallback.outputs.fallback == 'true'
+      - name: Save golden screenshots cache
+        if: needs.plan.outputs.generate == 'true'
         uses: actions/cache/save@v5
         with:
           path: docs-site/static/img/screenshots
@@ -270,7 +311,9 @@ jobs:
           path: docs-site/build
 
   deploy:
-    if: (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/master'
+    if: |
+      github.ref == 'refs/heads/master' &&
+      (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     needs: build
     runs-on: ubuntu-latest
     environment:

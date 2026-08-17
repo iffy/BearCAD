@@ -49,5 +49,6 @@ warns if they're missing; the pages still serve.
 ## Deployment
 
 Deployment is automated: pushes to `master` that touch `docs-site/**` trigger
-[`.github/workflows/docs.yml`](../.github/workflows/docs.yml), which runs `npm run build` and
-publishes `build/` to GitHub Pages.
+[`.github/workflows/docs.yml`](../.github/workflows/docs.yml), which fetches the existing
+screenshots, runs `npm run build`, and publishes `build/` to GitHub Pages. Screenshots
+are recaptured on the nightly schedule (or a manual workflow_dispatch), not on every push.
