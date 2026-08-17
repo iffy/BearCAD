@@ -83,6 +83,14 @@
   text-wrap: pretty;
 }
 
+.heroCtas {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+  margin-top: 1.6rem;
+}
+
 @media screen and (min-width: 800px) {
   .hero {
     padding-top: 4rem;
@@ -137,20 +145,13 @@
   }
 }
 
-.heroCtas {
-  display: flex;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 0.7rem;
-  margin-top: 1.6rem;
-}
-
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   min-height: 2.75rem;
   padding: 0.7rem 1.2rem;
+  border: 1.5px solid transparent;
   border-radius: 999px;
   font-weight: 700;
   font-size: 1rem;
@@ -164,15 +165,30 @@
 }
 
 .btnPrimary {
-  background: var(--honey);
+  background: #d4890c;
   color: #1c1e21;
-  box-shadow: 0 8px 20px color-mix(in srgb, var(--honey) 38%, transparent);
+  border-color: #b36f08;
+  box-shadow:
+    0 1px 2px color-mix(in srgb, var(--ink) 10%, transparent),
+    0 8px 18px color-mix(in srgb, var(--ink) 14%, transparent);
 }
 
 .btnGhost {
+  background: #fff;
+  color: var(--ink);
+  border: 1.5px solid color-mix(in srgb, var(--ink) 28%, transparent);
+}
+
+[data-theme='dark'] .btnPrimary {
+  background: var(--honey);
+  border-color: transparent;
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--honey) 38%, transparent);
+}
+
+[data-theme='dark'] .btnGhost {
   background: transparent;
   color: var(--ifm-font-color-base);
-  border: 1px solid var(--ifm-color-emphasis-300);
+  border: 1px solid var(--ifm-color-emphasis-400);
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -181,13 +197,24 @@
   }
 
   .btnPrimary:hover {
-    background: var(--honey-hot);
+    background: #e09814;
     color: #1c1e21;
   }
 
   .btnGhost:hover {
+    color: var(--ink);
+    border-color: color-mix(in srgb, var(--ink) 45%, transparent);
+    background: #fff;
+  }
+
+  [data-theme='dark'] .btnPrimary:hover {
+    background: var(--honey-hot);
+  }
+
+  [data-theme='dark'] .btnGhost:hover {
     color: var(--ifm-font-color-base);
     border-color: var(--honey);
+    background: transparent;
   }
 }
 
