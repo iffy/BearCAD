@@ -19269,8 +19269,13 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
             }
         }
         "move_x" | "move_y" | "move_z" => {
+            // Drag (and scripted drag) lands on 0.1 of the length unit, written
+            // with the same formatter as the computed subtitle so the two do not
+            // flicker (`60.600002mm` vs `60.6 mm`, #1431).
+            let unit = state.doc.default_length_unit;
             if let Some(cm) = state.creating_move.as_mut() {
-                let text = format!("{value}mm");
+                let snapped = crate::value::snap_gizmo_length_mm(value, unit);
+                let text = crate::value::format_length_display_in(snapped, unit);
                 match name {
                     "move_x" => cm.tx = text,
                     "move_y" => cm.ty = text,
@@ -19281,14 +19286,16 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
                 false
             }
         }
-        // Free-mode rotation rings (#1234): value is radians, stored as degree expressions.
+        // Free-mode rotation rings (#1234): value is radians, stored as a 0.1-step
+        // degree expression so the field and computed subtitle stay in lockstep (#1431).
         "move_rx" | "move_ry" | "move_rz" => {
+            let unit = state.doc.default_angle_unit;
             if let Some(cm) = state.creating_move.as_mut() {
                 if cm.translate_mode != crate::model::MoveTranslateMode::Free {
                     return false;
                 }
-                let deg = value.to_degrees();
-                let text = format!("{deg}");
+                let snapped = crate::value::snap_gizmo_angle_rad(value, unit);
+                let text = crate::value::format_angle_display_in(snapped, unit);
                 match name {
                     "move_rx" => cm.rx = text,
                     "move_ry" => cm.ry = text,
@@ -20854,7 +20861,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert!((gizmo_value(&state, "move_rz").unwrap() - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
         assert!(set_gizmo(&mut state, "move_rx", std::f32::consts::FRAC_PI_2));
         assert!((gizmo_value(&state, "move_rx").unwrap() - std::f32::consts::FRAC_PI_2).abs() < 1e-3);
-        assert_eq!(state.creating_move.as_ref().unwrap().rx, "90");
+        assert_eq!(state.creating_move.as_ref().unwrap().rx, "90.0 deg");
 
         // Point Snap has translation gizmos but no free-rotation rings.
         state.creating_move.as_mut().unwrap().translate_mode =
@@ -20864,6 +20871,46 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert!(!snap_names.contains(&"move_rx"));
         assert!(!snap_names.contains(&"move_spin"));
         assert!(!set_gizmo(&mut state, "move_rz", 1.0));
+    }
+
+    /// #1431: a push/pull drag writes a 0.1-step expression so the ValueInput and its
+    /// computed subtitle stay in lockstep (no `60.600002mm` vs `60.6 mm` flicker).
+    #[test]
+    fn move_gizmo_drag_writes_tenth_step_text() {
+        let mut state = AppState::default();
+        state.creating_move = Some(CreatingMove {
+            translate_mode: crate::model::MoveTranslateMode::Free,
+            ..Default::default()
+        });
+        assert!(set_gizmo(&mut state, "move_z", 60.600_002));
+        let tz = state.creating_move.as_ref().unwrap().tz.clone();
+        assert_eq!(tz, "60.6 mm");
+        assert_eq!(
+            crate::expression_input::value_input_computed_display(
+                &tz,
+                crate::expression_input::ValueKind::Length,
+                &state.doc,
+            ),
+            None,
+            "computed subtitle must not appear for a snapped gizmo value, got typed {tz:?}"
+        );
+
+        assert!(set_gizmo(
+            &mut state,
+            "move_ry",
+            61.000_004_f32.to_radians()
+        ));
+        let ry = state.creating_move.as_ref().unwrap().ry.clone();
+        assert_eq!(ry, "61.0 deg");
+        assert_eq!(
+            crate::expression_input::value_input_computed_display(
+                &ry,
+                crate::expression_input::ValueKind::Angle,
+                &state.doc,
+            ),
+            None,
+            "computed subtitle must not appear for a snapped rotation, got typed {ry:?}"
+        );
     }
 
     /// #1426: Face Snap exposes the spin ring as `move_spin`, and at 0° its handle sits

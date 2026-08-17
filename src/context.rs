@@ -4665,8 +4665,20 @@ pub(crate) fn shape_field_visible(
     }
 }
 
+/// Off-screen rect for a hidden inspector slot. Each salt keeps a stable unique
+/// rect so the widget stays in the layer (no red flash on mode switch) without
+/// occupying layout space (#1430).
+fn hidden_slot_rect(salt: &impl std::fmt::Debug) -> egui::Rect {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    format!("{salt:?}").hash(&mut hasher);
+    let y = -10_000.0 - (hasher.finish() % 4_000) as f32;
+    egui::Rect::from_min_size(egui::pos2(-10_000.0, y), egui::vec2(240.0, 32.0))
+}
+
 /// Run `add` for a slot that may be hidden. Unused slots stay in the widget layer
-/// at zero size so switching kinds does not flash red (#1320/#1357).
+/// so switching kinds/modes does not flash red (#1320/#1357/#1416), but they are
+/// painted off-layout so visible rows pack at the top (#1430).
 fn with_optional_slot<R>(
     ui: &mut egui::Ui,
     salt: impl std::hash::Hash + std::fmt::Debug,
@@ -4674,33 +4686,30 @@ fn with_optional_slot<R>(
     surrender: Option<egui::Id>,
     add: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    ui.push_id(salt, |ui| {
-        if visible {
-            add(ui)
-        } else {
-            if let Some(id) = surrender {
-                if ui.ctx().memory(|m| m.focused()) == Some(id) {
-                    ui.ctx().memory_mut(|m| m.surrender_focus(id));
-                }
+    // Both paths use `new_child` so auto-ids stay in lockstep when visibility
+    // flips. Hidden children do not `advance_cursor_after_rect`, which is what
+    // used to leave empty gaps between the current mode's rows.
+    let dest = (!visible).then(|| hidden_slot_rect(&salt));
+    let mut builder = egui::UiBuilder::new().id_salt(salt);
+    if let Some(dest) = dest {
+        if let Some(id) = surrender {
+            if ui.ctx().memory(|m| m.focused()) == Some(id) {
+                ui.ctx().memory_mut(|m| m.surrender_focus(id));
             }
-            ui.scope_builder(
-                egui::UiBuilder::new()
-                    .invisible()
-                    .max_rect(egui::Rect::from_min_size(
-                        ui.min_rect().min,
-                        egui::Vec2::ZERO,
-                    )),
-                add,
-            )
-            .inner
         }
-    })
-    .inner
+        builder = builder.invisible().max_rect(dest);
+    }
+    let mut child = ui.new_child(builder);
+    let result = add(&mut child);
+    if visible {
+        ui.advance_cursor_after_rect(child.min_rect());
+    }
+    result
 }
 
-/// Run `add` for a shape dimension slot. Unused slots stay in the widget layer at
-/// zero size so switching kinds does not flash red (#1320). Visible and hidden
-/// paths share the same id salt so labeled_row ids do not remount.
+/// Run `add` for a shape dimension slot. Unused slots stay in the widget layer
+/// off-layout so switching kinds does not flash red (#1320/#1430). Visible and
+/// hidden paths share the same id salt so labeled_row ids do not remount.
 fn with_shape_dimension_slot<R>(
     ui: &mut egui::Ui,
     kind: crate::model::PrimitiveKind,
@@ -4800,7 +4809,7 @@ pub(crate) fn move_picker_slot_visible(
     }
 }
 
-/// One Move picker row. Hidden modes still mount the widget at zero size (#1416).
+/// One Move picker row. Hidden modes still mount the widget off-layout (#1416/#1430).
 fn show_move_picker_row(
     ui: &mut egui::Ui,
     doc: &Document,
@@ -4840,7 +4849,7 @@ fn show_move_picker_row(
     edit
 }
 
-/// One Move ValueInput row. Hidden modes still mount the widget at zero size (#1416).
+/// One Move ValueInput row. Hidden modes still mount the widget off-layout (#1416/#1430).
 fn show_move_value_row(
     ui: &mut egui::Ui,
     doc: &Document,
@@ -5927,9 +5936,10 @@ pub fn show_pane(
         }
         // Every mode-specific row stays in the widget layer (#1416) so switching
         // Translate modes does not remount a different input on the same rect
-        // (egui paints that red). Unused pickers stay unregistered (#1081).
-        // Paint order keeps each mode's visible rows in the same sequence as
-        // before: Face Snap's mate, then Free's reference + XYZ, then Rotation.
+        // (egui paints that red). Hidden rows paint off-layout so each mode's
+        // own fields pack at the top (#1430). Unused pickers stay unregistered
+        // (#1081). Paint order of the visible rows: Face Snap's mate, then
+        // Free's reference + XYZ, then Rotation.
         let tool_pickers = &content.tool_pickers;
         let dummy_picker = ElementPicker::new(
             ElementFilter::kind(ElementKind::Vertex),
@@ -9104,6 +9114,73 @@ mod tests {
             painted.as_slice(),
             ["move_face_moving", "move_face_fixed"],
             "dropping unused slots unmounts Point Snap's first two rows — that is the flash"
+        );
+    }
+
+    /// #1430: hidden Move/Shape/Joint slots must stay in the widget layer without
+    /// pushing later rows down. Scattering visible fields to keep ids on the same
+    /// rect is how the Move inspector grew those empty gaps.
+    #[test]
+    fn optional_slot_hidden_does_not_take_layout_space() {
+        let ctx = egui::Context::default();
+        let mut gap = f32::NAN;
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            egui::Panel::right("context").default_size(200.0).show(ui, |ui| {
+                let y0 = ui.cursor().top();
+                with_optional_slot(ui, "hidden_slot", false, None, |ui| {
+                    labeled_row(ui, "Hidden", |ui| {
+                        ui.add_sized(egui::vec2(90.0, 18.0), egui::Label::new("x"));
+                    });
+                });
+                gap = ui.cursor().top() - y0;
+            });
+        });
+        assert!(
+            gap < 1.0,
+            "a hidden slot must not push later rows down, gap was {gap}"
+        );
+    }
+
+    /// #1430: Free mode's first typed field (X) belongs at the top of the field
+    /// list, not below Face Snap / Point Snap rows that the current mode hides.
+    #[test]
+    fn move_visible_value_rows_sit_at_the_top() {
+        use crate::model::MoveTranslateMode as M;
+        let ctx = egui::Context::default();
+        let doc = Document::default();
+        let mut first_y = f32::NAN;
+        let mut tx_y = f32::NAN;
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            egui::Panel::right("context").default_size(200.0).show(ui, |ui| {
+                first_y = ui.next_widget_position().y;
+                for salt in move_value_slots() {
+                    let mut text = "0".to_string();
+                    let id = move_field_id(salt);
+                    with_optional_slot(
+                        ui,
+                        ("move_slot", *salt),
+                        move_value_slot_visible(M::Free, salt, false),
+                        Some(id),
+                        |ui| {
+                            labeled_row(ui, *salt, |ui| {
+                                let _ = crate::expression_input::ValueInput::from_id(
+                                    id,
+                                    crate::expression_input::ValueKind::Length,
+                                )
+                                .width(90.0)
+                                .show(ui, &mut text, &doc);
+                                if *salt == "tx" {
+                                    tx_y = ui.min_rect().top();
+                                }
+                            });
+                        },
+                    );
+                }
+            });
+        });
+        assert!(
+            (tx_y - first_y).abs() < 8.0,
+            "Free mode X should sit at the top of the field list, not below hidden Face/Point slots (tx_y={tx_y}, first_y={first_y})"
         );
     }
 

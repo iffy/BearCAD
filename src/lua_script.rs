@@ -11516,7 +11516,7 @@ mod tests {
         );
         let cm = state.creating_move.as_ref().expect("move armed");
         assert_eq!(cm.translate_mode, crate::model::MoveTranslateMode::Free);
-        assert_eq!(cm.rz, "90");
+        assert_eq!(cm.rz, "90.0 deg");
     }
 
     /// #1320: Shape kinds are scriptable as `bearcad.ui.tool_mode`.
