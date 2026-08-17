@@ -44,32 +44,36 @@ function Hero() {
   return (
     <header className={styles.hero}>
       <div className={styles.heroInner}>
-        <img
-          className={styles.logo}
-          src={useBaseUrl('/img/logo.png')}
-          alt=""
-          width="128"
-          height="128"
-        />
-        {version ? <p className={styles.kicker}>v{version}</p> : null}
-        <Heading as="h1" className={styles.title}>
-          Small CAD.
-          <br />
-          Quick CAD.
-          <br />
-          BearCAD
-        </Heading>
-        <p className={styles.sub}>
-          Design a part, print it, or export STEP. Half-second launch. No
-          account.
-        </p>
-        <div className={styles.heroCtas}>
-          <Link className={clsx(styles.btn, styles.btnPrimary)} href={WEB_APP_PATH}>
-            Open in your browser
-          </Link>
-          <Link className={clsx(styles.btn, styles.btnGhost)} href="#get">
-            Download
-          </Link>
+        <div className={styles.heroBrand}>
+          <img
+            className={styles.logo}
+            src={useBaseUrl('/img/logo.png')}
+            alt=""
+            width="220"
+            height="220"
+          />
+          {version ? <p className={styles.kicker}>v{version}</p> : null}
+        </div>
+        <div className={styles.heroCopy}>
+          <Heading as="h1" className={styles.title}>
+            <span className={styles.titleSoft}>Small CAD.</span>
+            <br />
+            <span className={styles.titleSoft}>Quick CAD.</span>
+            <br />
+            <span className={styles.titleName}>BearCAD</span>
+          </Heading>
+          <p className={styles.sub}>
+            Design a part, print it, or export STEP. Half-second launch. No
+            account.
+          </p>
+          <div className={styles.heroCtas}>
+            <Link className={clsx(styles.btn, styles.btnPrimary)} href={WEB_APP_PATH}>
+              Open in your browser
+            </Link>
+            <Link className={clsx(styles.btn, styles.btnGhost)} href="#get">
+              Download
+            </Link>
+          </div>
         </div>
       </div>
       <div className={styles.shotWrap}>
