@@ -99,7 +99,7 @@
   }
 
   .heroBrand {
-    justify-self: stretch;
+    justify-self: center;
   }
 
   .logo {
@@ -123,23 +123,17 @@
   }
 
   .heroCtas {
-    grid-column: 1 / -1;
-    display: grid;
-    grid-template-columns: subgrid;
-    justify-content: stretch;
-    gap: 0;
+    grid-column: 2;
+    justify-self: start;
+    display: inline-grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.7rem;
     margin-top: 0;
   }
 
   .heroCtas .btn {
     width: 100%;
-  }
-
-  @supports not (grid-template-columns: subgrid) {
-    .heroCtas {
-      grid-template-columns: auto minmax(0, 1fr);
-      column-gap: 3.5rem;
-    }
+    white-space: nowrap;
   }
 }
 
