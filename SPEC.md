@@ -5116,9 +5116,14 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   **Tutorial** button in the bottom-right status bar (beside the update badge) opens the
   **Tutorials pane** (also View ▸ Panes ▸ Tutorials, #1291) listing every registered
   tutorial (`tutorial::TUTORIALS`); the whole row (status circle + title) is clickable and
-  highlights on hover (#1252). Starting one opens a fresh document and resets the camera
-  to the home view (#1261). Finishing a walkthrough reopens the pane when other tutorials
-  are still incomplete (#1289).
+  highlights on hover (#1252). The button is **bright blue** while any walkthrough is
+  unfinished, unless the user presses **Skip all tutorials** in the pane (#1434) — that
+  suppresses the highlight and any tutorial prompting. Starting one opens a fresh document
+  and resets the camera to the home view (#1261). Finishing a walkthrough reopens the pane
+  when other tutorials are still incomplete (#1289). For the first 30 days after a
+  **fresh install** (not an upgrade), if walkthroughs remain unfinished at launch, a
+  standout tooltip points at the button: *Want to try some tutorials?* It fades a few
+  seconds after the user starts working on the document.
 - **One action per step** when authoring (#1253): every click is its own step, every bit of
   typing is its own step — never combine a click with typing (or two clicks / two typed
   values) in one step. See the module docs on `tutorial`.
@@ -5243,6 +5248,9 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   `bearcad.ui.tutorial_assist()` (press the current step's "do it for me" button),
   `bearcad.ui.tutorial_end()`, `bearcad.ui.tutorial_step()` (current step index or nil),
   `bearcad.ui.tutorial_orb()` (`{x, y}` screen position of the guide ring, or nil).
+  Prompting (#1434): `bearcad.ui.skip_all_tutorials([bool])`, `bearcad.ui.install_age([days|false])`,
+  `bearcad.ui.tutorial_highlight()`, `bearcad.ui.tutorial_prompt()` / `"launch"` / `"work"` /
+  `"tick"` / `"dismiss"`, `bearcad.ui.complete_tutorial(name)`.
 
 ### 11.x Auto-update (#427)
 - **Build identity (#460, #1129):** `build.rs` bakes `git describe --tags` and the short

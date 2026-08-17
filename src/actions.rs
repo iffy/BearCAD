@@ -2300,6 +2300,8 @@ pub enum Action {
     SetChangelogWindow { open: Option<bool> },
     /// Show/hide/toggle the Tutorials pane (#1241).
     SetTutorialPane { open: Option<bool> },
+    /// Suppress (or restore) the unfinished-tutorials highlight and launch prompt (#1434).
+    SkipAllTutorials { skip: bool },
     /// Open/close the McMaster-Carr catalog window (#1022), optionally at a part number.
     SetMcMasterWindow { open: Option<bool>, part: Option<String> },
     AddParameter { name: String, expression: String },
@@ -3240,6 +3242,7 @@ impl Action {
                     | Action::SetSettingsWindow { .. }
                     | Action::SetChangelogWindow { .. }
                     | Action::SetTutorialPane { .. }
+                    | Action::SkipAllTutorials { .. }
                     | Action::SetElementsViewMode { .. }
                     | Action::SetHomeView
                     | Action::ForceRebuildGeometry
@@ -3868,6 +3871,16 @@ pub struct AppState {
     pub completed_tutorials: Vec<String>,
     /// Set when [`Self::completed_tutorials`] changes so the host can persist it.
     pub completed_tutorials_dirty: bool,
+    /// User dismissed tutorial prompting (#1434). Mirrored from
+    /// [`crate::settings::AppSettings`].
+    pub skip_all_tutorials: bool,
+    /// Set when [`Self::skip_all_tutorials`] changes so the host can persist it.
+    pub skip_all_tutorials_dirty: bool,
+    /// Unix seconds of first launch on this machine, if this was a fresh install
+    /// (#1434). `None` is an upgrade (or unknown) — no 30-day launch tooltip.
+    pub installed_at_unix: Option<i64>,
+    /// First-launch tooltip pointing at the Tutorials button (#1434).
+    pub tutorial_prompt: Option<crate::tutorial::TutorialPrompt>,
     /// The McMaster-Carr catalog window (#1022) is open. Here rather than on `App` for the
     /// same reason: scripts drive it for docs captures.
     pub mcmaster_open: bool,
@@ -4112,6 +4125,13 @@ pub struct AppState {
     pub script_window_count: usize,
 }
 
+fn unix_now_secs() -> i64 {
+    crate::time::SystemTime::now()
+        .duration_since(crate::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 impl Default for AppState {
     fn default() -> Self {
         Self {
@@ -4126,6 +4146,10 @@ impl Default for AppState {
             changelog_open: false,
             completed_tutorials: Vec::new(),
             completed_tutorials_dirty: false,
+            skip_all_tutorials: false,
+            skip_all_tutorials_dirty: false,
+            installed_at_unix: None,
+            tutorial_prompt: None,
             mcmaster_open: false,
             mcmaster_part: String::new(),
             dimension_param_name: String::new(),
@@ -8016,12 +8040,26 @@ impl AppState {
         // from (#1023). A refusal only ever reached the status bar, where the next action
         // overwrote it — which is exactly the failure nobody could explain afterwards.
         let label = crate::diag::action_label(&action);
+        let dirty_before = self.dirty;
+        let dismiss_prompt = matches!(
+            action,
+            Action::SkipAllTutorials { skip: true }
+                | Action::StartTutorial { .. }
+        );
+        let check_tutorial_pane = matches!(action, Action::SetTutorialPane { .. });
         let result = self.apply_action(action);
         match &result {
             ActionResult::Err(reason) => {
                 crate::diag::info(format!("{label} refused: {reason}"))
             }
             ActionResult::Ok | ActionResult::NeedsDialog => crate::diag::log(&label),
+        }
+        if dismiss_prompt
+            || (check_tutorial_pane && self.panes.is_visible(Pane::Tutorials))
+        {
+            self.dismiss_tutorial_prompt();
+        } else if self.dirty && !dirty_before {
+            self.note_document_work();
         }
         // A running tutorial advances the moment an action satisfies its step —
         // through the GUI, scripts, or tests alike.
@@ -8096,11 +8134,113 @@ impl AppState {
         }
         self.completed_tutorials.push(name.to_string());
         self.completed_tutorials_dirty = true;
+        if !self.has_unfinished_tutorials() {
+            self.dismiss_tutorial_prompt();
+        }
     }
 
     /// Whether the tutorial named `name` is marked complete in the pane (#1241).
     pub fn tutorial_completed(&self, name: &str) -> bool {
         self.completed_tutorials.iter().any(|n| n == name)
+    }
+
+    /// Any registered walkthrough the user has not finished (#1434).
+    pub fn has_unfinished_tutorials(&self) -> bool {
+        crate::tutorial::TUTORIALS
+            .iter()
+            .any(|t| !self.tutorial_completed(t.name))
+    }
+
+    /// Bright-blue Tutorials button: unfinished walkthroughs, unless they skipped all (#1434).
+    pub fn tutorials_button_highlighted(&self) -> bool {
+        !self.skip_all_tutorials && self.has_unfinished_tutorials()
+    }
+
+    /// Seconds since this fresh install, if we know it was one (#1434).
+    pub fn install_age_days(&self) -> Option<f64> {
+        let installed = self.installed_at_unix?;
+        let now = unix_now_secs();
+        Some((now - installed) as f64 / 86_400.0)
+    }
+
+    /// Test/script hook: pretend this install is `days` old, or `None` for an upgrade (#1434).
+    pub fn set_install_age_days(&mut self, days: Option<f64>) {
+        self.installed_at_unix = days.map(|d| {
+            unix_now_secs().saturating_sub((d.max(0.0) * 86_400.0).round() as i64)
+        });
+    }
+
+    /// Arm the launch tooltip when a fresh install still has unfinished tutorials (#1434).
+    pub fn prepare_tutorial_prompt(&mut self) {
+        if self.tutorial_prompt.is_some() {
+            return;
+        }
+        if !self.should_launch_tutorial_prompt() {
+            return;
+        }
+        self.tutorial_prompt = Some(crate::tutorial::TutorialPrompt::new());
+    }
+
+    fn should_launch_tutorial_prompt(&self) -> bool {
+        if !self.tutorials_button_highlighted() {
+            return false;
+        }
+        match self.install_age_days() {
+            Some(days) => days < crate::tutorial::PROMPT_WINDOW_DAYS,
+            None => false,
+        }
+    }
+
+    pub fn tutorial_prompt(&self) -> Option<&crate::tutorial::TutorialPrompt> {
+        self.tutorial_prompt.as_ref()
+    }
+
+    pub fn tutorial_prompt_text(&self) -> Option<&'static str> {
+        self.tutorial_prompt
+            .as_ref()
+            .and_then(|p| (p.alpha() > 0.0).then_some(crate::tutorial::PROMPT_TEXT))
+    }
+
+    pub fn tutorial_prompt_alpha(&self) -> Option<f32> {
+        self.tutorial_prompt.as_ref().and_then(|p| {
+            let a = p.alpha();
+            (a > 0.0).then_some(a)
+        })
+    }
+
+    pub fn note_document_work(&mut self) {
+        if let Some(prompt) = &mut self.tutorial_prompt {
+            if !prompt.work_started {
+                prompt.work_started = true;
+                prompt.work_elapsed = 0.0;
+            }
+        }
+    }
+
+    pub fn tick_tutorial_prompt(&mut self, dt: f32) {
+        let keep = self
+            .tutorial_prompt
+            .as_mut()
+            .map(|p| p.tick(dt))
+            .unwrap_or(false);
+        if !keep {
+            self.tutorial_prompt = None;
+        }
+    }
+
+    pub fn dismiss_tutorial_prompt(&mut self) {
+        self.tutorial_prompt = None;
+    }
+
+    pub fn set_skip_all_tutorials(&mut self, skip: bool) {
+        if self.skip_all_tutorials == skip {
+            return;
+        }
+        self.skip_all_tutorials = skip;
+        self.skip_all_tutorials_dirty = true;
+        if skip {
+            self.dismiss_tutorial_prompt();
+        }
     }
 
     fn apply_action(&mut self, action: Action) -> ActionResult {
@@ -10682,6 +10822,15 @@ impl AppState {
                     "Tutorials opened".to_string()
                 } else {
                     "Tutorials closed".to_string()
+                };
+                ActionResult::Ok
+            }
+            Action::SkipAllTutorials { skip } => {
+                self.set_skip_all_tutorials(skip);
+                self.status = if skip {
+                    "Tutorial prompts skipped".to_string()
+                } else {
+                    "Tutorial prompts restored".to_string()
                 };
                 ActionResult::Ok
             }

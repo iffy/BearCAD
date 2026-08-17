@@ -892,6 +892,8 @@ pub enum Instruction {
     SetChangelogWindow { open: Option<bool> },
     /// Show/hide/toggle the Tutorials pane (#1241).
     SetTutorialPane { open: Option<bool> },
+    /// Suppress (or restore) unfinished-tutorial highlighting and the launch prompt (#1434).
+    SkipAllTutorials { skip: bool },
     /// Open/close the McMaster-Carr catalog window (#1022).
     SetMcMasterWindow { open: Option<bool>, part: Option<String> },
     /// Open a new blank document tab (`bearcad.ui.new_tab()`).
@@ -2084,6 +2086,9 @@ impl Instruction {
                 };
                 format!("bearcad.ui.tutorial_pane({verb:?})")
             }
+            Instruction::SkipAllTutorials { skip } => {
+                format!("bearcad.ui.skip_all_tutorials({skip})")
+            }
             Instruction::SetMcMasterWindow { open, part } => {
                 let verb = match open {
                     Some(true) => "show",
@@ -3271,6 +3276,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         Action::SetSettingsWindow { open } => Some(Instruction::SetSettingsWindow { open: *open }),
         Action::SetChangelogWindow { open } => Some(Instruction::SetChangelogWindow { open: *open }),
         Action::SetTutorialPane { open } => Some(Instruction::SetTutorialPane { open: *open }),
+        Action::SkipAllTutorials { skip } => Some(Instruction::SkipAllTutorials { skip: *skip }),
         Action::SetMcMasterWindow { open, part } => Some(Instruction::SetMcMasterWindow {
             open: *open,
             part: part.clone(),
@@ -7603,6 +7609,10 @@ impl ScriptRunner {
             }
             Instruction::SetTutorialPane { open } => {
                 state.apply(Action::SetTutorialPane { open });
+                StepResult::Continue
+            }
+            Instruction::SkipAllTutorials { skip } => {
+                state.apply(Action::SkipAllTutorials { skip });
                 StepResult::Continue
             }
             Instruction::DeleteParameter { index } => {

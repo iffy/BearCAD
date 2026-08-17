@@ -4341,6 +4341,89 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             Ok(list)
         })?,
     )?;
+    // #1434: skip prompting, install age, button highlight, launch tooltip.
+    api.set(
+        "skip_all_tutorials",
+        lua.create_function(|lua, skip: Option<bool>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            if let Some(skip) = skip {
+                unsafe { tick.exec(Instruction::SkipAllTutorials { skip })? };
+            }
+            let state = unsafe { tick.state() };
+            Ok(state.skip_all_tutorials)
+        })?,
+    )?;
+    api.set(
+        "install_age",
+        lua.create_function(|lua, days: Option<Value>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            match days {
+                None => {}
+                Some(Value::Nil) | Some(Value::Boolean(false)) => {
+                    state.set_install_age_days(None);
+                }
+                Some(Value::Number(n)) => state.set_install_age_days(Some(n)),
+                Some(Value::Integer(n)) => state.set_install_age_days(Some(n as f64)),
+                Some(other) => {
+                    return Err(mlua::Error::external(format!(
+                        "install_age expects days or false, got {other:?}"
+                    )));
+                }
+            }
+            Ok(state.install_age_days())
+        })?,
+    )?;
+    api.set(
+        "tutorial_highlight",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            Ok(state.tutorials_button_highlighted())
+        })?,
+    )?;
+    api.set(
+        "tutorial_prompt",
+        lua.create_function(|lua, (verb, arg): (Option<String>, Option<f32>)| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            if let Some(verb) = verb.as_deref() {
+                let state = unsafe { tick.state() };
+                match verb {
+                    "launch" | "show" | "arm" => state.prepare_tutorial_prompt(),
+                    "work" => state.note_document_work(),
+                    "tick" => state.tick_tutorial_prompt(arg.unwrap_or(0.0)),
+                    "dismiss" | "hide" => state.dismiss_tutorial_prompt(),
+                    other => {
+                        return Err(mlua::Error::external(format!(
+                            "tutorial_prompt expects \"launch\"/\"work\"/\"tick\"/\"dismiss\", got {other:?}"
+                        )));
+                    }
+                }
+            }
+            let state = unsafe { tick.state() };
+            match (state.tutorial_prompt_text(), state.tutorial_prompt_alpha()) {
+                (Some(text), Some(alpha)) => {
+                    let t = lua.create_table()?;
+                    t.set("text", text)?;
+                    t.set("alpha", alpha)?;
+                    Ok(Value::Table(t))
+                }
+                _ => Ok(Value::Nil),
+            }
+        })?,
+    )?;
+    api.set(
+        "complete_tutorial",
+        lua.create_function(|lua, name: String| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            if crate::tutorial::tutorial_index(&name).is_none() {
+                return Err(mlua::Error::external(format!("unknown tutorial '{name}'")));
+            }
+            let state = unsafe { tick.state() };
+            state.mark_tutorial_completed(&name);
+            Ok(())
+        })?,
+    )?;
 
     // Document tabs: new / close / select / reorder / detach, plus a read-only strip snapshot.
     api.set(
@@ -6946,6 +7029,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "tutorial", "tutorial_next", "tutorial_assist", "tutorial_end", "tutorial_step",
             "tutorial_orb",
             "tutorial_pane", "tutorials",
+            "skip_all_tutorials", "install_age", "tutorial_highlight", "tutorial_prompt",
+            "complete_tutorial",
             "touch",
             "os_open",
             "move", "click", "move_ground", "click_ground",
@@ -7189,6 +7274,59 @@ mod tests {
             assert(bearcad.parameter("get", "height") == 50, "height changed to 50mm")
             assert(bearcad.count("extrusion") == 1, "extruded")
             assert(bearcad.count("line") >= 4, "rectangle")
+            "#,
+        );
+    }
+
+    /// #1434: skip-all, install age, highlight, and the launch tooltip are scriptable.
+    #[test]
+    fn tutorial_prompt_lua_drives_skip_age_and_fade() {
+        run_lua_expect_ok(
+            r#"
+            assert(bearcad.ui.tutorial_highlight(), "unfinished tutorials highlight")
+            assert(bearcad.ui.skip_all_tutorials() == false)
+            assert(bearcad.ui.install_age() == nil, "default is an upgrade, not a fresh install")
+            assert(bearcad.ui.tutorial_prompt() == nil)
+
+            bearcad.ui.install_age(5)
+            local age = bearcad.ui.install_age()
+            assert(age ~= nil and age >= 4.9 and age <= 5.1, "install age days, got " .. tostring(age))
+            local p = bearcad.ui.tutorial_prompt("launch")
+            assert(p ~= nil and p.text == "Want to try some tutorials?", "launch prompt")
+            assert(p.alpha == 1)
+
+            bearcad.ui.tutorial_prompt("tick", 10)
+            p = bearcad.ui.tutorial_prompt()
+            assert(p ~= nil and p.alpha == 1, "idle time does not fade")
+
+            bearcad.ui.tutorial_prompt("work")
+            bearcad.ui.tutorial_prompt("tick", 2.9)
+            p = bearcad.ui.tutorial_prompt()
+            assert(p ~= nil and p.alpha == 1, "hold before fade")
+            bearcad.ui.tutorial_prompt("tick", 0.5)
+            p = bearcad.ui.tutorial_prompt()
+            assert(p ~= nil and p.alpha < 1 and p.alpha > 0, "fading, alpha=" .. tostring(p.alpha))
+            bearcad.ui.tutorial_prompt("tick", 2)
+            assert(bearcad.ui.tutorial_prompt() == nil, "faded away")
+
+            bearcad.ui.tutorial_prompt("launch")
+            bearcad.ui.skip_all_tutorials(true)
+            assert(bearcad.ui.skip_all_tutorials())
+            assert(not bearcad.ui.tutorial_highlight(), "skip-all kills the blue button")
+            assert(bearcad.ui.tutorial_prompt() == nil, "skip-all kills the prompt")
+
+            bearcad.ui.skip_all_tutorials(false)
+            assert(bearcad.ui.tutorial_highlight(), "unskip restores the highlight")
+
+            bearcad.ui.install_age(40)
+            assert(bearcad.ui.tutorial_prompt("launch") == nil, "past 30 days, no prompt")
+            bearcad.ui.install_age(false)
+            assert(bearcad.ui.install_age() == nil)
+
+            for _, t in ipairs(bearcad.ui.tutorials()) do
+              bearcad.ui.complete_tutorial(t.name)
+            end
+            assert(not bearcad.ui.tutorial_highlight(), "all complete, no highlight")
             "#,
         );
     }

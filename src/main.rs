@@ -3605,26 +3605,42 @@ impl App {
 
     /// The bottom-right Tutorials launcher, next to the update badge: opens the Tutorials
     /// pane (#1241). Graduation-cap icon + plural label (#1254). Hidden while a walkthrough
-    /// is running (the bubble takes over).
+    /// is running (the bubble takes over). Bright blue while walkthroughs remain and the
+    /// user has not skipped all (#1434).
     fn show_tutorial_button(&mut self, ui: &mut egui::Ui) {
         if self.state.tutorial.is_some() {
             return;
         }
         let open = self.state.panes.is_visible(Pane::Tutorials);
+        let highlight = self.state.tutorials_button_highlighted();
+        const HIGHLIGHT: egui::Color32 = egui::Color32::from_rgb(30, 144, 255);
         let image = egui::Image::new(icons::sized_texture_at(
             ui.ctx(),
             icons::IconId::GraduationCap,
             14.0,
         ));
+        let image = if highlight {
+            image.tint(egui::Color32::WHITE)
+        } else {
+            image
+        };
+        let label = if highlight {
+            egui::RichText::new("Tutorials")
+                .size(12.0)
+                .color(egui::Color32::WHITE)
+        } else {
+            egui::RichText::new("Tutorials").size(12.0)
+        };
+        let mut button = egui::Button::image_and_text(image, label).selected(open);
+        if highlight {
+            button = button.fill(HIGHLIGHT);
+        }
         let btn = ui
-            .add(
-                egui::Button::image_and_text(
-                    image,
-                    egui::RichText::new("Tutorials").size(12.0),
-                )
-                .selected(open),
-            )
+            .add(button)
             .on_hover_text("Learn BearCAD hands-on, guided by Bear");
+        self.state
+            .tutorial_anchor_rects
+            .insert(tutorial::UiAnchor::TutorialsButton, btn.rect);
         if btn.clicked() {
             self.state.apply(Action::SetTutorialPane { open: None });
         }
@@ -3692,12 +3708,91 @@ impl App {
                     start = Some(index);
                 }
             }
+            ui.add_space(12.0);
+            if self.state.skip_all_tutorials {
+                ui.label(
+                    egui::RichText::new("Tutorial prompts are off.")
+                        .size(12.0)
+                        .weak(),
+                );
+            } else if ui
+                .button(tutorial::SKIP_ALL_LABEL)
+                .on_hover_text("Hide the blue highlight and stop asking about tutorials")
+                .clicked()
+            {
+                self.state.apply(Action::SkipAllTutorials { skip: true });
+            }
         });
         if let Some(index) = start {
             self.state.apply(Action::StartTutorial { index });
         }
         if !kept {
             self.state.panes.set(Pane::Tutorials, false);
+        }
+    }
+
+    /// First-launch tooltip pointing at the Tutorials button (#1434).
+    fn show_tutorial_prompt(&mut self, ctx: &egui::Context) {
+        let Some(alpha) = self.state.tutorial_prompt_alpha() else {
+            return;
+        };
+        let Some(anchor) = self
+            .state
+            .tutorial_anchor_rects
+            .get(&tutorial::UiAnchor::TutorialsButton)
+            .copied()
+        else {
+            return;
+        };
+        if self
+            .state
+            .tutorial_prompt()
+            .is_some_and(|p| p.work_started)
+        {
+            ctx.request_repaint();
+        }
+        let a = (alpha * 255.0).round().clamp(0.0, 255.0) as u8;
+        let fill = egui::Color32::from_rgba_unmultiplied(20, 48, 92, a);
+        let stroke = egui::Color32::from_rgba_unmultiplied(80, 180, 255, a);
+        let text = egui::Color32::from_rgba_unmultiplied(240, 248, 255, a);
+        const TAIL: f32 = 10.0;
+        let mut open_pane = false;
+        egui::Area::new(egui::Id::new("tutorial_launch_prompt"))
+            .order(egui::Order::Foreground)
+            .pivot(egui::Align2::RIGHT_BOTTOM)
+            .fixed_pos(egui::pos2(anchor.right(), anchor.top() - 6.0 - TAIL))
+            .show(ctx, |ui| {
+                let bubble = egui::Frame::default()
+                    .fill(fill)
+                    .stroke(egui::Stroke::new(2.0, stroke))
+                    .corner_radius(10.0)
+                    .inner_margin(egui::Margin::symmetric(14, 10))
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(tutorial::PROMPT_TEXT)
+                                .size(15.0)
+                                .color(text)
+                                .strong(),
+                        );
+                    });
+                let r = bubble.response.rect;
+                let tip = egui::pos2(anchor.center().x.clamp(r.left() + 16.0, r.right() - 16.0), r.bottom() + TAIL);
+                let base_l = egui::pos2(tip.x - 12.0, r.bottom() - 1.0);
+                let base_r = egui::pos2(tip.x + 12.0, r.bottom() - 1.0);
+                let painter = ui.ctx().layer_painter(ui.layer_id());
+                painter.add(egui::Shape::convex_polygon(
+                    vec![base_l, tip, base_r],
+                    fill,
+                    egui::Stroke::NONE,
+                ));
+                painter.line_segment([base_l, tip], egui::Stroke::new(2.0, stroke));
+                painter.line_segment([tip, base_r], egui::Stroke::new(2.0, stroke));
+                if bubble.response.clicked() {
+                    open_pane = true;
+                }
+            });
+        if open_pane {
+            self.state.apply(Action::SetTutorialPane { open: Some(true) });
         }
     }
 
@@ -4485,6 +4580,8 @@ impl App {
         {
             state.library_directory = settings.library_directory.clone();
             state.completed_tutorials = settings.completed_tutorials.clone();
+            state.skip_all_tutorials = settings.skip_all_tutorials;
+            state.installed_at_unix = settings.installed_at_unix;
             state.animate_zoom_to_fit = settings.animate_zoom_to_fit;
             state.update_channel = settings.update_channel;
         }
@@ -4500,6 +4597,9 @@ impl App {
             state.command_log = Some(std::cell::RefCell::new(
                 command_log::CommandLog::new_recording(show_commands),
             ));
+            // Launch tooltip is for interactive first-run sessions only — scripts and
+            // `--tutorial` would just fight it (#1434).
+            state.prepare_tutorial_prompt();
         }
         // Let the REPL's stdin reader thread wake the event loop when input arrives while
         // the app is idle (no repaints scheduled).
@@ -14032,15 +14132,24 @@ impl App {
         // Tutorials pane (#1241): same dock side as Settings; lists every walkthrough.
         self.show_tutorial_pane(ui, ctx);
 
-        // Persist newly completed tutorials (#1241) without waiting for another settings
-        // change — the pane reads from AppState, the file is the long-term copy.
+        if self.state.tutorial_prompt().is_some() {
+            let dt = ctx.input(|i| i.stable_dt).min(0.1);
+            self.state.tick_tutorial_prompt(dt);
+        }
+        self.show_tutorial_prompt(ctx);
+
+        // Persist newly completed tutorials (#1241) and skip-all (#1434) without waiting
+        // for another settings change — the pane reads from AppState, the file is the
+        // long-term copy.
         #[cfg(not(target_arch = "wasm32"))]
-        if self.state.completed_tutorials_dirty {
+        if self.state.completed_tutorials_dirty || self.state.skip_all_tutorials_dirty {
             self.settings.completed_tutorials = self.state.completed_tutorials.clone();
+            self.settings.skip_all_tutorials = self.state.skip_all_tutorials;
             if let Err(err) = self.settings.save() {
                 self.state.status = format!("Could not save settings: {err}");
             }
             self.state.completed_tutorials_dirty = false;
+            self.state.skip_all_tutorials_dirty = false;
         }
 
         if self.state.panes.is_visible(Pane::Hierarchy) {

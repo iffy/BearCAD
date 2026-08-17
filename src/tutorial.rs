@@ -56,6 +56,8 @@ pub enum UiAnchor {
     ViewHome,
     /// A status-bar pane toggle (phone layout only, #828): Elements / Context / Params.
     PaneButton(crate::actions::Pane),
+    /// The status-bar Tutorials launcher (#1434): the launch prompt points here.
+    TutorialsButton,
 }
 
 /// What a step's glowing orb points at, once resolved against the live state.
@@ -214,6 +216,53 @@ pub fn narration_spans(text: &str) -> Vec<(&str, bool)> {
 
 /// Side-panel title shown in the UI (#1255), matching Elements / Parameters / Context.
 pub const PANE_TITLE: &str = "Tutorials";
+
+/// Launch tooltip on the Tutorials button (#1434).
+pub const PROMPT_TEXT: &str = "Want to try some tutorials?";
+/// Fresh-install window during which the launch tooltip may appear (#1434).
+pub const PROMPT_WINDOW_DAYS: f64 = 30.0;
+/// How long the tooltip stays fully visible after the user starts working (#1434).
+pub const PROMPT_FADE_AFTER_SECS: f32 = 3.0;
+/// Fade duration after [`PROMPT_FADE_AFTER_SECS`] (#1434).
+pub const PROMPT_FADE_SECS: f32 = 0.8;
+/// Label of the Tutorials pane button that suppresses prompting (#1434).
+pub const SKIP_ALL_LABEL: &str = "Skip all tutorials";
+
+/// The first-launch tooltip that points at the Tutorials button (#1434).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TutorialPrompt {
+    /// The user has started working on the document; the fade clock is running.
+    pub work_started: bool,
+    /// Seconds since [`Self::work_started`] became true.
+    pub work_elapsed: f32,
+}
+
+impl TutorialPrompt {
+    pub fn new() -> Self {
+        Self {
+            work_started: false,
+            work_elapsed: 0.0,
+        }
+    }
+
+    /// 1 while idle or during the hold; ramps to 0 over [`PROMPT_FADE_SECS`].
+    pub fn alpha(&self) -> f32 {
+        if !self.work_started || self.work_elapsed <= PROMPT_FADE_AFTER_SECS {
+            1.0
+        } else {
+            let t = (self.work_elapsed - PROMPT_FADE_AFTER_SECS) / PROMPT_FADE_SECS;
+            (1.0 - t).clamp(0.0, 1.0)
+        }
+    }
+
+    /// Advance the fade clock. Returns `false` once the tooltip should be gone.
+    pub fn tick(&mut self, dt: f32) -> bool {
+        if self.work_started {
+            self.work_elapsed += dt.max(0.0);
+        }
+        self.alpha() > 0.0
+    }
+}
 
 pub struct Tutorial {
     /// Stable name for scripting (`bearcad.ui.tutorial("cube")`).
@@ -3607,5 +3656,149 @@ mod tests {
             .iter()
             .filter(|s| s.narration.to_ascii_lowercase().contains(needle))
             .collect()
+    }
+
+    /// #1434: unfinished tutorials light the status-bar button unless the user skipped all.
+    #[test]
+    fn unfinished_tutorials_highlight_the_button() {
+        let mut app = AppState::default();
+        assert!(
+            app.has_unfinished_tutorials(),
+            "a fresh session has walkthroughs left"
+        );
+        assert!(
+            app.tutorials_button_highlighted(),
+            "unfinished tutorials make the button bright blue"
+        );
+
+        for tut in TUTORIALS {
+            app.mark_tutorial_completed(tut.name);
+        }
+        assert!(!app.has_unfinished_tutorials());
+        assert!(
+            !app.tutorials_button_highlighted(),
+            "finishing every walkthrough drops the highlight"
+        );
+    }
+
+    /// #1434: Skip all tutorials kills the blue button and any launch prompt.
+    #[test]
+    fn skip_all_tutorials_suppresses_highlight_and_prompt() {
+        let mut app = AppState::default();
+        app.set_install_age_days(Some(1.0));
+        app.prepare_tutorial_prompt();
+        assert!(app.tutorials_button_highlighted());
+        assert_eq!(app.tutorial_prompt_text(), Some(PROMPT_TEXT));
+
+        app.apply(Action::SkipAllTutorials { skip: true });
+        assert!(app.skip_all_tutorials);
+        assert!(app.skip_all_tutorials_dirty);
+        assert!(
+            !app.tutorials_button_highlighted(),
+            "skip-all suppresses the blue button"
+        );
+        assert!(
+            app.tutorial_prompt_text().is_none(),
+            "skip-all dismisses the launch prompt"
+        );
+        assert!(
+            app.has_unfinished_tutorials(),
+            "skip-all does not mark walkthroughs complete"
+        );
+
+        app.prepare_tutorial_prompt();
+        assert!(
+            app.tutorial_prompt_text().is_none(),
+            "skip-all also blocks re-arming the prompt"
+        );
+    }
+
+    /// #1434: the launch tooltip only appears for a fresh install in the first 30 days.
+    #[test]
+    fn launch_prompt_is_only_for_fresh_installs_under_30_days() {
+        let mut app = AppState::default();
+        // Upgrade / unknown install age: no prompt, but the button still highlights.
+        app.prepare_tutorial_prompt();
+        assert!(app.tutorial_prompt_text().is_none());
+        assert!(app.tutorials_button_highlighted());
+
+        app.set_install_age_days(Some(31.0));
+        app.prepare_tutorial_prompt();
+        assert!(
+            app.tutorial_prompt_text().is_none(),
+            "day 31 is outside the window"
+        );
+
+        app.set_install_age_days(Some(0.0));
+        app.prepare_tutorial_prompt();
+        assert_eq!(app.tutorial_prompt_text(), Some(PROMPT_TEXT));
+        assert_eq!(app.tutorial_prompt_alpha(), Some(1.0));
+
+        app.dismiss_tutorial_prompt();
+        app.set_install_age_days(Some(29.0));
+        app.prepare_tutorial_prompt();
+        assert_eq!(
+            app.tutorial_prompt_text(),
+            Some(PROMPT_TEXT),
+            "still inside the first 30 days"
+        );
+    }
+
+    /// #1434: the launch tooltip holds until the user works, then fades after a few seconds.
+    #[test]
+    fn launch_prompt_fades_after_the_user_starts_working() {
+        let mut app = AppState::default();
+        app.set_install_age_days(Some(2.0));
+        app.prepare_tutorial_prompt();
+        assert_eq!(app.tutorial_prompt_alpha(), Some(1.0));
+
+        app.tick_tutorial_prompt(10.0);
+        assert_eq!(
+            app.tutorial_prompt_alpha(),
+            Some(1.0),
+            "idle time does not fade the prompt"
+        );
+
+        app.note_document_work();
+        app.tick_tutorial_prompt(PROMPT_FADE_AFTER_SECS - 0.1);
+        assert_eq!(
+            app.tutorial_prompt_alpha(),
+            Some(1.0),
+            "still fully visible during the hold"
+        );
+
+        app.tick_tutorial_prompt(0.1 + PROMPT_FADE_SECS * 0.5);
+        let mid = app.tutorial_prompt_alpha().expect("fading");
+        assert!(
+            mid > 0.0 && mid < 1.0,
+            "halfway through the fade, alpha={mid}"
+        );
+
+        app.tick_tutorial_prompt(PROMPT_FADE_SECS);
+        assert!(
+            app.tutorial_prompt_text().is_none(),
+            "gone after the fade finishes"
+        );
+    }
+
+    /// #1434: editing the document counts as starting work (so the prompt can fade).
+    #[test]
+    fn document_edits_start_the_prompt_fade() {
+        let mut app = AppState::default();
+        app.set_install_age_days(Some(1.0));
+        app.prepare_tutorial_prompt();
+        app.apply(Action::SetTool(Tool::Line));
+        // A tool change alone is not working on the document; drawing is.
+        assert_eq!(app.tutorial_prompt_alpha(), Some(1.0));
+
+        app.apply(Action::AddParameter {
+            name: "width".into(),
+            expression: "10".into(),
+        });
+        assert!(
+            app.tutorial_prompt()
+                .is_some_and(|p| p.work_started),
+            "creating a parameter starts the fade clock"
+        );
     }
 }
