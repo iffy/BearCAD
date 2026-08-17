@@ -56,6 +56,13 @@ pub struct AppSettings {
     /// the Tutorials pane (#1260); survives restarts.
     #[serde(default)]
     pub completed_tutorials: Vec<String>,
+    /// User dismissed the unfinished-tutorials highlight and launch prompt (#1434).
+    #[serde(default)]
+    pub skip_all_tutorials: bool,
+    /// Unix timestamp of first launch, stamped only when creating a new settings file
+    /// (#1434). Missing on upgrades so existing installs are not treated as fresh.
+    #[serde(default)]
+    pub installed_at_unix: Option<i64>,
     /// When true, Zoom to Fit glides over [`crate::camera::ZOOM_TO_FIT_DURATION`]
     /// (half Home, #1276/#1303). When false, the camera snaps. On by default.
     #[serde(default = "default_true")]
@@ -70,6 +77,8 @@ impl Default for AppSettings {
         Self {
             library_directory: None,
             completed_tutorials: Vec::new(),
+            skip_all_tutorials: false,
+            installed_at_unix: None,
             animate_zoom_to_fit: true,
             update_channel: UpdateChannel::Release,
         }
@@ -94,8 +103,29 @@ pub fn settings_path() -> Option<PathBuf> {
 
 impl AppSettings {
     /// Load from the standard location; missing or malformed → defaults, no error.
+    /// A missing file is a fresh install: stamp [`Self::installed_at_unix`] and write it.
     pub fn load() -> Self {
-        settings_path().map(|p| Self::load_from(&p)).unwrap_or_default()
+        settings_path()
+            .map(|p| Self::load_or_init(&p))
+            .unwrap_or_default()
+    }
+
+    /// Load from `path`. If the file does not exist, this is a fresh install — stamp
+    /// the install time and write defaults. An existing file without `installed_at_unix`
+    /// is an upgrade, not a fresh install (#1434).
+    pub fn load_or_init(path: &std::path::Path) -> Self {
+        if path.exists() {
+            return Self::load_from(path);
+        }
+        let mut settings = Self::default();
+        settings.installed_at_unix = Some(
+            crate::time::SystemTime::now()
+                .duration_since(crate::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0),
+        );
+        let _ = settings.save_to(path);
+        settings
     }
 
     /// Load from an explicit path (the standard one, or a test's temp file).
@@ -138,6 +168,8 @@ mod tests {
         let settings = AppSettings {
             library_directory: Some(PathBuf::from("/some/library")),
             completed_tutorials: vec!["navigate".into(), "cube".into()],
+            skip_all_tutorials: true,
+            installed_at_unix: Some(1_700_000_000),
             animate_zoom_to_fit: false,
             update_channel: UpdateChannel::PreRelease,
         };
@@ -173,6 +205,40 @@ mod tests {
         std::fs::write(&path, br#"{"library_directory": null}"#).unwrap();
         let loaded = AppSettings::load_from(&path);
         assert_eq!(loaded.update_channel, UpdateChannel::Release);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// #1434: a brand-new settings file is a fresh install and records the time.
+    #[test]
+    fn missing_settings_file_stamps_install_time() {
+        let path = temp_file("bearcad_settings_fresh_install.json");
+        let _ = std::fs::remove_file(&path);
+        let stamped = AppSettings::load_or_init(&path);
+        assert!(stamped.installed_at_unix.is_some());
+        assert!(!stamped.skip_all_tutorials);
+        let loaded = AppSettings::load_from(&path);
+        assert_eq!(loaded.installed_at_unix, stamped.installed_at_unix);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// #1434: an older settings file without `installed_at_unix` is an upgrade.
+    #[test]
+    fn existing_settings_without_install_time_are_an_upgrade() {
+        let path = temp_file("bearcad_settings_upgrade_install.json");
+        std::fs::write(&path, br#"{"library_directory": null}"#).unwrap();
+        let loaded = AppSettings::load_or_init(&path);
+        assert!(loaded.installed_at_unix.is_none());
+        assert!(!loaded.skip_all_tutorials);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// #1434: older settings files without `skip_all_tutorials` stay un-skipped.
+    #[test]
+    fn skip_all_tutorials_defaults_off_when_absent() {
+        let path = temp_file("bearcad_settings_no_skip_all.json");
+        std::fs::write(&path, br#"{"library_directory": null}"#).unwrap();
+        let loaded = AppSettings::load_from(&path);
+        assert!(!loaded.skip_all_tutorials);
         std::fs::remove_file(&path).unwrap();
     }
 

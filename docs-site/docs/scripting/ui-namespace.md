@@ -133,6 +133,12 @@ bearcad.ui.tutorial_assist()
 bearcad.ui.tutorial_end()
 local step = bearcad.ui.tutorial_step()  -- nil when none running
 local orb = bearcad.ui.tutorial_orb()    -- {x=, y=} screen px, or nil
+bearcad.ui.skip_all_tutorials(true)     -- suppress the blue button and launch prompt
+bearcad.ui.install_age(5)               -- pretend this fresh install is 5 days old
+local prompt = bearcad.ui.tutorial_prompt("launch")  -- {text=, alpha=}, or nil
+bearcad.ui.tutorial_prompt("work")
+bearcad.ui.tutorial_prompt("tick", 3.5)
+assert(bearcad.ui.tutorial_highlight())
 ```
 
 ```lua
