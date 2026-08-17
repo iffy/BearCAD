@@ -67,7 +67,7 @@ function Hero() {
             </span>
           </Heading>
           <p className={styles.sub}>
-            Design a part, print it, or export STEP. Half-second launch. No
+            Sketch, extrude, revolve, import/export, constrain and 3D print. Half-second launch. No
             account.
           </p>
         </div>
