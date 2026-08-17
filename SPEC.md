@@ -4786,7 +4786,7 @@ The model in one place:
   | Input | Action |
   |---|---|
   | Right-drag | Orbit the camera |
-  | **Middle-drag**, or **Shift + right-drag** | Pan the camera (slide the view target in the view plane). Middle-drag is the browser-safe pan: Firefox forces its native context menu on Shift+right-click regardless of `preventDefault`, so the web build relies on middle-drag (#195). |
+  | **Middle-drag**, or **Shift + right-drag** | Pan the camera (slide the view target in the view plane). The web host `preventDefault`s the browser context menu so Shift+right-drag can pan (#1447). Firefox still forces its native menu on Shift+right-click regardless, so middle-drag remains the browser-safe fallback there (#195). |
   | Mouse wheel | Zoom (dolly in/out) |
 
 - **Zoom to Fit (#164/#279/#1276):** available from the toolbar **Zoom** button (magnifying-glass
