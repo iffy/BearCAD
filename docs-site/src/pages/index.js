@@ -13,7 +13,7 @@ const STATS = [
   {value: '21–50 MB', label: 'The whole app'},
   {value: '~0.5 s', label: 'Cold launch'},
   {value: 'No account', label: 'Files stay yours'},
-  {value: 'STL & STEP', label: 'Print or export'},
+  {value: 'STL/STEP/3MF', label: 'Print or export'},
 ];
 
 const TRAITS = [
@@ -52,7 +52,6 @@ function Hero() {
             width="220"
             height="220"
           />
-          {version ? <p className={styles.kicker}>v{version}</p> : null}
         </div>
         <div className={styles.heroCopy}>
           <Heading as="h1" className={styles.title}>
@@ -76,7 +75,7 @@ function Hero() {
             Open in your browser
           </Link>
           <Link className={clsx(styles.btn, styles.btnGhost)} href="#get">
-            Download
+            Download {version ? <>v{version}</> : null}
           </Link>
         </div>
       </div>
