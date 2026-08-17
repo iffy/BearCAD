@@ -346,13 +346,16 @@ mod tests {
 
     #[test]
     fn homepage_offers_chromebook_install_next_to_downloads() {
-        // Per-OS downloads (Chromebook included) moved off the hero to a dedicated
-        // page when the landing page gained its four-action layout (#1374); the hero
-        // now just links there.
+        // Hero Download jumps to the on-page GetBearCAD block (#get). Per-OS
+        // downloads and Chromebook install live on downloads.mdx.
         let home = include_str!("../docs-site/src/pages/index.js");
         assert!(
-            home.contains("Download") && home.contains("/docs/downloads"),
-            "landing page should link to the dedicated download page"
+            home.contains("Download") && home.contains("#get"),
+            "landing Download should go to the on-page GetBearCAD block"
+        );
+        assert!(
+            !home.contains("/docs/downloads"),
+            "landing Download should not point at /docs/downloads"
         );
         let downloads = include_str!("../docs-site/docs/downloads.mdx");
         assert!(
