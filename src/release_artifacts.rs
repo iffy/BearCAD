@@ -440,6 +440,35 @@ mod tests {
             hero_ctas.contains("grid-column: 1") && hero_ctas.contains("justify-self: end"),
             "desktop CTAs should sit with the copy, right-aligned to the gutter, got:{hero_ctas}"
         );
+        let desktop_title = rule(".title");
+        assert!(
+            desktop_title.contains("text-align: right"),
+            "desktop title should stay right-aligned against the gutter, got:{desktop_title}"
+        );
+    }
+
+    /// Mobile stacks the hero in one column; Small/Quick/Fun/Bear should
+    /// sit centered, not inherit the desktop right-align.
+    #[test]
+    fn homepage_hero_title_is_centered_on_mobile() {
+        let css = include_str!("../docs-site/src/pages/index.module.css");
+        let mobile = css
+            .split("@media screen and (min-width: 800px)")
+            .next()
+            .expect("mobile hero styles");
+        let title = mobile
+            .split(".title {")
+            .nth(1)
+            .and_then(|s| s.split('}').next())
+            .expect(".title base rule");
+        assert!(
+            title.contains("text-align: center"),
+            "mobile Small/Quick/Fun/Bear title should be centered, got:{title}"
+        );
+        assert!(
+            !title.contains("text-align: right"),
+            "mobile title must not be right-aligned, got:{title}"
+        );
     }
 
     /// Landing hero uses the colorful 2×2×2 materials viewport shot, not a

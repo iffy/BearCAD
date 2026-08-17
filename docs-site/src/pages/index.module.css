@@ -64,7 +64,7 @@
   font-size: clamp(2.4rem, 9vw, 4.25rem);
   letter-spacing: -0.055em;
   line-height: 0.95;
-  text-align: right;
+  text-align: center;
 }
 
 .titleSoft {
@@ -144,6 +144,7 @@
   .title {
     margin-left: auto;
     margin-right: 0;
+    text-align: right;
   }
 
   .sub {
