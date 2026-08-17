@@ -375,16 +375,22 @@ mod tests {
         );
     }
 
+    /// #1213 / #1439 / #1440: Chromebook install sits next to the other
+    /// platform downloads. After the name-your-price landing, the hero
+    /// Download CTA jumps to the GetBearCAD block (`#get`); the dedicated
+    /// download page still names Chromebooks and points at the hosted web app.
     #[test]
     fn homepage_offers_chromebook_install_next_to_downloads() {
-        // Per-OS downloads (Chromebook included) moved off the hero to a dedicated
-        // page when the landing page gained its four-action layout (#1374); the hero
-        // now just links there.
         let home = include_str!("../docs-site/src/pages/index.js");
         assert!(
-            home.contains("Download") && home.contains("/docs/downloads"),
-            "landing page should link to the dedicated download page"
+            home.contains("Download") && home.contains("#get"),
+            "landing page Download should jump to the GetBearCAD block"
         );
+        assert!(
+            home.contains("GetBearCAD"),
+            "landing page should embed the GetBearCAD download/pay block"
+        );
+
         let downloads = include_str!("../docs-site/docs/downloads.mdx");
         assert!(
             downloads.contains("Chromebook"),
