@@ -8,21 +8,25 @@ export const DOWNLOADS = [
   {
     label: 'macOS',
     detail: 'Apple Silicon',
+    icon: 'macos',
     href: `${RELEASE}/bearcad.dmg`,
   },
   {
     label: 'Windows',
     detail: 'x86-64',
+    icon: 'windows',
     href: `${RELEASE}/bearcad.exe`,
   },
   {
     label: 'Linux',
     detail: 'x86-64',
+    icon: 'linux',
     href: `${RELEASE}/bearcad-linux-x86_64.tar.gz`,
   },
   {
     label: 'Browser',
     detail: 'No install',
+    icon: 'browser',
     href: WEB_APP_PATH,
   },
 ];

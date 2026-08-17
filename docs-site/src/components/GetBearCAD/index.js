@@ -1,5 +1,6 @@
 import Link from '@docusaurus/Link';
 import {DOWNLOADS, PAY_URL} from '@site/src/site';
+import {ICONS} from './icons';
 import styles from './styles.module.css';
 
 export default function GetBearCAD() {
@@ -18,12 +19,18 @@ export default function GetBearCAD() {
       </div>
 
       <div className={styles.downloads} id="downloads">
-        {DOWNLOADS.map(({label, detail, href}) => (
-          <Link key={label} className={styles.dl} href={href}>
-            <span className={styles.dlLabel}>{label}</span>
-            <span className={styles.dlDetail}>{detail}</span>
-          </Link>
-        ))}
+        {DOWNLOADS.map(({label, detail, href, icon}) => {
+          const Icon = ICONS[icon];
+          return (
+            <Link key={label} className={styles.dl} href={href}>
+              {Icon ? <Icon /> : null}
+              <span className={styles.dlText}>
+                <span className={styles.dlLabel}>{label}</span>
+                <span className={styles.dlDetail}>{detail}</span>
+              </span>
+            </Link>
+          );
+        })}
       </div>
     </div>
   );
