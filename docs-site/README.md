@@ -24,28 +24,27 @@ else is noise. Concretely:
 - The **landing page** is served at the site root (`/`) from `src/pages/index.js`.
 - The **documentation** is served under `/docs/` from the `docs/` folder.
 
-## Install
+## Preview locally
+
+Node 20+. From the repo root:
 
 ```bash
-npm ci
+cd docs-site
+npm ci          # first time, or after package-lock changes
+npm start       # http://localhost:3000/ — live reload
 ```
 
-## Local development
+Landing page is `/`. Docs are `/docs/`.
 
-```bash
-npm run start
-```
-
-Starts a local dev server and opens a browser window. Most changes reload live.
-
-## Build
+Production-like preview (what CI publishes):
 
 ```bash
 npm run build
+npm run serve   # http://localhost:3000/
 ```
 
-Generates the static site into `build/` — both `build/index.html` (landing page) and
-`build/docs/` (documentation). Serve it locally with `npm run serve`.
+Doc screenshots under `static/img/screenshots/` are CI artifacts. A local build
+warns if they're missing; the pages still serve.
 
 ## Deployment
 

@@ -12,6 +12,19 @@ BREP kernel; sketch constraints solved by [SolveSpace](https://solvespace.com/)'
 
 [Docs](https://iffy.github.io/BearCAD/)
 
+## Website
+
+Node 20+. From the repo root:
+
+```sh
+cd docs-site
+npm ci          # first time, or after package-lock changes
+npm start       # http://localhost:3000/ — live reload
+```
+
+Landing page is `/`. Docs are `/docs/`. `npm run build && npm run serve` is a
+production-like preview. More in [docs-site/README.md](docs-site/README.md).
+
 ## Download
 
 Or skip the download: **[run BearCAD in your browser](https://bearcad.com/app/)**
