@@ -1,1 +1,0 @@
-Repeated bodies (Repeat tool) are now named with incrementing numbers off their source body's name — 'Jim' yields 'Jim1', 'Jim2', …, and a base already ending in a number ('Jim1') yields 'Jim1-1', 'Jim1-2', ….
