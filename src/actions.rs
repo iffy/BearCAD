@@ -9140,6 +9140,36 @@ impl AppState {
                         }
                     }
                 }
+                // In-sketch Repeat always has a draft so the Entities picker shows empty
+                // on enable, not only after the first edge pick (#1437). Seed from the
+                // current sketch selection when present so pre-picked lines/circles show up.
+                if tool == Tool::Repeat {
+                    if let Some(session) = self.sketch_session {
+                        if self.creating_sketch_repeat.is_none() {
+                            let mut cr = CreatingSketchRepeat::new(session.sketch);
+                            for element in handoff.iter().cloned() {
+                                match element {
+                                    crate::hierarchy::SceneElement::Line(li)
+                                        if self.doc.lines.get(li).is_some_and(|l| {
+                                            l.sketch == session.sketch
+                                        }) =>
+                                    {
+                                        cr.line_targets.push(li);
+                                    }
+                                    crate::hierarchy::SceneElement::Circle(ci)
+                                        if self.doc.circles.get(ci).is_some_and(|c| {
+                                            c.sketch == session.sketch
+                                        }) =>
+                                    {
+                                        cr.circle_targets.push(ci);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            self.creating_sketch_repeat = Some(cr);
+                        }
+                    }
+                }
                 if tool == Tool::Repeat && self.creating_repeat.is_none() {
                     // Seed the target set from the current selection (#439): a body
                     // selected before picking the tool is what you want to repeat, so
@@ -23333,6 +23363,48 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         state.apply(Action::SetTool(Tool::Offset));
         let co = state.creating_sketch_offset.as_ref().unwrap();
         assert_eq!(co.line_targets, vec![lkey(0)]);
+    }
+
+    /// #1437: enabling Repeat in a sketch creates an empty draft so the Entities picker
+    /// is visible before the first edge is clicked — same as Offset (#512).
+    #[test]
+    fn set_tool_repeat_in_sketch_starts_empty_draft() {
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(pkey(0)),
+            viewport: None,
+        });
+        state.apply(Action::SetTool(Tool::Repeat));
+        let cr = state
+            .creating_sketch_repeat
+            .as_ref()
+            .expect("Repeat tool creates a sketch draft immediately");
+        assert!(cr.line_targets.is_empty());
+        assert!(cr.circle_targets.is_empty());
+        assert_eq!(cr.sketch, state.sketch_session.unwrap().sketch);
+    }
+
+    /// #1437: pre-selected sketch lines seed the Repeat draft when the tool is enabled.
+    #[test]
+    fn set_tool_repeat_seeds_from_selection() {
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(pkey(0)),
+            viewport: None,
+        });
+        let sketch = state.sketch_session.unwrap().sketch;
+        state.doc.lines.insert(crate::model::Line::from_local_endpoints(
+            sketch, 0.0, 0.0, 10.0, 0.0,
+        ));
+        state.doc.shape_order.push(crate::model::ShapeKind::Line);
+        crate::selection::click_scene_selection(
+            &mut state.scene_selection,
+            crate::hierarchy::SceneElement::Line(lkey(0)),
+            false,
+        );
+        state.apply(Action::SetTool(Tool::Repeat));
+        let cr = state.creating_sketch_repeat.as_ref().unwrap();
+        assert_eq!(cr.line_targets, vec![lkey(0)]);
     }
 
     /// Revolve (SPEC §3.5): committing a face + axis creates the revolution and its body
