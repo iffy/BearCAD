@@ -10,10 +10,10 @@ import {WEB_APP_PATH} from '@site/src/site';
 import styles from './index.module.css';
 
 const STATS = [
-  {value: '21–50 MB', label: 'The whole app'},
-  {value: '~0.5 s', label: 'Cold launch'},
+  {value: '~ 50 MB', label: 'The whole app'},
+  {value: '~ 0.5s', label: 'Cold launch'},
   {value: 'No account', label: 'Files stay yours'},
-  {value: 'STL/STEP/3MF', label: 'Print or export'},
+  {value: 'STL / STEP / 3MF', label: 'Print or export'},
 ];
 
 const TRAITS = [
