@@ -65,7 +65,9 @@
 }
 
 .titleSoft {
-  font-weight: 200;
+  font-family: Outfit, ui-sans-serif, system-ui, sans-serif;
+  font-weight: 100;
+  letter-spacing: -0.02em;
 }
 
 .titleName {
