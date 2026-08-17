@@ -3,9 +3,8 @@ import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 
 /**
  * Small "Version X.Y.Z" badge sourced from the site's customFields.appVersion,
- * which docusaurus.config.js reads from the workspace root Cargo.toml at
- * build time. See the version-sourcing comment in docusaurus.config.js for
- * why this isn't (yet) read from CHANGELOG.md.
+ * which docusaurus.config.js reads from the latest CHANGELOG.md release
+ * header at build time.
  */
 export default function VersionBadge() {
   const {siteConfig} = useDocusaurusContext();

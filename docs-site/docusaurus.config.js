@@ -12,31 +12,20 @@ import {PAY_URL, WEB_APP_PATH} from './src/site.js';
 
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 
-// --- Version sourcing -------------------------------------------------
-//
-// The docs display a single version number for the app. Scope decision (see
-// changes/ log and docs-site README): this repo's CHANGELOG.md has no version
-// headers yet — nothing has ever run `changer bump`/`changer release` to
-// consolidate the per-change snippets under changes/*.md into dated,
-// versioned entries. Until that happens there is no "top of CHANGELOG"
-// version to read. So for this first draft we read the version straight out
-// of the workspace root Cargo.toml's `[package].version`, which is the only
-// real version number that exists in the repo today.
-//
-// TODO: once this project starts cutting releases via `changer bump` /
-// `changer release` (which will populate CHANGELOG.md with real `## vX.Y.Z`
-// headers), switch this to parse the top entry of ../CHANGELOG.md instead,
-// and wire up Docusaurus's `docusaurus docs:version` versioned-docs feature
-// to snapshot each release rather than always showing "current".
+// Version shown on the site (landing kicker, docs badge, footer). Prefer the
+// latest `changer` release header in CHANGELOG.md (`# vX.Y.Z`). Fall back to
+// Cargo.toml if the changelog has no version yet.
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
+const changelog = readFileSync(path.join(rootDir, '..', 'CHANGELOG.md'), 'utf8');
+const changelogMatch = changelog.match(/^#\s*v(\d+\.\d+\.\d+)\b/m);
 const cargoToml = readFileSync(path.join(rootDir, '..', 'Cargo.toml'), 'utf8');
-const versionMatch = cargoToml.match(/^version\s*=\s*"([^"]+)"/m);
-const appVersion = versionMatch ? versionMatch[1] : 'unknown';
+const cargoMatch = cargoToml.match(/^version\s*=\s*"([^"]+)"/m);
+const appVersion = changelogMatch?.[1] ?? cargoMatch?.[1] ?? 'unknown';
 
 /** @type {import('@docusaurus/types').Config} */
 const config = {
   title: 'BearCAD',
-  tagline: 'Small, quick CAD. Built by robots.',
+  tagline: 'Small CAD. Quick CAD.',
   favicon: 'img/favicon.ico',
 
   // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future
@@ -191,8 +180,6 @@ const config = {
             ],
           },
         ],
-        // See the version-sourcing comment above: this tracks Cargo.toml
-        // until the project starts cutting versioned releases via `changer`.
         copyright: `BearCAD v${appVersion} · Built ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC · Docs built with Docusaurus · Copyright © ${new Date().getFullYear()}`,
       },
       prism: {

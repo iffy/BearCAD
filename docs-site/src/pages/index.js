@@ -13,7 +13,7 @@ const STATS = [
   {value: '21–50 MB', label: 'The whole app'},
   {value: '~0.5 s', label: 'Cold launch'},
   {value: 'No account', label: 'Files stay yours'},
-  {value: 'Pre-alpha', label: 'Rough, fast-moving'},
+  {value: 'STL & STEP', label: 'Print or export'},
 ];
 
 const TRAITS = [
@@ -48,17 +48,20 @@ function Hero() {
           className={styles.logo}
           src={useBaseUrl('/img/logo.png')}
           alt=""
-          width="96"
-          height="96"
+          width="128"
+          height="128"
         />
-        <p className={styles.kicker}>
-          {version ? `v${version} · ` : ''}Pre-alpha · Built by robots
-        </p>
+        {version ? <p className={styles.kicker}>v{version}</p> : null}
         <Heading as="h1" className={styles.title}>
           Small CAD.
+          <br />
+          Quick CAD.
+          <br />
+          BearCAD
         </Heading>
         <p className={styles.sub}>
-          Sketch, constrain, extrude. Launches in half a second. No account.
+          Design a part, print it, or export STEP. Half-second launch. No
+          account.
         </p>
         <div className={styles.heroCtas}>
           <Link className={clsx(styles.btn, styles.btnPrimary)} href={WEB_APP_PATH}>

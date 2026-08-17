@@ -35,8 +35,8 @@
 
 .logo {
   display: block;
-  width: 88px;
-  height: 88px;
+  width: 120px;
+  height: 120px;
   margin: 0 auto 1.1rem;
   filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.18));
 }
@@ -53,15 +53,14 @@
 .title {
   margin: 0;
   font-family: "Bricolage Grotesque", ui-rounded, system-ui, sans-serif;
-  font-size: clamp(2.6rem, 11vw, 5.4rem);
+  font-size: clamp(2.4rem, 9vw, 4.25rem);
   font-weight: 800;
   letter-spacing: -0.055em;
-  line-height: 0.92;
-  text-wrap: balance;
+  line-height: 0.95;
 }
 
 .sub {
-  max-width: 28rem;
+  max-width: 34rem;
   margin: 1.05rem auto 0;
   font-size: clamp(1.05rem, 2.6vw, 1.4rem);
   line-height: 1.4;
@@ -129,6 +128,7 @@
   margin: 2.75rem auto 0;
   padding-left: var(--pad-left);
   padding-right: var(--pad-right);
+  padding-bottom: 3.25rem;
 }
 
 .shot {
@@ -136,7 +136,7 @@
   width: 100%;
   max-width: 100%;
   height: auto;
-  border-radius: 14px 14px 0 0;
+  border-radius: 14px;
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--ink) 10%, transparent),
     0 28px 70px rgba(0, 0, 0, 0.28);
@@ -336,8 +336,8 @@
   }
 
   .logo {
-    width: 68px;
-    height: 68px;
+    width: 88px;
+    height: 88px;
     margin-bottom: 0.85rem;
   }
 
@@ -356,7 +356,7 @@
 
   .shotWrap {
     margin-top: 2rem;
-    margin-bottom: 1.35rem;
+    padding-bottom: 2.25rem;
   }
 
   .shot {
