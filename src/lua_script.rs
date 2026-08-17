@@ -947,6 +947,9 @@ fn lua_amount_expr(opts: &Table, key: &str) -> mlua::Result<String> {
 
 fn parse_constraint_point_table(lua: &Lua, table: Table) -> mlua::Result<ConstraintPoint> {
     let kind: String = table.get("kind").or_else(|_| table.get("type"))?;
+    if kind.eq_ignore_ascii_case("origin") {
+        return Ok(ConstraintPoint::Origin);
+    }
     if kind.eq_ignore_ascii_case("face") {
         // { kind = "face", face = { ... }, index = 0 } — vertex `index` of that face's own
         // boundary loop (#26/#27's `FaceVertex`).
@@ -8263,6 +8266,23 @@ mod tests {
         );
         let line = &state.doc.lines[lkey(1)];
         assert!((line.y0 - 12.0).abs() < 0.1, "line spacing: y0={}", line.y0);
+
+        // #1436: origin + a circle centre is a scriptable point-to-point distance.
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.circle{ x = 8, y = 0, r = 3 }
+            bearcad.add_constraint({ kind = "point_point",
+                                     anchor = { kind = "origin" },
+                                     mover  = { kind = "circle", index = 0 } }, "12mm")
+        "#,
+        );
+        let circle = &state.doc.circles[rkey(0)];
+        let dist = (circle.cx * circle.cx + circle.cy * circle.cy).sqrt();
+        assert!(
+            (dist - 12.0).abs() < 0.1,
+            "origin-to-circle distance: {dist}"
+        );
     }
 
     #[test]

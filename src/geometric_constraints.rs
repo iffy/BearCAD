@@ -349,6 +349,7 @@ fn constraint_ref_sort_key(reference: ConstraintRef) -> (u8, usize, u8, u8) {
         ConstraintRef::Point(ConstraintPoint::ImageCalibrationPoint { image, index }) => {
             (9, image.index() as usize, index as u8, 0)
         }
+        ConstraintRef::Point(ConstraintPoint::Origin) => (9, 1, 0, 0),
         ConstraintRef::Line(ConstraintLine::OriginAxis(axis)) => (8, axis as usize, 0, 0),
         ConstraintRef::Origin => (9, 0, 0, 0),
     }
@@ -661,6 +662,7 @@ fn validate_point_ref(doc: &Document, sketch: SketchId, point: &ConstraintPoint)
                 return Err(format!("Face vertex {index} no longer resolves"));
             }
         }
+        ConstraintPoint::Origin => {}
         ConstraintPoint::TextAnchor { text, .. } => {
             let entity = doc
                 .sketch_texts
@@ -721,7 +723,7 @@ fn coincident_point_mobility(point: &ConstraintPoint) -> u8 {
         ConstraintPoint::TextAnchor { .. } | ConstraintPoint::ImageCalibrationPoint { .. } => 3,
         // Fixed by the body's own geometry: never the mover, so it always ranks below every
         // draggable sketch-native point (mirrors `ConstraintEntity::Origin`'s fixed treatment).
-        ConstraintPoint::FaceVertex { .. } => 0,
+        ConstraintPoint::FaceVertex { .. } | ConstraintPoint::Origin => 0,
     }
 }
 
@@ -892,6 +894,7 @@ pub fn point_uv(doc: &Document, sketch: SketchId, point: ConstraintPoint) -> Res
                 .ok_or_else(|| format!("Circle {} not found", circle.index()))?;
             Ok((entity.cx, entity.cy))
         }
+        ConstraintPoint::Origin => Ok((0.0, 0.0)),
         // A face's own vertex has no stored local coordinate: it's a body-space 3D point
         // resolved from the extrusion's analytic boundary and projected into `sketch`'s frame.
         ConstraintPoint::FaceVertex { face, index } => {
@@ -968,6 +971,7 @@ pub fn set_point_uv(
         // Fixed by the body's own geometry, not by the sketch — mirrors how
         // `ConstraintEntity::Origin` is treated as a fixed, undraggable reference.
         ConstraintPoint::FaceVertex { .. } => Err("Face vertices are fixed and cannot be moved".to_string()),
+        ConstraintPoint::Origin => Err("The origin is fixed and cannot be moved".to_string()),
         // Moving a calibration point translates the whole image (#425): the scale never
         // changes from constraints.
         ConstraintPoint::ImageCalibrationPoint { image, index } => {

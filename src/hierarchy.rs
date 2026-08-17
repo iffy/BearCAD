@@ -821,6 +821,7 @@ fn point_effective_visible(
         ConstraintPoint::CircleCenter(circle) => doc.circles.get(circle).is_some_and(|entity| {
             visibility.effective_visible(doc, SceneElement::Sketch(entity.sketch))
         }),
+        ConstraintPoint::Origin => true,
         // A face's own vertex tracks the feature that produced its face — same dependency
         // `face_element` gives a sketch placed on a body cap/side wall.
         // With no owning feature there is nothing to inherit from (#1055).
@@ -3094,6 +3095,7 @@ fn point_parent_element(doc: &Document, point: ConstraintPoint) -> Option<SceneE
         ConstraintPoint::CircleCenter(circle) => Some(SceneElement::Circle(circle)),
         ConstraintPoint::TextAnchor { text, .. } => Some(SceneElement::SketchText(text)),
         ConstraintPoint::ImageCalibrationPoint { image, .. } => Some(SceneElement::Image(image)),
+        ConstraintPoint::Origin => Some(SceneElement::Origin),
         // A face's own vertex nests under the feature that produced its face.
         ConstraintPoint::FaceVertex { face, .. } => face_owner_element(&face),
     }
@@ -3412,6 +3414,7 @@ fn constraint_point_touches_element(point: &ConstraintPoint, element: &SceneElem
         (p, SceneElement::Point(q)) => p == q,
         (ConstraintPoint::LineEndpoint { line, .. }, SceneElement::Line(i)) => line == i,
         (ConstraintPoint::CircleCenter(c), SceneElement::Circle(i)) => c == i,
+        (ConstraintPoint::Origin, SceneElement::Origin) => true,
         _ => false,
     }
 }

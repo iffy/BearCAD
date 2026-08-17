@@ -1342,6 +1342,9 @@ fn constraint_point_from_json(
         .or_else(|| t.get("type"))
         .and_then(Value::as_str)
         .ok_or("point requires a string `kind`")?;
+    if kind.eq_ignore_ascii_case("origin") {
+        return Ok(ConstraintPoint::Origin);
+    }
     if kind.eq_ignore_ascii_case("face") {
         let face = face_id_from_json(doc, t.get("face").ok_or("face vertex requires `face`")?)?;
         let index = req_usize(t, "index", "point")?;

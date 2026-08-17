@@ -495,6 +495,7 @@ pub fn element_in_sketch(
             crate::model::ConstraintPoint::TextAnchor { text, .. } => text_in(*text),
             // Gated to the host plane at creation; nothing sketch-foreign resolves here.
             crate::model::ConstraintPoint::ImageCalibrationPoint { .. } => true,
+            crate::model::ConstraintPoint::Origin => true,
         },
         SceneElement::FaceEdge(cl) => constraint_line_in(cl),
         SceneElement::BodyEdge { body, .. }

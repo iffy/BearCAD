@@ -1471,6 +1471,7 @@ fn constraint_point_table(doc: &Document, p: &ConstraintPoint) -> String {
             let ord = doc.circles.keys().position(|k| k == *c).unwrap_or(0);
             format!("{{ kind = \"circle\", index = {ord}, point = true }}")
         }
+        ConstraintPoint::Origin => "{ kind = \"origin\" }".into(),
         other => {
             // Fall back to Instruction rendering for face/text/image points.
             Instruction::SelectSceneElement {

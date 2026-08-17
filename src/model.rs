@@ -952,6 +952,10 @@ impl TextAnchor {
 pub enum ConstraintPoint {
     LineEndpoint { line: LineKey, end: LineEnd },
     CircleCenter(CircleKey),
+    /// The sketch origin (local UV `(0, 0)`). Fixed, like [`ConstraintEntity::Origin`]:
+    /// on a circular cap this *is* the extruded circle's centre, so a dimension from
+    /// here to a hole locates it (#1436).
+    Origin,
     /// A corner of an extrusion-backed face's own boundary loop (#26/#27): index into
     /// [`crate::extrude::face_boundary_loop_world`]'s ordered vertex list. Scoped to
     /// `FaceId::ExtrudeCap`/`FaceId::ExtrudeSide`; other face kinds never resolve. Fixed by

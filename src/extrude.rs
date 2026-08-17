@@ -8245,6 +8245,7 @@ pub fn constraint_point_world(doc: &Document, point: crate::model::ConstraintPoi
             )?;
             return Some(frame.origin + frame.u_axis * u + frame.v_axis * v);
         }
+        crate::model::ConstraintPoint::Origin => return None,
         crate::model::ConstraintPoint::FaceVertex { .. } => unreachable!("handled above"),
     };
     let frame = sketch_geometry_frame(doc, sketch)?;

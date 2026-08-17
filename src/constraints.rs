@@ -559,13 +559,27 @@ fn resolve_two_selection_dimension(
             _ => None,
         })
         .collect();
-    let points: Vec<ConstraintPoint> = refs
+    let mut points: Vec<ConstraintPoint> = refs
         .iter()
         .filter_map(|reference| match reference {
             ConstraintRef::Point(point) => Some(point.clone()),
+            // The sketch origin is a fixed point (#1436): origin + a hole's centre
+            // is how far the hole sits from a circular face's centre.
+            ConstraintRef::Origin => Some(ConstraintPoint::Origin),
             _ => None,
         })
         .collect();
+    // A circle paired with something else is its centre (#1436) — origin-to-circle,
+    // centre-to-centre, or centre-to-edge. A lone circle still dimensions as a
+    // diameter via the single-selection path.
+    for reference in refs {
+        if let ConstraintRef::Circle(circle) = reference {
+            let center = ConstraintPoint::CircleCenter(*circle);
+            if !points.contains(&center) {
+                points.push(center);
+            }
+        }
+    }
 
     if lines.len() == 2 {
         let line_a = lines[0].clone();
@@ -674,6 +688,7 @@ fn validate_point_in_sketch(
             }
             Ok(())
         }
+        ConstraintPoint::Origin => Ok(()),
         ConstraintPoint::FaceVertex { face, index } => {
             if !crate::geometric_constraints::face_vertex_valid(doc, &face, index) {
                 return Err(format!("Face vertex {index} no longer resolves"));
@@ -1867,6 +1882,60 @@ mod tests {
                 line_b: ConstraintLine::Line(lkey(1)),
                 rotation_sign: 1,
             })
+        );
+    }
+
+    /// #1436: the sketch origin plus a circle (or its centre) is the distance from the
+    /// origin to that centre — on a circular cap the origin *is* the extruded circle's
+    /// centre, so this is how you locate a hole on a cylinder face.
+    #[test]
+    fn dimension_edit_from_origin_and_circle_is_center_distance() {
+        use crate::hierarchy::SceneElement;
+        use crate::model::DimensionTarget;
+        use crate::selection::{click_scene_selection, SceneSelection};
+
+        let (mut doc, sketch) = sketch_doc();
+        doc.circles
+            .insert(Circle::from_local_center_radius(sketch, 8.0, 0.0, 3.0, 0.0));
+        doc.shape_order.push(ShapeKind::Circle);
+
+        let mut sel = SceneSelection::default();
+        click_scene_selection(&mut sel, SceneElement::Origin, false);
+        click_scene_selection(&mut sel, SceneElement::Circle(rkey(0)), true);
+        let target = dimension_edit_from_selection(&doc, sketch, &sel);
+        assert!(
+            matches!(
+                target,
+                Some(DimensionTarget::Distance(DistanceTarget::PointPointDistance { .. }))
+            ),
+            "origin + circle should dimension as origin-to-centre distance, got {target:?}"
+        );
+
+        let mut sel = SceneSelection::default();
+        click_scene_selection(&mut sel, SceneElement::Origin, false);
+        click_scene_selection(
+            &mut sel,
+            SceneElement::Point(ConstraintPoint::CircleCenter(rkey(0))),
+            true,
+        );
+        let target = dimension_edit_from_selection(&doc, sketch, &sel);
+        assert!(
+            matches!(
+                target,
+                Some(DimensionTarget::Distance(DistanceTarget::PointPointDistance { .. }))
+            ),
+            "origin + circle centre should dimension as a point-point distance, got {target:?}"
+        );
+
+        let Some(DimensionTarget::Distance(dt)) = target else {
+            panic!("expected a distance target");
+        };
+        add_distance_constraint(&mut doc, sketch, dt, "12mm".to_string()).unwrap();
+        let c = &doc.circles[rkey(0)];
+        let dist = (c.cx * c.cx + c.cy * c.cy).sqrt();
+        assert!(
+            (dist - 12.0).abs() < 0.1,
+            "dimension should place the circle 12 mm from the origin, got {dist}"
         );
     }
 

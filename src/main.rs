@@ -19941,9 +19941,28 @@ fn resolve_viewport_hover_highlight(
                 Some(session) if face_edge_hover(doc, session.sketch, pp, project).is_some() => {
                     face_edge_hover(doc, session.sketch, pp, project)
                 }
-                Some(session) => scene_element_from_pick(&target.kind)
-                    .filter(|element| element_in_sketch(doc, session.sketch, element))
-                    .map(|_| gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind)),
+                Some(session) => {
+                    // #1436: the origin is a dimensionable point (circular-cap centre).
+                    // Real vertices still win — they land in `target` via resolve_pick_target.
+                    if !matches!(
+                        &target.kind,
+                        construction::PickTargetKind::Point(_)
+                    ) {
+                        if let Some(frame) = sketch_geometry_frame(doc, session.sketch) {
+                            if project(frame.origin).is_some_and(|op| {
+                                (op - pp).length()
+                                    <= touch::hit(construction::POINT_PICK_RADIUS_PX)
+                            }) {
+                                return Some(gpu_viewport::ViewportHoverHighlight::Element(
+                                    SceneElement::Origin,
+                                ));
+                            }
+                        }
+                    }
+                    scene_element_from_pick(&target.kind)
+                        .filter(|element| element_in_sketch(doc, session.sketch, element))
+                        .map(|_| gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind))
+                }
                 // 3D mode (#453): glow the measurable line or point a click would capture
                 // as a derived parameter — body feature edges and mesh corners included
                 // (#647), which the click path has always selected.
@@ -23179,8 +23198,10 @@ fn handle_dimension_line_pick(
     let Some(pp) = pointer_screen else {
         return false;
     };
-    if nearest_sketch_point_in_sketch(pp, project, &state.doc, session.sketch).is_some() {
-        return false; // let the point-pick handler take vertices
+    if nearest_sketch_point_in_sketch(pp, project, &state.doc, session.sketch).is_some()
+        || press_on_sketch_origin(state, session, project, pp)
+    {
+        return false; // let the point-pick handler take vertices and the origin (#1436)
     }
     let Some((target, _)) =
         nearest_sketch_line_in_sketch(pp, project, &state.doc, session.sketch)
@@ -23212,25 +23233,38 @@ fn handle_dimension_point_pick(
     let Some(pp) = pointer_screen else {
         return false;
     };
-    let Some((point, _)) =
+    if let Some((point, _)) =
         nearest_sketch_point_in_sketch(pp, project, &state.doc, session.sketch)
-    else {
-        return false;
-    };
-    // Select the **point**, not the shape that owns it (#870): picking a circle's centre used
-    // to select the circle, which is its *diameter* — so a centre-to-edge distance could
-    // never be built, and the click looked like it had missed.
-    let owner = vertex_drag::scene_element_for_point(point.clone());
-    if document_health::require_element_editable(&state.document_health, owner).is_err() {
-        return false;
+    {
+        // Select the **point**, not the shape that owns it (#870): picking a circle's centre used
+        // to select the circle, which is its *diameter* — so a centre-to-edge distance could
+        // never be built, and the click looked like it had missed.
+        let owner = vertex_drag::scene_element_for_point(point.clone());
+        if document_health::require_element_editable(&state.document_health, owner).is_err() {
+            return false;
+        }
+        let element = SceneElement::Point(point);
+        let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
+        state.apply(Action::ClickSceneElement { element, additive });
+        if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
+            state.try_begin_dimension_from_selection();
+        }
+        return true;
     }
-    let element = SceneElement::Point(point);
-    let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
-    state.apply(Action::ClickSceneElement { element, additive });
-    if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
-        state.try_begin_dimension_from_selection();
+    // #1436: the sketch origin is a dimensionable point — on a circular cap it is the
+    // extruded circle's centre, so origin + a hole locates the hole.
+    if press_on_sketch_origin(state, session, project, pp) {
+        let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Origin,
+            additive,
+        });
+        if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
+            state.try_begin_dimension_from_selection();
+        }
+        return true;
     }
-    true
+    false
 }
 
 /// Whether a press at `pp` is on the sketch **origin** marker (#852). The origin is a
@@ -36535,7 +36569,7 @@ mod tests {
         use crate::actions::SketchSession;
         use crate::construction::PickTargetKind;
 
-        // A sketch on the ground plane with one line near the origin.
+        // A sketch on the ground plane with one line through the origin.
         let mut doc = crate::model::Document::default();
         let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         doc.lines
@@ -36545,8 +36579,8 @@ mod tests {
         let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
         let vp = cam.view_proj(viewport);
         let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
-        // Aim the cursor at the line's midpoint on screen.
-        let mid = project(glam::Vec3::ZERO).expect("origin projects into the viewport");
+        // Aim off the origin so the origin marker doesn't steal the line hover.
+        let on_line = project(glam::Vec3::new(10.0, 0.0, 0.0)).expect("line point projects");
 
         let hover = resolve_viewport_hover_highlight(
             false,
@@ -36557,7 +36591,7 @@ mod tests {
             false,
             false,
             false,
-            Some(mid),
+            Some(on_line),
             &cam,
             viewport,
             &vp,
@@ -36574,6 +36608,36 @@ mod tests {
                 )) if l == lkey(0)
             ),
             "hovering a line with the Dimension tool should highlight it, got {hover:?}"
+        );
+
+        // #1436: the origin itself is a dimensionable point (circular-cap centre).
+        let at_origin = project(glam::Vec3::ZERO).expect("origin projects");
+        let hover = resolve_viewport_hover_highlight(
+            false,
+            crate::actions::Tool::Dimension,
+            Some(SketchSession { sketch }),
+            MovePickHover::Bodies,
+            false,
+            false,
+            false,
+            false,
+            Some(at_origin),
+            &cam,
+            viewport,
+            &vp,
+            &doc,
+            &project,
+            None,
+            &[],
+        );
+        assert!(
+            matches!(
+                hover,
+                Some(gpu_viewport::ViewportHoverHighlight::Element(
+                    crate::hierarchy::SceneElement::Origin
+                ))
+            ),
+            "hovering the origin with the Dimension tool should highlight it, got {hover:?}"
         );
 
         // #800: a **point** of that sketch highlights too — a dimension is often between two

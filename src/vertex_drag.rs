@@ -165,6 +165,7 @@ pub fn scene_element_for_point(point: ConstraintPoint) -> SceneElement {
         ConstraintPoint::CircleCenter(circle) => SceneElement::Circle(circle),
         ConstraintPoint::TextAnchor { text, .. } => SceneElement::SketchText(text),
         ConstraintPoint::ImageCalibrationPoint { image, .. } => SceneElement::Image(image),
+        ConstraintPoint::Origin => SceneElement::Origin,
         // A face's own vertex tracks the feature that produced its face, same convention
         // as `document_health`/`hierarchy`'s owner mappings for `FaceVertex`/`FaceEdge`.
         // No owning feature means nothing to inherit from (#1055).
@@ -218,7 +219,7 @@ pub fn can_drag_point(doc: &Document, sketch: SketchId, point: ConstraintPoint) 
             .unwrap_or(false);
     }
     // A face's own vertex is fixed by the body's geometry, never draggable.
-    if let ConstraintPoint::FaceVertex { .. } = point {
+    if let ConstraintPoint::FaceVertex { .. } | ConstraintPoint::Origin = point {
         return false;
     }
     true
@@ -363,6 +364,7 @@ fn constraint_point_sort_key(point: ConstraintPoint) -> (u8, usize, u8, u8) {
     match point {
         ConstraintPoint::LineEndpoint { line, end } => (0, line.index() as usize, end as u8, 0),
         ConstraintPoint::CircleCenter(circle) => (2, circle.index() as usize, 0, 0),
+        ConstraintPoint::Origin => (2, usize::MAX, 0, 0),
         ConstraintPoint::FaceVertex { index, .. } => (3, index, 0, 0),
         ConstraintPoint::TextAnchor { text, anchor } => (4, text.index() as usize, anchor as u8, 0),
         ConstraintPoint::ImageCalibrationPoint { image, index } => {

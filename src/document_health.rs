@@ -185,6 +185,7 @@ fn scene_element_for_point(point: &ConstraintPoint) -> SceneElement {
         ConstraintPoint::FaceVertex { face, .. } => scene_element_for_face(face),
         ConstraintPoint::TextAnchor { text, .. } => SceneElement::SketchText(*text),
         ConstraintPoint::ImageCalibrationPoint { image, .. } => SceneElement::Image(*image),
+        ConstraintPoint::Origin => SceneElement::Origin,
     }
 }
 
@@ -613,6 +614,7 @@ fn point_owner_element(point: &ConstraintPoint) -> SceneElement {
         ConstraintPoint::FaceVertex { face, .. } => scene_element_for_face(face),
         ConstraintPoint::TextAnchor { text, .. } => SceneElement::SketchText(*text),
         ConstraintPoint::ImageCalibrationPoint { image, .. } => SceneElement::Image(*image),
+        ConstraintPoint::Origin => SceneElement::Origin,
     }
 }
 

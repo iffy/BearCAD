@@ -71,7 +71,13 @@ fn entity_world_position(
     sketch: SketchId,
 ) -> Option<Vec3> {
     match entity {
-        ConstraintEntity::Point(point) => point_world_position(doc, point),
+        ConstraintEntity::Point(point) => match point {
+            ConstraintPoint::Origin => {
+                let frame = sketch_geometry_frame(doc, sketch)?;
+                Some(local_to_world(&frame, 0.0, 0.0))
+            }
+            other => point_world_position(doc, other),
+        },
         ConstraintEntity::Line(line) => {
             let (a, b) = constraint_line_world_endpoints(doc, sketch, line)?;
             Some(midpoint(a, b))
