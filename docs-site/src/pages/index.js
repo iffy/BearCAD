@@ -68,14 +68,14 @@ function Hero() {
             Design a part, print it, or export STEP. Half-second launch. No
             account.
           </p>
-          <div className={styles.heroCtas}>
-            <Link className={clsx(styles.btn, styles.btnPrimary)} href={WEB_APP_PATH}>
-              Open in your browser
-            </Link>
-            <Link className={clsx(styles.btn, styles.btnGhost)} href="#get">
-              Download
-            </Link>
-          </div>
+        </div>
+        <div className={styles.heroCtas}>
+          <Link className={clsx(styles.btn, styles.btnPrimary)} href={WEB_APP_PATH}>
+            Open in your browser
+          </Link>
+          <Link className={clsx(styles.btn, styles.btnGhost)} href="#get">
+            Download
+          </Link>
         </div>
       </div>
       <div className={styles.shotWrap}>
