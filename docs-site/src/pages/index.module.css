@@ -1,96 +1,308 @@
-/**
- * CSS files with the .module.css suffix will be treated as CSS modules
- * and scoped locally.
- */
+.page {
+  --honey: #e8a317;
+  --honey-hot: #f0b02a;
+  --ink: #1c1e21;
+  background: #f6f3ee;
+}
 
-.heroBanner {
-  padding: 4rem 0;
-  text-align: center;
+[data-theme='dark'] .page {
+  --ink: #f4f1ea;
+  background: #141416;
+}
+
+.hero {
   position: relative;
   overflow: hidden;
+  padding: 3.5rem 1.25rem 0;
+  text-align: center;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--ink) 5%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--ink) 5%, transparent) 1px, transparent 1px);
+  background-size: 28px 28px;
+  background-position: center top;
 }
 
-@media screen and (max-width: 996px) {
-  .heroBanner {
-    padding: 2rem;
-  }
+.heroInner {
+  position: relative;
+  max-width: 44rem;
+  margin: 0 auto;
 }
 
-.ctaRow {
+.logo {
+  display: block;
+  width: 88px;
+  height: 88px;
+  margin: 0 auto 1.1rem;
+  filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.18));
+}
+
+.kicker {
+  margin: 0 0 0.7rem;
+  font-size: 0.8rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ifm-color-emphasis-600);
+}
+
+.title {
+  margin: 0;
+  font-family: "Bricolage Grotesque", ui-rounded, system-ui, sans-serif;
+  font-size: clamp(3rem, 9vw, 5.4rem);
+  font-weight: 800;
+  letter-spacing: -0.055em;
+  line-height: 0.92;
+}
+
+.sub {
+  margin: 1.05rem 0 0;
+  font-size: clamp(1.15rem, 2.4vw, 1.4rem);
+  line-height: 1.35;
+  color: var(--ifm-color-emphasis-700);
+}
+
+.heroCtas {
   display: flex;
   justify-content: center;
-  margin-bottom: 1rem;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+  margin-top: 1.6rem;
 }
 
-.buttons {
-  display: flex;
+.btn {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 1rem;
-  flex-wrap: wrap;
-}
-
-/* Primary CTA: same size as download buttons, filled amber so it stands out on
-   the green hero (a green `button--primary` would vanish into the background). */
-.ctaButton {
-  background: #ffc94d;
-  border: 1px solid #ffc94d;
-  color: #1c1e21;
-  transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
-}
-
-.ctaButton:hover {
-  background: #ffd36b;
-  border-color: #ffd36b;
-  color: #1c1e21;
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
-}
-
-/* Platform downloads: white on the green hero, amber on hover. */
-.downloadButton {
-  background: #fff;
-  border: 1px solid #fff;
-  color: #1c1e21;
-  transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease,
+  padding: 0.7rem 1.2rem;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 1rem;
+  text-decoration: none;
+  transition: transform 0.15s ease, background 0.15s ease, box-shadow 0.15s ease,
     border-color 0.15s ease;
 }
 
-.downloadButton:hover {
-  background: #ffc94d;
-  border-color: #ffc94d;
+.btn:hover {
+  text-decoration: none;
+  transform: translateY(-1px);
+}
+
+.btnPrimary {
+  background: var(--honey);
   color: #1c1e21;
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--honey) 38%, transparent);
 }
 
-.ctaHint {
+.btnPrimary:hover {
+  background: var(--honey-hot);
+  color: #1c1e21;
+}
+
+.btnGhost {
+  background: transparent;
+  color: var(--ifm-font-color-base);
+  border: 1px solid var(--ifm-color-emphasis-300);
+}
+
+.btnGhost:hover {
+  color: var(--ifm-font-color-base);
+  border-color: var(--honey);
+}
+
+.shotWrap {
+  position: relative;
+  max-width: 1040px;
+  margin: 2.75rem auto 0;
+  padding: 0 0.25rem;
+}
+
+.shot {
   display: block;
-  margin-top: 0.75rem;
-  font-size: 0.85rem;
-  opacity: 0.8;
+  width: 100%;
+  height: auto;
+  border-radius: 14px 14px 0 0;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--ink) 10%, transparent),
+    0 28px 70px rgba(0, 0, 0, 0.28);
 }
 
-.heroLogo {
-  display: block;
-  margin: 0 auto 1rem;
-  width: 160px;
-  height: 160px;
-  filter: drop-shadow(0 6px 18px rgba(0, 0, 0, 0.25));
+.stats {
+  border-top: 1px solid var(--ifm-color-emphasis-200);
+  border-bottom: 1px solid var(--ifm-color-emphasis-200);
+  background: color-mix(in srgb, var(--ifm-background-surface-color) 70%, transparent);
 }
 
-.screenshotSection {
-  padding: 3rem 0 1rem;
+.statsGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  max-width: 1040px;
+  margin: 0 auto;
+}
+
+.stat {
+  padding: 1.35rem 1rem;
   text-align: center;
 }
 
-.screenshot {
-  max-width: min(960px, 100%);
-  border-radius: 12px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+.stat + .stat {
+  border-left: 1px solid var(--ifm-color-emphasis-200);
 }
 
-.screenshotCaption {
-  margin-top: 1rem;
-  opacity: 0.8;
+.statValue {
+  font-family: "Bricolage Grotesque", ui-rounded, system-ui, sans-serif;
+  font-size: 1.35rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+}
+
+.statLabel {
+  margin-top: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--ifm-color-emphasis-600);
+}
+
+.narrow {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 0 1.25rem;
+}
+
+.get {
+  padding: 4rem 0 2.5rem;
+}
+
+.sectionTitle {
+  margin: 0;
+  scroll-margin-top: 5.5rem;
+  font-family: "Bricolage Grotesque", ui-rounded, system-ui, sans-serif;
+  font-size: clamp(1.7rem, 3vw, 2.15rem);
+  font-weight: 800;
+  letter-spacing: -0.035em;
+}
+
+.sectionLead {
+  margin: 0.4rem 0 1.4rem;
+  color: var(--ifm-color-emphasis-700);
+}
+
+.traits {
+  padding: 1.5rem 0 3.5rem;
+}
+
+.traitGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.trait {
+  padding: 1.25rem 1.2rem 1.15rem;
+  border-radius: 14px;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  background: var(--ifm-background-surface-color);
+}
+
+.traitTitle {
+  margin: 0 0 0.4rem;
+  font-family: "Bricolage Grotesque", ui-rounded, system-ui, sans-serif;
+  font-size: 1.15rem;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+}
+
+.traitBody {
+  margin: 0;
+  color: var(--ifm-color-emphasis-700);
+  line-height: 1.45;
+}
+
+.part {
+  margin: 2.25rem 0 0;
+}
+
+.partImg {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 14px;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--ink) 10%, transparent),
+    0 18px 44px rgba(0, 0, 0, 0.22);
+}
+
+.partCap {
+  margin-top: 0.85rem;
+  text-align: center;
+  color: var(--ifm-color-emphasis-600);
+  font-size: 0.95rem;
+}
+
+.more {
+  padding: 0 0 4.5rem;
+  text-align: center;
+}
+
+.moreLabel {
+  margin: 0 0 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ifm-color-emphasis-600);
+}
+
+.moreLinks {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.dot {
+  margin: 0 0.55rem;
+  color: var(--ifm-color-emphasis-400);
+}
+
+@media screen and (max-width: 860px) {
+  .hero {
+    padding-top: 2.4rem;
+  }
+
+  .statsGrid,
+  .traitGrid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .stat:nth-child(3) {
+    border-left: 0;
+    border-top: 1px solid var(--ifm-color-emphasis-200);
+  }
+
+  .stat:nth-child(4) {
+    border-top: 1px solid var(--ifm-color-emphasis-200);
+  }
+
+  .trait:last-child {
+    grid-column: 1 / -1;
+  }
+}
+
+@media screen and (max-width: 520px) {
+  .statsGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .stat + .stat,
+  .stat:nth-child(3),
+  .stat:nth-child(4) {
+    border-left: 0;
+    border-top: 1px solid var(--ifm-color-emphasis-200);
+  }
+
+  .traitGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .trait:last-child {
+    grid-column: auto;
+  }
 }

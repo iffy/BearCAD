@@ -53,6 +53,32 @@ img[src*="/img/icons/"] {
   margin-right: 0.4rem;
 }
 
+/* Landing page: navbar blends into the warm page, not a white bar. */
+html.plugin-pages .navbar {
+  background: #f6f3ee;
+  box-shadow: none;
+  border-bottom: 1px solid rgba(28, 30, 33, 0.06);
+}
+html.plugin-pages[data-theme='dark'] .navbar {
+  background: #141416;
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+
+/* Homepage Download in the navbar: a small pill, not another text link. */
+.navbar__item.navbar__link[href='/docs/downloads'] {
+  background: #e8a317;
+  color: #1c1e21;
+  border-radius: 999px;
+  padding: 0.22rem 0.8rem;
+  font-weight: 700;
+  margin-left: 0.25rem;
+}
+.navbar__item.navbar__link[href='/docs/downloads']:hover,
+.navbar__item.navbar__link[href='/docs/downloads'].navbar__link--active {
+  background: #f0b02a;
+  color: #1c1e21;
+}
+
 /* Why page Features table: yes/no as loud green checks / red Xs. */
 .feat-yes,
 .feat-no {

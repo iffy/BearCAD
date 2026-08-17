@@ -8,6 +8,7 @@ import {themes as prismThemes} from 'prism-react-renderer';
 import {fileURLToPath} from 'node:url';
 import {readFileSync} from 'node:fs';
 import path from 'node:path';
+import {PAY_URL, WEB_APP_PATH} from './src/site.js';
 
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 
@@ -35,7 +36,7 @@ const appVersion = versionMatch ? versionMatch[1] : 'unknown';
 /** @type {import('@docusaurus/types').Config} */
 const config = {
   title: 'BearCAD',
-  tagline: 'Local-first, parametric CAD. Built by robots.',
+  tagline: 'Small, quick CAD. Built by robots.',
   favicon: 'img/favicon.ico',
 
   // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future
@@ -80,6 +81,13 @@ const config = {
     defaultLocale: 'en',
     locales: ['en'],
   },
+
+  stylesheets: [
+    {
+      href: 'https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&display=swap',
+      type: 'text/css',
+    },
+  ],
 
   presets: [
     [
@@ -156,6 +164,14 @@ const config = {
       footer: {
         style: 'dark',
         links: [
+          {
+            title: 'Get',
+            items: [
+              {label: 'Download', to: '/docs/downloads'},
+              {label: 'Name your price', href: PAY_URL},
+              {label: 'Run in browser', href: WEB_APP_PATH},
+            ],
+          },
           {
             title: 'Docs',
             items: [

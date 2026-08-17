@@ -3,78 +3,158 @@ import Link from '@docusaurus/Link';
 import useBaseUrl from '@docusaurus/useBaseUrl';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import Layout from '@theme/Layout';
-import HomepageFeatures from '@site/src/components/HomepageFeatures';
-
 import Heading from '@theme/Heading';
+import GetBearCAD from '@site/src/components/GetBearCAD';
+import {WEB_APP_PATH} from '@site/src/site';
+
 import styles from './index.module.css';
 
-// Latest-release asset URLs live on the /docs/downloads page (same names as
-// src/release_artifacts.rs); the navbar and hero only link there.
-// The hosted web build (wasm), deployed alongside the docs by CI. Chromebooks
-// install this as a PWA (Install app in Chrome); same path as "Run in browser".
-const WEB_APP_PATH = 'pathname:///app/';
-// Choose what you want to pay (Stripe payment link).
-const PAY_URL = 'https://buy.stripe.com/4gMbJ39g2gsH4hKd9cdQQ00';
-// The other three of the four main actions, besides the prominent "Run in your
-// browser" CTA. Download points at a dedicated page so the navbar can reuse it.
-// `to` (not `href`) marks an internal route so it navigates without a reload.
-const ACTIONS = [
-  {label: '▶  Run in your browser', href: WEB_APP_PATH, primary: true},
-  {label: 'Read the docs', to: '/docs/intro'},
-  {label: 'Choose what to pay', href: PAY_URL},
-  {label: 'Download', to: '/docs/downloads'},
+const STATS = [
+  {value: '21–50 MB', label: 'The whole app'},
+  {value: '~0.5 s', label: 'Cold launch'},
+  {value: 'No account', label: 'Files stay yours'},
+  {value: 'Pre-alpha', label: 'Rough, fast-moving'},
 ];
 
-function HomepageHeader() {
+const TRAITS = [
+  {
+    title: 'Sketch sloppy',
+    body: 'Draw a bracket freehand. The solver squares it up. Change a parameter later and the part rebuilds.',
+  },
+  {
+    title: 'Tiny on purpose',
+    body: 'A single executable with a real BREP kernel. No splash screen, no sign-in, no 8 GB installer.',
+  },
+  {
+    title: 'Click it, script it',
+    body: 'The same actions drive the GUI, the command palette, and Lua. If you can click it, you can script it.',
+  },
+];
+
+const MORE = [
+  {label: 'Quickstart', to: '/docs/quickstart'},
+  {label: 'Why BearCAD?', to: '/docs/why'},
+  {label: 'Tools', to: '/docs/tools'},
+  {label: 'Scripting', to: '/docs/scripting'},
+];
+
+function Hero() {
   const {siteConfig} = useDocusaurusContext();
+  const version = siteConfig.customFields?.appVersion ?? '';
   return (
-    <header className={clsx('hero hero--primary', styles.heroBanner)}>
-      <div className="container">
+    <header className={styles.hero}>
+      <div className={styles.heroInner}>
         <img
-          className={styles.heroLogo}
+          className={styles.logo}
           src={useBaseUrl('/img/logo.png')}
-          alt="BearCAD bear icon"
-          width="160"
-          height="160"
+          alt=""
+          width="96"
+          height="96"
         />
-        <Heading as="h1" className="hero__title">
-          {siteConfig.title}
+        <p className={styles.kicker}>
+          {version ? `v${version} · ` : ''}Pre-alpha · Built by robots
+        </p>
+        <Heading as="h1" className={styles.title}>
+          Small CAD.
         </Heading>
-        <p className="hero__subtitle">{siteConfig.tagline}</p>
-        <div className={styles.ctaRow}>
-          <Link
-            className={clsx('button button--lg', styles.ctaButton)}
-            href={ACTIONS[0].href}>
-            {ACTIONS[0].label}
+        <p className={styles.sub}>
+          Sketch, constrain, extrude.
+          <br />
+          Launches in half a second. No account.
+        </p>
+        <div className={styles.heroCtas}>
+          <Link className={clsx(styles.btn, styles.btnPrimary)} href={WEB_APP_PATH}>
+            Open in your browser
+          </Link>
+          <Link className={clsx(styles.btn, styles.btnGhost)} href="#get">
+            Download
           </Link>
         </div>
-        <div className={styles.buttons}>
-          {ACTIONS.slice(1).map(({label, href, to}) => (
-            <Link
-              key={label}
-              className={clsx('button button--lg', styles.downloadButton)}
-              {...(to ? {to} : {href})}>
-              {label}
-            </Link>
-          ))}
-        </div>
+      </div>
+      <div className={styles.shotWrap}>
+        <img
+          className={styles.shot}
+          src={useBaseUrl('/img/screenshots/elements-pane.png')}
+          alt="BearCAD with a sketched plate, the Elements pane, and a live 3D viewport"
+        />
       </div>
     </header>
   );
 }
 
-function HomepageScreenshot() {
+function Stats() {
   return (
-    <section className={styles.screenshotSection}>
-      <div className="container">
-        <img
-          className={styles.screenshot}
-          src={useBaseUrl('/img/screenshots/quickstart.png')}
-          alt="BearCAD editing the Quickstart's 120-degree bracket: rounded bend, countersunk screw holes"
-        />
-        <p className={styles.screenshotCaption}>
-          The <Link to="/docs/quickstart">Quickstart</Link> bracket — sketched freehand, squared
-          up by the constraint solver, rebuilt from parameters.
+    <section className={styles.stats} aria-label="At a glance">
+      <div className={styles.statsGrid}>
+        {STATS.map(({value, label}) => (
+          <div key={value} className={styles.stat}>
+            <div className={styles.statValue}>{value}</div>
+            <div className={styles.statLabel}>{label}</div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function Get() {
+  return (
+    <section className={styles.get}>
+      <div className={styles.narrow}>
+        <Heading as="h2" className={styles.sectionTitle} id="get">
+          Get BearCAD
+        </Heading>
+        <p className={styles.sectionLead}>
+          Pay what you want, or skip it. Then grab a build.
+        </p>
+        <GetBearCAD />
+      </div>
+    </section>
+  );
+}
+
+function Traits() {
+  return (
+    <section className={styles.traits}>
+      <div className={styles.narrow}>
+        <div className={styles.traitGrid}>
+          {TRAITS.map(({title, body}) => (
+            <div key={title} className={styles.trait}>
+              <Heading as="h3" className={styles.traitTitle}>
+                {title}
+              </Heading>
+              <p className={styles.traitBody}>{body}</p>
+            </div>
+          ))}
+        </div>
+        <figure className={styles.part}>
+          <img
+            className={styles.partImg}
+            src={useBaseUrl('/img/screenshots/quickstart.png')}
+            alt="A 120-degree angle bracket with rounded corners and countersunk holes"
+          />
+          <figcaption className={styles.partCap}>
+            The <Link to="/docs/quickstart">Quickstart</Link> bracket: sketched
+            freehand, squared up, rebuilt from parameters.
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+  );
+}
+
+function More() {
+  return (
+    <section className={styles.more}>
+      <div className={styles.narrow}>
+        <p className={styles.moreLabel}>Docs, if you want them</p>
+        <p className={styles.moreLinks}>
+          {MORE.map(({label, to}, i) => (
+            <span key={to}>
+              {i > 0 && <span className={styles.dot}>·</span>}
+              <Link to={to}>{label}</Link>
+            </span>
+          ))}
         </p>
       </div>
     </section>
@@ -82,15 +162,17 @@ function HomepageScreenshot() {
 }
 
 export default function Home() {
-  const {siteConfig} = useDocusaurusContext();
   return (
     <Layout
-      title={siteConfig.title}
-      description="BearCAD — local-first, parametric CAD with a shared GUI and Lua scripting action layer.">
-      <HomepageHeader />
+      title="Small, quick CAD"
+      description="A tiny parametric CAD app. Half-second launch, no account, name your price."
+      wrapperClassName={styles.page}>
       <main>
-        <HomepageScreenshot />
-        <HomepageFeatures />
+        <Hero />
+        <Stats />
+        <Get />
+        <Traits />
+        <More />
       </main>
     </Layout>
   );
