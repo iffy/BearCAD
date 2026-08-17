@@ -25,7 +25,7 @@ const appVersion = changelogMatch?.[1] ?? cargoMatch?.[1] ?? 'unknown';
 /** @type {import('@docusaurus/types').Config} */
 const config = {
   title: 'BearCAD',
-  tagline: 'Small CAD. Quick CAD.',
+  tagline: 'Small CAD. Quick CAD. Fun CAD.',
   favicon: 'img/favicon.ico',
 
   // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future

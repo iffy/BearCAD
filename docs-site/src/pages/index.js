@@ -60,6 +60,8 @@ function Hero() {
             <br />
             <span className={styles.titleSoft}>Quick CAD.</span>
             <br />
+            <span className={styles.titleSoft}>Fun CAD.</span>
+            <br />
             <span className={styles.titleName}>BearCAD</span>
           </Heading>
           <p className={styles.sub}>
@@ -168,7 +170,7 @@ function More() {
 export default function Home() {
   return (
     <Layout
-      title="Small, quick CAD"
+      title="Small, quick, fun CAD"
       description="A tiny parametric CAD app. Half-second launch, no account, name your price."
       wrapperClassName={styles.page}>
       <main>
