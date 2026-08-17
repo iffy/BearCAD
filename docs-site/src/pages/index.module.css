@@ -74,7 +74,13 @@
 }
 
 .titleName {
+  position: relative;
   font-weight: 800;
+}
+
+.titleDot {
+  position: absolute;
+  left: 100%;
 }
 
 .sub {

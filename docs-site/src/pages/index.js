@@ -62,7 +62,9 @@ function Hero() {
             <br />
             <span className={styles.titleSoft}>Fun CAD</span>
             <br />
-            <span className={styles.titleName}>BearCAD.</span>
+            <span className={styles.titleName}>
+              BearCAD<span className={styles.titleDot}>.</span>
+            </span>
           </Heading>
           <p className={styles.sub}>
             Design a part, print it, or export STEP. Half-second launch. No
