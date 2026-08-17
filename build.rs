@@ -70,6 +70,11 @@ fn main() {
         build_slvs();
     }
 
+    // Runtime only needs 256px (About panel) / 128px (window chrome). Keep the
+    // 1024px source on disk for .icns/.ico packaging; bake a smaller PNG so the
+    // binary doesn't carry the full raster.
+    write_bundled_window_icon();
+
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
@@ -220,6 +225,21 @@ const OCCT_TOOLKITS: &[&str] = &[
     "TKMath",
     "TKernel",
 ];
+
+/// 256×256 PNG for `include_bytes!` in `app_icon.rs` (About panel + window chrome).
+fn write_bundled_window_icon() {
+    use image::imageops::FilterType;
+
+    println!("cargo:rerun-if-changed=src/assets/appicon.png");
+    let dest = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("appicon-256.png");
+    let image = image::ImageReader::open("src/assets/appicon.png")
+        .expect("open app icon png")
+        .decode()
+        .expect("decode app icon png")
+        .into_rgba8();
+    let resized = image::imageops::resize(&image, 256, 256, FilterType::Lanczos3);
+    resized.save(&dest).expect("write bundled 256px app icon");
+}
 
 fn png_to_ico(png_path: &str, out_path: &std::path::Path) {
     use ico::{IconDir, IconImage};
