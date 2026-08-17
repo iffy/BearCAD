@@ -585,7 +585,10 @@ impl SketchBridge {
         if let Some(vars) = self.point_vars.get(&point) {
             return Ok(*vars);
         }
-        if let ConstraintPoint::FaceVertex { .. } = &point {
+        if matches!(
+            &point,
+            ConstraintPoint::FaceVertex { .. } | ConstraintPoint::Origin
+        ) {
             let (u, v) = point_uv(doc, self.sketch, point.clone())?;
             let vars = self.system.add_point(u as f64, v as f64, true);
             self.point_vars.insert(point, vars);
@@ -911,6 +914,7 @@ fn point_sketch(doc: &Document, point: ConstraintPoint) -> Option<SketchId> {
         // A face's own vertex has no owning sketch — it's referenced *from* whichever sketch a
         // constraint projects it into, not owned by one (mirrors `construction::point_sketch`).
         ConstraintPoint::FaceVertex { .. } => None,
+        ConstraintPoint::Origin => None,
     }
 }
 

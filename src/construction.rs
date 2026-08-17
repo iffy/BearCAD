@@ -809,6 +809,7 @@ pub fn point_sketch(doc: &Document, point: ConstraintPoint) -> Option<SketchId> 
         // A face's own vertex has no owning sketch of its own — it's referenced *from*
         // whichever sketch a constraint projects it into, not owned by one.
         ConstraintPoint::FaceVertex { .. } => None,
+        ConstraintPoint::Origin => None,
     }
 }
 
@@ -1523,7 +1524,8 @@ impl PickOcclusion {
                     }
                     ConstraintPoint::FaceVertex { .. }
                     | ConstraintPoint::TextAnchor { .. }
-                    | ConstraintPoint::ImageCalibrationPoint { .. } => false,
+                    | ConstraintPoint::ImageCalibrationPoint { .. }
+                    | ConstraintPoint::Origin => false,
                 };
                 !shadow && vis.effective_visible(doc, SceneElement::Point(point.clone()))
             }
@@ -2426,6 +2428,7 @@ pub fn point_world_position(doc: &Document, point: ConstraintPoint) -> Option<Ve
             let entity = doc.circles.get(circle)?;
             circle_world_center(doc, entity)
         }
+        ConstraintPoint::Origin => None,
         // Already a world-space point (#26/#27) — no sketch frame to project through.
         ConstraintPoint::FaceVertex { face, index } => {
             crate::extrude::face_boundary_loop_world(doc, &face)?.get(index).copied()

@@ -221,7 +221,8 @@ fn owning_lines(point: &ConstraintPoint) -> Vec<ConstraintLine> {
         ConstraintPoint::CircleCenter(_)
         | ConstraintPoint::FaceVertex { .. }
         | ConstraintPoint::TextAnchor { .. }
-        | ConstraintPoint::ImageCalibrationPoint { .. } => Vec::new(),
+        | ConstraintPoint::ImageCalibrationPoint { .. }
+        | ConstraintPoint::Origin => Vec::new(),
     }
 }
 

@@ -388,7 +388,7 @@ impl<'a> Builder<'a> {
         }
         let (u, v) = point_uv(self.doc, self.sketch, point.clone())?;
         let fixed = match point {
-            ConstraintPoint::FaceVertex { .. } => true,
+            ConstraintPoint::FaceVertex { .. } | ConstraintPoint::Origin => true,
             // Projected lines (#140) are associative references: their endpoints are driven
             // by the source body/plane, not the sketch solver. Leaving them free let a
             // coincident pull the projection to free geometry; the next refresh snapped the

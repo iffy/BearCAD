@@ -4426,6 +4426,7 @@ fn point_lua_fields(point: &ConstraintPoint, doc: Option<&crate::model::Document
             );
             format!("kind = \"circle\", index = {ordinal}")
         }
+        ConstraintPoint::Origin => "kind = \"origin\"".to_string(),
         // #26/#27: mirrors `lua_script::parse_constraint_point_table`'s `"face"` shape.
         ConstraintPoint::FaceVertex { face, index } => {
             format!("kind = \"face\", face = {}, index = {index}", face_id_lua_ref(face, doc))

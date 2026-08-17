@@ -31,7 +31,8 @@ to drop it where you want it, then type the value and press **Enter**.
 - For angles, two crossing lines enclose two different angles — move the cursor into the
   one you mean before clicking.
 - When a sketch is drawn on a body's face, you can dimension against that face's own edges
-  — e.g. "this hole's center is 10 mm from the top edge."
+  — e.g. "this hole's center is 10 mm from the top edge." On a circular face, click the
+  origin (the face's centre) and the hole to set how far it sits from the centre.
 
 A fully dimensioned shape draws in the fully-constrained color and can no longer be dragged
 out of shape —

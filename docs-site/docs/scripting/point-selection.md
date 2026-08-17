@@ -91,6 +91,15 @@ bearcad.select({ kind = "origin" }, true)              -- add the origin
 bearcad.add_geometric_constraint("coincident")         -- end point now sits on the origin
 ```
 
+A dimension from the origin to a circle's centre (how far a hole sits from a circular
+face's centre) is the same `{ kind = "origin" }` table:
+
+```lua
+bearcad.add_constraint({ kind = "point_point",
+                         anchor = { kind = "origin" },
+                         mover  = { kind = "circle", index = 0 } }, "12mm")
+```
+
 Interactively, dragging a point near an axis or the origin snaps it on and adds the same
 constraint.
 

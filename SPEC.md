@@ -3004,8 +3004,12 @@ ordinal too.
   #487's "second plain click accumulates an angle" rule, which made a click meant for a
   different edge drop an angle dimension instead.)
 - **Selection:** Sketch points (line endpoints — including a rectangle's corners — and circle
-  centres), lines (a rectangle's four edges are plain lines), and circles are selectable in the
+  centres), the sketch **origin**, lines (a rectangle's four edges are plain lines), and circles are selectable in the
   viewport. Point picks take precedence near vertices within the point pick tolerance.
+  The origin plus a circle (or its centre) is a point-to-point distance — on a circular
+  cap the origin *is* the extruded circle's centre, so this locates a hole from the
+  centre. A circle paired with another point or the origin dimensions from its centre,
+  not as a diameter.
 - **Elements-pane hover → viewport highlight (#161):** hovering any row in the Elements
   pane (List or Graph view) highlights that element in the 3D viewport using the
   standard hover color: sketch entities get their usual pick highlight, a hovered sketch
@@ -3880,7 +3884,8 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   `{ kind = "point_line", point = <point>, line = <line> }` (perpendicular distance from a
   point to an edge — how holes are positioned), `{ kind = "point_point", anchor, mover }`,
   and `{ kind = "line_line", a, b }` (spacing between parallel lines). `point` takes the same
-  tables point-level selection does (line endpoint, circle centre, face vertex, text anchor);
+  tables point-level selection does (line endpoint, circle centre, face vertex, text anchor,
+  sketch origin `{ kind = "origin" }`);
   `line` takes a sketch line, an origin `axis`, or a `face` edge. The side/direction each
   dimension is measured on is captured from the current geometry
   (`constraints::finalize_distance_target`), exactly as for an interactive pick.

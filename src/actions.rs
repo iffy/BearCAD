@@ -27202,6 +27202,101 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         );
     }
 
+    /// #1436: a sketch on the cap of an extruded circle, with a smaller circle drawn on
+    /// it — selecting the origin (the extruded circle's centre) and the little circle
+    /// must resolve to a point-to-point distance so the hole can be located from the
+    /// centre. Shares `dimension_edit_from_selection` with the viewport pick path.
+    #[test]
+    fn origin_and_circle_on_extruded_circle_cap_resolve_to_a_distance() {
+        use crate::model::{DimensionTarget, DistanceTarget};
+
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state
+            .doc
+            .circles
+            .insert(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 20.0, 0.0));
+        state.doc.shape_order.push(crate::model::ShapeKind::Circle);
+        let profile = ExtrudeFace::Circle(rkey(0));
+        state.apply(Action::CreateExtrusion {
+            expression: None,
+            sketch,
+            faces: vec![profile.clone()],
+            distance: 10.0,
+            body: crate::actions::ExtrudeBodyChoice::New,
+            target: None,
+            symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+        });
+        let cap = FaceId::ExtrudeCap {
+            extrusion: xkey(0),
+            profile,
+            top: true,
+        };
+        state.apply(Action::BeginSketch {
+            face: cap,
+            viewport: None,
+        });
+        let cap_sketch = state.sketch_session.unwrap().sketch;
+        state.doc.circles.insert(
+            crate::model::Circle::from_local_center_radius(cap_sketch, 8.0, 0.0, 3.0, 0.0),
+        );
+        let ci = state.doc.circles.keys().last().unwrap();
+        state.doc.shape_order.push(crate::model::ShapeKind::Circle);
+        state.refresh_document_health();
+
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Origin,
+            additive: false,
+        });
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Circle(ci),
+            additive: true,
+        });
+
+        let target = crate::constraints::dimension_edit_from_selection(
+            &state.doc,
+            cap_sketch,
+            &state.scene_selection,
+        );
+        assert!(
+            matches!(
+                target,
+                Some(DimensionTarget::Distance(DistanceTarget::PointPointDistance { .. }))
+            ),
+            "origin + little circle on a circular cap should dimension as a centre distance, got {target:?}"
+        );
+
+        // The origin (cap centre) is pickable under the Dimension tool too: aim a
+        // top-down camera at the cap and click the centre.
+        let frame = crate::face::sketch_geometry_frame(&state.doc, cap_sketch)
+            .expect("cap sketch frame");
+        let mut cam = crate::camera::Camera::default();
+        let (yaw, pitch) = crate::camera::StandardView::Top.yaw_pitch();
+        cam.yaw = yaw;
+        cam.pitch = pitch;
+        cam.target = frame.origin;
+        cam.distance = 120.0;
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let vp = cam.view_proj(viewport);
+        let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
+        let origin_px = project(frame.origin).expect("origin projects into view");
+        let picked = crate::construction::nearest_sketch_point_in_sketch(
+            origin_px,
+            &project,
+            &state.doc,
+            cap_sketch,
+        );
+        // A real vertex at the origin still wins; when the centre is empty the origin
+        // itself must be the pick (see handle_dimension_point_pick).
+        assert!(
+            picked.is_none(),
+            "the circular cap's centre is the origin, not a sketch vertex, got {picked:?}"
+        );
+    }
+
     /// #201: committing a repeat whose count is typed as `name = expr` defines the parameter
     /// and stores the bare name, so the repeat stays parameter-driven.
     #[test]

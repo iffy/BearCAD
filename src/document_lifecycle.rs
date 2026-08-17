@@ -118,6 +118,7 @@ fn point_owner_alive(
     match point {
         ConstraintPoint::LineEndpoint { line, .. } => line_alive(doc, *line),
         ConstraintPoint::CircleCenter(circle) => circle_alive(doc, *circle),
+        ConstraintPoint::Origin => true,
         // A face's own vertex is "alive" exactly when it still resolves (extrusion present,
         // index still within its current boundary loop) — it has no owning scene entity.
         ConstraintPoint::FaceVertex { face, index } => {
@@ -153,6 +154,7 @@ fn point_owner_element(point: &crate::model::ConstraintPoint) -> Option<SceneEle
         ConstraintPoint::CircleCenter(circle) => SceneElement::Circle(*circle),
         ConstraintPoint::TextAnchor { text, .. } => SceneElement::SketchText(*text),
         ConstraintPoint::ImageCalibrationPoint { image, .. } => SceneElement::Image(*image),
+        ConstraintPoint::Origin => SceneElement::Origin,
         ConstraintPoint::FaceVertex { .. } => return None,
     })
 }
@@ -884,6 +886,7 @@ pub fn constraint_point_alive(doc: &Document, point: &ConstraintPoint) -> bool {
     match point {
         ConstraintPoint::LineEndpoint { line, .. } => line_alive(doc, *line),
         ConstraintPoint::CircleCenter(circle) => circle_alive(doc, *circle),
+        ConstraintPoint::Origin => true,
         ConstraintPoint::FaceVertex { face, index } => {
             crate::extrude::face_boundary_loop_world(doc, face).is_some_and(|l| *index < l.len())
         }

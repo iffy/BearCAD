@@ -161,6 +161,7 @@ fn pane_element_for_constraint_point(
         ConstraintPoint::CircleCenter(circle) => SceneElement::Circle(circle),
         ConstraintPoint::TextAnchor { text, .. } => SceneElement::SketchText(text),
         ConstraintPoint::ImageCalibrationPoint { image, .. } => SceneElement::Image(image),
+        ConstraintPoint::Origin => SceneElement::Origin,
         ConstraintPoint::FaceVertex { face, .. } => {
             crate::hierarchy::face_owner_element(&face).unwrap_or(SceneElement::Origin)
         }
