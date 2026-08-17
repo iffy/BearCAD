@@ -100,3 +100,10 @@ html.plugin-pages[data-theme='dark'] .navbar {
 .feat-no {
   color: #ff0000;
 }
+
+/* Center checks, Xs, and every other cell in the Features comparison table. */
+.feat-table th,
+.feat-table td {
+  text-align: center;
+  vertical-align: middle;
+}
