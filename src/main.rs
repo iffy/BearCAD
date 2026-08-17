@@ -752,6 +752,21 @@ mod cli_tests {
     }
 
     #[test]
+    fn web_index_prevents_browser_context_menu() {
+        let html = include_str!("../web/index.html");
+        let ctx_idx = html.find("contextmenu").unwrap_or_else(|| {
+            panic!("web/index.html must listen for contextmenu so Shift+right-drag can pan (#1447)")
+        });
+        let start = ctx_idx.saturating_sub(80);
+        let end = (ctx_idx + 160).min(html.len());
+        let window = &html[start..end];
+        assert!(
+            window.contains("preventDefault"),
+            "contextmenu handler must preventDefault so the browser menu cannot eat pan (#1447): {window}"
+        );
+    }
+
+    #[test]
     fn rewrite_legacy_open_url_strips_project_prefix() {
         assert_eq!(
             super::rewrite_legacy_open_url("/BearCAD/img/screenshots/fillet.bearcad.json"),
@@ -26730,9 +26745,10 @@ impl App {
                 }
             }
         }
-        // Middle-mouse drag always pans (#195). Shift+right-drag pans too, but Firefox forces
-        // its native context menu on Shift+right-click regardless of preventDefault, eating the
-        // gesture on the web — so middle-drag is the browser-safe way to pan there.
+        // Middle-mouse drag always pans (#195). Shift+right-drag pans too; the web host
+        // preventDefaults the browser context menu so that gesture isn't stolen (#1447).
+        // Firefox still forces its native menu on Shift+right-click regardless, so
+        // middle-drag remains the browser-safe fallback there.
         if response.dragged_by(egui::PointerButton::Middle) && !camera_frozen {
             let delta = response.drag_delta();
             self.state.cam.pan(delta, viewport.height());
@@ -27454,7 +27470,10 @@ impl App {
         // 1. Bezier handle under the cursor → Delete handle.
         // 2. Already-selected hierarchy element under the cursor → the same Elements-pane menu.
         // 3. Sketch-only extras: convert a two-line vertex to bezier, or straighten a curve.
-        if response.secondary_clicked() {
+        // Shift+right is pan — do not open a menu over that gesture (#1447).
+        if response.secondary_clicked()
+            && camera::Camera::opens_secondary_context_menu(ui.input(|i| i.modifiers.shift))
+        {
             self.viewport_context_menu = None;
             let pp = response.interact_pointer_pos().or(pointer_screen);
             // Bezier handles win over the element menu: the handle is a UI affordance, not a
@@ -27543,6 +27562,13 @@ impl App {
                     None
                 });
             }
+        }
+        // A shift+right-drag pan must not keep a leftover right-click menu up (#1447).
+        if camera::Camera::is_panning(
+            response.dragged_by(egui::PointerButton::Secondary),
+            ui.input(|i| i.modifiers.shift),
+        ) {
+            self.viewport_context_menu = None;
         }
         if self.viewport_context_menu.is_some() {
             // Queue menu actions so the shared `element_context_menu` doesn't need `&mut self`
@@ -31777,7 +31803,9 @@ impl App {
             draw_orbit_pivot_indicator(&painter, &project, cam.target);
         }
 
-        if matches!(self.state.tool, Tool::Select | Tool::Constraint) {
+        if matches!(self.state.tool, Tool::Select | Tool::Constraint)
+            && camera::Camera::opens_secondary_context_menu(shift_held)
+        {
             let mut create_parameter_from_line = None;
             crate::parameters::show_computed_line_length_context_menu(
                 &response,

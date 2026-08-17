@@ -60,6 +60,10 @@
     }
     // Double-tap zoom, likewise.
     document.addEventListener("dblclick", (e) => e.preventDefault(), { passive: false });
+    // Right-drag orbits and Shift+right-drag pans. The browser's native context
+    // menu steals the pointer (and eframe's canvas handler can miss the event
+    // while locked inside pointerdown), so cancel it here in capture phase (#1447).
+    document.addEventListener("contextmenu", (e) => e.preventDefault(), { capture: true, passive: false });
     // Chrome / ChromeOS installability: a controlling service worker is required.
     // Scope is this directory (/app/ when hosted), so the SW stays under the app root.
     if ("serviceWorker" in navigator) {

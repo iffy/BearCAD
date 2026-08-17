@@ -1068,6 +1068,14 @@ impl Camera {
         secondary_dragging && shift_held
     }
 
+    /// Whether a right-click should open an in-app context menu.
+    ///
+    /// Shift+right is pan, so Shift must not open a menu — otherwise the click
+    /// (or the browser's native menu on web) eats the gesture (#1447).
+    pub fn opens_secondary_context_menu(shift_held: bool) -> bool {
+        !shift_held
+    }
+
     /// True while orbiting or panning — show the camera pivot indicator.
     pub fn shows_camera_pivot(secondary_dragging: bool, shift_held: bool) -> bool {
         Self::is_orbiting(secondary_dragging, shift_held)
@@ -1890,6 +1898,18 @@ mod tests {
         assert!(Camera::is_panning(true, true));
         assert!(!Camera::is_panning(true, false));
         assert!(!Camera::is_panning(false, true));
+    }
+
+    #[test]
+    fn shift_right_click_does_not_open_context_menu() {
+        assert!(
+            !Camera::opens_secondary_context_menu(true),
+            "Shift+right is pan — the context menu must not steal it (#1447)"
+        );
+        assert!(
+            Camera::opens_secondary_context_menu(false),
+            "plain right-click still opens the in-app menu"
+        );
     }
 
     #[test]
