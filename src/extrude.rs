@@ -2040,16 +2040,27 @@ fn eval_free_move_angle_deg(doc: &Document, expr: &str) -> f32 {
     }
 }
 
-/// Which fade-arc sides to draw from the handle (#1420): `+1` is the +angle direction.
-/// The unused side drops once the handle has been pulled off the start.
+/// How far each rotation-gizmo fade tail extends from the original 0° radial (#1405/#1433).
+pub const ROTATION_FADE_ARC_DEG: f32 = 30.0;
+
+/// Which fade-arc sides to draw from the original 0° line (#1420/#1433): `+1` is the
+/// +angle direction. The unused side drops once the handle has been pulled off the
+/// start; once the turn is wider than the tail the fade is gone entirely.
 pub fn rotation_fade_arc_signs(angle_deg: f32) -> &'static [f32] {
-    if angle_deg > 1e-3 {
+    if angle_deg.abs() > ROTATION_FADE_ARC_DEG {
+        &[]
+    } else if angle_deg > 1e-3 {
         &[1.0]
     } else if angle_deg < -1e-3 {
         &[-1.0]
     } else {
         &[1.0, -1.0]
     }
+}
+
+/// Direction the fade arcs radiate from (#1433): the original 0° radial, not the handle.
+pub fn rotation_fade_anchor_dir(start_dir: Vec3, _handle_dir: Vec3) -> Vec3 {
+    start_dir
 }
 
 /// The three Free-move rotation-gizmo handle world positions (#1413/#1414): one per ring at a
@@ -11732,11 +11743,23 @@ mod tests {
     }
 
     /// #1420: pulling the handle off 0° drops the fade on the unused side.
+    /// #1433: once the turn is wider than the tail, the fade is gone entirely.
     #[test]
     fn rotation_fade_drops_the_unused_side() {
         assert_eq!(rotation_fade_arc_signs(0.0), &[1.0, -1.0]);
         assert_eq!(rotation_fade_arc_signs(21.5), &[1.0]);
         assert_eq!(rotation_fade_arc_signs(-11.5), &[-1.0]);
+        assert_eq!(rotation_fade_arc_signs(30.1), &[] as &[f32]);
+        assert_eq!(rotation_fade_arc_signs(-61.0), &[] as &[f32]);
+        assert_eq!(rotation_fade_arc_signs(298.6), &[] as &[f32]);
+    }
+
+    /// #1433: the fade stays on the original 0° radial, not the live handle.
+    #[test]
+    fn rotation_fade_stays_on_the_original_radial() {
+        let start = Vec3::X;
+        let handle = Vec3::Y;
+        assert_eq!(rotation_fade_anchor_dir(start, handle), start);
     }
 
     /// #186: a repeat's fill length can be bound to a target's extended plane (like an

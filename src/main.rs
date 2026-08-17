@@ -132,10 +132,11 @@ use construction::{
     axis_offset_handle, draw_axis_plane_gizmo, draw_circle_face_highlight, draw_offset_gizmo,
     draw_polygon_face_highlight, draw_quad_face_highlight, draw_region_face_highlight,
     nearest_sketch_line_in_sketch, nearest_sketch_point_in_sketch, offset_from_normal_drag,
-    offset_gizmo_hit, offset_handle, rotation_handle_hit,
-    parent_from_pick_target, plane_corners, point_world_position, preview_plane_edit_dependents,
-    resolve_pick_target, scene_element_from_pick, AxisGizmoDrag,
-    AxisGizmoHit, PlaneDim, PlaneReference, AXIS_GIZMO_HANDLE_HIT_RADIUS_PX,
+    offset_gizmo_hit, offset_handle, rotation_gizmo_drag_deg, rotation_handle_hit,
+    signed_angle_deg_about_axis, wrap_signed_deg, parent_from_pick_target, plane_corners,
+    point_world_position, preview_plane_edit_dependents, resolve_pick_target,
+    scene_element_from_pick, AxisGizmoDrag, AxisGizmoHit, PlaneDim, PlaneReference,
+    AXIS_GIZMO_HANDLE_HIT_RADIUS_PX,
 };
 use document_health::{health_tint_color, DocumentHealth, HealthStatus};
 use document_lifecycle::{circle_alive, constraint_alive, line_alive};
@@ -8988,16 +8989,23 @@ impl App {
         }
 
         // Face Snap's spin ring (#1077): the same grab-and-drag as the text ring, writing the
-        // Turn field live so the typed value and the drag are the one control.
+        // Turn field live so the typed value and the drag are the one control. Angle is the
+        // 3D ring-plane heading so a short "up and right" pull stays a short signed turn
+        // instead of wrapping to ~299° (#1432).
         if let Some((center, axis, radius, zero_dir, angle_deg)) = self.face_spin_ring_geom() {
-            let cursor_angle =
-                |pp: egui::Pos2| project(center).map(|c| (pp.y - c.y).atan2(pp.x - c.x));
-            let sign = if axis.dot(cam.eye() - center) > 0.0 { -1.0 } else { 1.0 };
+            let plane_angle = |pp: egui::Pos2| -> Option<f32> {
+                let zd = zero_dir.filter(|z| *z != Vec3::ZERO)?;
+                let hit = cam.ray_plane_hit(pp, viewport, vp, center, axis)?;
+                Some(signed_angle_deg_about_axis(center, axis, zd, hit))
+            };
             if let Some(drag) = self.face_spin_drag {
                 if ui.input(|i| i.pointer.primary_down()) {
-                    if let Some(angle) = pointer_screen.and_then(cursor_angle) {
-                        let raw = drag.start_spin
-                            + sign * (angle - drag.start_cursor_angle).to_degrees();
+                    if let Some(angle) = pointer_screen.and_then(plane_angle) {
+                        let raw = rotation_gizmo_drag_deg(
+                            drag.start_spin,
+                            drag.start_cursor_angle,
+                            angle,
+                        );
                         // Holding Control snaps the turn to whole 5° steps (#1360).
                         let spin = if ui.input(|i| i.modifiers.command) {
                             (raw / 5.0).round() * 5.0
@@ -9007,6 +9015,7 @@ impl App {
                                 self.state.doc.default_angle_unit,
                             )
                         };
+                        let spin = wrap_signed_deg(spin);
                         if let Some(cm) = self.state.creating_move.as_mut() {
                             // format {:.1} matches the 0.1° (or unit) step after snap (#1296).
                             cm.face_spin = format!("{spin:.1}");
@@ -9022,7 +9031,7 @@ impl App {
                     // Handle only (#1418): the ring itself is not a grab target.
                     let handle = face_spin_handle_pos(center, axis, radius, zero_dir, angle_deg);
                     if rotation_handle_hit(pp, &project, handle) {
-                        if let Some(angle) = cursor_angle(pp) {
+                        if let Some(angle) = plane_angle(pp) {
                             let start_spin = self
                                 .state
                                 .creating_move
@@ -9062,8 +9071,11 @@ impl App {
                         } else {
                             1.0
                         };
-                        let raw = drag.start_angle_deg
-                            + sign * (angle - drag.start_cursor_angle).to_degrees();
+                        let raw = rotation_gizmo_drag_deg(
+                            drag.start_angle_deg,
+                            sign * drag.start_cursor_angle.to_degrees(),
+                            sign * angle.to_degrees(),
+                        );
                         // Holding Control snaps the turn to whole 5° steps (#1360).
                         let deg = if ui.input(|i| i.modifiers.command) {
                             (raw / 5.0).round() * 5.0
@@ -9073,6 +9085,7 @@ impl App {
                                 self.state.doc.default_angle_unit,
                             )
                         };
+                        let deg = wrap_signed_deg(deg);
                         let name = extrude::free_move_rotation_gizmo_name(drag.axis);
                         crate::actions::set_gizmo(&mut self.state, name, deg.to_radians());
                     }
@@ -29987,7 +30000,7 @@ impl App {
                     if let Some(sp) = project(center + hdir * radius) {
                         move_turn_labels.push((
                             sp,
-                            format!("{angle_deg:.0}°"),
+                            format!("{:.0}°", wrap_signed_deg(angle_deg)),
                             gpu_viewport::MOVE_ROTATION_GIZMO,
                         ));
                     }
