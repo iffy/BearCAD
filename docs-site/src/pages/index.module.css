@@ -57,11 +57,14 @@
 }
 
 .title {
-  margin: 0;
+  width: max-content;
+  max-width: 100%;
+  margin: 0 auto;
   font-family: "Bricolage Grotesque", ui-rounded, system-ui, sans-serif;
   font-size: clamp(2.4rem, 9vw, 4.25rem);
   letter-spacing: -0.055em;
   line-height: 0.95;
+  text-align: right;
 }
 
 .titleSoft {
@@ -123,6 +126,11 @@
 
   .heroCopy {
     text-align: left;
+  }
+
+  .title {
+    margin-left: 0;
+    margin-right: 0;
   }
 
   .sub {
