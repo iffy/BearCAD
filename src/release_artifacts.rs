@@ -375,6 +375,21 @@ mod tests {
         );
     }
 
+    /// Landing hero uses the colorful 2×2×2 materials viewport shot, not a
+    /// second full-window UI dump.
+    #[test]
+    fn homepage_hero_uses_materials_screenshot() {
+        let home = include_str!("../docs-site/src/pages/index.js");
+        assert!(
+            home.contains("/img/screenshots/materials.png"),
+            "landing hero should show the materials 2×2×2 cubes screenshot"
+        );
+        assert!(
+            !home.contains("/img/screenshots/elements-pane.png"),
+            "landing page should not reuse the elements-pane UI screenshot"
+        );
+    }
+
     #[test]
     fn homepage_offers_chromebook_install_next_to_downloads() {
         // Per-OS downloads (Chromebook included) moved off the hero to a dedicated
