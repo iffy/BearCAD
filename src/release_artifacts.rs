@@ -344,8 +344,10 @@ mod tests {
         );
     }
 
-    /// #1441: the icon | copy split sits on the page center, not left of it
+    /// #1441: the copy | icon split sits on the page center, not left of it
     /// because the logo column was only as wide as the icon.
+    /// #1444: copy+CTAs on the left (right-aligned), icon on the right
+    /// (left-aligned), so both hug that centered gutter.
     #[test]
     fn homepage_hero_column_gutter_is_centered() {
         let css = include_str!("../docs-site/src/pages/index.module.css");
@@ -372,6 +374,30 @@ mod tests {
         assert!(
             hero_inner_base.contains("margin: 0 auto"),
             "hero inner should be centered so equal columns put the gutter on the page midline"
+        );
+
+        let rule = |class: &str| {
+            desktop
+                .split(class)
+                .nth(1)
+                .and_then(|s| s.split('}').next())
+                .unwrap_or_else(|| panic!("{class} in desktop breakpoint"))
+                .to_string()
+        };
+        let hero_brand = rule(".heroBrand");
+        assert!(
+            hero_brand.contains("grid-column: 2") && hero_brand.contains("justify-self: start"),
+            "desktop icon should sit in the right column, left-aligned to the gutter, got:{hero_brand}"
+        );
+        let hero_copy = rule(".heroCopy");
+        assert!(
+            hero_copy.contains("text-align: right"),
+            "desktop copy should right-align against the centered gutter, got:{hero_copy}"
+        );
+        let hero_ctas = rule(".heroCtas");
+        assert!(
+            hero_ctas.contains("grid-column: 1") && hero_ctas.contains("justify-self: end"),
+            "desktop CTAs should sit with the copy, right-aligned to the gutter, got:{hero_ctas}"
         );
     }
 
