@@ -325,6 +325,8 @@ assert(bearcad.parameter("get_expression", "A") == "5mm")
 
 ## Materials
 
+See [Materials](/docs/materials).
+
 ```lua
 bearcad.material{ name = "Brass", color = "#c88a4a", bodies = {0} }
 bearcad.set_material{ body = 1, material = 0 }
