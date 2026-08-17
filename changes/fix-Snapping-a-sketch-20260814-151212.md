@@ -1,1 +1,0 @@
-Snapping a sketch point to a body face's boundary edge now pins it to the edge line (a point-on-edge coincident) rather than to the face's nearest corner (a point-on-vertex coincident), so a sketch drawn beside a base cuboid follows the edge when the base's dimensions change (#1395).

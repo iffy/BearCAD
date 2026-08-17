@@ -1,3 +1,40 @@
+# v0.4.0 - 2026-08-17
+
+- **NEW:** Unit parameter values in the Parameters pane now commit when you press Tab, matching Enter, while letting variable-name autocomplete complete first (#1403).
+- **NEW:** Repeated bodies (Repeat tool) are now named with incrementing numbers off their source body's name — 'Jim' yields 'Jim1', 'Jim2', …, and a base already ending in a number ('Jim1') yields 'Jim1-1', 'Jim1-2', ….
+- **NEW:** macOS release builds are Developer ID signed, notarized, and stapled.
+- **NEW:** Script calls can now hold the platform primary modifier with bearcad.ui.key("c", { cmd = true }), which the Copy/Paste shortcuts read as ⌘/Ctrl (the normal Command/Ctrl+C and +V keys)
+- **NEW:** Right-clicking an imported unit in the Elements pane now offers 'Import another [name]', adding another instance of the same unit with identical parameter overrides (#1404).
+- **NEW:** The Elements graph draws a dashed skip-edge from a hidden shadow's parent to the node that depended on that shadow.
+- **NEW:** The Y shortcut now cycles the active tool's Output choice (new body / add to body / cut) on the Extrude, Revolve, Sweep, Loft, and Mirror tools (#1397).
+- **NEW:** In the Parameters pane, the gear/options icon now sits to the left of the name and the delete button is pushed to the far right of each row, so the delete is harder to click by accident.
+- **FIX:** Import Unit (File → Import → BearCAD…) now checks for an unsaved document before opening the file picker, prompting you to save first, instead of waiting until a file is already chosen (#1402).
+- **FIX:** Rotation gizmos grab only at their handle discs (with a yellow hover ring) so dragging the red handle no longer turns the blue ring (#1418).
+- **FIX:** Sketch lines selected in edit mode render in the depth-disabled Wireframe layer so extrusion geometry never occludes them (#1409); body edges and vertices of the sketch\u2019s host face are accepted by the InSketch pick filter, making them selectable and visible in the explosion selector (#1410, #1411).
+- **FIX:** The Offset tool's default distance is now always 5 mm regardless of the document's default length unit, instead of scaling a bare '5' (e.g. 5 in = 127 mm) into an inches document (#1412).
+- **FIX:** Rotation gizmo radials from the body centre are thinner, with the original position dashed and the live handle position solid (#1419).
+- **FIX:** Rotation gizmo turns stay signed end to end — a -5° pull reads as -5°, never a wrapped 355° — across the ring labels, the typed rx/ry/rz fields, and face-spin turns (#1415).
+- **FIX:** Snapping a sketch point to a body face's boundary edge now pins it to the edge line (a point-on-edge coincident) rather than to the face's nearest corner (a point-on-vertex coincident), so a sketch drawn beside a base cuboid follows the edge when the base's dimensions change (#1395).
+- **FIX:** Face Snap move previews now use a yellow, axis-aligned spin gizmo and a smooth bezier connector that leaves both faces along their normals, even with no extra turn.
+- **FIX:** Rotation gizmo handles float clear of the moved body: each of Free Move's three rings starts on its own fixed, non-overlapping spot around the selection so multiple gizmos never pile up (#1413).
+- **FIX:** Rotation gizmo circles stay on the object's current equators after a multi-axis turn, instead of shrinking off-plane around a world axis (#1422).
+- **FIX:** Free Move no longer hover-highlights or selects construction planes and other scene objects; only the rotation and translation gizmo handles are pickable.
+- **FIX:** ValueInput bare numbers are now interpreted in the document's default length unit (e.g. 1.5 in an inches doc = 1.5 in) instead of always millimetres; repeat counts remain unit-independent
+- **FIX:** Free Move's three rotation rings follow the preview: turning one ring swings the other handles along with the moving object's composed rotation instead of each staying on its own fixed axis (#1414).
+- **FIX:** Min, max and step fields in the Parameters gear-options panel now use ValueInput widgets, accepting expressions, units, and computed previews like every other value input in the app (#1399 #1400).
+- **FIX:** Imported STL bodies are now moveable in both free and point-snap modes (regression tests added)
+- **FIX:** Switching Move translate modes no longer flashes inspector inputs red when rows remount (#1416).
+- **FIX:** Free Move preview body now snaps to gizmo drags instead of easing toward them; typed inspector values still animate.
+- **FIX:** Moving an imported unit now moves the instance itself (not its materialized bodies), so the geometry stays nested under the unit in the Elements pane instead of spawning a detached Moved output body; this also holds when a selected unit is handed into the Move tool and when re-editing a committed unit move.
+- **FIX:** Pulling a rotation gizmo off its start drops the fade on the unused side, and a thin full circle of rotation appears only while the handle is held (#1420).
+- **FIX:** Rotation gizmo direction arrows stand off from the handle as far as the Move tool's translation arrows (#1421).
+- **FIX:** The Move tool's rotation gizmos now draw two fading 30° arcs out from the handle instead of a full circle, keep the handle floating on a deterministic reference with a direction arrow on each side of it, and paint the fade arcs underneath the live rotation sweep; a live turn stays signed (negative angles no longer read as 355°).
+- **FIX:** Auto-zoom now frames both the original position and the previewed destination of a moving body, matching Zoom to Fit.
+- The Move tool inspector labels the mode dropdown Move mode instead of Translate.
+- Doubled the file-preview thumbnail resolution from 512 px to 1024 px (#1407)
+- Speed up orbit/pan by keying the fully-constrained-lines memo on the document's integer mesh revision instead of re-serializing the whole sketch model to JSON every frame.
+- Point all website payment actions at the Stripe payment link (landing-page action and downloads note) instead of the dashboard-configured buy button.
+
 # v0.3.0 - 2026-08-14
 
 - **BREAKING CHANGE:** Remove the Viewport-styles documentation page and its CI build process (style-swatch generator, screenshot scene, and workflow steps).
