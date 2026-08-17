@@ -256,9 +256,9 @@ const GIZMO_ANGLE_CIRCLE_SEGMENTS: usize = 48;
 const GIZMO_ANGLE_STROKE_PX: f32 = 1.5;
 const GIZMO_ANGLE_STROKE_HOVER_PX: f32 = 2.5;
 const GIZMO_HANDLE_RING_STROKE_PX: f32 = 1.5;
-/// Fading arcs either side of a rotation gizmo's handle (#1405): each extends this many
-/// degrees out from the handle around the circle of rotation, fading out toward its tip.
-const GIZMO_ROTATION_FADE_ARC_DEG: f32 = 30.0;
+/// Fading arcs either side of a rotation gizmo's original 0° radial (#1405/#1433):
+/// each extends this many degrees, fading out toward its tip.
+const GIZMO_ROTATION_FADE_ARC_DEG: f32 = crate::extrude::ROTATION_FADE_ARC_DEG;
 /// How many screen segments sample each fading rotation arc (#1405).
 const GIZMO_ROTATION_FADE_ARC_SEGMENTS: usize = 20;
 /// How far off each side of the rotation handle its direction arrows sit (#1405/#1421), in px.
@@ -5227,11 +5227,12 @@ fn ring_reference(axis: Vec3) -> Vec3 {
     n.cross(reference).normalize_or_zero()
 }
 
-/// The rotation gizmo dial (#1405): instead of a full circle, two fading arcs extend 30° in
-/// each direction from the handle, the handle floats at its (rotated) reference with a
-/// direction arrow on each side pointing along an arc. When a live turn is set, the fade arcs
-/// follow the handle but are painted underneath the sweep arc (drawn first, so it reads on
-/// top). Replaces [`ring_points`] for the Move-tool rotation gizmos.
+/// The rotation gizmo dial (#1405/#1433): instead of a full circle, two fading arcs extend
+/// 30° in each direction from the original 0° radial. The handle floats at its (rotated)
+/// reference with a direction arrow on each side pointing along an arc. When a live turn
+/// is set, the fade stays on the start line (and drops once the turn is wider than the
+/// tail) and is painted underneath the sweep arc. Replaces [`ring_points`] for the
+/// Move-tool rotation gizmos.
 #[allow(clippy::too_many_arguments)]
 fn push_rotation_gizmo(
     mesh: &mut SceneMesh<'_>,
@@ -5271,13 +5272,14 @@ fn push_rotation_gizmo(
         );
     }
 
-    // The fading arcs either side of the handle, drawn first so a live sweep stays on top.
-    // Pulling off 0° drops the fade on the unused side (#1420).
+    // Fade stays on the original 0° radial (#1433). Pulling off 0° drops the unused
+    // side (#1420); past the tail width the fade is gone entirely.
+    let fade_dir = crate::extrude::rotation_fade_anchor_dir(start_dir, handle_dir);
     push_rotation_fade_arcs(
         mesh,
         gizmo.center,
         n,
-        handle_dir,
+        fade_dir,
         gizmo.radius,
         gizmo.color,
         stroke,
@@ -5388,8 +5390,8 @@ fn push_rotation_full_circle(
     }
 }
 
-/// Arcs through `±GIZMO_ROTATION_FADE_ARC_DEG` from `handle_dir` along `signs`, fading
-/// from `color` at the handle out to transparent at their tips (#1405/#1420).
+/// Arcs through `±GIZMO_ROTATION_FADE_ARC_DEG` from the original 0° radial along `signs`,
+/// fading from `color` at the start line out to transparent at their tips (#1405/#1433).
 #[allow(clippy::too_many_arguments)]
 fn push_rotation_fade_arcs(
     mesh: &mut SceneMesh<'_>,

@@ -1043,6 +1043,46 @@ pub fn angle_from_axis_plane_hit(origin: Vec3, direction: Vec3, hit: Vec3) -> f3
     sin.atan2(cos).to_degrees().rem_euclid(360.0)
 }
 
+/// Wrap a degree angle onto `(-180, 180]`.
+pub fn wrap_signed_deg(deg: f32) -> f32 {
+    if !deg.is_finite() {
+        return 0.0;
+    }
+    let mut d = deg % 360.0;
+    if d > 180.0 {
+        d -= 360.0;
+    } else if d <= -180.0 {
+        d += 360.0;
+    }
+    d
+}
+
+/// Signed angle in degrees from `zero_dir` to the in-plane direction of `hit`, about `axis`
+/// through `origin`. Right-hand rule, short path in `(-180, 180]` (#1432).
+pub fn signed_angle_deg_about_axis(origin: Vec3, axis: Vec3, zero_dir: Vec3, hit: Vec3) -> f32 {
+    let n = axis.normalize_or_zero();
+    let z = (zero_dir - n * zero_dir.dot(n)).normalize_or_zero();
+    let rel = hit - origin;
+    let radial = (rel - n * rel.dot(n)).normalize_or_zero();
+    if n == Vec3::ZERO || z == Vec3::ZERO || radial == Vec3::ZERO {
+        return 0.0;
+    }
+    let sin = n.dot(z.cross(radial));
+    let cos = z.dot(radial);
+    wrap_signed_deg(sin.atan2(cos).to_degrees())
+}
+
+/// Incremental rotation-gizmo turn (#1432): add the shortest signed step from
+/// `start_angle_deg` to `current_angle_deg` onto `start_value_deg`, then wrap
+/// the result to `(-180, 180]`.
+pub fn rotation_gizmo_drag_deg(
+    start_value_deg: f32,
+    start_angle_deg: f32,
+    current_angle_deg: f32,
+) -> f32 {
+    wrap_signed_deg(start_value_deg + wrap_signed_deg(current_angle_deg - start_angle_deg))
+}
+
 /// Offset (mm) after dragging the normal arrow along its screen projection.
 pub fn offset_from_normal_drag(
     origin: Vec3,
@@ -5263,6 +5303,57 @@ mod tests {
                 "deg={deg} got={angle}"
             );
         }
+    }
+
+    /// #1432: a long-way wrap like 298.6° is the short signed turn (−61.4°).
+    #[test]
+    fn wrap_signed_deg_keeps_the_short_turn() {
+        let got = wrap_signed_deg(298.6);
+        assert!(
+            (got + 61.4).abs() < 0.05,
+            "298.6° should wrap to −61.4°, got {got}"
+        );
+        assert!((wrap_signed_deg(-61.4) + 61.4).abs() < 0.05);
+        assert!((wrap_signed_deg(0.0)).abs() < 1e-4);
+        assert!((wrap_signed_deg(180.0) - 180.0).abs() < 1e-4);
+        assert!(wrap_signed_deg(181.0) < 0.0);
+    }
+
+    /// #1432: the 3D ring-plane angle from +X toward −Y (clockwise about +Z) is negative,
+    /// never the complementary 0–360 wrap.
+    #[test]
+    fn signed_angle_about_axis_is_the_short_turn() {
+        let origin = Vec3::ZERO;
+        let axis = Vec3::Z;
+        let zero = Vec3::X;
+        let clockwise = Quat::from_axis_angle(axis, (-61.4f32).to_radians()) * zero;
+        let hit = origin + clockwise;
+        let got = signed_angle_deg_about_axis(origin, axis, zero, hit);
+        assert!(
+            got < 0.0 && (got + 61.4).abs() < 0.2,
+            "clockwise 61.4° should stay negative, got {got}"
+        );
+        let ccw = Quat::from_axis_angle(axis, 40f32.to_radians()) * zero;
+        let pos = signed_angle_deg_about_axis(origin, axis, zero, origin + ccw);
+        assert!(
+            pos > 0.0 && (pos - 40.0).abs() < 0.2,
+            "ccw 40° should stay positive, got {pos}"
+        );
+    }
+
+    /// #1432: a drag that crosses the atan2 branch cut is a short step, not a ~300° jump.
+    #[test]
+    fn rotation_gizmo_drag_takes_the_short_signed_step() {
+        let crossed = rotation_gizmo_drag_deg(0.0, 170.0, -170.0);
+        assert!(
+            (crossed - 20.0).abs() < 0.1,
+            "170° → −170° is +20°, not −340°, got {crossed}"
+        );
+        let report = rotation_gizmo_drag_deg(0.0, 0.0, 298.6);
+        assert!(
+            report < 0.0 && (report + 61.4).abs() < 0.1,
+            "a 298.6° landing is the short −61.4° turn, got {report}"
+        );
     }
 
     /// #1418: rotation gizmos grab only at the handle disc, not along the ring.

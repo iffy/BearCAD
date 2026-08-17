@@ -19312,7 +19312,10 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
                 if cm.translate_mode != crate::model::MoveTranslateMode::FaceSnap {
                     return false;
                 }
-                cm.face_spin = format!("{:.1}", value.to_degrees());
+                cm.face_spin = format!(
+                    "{:.1}",
+                    crate::construction::wrap_signed_deg(value.to_degrees())
+                );
                 true
             } else {
                 false
@@ -20959,6 +20962,15 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert_eq!(state.creating_move.as_ref().unwrap().face_spin, "20.0");
         assert!(
             (gizmo_value(&state, "move_spin").unwrap() - 20f32.to_radians()).abs() < 1e-3
+        );
+
+        // #1432: a long-way wrap from the Turn gizmo stores the short signed angle.
+        assert!(set_gizmo(&mut state, "move_spin", 298.6f32.to_radians()));
+        let stored = &state.creating_move.as_ref().unwrap().face_spin;
+        let deg: f32 = stored.parse().expect("face_spin is a number");
+        assert!(
+            deg < 0.0 && (deg + 61.4).abs() < 0.15,
+            "298.6° drag should store −61.4°, got {stored}"
         );
     }
     use crate::face::SketchFrame;
