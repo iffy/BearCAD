@@ -344,6 +344,47 @@ mod tests {
         );
     }
 
+    /// #1450: the pay CTA is "Pay Whatever" (with a leading icon), and a
+    /// matching blue button sits in the top nav next to Download.
+    #[test]
+    fn pay_whatever_button_and_navbar() {
+        let get = include_str!("../docs-site/src/components/GetBearCAD/index.js");
+        assert!(
+            get.contains("Pay Whatever"),
+            "download/pay block button should say Pay Whatever"
+        );
+        assert!(
+            !get.contains("Name a price"),
+            "download/pay block should not use the old Name a price label"
+        );
+        assert!(
+            get.contains("<DollarIcon"),
+            "Pay Whatever button should start with a dollar icon"
+        );
+
+        let config = include_str!("../docs-site/docusaurus.config.js");
+        let download_at = config
+            .find("label: 'Download'")
+            .expect("navbar should include a Download item");
+        let pay_at = config
+            .find("Pay Whatever")
+            .expect("navbar should include a Pay Whatever item");
+        assert!(
+            (download_at as i32 - pay_at as i32).abs() < 400,
+            "Pay Whatever should sit next to Download in the navbar items list"
+        );
+        assert!(
+            config.contains("className: 'navbar-pay'"),
+            "navbar Pay Whatever should have a class so it can be styled as a blue pill"
+        );
+
+        let css = include_str!("../docs-site/src/css/custom.css");
+        assert!(
+            css.contains("navbar-pay") && (css.contains("#3b7dd8") || css.contains("var(--pay)")),
+            "navbar Pay Whatever should be the same blue as the GetBearCAD pay button"
+        );
+    }
+
     /// #1441: the copy | icon split sits on the page center, not left of it
     /// because the logo column was only as wide as the icon.
     /// #1444: copy+CTAs on the left (right-aligned), icon on the right

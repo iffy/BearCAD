@@ -58,6 +58,26 @@ export function GlobeIcon() {
   );
 }
 
+export function DollarIcon() {
+  return (
+    <svg {...svg} fill="none">
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.75" />
+      <path
+        d="M12 6.25v11.5"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+      />
+      <path
+        d="M15.15 8.35c-.55-.75-1.45-1.2-3.15-1.2-1.85 0-3.05 1-3.05 2.3 0 3.2 6.2 1.5 6.2 4.7 0 1.35-1.25 2.4-3.15 2.4-1.75 0-2.7-.5-3.25-1.25"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 export const ICONS = {
   macos: AppleIcon,
   windows: WindowsIcon,

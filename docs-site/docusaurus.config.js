@@ -146,6 +146,12 @@ const config = {
             label: 'Download',
             position: 'right',
           },
+          {
+            href: PAY_URL,
+            label: 'Pay Whatever',
+            position: 'right',
+            className: 'navbar-pay',
+          },
         ],
       },
       footer: {
@@ -155,7 +161,7 @@ const config = {
             title: 'Get',
             items: [
               {label: 'Download', to: '/docs/downloads'},
-              {label: 'Name your price', href: PAY_URL},
+              {label: 'Pay Whatever', href: PAY_URL},
               {label: 'Run in browser', href: WEB_APP_PATH},
             ],
           },

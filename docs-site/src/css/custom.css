@@ -79,12 +79,41 @@ html.plugin-pages[data-theme='dark'] .navbar {
   color: #1c1e21;
 }
 
+/* Pay Whatever: same pill shape as Download, in the GetBearCAD pay blue. */
+.navbar__item.navbar__link.navbar-pay {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  background: #3b7dd8;
+  color: #fff;
+  border-radius: 999px;
+  padding: 0.22rem 0.8rem;
+  font-weight: 700;
+  margin-left: 0.25rem;
+}
+.navbar__item.navbar__link.navbar-pay::before {
+  content: '$';
+  font-weight: 800;
+  line-height: 1;
+}
+.navbar__item.navbar__link.navbar-pay:hover,
+.navbar__item.navbar__link.navbar-pay.navbar__link--active {
+  background: #4c8ce3;
+  color: #fff;
+}
+
 /* Mobile drawer: same pill, full-width so it doesn't look like a leftover chip. */
 .navbar-sidebar .navbar__item.navbar__link[href='/docs/downloads'] {
   display: block;
   margin: 0.75rem 0.85rem 0.35rem;
   padding: 0.55rem 0.8rem;
   text-align: center;
+}
+.navbar-sidebar .navbar__item.navbar__link.navbar-pay {
+  display: flex;
+  justify-content: center;
+  margin: 0.35rem 0.85rem 0.75rem;
+  padding: 0.55rem 0.8rem;
 }
 
 /* Why page Features table: yes/no as loud green checks / red Xs. */
