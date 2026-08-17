@@ -3,7 +3,8 @@
 use egui::IconData;
 use std::sync::Arc;
 
-const APP_ICON_PNG: &[u8] = include_bytes!("assets/appicon.png");
+// 256×256 PNG produced by build.rs from the 1024px source (kept for .icns/.ico packaging).
+const APP_ICON_PNG: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/appicon-256.png"));
 
 /// Window icons only need a modest raster; keep the bundled 1024px asset for packaging.
 #[cfg(any(not(target_os = "macos"), test))]
