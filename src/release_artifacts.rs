@@ -344,6 +344,37 @@ mod tests {
         );
     }
 
+    /// #1441: the icon | copy split sits on the page center, not left of it
+    /// because the logo column was only as wide as the icon.
+    #[test]
+    fn homepage_hero_column_gutter_is_centered() {
+        let css = include_str!("../docs-site/src/pages/index.module.css");
+        let desktop = css
+            .split("@media screen and (min-width: 800px)")
+            .nth(1)
+            .expect("desktop hero breakpoint");
+        let hero_inner = desktop
+            .split(".heroInner")
+            .nth(1)
+            .and_then(|s| s.split('}').next())
+            .expect(".heroInner in desktop breakpoint");
+        assert!(
+            hero_inner.contains("grid-template-columns: 1fr 1fr")
+                || hero_inner.contains("grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)"),
+            "desktop hero should use equal columns so the gutter is page-centered, got:{hero_inner}"
+        );
+
+        let hero_inner_base = css
+            .split(".heroInner")
+            .nth(1)
+            .and_then(|s| s.split('}').next())
+            .expect(".heroInner base rule");
+        assert!(
+            hero_inner_base.contains("margin: 0 auto"),
+            "hero inner should be centered so equal columns put the gutter on the page midline"
+        );
+    }
+
     #[test]
     fn homepage_offers_chromebook_install_next_to_downloads() {
         // Per-OS downloads (Chromebook included) moved off the hero to a dedicated

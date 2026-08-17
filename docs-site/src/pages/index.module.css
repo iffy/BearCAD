@@ -109,7 +109,7 @@
 
   .heroInner {
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: 1fr 1fr;
     align-items: center;
     column-gap: 3.5rem;
     row-gap: 1.6rem;
@@ -117,7 +117,7 @@
   }
 
   .heroBrand {
-    justify-self: center;
+    justify-self: end;
   }
 
   .logo {
