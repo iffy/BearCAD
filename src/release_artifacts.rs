@@ -375,7 +375,7 @@ mod tests {
         );
     }
 
-    /// #1213 / #1439 / #1440: Chromebook install sits next to the other
+    /// #1213 / #1439 / #1440 / #1443: Chromebook install sits next to the other
     /// platform downloads. After the name-your-price landing, the hero
     /// Download CTA jumps to the GetBearCAD block (`#get`); the dedicated
     /// download page still names Chromebooks and points at the hosted web app.
@@ -385,6 +385,10 @@ mod tests {
         assert!(
             home.contains("Download") && home.contains("#get"),
             "landing page Download should jump to the GetBearCAD block"
+        );
+        assert!(
+            !home.contains("/docs/downloads"),
+            "landing Download should not point at /docs/downloads"
         );
         assert!(
             home.contains("GetBearCAD"),
