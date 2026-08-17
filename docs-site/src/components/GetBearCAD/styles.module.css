@@ -46,6 +46,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 0.4rem;
   min-height: 2.75rem;
   padding: 0.55rem 1.05rem;
   border-radius: 999px;
@@ -56,6 +57,13 @@
   text-decoration: none;
   white-space: nowrap;
   transition: transform 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.wrap .payButton svg {
+  display: block;
+  flex: 0 0 auto;
+  width: 1.15rem;
+  height: 1.15rem;
 }
 
 .wrap .payButton:hover {
