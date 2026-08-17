@@ -307,6 +307,43 @@ mod tests {
         );
     }
 
+    /// #1438: user-facing docs must not call BearCAD "free"; pricing is name-your-price.
+    #[test]
+    fn docs_say_name_your_price_not_that_bearcad_is_free() {
+        let get = include_str!("../docs-site/src/components/GetBearCAD/index.js");
+        assert!(
+            get.contains("Name your price"),
+            "download/pay block should lead with name-your-price"
+        );
+        assert!(
+            !get.contains("BearCAD is free"),
+            "download/pay block should not call BearCAD free"
+        );
+
+        let intro = include_str!("../docs-site/docs/intro.mdx");
+        let intro_lc = intro.to_ascii_lowercase();
+        assert!(
+            intro_lc.contains("name your price"),
+            "overview should say name your price"
+        );
+        assert!(
+            !intro_lc.contains("bearcad is a free") && !intro_lc.contains("bearcad is free"),
+            "overview should not call BearCAD free"
+        );
+
+        let why = include_str!("../docs-site/docs/why.mdx");
+        assert!(
+            why.contains("| **Cost** | Name your price |"),
+            "why-page cost row should list BearCAD as name-your-price"
+        );
+
+        let home = include_str!("../docs-site/src/pages/index.js");
+        assert!(
+            home.to_ascii_lowercase().contains("name your price"),
+            "landing page should mention name your price"
+        );
+    }
+
     #[test]
     fn homepage_offers_chromebook_install_next_to_downloads() {
         // Per-OS downloads (Chromebook included) moved off the hero to a dedicated
@@ -317,7 +354,7 @@ mod tests {
             home.contains("Download") && home.contains("/docs/downloads"),
             "landing page should link to the dedicated download page"
         );
-        let downloads = include_str!("../docs-site/docs/downloads.md");
+        let downloads = include_str!("../docs-site/docs/downloads.mdx");
         assert!(
             downloads.contains("Chromebook"),
             "download page should name Chromebook"
