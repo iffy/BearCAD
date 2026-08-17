@@ -82,8 +82,8 @@ function Hero() {
       <div className={styles.shotWrap}>
         <img
           className={styles.shot}
-          src={useBaseUrl('/img/screenshots/elements-pane.png')}
-          alt="BearCAD with a sketched plate, the Elements pane, and a live 3D viewport"
+          src={useBaseUrl('/img/screenshots/materials.png')}
+          alt="Eight cubes in a 2×2×2, each a different material colour"
         />
       </div>
     </header>

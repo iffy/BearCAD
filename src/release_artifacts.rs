@@ -401,6 +401,21 @@ mod tests {
         );
     }
 
+    /// Landing hero uses the colorful 2×2×2 materials viewport shot, not a
+    /// second full-window UI dump.
+    #[test]
+    fn homepage_hero_uses_materials_screenshot() {
+        let home = include_str!("../docs-site/src/pages/index.js");
+        assert!(
+            home.contains("/img/screenshots/materials.png"),
+            "landing hero should show the materials 2×2×2 cubes screenshot"
+        );
+        assert!(
+            !home.contains("/img/screenshots/elements-pane.png"),
+            "landing page should not reuse the elements-pane UI screenshot"
+        );
+    }
+
     /// #1213 / #1439 / #1440 / #1443: Chromebook install sits next to the other
     /// platform downloads. After the name-your-price landing, the hero
     /// Download CTA jumps to the GetBearCAD block (`#get`); the dedicated
