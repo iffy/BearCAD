@@ -2,7 +2,11 @@
   --honey: #e8a317;
   --honey-hot: #f0b02a;
   --ink: #1c1e21;
+  --pad-left: max(1.25rem, env(safe-area-inset-left, 0px));
+  --pad-right: max(1.25rem, env(safe-area-inset-right, 0px));
+  --max: 1040px;
   background: #f6f3ee;
+  overflow-x: clip;
 }
 
 [data-theme='dark'] .page {
@@ -12,8 +16,7 @@
 
 .hero {
   position: relative;
-  overflow: hidden;
-  padding: 3.5rem 1.25rem 0;
+  padding: 3.5rem 0 0;
   text-align: center;
   background-image:
     linear-gradient(color-mix(in srgb, var(--ink) 5%, transparent) 1px, transparent 1px),
@@ -26,6 +29,8 @@
   position: relative;
   max-width: 44rem;
   margin: 0 auto;
+  padding-left: var(--pad-left);
+  padding-right: var(--pad-right);
 }
 
 .logo {
@@ -48,17 +53,20 @@
 .title {
   margin: 0;
   font-family: "Bricolage Grotesque", ui-rounded, system-ui, sans-serif;
-  font-size: clamp(3rem, 9vw, 5.4rem);
+  font-size: clamp(2.6rem, 11vw, 5.4rem);
   font-weight: 800;
   letter-spacing: -0.055em;
   line-height: 0.92;
+  text-wrap: balance;
 }
 
 .sub {
-  margin: 1.05rem 0 0;
-  font-size: clamp(1.15rem, 2.4vw, 1.4rem);
-  line-height: 1.35;
+  max-width: 28rem;
+  margin: 1.05rem auto 0;
+  font-size: clamp(1.05rem, 2.6vw, 1.4rem);
+  line-height: 1.4;
   color: var(--ifm-color-emphasis-700);
+  text-wrap: pretty;
 }
 
 .heroCtas {
@@ -73,6 +81,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  min-height: 2.75rem;
   padding: 0.7rem 1.2rem;
   border-radius: 999px;
   font-weight: 700;
@@ -84,7 +93,6 @@
 
 .btn:hover {
   text-decoration: none;
-  transform: translateY(-1px);
 }
 
 .btnPrimary {
@@ -93,32 +101,40 @@
   box-shadow: 0 8px 20px color-mix(in srgb, var(--honey) 38%, transparent);
 }
 
-.btnPrimary:hover {
-  background: var(--honey-hot);
-  color: #1c1e21;
-}
-
 .btnGhost {
   background: transparent;
   color: var(--ifm-font-color-base);
   border: 1px solid var(--ifm-color-emphasis-300);
 }
 
-.btnGhost:hover {
-  color: var(--ifm-font-color-base);
-  border-color: var(--honey);
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover {
+    transform: translateY(-1px);
+  }
+
+  .btnPrimary:hover {
+    background: var(--honey-hot);
+    color: #1c1e21;
+  }
+
+  .btnGhost:hover {
+    color: var(--ifm-font-color-base);
+    border-color: var(--honey);
+  }
 }
 
 .shotWrap {
   position: relative;
-  max-width: 1040px;
+  max-width: var(--max);
   margin: 2.75rem auto 0;
-  padding: 0 0.25rem;
+  padding-left: var(--pad-left);
+  padding-right: var(--pad-right);
 }
 
 .shot {
   display: block;
   width: 100%;
+  max-width: 100%;
   height: auto;
   border-radius: 14px 14px 0 0;
   box-shadow:
@@ -135,8 +151,10 @@
 .statsGrid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  max-width: 1040px;
+  max-width: var(--max);
   margin: 0 auto;
+  padding-left: var(--pad-left);
+  padding-right: var(--pad-right);
 }
 
 .stat {
@@ -150,7 +168,7 @@
 
 .statValue {
   font-family: "Bricolage Grotesque", ui-rounded, system-ui, sans-serif;
-  font-size: 1.35rem;
+  font-size: clamp(1.15rem, 2vw, 1.35rem);
   font-weight: 800;
   letter-spacing: -0.03em;
   line-height: 1.15;
@@ -163,9 +181,10 @@
 }
 
 .narrow {
-  max-width: 1040px;
+  max-width: var(--max);
   margin: 0 auto;
-  padding: 0 1.25rem;
+  padding-left: var(--pad-left);
+  padding-right: var(--pad-right);
 }
 
 .get {
@@ -176,9 +195,10 @@
   margin: 0;
   scroll-margin-top: 5.5rem;
   font-family: "Bricolage Grotesque", ui-rounded, system-ui, sans-serif;
-  font-size: clamp(1.7rem, 3vw, 2.15rem);
+  font-size: clamp(1.55rem, 3vw, 2.15rem);
   font-weight: 800;
   letter-spacing: -0.035em;
+  text-wrap: balance;
 }
 
 .sectionLead {
@@ -201,6 +221,7 @@
   border-radius: 14px;
   border: 1px solid var(--ifm-color-emphasis-200);
   background: var(--ifm-background-surface-color);
+  min-width: 0;
 }
 
 .traitTitle {
@@ -224,6 +245,7 @@
 .partImg {
   display: block;
   width: 100%;
+  max-width: 100%;
   height: auto;
   border-radius: 14px;
   box-shadow:
@@ -244,7 +266,7 @@
 }
 
 .moreLabel {
-  margin: 0 0 0.35rem;
+  margin: 0 0 0.55rem;
   font-size: 0.78rem;
   font-weight: 650;
   letter-spacing: 0.08em;
@@ -253,56 +275,103 @@
 }
 
 .moreLinks {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.45rem 1.1rem;
   margin: 0;
+  padding: 0;
+  list-style: none;
   font-size: 1.05rem;
 }
 
-.dot {
-  margin: 0 0.55rem;
-  color: var(--ifm-color-emphasis-400);
+.moreLinks a {
+  display: inline-block;
+  padding: 0.2rem 0;
 }
 
-@media screen and (max-width: 860px) {
+/* Tablet and below: 2x2 stats, stacked traits, tighter rhythm. */
+@media screen and (max-width: 996px) {
   .hero {
     padding-top: 2.4rem;
   }
 
-  .statsGrid,
-  .traitGrid {
-    grid-template-columns: 1fr 1fr;
+  .statsGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .stat:nth-child(3) {
+  .stat + .stat {
     border-left: 0;
-    border-top: 1px solid var(--ifm-color-emphasis-200);
   }
 
-  .stat:nth-child(4) {
-    border-top: 1px solid var(--ifm-color-emphasis-200);
+  .stat:nth-child(odd) {
+    border-right: 1px solid var(--ifm-color-emphasis-200);
   }
 
-  .trait:last-child {
-    grid-column: 1 / -1;
+  .stat:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--ifm-color-emphasis-200);
+  }
+
+  .traitGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .get {
+    padding: 2.75rem 0 1.75rem;
+  }
+
+  .traits {
+    padding: 1.15rem 0 2.5rem;
+  }
+
+  .more {
+    padding-bottom: 3.25rem;
   }
 }
 
-@media screen and (max-width: 520px) {
-  .statsGrid {
-    grid-template-columns: 1fr;
+/* Phones: stacked CTAs, floating screenshot, bigger tap targets. */
+@media screen and (max-width: 600px) {
+  .hero {
+    padding-top: 1.75rem;
   }
 
-  .stat + .stat,
-  .stat:nth-child(3),
-  .stat:nth-child(4) {
-    border-left: 0;
-    border-top: 1px solid var(--ifm-color-emphasis-200);
+  .logo {
+    width: 68px;
+    height: 68px;
+    margin-bottom: 0.85rem;
   }
 
-  .traitGrid {
-    grid-template-columns: 1fr;
+  .kicker {
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
   }
 
-  .trait:last-child {
-    grid-column: auto;
+  .heroCtas {
+    flex-direction: column;
+    align-items: stretch;
+    max-width: 22rem;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .shotWrap {
+    margin-top: 2rem;
+    margin-bottom: 1.35rem;
+  }
+
+  .shot {
+    border-radius: 12px;
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--ink) 10%, transparent),
+      0 14px 32px rgba(0, 0, 0, 0.2);
+  }
+
+  .stat {
+    padding: 1rem 0.75rem;
+  }
+
+  .partCap {
+    font-size: 0.9rem;
+    text-wrap: pretty;
   }
 }

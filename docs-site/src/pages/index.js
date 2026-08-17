@@ -58,9 +58,7 @@ function Hero() {
           Small CAD.
         </Heading>
         <p className={styles.sub}>
-          Sketch, constrain, extrude.
-          <br />
-          Launches in half a second. No account.
+          Sketch, constrain, extrude. Launches in half a second. No account.
         </p>
         <div className={styles.heroCtas}>
           <Link className={clsx(styles.btn, styles.btnPrimary)} href={WEB_APP_PATH}>
@@ -148,14 +146,13 @@ function More() {
     <section className={styles.more}>
       <div className={styles.narrow}>
         <p className={styles.moreLabel}>Docs, if you want them</p>
-        <p className={styles.moreLinks}>
-          {MORE.map(({label, to}, i) => (
-            <span key={to}>
-              {i > 0 && <span className={styles.dot}>·</span>}
+        <ul className={styles.moreLinks}>
+          {MORE.map(({label, to}) => (
+            <li key={to}>
               <Link to={to}>{label}</Link>
-            </span>
+            </li>
           ))}
-        </p>
+        </ul>
       </div>
     </section>
   );

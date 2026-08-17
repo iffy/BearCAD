@@ -2,6 +2,7 @@
   display: flex;
   flex-direction: column;
   gap: 1.15rem;
+  container-type: inline-size;
 }
 
 :global(.theme-doc-markdown) .wrap {
@@ -43,6 +44,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  min-height: 2.75rem;
   padding: 0.55rem 1.05rem;
   border-radius: 999px;
   background: #e8a317;
@@ -55,23 +57,31 @@
 }
 
 .wrap .payButton:hover {
-  background: #f0b02a;
   color: #1c1e21;
   text-decoration: none;
-  transform: translateY(-1px);
-  box-shadow: 0 6px 16px color-mix(in srgb, #e8a317 40%, transparent);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .wrap .payButton:hover {
+    background: #f0b02a;
+    transform: translateY(-1px);
+    box-shadow: 0 6px 16px color-mix(in srgb, #e8a317 40%, transparent);
+  }
 }
 
 .downloads {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(11.5rem, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.75rem;
 }
 
 .wrap .dl {
   display: flex;
   flex-direction: column;
+  justify-content: center;
   gap: 0.15rem;
+  min-width: 0;
+  min-height: 4.25rem;
   padding: 1rem 1.05rem 0.95rem;
   border-radius: 14px;
   border: 1px solid var(--ifm-color-emphasis-200);
@@ -84,13 +94,18 @@
 .wrap .dl:hover {
   color: inherit;
   text-decoration: none;
-  transform: translateY(-2px);
-  border-color: #e8a317;
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.08);
 }
 
-[data-theme='dark'] .wrap .dl:hover {
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+@media (hover: hover) and (pointer: fine) {
+  .wrap .dl:hover {
+    transform: translateY(-2px);
+    border-color: #e8a317;
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.08);
+  }
+
+  :global([data-theme='dark']) .wrap .dl:hover {
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+  }
 }
 
 .dlLabel {
@@ -103,9 +118,39 @@
   color: var(--ifm-color-emphasis-600);
 }
 
-@media screen and (max-width: 860px) {
+/* Docs column and tablets: 2x2 so cards don't squash or stack 4-high. */
+@container (max-width: 800px) {
+  .downloads {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container (max-width: 560px) {
   .pay {
     flex-direction: column;
-    align-items: flex-start;
+    align-items: stretch;
+    padding: 1rem 1.1rem;
+  }
+
+  .wrap .payButton {
+    width: 100%;
+  }
+}
+
+/* Fallback when container queries aren't available (old engines). */
+@supports not (container-type: inline-size) {
+  @media screen and (max-width: 860px) {
+    .downloads {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .pay {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .wrap .payButton {
+      width: 100%;
+    }
   }
 }

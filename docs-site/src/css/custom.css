@@ -79,6 +79,14 @@ html.plugin-pages[data-theme='dark'] .navbar {
   color: #1c1e21;
 }
 
+/* Mobile drawer: same pill, full-width so it doesn't look like a leftover chip. */
+.navbar-sidebar .navbar__item.navbar__link[href='/docs/downloads'] {
+  display: block;
+  margin: 0.75rem 0.85rem 0.35rem;
+  padding: 0.55rem 0.8rem;
+  text-align: center;
+}
+
 /* Why page Features table: yes/no as loud green checks / red Xs. */
 .feat-yes,
 .feat-no {
