@@ -2223,6 +2223,8 @@ impl<'a> SceneMesh<'a> {
 
     /// A body's contact shadow on the build plane (#1041): its triangles projected onto
     /// z = 0 along the scene's fixed light direction, drawn dark and translucent.
+    /// Hidden when the camera is below the plane (#1464) — looking up, it would
+    /// show through empty space (solid ground is already hidden).
     ///
     /// The receiver is one known plane, so this needs no shadow map and no second depth pass
     /// — the projection is a line-plane intersection per vertex. Triangles that dip below the
@@ -2237,7 +2239,12 @@ impl<'a> SceneMesh<'a> {
     /// A silhouette overlaps itself, and overlapping translucent triangles blend twice into
     /// blotches; the stencil pass this layer draws through paints each pixel once, exactly as
     /// coplanar sketch fills do (#3).
-    fn push_ground_shadow(&mut self, solid: &crate::extrude::SolidMesh, _cam: &Camera) {
+    fn push_ground_shadow(&mut self, solid: &crate::extrude::SolidMesh, cam: &Camera) {
+        // Looking up from below, a shadow on z = 0 reads as a floating blotch
+        // through empty space — solid ground is already hidden (#1300).
+        if cam.eye().z <= 0.0 {
+            return;
+        }
         let light = SCENE_LIGHT_DIR.normalize_or_zero();
         // A light parallel to the plane casts no shadow onto it.
         if light.z.abs() < 1e-3 {
@@ -8251,6 +8258,37 @@ mod tests {
         assert!(
             build_scene_for_doc(&state).grid.is_some(),
             "ground grid shows from above"
+        );
+    }
+
+    /// #1464: contact shadows sit on the ground plane. Looking up from below would
+    /// show them through empty space (solid ground is already hidden, #1300), so they
+    /// stay off when the eye is under z = 0.
+    #[test]
+    fn ground_shadows_are_hidden_when_camera_is_below() {
+        use crate::camera::ShadingMode;
+
+        let mut state = state_with_one_body();
+        assert!(
+            state.cam.eye().z > 0.0,
+            "default camera is above the ground"
+        );
+
+        let from_above = build_scene_with_shading(&state, ShadingMode::Realistic);
+        assert!(
+            !from_above.shadow_indices.is_empty(),
+            "realistic mode casts a contact shadow onto the ground from above"
+        );
+
+        state.cam.pitch = -1.4;
+        assert!(
+            state.cam.eye().z < 0.0,
+            "test setup: camera must be below the ground plane"
+        );
+        let from_below = build_scene_with_shading(&state, ShadingMode::Realistic);
+        assert!(
+            from_below.shadow_indices.is_empty(),
+            "contact shadows must not show when looking up from below"
         );
     }
 
