@@ -119,6 +119,7 @@ bearcad.ui.help(false)
 bearcad.ui.help()        -- toggle
 local keys = bearcad.ui.toolbar_shortcuts()  -- { shape = "B", sketch = "S", ... }
                                              -- empty while help mode is off
+local bar = bearcad.ui.toolbar_tools()       -- current workbench tools, left to right
 ```
 
 With help mode on, each row of the Context pane gets a floating note beside it saying what

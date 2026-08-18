@@ -3681,6 +3681,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         entry.set("gizmo", row.gizmo.label())?;
         entry.set("esc", row.esc.label())?;
         entry.set("commit_on_enter", row.commit_on_enter)?;
+        entry.set("commit_widget", row.commit_widget.label())?;
         entry.set("output_modes", row.output_modes)?;
         entry.set("stay_armed", row.stay_armed)?;
         entry.set("arm_on_set_tool", row.arm_on_set_tool)?;
@@ -4960,6 +4961,26 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 state.sketch_session.is_some(),
             ) {
                 table.set(name, label)?;
+            }
+            Ok(table)
+        })?,
+    )?;
+
+    // #1506: tools the current workbench toolbar would show, left to right.
+    api.set(
+        "toolbar_tools",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            let table = lua.create_table()?;
+            for (i, tool) in crate::tooltable::visible_toolbar_tools(
+                state.editing_drawing.is_some(),
+                state.sketch_session.is_some(),
+            )
+            .into_iter()
+            .enumerate()
+            {
+                table.set(i + 1, crate::shortcuts::tool_script_name(tool))?;
             }
             Ok(table)
         })?,
@@ -7267,7 +7288,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         -- `bearcad.ui.*` sub-namespace so scripts can focus on modeling (#46).
         bearcad.ui = {}
         local ui_funcs = {
-            "tool", "tool_mode", "help", "toolbar_shortcuts", "focus_name", "focus_dim", "pane", "palette", "settings",
+            "tool", "tool_mode", "help", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_dim", "pane", "palette", "settings",
             "changelog",
             "mcmaster",
             "report_issue", "windows", "focused_window",
@@ -8287,7 +8308,7 @@ mod tests {
             assert(bearcad.ui ~= nil, "bearcad.ui table missing")
             for _, name in ipairs({ "move", "click", "tool", "view", "orbit", "pan",
                                     "key", "type", "pane", "palette", "wait", "help",
-                                    "toolbar_shortcuts", "changelog",
+                                    "toolbar_shortcuts", "toolbar_tools", "changelog",
                                     "mcmaster", "report_issue", "windows", "focused_window",
                                     "new_tab", "close_tab", "tab", "tabs", "tab_count",
                                     "window_count", "reorder_tab", "detach_tab" }) do
@@ -12392,6 +12413,23 @@ mod tests {
             assert(chamfer and chamfer.multi_pick == "toggle",
               "Chamfer/Fillet share Offset's toggle (#1504)")
 
+            local sketch_mirror
+            local sketch_slice
+            for _, row in ipairs(table) do
+                if row.tool == "mirror" and row.space == "sketch" then sketch_mirror = row end
+                if row.tool == "slice" and row.space == "sketch" then sketch_slice = row end
+            end
+            assert(sketch_mirror and sketch_mirror.commit_widget == "primary",
+              "Sketch Mirror commits with the blue primary button (#1505)")
+            assert(sketch_slice and sketch_slice.commit_widget == "primary",
+              "Sketch Slice commits with the blue primary button (#1505)")
+
+            local bar = bearcad.ui.toolbar_tools()
+            local on_bar = {}
+            for _, name in ipairs(bar) do on_bar[name] = true end
+            assert(on_bar.extrude and on_bar.rectangle,
+              "3D toolbar lists Extrude/Rectangle (#1506)")
+
             bearcad.ui.tool("revolve")
             local row = bearcad.tool_row()
             assert(row.tool == "revolve")
@@ -12406,6 +12444,26 @@ mod tests {
             local ok, err = pcall(bearcad.ui.picker_focus, "nope")
             assert(not ok, "unknown picker must error (#1485)")
             assert(tostring(err):find("nope"), "unexpected error: " .. tostring(err))
+            "#,
+        );
+    }
+
+    /// #1506: `bearcad.ui.toolbar_tools()` is the workbench bar — opening a drawing
+    /// drops Extrude/Rectangle/Line so letter keys have nothing 3D to arm.
+    #[test]
+    fn lua_drawing_toolbar_tools_exclude_3d_tools() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.drawing{}
+            local on_bar = {}
+            for _, name in ipairs(bearcad.ui.toolbar_tools()) do
+                on_bar[name] = true
+            end
+            assert(on_bar.select and on_bar.drawing_add and on_bar.drawing_align
+              and on_bar.dimension and on_bar.text,
+              "drawing toolbar is Select/Add/Align/Dimension/Text")
+            assert(not on_bar.extrude and not on_bar.rectangle and not on_bar.line,
+              "3D letter-key tools stay off the drawing bar")
             "#,
         );
     }

@@ -5354,6 +5354,8 @@ it.
 - Every toolbar tool that has a keyboard shortcut also grows a small badge with that
   key (e.g. **B** under Shape), from the same `tool_shortcut()` table the Keyboard
   Shortcuts window uses. Scripts read the badges as `bearcad.ui.toolbar_shortcuts()`.
+  The tools on the bar (and the only ones a letter key will arm) are
+  `bearcad.ui.toolbar_tools()`.
 - The help text is per (tool, row label), so the same label reads correctly under different
   tools ("Bodies" means one thing to Move and another to Combine). Rows that mean the same
   thing everywhere (default units, snapping) are matched on the label alone.

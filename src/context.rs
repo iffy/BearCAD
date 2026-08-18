@@ -5313,7 +5313,7 @@ pub fn show_pane(
         if let Some(edit) = pending {
             on_dimension_edit(edit);
         }
-        if primary_button(ui, controls_enabled, "Set dimension") {
+        if primary_button(ui, controls_enabled, crate::tooltable::commit_label(Tool::Dimension, false)) {
             on_dimension_edit(DimensionEditEdit::Commit);
         }
         ui.add_space(4.0);
@@ -5342,8 +5342,12 @@ pub fn show_pane(
             on_treatment_edit(edit);
         }
         let action = match control.kind {
-            crate::model::VertexTreatmentKind::Fillet => "Fillet",
-            crate::model::VertexTreatmentKind::Chamfer => "Chamfer",
+            crate::model::VertexTreatmentKind::Fillet => {
+                crate::tooltable::commit_label(Tool::Fillet, false)
+            }
+            crate::model::VertexTreatmentKind::Chamfer => {
+                crate::tooltable::commit_label(Tool::Chamfer, false)
+            }
         };
         if primary_button(ui, controls_enabled, action) {
             on_treatment_edit(TreatmentEdit::Commit);
@@ -5842,7 +5846,7 @@ pub fn show_pane(
         });
         // Ready once a profile face and an axis are picked (#586).
         let ready = !control.faces.is_empty() && control.axis.is_some();
-        if primary_button(ui, ready && controls_enabled, "Revolve") {
+        if primary_button(ui, ready && controls_enabled, crate::tooltable::commit_label(Tool::Revolve, false)) {
             on_revolve_edit(RevolveEdit::Commit);
         }
     }
@@ -5882,7 +5886,7 @@ pub fn show_pane(
         });
         // Ready once a profile face and a path are picked (#586).
         let ready = !control.faces.is_empty() && !control.path.is_empty();
-        if primary_button(ui, ready && controls_enabled, "Sweep") {
+        if primary_button(ui, ready && controls_enabled, crate::tooltable::commit_label(Tool::Sweep, false)) {
             on_sweep_edit(SweepEdit::Commit);
         }
     }
@@ -5919,7 +5923,7 @@ pub fn show_pane(
             }
         });
         // Ready once at least two sections are picked (#586).
-        if primary_button(ui, control.can_commit && controls_enabled, "Loft") {
+        if primary_button(ui, control.can_commit && controls_enabled, crate::tooltable::commit_label(Tool::Loft, false)) {
             on_loft_commit();
         }
     }
@@ -6044,7 +6048,7 @@ pub fn show_pane(
             }
             // The plane is only created when this fires (button or Enter) — never on a stray
             // viewport click (#611).
-            if primary_button(ui, controls_enabled, "Create plane") {
+            if primary_button(ui, controls_enabled, crate::tooltable::commit_label(Tool::ConstructionPlane, false)) {
                 on_plane_tool_edit(PlaneToolEdit::Commit);
             }
         }
@@ -6111,7 +6115,7 @@ pub fn show_pane(
         } else if primary_button(
             ui,
             control.can_commit && controls_enabled,
-            if control.editing { "Apply changes" } else { "Create" },
+            crate::tooltable::commit_label(Tool::Combine, control.editing),
         ) {
             on_boolean_edit(BooleanEdit::Commit);
         }
@@ -6378,7 +6382,7 @@ pub fn show_pane(
         if primary_button(
             ui,
             control.can_commit && controls_enabled,
-            if control.editing { "Apply changes" } else { "Move" },
+            crate::tooltable::commit_label(Tool::Move, control.editing),
         ) {
             on_move_edit(MoveEdit::Commit);
         }
@@ -6533,7 +6537,7 @@ pub fn show_pane(
         let create = primary_button(
             ui,
             control.can_commit && controls_enabled,
-            if control.editing { "Apply changes" } else { "Create" },
+            crate::tooltable::commit_label(Tool::Shape, control.editing),
         );
         if create || (enter_commit && control.can_commit) {
             on_shape_edit(ShapeEdit::Commit);
@@ -7000,7 +7004,7 @@ pub fn show_pane(
         if primary_button(
             ui,
             control.can_commit && controls_enabled,
-            if control.editing { "Apply changes" } else { "Joint" },
+            crate::tooltable::commit_label(Tool::Joint, control.editing),
         ) {
             on_joint_edit(JointEdit::Commit);
         }
@@ -7053,7 +7057,7 @@ pub fn show_pane(
         if primary_button(
             ui,
             control.can_commit && controls_enabled,
-            if control.editing { "Apply changes" } else { "Mirror" },
+            crate::tooltable::commit_label(Tool::Mirror, control.editing),
         ) {
             on_mirror_edit(MirrorEdit::Commit);
         }
@@ -7379,7 +7383,7 @@ pub fn show_pane(
         if primary_button(
             ui,
             control.can_commit && controls_enabled,
-            if control.editing { "Apply changes" } else { "Repeat" },
+            crate::tooltable::commit_label(Tool::Repeat, control.editing),
         ) {
             on_repeat_edit(RepeatEdit::Commit);
         }
@@ -7573,7 +7577,7 @@ pub fn show_pane(
         if primary_button(
             ui,
             control.can_commit && controls_enabled,
-            if control.editing { "Apply changes" } else { "Repeat" },
+            crate::tooltable::commit_label(Tool::Repeat, control.editing),
         ) {
             on_sketch_repeat_edit(SketchRepeatEdit::Commit);
         }
@@ -7638,7 +7642,7 @@ pub fn show_pane(
         if primary_button(
             ui,
             control.can_commit && controls_enabled,
-            if control.editing { "Apply changes" } else { "Offset" },
+            crate::tooltable::commit_label(Tool::Offset, control.editing),
         ) {
             on_sketch_offset_edit(SketchOffsetEdit::Commit);
         }
@@ -7705,13 +7709,11 @@ pub fn show_pane(
             });
         });
         }
-        if ui
-            .add_enabled(
-                control.can_commit && controls_enabled,
-                egui::Button::new(if control.editing { "Apply changes" } else { "Mirror" }),
-            )
-            .clicked()
-        {
+        if primary_button(
+            ui,
+            control.can_commit && controls_enabled,
+            crate::tooltable::commit_label(Tool::Mirror, control.editing),
+        ) {
             on_sketch_mirror_edit(SketchMirrorEdit::Commit);
         }
     }
@@ -7748,7 +7750,7 @@ pub fn show_pane(
         if primary_button(
             ui,
             control.can_commit && controls_enabled,
-            if control.editing { "Apply changes" } else { "Slice" },
+            crate::tooltable::commit_label(Tool::Slice, control.editing),
         ) {
             on_slice_edit(SliceEdit::Commit);
         }
@@ -7793,7 +7795,7 @@ pub fn show_pane(
         if primary_button(
             ui,
             control.can_commit && controls_enabled,
-            if control.editing { "Apply changes" } else { "Shell" },
+            crate::tooltable::commit_label(Tool::Shell, control.editing),
         ) {
             on_shell_edit(ShellEdit::Commit);
         }
@@ -7804,13 +7806,11 @@ pub fn show_pane(
     if let Some(control) = &content.sketch_slice {
         any_control = true;
         ui.add_space(2.0);
-        if ui
-            .add_enabled(
-                control.can_commit && controls_enabled,
-                egui::Button::new(if control.editing { "Apply changes" } else { "Slice" }),
-            )
-            .clicked()
-        {
+        if primary_button(
+            ui,
+            control.can_commit && controls_enabled,
+            crate::tooltable::commit_label(Tool::Slice, control.editing),
+        ) {
             on_sketch_slice_edit(SketchSliceEdit::Commit);
         }
     }
@@ -7823,7 +7823,7 @@ pub fn show_pane(
         if primary_button(
             ui,
             control.can_commit && controls_enabled,
-            "Project",
+            crate::tooltable::commit_label(Tool::Project, false),
         ) {
             on_project_edit(ProjectEdit::Commit);
         }
@@ -8500,7 +8500,7 @@ pub fn show_pane(
     // picker, Output, and Symmetric — so it reads as the final action, like Sweep/Loft/Revolve
     // (#601). Shown (disabled) as soon as the tool is selected, enabled once a face is picked.
     if let Some(control) = &content.extrude {
-        if primary_button(ui, controls_enabled && control.can_commit, "Extrude") {
+        if primary_button(ui, controls_enabled && control.can_commit, crate::tooltable::commit_label(Tool::Extrude, false)) {
             on_extrude_edit(ExtrudeEdit::Commit);
         }
         ui.add_space(4.0);

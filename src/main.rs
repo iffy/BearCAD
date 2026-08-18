@@ -6360,6 +6360,15 @@ impl App {
         self.apply_window_cycle(ctx, dir);
     }
 
+    /// #1506: letter keys only arm a tool the current workbench toolbar would show.
+    fn letter_shortcut_arms(&self, tool: Tool) -> bool {
+        crate::tooltable::letter_shortcut_arms(
+            tool,
+            self.state.editing_drawing.is_some(),
+            self.state.sketch_session.is_some(),
+        )
+    }
+
     fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
         if self.state.command_palette.open {
             return;
@@ -6367,7 +6376,8 @@ impl App {
 
         // P activates the Projection tool inside a sketch (#1193/#1197): select outside
         // geometry, Enter projects; Enter on only projected lines un-projects.
-        if self.state.sketch_session.is_some()
+        // The letter also consults the workbench toolbar so it cannot fire on a drawing (#1506).
+        if self.letter_shortcut_arms(Tool::Project)
             && !keyboard_shortcuts_suppressed(ctx)
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::P))
         {
@@ -6485,6 +6495,7 @@ impl App {
             }
 
             if !self.state.draft_blocks_tool_switch()
+                && self.letter_shortcut_arms(Tool::Sketch)
                 && ctx.input(|i| i.key_pressed(egui::Key::S))
             {
                 if self.state.tool != Tool::Sketch {
@@ -6493,6 +6504,7 @@ impl App {
             }
 
             if !self.state.draft_blocks_tool_switch()
+                && self.letter_shortcut_arms(Tool::Rectangle)
                 && ctx.input(|i| i.key_pressed(egui::Key::R))
             {
                 if self.state.tool != Tool::Rectangle {
@@ -6510,7 +6522,10 @@ impl App {
             // J joins parts (#921); pressing it again cycles the joint kind. Changing kind
             // goes through the pane's own edit so the positions reset with it. 3D-only, so
             // SetTool leaves an open sketch (#1495) — same as the toolbar button.
-            if !self.state.draft_blocks_tool_switch() && consume_joint_tool_key(ctx) {
+            if !self.state.draft_blocks_tool_switch()
+                && self.letter_shortcut_arms(Tool::Joint)
+                && consume_joint_tool_key(ctx)
+            {
                 if self.state.tool != Tool::Joint {
                     self.state.apply(Action::SetTool(Tool::Joint));
                 } else if let Some(cj) = self.state.creating_joint.as_mut() {
@@ -6527,7 +6542,10 @@ impl App {
 
             // B places shapes (#909); pressing it again cycles cuboid → cylinder → sphere.
             // 3D-only: SetTool leaves an open sketch, matching the toolbar (#1495).
-            if !self.state.draft_blocks_tool_switch() && consume_shape_tool_key(ctx) {
+            if !self.state.draft_blocks_tool_switch()
+                && self.letter_shortcut_arms(Tool::Shape)
+                && consume_shape_tool_key(ctx)
+            {
                 if self.state.tool != Tool::Shape {
                     self.state.apply(Action::SetTool(Tool::Shape));
                 } else {
@@ -6537,6 +6555,7 @@ impl App {
             }
 
             if !self.state.draft_blocks_tool_switch()
+                && self.letter_shortcut_arms(Tool::Line)
                 && ctx.input(|i| i.key_pressed(egui::Key::L))
             {
                 if self.state.tool != Tool::Line {
@@ -6545,6 +6564,7 @@ impl App {
             }
 
             if !self.state.draft_blocks_tool_switch()
+                && self.letter_shortcut_arms(Tool::Constraint)
                 && ctx.input(|i| i.key_pressed(egui::Key::C))
             {
                 if self.state.tool == Tool::Constraint && !self.state.scene_selection.is_empty() {
@@ -6562,6 +6582,7 @@ impl App {
             }
 
             if !self.state.draft_blocks_tool_switch()
+                && self.letter_shortcut_arms(Tool::Circle)
                 && ctx.input(|i| i.key_pressed(egui::Key::O))
             {
                 if self.state.tool != Tool::Circle {
@@ -6577,12 +6598,14 @@ impl App {
             }
 
             if !self.state.draft_blocks_tool_switch()
+                && self.letter_shortcut_arms(Tool::Dimension)
                 && ctx.input(|i| i.key_pressed(egui::Key::D))
             {
                 self.state.apply(Action::SetTool(Tool::Dimension));
             }
 
             if !self.state.draft_blocks_tool_switch()
+                && self.letter_shortcut_arms(Tool::Move)
                 && ctx.input(|i| i.key_pressed(egui::Key::M))
             {
                 if self.state.tool != Tool::Move {
@@ -6605,6 +6628,7 @@ impl App {
             }
 
             if !self.state.draft_blocks_tool_switch()
+                && self.letter_shortcut_arms(Tool::Extrude)
                 && ctx.input(|i| i.key_pressed(egui::Key::E))
             {
                 if self.state.tool != Tool::Extrude {
@@ -6613,6 +6637,7 @@ impl App {
             }
 
             if !self.state.draft_blocks_tool_switch()
+                && self.letter_shortcut_arms(Tool::Chamfer)
                 && ctx.input(|i| i.key_pressed(egui::Key::K))
             {
                 if self.state.tool != Tool::Chamfer {
@@ -6630,6 +6655,7 @@ impl App {
             }
 
             if !self.state.draft_blocks_tool_switch()
+                && self.letter_shortcut_arms(Tool::Fillet)
                 && ctx.input(|i| i.key_pressed(egui::Key::F))
             {
                 if self.state.tool != Tool::Fillet {
@@ -6676,6 +6702,7 @@ impl App {
                     self.state.apply(Action::ToggleTangentConstraint);
                 } else if self.state.tool != Tool::Text
                     && !self.state.draft_blocks_tool_switch()
+                    && self.letter_shortcut_arms(Tool::Text)
                 {
                     self.state.apply(Action::SetTool(Tool::Text));
                 }
