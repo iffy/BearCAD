@@ -4990,6 +4990,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    api.set(
+        "tool_hints",
+        lua.create_function(|lua, on: Option<bool>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::ToolHints { on }) }
+        })?,
+    )?;
+
     // #1319: shortcut badges shown on the toolbar while help mode is on.
     api.set(
         "toolbar_shortcuts",
@@ -7329,7 +7337,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         -- `bearcad.ui.*` sub-namespace so scripts can focus on modeling (#46).
         bearcad.ui = {}
         local ui_funcs = {
-            "tool", "tool_mode", "help", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_dim", "pane", "palette", "settings",
+            "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_dim", "pane", "palette", "settings",
             "changelog",
             "mcmaster",
             "report_issue", "windows", "focused_window",
@@ -11630,6 +11638,21 @@ mod tests {
             assert(bearcad.body_stats(5) == nil)
         "#,
         );
+    }
+
+    /// #1509: `bearcad.ui.tool_hints(...)` shows/hides/toggles the viewport hint line.
+    #[test]
+    fn lua_tool_hints_toggles() {
+        let state = run_lua("bearcad.ui.tool_hints(false)");
+        assert!(!state.show_tool_hints, "explicit off");
+        assert_eq!(state.status, "Tool hints off");
+
+        let state = run_lua("bearcad.ui.tool_hints(false)\nbearcad.ui.tool_hints()");
+        assert!(state.show_tool_hints, "bare call toggles");
+        assert_eq!(state.status, "Tool hints on");
+
+        let state = run_lua("bearcad.ui.tool_hints(true)\nbearcad.ui.tool_hints(true)");
+        assert!(state.show_tool_hints, "setting it on twice leaves it on");
     }
 
     /// #1319: `bearcad.ui.toolbar_shortcuts()` reports help-mode toolbar badges.

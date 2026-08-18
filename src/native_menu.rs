@@ -62,6 +62,8 @@ pub struct MenuIds {
     pub settings: MenuId,
     /// Help ▸ Help Mode (#672), a checked toggle with the Cmd/Ctrl+/ accelerator.
     pub help_mode: MenuId,
+    /// View ▸ Tool Hints (#1509), a checked toggle for the viewport hint overlay.
+    pub tool_hints: MenuId,
     /// DEV → Report issue (#627); the DEV menu only appears in debug builds.
     pub report_issue: MenuId,
     /// DEV → Verify Lua export (#1159); debug builds only.
@@ -77,6 +79,8 @@ pub struct NativeMenu {
     fps_mode: CheckMenuItem,
     /// Help ▸ Help Mode's checkbox (#672), synced from app state each frame.
     help_mode: CheckMenuItem,
+    /// View ▸ Tool Hints checkbox (#1509), synced from app state each frame.
+    tool_hints: CheckMenuItem,
     pane_checks: Vec<(Pane, CheckMenuItem)>,
 }
 
@@ -192,6 +196,9 @@ pub fn command_for_id(
     }
     if ids.help_mode == id {
         return Some(MenuCommand::ToggleHelpMode);
+    }
+    if ids.tool_hints == id {
+        return Some(MenuCommand::ToggleToolHints);
     }
     if ids.licenses == id {
         return Some(MenuCommand::Licenses);
@@ -363,6 +370,8 @@ impl NativeMenu {
         );
         let fps_mode =
             CheckMenuItem::with_id("fps_mode", "FPS Mode (experimental)", true, false, None);
+        let tool_hints =
+            CheckMenuItem::with_id("tool_hints", "Tool Hints", true, true, None);
         let zoom_to_fit = MenuItem::with_id("zoom_to_fit", "Zoom to Fit", true, None);
         let about = MenuItem::with_id("about", "About BearCAD", true, None);
         let shortcuts_view =
@@ -454,6 +463,7 @@ impl NativeMenu {
         view_menu.append(&command_palette)?;
         view_menu.append(&zoom_to_fit)?;
         view_menu.append(&fps_mode)?;
+        view_menu.append(&tool_hints)?;
         view_menu.append(&shortcuts_view)?;
         view_menu.append(&PredefinedMenuItem::separator())?;
         view_menu.append(&panes_menu)?;
@@ -522,6 +532,7 @@ impl NativeMenu {
             report_problem: report_problem.id().clone(),
             settings: settings_item.id().clone(),
             help_mode: help_mode.id().clone(),
+            tool_hints: tool_hints.id().clone(),
             report_issue: report_issue.id().clone(),
             verify_lua_export: verify_lua_export.id().clone(),
             pane_checks: pane_ids,
@@ -532,6 +543,7 @@ impl NativeMenu {
             ids,
             fps_mode,
             help_mode,
+            tool_hints,
             pane_checks,
         })
     }
@@ -557,6 +569,11 @@ impl NativeMenu {
     /// Keep the Help ▸ Help Mode checkmark aligned with the app state (#672).
     pub fn sync_help_mode(&self, active: bool) {
         self.help_mode.set_checked(active);
+    }
+
+    /// Keep the View ▸ Tool Hints checkmark aligned with the app state (#1509).
+    pub fn sync_tool_hints(&self, active: bool) {
+        self.tool_hints.set_checked(active);
     }
 }
 
@@ -649,6 +666,7 @@ mod tests {
             report_problem: MenuId::new("report_problem"),
             settings: MenuId::new("settings"),
             help_mode: MenuId::new("help_mode"),
+            tool_hints: MenuId::new("tool_hints"),
             report_issue: MenuId::new("report_issue"),
             verify_lua_export: MenuId::new("verify_lua_export"),
             pane_checks: vec![(Pane::ViewCube, pane_menu_id.clone())],
@@ -762,6 +780,20 @@ mod tests {
         assert_eq!(
             MenuCommand::ToggleHelpMode.to_action(),
             Some(Action::SetHelpMode(None))
+        );
+    }
+
+    #[test]
+    fn maps_tool_hints_menu_item() {
+        // #1509: View ▸ Tool Hints toggles the viewport usage overlay.
+        let ids = ids_with_pane("view_cube").0;
+        assert_eq!(
+            command_for_id(&ids.tool_hints, &ids, |_| true),
+            Some(MenuCommand::ToggleToolHints)
+        );
+        assert_eq!(
+            MenuCommand::ToggleToolHints.to_action(),
+            Some(Action::SetToolHints(None))
         );
     }
 

@@ -8,6 +8,9 @@
 -- falling back to ".".
 
 local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/aligned-views.png"
+
+-- Hide the viewport usage overlay so it doesn't cover the model (#1509).
+bearcad.ui.tool_hints(false)
 bearcad.new()
 -- An L-profile so the top/bottom view reads as a clearly different shape from the front.
 bearcad.line{ x = 0,  y = 0,  x1 = 40, y1 = 0 }

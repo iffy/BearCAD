@@ -12,6 +12,9 @@
 -- never resolves and --timeout force-exits without a PNG, which is expected.
 
 local dir = os.getenv("BEARCAD_SCREENSHOT_OUT") or "."
+
+-- Hide the viewport usage overlay so it doesn't cover the model (#1509).
+bearcad.ui.tool_hints(false)
 local function shot(name)
   bearcad.ui.zoom_fit()
   bearcad.ui.wait(1)

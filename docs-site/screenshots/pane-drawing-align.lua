@@ -5,6 +5,9 @@
 
 local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/pane-drawing-align.png"
 
+-- Hide the viewport usage overlay so it doesn't cover the model (#1509).
+bearcad.ui.tool_hints(false)
+
 bearcad.new()
 bearcad.rect{ width = 60, height = 35, name = "Plate" }
 bearcad.extrude{ polygon = { 0, 1, 2, 3 }, distance = 12, name = "Block" }

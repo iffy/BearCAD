@@ -65,6 +65,8 @@ pub enum MenuCommand {
     ShowSettings,
     /// Toggle help mode (#672): every pane control grows a note saying what it wants.
     ToggleHelpMode,
+    /// Toggle the viewport tool-hint overlay (#1509).
+    ToggleToolHints,
     SetPaneVisible { pane: Pane, visible: bool },
     /// Open the DEV → Report issue window (#627): dev-build-only filing of an issue (with
     /// optional screenshot/document-JSON attachments) into the local todoer db.
@@ -116,6 +118,7 @@ impl MenuCommand {
             MenuCommand::ShowChangelog => Some(Action::SetChangelogWindow { open: Some(true) }),
             MenuCommand::ShowSettings => None,
             MenuCommand::ToggleHelpMode => Some(Action::SetHelpMode(None)),
+            MenuCommand::ToggleToolHints => Some(Action::SetToolHints(None)),
             MenuCommand::SetPaneVisible { pane, visible } => {
                 Some(Action::SetPaneVisible { pane, visible })
             }

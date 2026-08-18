@@ -127,6 +127,18 @@ it wants, and each toolbar tool that has a shortcut grows a small badge with tha
 A pane screenshot widens to include the notes, which is how the annotated pane
 pictures in the tool pages are made.
 
+## Viewport tool hints
+
+The usage line at the bottom of the 3D view. **View → Tool Hints** toggles it; from scripts:
+
+```lua
+bearcad.ui.tool_hints(false)   -- hide
+bearcad.ui.tool_hints(true)    -- show
+bearcad.ui.tool_hints()        -- toggle
+```
+
+Docs screenshot scripts turn it off so the line does not cover the model.
+
 ## Tutorials
 
 ```lua

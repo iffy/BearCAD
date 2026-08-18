@@ -959,6 +959,8 @@ pub enum Instruction {
     SetToolMode(String),
     /// Help mode (#672): `None` toggles. Documentation captures turn it on.
     HelpMode { on: Option<bool> },
+    /// Viewport tool-hint overlay (#1509): `None` toggles. Docs captures turn it off.
+    ToolHints { on: Option<bool> },
 
     // Sequencing
     WaitMs(u64),
@@ -2196,6 +2198,10 @@ impl Instruction {
             Instruction::HelpMode { on } => match on {
                 Some(on) => format!("bearcad.ui.help({on})"),
                 None => "bearcad.ui.help()".to_string(),
+            },
+            Instruction::ToolHints { on } => match on {
+                Some(on) => format!("bearcad.ui.tool_hints({on})"),
+                None => "bearcad.ui.tool_hints()".to_string(),
             },
             Instruction::SetGizmo { name, value, relative } => {
                 if *relative {
@@ -5728,6 +5734,11 @@ impl ScriptRunner {
             .as_ref()
             .is_some_and(|request| request.crop.is_some())
     }
+
+    /// Hide the viewport tool-hint line while any screenshot is in flight (#1509).
+    pub fn screenshot_suppresses_tool_hints(&self) -> bool {
+        self.screenshot_pending.is_some()
+    }
 }
 
 pub(crate) enum StepResult {
@@ -7898,6 +7909,10 @@ impl ScriptRunner {
                 state.apply(crate::actions::Action::SetHelpMode(on));
                 StepResult::Continue
             }
+            Instruction::ToolHints { on } => {
+                state.apply(crate::actions::Action::SetToolHints(on));
+                StepResult::Continue
+            }
             Instruction::SetToolMode(mode) => {
                 if let Err(err) = crate::actions::set_tool_mode(state, &mode) {
                     self.record_action_error(crate::actions::ActionResult::Err(err));
@@ -8438,6 +8453,18 @@ mod tests {
         };
         // The default region stays implicit, exactly as it was written before regions.
         assert_eq!(viewport.as_lua(), "bearcad.ui.screenshot(\"out.png\")");
+    }
+
+    #[test]
+    fn tool_hints_instruction_writes_back_out() {
+        assert_eq!(
+            Instruction::ToolHints { on: Some(false) }.as_lua(),
+            "bearcad.ui.tool_hints(false)"
+        );
+        assert_eq!(
+            Instruction::ToolHints { on: None }.as_lua(),
+            "bearcad.ui.tool_hints()"
+        );
     }
 
     /// #736: every unit instruction exports as a replayable `bearcad.*` call.

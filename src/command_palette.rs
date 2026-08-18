@@ -89,6 +89,8 @@ pub enum PaletteCommandId {
     ImportMcMaster,
     ShowHelpMode,
     HideHelpMode,
+    ShowToolHints,
+    HideToolHints,
 }
 
 /// What happens when a palette entry is chosen.
@@ -274,6 +276,12 @@ impl PaletteCommand {
             PaletteCommandId::HideHelpMode => {
                 PaletteOutcome::Action(Action::SetHelpMode(Some(false)))
             }
+            PaletteCommandId::ShowToolHints => {
+                PaletteOutcome::Action(Action::SetToolHints(Some(true)))
+            }
+            PaletteCommandId::HideToolHints => {
+                PaletteOutcome::Action(Action::SetToolHints(Some(false)))
+            }
             PaletteCommandId::ShowPaneViewCube => PaletteOutcome::Action(Action::SetPaneVisible {
                 pane: Pane::ViewCube,
                 visible: true,
@@ -409,6 +417,24 @@ pub fn commands_for_state(state: &AppState) -> Vec<PaletteCommand> {
                 PaletteCommandId::ShowHelpMode,
                 "Turn On Help Mode",
                 "help mode on show explain notes tooltips context pane what is this",
+            )
+        },
+    );
+
+    // Viewport tool hints (#1509): whichever way they aren't.
+    push(
+        &mut out,
+        if state.show_tool_hints {
+            PaletteCommand::new(
+                PaletteCommandId::HideToolHints,
+                "Hide Tool Hints",
+                "tool hints off hide viewport overlay usage help text",
+            )
+        } else {
+            PaletteCommand::new(
+                PaletteCommandId::ShowToolHints,
+                "Show Tool Hints",
+                "tool hints on show viewport overlay usage help text",
             )
         },
     );
@@ -1003,6 +1029,23 @@ mod tests {
         let filtered = filter_commands("new", &cmds);
         assert!(!filtered.is_empty());
         assert_eq!(filtered[0].0.id, PaletteCommandId::NewDocument);
+    }
+
+    #[test]
+    fn tool_hints_palette_offers_the_opposite() {
+        let mut state = AppState::default();
+        assert!(state.show_tool_hints);
+        assert!(
+            commands_for_state(&state)
+                .iter()
+                .any(|c| c.id == PaletteCommandId::HideToolHints)
+        );
+        state.apply(Action::SetToolHints(Some(false)));
+        assert!(
+            commands_for_state(&state)
+                .iter()
+                .any(|c| c.id == PaletteCommandId::ShowToolHints)
+        );
     }
 
     #[test]

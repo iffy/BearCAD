@@ -16,6 +16,9 @@
 
 local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/letter-b.png"
 
+-- Hide the viewport usage overlay so it doesn't cover the model (#1509).
+bearcad.ui.tool_hints(false)
+
 -- Letter bounding box (letter coords: x = width rightward, y = height upward). The bezier
 -- lobes bulge out to ~x=56.
 local H, W = 72, 56

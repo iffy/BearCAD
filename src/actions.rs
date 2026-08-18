@@ -2519,6 +2519,8 @@ pub enum Action {
     /// Turn help mode on, off, or (with `None`) the other way (#672): the Context pane's
     /// controls each grow a floating note explaining what they want.
     SetHelpMode(Option<bool>),
+    /// Show/hide/toggle the viewport tool-hint overlay (#1509). `None` toggles.
+    SetToolHints(Option<bool>),
     /// Show/hide/toggle the Settings window (#720/#737).
     SetSettingsWindow { open: Option<bool> },
     /// Show/hide/toggle the Changelog window (#1328).
@@ -4101,6 +4103,9 @@ pub struct AppState {
     /// the explanations live next to the controls they describe rather than in a separate
     /// page that can drift.
     pub help_mode: bool,
+    /// Viewport tool-hint overlay (#1509): the usage line at the bottom of the 3D view.
+    /// On by default, session-only, never persisted. Docs screenshots turn it off.
+    pub show_tool_hints: bool,
     /// The Settings window (#720) is open. Lives here (not on `App`) so scripts can
     /// drive it for docs captures (#737): `bearcad.ui.settings(...)`.
     pub settings_open: bool,
@@ -4405,6 +4410,7 @@ impl Default for AppState {
             move_angle_snap_deg: MAX_ANGLE_SNAP_DEG,
             move_translate_mode: crate::model::MoveTranslateMode::default(),
             help_mode: false,
+            show_tool_hints: true,
             settings_open: false,
             changelog_open: false,
             completed_tutorials: Vec::new(),
@@ -11357,6 +11363,15 @@ impl AppState {
                     "Help mode on".to_string()
                 } else {
                     "Help mode off".to_string()
+                };
+                ActionResult::Ok
+            }
+            Action::SetToolHints(on) => {
+                self.show_tool_hints = on.unwrap_or(!self.show_tool_hints);
+                self.status = if self.show_tool_hints {
+                    "Tool hints on".to_string()
+                } else {
+                    "Tool hints off".to_string()
                 };
                 ActionResult::Ok
             }
@@ -21279,6 +21294,27 @@ mod tests {
         state.apply(Action::SetHelpMode(Some(true)));
         state.apply(Action::SetHelpMode(Some(true)));
         assert!(state.help_mode, "setting it on twice leaves it on");
+    }
+
+    /// #1509: the viewport hint line is on by default and can be set or toggled.
+    #[test]
+    fn tool_hints_toggles_and_sets_explicitly() {
+        let mut state = AppState::default();
+        assert!(state.show_tool_hints, "tool hints are on by default");
+
+        state.apply(Action::SetToolHints(None));
+        assert!(!state.show_tool_hints);
+        assert_eq!(state.status, "Tool hints off");
+
+        state.apply(Action::SetToolHints(None));
+        assert!(state.show_tool_hints);
+        assert_eq!(state.status, "Tool hints on");
+
+        state.apply(Action::SetToolHints(Some(false)));
+        state.apply(Action::SetToolHints(Some(false)));
+        assert!(!state.show_tool_hints, "setting it off twice leaves it off");
+        state.apply(Action::SetToolHints(Some(true)));
+        assert!(state.show_tool_hints);
     }
 
     #[test]

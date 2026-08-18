@@ -18,7 +18,7 @@ scripted with the same [declarative](/docs/scripting/declarative-modeling) and
   output is reproducible, and captures a PNG.
 - Each script writes to the directory named by the `BEARCAD_SCREENSHOT_OUT` environment variable
   (falling back to the current directory), so the same script works both in the harness and when
-  run by hand.
+  run by hand. Viewport shots hide the tool-hint overlay (`bearcad.ui.tool_hints(false)`).
 - [`scripts/gen-doc-screenshots.sh`](https://github.com/iffy/BearCAD/tree/master/scripts/gen-doc-screenshots.sh)
   builds the app, runs every script into `docs-site/static/img/screenshots/`, and fails if any
   expected PNG is missing or empty. Docusaurus serves that folder as `/img/screenshots/<name>.png`.

@@ -7,6 +7,9 @@
 -- falling back to ".".
 
 local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/pane-unit.png"
+
+-- Hide the viewport usage overlay so it doesn't cover the model (#1509).
+bearcad.ui.tool_hints(false)
 local tmp = os.getenv("TMPDIR") or "/tmp"
 
 -- The part: a small box.

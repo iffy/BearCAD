@@ -12,6 +12,9 @@
 
 local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/fillet.png"
 
+-- Hide the viewport usage overlay so it doesn't cover the model (#1509).
+bearcad.ui.tool_hints(false)
+
 bearcad.new()
 -- Hide the side panes so the captured viewport is landscape (#150).
 bearcad.ui.pane("elements", "hide")
