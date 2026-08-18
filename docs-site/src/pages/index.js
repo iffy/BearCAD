@@ -112,9 +112,6 @@ function Get() {
         <Heading as="h2" className={styles.sectionTitle} id="get">
           Get BearCAD
         </Heading>
-        <p className={styles.sectionLead}>
-          Pay what you want, or skip it. Then grab a build.
-        </p>
         <GetBearCAD />
       </div>
     </section>
