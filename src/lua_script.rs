@@ -144,6 +144,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::Revolution(_) => "revolution",
         SceneElement::Shape(_) => "shape",
         SceneElement::SweepOp(_) => "sweep",
+        SceneElement::Loft(_) => "loft",
         SceneElement::Component(_) => "component",
         SceneElement::UnitInstance(_) => "unit_instance",
         SceneElement::Joint(_) => "joint",
@@ -172,6 +173,7 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
             doc.revolutions.keys().position(|k| k == key).unwrap_or(0)
         }
         SceneElement::SweepOp(key) => doc.sweeps.keys().position(|k| k == key).unwrap_or(0),
+        SceneElement::Loft(key) => doc.lofts.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::Shape(key) => doc.primitives.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::Body(key) => doc.bodies.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::BooleanOp(key) => {
@@ -313,6 +315,7 @@ pub fn scene_element_from_kind(
             Some(SceneElement::Revolution(doc.revolutions.keys().nth(index)?))
         }
         "sweep" | "sweep_op" => Some(SceneElement::SweepOp(doc.sweeps.keys().nth(index)?)),
+        "loft" => Some(SceneElement::Loft(doc.lofts.keys().nth(index)?)),
         "joint" => Some(SceneElement::Joint(doc.joints.keys().nth(index)?)),
         "shape" | "primitive" => Some(SceneElement::Shape(doc.primitives.keys().nth(index)?)),
         // #1517: the remaining top-level kinds a component can hold, so

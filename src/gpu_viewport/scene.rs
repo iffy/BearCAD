@@ -1003,6 +1003,7 @@ impl ViewportScene {
                     | SceneElement::Revolution(_)
                     | SceneElement::Shape(_)
                     | SceneElement::SweepOp(_)
+                    | SceneElement::Loft(_)
                     | SceneElement::Joint(_)
                     | SceneElement::Component(_)),
                 )) => crate::hierarchy::produced_bodies(input.doc, el)
@@ -4223,6 +4224,7 @@ impl<'a> SceneMesh<'a> {
             | SceneElement::Revolution(_)
             | SceneElement::Shape(_)
             | SceneElement::SweepOp(_)
+            | SceneElement::Loft(_)
             | SceneElement::Joint(_)
             | SceneElement::Component(_) => {}
             // The origin and the sketch axes draw their own hover, where the sketch frame that
@@ -7329,6 +7331,7 @@ mod tests {
                     | SceneElement::Revolution(_)
                     | SceneElement::Shape(_)
                     | SceneElement::SweepOp(_)
+                    | SceneElement::Loft(_)
             ) {
                 continue;
             }

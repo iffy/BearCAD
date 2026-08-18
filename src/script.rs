@@ -2513,6 +2513,11 @@ fn element_script_tokens(
             index: ordinal_or_slot(doc.map(|d| d.sweeps.keys().position(|k| k == i)), i.index()),
             point: None,
         },
+        SceneElement::Loft(i) => ElementScriptTokens {
+            kind: "loft",
+            index: ordinal_or_slot(doc.map(|d| d.lofts.keys().position(|k| k == i)), i.index()),
+            point: None,
+        },
         // The component's arena slot, not its ordinal (#1070).
         SceneElement::Component(i) => ElementScriptTokens {
             kind: "component",

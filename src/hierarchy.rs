@@ -84,7 +84,7 @@ pub enum HierarchyNode {
     /// A sweep (Sweep tool); its output body nests under it.
     SweepOp(crate::model::SweepKey),
     /// A loft (Loft tool): its output body nests under it, and its cross-section sketches feed
-    /// it as graph inputs (#252). Display-only for now (no `SceneElement`).
+    /// it as graph inputs (#252). Selectable via [`SceneElement::Loft`] (#1487).
     Loft(crate::model::LoftKey),
     /// Synthetic section under Document that holds every unassigned technical drawing
     /// (#1205). Present only when the document has at least one drawing that isn't filed
@@ -233,6 +233,8 @@ pub enum SceneElement {
     Shape(crate::model::PrimitiveKey),
     /// A sweep (Sweep tool).
     SweepOp(crate::model::SweepKey),
+    /// A loft (Loft tool, #1487).
+    Loft(crate::model::LoftKey),
     /// The origin, selectable in a sketch so a point can be constrained coincident to it from
     /// the constraint tool (#189). Fixed geometry with no owning entity, like `FaceEdge`.
     Origin,
@@ -522,8 +524,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         | HierarchyNode::DrawingDimension { .. }
         // A unit's contents are read-only from the importing document (#723): no scene
         // identity means no selection, visibility, deletion, or renaming can target them.
-        | HierarchyNode::UnitChild { .. }
-        | HierarchyNode::Loft(_) => return None,
+        | HierarchyNode::UnitChild { .. } => return None,
         HierarchyNode::ConstructionPlane(i) => SceneElement::ConstructionPlane(i),
         HierarchyNode::Sketch(i) => SceneElement::Sketch(i),
         HierarchyNode::Line(i) => SceneElement::Line(i),
@@ -548,6 +549,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::Revolution(i) => SceneElement::Revolution(i),
         HierarchyNode::Shape(i) => SceneElement::Shape(i),
         HierarchyNode::SweepOp(i) => SceneElement::SweepOp(i),
+        HierarchyNode::Loft(i) => SceneElement::Loft(i),
         HierarchyNode::Component(i) => SceneElement::Component(i),
         HierarchyNode::UnitInstance(i) => SceneElement::UnitInstance(i),
         HierarchyNode::Joint(i) => SceneElement::Joint(i),
@@ -569,6 +571,7 @@ pub fn node_editable_operation(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::Revolution(i) => Some(SceneElement::Revolution(i)),
         HierarchyNode::Shape(i) => Some(SceneElement::Shape(i)),
         HierarchyNode::SweepOp(i) => Some(SceneElement::SweepOp(i)),
+        HierarchyNode::Loft(i) => Some(SceneElement::Loft(i)),
         HierarchyNode::SketchMirrorOp(i) => Some(SceneElement::SketchMirrorOp(i)),
         HierarchyNode::SketchOffsetOp(i) => Some(SceneElement::SketchOffsetOp(i)),
         HierarchyNode::Joint(i) => Some(SceneElement::Joint(i)),
@@ -800,6 +803,7 @@ impl ElementVisibility {
             SceneElement::Revolution(_) => true,
             SceneElement::Shape(_) => true,
             SceneElement::SweepOp(_) => true,
+            SceneElement::Loft(_) => true,
             // A joint is a relationship, not geometry — its icon shows whenever its
             // parts do (#891).
             SceneElement::Joint(_) => true,
@@ -1877,6 +1881,7 @@ pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNod
         SceneElement::Revolution(i) => HierarchyNode::Revolution(*i),
         SceneElement::Shape(i) => HierarchyNode::Shape(*i),
         SceneElement::SweepOp(i) => HierarchyNode::SweepOp(*i),
+        SceneElement::Loft(i) => HierarchyNode::Loft(*i),
         SceneElement::Component(i) => HierarchyNode::Component(*i),
         SceneElement::UnitInstance(i) => HierarchyNode::UnitInstance(*i),
         SceneElement::Joint(i) => HierarchyNode::Joint(*i),
@@ -1968,6 +1973,7 @@ fn visibility_sort_key(element: &SceneElement) -> (u8, u64) {
         SceneElement::Revolution(i) => (20, i.index() as u64),
         SceneElement::Shape(i) => (21, i.index() as u64),
         SceneElement::SweepOp(i) => (22, i.index() as u64),
+        SceneElement::Loft(i) => (22, i.index() as u64 + 100_000),
         SceneElement::Component(i) => (23, i.index() as u64),
         SceneElement::UnitInstance(i) => (24, i.index() as u64),
         SceneElement::Joint(i) => (25, i.index() as u64),
@@ -2817,8 +2823,8 @@ fn topological_flat_sort(
     result
 }
 
-/// The [`SceneElement`] a component member points at (#423). Drawings and lofts are
-/// display-only (no scene element).
+/// The [`SceneElement`] a component member points at (#423). Drawings are display-only
+/// (no scene element).
 pub fn component_member_element(member: crate::model::ComponentMember) -> Option<SceneElement> {
     use crate::model::ComponentMember as CM;
     Some(match member {
@@ -2834,7 +2840,8 @@ pub fn component_member_element(member: crate::model::ComponentMember) -> Option
         CM::EdgeTreatmentOp(i) => SceneElement::EdgeTreatmentOp(i),
         CM::Revolution(i) => SceneElement::Revolution(i),
         CM::Sweep(i) => SceneElement::SweepOp(i),
-        CM::Loft(_) | CM::Drawing(_) => return None,
+        CM::Loft(i) => SceneElement::Loft(i),
+        CM::Drawing(_) => return None,
     })
 }
 
@@ -2859,13 +2866,14 @@ pub fn component_member_for_element(
         SceneElement::EdgeTreatmentOp(i) => CM::EdgeTreatmentOp(*i),
         SceneElement::Revolution(i) => CM::Revolution(*i),
         SceneElement::SweepOp(i) => CM::Sweep(*i),
+        SceneElement::Loft(i) => CM::Loft(*i),
         _ => return None,
     })
 }
 
 /// The component member an Elements-pane row stands for (#423). Wider than
-/// [`component_member_for_element`]: lofts and drawings are rows a user can file into a
-/// component even though neither is a scene element.
+/// [`component_member_for_element`]: drawings are rows a user can file into a
+/// component even though they have no scene element.
 pub fn component_member_for_node(node: &HierarchyNode) -> Option<crate::model::ComponentMember> {
     use crate::model::ComponentMember as CM;
     Some(match node {
@@ -2954,6 +2962,7 @@ pub fn owning_component(
         // A shape isn't a component member of its own (#909).
         SceneElement::Shape(_) => None,
         SceneElement::SweepOp(i) => doc.component_of(CM::Sweep(*i)),
+        SceneElement::Loft(i) => doc.component_of(CM::Loft(*i)),
         // In-sketch geometry cascades through its sketch's plane (handled by the sketch's
         // own effective-visibility recursion); everything else has no owning component.
         _ => None,
@@ -3053,6 +3062,7 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
         SceneElement::EdgeTreatmentOp(_) => None,
         SceneElement::Revolution(_) | SceneElement::Shape(_) => None,
         SceneElement::SweepOp(_) => None,
+        SceneElement::Loft(_) => None,
         // A joint is always a top-level row (#891).
         SceneElement::Joint(_) => None,
     }
@@ -3365,6 +3375,14 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
             // The swept solid's output body is linked by `BodySource::Sweep`.
             for (bi, body) in doc.bodies.iter() {
                 if body.source == crate::model::BodySource::Sweep(index) {
+                    out.insert(SceneElement::Body(bi));
+                    collect_descendants(doc, SceneElement::Body(bi), out);
+                }
+            }
+        }
+        SceneElement::Loft(index) => {
+            for (bi, body) in doc.bodies.iter() {
+                if body.source == crate::model::BodySource::Loft(index) {
                     out.insert(SceneElement::Body(bi));
                     collect_descendants(doc, SceneElement::Body(bi), out);
                 }
@@ -5676,19 +5694,6 @@ fn show_row(
         return;
     }
 
-    // A loft operation (#252): a display-only row (no SceneElement yet); its output body nests
-    // beneath it and its sketch inputs show as graph edges.
-    if matches!(node, HierarchyNode::Loft(_)) {
-        ui.horizontal(|ui| {
-            ui.add_space(depth as f32 * 18.0);
-            if let Some(icon) = icon_for_hierarchy_node(doc, node) {
-                ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
-            }
-            let _ = ui.selectable_label(false, node_label(doc, node));
-        });
-        return;
-    }
-
     // A drawing projection (#281), text note (#333), or dimension (#341): a display-only leaf.
     // Clicking opens the drawing and selects that element (like clicking a sketch's child), so
     // its editor opens and it highlights on the page.
@@ -6206,6 +6211,7 @@ fn component_member_node(node: HierarchyNode) -> bool {
             | HierarchyNode::ShellOp(_)
             | HierarchyNode::Revolution(_)
             | HierarchyNode::SweepOp(_)
+            | HierarchyNode::Loft(_)
     )
 }
 
@@ -6281,6 +6287,7 @@ mod tests {
             CM::EdgeTreatmentOp(etkey(1)),
             CM::Revolution(crate::arena::Key::from_bits(1)),
             CM::Sweep(crate::arena::Key::from_bits(1)),
+            CM::Loft(crate::arena::Key::from_bits(1)),
         ];
         for member in members {
             let element = component_member_element(member)
@@ -8660,6 +8667,32 @@ label_hidden: false,
                 "sketch {si:?} feeds the loft"
             );
         }
+        // #1487: a loft is a real scene element, same as a sweep — selectable, hideable,
+        // renameable, deletable, and a component member.
+        assert_eq!(
+            scene_element_for_node(HierarchyNode::Loft(loft_key)),
+            Some(SceneElement::Loft(loft_key))
+        );
+        assert_eq!(
+            hierarchy_node_for_element(&SceneElement::Loft(loft_key)),
+            Some(HierarchyNode::Loft(loft_key))
+        );
+        assert_eq!(
+            node_editable_operation(HierarchyNode::Loft(loft_key)),
+            Some(SceneElement::Loft(loft_key))
+        );
+        assert_eq!(
+            component_member_element(crate::model::ComponentMember::Loft(loft_key)),
+            Some(SceneElement::Loft(loft_key))
+        );
+        assert_eq!(
+            component_member_for_element(&SceneElement::Loft(loft_key)),
+            Some(crate::model::ComponentMember::Loft(loft_key))
+        );
+        assert_eq!(
+            produced_bodies(&doc, &SceneElement::Loft(loft_key)),
+            vec![bkey(0)]
+        );
     }
 
     /// #sweep: the op node depends on its profile sketch and every path line, and

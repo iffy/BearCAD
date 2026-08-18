@@ -2034,8 +2034,8 @@ fn emit_components(doc: &Document, out: &mut String) {
             continue;
         };
         let Some((kind, index)) = component_member_ref(doc, member) else {
-            // Lofts and drawings are component members the Elements pane can file but
-            // `bearcad.move_to_component` has no `kind` for yet.
+            // Drawings are component members the Elements pane can file but
+            // `bearcad.move_to_component` has no `kind` for yet (#1525).
             out.push_str(&format!(
                 "-- skipped: {member:?} is in a component, but move_to_component can't name it\n"
             ));
@@ -2062,8 +2062,8 @@ fn component_member_ref(
         M::ConstructionPlane(k) => ord!(construction_planes, k, "construction_plane"),
         M::Extrusion(k) => ord!(extrusions, k, "extrusion"),
         M::Body(k) => ord!(bodies, k, "body"),
-        // `move_to_component` has no `kind` for these two.
-        M::Loft(_) => None,
+        M::Loft(k) => ord!(lofts, k, "loft"),
+        // `move_to_component` has no `kind` for a drawing yet (#1525).
         M::Drawing(_) => None,
         M::BooleanOp(k) => ord!(boolean_ops, k, "boolean_op"),
         M::MoveOp(k) => ord!(move_ops, k, "move_op"),
@@ -2344,6 +2344,18 @@ mod tests {
                bearcad.cuboid{ width = 10, depth = 10, height = 10 }
                bearcad.component{ name = "Sub" }
                bearcad.move_to_component{ kind = "body", index = 0, component = 0 }"#,
+        ),
+        (
+            "loft in a component",
+            r#"bearcad.new()
+               bearcad.circle{ r = 5 }
+               bearcad.plane{ offset = 10 }
+               bearcad.begin_sketch{ kind = "plane", index = 3 }
+               bearcad.circle{ r = 2 }
+               bearcad.exit_sketch()
+               bearcad.loft{ circles = {0, 1} }
+               bearcad.component{ name = "Sub" }
+               bearcad.move_to_component{ kind = "loft", index = 0, component = 0 }"#,
         ),
         (
             "drawing",
