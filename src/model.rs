@@ -1864,22 +1864,22 @@ impl BodySource {
     }
 
     /// The extrusion that *produced* this body as its fused output (#1106/#1107): the last
-    /// added extrusion, or — when the body is cuts-only on a primitive base — the last cut.
-    /// Used so the combined body nests under that extrusion in the graph, not under the Shape.
+    /// cut if this body is a fuse-cut result, otherwise the last add. Used so the combined
+    /// body nests under that extrusion in the graph, not under the Shape.
     pub fn producing_extrusion(&self) -> Option<ExtrusionKey> {
         match self {
             Self::Extrusion(e) => Some(*e),
             Self::Extrusions(indices) => indices.last().copied(),
-            Self::Solid { add, cut, .. } | Self::Shelled { add, cut, .. } => {
-                add.last().copied().or_else(|| cut.last().copied())
+            Self::Solid { add, cut, .. }
+            | Self::Shelled { add, cut, .. }
+            | Self::Boolean { add, cut, .. }
+            | Self::Moved { add, cut, .. }
+            | Self::Mirrored { add, cut, .. }
+            | Self::Repeated { add, cut, .. }
+            | Self::Sliced { add, cut, .. }
+            | Self::EdgeTreated { add, cut, .. } => {
+                cut.last().copied().or_else(|| add.last().copied())
             }
-            // In-place cuts stay under the op; only a fused add re-parents (#1338/#1345).
-            Self::Boolean { add, .. }
-            | Self::Moved { add, .. }
-            | Self::Mirrored { add, .. }
-            | Self::Repeated { add, .. }
-            | Self::Sliced { add, .. }
-            | Self::EdgeTreated { add, .. } => add.last().copied(),
             _ => None,
         }
     }
@@ -1930,18 +1930,22 @@ impl BodySource {
                     cut,
                 })
             }
-            // Peel a fused add; the boolean output remains when add/cut are empty (#1338).
+            // Peel a fused add or cut; the boolean output remains when add/cut are empty (#1338).
             Self::Boolean { op, solid, add, cut } => {
-                if add.last().copied() != Some(extrusion) {
+                if add.last().copied() != Some(extrusion)
+                    && cut.last().copied() != Some(extrusion)
+                {
                     return None;
                 }
                 let add: Vec<ExtrusionKey> =
                     add.iter().copied().filter(|&e| e != extrusion).collect();
+                let cut: Vec<ExtrusionKey> =
+                    cut.iter().copied().filter(|&e| e != extrusion).collect();
                 Some(Self::Boolean {
                     op: *op,
                     solid: *solid,
                     add,
-                    cut: cut.clone(),
+                    cut,
                 })
             }
             // Peel the last fused extrusion; pure hollow when add and cut are empty (#1168).
@@ -1959,29 +1963,19 @@ impl BodySource {
             }
             // Peel a fused add; the op output remains when add/cut are empty (#1345).
             Self::Moved { op, target, add, cut } => {
-                if add.last().copied() != Some(extrusion) {
-                    return None;
-                }
-                let add: Vec<ExtrusionKey> =
-                    add.iter().copied().filter(|&e| e != extrusion).collect();
-                Some(Self::Moved {
+                peel_add_or_cut(add, cut, extrusion).map(|(add, cut)| Self::Moved {
                     op: *op,
                     target: *target,
                     add,
-                    cut: cut.clone(),
+                    cut,
                 })
             }
             Self::Mirrored { op, target, add, cut } => {
-                if add.last().copied() != Some(extrusion) {
-                    return None;
-                }
-                let add: Vec<ExtrusionKey> =
-                    add.iter().copied().filter(|&e| e != extrusion).collect();
-                Some(Self::Mirrored {
+                peel_add_or_cut(add, cut, extrusion).map(|(add, cut)| Self::Mirrored {
                     op: *op,
                     target: *target,
                     add,
-                    cut: cut.clone(),
+                    cut,
                 })
             }
             Self::Repeated {
@@ -1990,56 +1984,51 @@ impl BodySource {
                 instance,
                 add,
                 cut,
-            } => {
-                if add.last().copied() != Some(extrusion) {
-                    return None;
-                }
-                let add: Vec<ExtrusionKey> =
-                    add.iter().copied().filter(|&e| e != extrusion).collect();
-                Some(Self::Repeated {
-                    op: *op,
-                    target: *target,
-                    instance: *instance,
-                    add,
-                    cut: cut.clone(),
-                })
-            }
+            } => peel_add_or_cut(add, cut, extrusion).map(|(add, cut)| Self::Repeated {
+                op: *op,
+                target: *target,
+                instance: *instance,
+                add,
+                cut,
+            }),
             Self::Sliced {
                 op,
                 target,
                 piece,
                 add,
                 cut,
-            } => {
-                if add.last().copied() != Some(extrusion) {
-                    return None;
-                }
-                let add: Vec<ExtrusionKey> =
-                    add.iter().copied().filter(|&e| e != extrusion).collect();
-                Some(Self::Sliced {
-                    op: *op,
-                    target: *target,
-                    piece: *piece,
-                    add,
-                    cut: cut.clone(),
-                })
-            }
+            } => peel_add_or_cut(add, cut, extrusion).map(|(add, cut)| Self::Sliced {
+                op: *op,
+                target: *target,
+                piece: *piece,
+                add,
+                cut,
+            }),
             Self::EdgeTreated { op, target, add, cut } => {
-                if add.last().copied() != Some(extrusion) {
-                    return None;
-                }
-                let add: Vec<ExtrusionKey> =
-                    add.iter().copied().filter(|&e| e != extrusion).collect();
-                Some(Self::EdgeTreated {
+                peel_add_or_cut(add, cut, extrusion).map(|(add, cut)| Self::EdgeTreated {
                     op: *op,
                     target: *target,
                     add,
-                    cut: cut.clone(),
+                    cut,
                 })
             }
             _ => None,
         }
     }
+}
+
+fn peel_add_or_cut(
+    add: &[ExtrusionKey],
+    cut: &[ExtrusionKey],
+    extrusion: ExtrusionKey,
+) -> Option<(Vec<ExtrusionKey>, Vec<ExtrusionKey>)> {
+    if add.last().copied() != Some(extrusion) && cut.last().copied() != Some(extrusion) {
+        return None;
+    }
+    Some((
+        add.iter().copied().filter(|&e| e != extrusion).collect(),
+        cut.iter().copied().filter(|&e| e != extrusion).collect(),
+    ))
 }
 
 /// Whether any live operation (boolean or move) other than the excluded ones consumes
@@ -2164,11 +2153,37 @@ pub fn body_index_for_extrusion(doc: &Document, extrusion: ExtrusionKey) -> Opti
 /// extrusion peeled off.
 pub fn fuse_host_of(doc: &Document, body: BodyKey) -> Option<BodyKey> {
     let src = &doc.bodies.get(body)?.source;
-    let producing = src.producing_extrusion()?;
-    let pred = src.predecessor_source(producing)?;
-    doc.bodies.iter().find_map(|(k, b)| {
-        (k != body && b.source == pred).then_some(k)
-    })
+    if let Some(producing) = src.producing_extrusion() {
+        if let Some(pred) = src.predecessor_source(producing) {
+            if let Some(k) = doc
+                .bodies
+                .iter()
+                .find_map(|(k, b)| (k != body && b.source == pred).then_some(k))
+            {
+                return Some(k);
+            }
+        }
+    }
+    // A fuse-cut output keeps the host's adds and records the cut; peel the last
+    // cut so we still find the shadowed host (#1501 / #1107).
+    let cut = *src.cut_extrusion_indices().last()?;
+    let pred = source_without_extrusion(src, cut)?;
+    doc.bodies
+        .iter()
+        .find_map(|(k, b)| (k != body && b.source == pred).then_some(k))
+}
+
+/// `source` with `extrusion` removed from add or cut, collapsed to the simplest form.
+fn source_without_extrusion(source: &BodySource, extrusion: ExtrusionKey) -> Option<BodySource> {
+    if source.producing_extrusion() == Some(extrusion) {
+        return source.predecessor_source(extrusion);
+    }
+    if !source.owns_extrusion(extrusion) {
+        return None;
+    }
+    let mut peeled = source.clone();
+    peeled.remove_extrusion(extrusion);
+    Some(peeled)
 }
 
 /// Whether any live body is a fuse-merge/cut result of `host` (#1106).
@@ -2912,6 +2927,16 @@ impl BooleanOpKind {
             "intersect" | "intersection" | "common" => Some(Self::Intersect),
             "difference" | "xor" | "symmetric_difference" => Some(Self::Difference),
             _ => None,
+        }
+    }
+
+    /// The name `bearcad.ui.tool_mode` reports (#1524).
+    pub fn script_name(self) -> &'static str {
+        match self {
+            Self::Combine => "combine",
+            Self::Cut => "cut",
+            Self::Intersect => "intersect",
+            Self::Difference => "difference",
         }
     }
 }

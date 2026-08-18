@@ -147,11 +147,14 @@ assert(bearcad.ui.tutorial_highlight())
 
 ```lua
 bearcad.ui.tool_mode("free")   -- put the active tool in one of its modes
+assert(bearcad.ui.tool_mode() == "free")
 ```
 
 `tool_mode` names the mode a tool's Context pane offers — `"snap"`/`"free"` for Move,
 `"combine"`/`"cut"`/`"intersect"`/`"difference"` for Combine, `"cuboid"`/`"cylinder"`/
-`"sphere"` for Shape — reaching mode rows that a scripted click cannot.
+`"sphere"` for Shape, `"new"`/`"merge"`/`"cut"` for Extrude/Revolve/Sweep/Loft/Mirror
+Output — reaching mode rows that a scripted click cannot. Called with no argument it
+returns the armed mode (or `nil`).
 
 ## Screenshots
 

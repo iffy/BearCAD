@@ -4959,9 +4959,21 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     api.set(
         "tool_mode",
-        lua.create_function(|lua, mode: String| {
+        lua.create_function(|lua, mode: Option<String>| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            unsafe { tick.exec(Instruction::SetToolMode(mode)) }
+            match mode {
+                Some(mode) => {
+                    unsafe { tick.exec(Instruction::SetToolMode(mode)) }?;
+                    Ok(Value::Nil)
+                }
+                None => {
+                    let state = unsafe { tick.state() };
+                    match crate::actions::current_tool_mode(state) {
+                        Some(name) => Ok(Value::String(lua.create_string(name)?)),
+                        None => Ok(Value::Nil),
+                    }
+                }
+            }
         })?,
     )?;
 
@@ -8505,7 +8517,7 @@ mod tests {
             bearcad.extrude{{ circle = 0, body = "cut", to = {{ face = {{
               kind = "body_mesh_face", body = 4,
               centroid = q(bottom.face), normal = q(bottom.normal) }} }} }}
-            local after = bearcad.body_stats(4).volume
+            local after = bearcad.body_stats(bearcad.count("body") - 1).volume
             assert(after < before - 1000,
               "the bore should run to the bottom face: " .. after .. " vs " .. before)
             assert(after > before * 0.5,
@@ -8538,7 +8550,7 @@ mod tests {
             local before = bearcad.body_stats(0).volume
             bearcad.extrude{ circle = 0, body = "cut", to = { face = {
               kind = "primitive_face", primitive = 0, face = "bottom" } } }
-            local after = bearcad.body_stats(0).volume
+            local after = bearcad.body_stats(bearcad.count("body") - 1).volume
             assert(after < before - 100,
               "the bore should remove material: " .. after .. " vs " .. before)
             assert(after > before * 0.5,
@@ -9716,7 +9728,8 @@ mod tests {
                                   profile = "polygon", profile_lines = {0,1,2,3}, top = true }
             bearcad.circle{ x = 10, y = 10, r = 5 }
             bearcad.extrude{ circle = 0, distance = -25, body = "cut" }
-            assert(bearcad.body_stats(0).volume < 23999, "cut should remove volume")
+            local live = bearcad.count("body") - 1
+            assert(bearcad.body_stats(live).volume < 23999, "cut should remove volume")
             bearcad.undo()
             local v = bearcad.body_stats(0).volume
             assert(math.abs(v - 24000) < 1, "cut undo must restore the body, got " .. v)
@@ -10485,8 +10498,8 @@ mod tests {
         );
     }
 
-    /// #1104: `body = "cut"` on a Shape-tool cuboid face still mutates that body into a
-    /// Solid with the cut (cut does not use the merge shadow/new-body path).
+    /// #1104/#1501: `body = "cut"` on a Shape-tool cuboid face shadows the cuboid
+    /// and produces a new Solid with the cut (same host-effect as merge).
     #[test]
     fn lua_extrude_cut_into_shape_tool_cuboid() {
         let state = run_lua(
@@ -10498,14 +10511,31 @@ mod tests {
             bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = -10, body = "cut" }
             "#,
         );
-        assert_eq!(state.doc.bodies.len(), 1);
-        let body = state.doc.bodies.values().next().unwrap();
-        assert_eq!(
-            body.source.primitive_base(),
-            Some(state.doc.primitives.keys().next().unwrap())
+        assert_eq!(state.doc.bodies.len(), 2);
+        let pi = state.doc.primitives.keys().next().unwrap();
+        let (shadow_bi, shadow) = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| b.shadow)
+            .expect("host cuboid is shadowed");
+        assert!(
+            matches!(shadow.source, crate::model::BodySource::Primitive(p) if p == pi)
         );
-        assert!(body.source.extrusion_indices().is_empty());
-        assert_eq!(body.source.cut_extrusion_indices(), [xkey(0)]);
+        let (live_bi, live) = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| !b.shadow)
+            .expect("cut result is live");
+        assert_ne!(shadow_bi, live_bi);
+        assert_eq!(live.source.primitive_base(), Some(pi));
+        assert!(live.source.extrusion_indices().is_empty());
+        assert_eq!(live.source.cut_extrusion_indices(), [xkey(0)]);
+        assert_eq!(
+            crate::model::fuse_host_of(&state.doc, live_bi),
+            Some(shadow_bi)
+        );
     }
 
     /// #1338: a tapered cut through a Combine result must actually subtract, and a second
@@ -10542,7 +10572,8 @@ mod tests {
             }
             bearcad.circle{ x = 0, y = 0, r = 6 }
             bearcad.extrude{ circle = 0, distance = -30, taper = 5, body = "cut" }
-            local v1 = bearcad.body_stats(live).volume
+            local result = bearcad.count("body") - 1
+            local v1 = bearcad.body_stats(result).volume
             assert(v1 < v0 - 50, "first cut must remove material: " .. v1 .. " vs " .. v0)
             bearcad.begin_sketch{
                 kind = "body_mesh_face",
@@ -10552,7 +10583,8 @@ mod tests {
             }
             bearcad.circle{ x = 12, y = 0, r = 4 }
             bearcad.extrude{ circle = 1, distance = -30, body = "cut" }
-            local v2 = bearcad.body_stats(live).volume
+            result = bearcad.count("body") - 1
+            local v2 = bearcad.body_stats(result).volume
             assert(v2 < v1 - 20, "second cut must also remove material: " .. v2 .. " vs " .. v1)
             "#,
         );
@@ -10600,7 +10632,8 @@ mod tests {
             }}
             bearcad.circle{{ x = 0, y = 0, r = 6 }}
             bearcad.extrude{{ circle = 0, distance = -30, body = "cut" }}
-            local v1 = bearcad.body_stats(live).volume
+            local result = bearcad.count("body") - 1
+            local v1 = bearcad.body_stats(result).volume
             assert(v1 < v0 - 50, "{label}: cut must remove material: " .. v1 .. " vs " .. v0)
             "#
         )
@@ -10955,9 +10988,16 @@ mod tests {
         "#,
         );
         assert_eq!(state.doc.extrusions.len(), 2);
-        assert_eq!(state.doc.bodies.len(), 1, "the cut should not create a new body");
-        assert_eq!(state.doc.bodies.values().nth(0).unwrap().source.extrusion_indices(), [xkey(0)]);
-        assert_eq!(state.doc.bodies.values().nth(0).unwrap().source.cut_extrusion_indices(), [xkey(1)]);
+        assert_eq!(state.doc.bodies.len(), 2, "cut shadows the host and creates a new body");
+        let live = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| !b.shadow)
+            .map(|(_, b)| b)
+            .expect("live cut result");
+        assert_eq!(live.source.extrusion_indices(), [xkey(0)]);
+        assert_eq!(live.source.cut_extrusion_indices(), [xkey(1)]);
     }
 
     /// #178 part 1: `body = "cut"` (or `"merge"`) explicitly requested, but the sketch isn't
@@ -11002,9 +11042,16 @@ mod tests {
             bearcad.extrude{ circle = 0, distance = -3, body = "cut" }
         "#,
         );
-        assert_eq!(state.doc.bodies.len(), 1, "the cut must not create a new body");
-        assert_eq!(state.doc.bodies.values().nth(0).unwrap().source.extrusion_indices(), [xkey(0)]);
-        assert_eq!(state.doc.bodies.values().nth(0).unwrap().source.cut_extrusion_indices(), [xkey(1)]);
+        assert_eq!(state.doc.bodies.len(), 2, "cut shadows the host and creates a new body");
+        let live = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| !b.shadow)
+            .map(|(_, b)| b)
+            .expect("live cut result");
+        assert_eq!(live.source.extrusion_indices(), [xkey(0)]);
+        assert_eq!(live.source.cut_extrusion_indices(), [xkey(1)]);
     }
 
     /// #178 part 2: `side_quad_world`'s `edge` indexes the profile's lines analytically. The
@@ -12345,6 +12392,118 @@ mod tests {
             assert(not ok, "unknown picker must error (#1485)")
             assert(tostring(err):find("nope"), "unexpected error: " .. tostring(err))
             "#,
+        );
+    }
+
+    /// #1524: Extrude's Output row is `bearcad.ui.tool_mode("new"|"merge"|"cut")`
+    /// while an extrusion is in progress, and the armed mode is readable. Same
+    /// names work on Revolve/Sweep/Loft/Mirror.
+    #[test]
+    fn lua_extrude_tool_mode_sets_and_reads_output() {
+        // No draft: setting a mode is an error (same as Move with nothing in progress).
+        run_lua(
+            r#"
+            bearcad.ui.tool("extrude")
+            local ok, err = pcall(bearcad.ui.tool_mode, "cut")
+            assert(not ok, "the Extrude tool has no draft yet")
+            assert(tostring(err):find("progress") or tostring(err):find("mode"),
+                "unexpected error: " .. tostring(err))
+            assert(bearcad.ui.tool_mode() == nil, "no armed output without a draft")
+            "#,
+        );
+
+        // Seed a live draft the way the Extrude tool does (#214), then drive Output.
+        let mut state = AppState::default();
+        let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
+        let lines = crate::construction::add_line_rectangle(
+            &mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4],
+        );
+        state.apply(crate::actions::Action::SetTool(crate::actions::Tool::Extrude));
+        state.apply(crate::actions::Action::ToggleExtrudeFace {
+            face: crate::model::ExtrudeFace::Polygon(lines.to_vec()),
+        });
+        assert!(state.creating_extrusion.is_some());
+        // Cut is only armed when a host body exists; give the draft one.
+        let host = state.doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(crate::arena::Key::from_bits(0)),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        if let Some(ce) = state.creating_extrusion.as_mut() {
+            ce.merge_candidate = Some(host);
+        }
+        let mut runner = crate::script::ScriptRunner::from_lua_source(
+            r#"
+            assert(bearcad.ui.tool_mode() == "new", "default output is new body")
+            bearcad.ui.tool_mode("cut")
+            assert(bearcad.ui.tool_mode() == "cut")
+            bearcad.ui.tool_mode("merge")
+            assert(bearcad.ui.tool_mode() == "merge")
+            bearcad.ui.tool_mode("new")
+            assert(bearcad.ui.tool_mode() == "new")
+            "#,
+        )
+        .unwrap();
+        runner.verbose = false;
+        let mut synthetic = crate::script::SyntheticInput::default();
+        let ctx = egui::Context::default();
+        let vp = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0));
+        let mut safety = 0u32;
+        while !runner.done {
+            runner.tick(&mut state, &mut synthetic, Some(vp), &ctx);
+            safety += 1;
+            assert!(safety < 100_000, "tool_mode script spun too long");
+        }
+        assert!(runner.error.is_none(), "script error: {:?}", runner.error);
+        assert_eq!(
+            state.creating_extrusion.as_ref().unwrap().body_mode,
+            crate::actions::ExtrudeBodyMode::NewBody
+        );
+    }
+
+    /// #1501: Add and Cut both shadow the host and produce a new live body —
+    /// the same host-effect Extrude merge already used.
+    #[test]
+    fn lua_extrude_cut_shadows_host_like_merge() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 80, height = 50 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20 }
+            bearcad.begin_sketch{ kind = "extrude_cap", extrusion = 0,
+                profile = "polygon", profile_lines = {0, 1, 2, 3}, top = true }
+            bearcad.rect{ x = 10, y = 10, width = 20, height = 10 }
+            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5, body = "cut" }
+            assert(bearcad.count("body") == 2, "cut shadows the host and creates a new body")
+            "#,
+        );
+        assert_eq!(state.doc.extrusions.len(), 2);
+        assert_eq!(
+            state.doc.bodies.len(),
+            2,
+            "cut shadows the host and creates a new body"
+        );
+        let (shadow_bi, shadow) = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| b.shadow)
+            .expect("host is shadowed");
+        assert_eq!(shadow.source.extrusion_indices(), [xkey(0)]);
+        assert!(shadow.source.cut_extrusion_indices().is_empty());
+        let (live_bi, live) = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| !b.shadow)
+            .expect("cut result is live");
+        assert_ne!(shadow_bi, live_bi);
+        assert_eq!(live.source.extrusion_indices(), [xkey(0)]);
+        assert_eq!(live.source.cut_extrusion_indices(), [xkey(1)]);
+        assert_eq!(
+            crate::model::fuse_host_of(&state.doc, live_bi),
+            Some(shadow_bi)
         );
     }
 

@@ -1488,7 +1488,10 @@ fn body_is_op_input(doc: &Document, body: crate::model::BodyKey) -> bool {
         crate::model::SweepMode::NewBody => false,
         crate::model::SweepMode::AddTo(b) | crate::model::SweepMode::Cut(b) => listed(b),
     });
-    loft_bodies || revolve_bodies || sweep_bodies
+    loft_bodies
+        || revolve_bodies
+        || sweep_bodies
+        || crate::model::body_is_fuse_host(doc, body)
 }
 
 fn planes_same_datum(a: &crate::model::ConstructionPlane, b: &crate::model::ConstructionPlane) -> bool {

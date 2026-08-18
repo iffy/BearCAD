@@ -485,10 +485,9 @@ pub fn delete_element(doc: &mut Document, element: SceneElement) -> bool {
             }
         }
         SceneElement::Revolution(index) => {
-            // Deleting the revolution removes its output body (only NewBody mode has one;
-            // AddTo/Cut fuse into existing bodies at recompute, so there's nothing else to
-            // release — the revolve simply stops contributing).
-            if doc.revolutions.remove(index).is_some() {
+            // Deleting the revolution removes its output body and releases shadowed
+            // Add/Cut hosts (#1501).
+            if let Some(rev) = doc.revolutions.remove(index) {
                 let produced: Vec<crate::model::BodyKey> = doc
                     .bodies
                     .iter()
@@ -498,6 +497,7 @@ pub fn delete_element(doc: &mut Document, element: SceneElement) -> bool {
                 for key in produced {
                     doc.bodies.remove(key);
                 }
+                unshadow_mode_hosts(doc, revolve_hosts(&rev.mode));
                 changed = true;
             }
         }
@@ -518,9 +518,7 @@ pub fn delete_element(doc: &mut Document, element: SceneElement) -> bool {
             }
         }
         SceneElement::SweepOp(index) => {
-            // Deleting the sweep removes its output body (only NewBody mode has one;
-            // AddTo/Cut fuse into existing bodies at recompute).
-            if doc.sweeps.remove(index).is_some() {
+            if let Some(fp) = doc.sweeps.remove(index) {
                 let produced: Vec<crate::model::BodyKey> = doc
                     .bodies
                     .iter()
@@ -530,11 +528,12 @@ pub fn delete_element(doc: &mut Document, element: SceneElement) -> bool {
                 for key in produced {
                     doc.bodies.remove(key);
                 }
+                unshadow_mode_hosts(doc, sweep_hosts(&fp.mode));
                 changed = true;
             }
         }
         SceneElement::Loft(index) => {
-            if doc.lofts.remove(index).is_some() {
+            if let Some(loft) = doc.lofts.remove(index) {
                 let produced: Vec<crate::model::BodyKey> = doc
                     .bodies
                     .iter()
@@ -544,6 +543,7 @@ pub fn delete_element(doc: &mut Document, element: SceneElement) -> bool {
                 for key in produced {
                     doc.bodies.remove(key);
                 }
+                unshadow_mode_hosts(doc, loft_hosts(&loft.mode));
                 changed = true;
             }
         }
@@ -604,7 +604,13 @@ fn delete_extrusion(doc: &mut Document, index: crate::model::ExtrusionKey) -> bo
             && source.cut_extrusion_indices().is_empty()
             && source.primitive_base().is_none();
         let is_producer = source.producing_extrusion() == Some(index);
-        if solely_owned || is_producer {
+        // A fuse-cut output lists the cut as producer. Old mutate-in-place
+        // files have no separate host — just peel the cut off that body.
+        let is_fuse_cut = source.cut_extrusion_indices().last() == Some(&index);
+        if solely_owned
+            || (is_producer && !is_fuse_cut)
+            || (is_fuse_cut && crate::model::fuse_host_of(doc, bi).is_some())
+        {
             if let Some(h) = crate::model::fuse_host_of(doc, bi) {
                 hosts_to_release.push(h);
             }
@@ -637,6 +643,39 @@ fn delete_extrusion(doc: &mut Document, index: crate::model::ExtrusionKey) -> bo
         }
     }
     true
+}
+
+fn unshadow_mode_hosts(doc: &mut Document, hosts: &[crate::model::BodyKey]) {
+    for &h in hosts {
+        if doc.bodies.contains(h)
+            && !crate::model::body_shadowed_by_other_ops(doc, h, None, None, None, None)
+        {
+            if let Some(body) = doc.bodies.get_mut(h) {
+                body.shadow = false;
+            }
+        }
+    }
+}
+
+fn revolve_hosts(mode: &crate::model::RevolveMode) -> &[crate::model::BodyKey] {
+    match mode {
+        crate::model::RevolveMode::NewBody => &[],
+        crate::model::RevolveMode::AddTo(b) | crate::model::RevolveMode::Cut(b) => b.as_slice(),
+    }
+}
+
+fn sweep_hosts(mode: &crate::model::SweepMode) -> &[crate::model::BodyKey] {
+    match mode {
+        crate::model::SweepMode::NewBody => &[],
+        crate::model::SweepMode::AddTo(b) | crate::model::SweepMode::Cut(b) => b.as_slice(),
+    }
+}
+
+fn loft_hosts(mode: &crate::model::LoftMode) -> &[crate::model::BodyKey] {
+    match mode {
+        crate::model::LoftMode::NewBody => &[],
+        crate::model::LoftMode::AddTo(b) | crate::model::LoftMode::Cut(b) => b.as_slice(),
+    }
 }
 
 fn delete_body(doc: &mut Document, index: crate::model::BodyKey) -> bool {

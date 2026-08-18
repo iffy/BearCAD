@@ -783,6 +783,25 @@ impl ToolOutputMode {
             Self::Cut => Self::NewBody,
         }
     }
+
+    /// Script/status name (`"new"` / `"merge"` / `"cut"`). Inverse of [`Self::from_name`].
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::NewBody => "new",
+            Self::AddToBody => "merge",
+            Self::Cut => "cut",
+        }
+    }
+
+    /// The Output-row names `bearcad.ui.tool_mode` accepts (#1524).
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().replace(['-', ' '], "_").as_str() {
+            "new" | "new_body" => Some(Self::NewBody),
+            "merge" | "add" | "join" | "add_to_body" | "add_touching" => Some(Self::AddToBody),
+            "cut" => Some(Self::Cut),
+            _ => None,
+        }
+    }
 }
 
 impl From<RevolveBodyChoice> for ToolOutputMode {
@@ -4709,13 +4728,14 @@ impl AppState {
                 });
                 self.doc.shape_order.push(ShapeKind::Body);
             }
-            HostBodyEffect::ShadowHostAndProduce => {
-                let ExtrudeBodyMode::MergeInto(bi) = mode else {
-                    unreachable!("only ExtrudeMerge uses ShadowHostAndProduce");
-                };
-                if self.doc.bodies.contains(bi) {
+            HostBodyEffect::ShadowHostAndProduce => match mode {
+                ExtrudeBodyMode::MergeInto(bi) if self.doc.bodies.contains(bi) => {
                     self.fuse_merge_onto_body(bi, ei);
-                } else {
+                }
+                ExtrudeBodyMode::Cut(bi) if self.doc.bodies.contains(bi) => {
+                    self.fuse_cut_onto_body(bi, ei);
+                }
+                _ => {
                     self.doc.bodies.insert(crate::model::Body {
                         source: crate::model::BodySource::single(ei),
                         material: None,
@@ -4724,21 +4744,14 @@ impl AppState {
                     });
                     self.doc.shape_order.push(ShapeKind::Body);
                 }
-            }
+            },
             HostBodyEffect::MutateHost => {
-                let ExtrudeBodyMode::Cut(bi) = mode else {
-                    unreachable!("only ExtrudeCut uses MutateHost");
-                };
-                if let Some(body) = self.doc.bodies.get_mut(bi) {
-                    body.source.append_cut_extrusion(ei);
-                } else {
-                    self.doc.bodies.insert(crate::model::Body {
-                        source: crate::model::BodySource::single(ei),
-                        material: None,
-                        name: None,
-                        shadow: false,
-                    });
-                    self.doc.shape_order.push(ShapeKind::Body);
+                // Output-row Add/Cut now shadow (#1501). Kept for any leftover
+                // mutate-in-place caller.
+                if let ExtrudeBodyMode::Cut(bi) = mode {
+                    if let Some(body) = self.doc.bodies.get_mut(bi) {
+                        body.source.append_cut_extrusion(ei);
+                    }
                 }
             }
         }
@@ -4920,36 +4933,45 @@ impl AppState {
         // the same constants `opsigs` prints for ExtrudeNewBody / ExtrudeMerge / ExtrudeCut.
         use crate::opsigs::{extrude_host_effect, HostBodyEffect};
         match extrude_host_effect(mode) {
-            HostBodyEffect::ShadowHostAndProduce => {
-                let ExtrudeBodyMode::MergeInto(bi) = mode else {
-                    unreachable!("only ExtrudeMerge uses ShadowHostAndProduce");
-                };
-                // Merging into a read-only unit is refused (#726): fall through to a new
-                // body instead of editing the unit.
-                if self
-                    .doc
-                    .bodies
-                    .get(bi)
-                    .is_some_and(|b| !matches!(b.source, crate::model::BodySource::UnitInstance(_)))
-                {
-                    return self.fuse_merge_onto_body(bi, ei);
+            HostBodyEffect::ShadowHostAndProduce => match mode {
+                ExtrudeBodyMode::MergeInto(bi) => {
+                    // Merging into a read-only unit is refused (#726): fall through to a new
+                    // body instead of editing the unit.
+                    if self
+                        .doc
+                        .bodies
+                        .get(bi)
+                        .is_some_and(|b| !matches!(b.source, crate::model::BodySource::UnitInstance(_)))
+                    {
+                        return self.fuse_merge_onto_body(bi, ei);
+                    }
                 }
-            }
+                ExtrudeBodyMode::Cut(bi) => {
+                    // Cutting a unit (#726) never mutates it: the cut lands on (or creates)
+                    // the document's own UnitCut output body; the intact unit body shadows
+                    // as the consumed input on the next sync pass.
+                    if let Some(crate::model::BodySource::UnitInstance(instance)) =
+                        self.doc.bodies.get(bi).map(|b| b.source.clone())
+                    {
+                        return self.cut_into_unit(instance, ei);
+                    }
+                    if self.doc.bodies.contains(bi) {
+                        return self.fuse_cut_onto_body(bi, ei);
+                    }
+                }
+                _ => {}
+            },
             HostBodyEffect::MutateHost => {
-                let ExtrudeBodyMode::Cut(bi) = mode else {
-                    unreachable!("only ExtrudeCut uses MutateHost");
-                };
-                // Cutting a unit (#726) never mutates it: the cut lands on (or creates)
-                // the document's own UnitCut output body; the intact unit body shadows
-                // as the consumed input on the next sync pass.
-                if let Some(crate::model::BodySource::UnitInstance(instance)) =
-                    self.doc.bodies.get(bi).map(|b| b.source.clone())
-                {
-                    return self.cut_into_unit(instance, ei);
-                }
-                if let Some(body) = self.doc.bodies.get_mut(bi) {
-                    body.source.append_cut_extrusion(ei);
-                    return bi;
+                if let ExtrudeBodyMode::Cut(bi) = mode {
+                    if let Some(crate::model::BodySource::UnitInstance(instance)) =
+                        self.doc.bodies.get(bi).map(|b| b.source.clone())
+                    {
+                        return self.cut_into_unit(instance, ei);
+                    }
+                    if let Some(body) = self.doc.bodies.get_mut(bi) {
+                        body.source.append_cut_extrusion(ei);
+                        return bi;
+                    }
                 }
             }
             HostBodyEffect::None => {}
@@ -4981,6 +5003,32 @@ impl AppState {
         source.append_extrusion(ei);
         // Material: prefer the host's, else whatever the extrusion's face carried (#926).
         let material = material.or_else(|| self.extrusion_source_material(ei));
+        if let Some(body) = self.doc.bodies.get_mut(bi) {
+            body.shadow = true;
+        }
+        let key = self.doc.bodies.insert(crate::model::Body {
+            source,
+            material,
+            name: None,
+            shadow: false,
+        });
+        self.doc.shape_order.push(ShapeKind::Body);
+        key
+    }
+
+    /// Fuse-cut extrusion `ei` from host body `bi` (#1501/#1107): the host becomes a
+    /// shadow body and a **new** live body carries the host source minus the extrusion.
+    /// Same consume-input / produce-output shape as [`Self::fuse_merge_onto_body`].
+    fn fuse_cut_onto_body(
+        &mut self,
+        bi: crate::model::BodyKey,
+        ei: crate::model::ExtrusionKey,
+    ) -> crate::model::BodyKey {
+        let (mut source, material) = {
+            let body = &self.doc.bodies[bi];
+            (body.source.clone(), body.material)
+        };
+        source.append_cut_extrusion(ei);
         if let Some(body) = self.doc.bodies.get_mut(bi) {
             body.shadow = true;
         }
@@ -6259,14 +6307,19 @@ impl AppState {
             return ActionResult::Err(e);
         }
         let key = self.doc.revolutions.insert(rev);
-        if matches!(mode, crate::model::RevolveMode::NewBody) {
-            self.doc.bodies.insert(crate::model::Body {
-                source: crate::model::BodySource::Revolve(key),
-                material: None,
-                name: None,
-                shadow: false,
-            });
+        // Host-effect comes from opsigs (#1501): Add/Cut shadow the hosts and
+        // still produce a Revolve-sourced body that evaluates as host ⋈ tool.
+        if crate::opsigs::revolve_host_effect(&mode)
+            == crate::opsigs::HostBodyEffect::ShadowHostAndProduce
+        {
+            set_mode_host_shadows(&mut self.doc, revolve_mode_hosts(&mode), true);
         }
+        self.doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Revolve(key),
+            material: None,
+            name: None,
+            shadow: false,
+        });
         self.doc.shape_order.push(crate::model::ShapeKind::Revolution);
         self.creating_revolve = None;
         self.tool = Tool::Select;
@@ -6284,8 +6337,8 @@ impl AppState {
     }
 
     /// Re-point an existing revolution (#211): replace its parameters in place (preserving its
-    /// name), then reconcile its output body — a `NewBody`-mode revolve owns one body via
-    /// `BodySource::Revolve`; `AddTo`/`Cut` own none (they fuse at recompute).
+    /// name), then reconcile its output body — every mode owns one `BodySource::Revolve`
+    /// body; Add/Cut also shadow their hosts (#1501).
     #[allow(clippy::too_many_arguments)]
     fn edit_revolution(
         &mut self,
@@ -6325,35 +6378,27 @@ impl AppState {
             self.status = e.clone();
             return ActionResult::Err(e);
         }
+        let old_mode = self.doc.revolutions[op].mode.clone();
+        set_mode_host_shadows(&mut self.doc, revolve_mode_hosts(&old_mode), false);
         self.doc.revolutions[op] = candidate;
-        // Reconcile the owned body with the (possibly changed) mode.
+        if crate::opsigs::revolve_host_effect(&mode)
+            == crate::opsigs::HostBodyEffect::ShadowHostAndProduce
+        {
+            set_mode_host_shadows(&mut self.doc, revolve_mode_hosts(&mode), true);
+        }
+        // Add/Cut now produce a body too (#1501); keep exactly one Revolve-sourced output.
         let has_body = self
             .doc
             .bodies
             .values()
             .any(|b| b.source == crate::model::BodySource::Revolve(op));
-        match (matches!(mode, crate::model::RevolveMode::NewBody), has_body) {
-            (true, false) => {
-                self.doc.bodies.insert(crate::model::Body {
-                    source: crate::model::BodySource::Revolve(op),
-                    material: None,
-                    name: None,
-                    shadow: false,
-                });
-            }
-            (false, true) => {
-                let produced: Vec<crate::model::BodyKey> = self
-                    .doc
-                    .bodies
-                    .iter()
-                    .filter(|(_, b)| b.source == crate::model::BodySource::Revolve(op))
-                    .map(|(k, _)| k)
-                    .collect();
-                for key in produced {
-                    self.doc.bodies.remove(key);
-                }
-            }
-            _ => {}
+        if !has_body {
+            self.doc.bodies.insert(crate::model::Body {
+                source: crate::model::BodySource::Revolve(op),
+                material: None,
+                name: None,
+                shadow: false,
+            });
         }
         self.creating_revolve = None;
         self.tool = Tool::Select;
@@ -6439,14 +6484,17 @@ impl AppState {
             return ActionResult::Err(e);
         }
         let key = self.doc.sweeps.insert(fp);
-        if matches!(mode, crate::model::SweepMode::NewBody) {
-            self.doc.bodies.insert(crate::model::Body {
-                source: crate::model::BodySource::Sweep(key),
-                material: None,
-                name: None,
-                shadow: false,
-            });
+        if crate::opsigs::sweep_host_effect(&mode)
+            == crate::opsigs::HostBodyEffect::ShadowHostAndProduce
+        {
+            set_mode_host_shadows(&mut self.doc, sweep_mode_hosts(&mode), true);
         }
+        self.doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Sweep(key),
+            material: None,
+            name: None,
+            shadow: false,
+        });
         self.doc.shape_order.push(crate::model::ShapeKind::Sweep);
         self.creating_sweep = None;
         self.tool = Tool::Select;
@@ -6464,8 +6512,8 @@ impl AppState {
     }
 
     /// Re-point an existing sweep: replace its parameters in place (preserving its
-    /// name), then reconcile its output body — a `NewBody`-mode sweep owns one body via
-    /// `BodySource::Sweep`; `AddTo`/`Cut` own none (they fuse at recompute).
+    /// name), then reconcile its output body — every mode owns one `BodySource::Sweep`
+    /// body; Add/Cut also shadow their hosts (#1501).
     fn edit_sweep(
         &mut self,
         op: crate::model::SweepKey,
@@ -6490,34 +6538,26 @@ impl AppState {
             self.status = e.clone();
             return ActionResult::Err(e);
         }
+        let old_mode = self.doc.sweeps[op].mode.clone();
+        set_mode_host_shadows(&mut self.doc, sweep_mode_hosts(&old_mode), false);
         self.doc.sweeps[op] = candidate;
+        if crate::opsigs::sweep_host_effect(&mode)
+            == crate::opsigs::HostBodyEffect::ShadowHostAndProduce
+        {
+            set_mode_host_shadows(&mut self.doc, sweep_mode_hosts(&mode), true);
+        }
         let has_body = self
             .doc
             .bodies
             .values()
             .any(|b| b.source == crate::model::BodySource::Sweep(op));
-        match (matches!(mode, crate::model::SweepMode::NewBody), has_body) {
-            (true, false) => {
-                self.doc.bodies.insert(crate::model::Body {
-                    source: crate::model::BodySource::Sweep(op),
-                    material: None,
-                    name: None,
-                    shadow: false,
-                });
-            }
-            (false, true) => {
-                let produced: Vec<crate::model::BodyKey> = self
-                    .doc
-                    .bodies
-                    .iter()
-                    .filter(|(_, b)| b.source == crate::model::BodySource::Sweep(op))
-                    .map(|(k, _)| k)
-                    .collect();
-                for key in produced {
-                    self.doc.bodies.remove(key);
-                }
-            }
-            _ => {}
+        if !has_body {
+            self.doc.bodies.insert(crate::model::Body {
+                source: crate::model::BodySource::Sweep(op),
+                material: None,
+                name: None,
+                shadow: false,
+            });
         }
         self.creating_sweep = None;
         self.tool = Tool::Select;
@@ -6971,9 +7011,24 @@ fn extrude_merge_candidate(doc: &Document, sketch: SketchId) -> Option<crate::mo
         // A sketch on a repeated copy's face (#1116) merges into that copy.
         FaceId::RepeatedFace { .. } => crate::model::body_index_for_face(doc, &face),
         // A remaining flat on a treated/boolean/imported body (#1325).
-        FaceId::BodyMeshFace { body, .. } => Some(body),
+        FaceId::BodyMeshFace { body, .. } => Some(live_fuse_tip(doc, body)),
         _ => return None,
     }
+    .map(|bi| live_fuse_tip(doc, bi))
+}
+
+/// Walk fuse-merge/cut outputs (#1501) so a sketch on a shadowed host still
+/// targets the live successor rather than forking a sibling.
+fn live_fuse_tip(doc: &Document, mut body: crate::model::BodyKey) -> crate::model::BodyKey {
+    for _ in 0..doc.bodies.len().saturating_add(1) {
+        let Some(next) = doc.bodies.keys().find(|&k| {
+            k != body && crate::model::fuse_host_of(doc, k) == Some(body)
+        }) else {
+            return body;
+        };
+        body = next;
+    }
+    body
 }
 
 /// UV polygon of the body face that hosts `sketch`, in the sketch's own geometry frame.
@@ -7680,10 +7735,35 @@ fn joint_status(doc: &Document, ji: crate::model::JointKey) -> String {
 /// source into the reflected output, so — like Move — the input becomes a shadow body; the
 /// default `NewBody` mode leaves the originals standing.
 fn set_mirror_input_shadows(doc: &mut Document, targets: &[crate::model::BodyKey], shadow: bool) {
-    for &input in targets {
+    set_mode_host_shadows(doc, targets, shadow);
+}
+
+fn set_mode_host_shadows(doc: &mut Document, hosts: &[crate::model::BodyKey], shadow: bool) {
+    for &input in hosts {
         if let Some(body) = doc.bodies.get_mut(input) {
             body.shadow = shadow;
         }
+    }
+}
+
+fn revolve_mode_hosts(mode: &crate::model::RevolveMode) -> &[crate::model::BodyKey] {
+    match mode {
+        crate::model::RevolveMode::NewBody => &[],
+        crate::model::RevolveMode::AddTo(b) | crate::model::RevolveMode::Cut(b) => b.as_slice(),
+    }
+}
+
+fn sweep_mode_hosts(mode: &crate::model::SweepMode) -> &[crate::model::BodyKey] {
+    match mode {
+        crate::model::SweepMode::NewBody => &[],
+        crate::model::SweepMode::AddTo(b) | crate::model::SweepMode::Cut(b) => b.as_slice(),
+    }
+}
+
+fn loft_mode_hosts(mode: &crate::model::LoftMode) -> &[crate::model::BodyKey] {
+    match mode {
+        crate::model::LoftMode::NewBody => &[],
+        crate::model::LoftMode::AddTo(b) | crate::model::LoftMode::Cut(b) => b.as_slice(),
     }
 }
 
@@ -12600,47 +12680,42 @@ impl AppState {
                             return ActionResult::Err(format!("no loft {op:?}"));
                         };
                         loft.name = existing.name.clone();
+                        let old_mode = existing.mode.clone();
+                        set_mode_host_shadows(&mut self.doc, loft_mode_hosts(&old_mode), false);
                         self.doc.lofts[op] = loft;
+                        if crate::opsigs::loft_host_effect(&mode)
+                            == crate::opsigs::HostBodyEffect::ShadowHostAndProduce
+                        {
+                            set_mode_host_shadows(&mut self.doc, loft_mode_hosts(&mode), true);
+                        }
                         let has_body = self
                             .doc
                             .bodies
                             .values()
                             .any(|b| b.source == crate::model::BodySource::Loft(op));
-                        match (matches!(mode, crate::model::LoftMode::NewBody), has_body) {
-                            (true, false) => {
-                                self.doc.bodies.insert(crate::model::Body {
-                                    source: crate::model::BodySource::Loft(op),
-                                    material: None,
-                                    name: None,
-                                    shadow: false,
-                                });
-                            }
-                            (false, true) => {
-                                let produced: Vec<crate::model::BodyKey> = self
-                                    .doc
-                                    .bodies
-                                    .iter()
-                                    .filter(|(_, b)| b.source == crate::model::BodySource::Loft(op))
-                                    .map(|(k, _)| k)
-                                    .collect();
-                                for key in produced {
-                                    self.doc.bodies.remove(key);
-                                }
-                            }
-                            _ => {}
-                        }
-                        op
-                    }
-                    None => {
-                        let key = self.doc.lofts.insert(loft);
-                        if matches!(mode, crate::model::LoftMode::NewBody) {
+                        if !has_body {
                             self.doc.bodies.insert(crate::model::Body {
-                                source: crate::model::BodySource::Loft(key),
+                                source: crate::model::BodySource::Loft(op),
                                 material: None,
                                 name: None,
                                 shadow: false,
                             });
                         }
+                        op
+                    }
+                    None => {
+                        let key = self.doc.lofts.insert(loft);
+                        if crate::opsigs::loft_host_effect(&mode)
+                            == crate::opsigs::HostBodyEffect::ShadowHostAndProduce
+                        {
+                            set_mode_host_shadows(&mut self.doc, loft_mode_hosts(&mode), true);
+                        }
+                        self.doc.bodies.insert(crate::model::Body {
+                            source: crate::model::BodySource::Loft(key),
+                            material: None,
+                            name: None,
+                            shadow: false,
+                        });
                         // One shape-order marker for the pair; undo pops the body with the loft.
                         self.doc.shape_order.push(ShapeKind::Loft);
                         key
@@ -19825,7 +19900,120 @@ pub fn set_tool_mode(state: &mut AppState, name: &str) -> Result<(), String> {
             state.apply(Action::SetShapeKind { kind });
             Ok(())
         }
+        Tool::Extrude | Tool::Revolve | Tool::Sweep | Tool::Loft | Tool::Mirror => {
+            let mode = ToolOutputMode::from_name(name)
+                .ok_or_else(|| format!("unknown {} output mode '{name}'", format!("{:?}", state.tool)))?;
+            set_tool_output_mode(state, mode)
+        }
         other => Err(format!("the {other:?} tool has no modes")),
+    }
+}
+
+/// The active tool's armed mode name (#1524): Combine/Move/Shape kinds, or the
+/// Output-row `"new"`/`"merge"`/`"cut"` while Extrude/Revolve/Sweep/Loft/Mirror
+/// have a draft. `None` when that tool has no mode or nothing is in progress.
+pub fn current_tool_mode(state: &AppState) -> Option<String> {
+    match state.tool {
+        Tool::Combine => state
+            .creating_boolean
+            .as_ref()
+            .map(|cb| cb.kind.script_name().to_string())
+            .or_else(|| Some(crate::model::BooleanOpKind::Combine.script_name().to_string())),
+        Tool::Move => state
+            .creating_move
+            .as_ref()
+            .map(|cm| cm.translate_mode.name().to_string()),
+        Tool::Shape => Some(state.shape_kind.script_name().to_string()),
+        Tool::Extrude | Tool::Revolve | Tool::Sweep | Tool::Loft | Tool::Mirror => {
+            current_output_mode(state).map(|m| m.name().to_string())
+        }
+        _ => None,
+    }
+}
+
+fn current_output_mode(state: &AppState) -> Option<ToolOutputMode> {
+    match state.tool {
+        Tool::Extrude => state
+            .creating_extrusion
+            .as_ref()
+            .map(|ce| ToolOutputMode::from(ce.body_mode)),
+        Tool::Revolve => state
+            .creating_revolve
+            .as_ref()
+            .map(|cr| ToolOutputMode::from(cr.body_choice)),
+        Tool::Sweep => state
+            .creating_sweep
+            .as_ref()
+            .map(|cf| ToolOutputMode::from(cf.body_choice)),
+        Tool::Loft => state
+            .creating_loft
+            .as_ref()
+            .map(|cl| ToolOutputMode::from(cl.body_choice)),
+        Tool::Mirror => state
+            .creating_mirror
+            .as_ref()
+            .map(|cm| ToolOutputMode::from(cm.mode)),
+        _ => None,
+    }
+}
+
+/// Put the active Output-row tool into `mode` (#1524). Requires a live draft.
+fn set_tool_output_mode(state: &mut AppState, mode: ToolOutputMode) -> Result<(), String> {
+    match state.tool {
+        Tool::Extrude => {
+            let ce = state
+                .creating_extrusion
+                .as_mut()
+                .ok_or_else(|| "the Extrude tool has nothing in progress to set a mode on".to_string())?;
+            ce.body_mode = mode.as_extrude_mode(ce.merge_candidate);
+            state.status = format!("Extrude output: {}", output_mode_status(mode));
+            Ok(())
+        }
+        Tool::Revolve => {
+            let cr = state
+                .creating_revolve
+                .as_mut()
+                .ok_or_else(|| "the Revolve tool has nothing in progress to set a mode on".to_string())?;
+            cr.body_choice = mode.into();
+            state.status = format!("Revolve output: {}", output_mode_status(mode));
+            Ok(())
+        }
+        Tool::Sweep => {
+            let cf = state
+                .creating_sweep
+                .as_mut()
+                .ok_or_else(|| "the Sweep tool has nothing in progress to set a mode on".to_string())?;
+            cf.body_choice = mode.into();
+            state.status = format!("Sweep output: {}", output_mode_status(mode));
+            Ok(())
+        }
+        Tool::Loft => {
+            let cl = state
+                .creating_loft
+                .as_mut()
+                .ok_or_else(|| "the Loft tool has nothing in progress to set a mode on".to_string())?;
+            cl.body_choice = mode.into();
+            state.status = format!("Loft output: {}", output_mode_status(mode));
+            Ok(())
+        }
+        Tool::Mirror => {
+            let cm = state
+                .creating_mirror
+                .as_mut()
+                .ok_or_else(|| "the Mirror tool has nothing in progress to set a mode on".to_string())?;
+            cm.mode = mode.into();
+            state.status = format!("Mirror output: {}", output_mode_status(mode));
+            Ok(())
+        }
+        other => Err(format!("the {other:?} tool has no output modes")),
+    }
+}
+
+fn output_mode_status(mode: ToolOutputMode) -> &'static str {
+    match mode {
+        ToolOutputMode::NewBody => "new body",
+        ToolOutputMode::AddToBody => "add to body",
+        ToolOutputMode::Cut => "cut",
     }
 }
 
@@ -20370,6 +20558,97 @@ mod tests {
         assert!(set_tool_mode(&mut state, "cuboid").is_ok());
         assert_eq!(state.shape_kind, crate::model::PrimitiveKind::Cuboid);
         assert!(set_tool_mode(&mut state, "free").is_err());
+    }
+
+    /// #1524: Extrude / Revolve / Sweep / Loft / Mirror expose their Output row
+    /// through `set_tool_mode("new"|"merge"|"cut")`, and the armed mode is readable.
+    #[test]
+    fn set_tool_mode_sets_output_row_and_is_readable() {
+        use crate::model::MirrorMode;
+        let mut state = AppState::default();
+
+        // Extrude: nothing in progress is a clear error; a live draft accepts the names.
+        state.tool = Tool::Extrude;
+        assert!(
+            set_tool_mode(&mut state, "cut").is_err(),
+            "nothing in progress to set"
+        );
+        assert!(current_tool_mode(&state).is_none());
+        let sketch = begin_default_sketch(&mut state);
+        let rect = crate::construction::add_line_rectangle(
+            &mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4],
+        );
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace {
+            face: ExtrudeFace::Polygon(rect.to_vec()),
+        });
+        let host = state.doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(crate::arena::Key::from_bits(0)),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        if let Some(ce) = state.creating_extrusion.as_mut() {
+            ce.merge_candidate = Some(host);
+        }
+        assert!(set_tool_mode(&mut state, "cut").is_ok());
+        assert!(matches!(
+            state.creating_extrusion.as_ref().unwrap().body_mode,
+            ExtrudeBodyMode::Cut(_)
+        ));
+        assert_eq!(current_tool_mode(&state).as_deref(), Some("cut"));
+        assert!(set_tool_mode(&mut state, "merge").is_ok());
+        assert!(matches!(
+            state.creating_extrusion.as_ref().unwrap().body_mode,
+            ExtrudeBodyMode::MergeInto(_)
+        ));
+        assert_eq!(current_tool_mode(&state).as_deref(), Some("merge"));
+        assert!(set_tool_mode(&mut state, "new").is_ok());
+        assert_eq!(
+            state.creating_extrusion.as_ref().unwrap().body_mode,
+            ExtrudeBodyMode::NewBody
+        );
+        assert_eq!(current_tool_mode(&state).as_deref(), Some("new"));
+        assert!(set_tool_mode(&mut state, "nonsense").is_err());
+
+        // Revolve / Sweep / Loft / Mirror share the same three names.
+        state.tool = Tool::Revolve;
+        state.creating_revolve = Some(CreatingRevolve::default());
+        assert!(set_tool_mode(&mut state, "cut").is_ok());
+        assert_eq!(
+            state.creating_revolve.as_ref().unwrap().body_choice,
+            RevolveBodyChoice::Cut
+        );
+        assert_eq!(current_tool_mode(&state).as_deref(), Some("cut"));
+        assert!(set_tool_mode(&mut state, "merge").is_ok());
+        assert_eq!(
+            state.creating_revolve.as_ref().unwrap().body_choice,
+            RevolveBodyChoice::AddTouching
+        );
+
+        state.tool = Tool::Sweep;
+        state.creating_sweep = Some(CreatingSweep::default());
+        assert!(set_tool_mode(&mut state, "cut").is_ok());
+        assert_eq!(
+            state.creating_sweep.as_ref().unwrap().body_choice,
+            RevolveBodyChoice::Cut
+        );
+
+        state.tool = Tool::Loft;
+        state.creating_loft = Some(CreatingLoft::default());
+        assert!(set_tool_mode(&mut state, "merge").is_ok());
+        assert_eq!(
+            state.creating_loft.as_ref().unwrap().body_choice,
+            RevolveBodyChoice::AddTouching
+        );
+
+        state.tool = Tool::Mirror;
+        state.creating_mirror = Some(CreatingMirror::default());
+        assert!(set_tool_mode(&mut state, "cut").is_ok());
+        assert_eq!(state.creating_mirror.as_ref().unwrap().mode, MirrorMode::Cut);
+        assert!(set_tool_mode(&mut state, "merge").is_ok());
+        assert_eq!(state.creating_mirror.as_ref().unwrap().mode, MirrorMode::Join);
+        assert_eq!(current_tool_mode(&state).as_deref(), Some("merge"));
     }
 
     #[test]
@@ -24476,6 +24755,49 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert_eq!(state.doc.bodies.len(), body_count);
         assert!((state.doc.revolutions[rev].angle_deg - 180.0).abs() < 1e-3);
         assert!(state.creating_revolve.is_none());
+    }
+
+    /// #1501: Revolve Add shadows the host and still produces a Revolve-sourced body.
+    #[test]
+    fn commit_revolve_add_shadows_the_host() {
+        let mut state = AppState::default();
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+        let host_lines = crate::construction::add_line_rectangle(
+            &mut state.doc, sketch, -30.0, -30.0, 60.0, 60.0, [false; 4],
+        );
+        state.apply(Action::CreateExtrusion {
+            sketch,
+            faces: vec![crate::model::ExtrudeFace::Polygon(host_lines.to_vec())],
+            distance: 5.0,
+            body: ExtrudeBodyChoice::New,
+            target: None,
+            expression: None,
+            symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+        });
+        let host = state.doc.bodies.keys().next().expect("host body");
+        let profile = crate::construction::add_line_rectangle(
+            &mut state.doc, sketch, 10.0, 0.0, 10.0, 10.0, [false; 4],
+        );
+        state.creating_revolve = Some(CreatingRevolve {
+            sketch: Some(sketch),
+            faces: vec![crate::model::ExtrudeFace::Polygon(profile.to_vec())],
+            axis: Some(crate::model::RevolveAxis::Y),
+            body_choice: RevolveBodyChoice::AddTouching,
+            cut_bodies: vec![host],
+            ..CreatingRevolve::default()
+        });
+        assert!(matches!(state.apply(Action::CommitRevolve), ActionResult::Ok));
+        assert!(state.doc.bodies[host].shadow, "Add shadows the host");
+        let live = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| !b.shadow)
+            .expect("Add produces a live body");
+        assert!(matches!(live.1.source, crate::model::BodySource::Revolve(_)));
     }
 
     /// Cut mode without picked bodies is rejected and the in-progress state survives.
@@ -30382,7 +30704,14 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         let cut = state.doc.extrusions.values().last().unwrap();
         assert!(cut.distance < 0.0, "outward cut flips inward, got {}", cut.distance);
-        let after = crate::extrude::body_solid_mesh(&state.doc, bkey(0))
+        let result_bi = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| !b.shadow)
+            .map(|(k, _)| k)
+            .expect("live cut result");
+        let after = crate::extrude::body_solid_mesh(&state.doc, result_bi)
             .map(|m| crate::extrude::mesh_signed_volume(&m).abs())
             .unwrap();
         assert!(after < before - 1.0, "the flipped cut removes material: {before} -> {after}");
