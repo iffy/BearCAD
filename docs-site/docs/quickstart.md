@@ -6,7 +6,7 @@ title: Quickstart
 # Quickstart: an angle bracket
 
 Don't have BearCAD yet? [Run it in your browser](pathname:///app/)
-or [download it here](https://github.com/iffy/BearCAD/releases/latest).
+or [download it here](/docs/downloads).
 
 A 120-degree angle bracket: rounded bend, rounded corners, two countersunk screw holes.
 Draw it sloppily, let the constraint solver square it up, then change the bend angle
