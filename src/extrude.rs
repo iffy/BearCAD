@@ -12226,12 +12226,22 @@ mod tests {
         // A -5° typed turn must evaluate to -5°, not 355°.
         let got = crate::value::eval_angle_rad_in_doc("-5", &doc).unwrap().to_degrees();
         assert!((got - -5.0).abs() < 1e-3, "typed -5° should stay -5°, got {got}");
-        let handles = free_move_rotation_handles(&doc, min, max, glam::Vec3::ZERO, "", "", "-5", 0.0).unwrap();
+        let rings =
+            free_move_rotation_rings(&doc, min, max, glam::Vec3::ZERO, "", "", "-5", 0.0).unwrap();
+        assert!(
+            (rings[2].angle_deg - -5.0).abs() < 1e-3,
+            "Z ring should keep the signed -5°, got {}",
+            rings[2].angle_deg
+        );
         // And the labelled handle position still follows the signed turn.
         let q = glam::Quat::from_rotation_z((-5f32).to_radians());
-        let c = (min + max) * 0.5;
-        let expected = c + q * free_move_rotation_base_dir(2) * free_move_rotation_ring(min, max).1;
-        assert!(handles[2].distance(expected) < 1e-3, "Z handle should sit at the signed -5° position");
+        let expected = rings[2].center
+            + q * free_move_rotation_base_dir(2) * rings[2].radius;
+        assert!(
+            rings[2].handle.distance(expected) < 1e-3,
+            "Z handle should sit at the signed -5° position: {} vs {expected}",
+            rings[2].handle
+        );
     }
 
     /// #1422: after more than one axis is turned, each ring's circle is the object's
