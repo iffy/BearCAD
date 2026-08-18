@@ -32,6 +32,9 @@
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
+#include <BRepOffsetAPI_MakeOffsetShape.hxx>
+#include <ShapeFix_Shape.hxx>
+#include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepLProp_SLProps.hxx>
 #include <GeomAbs_JoinType.hxx>
@@ -67,6 +70,7 @@
 #include <TopLoc_Location.hxx>
 #include <TopAbs_Orientation.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Pln.hxx>
 #include <gp_Vec.hxx>
 #include <Standard_Failure.hxx>
 #include <Standard_Version.hxx>
@@ -107,7 +111,43 @@ extern "C" BearcadShape* bearcad_shape_prism(const double* xyz, unsigned long n_
         return nullptr;
     }
     try {
+        // Snap every vertex onto one plane before MakeFace. Sketch frames from
+        // tessellated mesh faces are f32, so a "planar" loop can miss OCCT's
+        // 1e-7 confusion by ~1e-5 and MakeFace(wire) fails (#1468).
+        gp_Pnt p0(xyz[0], xyz[1], xyz[2]);
+        gp_Vec normal;
+        bool have_n = false;
+        for (unsigned long i = 1; i + 1 < n_pts; ++i) {
+            gp_Pnt pi(xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]);
+            gp_Pnt pj(xyz[3 * (i + 1)], xyz[3 * (i + 1) + 1], xyz[3 * (i + 1) + 2]);
+            gp_Vec c = gp_Vec(p0, pi).Crossed(gp_Vec(p0, pj));
+            if (c.SquareMagnitude() > 1e-24) {
+                normal = c;
+                have_n = true;
+                break;
+            }
+        }
         BRepBuilderAPI_MakePolygon poly;
+        if (have_n) {
+            gp_Dir dn(normal);
+            gp_Vec nn(dn);
+            gp_Pln pln(p0, dn);
+            for (unsigned long i = 0; i < n_pts; ++i) {
+                gp_Pnt p(xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]);
+                const double d = gp_Vec(p0, p).Dot(nn);
+                poly.Add(p.Translated(-d * nn));
+            }
+            poly.Close();
+            if (!poly.IsDone()) {
+                return nullptr;
+            }
+            BRepBuilderAPI_MakeFace face(pln, poly.Wire());
+            if (!face.IsDone()) {
+                return nullptr;
+            }
+            BRepPrimAPI_MakePrism prism(face.Face(), gp_Vec(dx, dy, dz));
+            return new BearcadShape{prism.Shape()};
+        }
         for (unsigned long i = 0; i < n_pts; ++i) {
             poly.Add(gp_Pnt(xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]));
         }
@@ -950,14 +990,72 @@ extern "C" BearcadShape* bearcad_shape_shell(const BearcadShape* s, const double
             }
         }
 
-        // Negative offset = inward for a solid with outward face normals.
-        BRepOffsetAPI_MakeThickSolid maker;
-        maker.MakeThickSolidByJoin(s->shape, closing, -thickness, tol, BRepOffset_Skin, false,
-                                   false, GeomAbs_Intersection);
-        if (!maker.IsDone()) {
-            return nullptr;
+        auto thicken = [&](const TopoDS_Shape& src, GeomAbs_JoinType join,
+                           bool intersect) -> TopoDS_Shape {
+            BRepOffsetAPI_MakeThickSolid maker;
+            maker.MakeThickSolidByJoin(src, closing, -thickness, tol, BRepOffset_Skin, intersect,
+                                       false, join);
+            if (!maker.IsDone()) {
+                return TopoDS_Shape();
+            }
+            TopoDS_Shape out = maker.Shape();
+            return out.IsNull() ? TopoDS_Shape() : out;
+        };
+        auto heal = [](const TopoDS_Shape& src) -> TopoDS_Shape {
+            ShapeFix_Shape fixer(src);
+            fixer.SetPrecision(0.1);
+            fixer.SetMaxTolerance(1.0);
+            fixer.Perform();
+            TopoDS_Shape fixed = fixer.Shape();
+            if (fixed.IsNull()) {
+                fixed = src;
+            }
+            ShapeUpgrade_UnifySameDomain unify(fixed, true, true, true);
+            unify.SetLinearTolerance(0.5);
+            unify.SetAngularTolerance(0.1);
+            unify.Build();
+            TopoDS_Shape out = unify.Shape();
+            return out.IsNull() ? fixed : out;
+        };
+
+        const GeomAbs_JoinType joins[] = {GeomAbs_Intersection, GeomAbs_Arc};
+        const bool intersects[] = {false, true};
+        TopoDS_Shape thick;
+        for (bool inter : intersects) {
+            for (GeomAbs_JoinType join : joins) {
+                thick = thicken(s->shape, join, inter);
+                if (!thick.IsNull()) {
+                    break;
+                }
+            }
+            if (!thick.IsNull()) {
+                break;
+            }
         }
-        TopoDS_Shape thick = maker.Shape();
+        if (thick.IsNull()) {
+            TopoDS_Shape healed = heal(s->shape);
+            for (bool inter : intersects) {
+                for (GeomAbs_JoinType join : joins) {
+                    thick = thicken(healed, join, inter);
+                    if (!thick.IsNull()) {
+                        break;
+                    }
+                }
+                if (!thick.IsNull()) {
+                    break;
+                }
+            }
+        }
+        if (thick.IsNull()) {
+            try {
+                BRepOffsetAPI_MakeOffsetShape offsetter;
+                offsetter.PerformByJoin(s->shape, -thickness, tol);
+                if (offsetter.IsDone()) {
+                    thick = offsetter.Shape();
+                }
+            } catch (const Standard_Failure&) {
+            }
+        }
         if (thick.IsNull()) {
             return nullptr;
         }
