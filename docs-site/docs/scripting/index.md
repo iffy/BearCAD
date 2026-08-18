@@ -128,6 +128,10 @@ Lengths are in millimetres, angles in radians. Gizmos today: `"extrude"`,
 `"move_x"`/`"move_y"`/`"move_z"` and `"move_rx"`/`"move_ry"`/`"move_rz"`, and
 `"text_width"` (a selected wrapped text's box width).
 
+`bearcad.move_preview()` is the Move tool's intended pose (the hover candidate, or
+the in-progress move): `{ translation, rotation, bbox }`, or `nil` when there is
+no ghost.
+
 ## Copy and paste
 
 `bearcad.copy()` then `bearcad.paste{ x = 40 }` (or `y`/`z`). Interactive paste in the

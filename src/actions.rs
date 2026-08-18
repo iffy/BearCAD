@@ -4011,6 +4011,11 @@ pub struct AppState {
     /// Only elements report: a hovered face region or curve with no element of its own is
     /// `None`, which is itself worth being able to assert.
     pub hover_element: Option<crate::hierarchy::SceneElement>,
+    /// The Move tool's intended preview pose (#1458): the hover probe when a candidate is
+    /// under the cursor, else the in-progress move. The *target*, not the eased ghost, so
+    /// a script can assert the placement a click would commit. `None` when there is no
+    /// ghost (identity / unresolved).
+    pub move_preview_transform: Option<glam::Mat4>,
     /// Focus and pick-mode flags the tools' pickers read (#963/#970). They live here rather
     /// than on `App` so the picker set can be built from `AppState` alone — the click routing
     /// and the viewport need it, and reading a per-frame cache instead means a pick arriving
@@ -4223,6 +4228,7 @@ impl Default for AppState {
             exploder_loupe_positions: Vec::new(),
             pick_single_edge: false,
             hover_element: None,
+            move_preview_transform: None,
             tool_pickers: Vec::new(),
             editing_committed_dim: None,
             placing_dimension: None,
