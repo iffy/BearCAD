@@ -2397,10 +2397,12 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
         // Selected unit instance (#728): its parameters lead the pane, unmistakably its
         // own section; the document's parameters follow below.
         show_unit_parameters_section(ui, app);
+        // The first column is only the gear (or empty on the header / new-parameter
+        // row). A shared `min_col_width(72)` reserved a large gutter left of Name (#1537).
         Grid::new("parameters_table")
             .num_columns(4)
             .spacing([8.0, 4.0])
-            .min_col_width(72.0)
+            .min_col_width(0.0)
             .show(ui, |ui| {
                 ui.label("");
                 ui.label("Name");
@@ -2645,8 +2647,9 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                     ui.end_row();
 
                     // Expanded options under the name with a tree gutter (#1176/#1178) —
-                    // not in the value column.
+                    // not in the gear column (that shoved Name right, #1537) or the value column.
                     if options_open {
+                        ui.label("");
                         let options_cell = ui.vertical(|ui| {
                             ui.add_space(2.0);
                             show_parameter_options_fields(
@@ -2663,7 +2666,6 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                             );
                             ui.add_space(4.0);
                         });
-                        ui.label("");
                         ui.label("");
                         ui.label("");
                         if options_cell.response.contains_pointer() {
@@ -2831,6 +2833,71 @@ mod tests {
         let mut doc = Document::default();
         add_parameter(&mut doc, "A".to_string(), "5mm".to_string()).unwrap();
         doc
+    }
+
+    /// Paint the Parameters pane and return (content left, new-name-field left).
+    fn paint_parameters_pane(app: &mut AppState) -> (f32, f32) {
+        let ctx = egui::Context::default();
+        ctx.options_mut(|o| {
+            o.max_passes = std::num::NonZeroUsize::new(3).unwrap();
+        });
+        let mut content_left = 0.0;
+        for _ in 0..3 {
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    ui.set_width(240.0);
+                    content_left = ui.cursor().left();
+                    show_pane(ui, app);
+                });
+            });
+        }
+        let name_left = app
+            .tutorial_anchor_rects
+            .get(&crate::tutorial::UiAnchor::ParametersName)
+            .expect("new-parameter name field")
+            .left();
+        (content_left, name_left)
+    }
+
+    /// #1537: an empty Parameters pane must not reserve a wide unused column to the
+    /// left of Name — that was the gear-column spacer plus `min_col_width(72)`.
+    #[test]
+    fn parameters_pane_name_column_is_not_indented_when_empty() {
+        let mut app = AppState::default();
+        let (content_left, name_left) = paint_parameters_pane(&mut app);
+        let gap = name_left - content_left;
+        assert!(
+            gap < 24.0,
+            "Name column should start near the pane's left edge, gap was {gap}"
+        );
+    }
+
+    /// #1537: a gear icon is allowed left of the name, but not a 72px empty gutter.
+    #[test]
+    fn parameters_pane_name_column_is_not_guttered_when_a_row_exists() {
+        let mut app = AppState::default();
+        app.doc = doc_with_param_a();
+        let (content_left, name_left) = paint_parameters_pane(&mut app);
+        let gap = name_left - content_left;
+        assert!(
+            gap < 40.0,
+            "Name column may sit past the gear, not a reserved 72px gutter, gap was {gap}"
+        );
+    }
+
+    /// #1537: opening a row's options must not widen the gear column and push Name right.
+    #[test]
+    fn parameters_pane_options_do_not_indent_the_name_column() {
+        let mut app = AppState::default();
+        app.doc = doc_with_param_a();
+        let index = app.doc.parameters.keys().next().expect("parameter A");
+        app.parameters_pane.options_open.insert(index);
+        let (content_left, name_left) = paint_parameters_pane(&mut app);
+        let gap = name_left - content_left;
+        assert!(
+            gap < 40.0,
+            "options belong under the name, not in a first column that shoves Name right, gap was {gap}"
+        );
     }
 
     /// #727/#1180: a new parameter is public (Private unchecked) when its expression is a
