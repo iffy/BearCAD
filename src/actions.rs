@@ -116,9 +116,8 @@ tools! {
     /// text input) to create parallel offset copies grouped under a
     /// `SketchOffsetOperation`. Outside a sketch: click a face to sketch on it first.
     Offset,
-    /// Sketch mode only: click an outside body edge (or a body) to project it into the
-    /// open sketch as an associative solid cyan reference line (#140/#1186; Y shortcut as a
-    /// discoverable toolbar tool).
+    /// Sketch-only: click a face to start a sketch, then click an outside body edge (or a
+    /// body) to project it as an associative solid cyan reference line (#140/#1186/#1494).
     Project,
     /// Pick two or more closed sketch profiles (circles or line loops) as cross sections,
     /// then Enter blends them into a lofted solid (SPEC §3.5 Loft).
@@ -138,8 +137,9 @@ tools! {
     /// Boolean operations between whole bodies (Combine tool): union, cut, intersect,
     /// symmetric difference. Inputs become shadow bodies; outputs are new bodies.
     Combine,
-    /// Move bodies (translate and/or rotate) into new bodies (Move tool, #176/#183).
-    /// Inputs become shadow bodies; outputs are new bodies; the operation is editable.
+    /// Move bodies (translate and/or rotate) into new bodies (Move tool, #176/#183),
+    /// or in a sketch drag the selected geometry (#306). Inputs become shadow bodies;
+    /// outputs are new bodies; the operation is editable.
     Move,
     /// Mirror bodies across a plane or planar face into new reflected bodies (Mirror tool,
     /// #523). The originals stay; each reflection is a new body; the operation is editable.
@@ -208,13 +208,21 @@ impl Tool {
         }
     }
 
-    /// Clicking a face with this tool outside a sketch begins a sketch on that face and the
-    /// tool survives into it. Read from the tool table's `face_click_opens_sketch` column
-    /// (#1494/#1508) — not a second list that can drift from it.
+    /// Has an in-sketch mode, so `BeginSketch` / `enter_sketch` keeps this tool (#1496).
+    /// Derived from the table's Sketch space — not the face-click column, which is a
+    /// smaller set (sketch-only tools plus Sketch).
     pub fn is_sketch_edit_tool(self) -> bool {
-        crate::tooltable::spaces(self)
-            .iter()
-            .any(|&space| crate::tooltable::row(self, space).face_click_opens_sketch)
+        crate::tooltable::survives_begin_sketch(self)
+    }
+
+    /// Clicking a face outside a sketch begins one. Sketch-only tools plus Sketch (#1494).
+    pub fn opens_sketch_on_face_click(self) -> bool {
+        crate::tooltable::opens_sketch_on_face_click(self)
+    }
+
+    /// 3D-only: `SetTool` leaves an open sketch (#1495).
+    pub fn leaves_sketch(self) -> bool {
+        crate::tooltable::is_3d_only(self)
     }
 }
 
@@ -9418,13 +9426,35 @@ impl AppState {
                 if self.creating_calibration.is_some() && tool != Tool::Select {
                     self.creating_calibration = None;
                 }
-                // Extruding/lofting act on the 3D model, not sketch geometry: leave
-                // sketch editing when either tool is picked from inside a sketch.
-                if matches!(
-                    tool,
-                    Tool::Extrude | Tool::Loft | Tool::Revolve | Tool::Sweep | Tool::Shape
-                ) && self.sketch_session.is_some()
+                // #157/#166: switching to Chamfer/Fillet with body edges already selected
+                // preloads them (filtered to treatable edges) so the gizmo shows right away.
+                if matches!(tool, Tool::Chamfer | Tool::Fillet)
+                    && self.sketch_session.is_none()
+                    && self.creating_edge_treatment.is_none()
                 {
+                    let edges =
+                        crate::extrude::treatable_edges_in_selection(&self.doc, &self.scene_selection);
+                    if !edges.is_empty() {
+                        self.creating_edge_treatment = Some(CreatingEdgeTreatment {
+                            edges,
+                            kind: if tool == Tool::Chamfer {
+                                VertexTreatmentKind::Chamfer
+                            } else {
+                                VertexTreatmentKind::Fillet
+                            },
+                            amount_live: DEFAULT_VERTEX_TREATMENT_AMOUNT,
+                            text: crate::value::format_length_display(
+                                DEFAULT_VERTEX_TREATMENT_AMOUNT,
+                            ),
+                            user_edited: false,
+                            pending_focus: true,
+                        });
+                    }
+                }
+                // 3D-only tools act on the solid, not sketch geometry: leave the sketch
+                // so Combine/Joint/Shell (and every later 3D-only tool) cannot sit armed
+                // and ignore clicks (#1495). Dual-mode tools stay.
+                if tool.leaves_sketch() && self.sketch_session.is_some() {
                     self.exit_sketch_session();
                 }
                 if tool == Tool::Loft && self.creating_loft.is_none() {
@@ -9475,7 +9505,7 @@ impl AppState {
                     Tool::Constraint if self.sketch_session.is_some() => {
                         "Constraint tool — select geometry, then pick a constraint".to_string()
                     }
-                    Tool::Constraint => "Constraint tool — open a sketch first".to_string(),
+                    Tool::Constraint => "Constraint tool — click a face".to_string(),
                     Tool::ConstructionPlane => "Construction plane tool".to_string(),
                     Tool::Extrude => {
                         "Extrude tool — click coplanar faces, then set a distance".to_string()
@@ -9534,13 +9564,14 @@ impl AppState {
                         "Shell tool — pick bodies, then open faces, set wall thickness, Enter commits"
                             .to_string()
                     }
-                    Tool::Project => {
+                    Tool::Project if self.sketch_session.is_some() => {
                         "Projection tool — select outside edges/bodies/planes, Enter projects; Enter on projected lines un-projects".to_string()
                     }
+                    Tool::Project => "Projection tool — click a face".to_string(),
                     Tool::Text if self.sketch_session.is_some() => {
                         "Text tool — click to place text, or drag a box to set its width".to_string()
                     }
-                    Tool::Text => "Text tool — open a sketch first".to_string(),
+                    Tool::Text => "Text tool — click a face".to_string(),
                     Tool::DrawingAdd => {
                         "Projection — click a body or sketch in the Elements pane".to_string()
                     }
@@ -16854,8 +16885,19 @@ op,
         self.status = match self.tool {
             Tool::Rectangle => format!("{name} — click to set corner"),
             Tool::Line => format!("{name} — click to set start"),
+            Tool::Circle => format!("{name} — click to set center"),
             Tool::Text => format!("{name} — click to place text, or drag a box to set its width"),
-            _ => format!("{name} — pick line or rectangle"),
+            Tool::Offset => format!("{name} — click lines/circles to offset"),
+            Tool::Constraint => format!("{name} — select geometry, then pick a constraint"),
+            Tool::Project => format!("{name} — select outside edges, Enter projects"),
+            Tool::Dimension => format!("{name} — click edges for length/angle"),
+            Tool::Chamfer => format!("{name} — click a sketch vertex"),
+            Tool::Fillet => format!("{name} — click a sketch vertex"),
+            Tool::Move => format!("{name} — drag the selection"),
+            Tool::Mirror => format!("{name} — pick a mirror line, then shapes"),
+            Tool::Repeat => format!("{name} — pick entities, then a direction"),
+            Tool::Slice => format!("{name} — pick targets, then cutters"),
+            _ => name,
         };
         ActionResult::Ok
     }
@@ -23720,6 +23762,87 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         state.apply(Action::SetTool(Tool::Extrude));
         assert_eq!(state.tool, Tool::Extrude);
         assert!(state.sketch_session.is_none());
+    }
+
+    /// #1495: every 3D-only tool leaves the sketch on SetTool and stays the tool you picked.
+    #[test]
+    fn set_tool_of_every_3d_only_tool_leaves_the_sketch() {
+        for tool in Tool::ALL {
+            if !crate::tooltable::is_3d_only(tool) {
+                continue;
+            }
+            let mut state = AppState::default();
+            begin_default_sketch(&mut state);
+            state.apply(Action::SetTool(tool));
+            assert!(
+                state.sketch_session.is_none(),
+                "{tool:?} is 3D-only and must leave the sketch"
+            );
+            assert_eq!(state.tool, tool, "{tool:?} must stay selected after leaving");
+        }
+    }
+
+    /// Dual-mode and sketch-only tools stay in the sketch when picked.
+    #[test]
+    fn set_tool_of_sketch_capable_tools_stays_in_the_sketch() {
+        for tool in Tool::ALL {
+            if !crate::tooltable::has_space(tool, crate::tooltable::ToolSpace::Sketch) {
+                continue;
+            }
+            let mut state = AppState::default();
+            begin_default_sketch(&mut state);
+            state.apply(Action::SetTool(tool));
+            assert!(
+                state.sketch_session.is_some(),
+                "{tool:?} has a sketch mode and must stay in the sketch"
+            );
+            assert_eq!(state.tool, tool);
+        }
+    }
+
+    /// #1496: SetTool each dual-mode tool, then BeginSketch — the tool survives.
+    #[test]
+    fn begin_sketch_keeps_every_dual_mode_tool() {
+        for tool in Tool::ALL {
+            if !crate::tooltable::is_dual_mode(tool) {
+                continue;
+            }
+            let mut state = AppState::default();
+            state.apply(Action::SetTool(tool));
+            state.apply(Action::BeginSketch {
+                face: FaceId::ConstructionPlane(pkey(0)),
+                viewport: None,
+            });
+            assert!(state.sketch_session.is_some(), "{tool:?} should enter a sketch");
+            assert_eq!(
+                state.tool, tool,
+                "{tool:?} has an in-sketch mode and must survive BeginSketch"
+            );
+        }
+    }
+
+    /// #1494: every face-click tool's SetTool status mentions a face (not "open a sketch first").
+    #[test]
+    fn set_tool_status_says_click_a_face_for_face_click_tools() {
+        for tool in Tool::ALL {
+            if !tool.opens_sketch_on_face_click() {
+                continue;
+            }
+            let mut state = AppState::default();
+            state.apply(Action::SetTool(tool));
+            assert!(state.sketch_session.is_none());
+            let status = state.status.to_ascii_lowercase();
+            assert!(
+                status.contains("face"),
+                "{tool:?} status should say to click a face, got {:?}",
+                state.status
+            );
+            assert!(
+                !status.contains("open a sketch first"),
+                "{tool:?} should not say 'open a sketch first', got {:?}",
+                state.status
+            );
+        }
     }
 
     #[test]
