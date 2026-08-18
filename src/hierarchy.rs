@@ -62,7 +62,8 @@ pub enum HierarchyNode {
     /// A 2D in-sketch linear repeat (#222/#228); its duplicated lines/circles nest under it.
     SketchRepeatOp(crate::model::SketchRepeatOpKey),
     SketchOffsetOp(crate::model::SketchOffsetOpKey),
-    /// A 2D in-sketch mirror (#523); its reflected lines/circles nest under it.
+    /// A 2D in-sketch mirror (#523/#1540); nests under its sketch, with reflected
+    /// lines/circles under it.
     SketchMirrorOp(crate::model::SketchMirrorOpKey),
     /// A 2D in-sketch chamfer/fillet (#538); its trimmed copies + bridge lines nest under it.
     SketchVertexTreatmentOp(crate::model::SketchVertexTreatmentOpKey),
@@ -213,7 +214,8 @@ pub enum SceneElement {
     /// A 2D in-sketch linear repeat (#222/#228).
     SketchRepeatOp(crate::model::SketchRepeatOpKey),
     SketchOffsetOp(crate::model::SketchOffsetOpKey),
-    /// A 2D in-sketch mirror (#523); its reflected lines/circles nest under it.
+    /// A 2D in-sketch mirror (#523/#1540); nests under its sketch, with reflected
+    /// lines/circles under it.
     SketchMirrorOp(crate::model::SketchMirrorOpKey),
     /// A 2D in-sketch chamfer/fillet (#538); its trimmed copies + bridge lines nest under it.
     SketchVertexTreatmentOp(crate::model::SketchVertexTreatmentOpKey),
@@ -2271,24 +2273,14 @@ pub fn build_hierarchy(
         }
         roots.push(build_sketch_offset_entry(doc, oi));
     }
-    // 2D in-sketch mirrors (#523): the op with its reflected lines/circles nested beneath.
+    // 2D in-sketch mirrors nest under the sketch they reflect (#1540, see
+    // `build_sketch_entry`); only a mirror whose sketch died falls back to a top-level
+    // orphan here so it stays reachable.
     for (oi, op) in doc.sketch_mirror_ops.iter() {
-        let mut children: Vec<HierarchyEntry> = op
-            .line_outputs
-            .iter()
-            .filter(|&&li| doc.lines.contains(li))
-            .map(|&li| HierarchyEntry { node: HierarchyNode::Line(li), children: Vec::new() })
-            .collect();
-        children.extend(
-            op.circle_outputs
-                .iter()
-                .filter(|&&ci| doc.circles.contains(ci))
-                .map(|&ci| HierarchyEntry { node: HierarchyNode::Circle(ci), children: Vec::new() }),
-        );
-        roots.push(HierarchyEntry {
-            node: HierarchyNode::SketchMirrorOp(oi),
-            children,
-        });
+        if crate::document_lifecycle::sketch_alive(doc, op.sketch) {
+            continue;
+        }
+        roots.push(build_sketch_mirror_entry(doc, oi));
     }
     // 2D in-sketch chamfer/fillet (#538): the op with its trimmed copies + bridge lines nested
     // beneath it (the shadowed source edges stay listed under the sketch, dimmed).
@@ -2636,7 +2628,7 @@ fn element_list_from_tree(tree: &[HierarchyEntry], doc: &Document) -> Vec<Hierar
 pub struct ElementFilter {
     pub planes: bool,
     pub sketches: bool,
-    /// In-sketch geometry: lines, circles, constraints, and edge treatments.
+    /// In-sketch geometry: lines, circles, constraints, edge treatments, and sketch mirrors.
     pub sketch_geometry: bool,
     pub bodies: bool,
     /// History operations: extrude, boolean, move, repeat, slice, revolve, and in-sketch ops.
@@ -2723,7 +2715,8 @@ impl ElementFilter {
             | HierarchyNode::Circle(_)
             | HierarchyNode::Constraint(_)
             | HierarchyNode::SketchText(_)
-            | HierarchyNode::EdgeTreatment { .. } => self.sketch_geometry,
+            | HierarchyNode::EdgeTreatment { .. }
+            | HierarchyNode::SketchMirrorOp(_) => self.sketch_geometry,
             HierarchyNode::Body(_) => self.bodies,
             HierarchyNode::Extrusion(_)
             | HierarchyNode::Shape(_)
@@ -2733,7 +2726,6 @@ impl ElementFilter {
             | HierarchyNode::RepeatOp(_)
             | HierarchyNode::SketchRepeatOp(_)
             | HierarchyNode::SketchOffsetOp(_)
-            | HierarchyNode::SketchMirrorOp(_)
             | HierarchyNode::SketchVertexTreatmentOp(_)
             | HierarchyNode::SketchSliceOp(_)
             | HierarchyNode::SliceOp(_)
@@ -4065,6 +4057,10 @@ fn is_sketch_repeat_line_output(doc: &Document, li: crate::model::LineKey) -> bo
             .sketch_offset_ops
             .values()
             .any(|op| op.line_outputs.contains(&li))
+        || doc
+            .sketch_mirror_ops
+            .values()
+            .any(|op| op.line_outputs.contains(&li))
         || doc.sketch_vertex_treatment_ops.values().any(|op| {
             op.line_outputs.contains(&li) || op.bridge_outputs.contains(&li)
         })
@@ -4076,6 +4072,10 @@ fn is_sketch_repeat_circle_output(doc: &Document, ci: crate::model::CircleKey) -
         .any(|op| op.circle_outputs.contains(&ci))
         || doc
             .sketch_offset_ops
+            .values()
+            .any(|op| op.circle_outputs.contains(&ci))
+        || doc
+            .sketch_mirror_ops
             .values()
             .any(|op| op.circle_outputs.contains(&ci))
 }
@@ -4098,6 +4098,28 @@ fn build_sketch_offset_entry(doc: &Document, oi: crate::model::SketchOffsetOpKey
     );
     HierarchyEntry {
         node: HierarchyNode::SketchOffsetOp(oi),
+        children,
+    }
+}
+
+/// One in-sketch mirror's row: the op with its reflected lines/circles nested beneath it
+/// (they're excluded from the sketch's own listing, see `is_sketch_repeat_line_output`).
+fn build_sketch_mirror_entry(doc: &Document, oi: crate::model::SketchMirrorOpKey) -> HierarchyEntry {
+    let op = &doc.sketch_mirror_ops[oi];
+    let mut children: Vec<HierarchyEntry> = op
+        .line_outputs
+        .iter()
+        .filter(|&&li| doc.lines.contains(li))
+        .map(|&li| HierarchyEntry { node: HierarchyNode::Line(li), children: Vec::new() })
+        .collect();
+    children.extend(
+        op.circle_outputs
+            .iter()
+            .filter(|&&ci| doc.circles.contains(ci))
+            .map(|&ci| HierarchyEntry { node: HierarchyNode::Circle(ci), children: Vec::new() }),
+    );
+    HierarchyEntry {
+        node: HierarchyNode::SketchMirrorOp(oi),
         children,
     }
 }
@@ -4190,6 +4212,13 @@ fn build_sketch_entry(
     for (oi, op) in doc.sketch_offset_ops.iter() {
         if op.sketch == sketch {
             children.push(build_sketch_offset_entry(doc, oi));
+        }
+    }
+    // Mirrors of this sketch's geometry nest under it too (#1540): a sketch mirror is a
+    // component of the sketch, so hiding sketch components hides it and its children.
+    for (oi, op) in doc.sketch_mirror_ops.iter() {
+        if op.sketch == sketch {
+            children.push(build_sketch_mirror_entry(doc, oi));
         }
     }
     // Extrusions built from this sketch nest under it (each owns its Body).
@@ -7947,6 +7976,170 @@ label_hidden: false,
             node: HierarchyNode::Line(lkey(1)),
             children: vec![],
         }]);
+    }
+
+    /// #1540: an in-sketch mirror belongs to the sketch it reflects, so its row nests under
+    /// that sketch (with its output lines under it) instead of standing as a root sibling.
+    #[test]
+    fn sketch_mirror_op_nests_under_its_sketch() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+        doc.lines
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 10.0));
+        doc.lines
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, -10.0, 0.0));
+        doc.shape_order
+            .extend([ShapeKind::Line, ShapeKind::Line, ShapeKind::Line]);
+        doc.sketch_mirror_ops
+            .insert(crate::model::SketchMirrorOperation {
+                sketch,
+                line: lkey(1),
+                line_targets: vec![lkey(0)],
+                circle_targets: Vec::new(),
+                line_outputs: vec![lkey(2)],
+                circle_outputs: Vec::new(),
+                constraint_outputs: Vec::new(),
+                name: None,
+            });
+        doc.shape_order.push(ShapeKind::SketchMirrorOperation);
+
+        let tree = build_hierarchy(&doc, Some(SketchSession { sketch }));
+        let roots = &tree[0].children;
+        assert!(
+            !roots
+                .iter()
+                .any(|e| e.node == HierarchyNode::SketchMirrorOp(skop(0))),
+            "the mirror must not be a document-level root: {roots:?}"
+        );
+        let sketch_entry = find_entry(&tree, HierarchyNode::Sketch(sketch)).expect("sketch entry");
+        let op = sketch_entry
+            .children
+            .iter()
+            .find(|c| c.node == HierarchyNode::SketchMirrorOp(skop(0)))
+            .expect("mirror nests under its sketch");
+        assert_eq!(
+            op.children,
+            vec![HierarchyEntry {
+                node: HierarchyNode::Line(lkey(2)),
+                children: vec![],
+            }]
+        );
+        assert!(
+            !sketch_entry
+                .children
+                .iter()
+                .any(|c| c.node == HierarchyNode::Line(lkey(2))),
+            "mirror output lines must not also list directly under the sketch"
+        );
+    }
+
+    /// #1540: a mirror whose sketch is gone still surfaces somewhere, so it never becomes
+    /// unreachable in the tree.
+    #[test]
+    fn sketch_mirror_op_surfaces_at_root_when_its_sketch_is_gone() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+        doc.sketches.remove(sketch);
+        doc.sketch_mirror_ops
+            .insert(crate::model::SketchMirrorOperation {
+                sketch,
+                line: lkey(0),
+                line_targets: Vec::new(),
+                circle_targets: Vec::new(),
+                line_outputs: Vec::new(),
+                circle_outputs: Vec::new(),
+                constraint_outputs: Vec::new(),
+                name: None,
+            });
+        doc.shape_order.push(ShapeKind::SketchMirrorOperation);
+        let tree = build_hierarchy(&doc, None);
+        assert!(tree[0]
+            .children
+            .iter()
+            .any(|e| e.node == HierarchyNode::SketchMirrorOp(skop(0))));
+    }
+
+    /// #1540: a sketch mirror is a sketch component, so the "Sketch components" filter
+    /// hides the op and its reflected children. Hiding "Operations" does not.
+    #[test]
+    fn hiding_sketch_components_hides_sketch_mirror_and_its_children() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+        doc.lines
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 10.0));
+        doc.lines
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, -10.0, 0.0));
+        doc.shape_order
+            .extend([ShapeKind::Line, ShapeKind::Line, ShapeKind::Line]);
+        doc.sketch_mirror_ops
+            .insert(crate::model::SketchMirrorOperation {
+                sketch,
+                line: lkey(1),
+                line_targets: vec![lkey(0)],
+                circle_targets: Vec::new(),
+                line_outputs: vec![lkey(2)],
+                circle_outputs: Vec::new(),
+                constraint_outputs: Vec::new(),
+                name: None,
+            });
+        doc.shape_order.push(ShapeKind::SketchMirrorOperation);
+
+        let mirror = HierarchyNode::SketchMirrorOp(skop(0));
+        let output = HierarchyNode::Line(lkey(2));
+        assert!(
+            ElementFilter::default().shows(mirror),
+            "default filter shows the sketch mirror"
+        );
+        assert!(
+            !ElementFilter {
+                sketch_geometry: false,
+                ..ElementFilter::default()
+            }
+            .shows(mirror),
+            "Sketch components off hides the sketch mirror"
+        );
+        assert!(
+            ElementFilter {
+                operations: false,
+                ..ElementFilter::default()
+            }
+            .shows(mirror),
+            "the mirror is not an Operations-filter node"
+        );
+
+        let tree = build_hierarchy(&doc, Some(SketchSession { sketch }));
+        let hidden = filter_hierarchy(
+            &tree,
+            &ElementFilter {
+                sketch_geometry: false,
+                ..ElementFilter::default()
+            },
+        );
+        fn collect(entries: &[HierarchyEntry]) -> Vec<HierarchyNode> {
+            let mut out = Vec::new();
+            for e in entries {
+                out.push(e.node);
+                out.extend(collect(&e.children));
+            }
+            out
+        }
+        let nodes = collect(&hidden);
+        assert!(
+            !nodes.contains(&mirror),
+            "filtered tree must drop the sketch mirror: {nodes:?}"
+        );
+        assert!(
+            !nodes.contains(&output),
+            "filtered tree must drop the mirror's children: {nodes:?}"
+        );
+        assert!(
+            nodes.contains(&HierarchyNode::Sketch(sketch)),
+            "the sketch itself stays when only sketch components are hidden"
+        );
     }
 
     /// #941: an offset whose sketch is gone still surfaces somewhere, so it never becomes
