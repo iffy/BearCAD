@@ -665,6 +665,21 @@ mod tests {
         assert!((sh.volume().unwrap() - 5.0).abs() < 1e-6);
     }
 
+    /// #1468: a sketch on a tessellated mesh face is planar in f32, not in OCCT's 1e-7
+    /// confusion. MakeFace must still build the prism.
+    #[test]
+    fn prism_from_a_slightly_nonplanar_quad_still_builds() {
+        let profile = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(10.0, 0.0, 2.0e-5),
+            Vec3::new(10.0, 8.0, 0.0),
+            Vec3::new(0.0, 8.0, -1.0e-5),
+        ];
+        let sh = Shape::prism(&profile, Vec3::new(0.0, 0.0, 4.0)).expect("prism built");
+        let v = sh.volume().expect("volume");
+        assert!((v - 320.0).abs() < 1.0, "volume {v}");
+    }
+
     #[test]
     fn shape_try_clone_preserves_volume() {
         let sh = Shape::prism(&square(0.0, 0.0, 2.0, 3.0), Vec3::new(0.0, 0.0, 4.0))

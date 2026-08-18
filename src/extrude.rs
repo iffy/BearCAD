@@ -347,6 +347,7 @@ fn occt_face_solid(
     face: &ExtrudeFace,
     distance: f32,
     overshoot: f32,
+    overshoot_free: bool,
 ) -> Option<crate::kernel::Shape> {
     // #1268: symmetric + taper — mid plane must stay the sketch size. Fuse two
     // non-symmetric half-extrusions (sketch→+d/2 and sketch→−d/2), each tapering from
@@ -360,26 +361,41 @@ fn occt_face_solid(
         let sign = if distance < 0.0 { -1.0 } else { 1.0 };
         let mut half_ext = extrusion.clone();
         half_ext.symmetric = false;
-        let upper = occt_face_solid(doc, &half_ext, face, half * sign, overshoot)?;
-        let lower = occt_face_solid(doc, &half_ext, face, -half * sign, overshoot)?;
+        let upper = occt_face_solid(doc, &half_ext, face, half * sign, overshoot, overshoot_free)?;
+        let lower = occt_face_solid(doc, &half_ext, face, -half * sign, overshoot, overshoot_free)?;
         return upper.boolean(&lower, crate::kernel::BoolOp::Fuse);
     }
     if let ExtrudeFace::Boolean { op, a, b } = face {
-        let sa = occt_face_solid(doc, extrusion, a, distance, overshoot)?;
-        let sb = occt_face_solid(doc, extrusion, b, distance, overshoot)?;
+        let sa = occt_face_solid(doc, extrusion, a, distance, overshoot, overshoot_free)?;
+        let sb = occt_face_solid(doc, extrusion, b, distance, overshoot, overshoot_free)?;
         let boolop = match op {
             crate::model::BooleanOp::Difference => crate::kernel::BoolOp::Cut,
             crate::model::BooleanOp::Intersection => crate::kernel::BoolOp::Common,
         };
         return sa.boolean(&sb, boolop);
     }
-    let (mut profile, mut top, _normal) =
+    let (mut profile, mut top, normal) =
         extrusion_profile_rings(doc, extrusion, face, distance)?;
-    // Extend both ends by `overshoot` along the extrusion direction (cut tools only).
+    profile = snap_loop_to_plane(&profile, normal);
+    let top_n = if top.len() >= 3 {
+        let n = (top[1] - top[0]).cross(top[2] - top[0]).normalize_or_zero();
+        if n == Vec3::ZERO {
+            normal
+        } else if n.dot(normal) < 0.0 {
+            -n
+        } else {
+            n
+        }
+    } else {
+        normal
+    };
+    top = snap_loop_to_plane(&top, top_n);
     if overshoot > 1e-6 {
         let u = (top[0] - profile[0]).normalize_or_zero();
         profile = profile.iter().map(|p| *p - u * overshoot).collect();
-        top = top.iter().map(|t| *t + u * overshoot).collect();
+        if overshoot_free {
+            top = top.iter().map(|t| *t + u * overshoot).collect();
+        }
     }
     // A pure translation is a single prism (simplest/most robust); a slanted target (per-vertex
     // top offset, e.g. extrude-to-an-angled-face) is a ruled loft between the bottom and top loops.
@@ -412,7 +428,9 @@ fn occt_face_solid(
         if overshoot > 1e-6 {
             let u = (htop[0] - hole[0]).normalize_or_zero();
             hole = hole.iter().map(|p| *p - u * overshoot).collect();
-            htop = htop.iter().map(|t| *t + u * overshoot).collect();
+            if overshoot_free {
+                htop = htop.iter().map(|t| *t + u * overshoot).collect();
+            }
         }
         let hdir = htop[0] - hole[0];
         let is_translation = hole
@@ -438,13 +456,32 @@ fn occt_extrusion_shape_overshoot(
     distance: f32,
     overshoot: f32,
 ) -> Option<crate::kernel::Shape> {
+    occt_extrusion_shape_overshoot_ends(doc, extrusion, distance, overshoot, true)
+}
+
+fn occt_extrusion_shape_base_overshoot(
+    doc: &Document,
+    extrusion: &Extrusion,
+    distance: f32,
+    overshoot: f32,
+) -> Option<crate::kernel::Shape> {
+    occt_extrusion_shape_overshoot_ends(doc, extrusion, distance, overshoot, false)
+}
+
+fn occt_extrusion_shape_overshoot_ends(
+    doc: &Document,
+    extrusion: &Extrusion,
+    distance: f32,
+    overshoot: f32,
+    overshoot_free: bool,
+) -> Option<crate::kernel::Shape> {
     // One solid per face, fused. A single-face extrusion (the common case) skips the
     // boolean; a multi-face one (several coplanar profiles extruded together) fuses into
     // one solid so it cuts/merges correctly — a multi-face *cut* used to return `None`
     // here, silently dropping every hole of the cut via the mesh fallback.
     let mut fused: Option<crate::kernel::Shape> = None;
     for face in &extrusion.faces {
-        let shape = occt_face_solid(doc, extrusion, face, distance, overshoot)?;
+        let shape = occt_face_solid(doc, extrusion, face, distance, overshoot, overshoot_free)?;
         fused = Some(match fused {
             None => shape,
             Some(acc) => acc.boolean(&shape, crate::kernel::BoolOp::Fuse)?,
@@ -652,10 +689,24 @@ fn occt_fuse_then_cut_extrusions(
         if extrusion.faces.is_empty() || distance.abs() < 1e-4 {
             continue;
         }
-        let added = occt_extrusion_shape_for_host(doc, extrusion, distance)?;
+        let added = occt_extrusion_shape_for_host_overshoot(
+            doc,
+            extrusion,
+            distance,
+            ADD_FUSE_OVERSHOOT,
+        )?;
         solid = solid.boolean(&added, BoolOp::Fuse)?;
     }
     occt_subtract_cut_extrusions(doc, solid, cut_indices)
+}
+
+fn snap_loop_to_plane(pts: &[Vec3], n: Vec3) -> Vec<Vec3> {
+    let n = n.normalize_or_zero();
+    if n == Vec3::ZERO || pts.len() < 3 {
+        return pts.to_vec();
+    }
+    let origin = pts[0];
+    pts.iter().map(|p| *p - n * (*p - origin).dot(n)).collect()
 }
 
 /// Subtract each cut extrusion's solid from `solid` (#35/#726). A cut that isn't
@@ -4460,6 +4511,11 @@ pub const OCCT_PREVIEW_DEFLECTION: f32 = 0.4;
 /// exactly on a body face (which would leave a coincident seam face; #200). Small enough to
 /// be geometrically irrelevant, large enough to clear float noise at typical mm scale.
 const CUT_TOOL_OVERSHOOT: f32 = 0.05;
+
+/// How far an add extrusion's base is pulled into the host so Fuse has overlapping
+/// volume. Two solids that only share a face stay a compound, and Shell cannot
+/// hollow that (#1469).
+const ADD_FUSE_OVERSHOOT: f32 = 0.5;
 
 /// World-space axis (origin, unit direction) a [`crate::model::Revolution`] sweeps around.
 pub fn revolve_axis_world(
@@ -8946,7 +9002,20 @@ fn occt_extrusion_shape_for_host(
     extrusion: &Extrusion,
     distance: f32,
 ) -> Option<crate::kernel::Shape> {
-    let shape = occt_extrusion_shape(doc, extrusion, distance)?;
+    occt_extrusion_shape_for_host_overshoot(doc, extrusion, distance, 0.0)
+}
+
+fn occt_extrusion_shape_for_host_overshoot(
+    doc: &Document,
+    extrusion: &Extrusion,
+    distance: f32,
+    base_overshoot: f32,
+) -> Option<crate::kernel::Shape> {
+    let shape = if base_overshoot > 1e-6 {
+        occt_extrusion_shape_base_overshoot(doc, extrusion, distance, base_overshoot)?
+    } else {
+        occt_extrusion_shape(doc, extrusion, distance)?
+    };
     match extrusion_host_unpose(doc, extrusion) {
         Some(inv) => shape.transformed(&mat4_to_rows_3x4(&inv)),
         None => Some(shape),
@@ -15373,6 +15442,174 @@ mod tests {
         assert!(
             (mid - expected).length() < 1e-3,
             "sample is the cubic bezier, got {mid} vs {expected}"
+        );
+    }
+
+    fn issue_1468_doc() -> crate::actions::AppState {
+        let bytes = include_bytes!("../tests/fixtures/issue_1468.json");
+        let mut state = crate::actions::AppState::default();
+        state.doc = crate::storage::from_json_bytes(bytes).expect("load issue 1468");
+        state.doc.bump_mesh_rev();
+        state
+    }
+
+    fn issue_1468_live_bodies(
+        doc: &Document,
+    ) -> (crate::model::BodyKey, crate::model::BodyKey) {
+        use crate::model::BodySource;
+        let moved = doc
+            .bodies
+            .iter()
+            .find_map(|(k, b)| {
+                (!b.shadow && matches!(b.source, BodySource::Moved { .. })).then_some(k)
+            })
+            .expect("live moved body");
+        let extrusion = doc
+            .bodies
+            .iter()
+            .find_map(|(k, b)| {
+                (!b.shadow && matches!(b.source, BodySource::Extrusion(_))).then_some(k)
+            })
+            .expect("live extrusion");
+        (moved, extrusion)
+    }
+
+    fn issue_1468_bezier_cutters(doc: &Document) -> Vec<crate::model::SliceCutter> {
+        doc.lines
+            .iter()
+            .filter(|(_, l)| l.bezier.is_some() && !l.construction)
+            .map(|(k, _)| crate::model::SliceCutter::Line { line: k })
+            .collect()
+    }
+
+    /// #1468/#1469: the purple solid is a moved cuboid with later add-extrusions.
+    /// A body is a body — it still has a kernel solid, and the add-extrudes fuse into one.
+    #[test]
+    fn issue_1468_moved_body_has_a_kernel_shape() {
+        let state = issue_1468_doc();
+        let (moved, extrusion) = issue_1468_live_bodies(&state.doc);
+        let moved_shape = occt_body_shape(&state.doc, moved)
+            .expect("moved body with add extrusions must be kernel-representable");
+        assert_eq!(
+            moved_shape.solids().len(),
+            1,
+            "add extrusions must fuse into the moved body, not sit as extra solids"
+        );
+        assert!(
+            occt_body_shape(&state.doc, extrusion).is_some(),
+            "the sketched extrusion must be kernel-representable"
+        );
+        assert!(
+            body_solid_mesh(&state.doc, moved).is_some_and(|m| !m.triangles.is_empty()),
+            "moved body must mesh"
+        );
+    }
+
+    /// #1468: the two bezier laser lines on the new extrusion must split it.
+    #[test]
+    fn issue_1468_laser_cut_commits_on_the_extrusion() {
+        let mut state = issue_1468_doc();
+        let (_moved, extrusion) = issue_1468_live_bodies(&state.doc);
+        let cutters = issue_1468_bezier_cutters(&state.doc);
+        assert_eq!(cutters.len(), 2, "fixture has two bezier laser lines");
+        let result = state.apply(crate::actions::Action::CreateSliceOperation {
+            targets: vec![extrusion],
+            cutters,
+            extend_infinite: true,
+        });
+        assert!(
+            matches!(result, crate::actions::ActionResult::Ok),
+            "laser cut must commit: {result:?} status={}",
+            state.status
+        );
+        let op = state.doc.slice_ops.values().next().expect("slice op");
+        assert!(
+            op.outputs.len() >= 2,
+            "laser cut must split the extrusion, got {} pieces",
+            op.outputs.len()
+        );
+        for &out in &op.outputs {
+            assert!(
+                body_solid_mesh(&state.doc, out).is_some_and(|m| !m.triangles.is_empty()),
+                "fragment {out:?} must mesh"
+            );
+        }
+    }
+
+    /// #1469: shell the moved assembly. A body is a body.
+    #[test]
+    fn issue_1469_shell_commits_on_the_moved_body() {
+        let mut state = issue_1468_doc();
+        let (moved, extrusion) = issue_1468_live_bodies(&state.doc);
+        let v0 = mesh_signed_volume(&body_solid_mesh(&state.doc, moved).expect("moved mesh")).abs();
+        let open = state
+            .doc
+            .sketches
+            .values()
+            .find_map(|s| match &s.face {
+                crate::model::FaceId::BodyMeshFace { body, .. } if *body == moved => {
+                    Some(s.face.clone())
+                }
+                _ => None,
+            })
+            .expect("mesh face on the moved body");
+        let result = state.apply(crate::actions::Action::CreateShellOperation {
+            targets: vec![moved],
+            open_faces: vec![open],
+            thickness: "2.7".into(),
+        });
+        assert!(
+            matches!(result, crate::actions::ActionResult::Ok),
+            "shell must commit: {result:?} status={}",
+            state.status
+        );
+        let out = state
+            .doc
+            .shell_ops
+            .values()
+            .last()
+            .expect("new shell")
+            .outputs[0];
+        let mesh = body_solid_mesh(&state.doc, out).expect("shelled mesh");
+        let v1 = mesh_signed_volume(&mesh).abs();
+        assert!(
+            v1 > 1.0 && v1 < v0,
+            "shell must hollow the moved body: {v1} vs {v0}"
+        );
+
+        let closed = state.apply(crate::actions::Action::CreateShellOperation {
+            targets: vec![extrusion],
+            open_faces: Vec::new(),
+            thickness: "2.7".into(),
+        });
+        assert!(
+            matches!(closed, crate::actions::ActionResult::Ok),
+            "closed shell of the new extrusion must commit: {closed:?} status={}",
+            state.status
+        );
+    }
+
+    /// #1468: the new extrusion is a real solid, so Combine/Cut can use it.
+    #[test]
+    fn issue_1468_boolean_on_the_extrusion_is_kernel_representable() {
+        let mut state = issue_1468_doc();
+        let (moved, extrusion) = issue_1468_live_bodies(&state.doc);
+        let result = state.apply(crate::actions::Action::CreateBooleanOperation {
+            kind: crate::model::BooleanOpKind::Combine,
+            a: vec![moved, extrusion],
+            b: Vec::new(),
+            keep_b: false,
+            solid_count: None,
+        });
+        assert!(
+            matches!(result, crate::actions::ActionResult::Ok),
+            "combine must commit: {result:?} status={}",
+            state.status
+        );
+        let out = state.doc.boolean_ops.values().next().expect("boolean").outputs[0];
+        assert!(
+            occt_body_shape(&state.doc, out).is_some(),
+            "combined result must be kernel-representable"
         );
     }
 }

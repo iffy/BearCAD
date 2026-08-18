@@ -13009,6 +13009,51 @@ mod tests {
         assert_eq!(op.cutters.len(), 3);
     }
 
+    /// #1468/#1469: laser-slice and shell on the reported moved-body model.
+    #[test]
+    fn lua_issue_1468_1469_cut_and_shell_the_moved_model() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/issue_1468.json");
+        let path_s = path.to_string_lossy().replace('\\', "\\\\");
+        let sliced = run_lua(&format!(
+            r#"
+            bearcad.open("{path_s}")
+            bearcad.slice{{
+                bodies = {{6}},
+                cutters = {{
+                    {{ kind = "line", index = 8 }},
+                    {{ kind = "line", index = 10 }},
+                }},
+            }}
+            "#
+        ));
+        assert_eq!(sliced.doc.slice_ops.len(), 1, "{}", sliced.status);
+        assert!(
+            sliced.doc.slice_ops.values().next().unwrap().outputs.len() >= 2,
+            "laser cut must split the extrusion"
+        );
+
+        let shelled = run_lua(&format!(
+            r#"
+            bearcad.open("{path_s}")
+            bearcad.shell{{ bodies = {{6}}, thickness = "2.7" }}
+            "#
+        ));
+        assert_eq!(shelled.doc.shell_ops.len(), 2, "{}", shelled.status);
+        let live = shelled
+            .doc
+            .shell_ops
+            .values()
+            .last()
+            .expect("new shell")
+            .outputs[0];
+        assert!(
+            crate::extrude::body_solid_mesh(&shelled.doc, live)
+                .is_some_and(|m| !m.triangles.is_empty()),
+            "shelled extrusion must mesh"
+        );
+    }
+
     /// SPEC §3.5 Loft: `bearcad.loft{ circles = {...} }` blends circle sections on two
     /// planes into a new loft-sourced body with a solid mesh.
     #[test]
