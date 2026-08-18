@@ -9281,6 +9281,9 @@ impl AppState {
                     .map(|view| view.picker.picked().to_vec())
                     .filter(|items| !items.is_empty())
                     .unwrap_or_else(|| self.scene_selection.ordered());
+                // Seed only a freshly armed draft (#1490): re-picking the same tool must
+                // not toggle what is already in the picker.
+                let seed_dedicated = incoming_dedicated_draft_is_empty(self, tool);
                 if self.creating_rect.is_some() && tool != Tool::Rectangle {
                     self.creating_rect = None;
                 }
@@ -9316,40 +9319,13 @@ impl AppState {
                     self.creating_boolean = None;
                 }
                 if tool == Tool::Combine && self.creating_boolean.is_none() {
-                    // Bodies already selected walk straight into the picker (#943): select two
-                    // solids, pick Combine, and they're the operands — they were highlighted in
-                    // the viewport but counted as nothing before.
-                    let mut cb = CreatingBoolean::default();
-                    for element in handoff.iter().cloned() {
-                        if let crate::hierarchy::SceneElement::Body(bi) = element {
-                            if self
-                                .doc
-                                .bodies
-                                .get(bi)
-                                .is_some_and(|b| !b.shadow)
-                                && !cb.a.contains(&bi)
-                            {
-                                cb.a.push(bi);
-                            }
-                        }
-                    }
-                    // The selection set has no order of its own; sort so the picker reads the
-                    // same way every time.
-                    cb.a.sort_unstable();
-                    self.creating_boolean = Some(cb);
+                    self.creating_boolean = Some(CreatingBoolean::default());
                 }
                 if self.creating_move.is_some() && tool != Tool::Move {
                     self.creating_move = None;
                 }
                 if tool == Tool::Move && self.creating_move.is_none() {
-                    // Whatever the outgoing picker held that can be moved (#956). A unit
-                    // instance (or its materialized body) target the *instance*, not the raw
-                    // body — its placement transform moves, like a plane, so the geometry
-                    // keeps nesting under the imported unit (it stays one element).
-                    let (targets, instance_targets) = move_handoff(&self.doc, &handoff);
                     self.creating_move = Some(CreatingMove {
-                        targets,
-                        instance_targets,
                         translate_mode: self.move_translate_mode,
                         ..CreatingMove::default()
                     });
@@ -9358,38 +9334,7 @@ impl AppState {
                     self.creating_joint = None;
                 }
                 if tool == Tool::Joint && self.creating_joint.is_none() {
-                    // Parts already selected walk straight in (#900): select two or more
-                    // things, pick the Joint tool, and they're the members — the
-                    // tie-together flow without re-picking.
-                    let mut cj = CreatingJoint::default();
-                    for element in handoff.iter().cloned() {
-                        let member = match element {
-                            crate::hierarchy::SceneElement::Body(bi) => {
-                                match self.doc.bodies.get(bi).map(|b| &b.source) {
-                                    Some(crate::model::BodySource::UnitInstance(ui)) => {
-                                        Some(crate::model::JointRef::UnitInstance(*ui))
-                                    }
-                                    Some(_) if !self.doc.bodies[bi].shadow => {
-                                        Some(crate::model::JointRef::Body(bi))
-                                    }
-                                    _ => None,
-                                }
-                            }
-                            crate::hierarchy::SceneElement::Component(ci) => {
-                                Some(crate::model::JointRef::Component(ci))
-                            }
-                            crate::hierarchy::SceneElement::UnitInstance(ui) => {
-                                Some(crate::model::JointRef::UnitInstance(ui))
-                            }
-                            _ => None,
-                        };
-                        if let Some(member) = member {
-                            if !cj.members.contains(&member) {
-                                cj.members.push(member);
-                            }
-                        }
-                    }
-                    self.creating_joint = Some(cj);
+                    self.creating_joint = Some(CreatingJoint::default());
                 }
                 if self.creating_mirror.is_some() && tool != Tool::Mirror {
                     self.creating_mirror = None;
@@ -9398,46 +9343,14 @@ impl AppState {
                     self.creating_sketch_mirror = None;
                 }
                 if tool == Tool::Mirror && self.sketch_session.is_some() {
-                    // Inside a sketch the Mirror tool reflects sketch geometry (#523/#528):
-                    // seed sources from the current selection's lines/circles.
                     if let Some(session) = self.sketch_session {
                         if self.creating_sketch_mirror.is_none() {
-                            let mut sm = CreatingSketchMirror::new(session.sketch);
-                            for element in handoff.iter().cloned() {
-                                match element {
-                                    crate::hierarchy::SceneElement::Line(li)
-                                        if self.doc.lines.get(li).is_some_and(|l| {
-                                            l.sketch == session.sketch
-                                        }) =>
-                                    {
-                                        sm.line_targets.push(li);
-                                    }
-                                    crate::hierarchy::SceneElement::Circle(ci)
-                                        if self.doc.circles.get(ci).is_some_and(|c| {
-                                            c.sketch == session.sketch
-                                        }) =>
-                                    {
-                                        sm.circle_targets.push(ci);
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            self.creating_sketch_mirror = Some(sm);
+                            self.creating_sketch_mirror =
+                                Some(CreatingSketchMirror::new(session.sketch));
                         }
                     }
                 } else if tool == Tool::Mirror && self.creating_mirror.is_none() {
-                    // Outside a sketch: mirror whole bodies. Seed from the selection (#523/#439).
-                    let mut cm = CreatingMirror::default();
-                    for element in handoff.iter().cloned() {
-                        if let crate::hierarchy::SceneElement::Body(bi) = element {
-                            if self.doc.bodies.get(bi).is_some_and(|b| !b.shadow)
-                                && !cm.targets.contains(&bi)
-                            {
-                                cm.targets.push(bi);
-                            }
-                        }
-                    }
-                    self.creating_mirror = Some(cm);
+                    self.creating_mirror = Some(CreatingMirror::default());
                 }
                 if self.creating_repeat.is_some() && tool != Tool::Repeat {
                     self.creating_repeat = None;
@@ -9450,94 +9363,27 @@ impl AppState {
                     self.creating_sketch_offset = None;
                 }
                 // Offset tool always has a draft so its Entities picker shows empty on
-                // enable, not only after the first edge pick (#512). Seed from the current
-                // sketch selection when present so pre-picked lines/circles show up.
+                // enable, not only after the first edge pick (#512).
                 if tool == Tool::Offset {
                     if let Some(session) = self.sketch_session {
                         if self.creating_sketch_offset.is_none() {
-                            let mut co = CreatingSketchOffset::new(session.sketch);
-                            for element in handoff.iter().cloned() {
-                                match element {
-                                    crate::hierarchy::SceneElement::Line(li)
-                                        if self.doc.lines.get(li).is_some_and(|l| {
-                                            l.sketch == session.sketch
-                                        }) =>
-                                    {
-                                        co.line_targets.push(li);
-                                    }
-                                    crate::hierarchy::SceneElement::Circle(ci)
-                                        if self.doc.circles.get(ci).is_some_and(|c| {
-                                            c.sketch == session.sketch
-                                        }) =>
-                                    {
-                                        co.circle_targets.push(ci);
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            self.creating_sketch_offset = Some(co);
+                            self.creating_sketch_offset =
+                                Some(CreatingSketchOffset::new(session.sketch));
                         }
                     }
                 }
                 // In-sketch Repeat always has a draft so the Entities picker shows empty
-                // on enable, not only after the first edge pick (#1437). Seed from the
-                // current sketch selection when present so pre-picked lines/circles show up.
+                // on enable, not only after the first edge pick (#1437).
                 if tool == Tool::Repeat {
                     if let Some(session) = self.sketch_session {
                         if self.creating_sketch_repeat.is_none() {
-                            let mut cr = CreatingSketchRepeat::new(session.sketch);
-                            for element in handoff.iter().cloned() {
-                                match element {
-                                    crate::hierarchy::SceneElement::Line(li)
-                                        if self.doc.lines.get(li).is_some_and(|l| {
-                                            l.sketch == session.sketch
-                                        }) =>
-                                    {
-                                        cr.line_targets.push(li);
-                                    }
-                                    crate::hierarchy::SceneElement::Circle(ci)
-                                        if self.doc.circles.get(ci).is_some_and(|c| {
-                                            c.sketch == session.sketch
-                                        }) =>
-                                    {
-                                        cr.circle_targets.push(ci);
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            self.creating_sketch_repeat = Some(cr);
+                            self.creating_sketch_repeat =
+                                Some(CreatingSketchRepeat::new(session.sketch));
                         }
                     }
                 }
                 if tool == Tool::Repeat && self.creating_repeat.is_none() {
-                    // Seed the target set from the current selection (#439): a body
-                    // selected before picking the tool is what you want to repeat, so
-                    // the next thing to pick is the axis.
-                    let mut cr = CreatingRepeat::default();
-                    for element in handoff.iter().cloned() {
-                        match element {
-                            crate::hierarchy::SceneElement::Body(bi)
-                                if self.doc.bodies.get(bi).is_some_and(|b| !b.shadow) =>
-                            {
-                                cr.targets.push(bi);
-                            }
-                            crate::hierarchy::SceneElement::ConstructionPlane(pi)
-                                if self
-                                    .doc
-                                    .construction_planes
-                                    .contains(pi) =>
-                            {
-                                cr.plane_targets.push(pi);
-                            }
-                            crate::hierarchy::SceneElement::Sketch(si)
-                                if self.doc.sketches.contains(si) =>
-                            {
-                                cr.sketch_targets.push(si);
-                            }
-                            _ => {}
-                        }
-                    }
-                    self.creating_repeat = Some(cr);
+                    self.creating_repeat = Some(CreatingRepeat::default());
                 }
                 if self.creating_slice.is_some() && tool != Tool::Slice {
                     self.creating_slice = None;
@@ -9547,19 +9393,13 @@ impl AppState {
                     self.creating_sketch_slice = None;
                 }
                 if tool == Tool::Slice && self.creating_slice.is_none() {
-                    self.creating_slice = Some(CreatingSlice {
-                        targets: handoff_bodies(&self.doc, &handoff),
-                        ..CreatingSlice::default()
-                    });
+                    self.creating_slice = Some(CreatingSlice::default());
                 }
                 if self.creating_shell.is_some() && tool != Tool::Shell {
                     self.creating_shell = None;
                 }
                 if tool == Tool::Shell && self.creating_shell.is_none() {
-                    self.creating_shell = Some(CreatingShell {
-                        targets: handoff_bodies(&self.doc, &handoff),
-                        ..CreatingShell::default()
-                    });
+                    self.creating_shell = Some(CreatingShell::default());
                 }
                 if self.creating_revolve.is_some() && tool != Tool::Revolve {
                     self.creating_revolve = None;
@@ -9578,31 +9418,6 @@ impl AppState {
                 if self.creating_calibration.is_some() && tool != Tool::Select {
                     self.creating_calibration = None;
                 }
-                // #157/#166: switching to Chamfer/Fillet with body edges already selected
-                // preloads them (filtered to treatable edges) so the gizmo shows right away.
-                if matches!(tool, Tool::Chamfer | Tool::Fillet)
-                    && self.sketch_session.is_none()
-                    && self.creating_edge_treatment.is_none()
-                {
-                    let edges =
-                        crate::extrude::treatable_edges_in_selection(&self.doc, &self.scene_selection);
-                    if !edges.is_empty() {
-                        self.creating_edge_treatment = Some(CreatingEdgeTreatment {
-                            edges,
-                            kind: if tool == Tool::Chamfer {
-                                VertexTreatmentKind::Chamfer
-                            } else {
-                                VertexTreatmentKind::Fillet
-                            },
-                            amount_live: DEFAULT_VERTEX_TREATMENT_AMOUNT,
-                            text: crate::value::format_length_display(
-                                DEFAULT_VERTEX_TREATMENT_AMOUNT,
-                            ),
-                            user_edited: false,
-                            pending_focus: true,
-                        });
-                    }
-                }
                 // Extruding/lofting act on the 3D model, not sketch geometry: leave
                 // sketch editing when either tool is picked from inside a sketch.
                 if matches!(
@@ -9612,19 +9427,8 @@ impl AppState {
                 {
                     self.exit_sketch_session();
                 }
-                // Switching to Loft with profiles already selected preloads them as
-                // sections (mirrors the Chamfer/Fillet preload above).
                 if tool == Tool::Loft && self.creating_loft.is_none() {
-                    let sections = crate::extrude::loft_sections_from_selection(
-                        &self.doc,
-                        &self.scene_selection,
-                    );
-                    self.creating_loft = Some(CreatingLoft {
-                        sections,
-                        body_choice: RevolveBodyChoice::default(),
-                        cut_bodies: Vec::new(),
-                        editing: None,
-                    });
+                    self.creating_loft = Some(CreatingLoft::default());
                 }
                 // The floating dimension editor only makes sense under the tools that
                 // can interact with it (Select drags labels, Dimension edits values);
@@ -9636,6 +9440,9 @@ impl AppState {
                     self.placing_dimension = None;
                 }
                 self.tool = tool;
+                if seed_dedicated {
+                    seed_primary_picker(self, tool, &handoff);
+                }
                 // Drop selection elements the new tool's pickers won't take (#1115): e.g.
                 // a body selected under Select is not a Revolve profile, so it clears.
                 // Handoff above already seeded tool-specific sets from the old selection.
@@ -18789,75 +18596,76 @@ fn move_status(bodies: usize, planes: usize, images: usize) -> String {
     format!("Moved {}", parts.join(", "))
 }
 
-/// Toggle a body into the active body-gathering tool's set (#218): the Elements pane (and any
-/// body selection) feeds bodies into whatever tool is collecting them — Move/Repeat/Slice
-/// targets, Combine's active side, or a Revolve Cut's bodies — regardless of the viewport's
-/// sub-element picking. Returns whether a tool consumed the click (so it shouldn't also change
-/// the persistent selection). Shadow/deleted bodies aren't usable targets.
-/// Whether the active tool gathers whole bodies from clicks (#218/#726) — the states in
-/// which a unit's materialized body must pass through as a raw body index (so Combine,
-/// Slice, Move, Repeat, and cut pickers can take it) instead of reading as its instance.
-/// Seed a tool's body set from what the outgoing picker held (#956), keeping only bodies that
-/// are really there and not already consumed — the same `LiveBody` rule the picker itself
-/// applies, so the pane and the handoff agree about what a valid body is.
-fn handoff_bodies(
-    doc: &crate::model::Document,
-    handoff: &[crate::hierarchy::SceneElement],
-) -> Vec<crate::model::BodyKey> {
-    let mut out: Vec<crate::model::BodyKey> = Vec::new();
-    for element in handoff {
-        if let crate::hierarchy::SceneElement::Body(bi) = element {
-            if doc.bodies.get(*bi).is_some_and(|b| !b.shadow)
-                && !out.contains(bi)
-            {
-                out.push(*bi);
-            }
+/// Whether the incoming tool's dedicated draft is still unset, so a handoff should seed it
+/// (#1490). Re-selecting the same tool must not toggle what is already picked.
+fn incoming_dedicated_draft_is_empty(state: &AppState, tool: Tool) -> bool {
+    match tool {
+        Tool::Combine => state.creating_boolean.is_none(),
+        Tool::Move => state.creating_move.is_none(),
+        Tool::Joint => state.creating_joint.is_none(),
+        Tool::Mirror if state.sketch_session.is_some() => state.creating_sketch_mirror.is_none(),
+        Tool::Mirror => state.creating_mirror.is_none(),
+        Tool::Offset => state.creating_sketch_offset.is_none(),
+        Tool::Repeat if state.sketch_session.is_some() => state.creating_sketch_repeat.is_none(),
+        Tool::Repeat => state.creating_repeat.is_none(),
+        Tool::Slice if state.sketch_session.is_some() => state.creating_sketch_slice.is_none(),
+        Tool::Slice => state.creating_slice.is_none(),
+        Tool::Shell => state.creating_shell.is_none(),
+        Tool::Loft => state.creating_loft.is_none(),
+        Tool::Extrude => state.creating_extrusion.is_none(),
+        Tool::Revolve => state.creating_revolve.is_none(),
+        Tool::Sweep => state.creating_sweep.is_none(),
+        Tool::Chamfer | Tool::Fillet if state.sketch_session.is_none() => {
+            state.creating_edge_treatment.is_none()
         }
+        _ => true,
     }
-    out
 }
 
-/// The Move tool's handoff (#1406): split a selection into body `targets` and unit
-/// `instance_targets`. A unit instance — whether handed off as a `UnitInstance` element or
-/// as its materialized `BodySource::UnitInstance` body — moves as an instance (its
-/// placement transform), the same way the click path routes it, so the geometry stays
-/// nested under the imported unit instead of producing a detached Moved output body.
-fn move_handoff(
-    doc: &crate::model::Document,
+/// Offer the outgoing picks to the incoming tool's primary picker (#1490): keep what
+/// [`ElementFilter::accepts`] takes, drop the rest. One loop, every tool.
+fn seed_primary_picker(
+    state: &mut AppState,
+    tool: Tool,
     handoff: &[crate::hierarchy::SceneElement],
-) -> (Vec<crate::model::BodyKey>, Vec<crate::model::UnitInstanceKey>) {
-    use crate::model::BodySource;
-    let mut bodies: Vec<crate::model::BodyKey> = Vec::new();
-    let mut instances: Vec<crate::model::UnitInstanceKey> = Vec::new();
-    for element in handoff {
-        match element {
-            crate::hierarchy::SceneElement::Body(bi) => {
-                let Some(body) = doc.bodies.get(*bi) else { continue };
-                if body.shadow {
-                    continue;
-                }
-                match body.source {
-                    BodySource::UnitInstance(ui) => {
-                        if !instances.contains(&ui) {
-                            instances.push(ui);
-                        }
-                    }
-                    _ => {
-                        if !bodies.contains(bi) {
-                            bodies.push(*bi);
-                        }
-                    }
-                }
-            }
-            crate::hierarchy::SceneElement::UnitInstance(ui) => {
-                if !instances.contains(ui) {
-                    instances.push(*ui);
-                }
-            }
-            _ => {}
+) {
+    let space = crate::tooltable::ToolSpace::current(
+        state.sketch_session.is_some(),
+        state.editing_drawing.is_some(),
+    );
+    let Some(primary) = crate::tooltable::row(tool, space).primary_picker() else {
+        return;
+    };
+    if primary.target == crate::context::PickerTarget::Selection {
+        return;
+    }
+    let mut filter = crate::context::picker_filter(primary.target);
+    if let Some(sketch) = state.sketch_session.map(|s| s.sketch) {
+        if crate::context::picker_is_sketch_scoped(primary.target) {
+            filter = filter.rule(crate::element_picker::PickRule::InSketch(sketch));
         }
     }
-    (bodies, instances)
+    for element in handoff {
+        if filter.accepts(&state.doc, element) {
+            apply_pick(state, primary.target, element);
+        }
+    }
+}
+
+/// The profile face a scene element names, if it is one.
+fn extrude_face_from_element(
+    element: &crate::hierarchy::SceneElement,
+) -> Option<crate::model::ExtrudeFace> {
+    use crate::hierarchy::SceneElement;
+    use crate::model::{ExtrudeFace, FaceId};
+    match element {
+        SceneElement::SketchFace(FaceId::Circle(i)) => Some(ExtrudeFace::Circle(*i)),
+        SceneElement::SketchFace(FaceId::Polygon(lines)) => {
+            Some(ExtrudeFace::Polygon(lines.clone()))
+        }
+        SceneElement::Circle(ci) => Some(ExtrudeFace::Circle(*ci)),
+        _ => None,
+    }
 }
 
 /// Make one tool picker the focused one (#963/#968/#1485) — the one definition a click on a
@@ -19018,6 +18826,225 @@ pub fn apply_pick(
     use crate::context::PickerTarget as P;
     use crate::hierarchy::SceneElement;
     match (target, element) {
+        (P::ExtrudeProfile, element) => {
+            let Some(face) = extrude_face_from_element(element) else {
+                return false;
+            };
+            let Some(sketch) = extrude_face_sketch(&state.doc, &face) else {
+                return false;
+            };
+            match &mut state.creating_extrusion {
+                Some(ce) if ce.sketch == sketch => {
+                    crate::element_picker::toggle_picked(&mut ce.faces, face);
+                    ce.pending_focus = true;
+                    true
+                }
+                _ => {
+                    let merge_candidate = extrude_merge_candidate(&state.doc, sketch);
+                    let faces = vec![face];
+                    let distance = initial_extrude_distance(&state.doc, &faces, state.cam.eye());
+                    let body_mode =
+                        default_extrude_body_mode(&state.doc, sketch, &faces, merge_candidate);
+                    state.creating_extrusion = Some(CreatingExtrusion {
+                        sketch,
+                        faces,
+                        distance,
+                        text: crate::value::format_length_display_in(
+                            distance.abs(),
+                            crate::model::effective_length_unit(&state.doc, sketch),
+                        ),
+                        user_edited: false,
+                        pending_focus: true,
+                        target: None,
+                        edit_index: None,
+                        body_mode,
+                        merge_candidate,
+                        symmetric: state.pending_extrude_symmetric,
+                        taper: 0.0,
+                        taper_text: String::new(),
+                        taper_user_edited: false,
+                        taper_mode: crate::model::ExtrudeTaperMode::Distance,
+                    });
+                    true
+                }
+            }
+        }
+        (P::RevolveProfile, element) => {
+            let Some(face) = extrude_face_from_element(element) else {
+                return false;
+            };
+            let Some(sketch) = extrude_face_sketch(&state.doc, &face) else {
+                return false;
+            };
+            let cr = state.creating_revolve.get_or_insert_with(CreatingRevolve::default);
+            if cr.sketch.is_some() && cr.sketch != Some(sketch) {
+                return false;
+            }
+            cr.sketch = Some(sketch);
+            crate::element_picker::toggle_picked(&mut cr.faces, face);
+            true
+        }
+        (P::SweepProfile, element) => {
+            let Some(face) = extrude_face_from_element(element) else {
+                return false;
+            };
+            let Some(sketch) = extrude_face_sketch(&state.doc, &face) else {
+                return false;
+            };
+            let cf = state.creating_sweep.get_or_insert_with(CreatingSweep::default);
+            if cf.sketch.is_some() && cf.sketch != Some(sketch) {
+                return false;
+            }
+            cf.sketch = Some(sketch);
+            crate::element_picker::toggle_picked(&mut cf.faces, face);
+            true
+        }
+        (P::LoftSections, element) => {
+            let section = if let Some(section) =
+                crate::extrude::loft_section_from_element(&state.doc, element.clone())
+            {
+                section
+            } else if let Some(face) = extrude_face_from_element(element) {
+                let Some(sketch) = extrude_face_sketch(&state.doc, &face) else {
+                    return false;
+                };
+                crate::model::LoftSection { sketch, face }
+            } else {
+                return false;
+            };
+            let cl = state.creating_loft.get_or_insert_with(CreatingLoft::default);
+            crate::element_picker::toggle_picked(&mut cl.sections, section);
+            true
+        }
+        (P::SketchOffsetEntities, SceneElement::Line(li)) => {
+            let sketch = state.sketch_session.map(|s| s.sketch);
+            let Some(sketch) = sketch else { return false };
+            if !state.doc.lines.get(*li).is_some_and(|l| l.sketch == sketch) {
+                return false;
+            }
+            let co = state
+                .creating_sketch_offset
+                .get_or_insert_with(|| CreatingSketchOffset::new(sketch));
+            crate::element_picker::toggle_picked(&mut co.line_targets, *li);
+            true
+        }
+        (P::SketchOffsetEntities, SceneElement::Circle(ci)) => {
+            let sketch = state.sketch_session.map(|s| s.sketch);
+            let Some(sketch) = sketch else { return false };
+            if !state.doc.circles.get(*ci).is_some_and(|c| c.sketch == sketch) {
+                return false;
+            }
+            let co = state
+                .creating_sketch_offset
+                .get_or_insert_with(|| CreatingSketchOffset::new(sketch));
+            crate::element_picker::toggle_picked(&mut co.circle_targets, *ci);
+            true
+        }
+        (P::SketchRepeatEntities, SceneElement::Line(li)) => {
+            let sketch = state.sketch_session.map(|s| s.sketch);
+            let Some(sketch) = sketch else { return false };
+            if !state.doc.lines.get(*li).is_some_and(|l| l.sketch == sketch) {
+                return false;
+            }
+            let cr = state
+                .creating_sketch_repeat
+                .get_or_insert_with(|| CreatingSketchRepeat::new(sketch));
+            crate::element_picker::toggle_picked(&mut cr.line_targets, *li);
+            true
+        }
+        (P::SketchRepeatEntities, SceneElement::Circle(ci)) => {
+            let sketch = state.sketch_session.map(|s| s.sketch);
+            let Some(sketch) = sketch else { return false };
+            if !state.doc.circles.get(*ci).is_some_and(|c| c.sketch == sketch) {
+                return false;
+            }
+            let cr = state
+                .creating_sketch_repeat
+                .get_or_insert_with(|| CreatingSketchRepeat::new(sketch));
+            crate::element_picker::toggle_picked(&mut cr.circle_targets, *ci);
+            true
+        }
+        (P::SketchMirrorShapes, SceneElement::Line(li)) => {
+            let sketch = state.sketch_session.map(|s| s.sketch);
+            let Some(sketch) = sketch else { return false };
+            if !state.doc.lines.get(*li).is_some_and(|l| l.sketch == sketch) {
+                return false;
+            }
+            let sm = state
+                .creating_sketch_mirror
+                .get_or_insert_with(|| CreatingSketchMirror::new(sketch));
+            crate::element_picker::toggle_picked(&mut sm.line_targets, *li);
+            true
+        }
+        (P::SketchMirrorShapes, SceneElement::Circle(ci)) => {
+            let sketch = state.sketch_session.map(|s| s.sketch);
+            let Some(sketch) = sketch else { return false };
+            if !state.doc.circles.get(*ci).is_some_and(|c| c.sketch == sketch) {
+                return false;
+            }
+            let sm = state
+                .creating_sketch_mirror
+                .get_or_insert_with(|| CreatingSketchMirror::new(sketch));
+            crate::element_picker::toggle_picked(&mut sm.circle_targets, *ci);
+            true
+        }
+        (P::SketchMirrorLine, SceneElement::Line(li)) => {
+            let sketch = state.sketch_session.map(|s| s.sketch);
+            let Some(sketch) = sketch else { return false };
+            if !state.doc.lines.get(*li).is_some_and(|l| l.sketch == sketch) {
+                return false;
+            }
+            let sm = state
+                .creating_sketch_mirror
+                .get_or_insert_with(|| CreatingSketchMirror::new(sketch));
+            sm.line = (sm.line != Some(*li)).then_some(*li);
+            true
+        }
+        (P::SketchSliceTargets, SceneElement::Line(li)) => {
+            let sketch = state.sketch_session.map(|s| s.sketch);
+            let Some(sketch) = sketch else { return false };
+            if !state.doc.lines.get(*li).is_some_and(|l| l.sketch == sketch) {
+                return false;
+            }
+            let cs = state
+                .creating_sketch_slice
+                .get_or_insert_with(|| CreatingSketchSlice::new(sketch));
+            crate::element_picker::toggle_picked(&mut cs.line_targets, *li);
+            true
+        }
+        (P::SketchSliceTargets, SceneElement::Circle(ci)) => {
+            let sketch = state.sketch_session.map(|s| s.sketch);
+            let Some(sketch) = sketch else { return false };
+            if !state.doc.circles.get(*ci).is_some_and(|c| c.sketch == sketch) {
+                return false;
+            }
+            let cs = state
+                .creating_sketch_slice
+                .get_or_insert_with(|| CreatingSketchSlice::new(sketch));
+            crate::element_picker::toggle_picked(&mut cs.circle_targets, *ci);
+            true
+        }
+        (P::SketchSliceTargets, SceneElement::SketchFace(crate::model::FaceId::Polygon(lines))) => {
+            let sketch = state.sketch_session.map(|s| s.sketch);
+            let Some(sketch) = sketch else { return false };
+            let cs = state
+                .creating_sketch_slice
+                .get_or_insert_with(|| CreatingSketchSlice::new(sketch));
+            crate::element_picker::toggle_picked(&mut cs.face_targets, lines.clone());
+            true
+        }
+        (P::SketchSliceTargets, SceneElement::SketchFace(crate::model::FaceId::Circle(ci))) => {
+            let sketch = state.sketch_session.map(|s| s.sketch);
+            let Some(sketch) = sketch else { return false };
+            if !state.doc.circles.get(*ci).is_some_and(|c| c.sketch == sketch) {
+                return false;
+            }
+            let cs = state
+                .creating_sketch_slice
+                .get_or_insert_with(|| CreatingSketchSlice::new(sketch));
+            crate::element_picker::toggle_picked(&mut cs.circle_targets, *ci);
+            true
+        }
         (P::SliceCutters, element) => {
             // Planes/faces or sketch lines (laser-style path cutters, #1126).
             let cutter = if let Some(face) = element.as_face_id() {
@@ -28193,6 +28220,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
     #[test]
     fn repeat_tool_seeds_selection_and_requires_axis() {
         let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
         state.apply(Action::ClickSceneElement {
             element: crate::hierarchy::SceneElement::Body(bkey(0)),
             additive: false,
@@ -32836,6 +32864,424 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         let mut seen = std::collections::HashSet::new();
         for tool in Tool::ALL {
             assert!(seen.insert(tool), "{tool:?} listed twice in Tool::ALL");
+        }
+    }
+
+    /// #1490: switching into any tool carries the subset of the current picks that its
+    /// primary picker accepts, and drops the rest. Walking `Tool::ALL` so a later tool
+    /// inherits the rule instead of needing another hand-written block.
+    #[test]
+    fn set_tool_seeds_the_primary_picker_from_the_handoff() {
+        use crate::context::PickerTarget as P;
+        use crate::tooltable::{row, spaces, ToolSpace};
+
+        for tool in Tool::ALL {
+            for &space in spaces(tool) {
+                if space == ToolSpace::Drawing {
+                    continue;
+                }
+                let primary = match row(tool, space).primary_picker() {
+                    Some(p) => p,
+                    None => continue,
+                };
+                if matches!(
+                    primary.target,
+                    P::PlaneAnchor | P::DrawingAlignBase | P::DrawingSelection
+                ) {
+                    continue;
+                }
+
+                let mut state = handoff_fixture(space);
+                if primary.target == P::Selection
+                    && crate::context::selection_picker_for(
+                        &state.doc,
+                        tool,
+                        state.sketch_session.map(|s| s.sketch),
+                        &state.scene_selection,
+                    )
+                    .is_none()
+                {
+                    continue;
+                }
+                let candidates = handoff_candidates(&state, space);
+                let filter = primary_handoff_filter(&state, tool, space, primary.target);
+                let accepted: Vec<_> = candidates
+                    .iter()
+                    .filter(|e| filter.accepts(&state.doc, e))
+                    .cloned()
+                    .collect();
+                let rejected: Vec<_> = candidates
+                    .iter()
+                    .filter(|e| !filter.accepts(&state.doc, e))
+                    .cloned()
+                    .collect();
+                assert!(
+                    !accepted.is_empty(),
+                    "{tool:?}/{space:?} fixture must include something the primary picker accepts"
+                );
+
+                state.scene_selection.clear();
+                for element in &candidates {
+                    crate::selection::click_scene_selection(
+                        &mut state.scene_selection,
+                        element.clone(),
+                        true,
+                    );
+                }
+
+                state.apply(Action::SetTool(tool));
+
+                let picked = primary_picker_contents(&state, primary.target);
+                for element in &accepted {
+                    let expected = expected_in_picker(&state.doc, primary.target, element);
+                    assert!(
+                        picked.iter().any(|p| p == &expected),
+                        "{tool:?}/{space:?} should keep {element:?} (as {expected:?}); picker has {picked:?}"
+                    );
+                }
+                for element in &rejected {
+                    assert!(
+                        !picked.contains(element),
+                        "{tool:?}/{space:?} should drop {element:?}; picker has {picked:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    fn handoff_fixture(space: crate::tooltable::ToolSpace) -> AppState {
+        use crate::model::Circle;
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        let rect = crate::construction::add_line_rectangle(
+            &mut state.doc,
+            sketch,
+            0.0,
+            0.0,
+            10.0,
+            10.0,
+            [false; 4],
+        );
+        state.doc.circles.insert(Circle::from_local_center_radius(
+            sketch, 20.0, 20.0, 3.0, 0.0,
+        ));
+        state.doc.shape_order.push(crate::model::ShapeKind::Circle);
+        state.refresh_document_health();
+        state.apply(Action::CreateExtrusion {
+            expression: None,
+            sketch,
+            faces: vec![ExtrudeFace::Polygon(rect.to_vec())],
+            distance: 5.0,
+            body: crate::actions::ExtrudeBodyChoice::New,
+            target: None,
+            symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+        });
+        if space != crate::tooltable::ToolSpace::Sketch {
+            state.apply(Action::ExitSketch);
+        }
+        state
+    }
+
+    fn handoff_candidates(
+        state: &AppState,
+        space: crate::tooltable::ToolSpace,
+    ) -> Vec<SceneElement> {
+        use crate::hierarchy::quantize_body_point;
+        use crate::model::{ConstraintPoint, FaceId, LineEnd};
+        let mut out = Vec::new();
+        out.push(SceneElement::ConstructionPlane(pkey(0)));
+        if let Some(si) = state.doc.sketches.keys().next() {
+            out.push(SceneElement::Sketch(si));
+        }
+        if let Some(li) = state.doc.lines.keys().next() {
+            out.push(SceneElement::Line(li));
+            out.push(SceneElement::Point(ConstraintPoint::LineEndpoint {
+                line: li,
+                end: LineEnd::Start,
+            }));
+        }
+        if let Some(ci) = state.doc.circles.keys().next() {
+            // The analytic face, not the circle entity: both map to the same Offset/Slice
+            // slot, and a toggle-style pick would add then remove it.
+            out.push(SceneElement::SketchFace(FaceId::Circle(ci)));
+        }
+        if let Some(lines) = closed_rect_lines(state) {
+            out.push(SceneElement::SketchFace(FaceId::Polygon(lines)));
+        }
+        if let Some(bi) = state.doc.bodies.keys().next() {
+            out.push(SceneElement::Body(bi));
+        }
+        if let Some(ei) = state.doc.extrusions.keys().next() {
+            out.push(SceneElement::Extrusion(ei));
+        }
+        if space == crate::tooltable::ToolSpace::Solid {
+            if let Some((_, _, a, b)) = crate::extrude::treatable_edges(&state.doc).first() {
+                if let Some(bi) = state.doc.bodies.keys().next() {
+                    out.push(SceneElement::BodyEdge {
+                        body: bi,
+                        a: quantize_body_point(*a),
+                        b: quantize_body_point(*b),
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    fn closed_rect_lines(state: &AppState) -> Option<Vec<crate::model::LineKey>> {
+        let sketch = state.doc.sketches.keys().next()?;
+        crate::polygon::closed_line_loops(&state.doc, sketch)
+            .into_iter()
+            .next()
+    }
+
+    fn primary_handoff_filter(
+        state: &AppState,
+        tool: Tool,
+        _space: crate::tooltable::ToolSpace,
+        target: crate::context::PickerTarget,
+    ) -> crate::element_picker::ElementFilter {
+        use crate::context::PickerTarget as P;
+        if target == P::Selection {
+            return crate::context::selection_picker_for(
+                &state.doc,
+                tool,
+                state.sketch_session.map(|s| s.sketch),
+                &state.scene_selection,
+            )
+            .map(|p| p.filter().clone())
+            .unwrap_or_else(crate::element_picker::ElementFilter::everything);
+        }
+        let mut filter = crate::context::picker_filter(target);
+        if let Some(sketch) = state.sketch_session.map(|s| s.sketch) {
+            if crate::context::picker_is_sketch_scoped(target) {
+                filter = filter.rule(crate::element_picker::PickRule::InSketch(sketch));
+            }
+        }
+        filter
+    }
+
+    fn expected_in_picker(
+        doc: &crate::model::Document,
+        target: crate::context::PickerTarget,
+        element: &SceneElement,
+    ) -> SceneElement {
+        use crate::context::PickerTarget as P;
+        match (target, element) {
+            (P::TreatmentEdges, SceneElement::BodyEdge { body, a, b }) => {
+                match crate::extrude::treatable_edge_for_selection(doc, *body, *a, *b) {
+                    Some((crate::model::TreatableSolid::Extrusion(extrusion), edge)) => {
+                        SceneElement::ExtrusionEdge { extrusion, edge }
+                    }
+                    Some((crate::model::TreatableSolid::Primitive(primitive), edge)) => {
+                        SceneElement::PrimitiveEdge { primitive, edge }
+                    }
+                    None => element.clone(),
+                }
+            }
+            (P::MoveTargets, SceneElement::Body(bi)) => {
+                match doc.bodies.get(*bi).map(|b| &b.source) {
+                    Some(crate::model::BodySource::UnitInstance(ui)) => {
+                        SceneElement::UnitInstance(*ui)
+                    }
+                    _ => element.clone(),
+                }
+            }
+            (P::JointMembers, _) => element
+                .as_joint_ref(doc)
+                .map(SceneElement::from_joint_ref)
+                .unwrap_or_else(|| element.clone()),
+            (
+                P::SketchSliceTargets,
+                SceneElement::SketchFace(crate::model::FaceId::Circle(ci)),
+            ) => SceneElement::Circle(*ci),
+            _ => element.clone(),
+        }
+    }
+
+    fn primary_picker_contents(
+        state: &AppState,
+        target: crate::context::PickerTarget,
+    ) -> Vec<SceneElement> {
+        use crate::context::PickerTarget as P;
+        match target {
+            P::Selection => state.scene_selection.ordered(),
+            P::CombineA => state
+                .creating_boolean
+                .as_ref()
+                .map(|c| c.a.iter().map(|&bi| SceneElement::Body(bi)).collect())
+                .unwrap_or_default(),
+            P::MoveTargets => state
+                .creating_move
+                .as_ref()
+                .map(|c| {
+                    c.targets
+                        .iter()
+                        .map(|&bi| SceneElement::Body(bi))
+                        .chain(c.instance_targets.iter().map(|&ui| SceneElement::UnitInstance(ui)))
+                        .chain(c.plane_targets.iter().map(|&pi| SceneElement::ConstructionPlane(pi)))
+                        .chain(c.image_targets.iter().map(|&ii| SceneElement::Image(ii)))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            P::JointMembers => state
+                .creating_joint
+                .as_ref()
+                .map(|c| {
+                    c.members
+                        .iter()
+                        .map(|m| SceneElement::from_joint_ref(*m))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            P::MirrorTargets => state
+                .creating_mirror
+                .as_ref()
+                .map(|c| c.targets.iter().map(|&bi| SceneElement::Body(bi)).collect())
+                .unwrap_or_default(),
+            P::MirrorPlane => state
+                .creating_mirror
+                .as_ref()
+                .and_then(|c| c.plane.clone())
+                .map(|face| vec![SceneElement::from_face_id(face)])
+                .unwrap_or_default(),
+            P::RepeatTargets => state
+                .creating_repeat
+                .as_ref()
+                .map(|c| {
+                    c.targets
+                        .iter()
+                        .map(|&bi| SceneElement::Body(bi))
+                        .chain(c.plane_targets.iter().map(|&pi| SceneElement::ConstructionPlane(pi)))
+                        .chain(c.sketch_targets.iter().map(|&si| SceneElement::Sketch(si)))
+                        .chain(c.extrusion_targets.iter().map(|&ei| SceneElement::Extrusion(ei)))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            P::SliceTargets => state
+                .creating_slice
+                .as_ref()
+                .map(|c| c.targets.iter().map(|&bi| SceneElement::Body(bi)).collect())
+                .unwrap_or_default(),
+            P::ShellTargets => state
+                .creating_shell
+                .as_ref()
+                .map(|c| c.targets.iter().map(|&bi| SceneElement::Body(bi)).collect())
+                .unwrap_or_default(),
+            P::ExtrudeProfile => state
+                .creating_extrusion
+                .as_ref()
+                .map(|c| {
+                    c.faces
+                        .iter()
+                        .map(crate::extrude::extrude_face_scene_element)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            P::RevolveProfile => state
+                .creating_revolve
+                .as_ref()
+                .map(|c| {
+                    c.faces
+                        .iter()
+                        .map(crate::extrude::extrude_face_scene_element)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            P::SweepProfile => state
+                .creating_sweep
+                .as_ref()
+                .map(|c| {
+                    c.faces
+                        .iter()
+                        .map(crate::extrude::extrude_face_scene_element)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            P::LoftSections => state
+                .creating_loft
+                .as_ref()
+                .map(|c| {
+                    c.sections
+                        .iter()
+                        .map(|s| crate::extrude::extrude_face_scene_element(&s.face))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            P::TreatmentEdges => state
+                .creating_edge_treatment
+                .as_ref()
+                .map(|c| {
+                    c.edges
+                        .iter()
+                        .map(|&(solid, edge)| match solid {
+                            crate::model::TreatableSolid::Extrusion(extrusion) => {
+                                SceneElement::ExtrusionEdge { extrusion, edge }
+                            }
+                            crate::model::TreatableSolid::Primitive(primitive) => {
+                                SceneElement::PrimitiveEdge { primitive, edge }
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            P::SketchOffsetEntities => state
+                .creating_sketch_offset
+                .as_ref()
+                .map(|c| {
+                    c.line_targets
+                        .iter()
+                        .map(|&li| SceneElement::Line(li))
+                        .chain(c.circle_targets.iter().map(|&ci| SceneElement::Circle(ci)))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            P::SketchRepeatEntities => state
+                .creating_sketch_repeat
+                .as_ref()
+                .map(|c| {
+                    c.line_targets
+                        .iter()
+                        .map(|&li| SceneElement::Line(li))
+                        .chain(c.circle_targets.iter().map(|&ci| SceneElement::Circle(ci)))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            P::SketchMirrorShapes => state
+                .creating_sketch_mirror
+                .as_ref()
+                .map(|c| {
+                    c.line_targets
+                        .iter()
+                        .map(|&li| SceneElement::Line(li))
+                        .chain(c.circle_targets.iter().map(|&ci| SceneElement::Circle(ci)))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            P::SketchMirrorLine => state
+                .creating_sketch_mirror
+                .as_ref()
+                .and_then(|c| c.line)
+                .map(|li| vec![SceneElement::Line(li)])
+                .unwrap_or_default(),
+            P::SketchSliceTargets => state
+                .creating_sketch_slice
+                .as_ref()
+                .map(|c| {
+                    c.line_targets
+                        .iter()
+                        .map(|&li| SceneElement::Line(li))
+                        .chain(c.circle_targets.iter().map(|&ci| SceneElement::Circle(ci)))
+                        .chain(c.face_targets.iter().map(|lines| {
+                            SceneElement::from_face_id(crate::model::FaceId::Polygon(lines.clone()))
+                        }))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
         }
     }
 
