@@ -822,7 +822,7 @@ impl ToolOutputMode {
         }
     }
 
-    /// Script/status name (`"new"` / `"merge"` / `"cut"`). Inverse of [`Self::from_name`].
+    /// Script name (`"new"` / `"merge"` / `"cut"`). Inverse of [`Self::from_name`].
     pub fn name(self) -> &'static str {
         match self {
             Self::NewBody => "new",
@@ -831,13 +831,30 @@ impl ToolOutputMode {
         }
     }
 
-    /// The Output-row names `bearcad.ui.tool_mode` accepts (#1524).
+    /// The Output-row names `bearcad.ui.tool_mode` accepts (#1499 / #1524).
     pub fn from_name(name: &str) -> Option<Self> {
         match name.to_ascii_lowercase().replace(['-', ' '], "_").as_str() {
             "new" | "new_body" => Some(Self::NewBody),
             "merge" | "add" | "join" | "add_to_body" | "add_touching" => Some(Self::AddToBody),
             "cut" => Some(Self::Cut),
             _ => None,
+        }
+    }
+
+    /// Materialize this normalized choice as an [`ExtrudeBodyMode`]. `merge_candidate` is the
+    /// host body an add/cut can target (`None` means the sketch has no host, so add degrades
+    /// to a profile join and cut is unavailable and wraps to a new body).
+    pub fn as_extrude_mode(self, merge_candidate: Option<crate::model::BodyKey>) -> ExtrudeBodyMode {
+        match self {
+            Self::NewBody => ExtrudeBodyMode::NewBody,
+            Self::AddToBody => match merge_candidate {
+                Some(bi) => ExtrudeBodyMode::MergeInto(bi),
+                None => ExtrudeBodyMode::JoinNew,
+            },
+            Self::Cut => match merge_candidate {
+                Some(bi) => ExtrudeBodyMode::Cut(bi),
+                None => ExtrudeBodyMode::NewBody,
+            },
         }
     }
 }
@@ -925,43 +942,6 @@ impl ToolPrefs {
 
     pub fn get(&self, tool: Tool) -> Option<&ToolPrefValues> {
         self.entries.get(&tool)
-    }
-}
-
-impl ToolOutputMode {
-    /// Script / pane name for this choice (#1499).
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::NewBody => "new_body",
-            Self::AddToBody => "add",
-            Self::Cut => "cut",
-        }
-    }
-
-    pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "new_body" | "new" => Some(Self::NewBody),
-            "add" | "add_to_body" | "join" => Some(Self::AddToBody),
-            "cut" => Some(Self::Cut),
-            _ => None,
-        }
-    }
-
-    /// Materialize this normalized choice as an [`ExtrudeBodyMode`]. `merge_candidate` is the
-    /// host body an add/cut can target (`None` means the sketch has no host, so add degrades
-    /// to a profile join and cut is unavailable and wraps to a new body).
-    pub fn as_extrude_mode(self, merge_candidate: Option<crate::model::BodyKey>) -> ExtrudeBodyMode {
-        match self {
-            Self::NewBody => ExtrudeBodyMode::NewBody,
-            Self::AddToBody => match merge_candidate {
-                Some(bi) => ExtrudeBodyMode::MergeInto(bi),
-                None => ExtrudeBodyMode::JoinNew,
-            },
-            Self::Cut => match merge_candidate {
-                Some(bi) => ExtrudeBodyMode::Cut(bi),
-                None => ExtrudeBodyMode::NewBody,
-            },
-        }
     }
 }
 
@@ -20368,7 +20348,7 @@ impl AppState {
         self.status = format!(
             "{} output: {}",
             crate::opsigs::tool_label(self.tool),
-            next.name().replace('_', " ")
+            output_mode_status(next)
         );
         ActionResult::Ok
     }

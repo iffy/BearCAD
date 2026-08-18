@@ -12415,14 +12415,12 @@ mod tests {
     /// names work on Revolve/Sweep/Loft/Mirror.
     #[test]
     fn lua_extrude_tool_mode_sets_and_reads_output() {
-        // #1499: SetTool arms an empty Extrude draft so Output is readable and settable
-        // before the first pick. #1524: the names are new/merge/cut.
+        // #1499: SetTool arms an empty Extrude draft so Output is readable before
+        // the first pick. Cut/merge need a host; those names are covered below.
         run_lua(
             r#"
             bearcad.ui.tool("extrude")
             assert(bearcad.ui.tool_mode() == "new", "SetTool arms Output (#1499)")
-            bearcad.ui.tool_mode("cut")
-            assert(bearcad.ui.tool_mode() == "cut")
             bearcad.ui.tool_mode("new")
             assert(bearcad.ui.tool_mode() == "new")
             "#,
