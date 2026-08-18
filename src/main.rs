@@ -10198,6 +10198,102 @@ impl App {
                     }
                 }
             }
+            SE::SketchRepeatOp(op) => {
+                if let Some(existing) = self.state.doc.sketch_repeat_ops.get(op).cloned() {
+                    let (computed, gap_is_offset, distance_is_end) = existing.mode.to_repeat_ui();
+                    self.state.creating_sketch_repeat = Some(actions::CreatingSketchRepeat {
+                        sketch: existing.sketch,
+                        line_targets: existing.line_targets,
+                        circle_targets: existing.circle_targets,
+                        dir_line: None,
+                        dir_u: existing.dir_u,
+                        dir_v: existing.dir_v,
+                        mode: existing.mode,
+                        count: existing.count,
+                        spacing: existing.spacing,
+                        length: existing.length,
+                        gap_is_offset,
+                        distance_is_end,
+                        var_mru: computed.as_mru(),
+                        editing: Some(op),
+                    });
+                    self.state.apply(Action::SetTool(Tool::Repeat));
+                    if self.state.sketch_session.is_none() {
+                        self.state.apply(Action::OpenSketch {
+                            sketch: existing.sketch,
+                            viewport: None,
+                        });
+                    }
+                }
+            }
+            SE::SketchSliceOp(op) => {
+                if let Some(existing) = self.state.doc.sketch_slice_ops.get(op).cloned() {
+                    self.state.creating_sketch_slice = Some(actions::CreatingSketchSlice {
+                        sketch: existing.sketch,
+                        line_targets: existing.line_targets,
+                        circle_targets: existing.circle_targets,
+                        face_targets: existing.face_targets,
+                        cutter_lines: existing.cutter_lines,
+                        picking_cutter: false,
+                        editing: Some(op),
+                    });
+                    self.state.apply(Action::SetTool(Tool::Slice));
+                    if self.state.sketch_session.is_none() {
+                        self.state.apply(Action::OpenSketch {
+                            sketch: existing.sketch,
+                            viewport: None,
+                        });
+                    }
+                }
+            }
+            SE::SketchVertexTreatmentOp(op) => {
+                if let Some(existing) = self.state.doc.sketch_vertex_treatment_ops.get(op).cloned() {
+                    let first = existing.corners.first();
+                    let kind = first
+                        .map(|c| c.kind)
+                        .unwrap_or(model::VertexTreatmentKind::Chamfer);
+                    let amount_text = first
+                        .map(|c| c.amount.clone())
+                        .unwrap_or_else(|| "3".to_string());
+                    let amount_live = first
+                        .and_then(|c| {
+                            crate::value::eval_length_mm_in_doc(&c.amount, &self.state.doc)
+                        })
+                        .unwrap_or(3.0)
+                        .max(0.0);
+                    let points = existing
+                        .corners
+                        .iter()
+                        .filter_map(|c| {
+                            let line = *existing.line_targets.get(c.a)?;
+                            Some(model::ConstraintPoint::LineEndpoint {
+                                line,
+                                end: c.a_end,
+                            })
+                        })
+                        .collect();
+                    let tool = match kind {
+                        model::VertexTreatmentKind::Chamfer => Tool::Chamfer,
+                        model::VertexTreatmentKind::Fillet => Tool::Fillet,
+                    };
+                    if self.state.sketch_session.is_none() {
+                        self.state.apply(Action::OpenSketch {
+                            sketch: existing.sketch,
+                            viewport: None,
+                        });
+                    }
+                    self.state.apply(Action::SetTool(tool));
+                    self.state.creating_edge_treatment = None;
+                    self.state.creating_vertex_treatment = Some(CreatingVertexTreatment {
+                        points,
+                        kind,
+                        amount_live,
+                        text: amount_text,
+                        user_edited: true,
+                        pending_focus: true,
+                    });
+                }
+            }
             _ => {}
         }
     }

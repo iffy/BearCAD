@@ -24,8 +24,7 @@
 //! Add the field to [`ToolRow`], fill it in for every arm of [`row`] (the compiler lists the
 //! arms for you), point the handler that used to `matches!` at the field, and add a walk in
 //! `tests`. Columns that exist so far are documented on [`ToolRow`]; later issues still move
-//! commit buttons, SceneElement / re-edit path, expression storage, preview bounds and
-//! default amounts here.
+//! commit buttons, expression storage, preview bounds and default amounts here.
 
 use crate::actions::Tool;
 use eframe::egui;
@@ -128,6 +127,55 @@ pub struct ToolPicker {
     pub heading: &'static str,
 }
 
+/// The operation a tool re-opens from an Elements-pane row via
+/// [`crate::hierarchy::node_editable_operation`] (#546 / #1486). Dual-mode tools have one
+/// per space. `None` for tools with a dedicated edit path (Extrude, 3D Chamfer/Fillet,
+/// Text, Drawing) or that do not commit a row-editable operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowEdit {
+    Boolean,
+    Move,
+    Mirror,
+    SketchMirror,
+    Repeat,
+    SketchRepeat,
+    SketchOffset,
+    Slice,
+    SketchSlice,
+    Shell,
+    Revolution,
+    Shape,
+    Sweep,
+    Joint,
+    SketchVertexTreatment,
+}
+
+impl RowEdit {
+    /// A dummy [`crate::hierarchy::HierarchyNode`] of this kind, for the row-entry walk.
+    #[cfg(test)]
+    pub fn dummy_node(self) -> crate::hierarchy::HierarchyNode {
+        use crate::arena::Key;
+        use crate::hierarchy::HierarchyNode as H;
+        match self {
+            Self::Boolean => H::BooleanOp(Key::from_bits(0)),
+            Self::Move => H::MoveOp(Key::from_bits(0)),
+            Self::Mirror => H::MirrorOp(Key::from_bits(0)),
+            Self::SketchMirror => H::SketchMirrorOp(Key::from_bits(0)),
+            Self::Repeat => H::RepeatOp(Key::from_bits(0)),
+            Self::SketchRepeat => H::SketchRepeatOp(Key::from_bits(0)),
+            Self::SketchOffset => H::SketchOffsetOp(Key::from_bits(0)),
+            Self::Slice => H::SliceOp(Key::from_bits(0)),
+            Self::SketchSlice => H::SketchSliceOp(Key::from_bits(0)),
+            Self::Shell => H::ShellOp(Key::from_bits(0)),
+            Self::Revolution => H::Revolution(Key::from_bits(0)),
+            Self::Shape => H::Shape(Key::from_bits(0)),
+            Self::Sweep => H::SweepOp(Key::from_bits(0)),
+            Self::Joint => H::Joint(Key::from_bits(0)),
+            Self::SketchVertexTreatment => H::SketchVertexTreatmentOp(Key::from_bits(0)),
+        }
+    }
+}
+
 /// One of a tool's own value fields, named by the id the widget is built with.
 ///
 /// Enter from one of these commits the tool; Enter from any *other* keyboard-holding widget
@@ -174,6 +222,10 @@ pub struct ToolRow {
     /// Pickers this tool can arm (#1485). `focus_tool_picker` / `picker_focus` succeed
     /// only for these; a name that is not here is an error, not a silent no-op.
     pub pickers: &'static [ToolPicker],
+    /// The Elements-pane operation this tool re-opens via double-click / right-click
+    /// Edit (#546 / #1486). `None` when the tool has a dedicated edit path or no
+    /// row-editable operation.
+    pub row_edit: Option<RowEdit>,
 }
 
 /// The spaces a tool has a row in. Exhaustive: a new `Tool` variant does not compile until
@@ -411,6 +463,7 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
         draft: Draft::None,
         output_modes: false,
         pickers: &[],
+        row_edit: None,
     };
     let sketch = space == ToolSpace::Sketch;
     match tool {
@@ -495,6 +548,9 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             commit_fields: if sketch { VERTEX_TREATMENT_FIELDS } else { EDGE_TREATMENT_FIELDS },
             draft: if sketch { Draft::VertexTreatment } else { Draft::EdgeTreatment },
             pickers: if sketch { SELECTION } else { EDGE_TREATMENT_PICKERS },
+            // 2D chamfer/fillet re-opens through the universal row; 3D has its own
+            // `EditEdgeTreatmentOp` path (#531).
+            row_edit: if sketch { Some(RowEdit::SketchVertexTreatment) } else { None },
             ..base
         },
         Tool::Offset => ToolRow {
@@ -504,6 +560,7 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             commit_fields: SKETCH_OFFSET_FIELDS,
             draft: Draft::SketchOffset,
             pickers: OFFSET_PICKERS,
+            row_edit: Some(RowEdit::SketchOffset),
             ..base
         },
         Tool::Loft => ToolRow {
@@ -520,6 +577,7 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             draft: Draft::Revolve,
             output_modes: true,
             pickers: REVOLVE_PICKERS,
+            row_edit: Some(RowEdit::Revolution),
             ..base
         },
         Tool::Sweep => ToolRow {
@@ -527,6 +585,7 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             draft: Draft::Sweep,
             output_modes: true,
             pickers: SWEEP_PICKERS,
+            row_edit: Some(RowEdit::Sweep),
             ..base
         },
         Tool::Shape => ToolRow {
@@ -534,12 +593,14 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             commit_on_enter: true,
             commit_fields: SHAPE_FIELDS,
             draft: Draft::Shape,
+            row_edit: Some(RowEdit::Shape),
             ..base
         },
         Tool::Combine => ToolRow {
             commit_on_enter: true,
             draft: Draft::Boolean,
             pickers: COMBINE_PICKERS,
+            row_edit: Some(RowEdit::Boolean),
             ..base
         },
         Tool::Move => ToolRow {
@@ -548,6 +609,7 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             commit_fields: MOVE_FIELDS,
             draft: Draft::Move,
             pickers: MOVE_PICKERS,
+            row_edit: Some(RowEdit::Move),
             ..base
         },
         Tool::Mirror => ToolRow {
@@ -555,6 +617,7 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             draft: if sketch { Draft::SketchMirror } else { Draft::Mirror },
             output_modes: !sketch,
             pickers: if sketch { MIRROR_SKETCH_PICKERS } else { MIRROR_SOLID_PICKERS },
+            row_edit: Some(if sketch { RowEdit::SketchMirror } else { RowEdit::Mirror }),
             ..base
         },
         Tool::Repeat => ToolRow {
@@ -563,12 +626,14 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             commit_fields: if sketch { SKETCH_REPEAT_FIELDS } else { REPEAT_FIELDS },
             draft: if sketch { Draft::SketchRepeat } else { Draft::Repeat },
             pickers: if sketch { REPEAT_SKETCH_PICKERS } else { REPEAT_SOLID_PICKERS },
+            row_edit: Some(if sketch { RowEdit::SketchRepeat } else { RowEdit::Repeat }),
             ..base
         },
         Tool::Slice => ToolRow {
             commit_on_enter: true,
             draft: if sketch { Draft::SketchSlice } else { Draft::Slice },
             pickers: if sketch { SLICE_SKETCH_PICKERS } else { SLICE_SOLID_PICKERS },
+            row_edit: Some(if sketch { RowEdit::SketchSlice } else { RowEdit::Slice }),
             ..base
         },
         Tool::Shell => ToolRow {
@@ -577,6 +642,7 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             commit_fields: SHELL_FIELDS,
             draft: Draft::Shell,
             pickers: SHELL_PICKERS,
+            row_edit: Some(RowEdit::Shell),
             ..base
         },
         Tool::Joint => ToolRow {
@@ -584,6 +650,7 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             commit_fields: JOINT_FIELDS,
             draft: Draft::Joint,
             pickers: JOINT_PICKERS,
+            row_edit: Some(RowEdit::Joint),
             ..base
         },
 
@@ -854,6 +921,23 @@ mod tests {
                 assert!(!p.heading.is_empty(), "{:?} has an empty picker heading", r.tool);
                 assert_eq!(r.picker_named(p.heading), Some(p.target));
             }
+        }
+    }
+
+    /// #1486: a tool-table `row_edit` is the Elements-pane double-click / right-click
+    /// Edit path. Walking every row so a new tool cannot claim a re-edit without a
+    /// `node_editable_operation` arm.
+    #[test]
+    fn row_edit_column_has_a_hierarchy_row() {
+        for r in all_rows() {
+            let Some(kind) = r.row_edit else { continue };
+            assert!(
+                crate::hierarchy::node_editable_operation(kind.dummy_node()).is_some(),
+                "{:?}/{:?} lists row_edit {:?} but the Elements pane has no Edit",
+                r.tool,
+                r.space,
+                kind
+            );
         }
     }
 
