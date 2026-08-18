@@ -4956,7 +4956,11 @@ The model in one place:
       of dropping to the ambient floor when the fixed light misses it. No materials/textures
       yet — every body renders with the same fixed gloss; per-body/per-face materials are
       future work. Bodies also cast **contact shadows** along the scene light: onto the
-      ground plane (#1041) and onto other bodies and themselves (#1461). Ground-plane
+      ground plane (#1041) and onto other bodies and themselves (#1461). Self-shadows
+      skip tessellation-acne slivers, sit on the receiving face with a slope-scaled
+      depth bias so they do not speckle on grazing walls, and soften into a short sun
+      penumbra. The shade side of a hole or pocket is covered by a cavity overlay so
+      that whole wall sits in shade, not only the Lambert term. Ground-plane
       shadows stay at z = 0 (no camera-space lift) and stay hidden when looking up from
       below (#1464/#1476).
 
