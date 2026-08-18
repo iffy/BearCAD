@@ -1,5 +1,7 @@
 struct Uniforms {
     view_proj: mat4x4<f32>,
+    // Directional light's orthographic view-projection (#1535).
+    light_view_proj: mat4x4<f32>,
     // xyz: the scene's fixed light direction, normalized. w: unused.
     light_dir: vec4f,
     // xyz: camera eye in world space, for the view-dependent terms. w: unused.
@@ -20,6 +22,8 @@ struct Uniforms {
 }
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@group(0) @binding(1) var shadow_map: texture_depth_2d;
+@group(0) @binding(2) var shadow_sampler: sampler_comparison;
 
 // Lighting models, matching `ShadingModel` in scene.rs. Carried in normal.w.
 const MODE_UNLIT: f32 = 0.0;
@@ -46,6 +50,12 @@ const REALISTIC_DIFFUSE: f32 = 0.6287;
 const REALISTIC_SPECULAR: f32 = 0.35;
 const REALISTIC_SHININESS: f32 = 24.0;
 const REALISTIC_HEADLIGHT: f32 = 0.70;
+// Headlight remaining on a fully occluded surface (#1535). Unshadowed lighting
+// is still max(sun, headlight); occlusion mixes toward this fill.
+const REALISTIC_SHADOW_FILL: f32 = 0.40;
+const SHADOW_MAP_SIZE: f32 = 2048.0;
+const SHADOW_DEPTH_BIAS: f32 = 0.002;
+const SHADOW_SLOPE_BIAS: f32 = 0.004;
 
 // The render target is a plain UNORM format, so nothing encodes for us: colours arrive
 // sRGB-encoded and whatever this shader writes is what reaches the screen. Lighting has to
@@ -104,6 +114,35 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     return out;
 }
 
+// Depth-only pass from the light (#1535). No colour target.
+@vertex
+fn vs_shadow(input: VertexInput) -> @builtin(position) vec4f {
+    return uniforms.light_view_proj * vec4f(input.position, 1.0);
+}
+
+/// 1 when `world_pos` can see the directional light, 0 when something is in front.
+/// 3×3 PCF so the terminator is a short penumbra rather than a sawtooth.
+fn shadow_visibility(world_pos: vec3f, n: vec3f, light: vec3f) -> f32 {
+    let lp = uniforms.light_view_proj * vec4f(world_pos, 1.0);
+    let ndc = lp.xyz / lp.w;
+    let uv = ndc.xy * vec2f(0.5, -0.5) + vec2f(0.5);
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || ndc.z < 0.0 || ndc.z > 1.0) {
+        return 1.0;
+    }
+    let ndotl = max(dot(n, light), 0.0);
+    let bias = SHADOW_DEPTH_BIAS + SHADOW_SLOPE_BIAS * (1.0 - ndotl);
+    let ref_z = ndc.z - bias;
+    let texel = 1.0 / SHADOW_MAP_SIZE;
+    var sum = 0.0;
+    for (var y = -1; y <= 1; y = y + 1) {
+        for (var x = -1; x <= 1; x = x + 1) {
+            let s = uv + vec2f(f32(x), f32(y)) * texel;
+            sum += textureSampleCompare(shadow_map, shadow_sampler, s, ref_z);
+        }
+    }
+    return sum / 9.0;
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     // 2D chrome, lines, fills, text, gizmos: the colour is already final.
@@ -139,11 +178,16 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     if (dot(nf, view) < 0.0) {
         nf = -nf;
     }
-    let fixed_diffuse = max(dot(nf, light), 0.0);
+    let n_dot_l = max(dot(nf, light), 0.0);
     let headlight = REALISTIC_HEADLIGHT * max(dot(nf, view), 0.0);
-    let diffuse = max(fixed_diffuse, headlight);
+    let visibility = shadow_visibility(input.world_pos, nf, light);
+    // Unshadowed: same max(sun, headlight) as before (#102). Occluded: dim the
+    // headlight so a real shadow still reads on a camera-facing wall (#1535).
+    let unshadowed = max(n_dot_l, headlight);
+    let shadowed = headlight * REALISTIC_SHADOW_FILL;
+    let diffuse = mix(shadowed, unshadowed, visibility);
     let half_vec = normalize(light + view);
-    let specular = pow(max(dot(nf, half_vec), 0.0), REALISTIC_SHININESS);
+    let specular = pow(max(dot(nf, half_vec), 0.0), REALISTIC_SHININESS) * visibility;
     // In linear space a highlight is light *added* to the surface, not a lerp toward white:
     // it keeps the material's colour underneath and lets the tonemap's shoulder roll off
     // the overshoot, instead of clipping to a flat white disc.
