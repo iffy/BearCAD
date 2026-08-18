@@ -1897,6 +1897,33 @@ pub struct FreeMoveTranslationHandle {
     pub outward: Vec3,
 }
 
+/// Minimum screen-space gap between neighboring Free-move gizmo handles (#1478).
+pub const FREE_MOVE_GIZMO_MIN_SPACING_PX: f32 = 48.0;
+
+/// Inflate a Free-move selection AABB so neighboring +face handles stay at least
+/// `min_spacing_world` apart. A spacing of 0 (or a box already that large) is a no-op.
+pub fn free_move_gizmo_bounds(min: Vec3, max: Vec3, min_spacing_world: f32) -> (Vec3, Vec3) {
+    let c = (min + max) * 0.5;
+    let half = (max - min) * 0.5;
+    // Neighboring +face handles sit at (hx, 0, 0) and (0, hy, 0); distance is
+    // sqrt(hx² + hy²). Floor each half-extent so that pair stays at least
+    // `min_spacing_world` apart even when the other axis is degenerate.
+    let floor = (min_spacing_world / std::f32::consts::SQRT_2).max(0.0);
+    let half = Vec3::new(half.x.max(floor), half.y.max(floor), half.z.max(floor));
+    (c - half, c + half)
+}
+
+/// World millimetres matching [`FREE_MOVE_GIZMO_MIN_SPACING_PX`] at the look-at plane.
+pub fn free_move_gizmo_min_spacing_world(
+    cam: &crate::camera::Camera,
+    viewport_aspect: f32,
+    viewport_height: f32,
+) -> f32 {
+    let (_, half_h) = cam.viewport_half_extents(viewport_aspect.max(0.01));
+    let world_per_px = (2.0 * half_h) / viewport_height.max(1.0);
+    FREE_MOVE_GIZMO_MIN_SPACING_PX * world_per_px
+}
+
 /// Translation handles on all six faces of the tight AABB around the Free-move selection
 /// (#1233). Order: +X, −X, +Y, −Y, +Z, −Z.
 pub fn free_move_translation_handles(min: Vec3, max: Vec3) -> [FreeMoveTranslationHandle; 6] {
@@ -1982,8 +2009,9 @@ pub struct FreeMoveRotationRing {
 }
 
 /// The three Free-move rotation rings (#1413/#1414/#1422). `(min, max)` are the targets'
-/// resting bounds, `translation` the live Free translation; `None` when a typed turn
-/// doesn't evaluate.
+/// resting bounds, `translation` the live Free translation; `min_spacing_world` is the
+/// screen-space floor from [`free_move_gizmo_min_spacing_world`] (#1478). `None` when a
+/// typed turn doesn't evaluate.
 pub fn free_move_rotation_rings(
     doc: &Document,
     min: Vec3,
@@ -1992,8 +2020,15 @@ pub fn free_move_rotation_rings(
     rx: &str,
     ry: &str,
     rz: &str,
+    min_spacing_world: f32,
 ) -> Option<[FreeMoveRotationRing; 3]> {
-    let (center, radius) = free_move_rotation_ring(min + translation, max + translation);
+    let (min, max) = free_move_gizmo_bounds(min + translation, max + translation, min_spacing_world);
+    let (center, radius) = free_move_rotation_ring(min, max);
+    // Keep rotation handles a full min-spacing beyond the face-arrow tips
+    // (AABB half-extent plus the 4 mm display offset) so the two families
+    // don't sit on top of each other on a tiny object (#1478).
+    let tip = ((max - min) * 0.5).max_element() + crate::construction::gizmo_display_offset(0.0);
+    let radius = radius.max(tip + min_spacing_world.max(0.0));
     let q = move_op_free_rotation_quat(doc, rx, ry, rz)?;
     let angles = [
         eval_free_move_angle_deg(doc, rx),
@@ -2076,8 +2111,12 @@ pub fn free_move_rotation_handles(
     rx: &str,
     ry: &str,
     rz: &str,
+    min_spacing_world: f32,
 ) -> Option<[Vec3; 3]> {
-    Some(free_move_rotation_rings(doc, min, max, translation, rx, ry, rz)?.map(|r| r.handle))
+    Some(
+        free_move_rotation_rings(doc, min, max, translation, rx, ry, rz, min_spacing_world)?
+            .map(|r| r.handle),
+    )
 }
 
 /// Gizmo script names for Free-move translation axes.
@@ -11772,7 +11811,7 @@ mod tests {
 
         // At rest, the three handles sit at distinct spots around the ring.
         let zero = glam::Vec3::ZERO;
-        let rest = free_move_rotation_handles(&doc, min, max, zero, "", "", "").unwrap();
+        let rest = free_move_rotation_handles(&doc, min, max, zero, "", "", "", 0.0).unwrap();
         for i in 0..3 {
             for j in (i + 1)..3 {
                 assert!(
@@ -11785,7 +11824,7 @@ mod tests {
         // #1414: rotating one ring (here 90° about Z) rotates all three handles along with the
         // preview, including the ring being turned — every base direction follows the composed
         // Free turn. Each handle ends at the ring centre plus Q·(rest offset).
-        let rz90 = free_move_rotation_handles(&doc, min, max, zero, "", "", "90").unwrap();
+        let rz90 = free_move_rotation_handles(&doc, min, max, zero, "", "", "90", 0.0).unwrap();
         let about_z = glam::Quat::from_rotation_z(90f32.to_radians());
         let c = (min + max) * 0.5 + zero;
         for i in 0..3 {
@@ -11800,6 +11839,89 @@ mod tests {
         // with the body; the Y ring's base (+Z) sits on the Z axis and rightly stays put.
         assert!((rz90[0] - rest[0]).length() > 1e-3, "X ring handle should have moved");
         assert!((rz90[2] - rest[2]).length() > 1e-3, "Z ring handle should have moved");
+    }
+
+    /// #1478: a tiny selection's Free-move handles must not collapse below a world spacing
+    /// that stands in for the viewport-pixel minimum. A large box is left alone.
+    #[test]
+    fn free_move_gizmos_keep_a_minimum_viewport_spacing() {
+        // Washer-sized AABB (~10×10×1.6 mm): +X and +Y face centres are only ~7 mm apart.
+        let min = glam::Vec3::new(-5.0, -5.0, -0.8);
+        let max = glam::Vec3::new(5.0, 5.0, 0.8);
+        let tight = free_move_translation_handles(min, max);
+        let plus_tight: Vec<_> = tight
+            .iter()
+            .filter(|h| h.outward.dot(free_move_axis_dir(h.axis)) > 0.0)
+            .map(|h| h.origin)
+            .collect();
+        let packed = (plus_tight[0] - plus_tight[1]).length();
+        assert!(
+            packed < 20.0,
+            "precondition: the tiny box packs +face handles, got {packed}"
+        );
+
+        // 48 px at ~0.83 mm/px (far camera, 800 px tall viewport).
+        let min_spacing = 40.0;
+        let (lo, hi) = free_move_gizmo_bounds(min, max, min_spacing);
+        let handles = free_move_translation_handles(lo, hi);
+        let plus: Vec<_> = handles
+            .iter()
+            .filter(|h| h.outward.dot(free_move_axis_dir(h.axis)) > 0.0)
+            .map(|h| h.origin)
+            .collect();
+        for i in 0..plus.len() {
+            for j in (i + 1)..plus.len() {
+                let d = (plus[i] - plus[j]).length();
+                assert!(
+                    d + 1e-3 >= min_spacing,
+                    "handles {i} and {j} are {d} apart, want >= {min_spacing}"
+                );
+            }
+        }
+
+        let big_min = glam::Vec3::ZERO;
+        let big_max = glam::Vec3::splat(200.0);
+        let (lo, hi) = free_move_gizmo_bounds(big_min, big_max, min_spacing);
+        assert!(
+            (lo - big_min).length() < 1e-4 && (hi - big_max).length() < 1e-4,
+            "a large box must keep its own AABB, got {lo:?}..{hi:?}"
+        );
+
+        // Rotation handles sit a full min-spacing beyond the +face arrows.
+        let doc = Document::default();
+        let rings = free_move_rotation_rings(
+            &doc, min, max, glam::Vec3::ZERO, "", "", "", min_spacing,
+        )
+        .unwrap();
+        for h in &handles {
+            if h.outward.dot(free_move_axis_dir(h.axis)) <= 0.0 {
+                continue;
+            }
+            for (i, ring) in rings.iter().enumerate() {
+                let d = (ring.handle - h.origin).length();
+                assert!(
+                    d + 1e-3 >= min_spacing,
+                    "rotation {i} and +axis {} are {d} apart, want >= {min_spacing}",
+                    h.axis
+                );
+            }
+        }
+    }
+
+    /// #1478: zooming out increases the world millimetres that correspond to the
+    /// minimum pixel gap, so the same small object inflates more when it's tiny on screen.
+    #[test]
+    fn free_move_gizmo_min_spacing_world_grows_when_zoomed_out() {
+        let mut cam = crate::camera::Camera::default();
+        cam.distance = 2000.0;
+        let far = free_move_gizmo_min_spacing_world(&cam, 16.0 / 9.0, 600.0);
+        cam.distance = 80.0;
+        let near = free_move_gizmo_min_spacing_world(&cam, 16.0 / 9.0, 600.0);
+        assert!(
+            far > near * 5.0,
+            "zooming out should demand more world spacing ({far} vs {near})"
+        );
+        assert!(near > 0.0 && far > 0.0);
     }
 
     /// #1415: the Free-move turn expressions stay signed — a negative typed turn reads back
@@ -11819,7 +11941,7 @@ mod tests {
         // A -5° typed turn must evaluate to -5°, not 355°.
         let got = crate::value::eval_angle_rad_in_doc("-5", &doc).unwrap().to_degrees();
         assert!((got - -5.0).abs() < 1e-3, "typed -5° should stay -5°, got {got}");
-        let handles = free_move_rotation_handles(&doc, min, max, glam::Vec3::ZERO, "", "", "-5").unwrap();
+        let handles = free_move_rotation_handles(&doc, min, max, glam::Vec3::ZERO, "", "", "-5", 0.0).unwrap();
         // And the labelled handle position still follows the signed turn.
         let q = glam::Quat::from_rotation_z((-5f32).to_radians());
         let c = (min + max) * 0.5;
@@ -11842,7 +11964,7 @@ mod tests {
         });
         let (min, max) = free_move_targets_bounds(&doc, &[bkey(0)], &[]).unwrap();
         let rings =
-            free_move_rotation_rings(&doc, min, max, glam::Vec3::ZERO, "30", "40", "50").unwrap();
+            free_move_rotation_rings(&doc, min, max, glam::Vec3::ZERO, "30", "40", "50", 0.0).unwrap();
         let q = move_op_free_rotation_quat(&doc, "30", "40", "50").unwrap();
         for i in 0..3 {
             let expected_axis = (q * free_move_axis_dir(i)).normalize();

@@ -19265,9 +19265,36 @@ pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
                 crate::value::eval_angle_rad_in_doc(s, &state.doc).unwrap_or(0.0)
             }
         };
-        gizmos.push(GizmoInfo { kind: "offset", name: "move_x", value: mm(&cm.tx), position: None });
-        gizmos.push(GizmoInfo { kind: "offset", name: "move_y", value: mm(&cm.ty), position: None });
-        gizmos.push(GizmoInfo { kind: "offset", name: "move_z", value: mm(&cm.tz), position: None });
+        let shift = glam::Vec3::new(mm(&cm.tx), mm(&cm.ty), mm(&cm.tz));
+        let bounds =
+            crate::extrude::free_move_targets_bounds(&state.doc, &cm.targets, &cm.plane_targets);
+        let spacing = crate::extrude::free_move_gizmo_min_spacing_world(
+            &state.cam,
+            state.viewport_aspect,
+            state.viewport_height,
+        );
+        let trans_handles = bounds.map(|(lo, hi)| {
+            let (lo, hi) = crate::extrude::free_move_gizmo_bounds(lo + shift, hi + shift, spacing);
+            crate::extrude::free_move_translation_handles(lo, hi)
+        });
+        let trans_pos = |axis: usize| {
+            trans_handles.and_then(|hs| {
+                hs.into_iter().find(|h| {
+                    h.axis == axis
+                        && h.outward.dot(crate::extrude::free_move_axis_dir(axis)) > 0.0
+                })
+                .map(|h| {
+                    crate::construction::offset_handle(
+                        h.origin,
+                        h.outward,
+                        crate::construction::gizmo_display_offset(0.0),
+                    )
+                })
+            })
+        };
+        gizmos.push(GizmoInfo { kind: "offset", name: "move_x", value: mm(&cm.tx), position: trans_pos(0) });
+        gizmos.push(GizmoInfo { kind: "offset", name: "move_y", value: mm(&cm.ty), position: trans_pos(1) });
+        gizmos.push(GizmoInfo { kind: "offset", name: "move_z", value: mm(&cm.tz), position: trans_pos(2) });
         // Face Snap's spin ring (#1077/#1426): the turn about the target face's normal.
         if cm.translate_mode == crate::model::MoveTranslateMode::FaceSnap {
             if let (Some(start), Some(end)) = (cm.start_point_a.as_ref(), cm.end_point_a.as_ref()) {
@@ -19291,20 +19318,18 @@ pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
         if cm.translate_mode == crate::model::MoveTranslateMode::Free {
             // The handles' world positions (#1413/#1414): deterministic non-overlapping
             // references rotated to follow the preview's composed turn.
-            let shift = glam::Vec3::new(mm(&cm.tx), mm(&cm.ty), mm(&cm.tz));
-            let handles =
-                crate::extrude::free_move_targets_bounds(&state.doc, &cm.targets, &cm.plane_targets)
-                    .and_then(|(lo, hi)| {
-                        crate::extrude::free_move_rotation_handles(
-                            &state.doc,
-                            lo,
-                            hi,
-                            shift,
-                            &cm.rx,
-                            &cm.ry,
-                            &cm.rz,
-                        )
-                    });
+            let handles = bounds.and_then(|(lo, hi)| {
+                crate::extrude::free_move_rotation_handles(
+                    &state.doc,
+                    lo,
+                    hi,
+                    shift,
+                    &cm.rx,
+                    &cm.ry,
+                    &cm.rz,
+                    spacing,
+                )
+            });
             gizmos.push(GizmoInfo {
                 kind: "rotate",
                 name: "move_rx",
