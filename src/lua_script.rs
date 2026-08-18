@@ -12816,6 +12816,55 @@ mod tests {
         );
     }
 
+    /// #1533: changing Combine to Cut/Intersect/Difference after Side A is filled
+    /// focuses Side B, so the next pick is the other operand.
+    #[test]
+    fn lua_combine_mode_change_with_a_selected_focuses_side_b() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 20, height = 20 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            bearcad.exit_sketch()
+            bearcad.ui.tool("combine")
+            bearcad.select{ kind = "body", index = 0 }
+            bearcad.ui.tool_mode("cut")
+            "#,
+        );
+        let cb = state
+            .creating_boolean
+            .as_ref()
+            .expect("Combine should be armed");
+        assert_eq!(cb.kind, crate::model::BooleanOpKind::Cut);
+        assert!(!cb.a.is_empty(), "Side A should still hold the body");
+        assert!(
+            cb.picking_b,
+            "changing mode after a Side A pick should arm Side B (#1533)"
+        );
+        assert_eq!(
+            state.picker_focus,
+            Some(crate::context::PickerTarget::CombineB),
+            "the Side B picker should take focus, not Side A"
+        );
+
+        // Empty A stays on A.
+        let empty = run_lua(
+            r#"
+            bearcad.ui.tool("combine")
+            bearcad.ui.tool_mode("intersect")
+            "#,
+        );
+        let cb = empty
+            .creating_boolean
+            .as_ref()
+            .expect("Combine should be armed");
+        assert_eq!(cb.kind, crate::model::BooleanOpKind::Intersect);
+        assert!(cb.a.is_empty());
+        assert!(
+            !cb.picking_b,
+            "with nothing on Side A, Intersect should still pick A"
+        );
+    }
+
     /// #1320: Shape kinds are scriptable as `bearcad.ui.tool_mode`.
     #[test]
     fn lua_shape_tool_mode_cycles_kinds() {

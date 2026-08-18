@@ -16212,16 +16212,17 @@ impl App {
                     context::BooleanEdit::Commit => {
                         self.state.apply(Action::CommitBoolean);
                     }
-                    edit => {
+                    context::BooleanEdit::Kind(kind) => {
+                        // Same path as `bearcad.ui.tool_mode` so a pane click also
+                        // arms Side B when leaving Combine with Side A filled (#1533).
+                        let _ = actions::set_tool_mode(&mut self.state, kind.script_name());
+                    }
+                    context::BooleanEdit::KeepB(v) => {
                         let cb = self
                             .state
                             .creating_boolean
                             .get_or_insert_with(actions::CreatingBoolean::default);
-                        match edit {
-                            context::BooleanEdit::Kind(kind) => cb.set_kind(kind),
-                            context::BooleanEdit::KeepB(v) => cb.keep_b = v,
-                            context::BooleanEdit::Commit => unreachable!(),
-                        }
+                        cb.keep_b = v;
                     }
                 }
             }

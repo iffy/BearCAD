@@ -1040,8 +1040,10 @@ impl Default for CreatingBoolean {
 impl CreatingBoolean {
     /// Switch which boolean this will perform. Combine has a single picker, so anything
     /// already on side B folds into A rather than being stranded in a picker that is no
-    /// longer shown.
+    /// longer shown. Leaving Combine for a two-sided mode with side A already filled
+    /// arms side B — the next click is the other operand (#1533).
     pub fn set_kind(&mut self, kind: crate::model::BooleanOpKind) {
+        let from_combine = self.kind == crate::model::BooleanOpKind::Combine;
         self.kind = kind;
         if kind == crate::model::BooleanOpKind::Combine {
             for bi in std::mem::take(&mut self.b) {
@@ -1050,6 +1052,8 @@ impl CreatingBoolean {
                 }
             }
             self.picking_b = false;
+        } else if from_combine && !self.a.is_empty() {
+            self.picking_b = true;
         }
     }
 }
@@ -20276,9 +20280,17 @@ pub fn set_tool_mode(state: &mut AppState, name: &str) -> Result<(), String> {
         Tool::Combine => {
             let kind = crate::model::BooleanOpKind::from_name(name)
                 .ok_or_else(|| format!("unknown Combine mode '{name}'"))?;
-            let cb = state.creating_boolean.get_or_insert_with(CreatingBoolean::default);
-            cb.set_kind(kind);
+            let picking_b = {
+                let cb = state.creating_boolean.get_or_insert_with(CreatingBoolean::default);
+                cb.set_kind(kind);
+                cb.picking_b
+            };
             state.tool_prefs.entry(Tool::Combine).boolean_kind = Some(kind);
+            // `picking_b` is the derived focus, but a hand-armed Side A override would
+            // win — arm the picker the mode change just chose (#1533).
+            if kind != crate::model::BooleanOpKind::Combine && picking_b {
+                focus_tool_picker(state, crate::context::PickerTarget::CombineB);
+            }
             Ok(())
         }
         Tool::Move => {
@@ -21350,6 +21362,44 @@ mod tests {
         assert_eq!(cb.a, vec![bkey(0), bkey(1)]);
         assert!(cb.b.is_empty());
         assert!(!cb.picking_b);
+
+        // #1533: with side A already filled, leaving Combine for a two-sided mode
+        // arms Side B so the next click is the other operand, not another A body.
+        for mode in ["cut", "intersect", "difference"] {
+            set_tool_mode(&mut state, "combine").unwrap();
+            let cb = state.creating_boolean.as_mut().unwrap();
+            cb.a = vec![bkey(0)];
+            cb.b.clear();
+            cb.picking_b = false;
+            state.picker_focus = Some(crate::context::PickerTarget::CombineA);
+            set_tool_mode(&mut state, mode).unwrap();
+            let cb = state.creating_boolean.as_ref().unwrap();
+            assert!(
+                cb.picking_b,
+                "mode {mode} after a Side A pick should arm Side B"
+            );
+            assert_eq!(
+                state.picker_focus,
+                Some(crate::context::PickerTarget::CombineB),
+                "mode {mode} should focus the Side B picker, not Side A"
+            );
+        }
+
+        // Empty Side A still needs an A pick — don't skip ahead to B.
+        set_tool_mode(&mut state, "combine").unwrap();
+        let cb = state.creating_boolean.as_mut().unwrap();
+        cb.a.clear();
+        cb.b.clear();
+        cb.picking_b = false;
+        state.picker_focus = Some(crate::context::PickerTarget::CombineA);
+        set_tool_mode(&mut state, "cut").unwrap();
+        let cb = state.creating_boolean.as_ref().unwrap();
+        assert!(!cb.picking_b, "empty Side A stays on A");
+        assert_ne!(
+            state.picker_focus,
+            Some(crate::context::PickerTarget::CombineB),
+            "empty Side A must not jump to Side B"
+        );
 
         // Move: only while something is in progress.
         state.tool = Tool::Move;

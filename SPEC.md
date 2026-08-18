@@ -915,7 +915,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   **Intersect** (only what's common), **Difference** (symmetric difference — only what's
   *not* common). Combine uses a single picker; the two-sided operations have A and B
   pickers (multi-select each, clicking a body in the viewport toggles it into the active
-  side) plus a **Keep B** toggle that leaves the B-side inputs as real bodies. Bodies already
+  side) plus a **Keep B** toggle that leaves the B-side inputs as real bodies. Switching
+  from Combine to a two-sided mode after side A is filled focuses side B. Bodies already
   selected when the tool is picked **seed side A** (#943), like Repeat and Joint. The context
   pane reads as one contiguous block — no dividers between the body pickers and the controls
   below — with the four operations as a segmented icon group in the right column of a
