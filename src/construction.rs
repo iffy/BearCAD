@@ -3495,23 +3495,87 @@ pub fn nearest_treatable_edge(
     screen: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     doc: &Document,
+    occlusion: Option<&PickOcclusion>,
 ) -> Option<(crate::model::TreatableSolid, crate::model::ExtrusionEdgeRef, Vec3, Vec3, f32)> {
+    // Same visible-beats-occluded ranking as [`nearest_body_edge`] (#581/#1462): a
+    // front edge must win when a back edge stacks under the cursor, instead of
+    // the hidden one being chosen and then dropped.
     let mut best: Option<(
         crate::model::TreatableSolid,
         crate::model::ExtrusionEdgeRef,
         Vec3,
         Vec3,
         f32,
+        bool,
     )> = None;
     for (solid, edge, a, b) in crate::extrude::treatable_edges(doc) {
         let Some(dist) = segment_pick_distance(screen, project, a, b) else {
             continue;
         };
-        if best.as_ref().is_none_or(|(_, _, _, _, d)| dist < *d) {
-            best = Some((solid, edge, a, b, dist));
+        let anchor = segment_point_nearest_screen(screen, project, a, b);
+        let visible = occlusion.is_none_or(|occ| !occ.occluded(anchor));
+        let better = best.as_ref().is_none_or(|(_, _, _, _, d, vis)| {
+            (visible, -dist) > (*vis, -*d)
+        });
+        if better {
+            best = Some((solid, edge, a, b, dist, visible));
         }
     }
-    best
+    best.and_then(|(solid, edge, a, b, dist, visible)| {
+        (visible || occlusion.is_none()).then_some((solid, edge, a, b, dist))
+    })
+}
+
+/// Analytic chamfer/fillet edges a click at `screen` would take (#1462/#1463).
+/// Goes through the shared pick (occlusion, posed bodies) first, then the
+/// treatable-edge search, then a face's boundary.
+pub fn pick_treatable_edges(
+    screen: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &Document,
+    eye: Vec3,
+    occlusion: Option<&PickOcclusion>,
+) -> Vec<(crate::model::TreatableSolid, crate::model::ExtrusionEdgeRef)> {
+    let q = crate::hierarchy::quantize_body_point;
+    if let Some(target) = resolve_pick_target(screen, project, None, doc, occlusion) {
+        match &target.kind {
+            PickTargetKind::BodyEdge { body, a, b } => {
+                if let Some(resolved) =
+                    crate::extrude::treatable_edge_for_selection(doc, *body, q(*a), q(*b))
+                {
+                    return vec![resolved];
+                }
+            }
+            PickTargetKind::BodyFace { body, triangles, .. } => {
+                let edges: Vec<_> = coplanar_face_boundary(triangles)
+                    .into_iter()
+                    .filter_map(|(a, b)| {
+                        crate::extrude::treatable_edge_for_selection(doc, *body, q(a), q(b))
+                    })
+                    .collect();
+                if !edges.is_empty() {
+                    return edges;
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some((solid, edge, _, _, _)) = nearest_treatable_edge(screen, project, doc, occlusion) {
+        return vec![(solid, edge)];
+    }
+    crate::face::pick_body_face(screen, project, doc, eye)
+        .and_then(|kind| match kind {
+            PickTargetKind::BodyFace { body, triangles, .. } => Some(
+                coplanar_face_boundary(&triangles)
+                    .into_iter()
+                    .filter_map(|(a, b)| {
+                        crate::extrude::treatable_edge_for_selection(doc, body, q(a), q(b))
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 fn draw_circle_highlight(
@@ -4362,6 +4426,105 @@ mod tests {
         assert!(matches!(reference, Some(PlaneReference::Axis { .. })));
     }
 
+    /// #1462: a cuboid hidden behind another cuboid is not fillet-picked through the front one.
+    #[test]
+    fn treatable_pick_does_not_go_through_a_front_body() {
+        let mut doc = Document::default();
+        let mut hidden = crate::model::Primitive::new(crate::model::PrimitiveKind::Cuboid);
+        hidden.width = "20".into();
+        hidden.depth = "20".into();
+        hidden.height = "20".into();
+        let hpi = doc.primitives.insert(hidden);
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Primitive(hpi),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let mut slab = crate::model::Primitive::new(crate::model::PrimitiveKind::Cuboid);
+        slab.origin = [0.0, 30.0, 0.0];
+        slab.width = "120".into();
+        slab.depth = "30".into();
+        slab.height = "100".into();
+        let spi = doc.primitives.insert(slab);
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Primitive(spi),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let eye = Vec3::new(162.0, 162.0, 172.0);
+        let project = |w: Vec3| {
+            let dir = (w - eye).normalize_or_zero();
+            let z = dir.dot(Vec3::new(-1.0, -1.0, -1.0).normalize_or_zero()).max(0.01);
+            Some(Pos2::new(
+                dir.dot(Vec3::new(1.0, -1.0, 0.0).normalize()) / z * 200.0,
+                dir.dot(Vec3::new(-1.0, -1.0, 2.0).normalize()) / z * 200.0,
+            ))
+        };
+        let origin = project(Vec3::ZERO).unwrap();
+        let visibility = crate::hierarchy::ElementVisibility::default();
+        let occ = PickOcclusion::new(&doc, &visibility, eye);
+        assert!(
+            occ.occluded(Vec3::ZERO),
+            "the origin sits behind the slab from this eye"
+        );
+        let picked = pick_treatable_edges(origin, &project, &doc, eye, Some(&occ));
+        assert!(
+            picked
+                .iter()
+                .all(|(solid, _)| *solid != crate::model::TreatableSolid::Primitive(hpi)),
+            "must not pick the hidden cuboid, got {picked:?}"
+        );
+        assert!(!picked.is_empty(), "should pick the slab in front, got nothing");
+    }
+
+    /// #1462: an analytic treatable edge hidden behind a body is not the pick.
+    /// From +X the near and far +Y verticals stack; occlusion must take the front one.
+    #[test]
+    fn treatable_pick_does_not_take_an_edge_through_a_body() {
+        let mut doc = Document::default();
+        let mut shape = crate::model::Primitive::new(crate::model::PrimitiveKind::Cuboid);
+        shape.width = "40".into();
+        shape.depth = "50".into();
+        shape.height = "22".into();
+        let pi = doc.primitives.insert(shape);
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        // Shear X into screen-x so the near and far +Y verticals do not coincide:
+        // far (x = −20) sits at screen 24, near (x = +20) at 26. A cursor on the far
+        // edge would take that hidden edge without occlusion.
+        let project = |w: Vec3| Some(Pos2::new(w.y + w.x * 0.05, w.z));
+        let eye = Vec3::new(100.0, 0.0, 11.0);
+        let cursor = Pos2::new(24.0, 11.0);
+        let visibility = crate::hierarchy::ElementVisibility::default();
+        let occ = PickOcclusion::new(&doc, &visibility, eye);
+
+        let picked = resolve_pick_target(cursor, &project, None, &doc, Some(&occ));
+        match picked.as_ref().map(|t| &t.kind) {
+            Some(PickTargetKind::BodyEdge { a, b, .. }) => {
+                let mid = (*a + *b) * 0.5;
+                assert!(
+                    mid.x > 0.0,
+                    "must pick the near vertical (x > 0), got {a:?}–{b:?}"
+                );
+            }
+            other => panic!("expected a body edge on the front, got {other:?}"),
+        }
+
+        let hit = nearest_treatable_edge(cursor, &project, &doc, Some(&occ));
+        let (_, _, a, b, _) = hit.expect("a visible treatable edge");
+        let mid = (a + b) * 0.5;
+        assert!(
+            mid.x > 0.0,
+            "fillet must not take the far vertical through the body, got {a:?}–{b:?}"
+        );
+    }
+
     #[test]
     fn nearest_treatable_edge_finds_circle_cap_rims() {
         use crate::actions::{Action, AppState, Tool};
@@ -4378,7 +4541,7 @@ mod tests {
         state.apply(Action::CommitExtrusion);
 
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
-        let hit = nearest_treatable_edge(Pos2::new(5.0, 0.0), &project, &state.doc);
+        let hit = nearest_treatable_edge(Pos2::new(5.0, 0.0), &project, &state.doc, None);
         // Cap rims of a cylinder are treatable analytic circle edges (#177).
         let (_, edge, _, _, _) = hit.expect("rim should be pickable");
         assert!(matches!(edge, ExtrusionEdgeRef::Cap { edge: 0, .. }));

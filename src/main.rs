@@ -12892,6 +12892,7 @@ impl App {
         ui: &egui::Ui,
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         pointer_screen: Option<egui::Pos2>,
+        pick_occlusion: Option<&construction::PickOcclusion>,
     ) {
         if self.state.sketch_session.is_some() {
             self.state.creating_edge_treatment = None;
@@ -13000,32 +13001,13 @@ impl App {
                 // An edge under the cursor is the pick. Failing that, a **face** is: this
                 // picker takes edges and not faces, so clicking a face means all of that
                 // face's edges (#960) — otherwise it's a dead click with nothing to say why.
-                let picked: Vec<(model::TreatableSolid, model::ExtrusionEdgeRef)> =
-                    match construction::nearest_treatable_edge(pp, project, &self.state.doc) {
-                        Some((solid, edge, _, _, _)) => vec![(solid, edge)],
-                        None => crate::face::pick_body_face(
-                            pp,
-                            project,
-                            &self.state.doc,
-                            self.state.cam.eye(),
-                        )
-                        .and_then(|kind| match kind {
-                            construction::PickTargetKind::BodyFace { body, triangles, .. } => {
-                                Some(construction::coplanar_face_boundary(&triangles).into_iter()
-                                    .filter_map(|(a, b)| {
-                                        crate::extrude::treatable_edge_for_selection(
-                                            &self.state.doc,
-                                            body,
-                                            hierarchy::quantize_body_point(a),
-                                            hierarchy::quantize_body_point(b),
-                                        )
-                                    })
-                                    .collect::<Vec<_>>())
-                            }
-                            _ => None,
-                        })
-                        .unwrap_or_default(),
-                    };
+                let picked = construction::pick_treatable_edges(
+                    pp,
+                    project,
+                    &self.state.doc,
+                    self.state.cam.eye(),
+                    pick_occlusion,
+                );
                 if let Some(&first) = picked.first() {
                     match self.state.creating_edge_treatment.as_mut() {
                         Some(cet) if additive => {
@@ -26909,47 +26891,29 @@ impl App {
         let cam_project = cam.clone();
         let project = move |w: Vec3| cam_project.project(w, viewport, &vp);
 
-        // Occlusion context for picking (#155): tools that pick scene geometry must not
-        // select things hidden behind a body. Built once per frame, only for those tools
-        // (it meshes every visible body). The body-set tools (Combine, Move, Repeat, Slice,
-        // Revolve) need it too, or a click can pass through a front body to one behind it (#265).
+        // Occlusion context for picking (#155/#1462): every tool that picks scene
+        // geometry must not select things hidden behind a body. Built once per
+        // frame from the cached body meshes — not a per-tool allow-list, which is
+        // how Fillet/Chamfer lost occlusion and started picking through solids.
         // A Move destination pick ignores the moving bodies (#1336): they are not there.
-        let pick_occlusion = if matches!(
-            self.state.tool,
-            Tool::Select
-                | Tool::Constraint
-                | Tool::ConstructionPlane
-                | Tool::Dimension
-                | Tool::Combine
-                | Tool::Move
-                | Tool::Repeat
-                | Tool::Slice
-                | Tool::Shell
-                | Tool::Revolve
-                | Tool::Sweep
-                | Tool::Project
-        ) {
-            Some({
-                let ignore = self.move_destination_ignore_bodies();
-                if ignore.is_empty() {
-                    construction::PickOcclusion::new(
-                        &self.state.doc,
-                        &self.state.element_visibility,
-                        cam.eye(),
-                    )
-                } else {
-                    construction::PickOcclusion::new_ignoring(
-                        &self.state.doc,
-                        &self.state.element_visibility,
-                        cam.eye(),
-                        &ignore,
-                    )
-                }
-            })
-        } else {
-            None
+        let pick_occlusion = {
+            let ignore = self.move_destination_ignore_bodies();
+            if ignore.is_empty() {
+                construction::PickOcclusion::new(
+                    &self.state.doc,
+                    &self.state.element_visibility,
+                    cam.eye(),
+                )
+            } else {
+                construction::PickOcclusion::new_ignoring(
+                    &self.state.doc,
+                    &self.state.element_visibility,
+                    cam.eye(),
+                    &ignore,
+                )
+            }
         };
-        let pick_occlusion = pick_occlusion.as_ref();
+        let pick_occlusion = Some(&pick_occlusion);
         // Hover highlight vs the destination click (#1367): a Move destination pick drops
         // the moving bodies from hit-testing so the click lands on the geometry behind the part
         // being moved (#1336), but the cursor should still light up the front (moving) body
@@ -28522,7 +28486,7 @@ impl App {
         if matches!(self.state.tool, Tool::Chamfer | Tool::Fillet) {
             self.handle_vertex_treatment_tool(ui, &project, pointer_screen);
             self.show_vertex_treatment_amount_input(ui, &project);
-            self.handle_edge_treatment_tool(ui, &project, pointer_screen);
+            self.handle_edge_treatment_tool(ui, &project, pointer_screen, pick_occlusion);
             self.show_edge_treatment_amount_input(ui, &project);
         }
 
@@ -29452,30 +29416,13 @@ impl App {
                 // Which analytic edges a click here would take: the one under the cursor, or —
                 // over a face, which this picker can't hold — all of that face's (#960), so
                 // what lights up is what the click does.
-                let wanted: Vec<(model::TreatableSolid, model::ExtrusionEdgeRef)> =
-                    match construction::nearest_treatable_edge(pp, &project, doc) {
-                        Some((solid, edge, _, _, _)) => vec![(solid, edge)],
-                        None => crate::face::pick_body_face(pp, &project, doc, cam.eye())
-                            .and_then(|kind| match kind {
-                                construction::PickTargetKind::BodyFace {
-                                    body, triangles, ..
-                                } => Some(
-                                    construction::coplanar_face_boundary(&triangles)
-                                        .into_iter()
-                                        .filter_map(|(a, b)| {
-                                            crate::extrude::treatable_edge_for_selection(
-                                                doc,
-                                                body,
-                                                hierarchy::quantize_body_point(a),
-                                                hierarchy::quantize_body_point(b),
-                                            )
-                                        })
-                                        .collect::<Vec<_>>(),
-                                ),
-                                _ => None,
-                            })
-                            .unwrap_or_default(),
-                    };
+                let wanted = construction::pick_treatable_edges(
+                    pp,
+                    &project,
+                    doc,
+                    cam.eye(),
+                    pick_occlusion,
+                );
                 if !wanted.is_empty() {
                     // Each **whole** analytic edge: a hole's rim reaches the tools as one
                     // `Cap` reference but many mesh chords, and lighting up the one chord

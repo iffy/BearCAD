@@ -1528,6 +1528,31 @@ impl BodySource {
         Self::Extrusion(extrusion)
     }
 
+    /// The input body this operation output was produced from, if any.
+    /// Move / mirror / repeat / slice / shell / fillet all name one; a boolean
+    /// has several and is not a single predecessor.
+    pub fn input_body(&self, doc: &Document) -> Option<BodyKey> {
+        match self {
+            Self::Moved { op, target, .. } => doc.move_ops.get(*op)?.targets.get(*target).copied(),
+            Self::Mirrored { op, target, .. } => {
+                doc.mirror_ops.get(*op)?.targets.get(*target).copied()
+            }
+            Self::Repeated { op, target, .. } => {
+                doc.repeat_ops.get(*op)?.targets.get(*target).copied()
+            }
+            Self::Sliced { op, target, .. } => {
+                doc.slice_ops.get(*op)?.targets.get(*target).copied()
+            }
+            Self::Shelled { op, target, .. } => {
+                doc.shell_ops.get(*op)?.targets.get(*target).copied()
+            }
+            Self::EdgeTreated { op, target, .. } => {
+                doc.edge_treatment_ops.get(*op)?.targets.get(*target).copied()
+            }
+            _ => None,
+        }
+    }
+
     /// Extrusions **added** to (fused into) the body.
     pub fn extrusion_indices(&self) -> &[ExtrusionKey] {
         match self {
@@ -1987,18 +2012,41 @@ pub fn body_shadowed_by_other_ops_ex(
 /// The body whose source includes `extrusion` (added or cut), if any.
 /// Prefers a live (non-shadow) body when several own the same extrusion after fuse-merge
 /// (#1106/#1107) — intermediate shadow solids keep older add lists that still name it.
+fn source_derives_from_extrusion(
+    doc: &Document,
+    source: &BodySource,
+    extrusion: ExtrusionKey,
+) -> bool {
+    source.owns_extrusion(extrusion)
+        || source
+            .input_body(doc)
+            .and_then(|bi| doc.bodies.get(bi))
+            .is_some_and(|b| source_derives_from_extrusion(doc, &b.source, extrusion))
+}
+
 pub fn body_index_for_extrusion(doc: &Document, extrusion: ExtrusionKey) -> Option<BodyKey> {
-    let mut shadow = None;
-    for (key, body) in doc.bodies.iter() {
-        if !body.source.owns_extrusion(extrusion) {
-            continue;
-        }
-        if !body.shadow {
-            return Some(key);
-        }
-        shadow.get_or_insert(key);
+    let matches: Vec<(BodyKey, bool)> = doc
+        .bodies
+        .iter()
+        .filter(|(_, b)| source_derives_from_extrusion(doc, &b.source, extrusion))
+        .map(|(k, b)| (k, b.shadow))
+        .collect();
+    let live: Vec<BodyKey> = matches
+        .iter()
+        .filter(|(_, shadow)| !shadow)
+        .map(|(k, _)| *k)
+        .collect();
+    if let Some(&direct) = live.iter().find(|&&k| {
+        doc.bodies
+            .get(k)
+            .is_some_and(|b| b.source.owns_extrusion(extrusion))
+    }) {
+        return Some(direct);
     }
-    shadow
+    if let Some(&k) = live.first() {
+        return Some(k);
+    }
+    matches.first().map(|(k, _)| *k)
 }
 
 /// The body that was shadowed when `body` was created by a merge/cut extrude (#1106/#1107),
@@ -2058,6 +2106,9 @@ pub fn face_belongs_to_body(doc: &Document, face: &FaceId, body: BodyKey) -> boo
     match face {
         FaceId::ExtrudeCap { extrusion, .. } | FaceId::ExtrudeSide { extrusion, .. } => {
             b.source.owns_extrusion(*extrusion)
+                || b.source
+                    .input_body(doc)
+                    .is_some_and(|input| face_belongs_to_body(doc, face, input))
         }
         FaceId::RevolveCap { revolution, .. } | FaceId::RevolveSide { revolution, .. } => {
             matches!(b.source, BodySource::Revolve(r) if r == *revolution)
@@ -2068,14 +2119,12 @@ pub fn face_belongs_to_body(doc: &Document, face: &FaceId, body: BodyKey) -> boo
             BodySource::Solid {
                 base: Some(p), ..
             } => *p == *primitive,
-            // Shelling a shell (or further shell): primitive faces still name the original
-            // shape — walk the input chain.
-            BodySource::Shelled { op, target, .. } => doc
-                .shell_ops
-                .get(*op)
-                .and_then(|o| o.targets.get(*target).copied())
+            // Move / shell / fillet / … : primitive faces still name the original
+            // shape — walk the input chain. A body is a body (#1463).
+            _ => b
+                .source
+                .input_body(doc)
                 .is_some_and(|input| face_belongs_to_body(doc, face, input)),
-            _ => false,
         },
         FaceId::RepeatedFace { .. } => body_index_for_face(doc, face) == Some(body),
         FaceId::BodyMeshFace { body: b, .. } => *b == body,
@@ -2087,7 +2136,8 @@ pub fn face_belongs_to_body(doc: &Document, face: &FaceId, body: BodyKey) -> boo
 }
 
 /// Whether this body source ultimately derives from Shape-tool primitive `primitive`
-/// (#1168): pure primitive, solid-with-that-base, or a shell (or further shell) of such.
+/// (#1168/#1463): pure primitive, solid-with-that-base, or any operation output
+/// (move, shell, fillet, …) of such. A body is a body.
 fn source_derives_from_primitive(
     doc: &Document,
     source: &BodySource,
@@ -2098,21 +2148,19 @@ fn source_derives_from_primitive(
         BodySource::Solid {
             base: Some(p), ..
         } => *p == primitive,
-        BodySource::Shelled { op, target, .. } => doc
-            .shell_ops
-            .get(*op)
-            .and_then(|o| o.targets.get(*target).copied())
+        _ => source
+            .input_body(doc)
             .and_then(|bi| doc.bodies.get(bi))
             .is_some_and(|b| source_derives_from_primitive(doc, &b.source, primitive)),
-        _ => false,
     }
 }
 
 /// The body built on primitive shape `primitive` (#909/#1104): a pure
 /// [`BodySource::Primitive`] body, a [`BodySource::Solid`] whose `base` is that shape,
-/// or a live [`BodySource::Shelled`] hollow of either (#1168). Prefers a live body when
-/// fuse-merge / shell left the pure primitive as a shadow (#1106); among several live
-/// matches, the fuse-chain leaf (not a host of another match).
+/// or a live operation output of either (shell #1168, move #1463, fillet, …).
+/// Prefers a live body when fuse-merge / shell / move left the pure primitive as a
+/// shadow; among several live matches, the original primitive/solid itself (a
+/// mirror keeps the source live and adds a copy), else the fuse-chain leaf.
 pub fn body_index_for_primitive(doc: &Document, primitive: PrimitiveKey) -> Option<BodyKey> {
     let matches: Vec<(BodyKey, bool)> = doc
         .bodies
@@ -2125,6 +2173,17 @@ pub fn body_index_for_primitive(doc: &Document, primitive: PrimitiveKey) -> Opti
         .filter(|(_, shadow)| !shadow)
         .map(|(k, _)| *k)
         .collect();
+    if let Some(&direct) = live.iter().find(|&&k| {
+        match doc.bodies.get(k).map(|b| &b.source) {
+            Some(BodySource::Primitive(p)) => *p == primitive,
+            Some(BodySource::Solid {
+                base: Some(p), ..
+            }) => *p == primitive,
+            _ => false,
+        }
+    }) {
+        return Some(direct);
+    }
     // Prefer the fuse-chain leaf: a live body that is not the fuse host of another match.
     if let Some(&leaf) = live.iter().find(|&&k| {
         !live
@@ -5875,6 +5934,62 @@ mod tests {
         cut_src.append_cut_extrusion(ei);
         assert_eq!(cut_src.cut_extrusion_indices(), [ei]);
         assert!(cut_src.extrusion_indices().is_empty());
+    }
+
+    /// #1463: a Move of a cuboid is the live body for that primitive's faces —
+    /// not the shadow primitive input. A body is a body.
+    #[test]
+    fn moved_body_owns_primitive_faces() {
+        let pi = PrimitiveKey::from_bits(1);
+        let mut doc = Document::default();
+        let input = doc.bodies.insert(Body {
+            source: BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: true,
+        });
+        let op = doc.move_ops.insert(MoveOperation {
+            targets: vec![input],
+            translate_mode: MoveTranslateMode::Free,
+            tx: "80".into(),
+            ..MoveOperation::default()
+        });
+        let out = doc.bodies.insert(Body {
+            source: BodySource::Moved {
+                op,
+                target: 0,
+                add: Vec::new(),
+                cut: Vec::new(),
+            },
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        doc.move_ops[op].outputs = vec![out];
+
+        assert_eq!(
+            body_index_for_primitive(&doc, pi),
+            Some(out),
+            "live moved body owns the cuboid's faces, not the shadow input"
+        );
+
+        let top = FaceId::PrimitiveFace {
+            primitive: pi,
+            face: PrimitiveFace::CuboidTop,
+        };
+        assert!(
+            face_belongs_to_body(&doc, &top, input),
+            "primitive face still belongs to the move input body"
+        );
+        assert!(
+            face_belongs_to_body(&doc, &top, out),
+            "and to the moved body — a body is a body"
+        );
+        assert_eq!(
+            body_index_for_face(&doc, &top),
+            Some(out),
+            "live preference for picking still points at the moved output"
+        );
     }
 
     /// #1338: a cut into a Combine result must record the extrusion on that boolean body

@@ -2204,6 +2204,88 @@ pub fn live_body_for_treatable_solid(
     }
 }
 
+/// Rigid pose from a body's analytic source (the primitive / extrusion it came
+/// from) to the body as presented. Move / mirror / repeat compose; shell /
+/// slice / fillet keep the input's frame. Same transform `body_solid_mesh`
+/// applies, so pick hits and treatable edges share a space (#1463).
+pub fn body_source_pose(doc: &Document, body: crate::model::BodyKey) -> glam::Mat4 {
+    let mut pose = glam::Mat4::IDENTITY;
+    let mut current = body;
+    let mut seen = std::collections::HashSet::new();
+    while seen.insert(current) {
+        let Some(b) = doc.bodies.get(current) else {
+            break;
+        };
+        match &b.source {
+            crate::model::BodySource::Moved { op, target, .. } => {
+                let Some(mv) = doc.move_ops.get(*op) else {
+                    break;
+                };
+                let Some(&input) = mv.targets.get(*target) else {
+                    break;
+                };
+                if let Some(m) = move_op_transform(doc, mv) {
+                    pose *= m;
+                }
+                current = input;
+            }
+            crate::model::BodySource::Mirrored { op, target, .. } => {
+                let Some(mr) = doc.mirror_ops.get(*op) else {
+                    break;
+                };
+                let Some(&input) = mr.targets.get(*target) else {
+                    break;
+                };
+                if let Some(m) = mirror_op_transform(doc, mr) {
+                    pose *= m;
+                }
+                current = input;
+            }
+            crate::model::BodySource::Repeated {
+                op,
+                target,
+                instance,
+                ..
+            } => {
+                let Some(rp) = doc.repeat_ops.get(*op) else {
+                    break;
+                };
+                let Some(&input) = rp.targets.get(*target) else {
+                    break;
+                };
+                if let Some(m) = repeat_instance_transform(doc, rp, *instance) {
+                    pose *= m;
+                }
+                current = input;
+            }
+            _ => match b.source.input_body(doc) {
+                Some(input) if input != current => current = input,
+                _ => break,
+            },
+        }
+    }
+    pose
+}
+
+fn treatable_solid_pose(doc: &Document, solid: TreatableSolid) -> glam::Mat4 {
+    live_body_for_treatable_solid(doc, solid)
+        .map(|body| body_source_pose(doc, body))
+        .unwrap_or(glam::Mat4::IDENTITY)
+}
+
+fn pose_segment(m: glam::Mat4, a: Vec3, b: Vec3) -> (Vec3, Vec3) {
+    (m.transform_point3(a), m.transform_point3(b))
+}
+
+fn pose_treatable_endpoints(
+    doc: &Document,
+    solid: TreatableSolid,
+    a: Vec3,
+    b: Vec3,
+) -> (Vec3, Vec3) {
+    pose_segment(treatable_solid_pose(doc, solid), a, b)
+}
+
 /// Treatments already applied along the EdgeTreated chain that produced `body`, oldest first,
 /// restricted to `extrusion` (#1322). A second-fillet preview splices these onto the ghost so
 /// it is based on the already-filleted solid, not the original sharp box.
@@ -9243,20 +9325,23 @@ pub fn treatable_edges(
                 if matches!(face, ExtrudeFace::Circle(_)) {
                     let distance = effective_distance(doc, ext);
                     if let Some((base, top, _)) = extrusion_profile_rings(doc, ext, face, distance) {
+                        let pose = treatable_solid_pose(doc, TreatableSolid::Extrusion(ei));
                         let m = base.len();
                         for k in 0..m {
                             let k2 = (k + 1) % m;
+                            let (ba, bb) = pose_segment(pose, base[k], base[k2]);
                             out.push((
                                 TreatableSolid::Extrusion(ei),
                                 ExtrusionEdgeRef::Cap { face: fi, edge: 0, top: false },
-                                base[k],
-                                base[k2],
+                                ba,
+                                bb,
                             ));
+                            let (ta, tb) = pose_segment(pose, top[k], top[k2]);
                             out.push((
                                 TreatableSolid::Extrusion(ei),
                                 ExtrusionEdgeRef::Cap { face: fi, edge: 0, top: true },
-                                top[k],
-                                top[k2],
+                                ta,
+                                tb,
                             ));
                         }
                     }
@@ -9267,26 +9352,30 @@ pub fn treatable_edges(
             let Some((base, top, _)) = extrusion_profile_rings(doc, ext, face, distance) else {
                 continue;
             };
+            let pose = treatable_solid_pose(doc, TreatableSolid::Extrusion(ei));
             for edge in 0..n {
                 let v = (edge + 1) % n;
+                let (va, vb) = pose_segment(pose, base[v], top[v]);
                 out.push((
                     TreatableSolid::Extrusion(ei),
                     ExtrusionEdgeRef::Vertical { face: fi, edge },
-                    base[v],
-                    top[v],
+                    va,
+                    vb,
                 ));
                 let e2 = (edge + 1) % n;
+                let (ba, bb) = pose_segment(pose, base[edge], base[e2]);
                 out.push((
                     TreatableSolid::Extrusion(ei),
                     ExtrusionEdgeRef::Cap { face: fi, edge, top: false },
-                    base[edge],
-                    base[e2],
+                    ba,
+                    bb,
                 ));
+                let (ta, tb) = pose_segment(pose, top[edge], top[e2]);
                 out.push((
                     TreatableSolid::Extrusion(ei),
                     ExtrusionEdgeRef::Cap { face: fi, edge, top: true },
-                    top[edge],
-                    top[e2],
+                    ta,
+                    tb,
                 ));
             }
         }
@@ -9309,6 +9398,7 @@ fn push_primitive_treatable_edges(
         return;
     };
     let solid = TreatableSolid::Primitive(pi);
+    let pose = treatable_solid_pose(doc, solid);
     match shape.kind {
         crate::model::PrimitiveKind::Cuboid => {
             let base = r.cuboid_base();
@@ -9316,23 +9406,26 @@ fn push_primitive_treatable_edges(
             let top: [Vec3; 4] = std::array::from_fn(|i| base[i] + lift);
             for edge in 0..4 {
                 let v = (edge + 1) % 4;
+                let (va, vb) = pose_segment(pose, base[v], top[v]);
                 out.push((
                     solid,
                     ExtrusionEdgeRef::Vertical { face: 0, edge },
-                    base[v],
-                    top[v],
+                    va,
+                    vb,
                 ));
+                let (ba, bb) = pose_segment(pose, base[edge], base[v]);
                 out.push((
                     solid,
                     ExtrusionEdgeRef::Cap { face: 0, edge, top: false },
-                    base[edge],
-                    base[v],
+                    ba,
+                    bb,
                 ));
+                let (ta, tb) = pose_segment(pose, top[edge], top[v]);
                 out.push((
                     solid,
                     ExtrusionEdgeRef::Cap { face: 0, edge, top: true },
-                    top[edge],
-                    top[v],
+                    ta,
+                    tb,
                 ));
             }
         }
@@ -9353,11 +9446,12 @@ fn push_primitive_treatable_edges(
                 }
                 for k in 0..N {
                     let k2 = (k + 1) % N;
+                    let (a, b) = pose_segment(pose, ring[k], ring[k2]);
                     out.push((
                         solid,
                         ExtrusionEdgeRef::Cap { face: 0, edge: 0, top },
-                        ring[k],
-                        ring[k2],
+                        a,
+                        b,
                     ));
                 }
             }
@@ -9402,13 +9496,13 @@ pub(crate) fn primitive_edge_kernel_endpoints(
 ) -> Option<(Vec3, Vec3)> {
     let shape = doc.primitives.get(primitive)?;
     let r = crate::primitives::resolve(doc, shape)?;
-    match (shape.kind, edge) {
+    let (a, b) = match (shape.kind, edge) {
         (crate::model::PrimitiveKind::Cuboid, ExtrusionEdgeRef::Vertical { edge, .. })
             if edge < 4 =>
         {
             let v = (edge + 1) % 4;
             let base = r.cuboid_base();
-            Some((base[v], base[v] + r.normal * r.height))
+            (base[v], base[v] + r.normal * r.height)
         }
         (crate::model::PrimitiveKind::Cuboid, ExtrusionEdgeRef::Cap { edge, top, .. })
             if edge < 4 =>
@@ -9417,9 +9511,9 @@ pub(crate) fn primitive_edge_kernel_endpoints(
             let lift = r.normal * r.height;
             let e2 = (edge + 1) % 4;
             if top {
-                Some((base[edge] + lift, base[e2] + lift))
+                (base[edge] + lift, base[e2] + lift)
             } else {
-                Some((base[edge], base[e2]))
+                (base[edge], base[e2])
             }
         }
         (
@@ -9433,10 +9527,16 @@ pub(crate) fn primitive_edge_kernel_endpoints(
             };
             let a = center + r.u * r.radius;
             let b = center - r.u * r.radius;
-            Some((a, b))
+            (a, b)
         }
-        _ => None,
-    }
+        _ => return None,
+    };
+    Some(pose_treatable_endpoints(
+        doc,
+        TreatableSolid::Primitive(primitive),
+        a,
+        b,
+    ))
 }
 
 fn primitive_edge_anchor(
@@ -9573,10 +9673,15 @@ pub fn treatable_edge_anchor(
     solid: TreatableSolid,
     edge: ExtrusionEdgeRef,
 ) -> Option<(Vec3, Vec3)> {
-    match solid {
-        TreatableSolid::Extrusion(ei) => extrusion_edge_anchor(doc, ei, edge),
-        TreatableSolid::Primitive(pi) => primitive_edge_anchor(doc, pi, edge),
-    }
+    let (origin, normal) = match solid {
+        TreatableSolid::Extrusion(ei) => extrusion_edge_anchor(doc, ei, edge)?,
+        TreatableSolid::Primitive(pi) => primitive_edge_anchor(doc, pi, edge)?,
+    };
+    let m = treatable_solid_pose(doc, solid);
+    Some((
+        m.transform_point3(origin),
+        m.transform_vector3(normal).normalize_or_zero(),
+    ))
 }
 
 /// World-space origin (edge midpoint) and normal (inward bisector of the edge's two adjacent
@@ -14767,6 +14872,109 @@ mod tests {
             "cuboid top edge must resolve from a body-edge pick"
         );
         let _ = (pi, edge);
+    }
+
+    /// A 40×50×22 cuboid at the origin, then moved +80 mm in X (#1463).
+    fn moved_cuboid_doc() -> (Document, crate::model::BodyKey, crate::model::PrimitiveKey) {
+        use crate::model::{MoveOperation, MoveTranslateMode};
+        let mut doc = Document::default();
+        let mut shape = crate::model::Primitive::new(crate::model::PrimitiveKind::Cuboid);
+        shape.width = "40".into();
+        shape.depth = "50".into();
+        shape.height = "22".into();
+        let pi = doc.primitives.insert(shape);
+        let input = doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: true,
+        });
+        let mut op = MoveOperation {
+            targets: vec![input],
+            translate_mode: MoveTranslateMode::Free,
+            tx: "80".into(),
+            ..MoveOperation::default()
+        };
+        let op_key = doc.move_ops.insert(op.clone());
+        let output = doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Moved {
+                op: op_key,
+                target: 0,
+                add: Vec::new(),
+                cut: Vec::new(),
+            },
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        op.outputs = vec![output];
+        doc.move_ops[op_key] = op;
+        (doc, output, pi)
+    }
+
+    /// #1463: treatable edges of a moved cuboid live where the body is, not at the
+    /// primitive's un-moved origin. A body is a body.
+    #[test]
+    fn treatable_edges_of_a_moved_cuboid_sit_on_the_moved_body() {
+        let (doc, live, _pi) = moved_cuboid_doc();
+        assert_eq!(
+            crate::model::body_index_for_primitive(&doc, crate::model::primitive_key_for_slot(0)),
+            Some(live),
+            "the live moved body owns the cuboid, not the shadow input"
+        );
+        let edges = treatable_edges(&doc);
+        assert_eq!(edges.len(), 12, "a moved cuboid still has 12 treatable edges");
+        let mesh = body_solid_mesh(&doc, live).expect("moved mesh");
+        let (min, max) = mesh.bounds().expect("bounds");
+        assert!(
+            min.x > 40.0 && max.x > 80.0,
+            "the live mesh must sit at the moved pose, got {min:?}..{max:?}"
+        );
+        for (solid, edge, a, b) in &edges {
+            let mid = (*a + *b) * 0.5;
+            assert!(
+                mid.x > 40.0,
+                "treatable edge {edge:?} of {solid:?} is still at the un-moved origin: {a:?}–{b:?}"
+            );
+            let q = crate::hierarchy::quantize_body_point;
+            assert!(
+                treatable_edge_for_selection(&doc, live, q(*a), q(*b)).is_some(),
+                "a pick on the moved body at {a:?}–{b:?} must resolve to that analytic edge"
+            );
+        }
+    }
+
+    /// #1463: committing a fillet on a moved cuboid must find the kernel edge
+    /// (posed endpoints) and actually cut the live body.
+    #[test]
+    fn fillet_on_a_moved_cuboid_cuts_the_live_body() {
+        let (doc, live, _pi) = moved_cuboid_doc();
+        let edges = treatable_edges(&doc);
+        let (solid, edge, _, _) = edges
+            .iter()
+            .copied()
+            .find(|(_, e, _, _)| matches!(e, ExtrusionEdgeRef::Cap { top: true, .. }))
+            .expect("top cap edge");
+        let mut state = crate::actions::AppState::default();
+        state.doc = doc;
+        let before = body_solid_mesh(&state.doc, live).expect("sharp moved cuboid");
+        let v0 = mesh_signed_volume(&before).abs();
+        assert!(matches!(
+            state.apply(crate::actions::Action::CommitEdgeTreatments {
+                edges: vec![(solid, edge)],
+                kind: crate::model::VertexTreatmentKind::Fillet,
+                amount: 3.0,
+            }),
+            crate::actions::ActionResult::Ok
+        ));
+        let op = state.doc.edge_treatment_ops.values().nth(0).unwrap();
+        assert_eq!(op.targets[0], live, "the fillet must treat the moved body, not the shadow");
+        let out = op.outputs[0];
+        let after = body_solid_mesh(&state.doc, out).expect("filleted moved cuboid");
+        let v1 = mesh_signed_volume(&after).abs();
+        assert!(v1 < v0 - 1.0, "fillet must cut the moved cuboid: {v1} vs {v0}");
+        let (min, _) = after.bounds().expect("filleted bounds");
+        assert!(min.x > 40.0, "the filleted output must stay at the moved pose, got {min:?}");
     }
 
     /// #1329: the reported document is a lone cuboid; every one of its 12 box edges is
