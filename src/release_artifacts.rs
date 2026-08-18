@@ -512,6 +512,33 @@ mod tests {
         );
     }
 
+    /// #1471: Quickstart's "download it here" must land on the same page as
+    /// the yellow navbar Download button (`/docs/downloads`).
+    #[test]
+    fn quickstart_download_link_matches_navbar() {
+        let config = include_str!("../docs-site/docusaurus.config.js");
+        let download_item = config
+            .split("items: [")
+            .nth(1)
+            .and_then(|s| s.split("footer:").next())
+            .expect("navbar items list");
+        assert!(
+            download_item.contains("to: '/docs/downloads'")
+                && download_item.contains("label: 'Download'"),
+            "navbar Download should point at /docs/downloads"
+        );
+
+        let quickstart = include_str!("../docs-site/docs/quickstart.md");
+        assert!(
+            quickstart.contains("[download it here](/docs/downloads)"),
+            "quickstart download link should match the navbar Download button"
+        );
+        assert!(
+            !quickstart.contains("github.com/iffy/BearCAD/releases"),
+            "quickstart should not send downloads to GitHub releases"
+        );
+    }
+
     /// #1213 / #1439 / #1440 / #1443: Chromebook install sits next to the other
     /// platform downloads. After the name-your-price landing, the hero
     /// Download CTA jumps to the GetBearCAD block (`#get`); the dedicated
