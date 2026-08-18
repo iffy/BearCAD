@@ -8,8 +8,8 @@
 //!
 //! `bearcad opsigs` / `cargo opsigs` walks [`ALL_OPERATIONS`] and prints markdown + HTML.
 
-use crate::actions::{ExtrudeBodyMode, Tool};
-use crate::model::MirrorMode;
+use crate::actions::{ExtrudeBodyMode, Tool, ToolOutputMode};
+use crate::model::{LoftMode, MirrorMode, RevolveMode, SweepMode};
 
 // ── Element vocabulary ──────────────────────────────────────────────────────
 
@@ -64,7 +64,9 @@ pub enum HostBodyEffect {
     None,
     /// Shadow each host and produce a new result body (merge, Move, Combine, …).
     ShadowHostAndProduce,
-    /// Mutate the host body in place (extrude cut, revolve add/cut into host, …).
+    /// Mutate the host body in place. Unused after #1501 (Add/Cut shadow); kept
+    /// so a future op can opt into mutate without a new variant.
+    #[allow(dead_code)]
     MutateHost,
 }
 
@@ -206,15 +208,15 @@ impl Operation for ExtrudeMerge {
     const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
-/// Extrude cut: mutates host in place (#35).
+/// Extrude cut: shadows host, produces a new body with the cut (#1501 / #1107).
 pub struct ExtrudeCut;
 impl Operation for ExtrudeCut {
     const TOOL: Tool = Tool::Extrude;
     const VARIANT: &'static str = "cut body";
     const INPUTS: &'static [ElementType] = &[ElementType::Face, ElementType::Body];
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
-    const SHADOWS: &'static [ElementType] = &[];
-    const HOST_EFFECT: HostBodyEffect = HostBodyEffect::MutateHost;
+    const SHADOWS: &'static [ElementType] = &[ElementType::Body];
+    const HOST_EFFECT: HostBodyEffect = HostBodyEffect::ShadowHostAndProduce;
     const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
@@ -226,6 +228,72 @@ pub fn extrude_host_effect(mode: ExtrudeBodyMode) -> HostBodyEffect {
         ExtrudeBodyMode::JoinNew => ExtrudeJoinProfiles::HOST_EFFECT,
         ExtrudeBodyMode::MergeInto(_) => ExtrudeMerge::HOST_EFFECT,
         ExtrudeBodyMode::Cut(_) => ExtrudeCut::HOST_EFFECT,
+    }
+}
+
+pub fn revolve_host_effect(mode: &RevolveMode) -> HostBodyEffect {
+    output_host_effect(
+        Tool::Revolve,
+        match mode {
+            RevolveMode::NewBody => ToolOutputMode::NewBody,
+            RevolveMode::AddTo(_) => ToolOutputMode::AddToBody,
+            RevolveMode::Cut(_) => ToolOutputMode::Cut,
+        },
+    )
+}
+
+pub fn sweep_host_effect(mode: &SweepMode) -> HostBodyEffect {
+    output_host_effect(
+        Tool::Sweep,
+        match mode {
+            SweepMode::NewBody => ToolOutputMode::NewBody,
+            SweepMode::AddTo(_) => ToolOutputMode::AddToBody,
+            SweepMode::Cut(_) => ToolOutputMode::Cut,
+        },
+    )
+}
+
+pub fn loft_host_effect(mode: &LoftMode) -> HostBodyEffect {
+    output_host_effect(
+        Tool::Loft,
+        match mode {
+            LoftMode::NewBody => ToolOutputMode::NewBody,
+            LoftMode::AddTo(_) => ToolOutputMode::AddToBody,
+            LoftMode::Cut(_) => ToolOutputMode::Cut,
+        },
+    )
+}
+
+/// One host-effect per Output-row choice (#1501). Commit paths read this instead of
+/// each rolling their own shadow-vs-mutate decision.
+pub fn output_host_effect(tool: Tool, mode: ToolOutputMode) -> HostBodyEffect {
+    match tool {
+        Tool::Extrude => match mode {
+            ToolOutputMode::NewBody => ExtrudeNewBody::HOST_EFFECT,
+            ToolOutputMode::AddToBody => ExtrudeMerge::HOST_EFFECT,
+            ToolOutputMode::Cut => ExtrudeCut::HOST_EFFECT,
+        },
+        Tool::Revolve => match mode {
+            ToolOutputMode::NewBody => RevolveNewBody::HOST_EFFECT,
+            ToolOutputMode::AddToBody => RevolveAddToBody::HOST_EFFECT,
+            ToolOutputMode::Cut => RevolveCutBody::HOST_EFFECT,
+        },
+        Tool::Sweep => match mode {
+            ToolOutputMode::NewBody => SweepNewBody::HOST_EFFECT,
+            ToolOutputMode::AddToBody => SweepAddToBody::HOST_EFFECT,
+            ToolOutputMode::Cut => SweepCutBody::HOST_EFFECT,
+        },
+        Tool::Loft => match mode {
+            ToolOutputMode::NewBody => LoftNewBody::HOST_EFFECT,
+            ToolOutputMode::AddToBody => LoftAddToBody::HOST_EFFECT,
+            ToolOutputMode::Cut => LoftCutBody::HOST_EFFECT,
+        },
+        Tool::Mirror => match mode {
+            ToolOutputMode::NewBody => MirrorNewBody::HOST_EFFECT,
+            ToolOutputMode::AddToBody => MirrorJoin::HOST_EFFECT,
+            ToolOutputMode::Cut => MirrorCut::HOST_EFFECT,
+        },
+        _ => HostBodyEffect::None,
     }
 }
 
@@ -277,11 +345,7 @@ impl Operation for MirrorCut {
 }
 
 pub fn mirror_host_effect(mode: MirrorMode) -> HostBodyEffect {
-    match mode {
-        MirrorMode::NewBody => MirrorNewBody::HOST_EFFECT,
-        MirrorMode::Join => MirrorJoin::HOST_EFFECT,
-        MirrorMode::Cut => MirrorCut::HOST_EFFECT,
-    }
+    output_host_effect(Tool::Mirror, ToolOutputMode::from(mode))
 }
 
 // ── Other tools (one or more variant types each) ────────────────────────────
@@ -476,8 +540,8 @@ impl Operation for LoftAddToBody {
     const VARIANT: &'static str = "add to body";
     const INPUTS: &'static [ElementType] = &[ElementType::Face, ElementType::Body];
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
-    const SHADOWS: &'static [ElementType] = &[];
-    const HOST_EFFECT: HostBodyEffect = HostBodyEffect::MutateHost;
+    const SHADOWS: &'static [ElementType] = &[ElementType::Body];
+    const HOST_EFFECT: HostBodyEffect = HostBodyEffect::ShadowHostAndProduce;
     const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
@@ -487,8 +551,8 @@ impl Operation for LoftCutBody {
     const VARIANT: &'static str = "cut body";
     const INPUTS: &'static [ElementType] = &[ElementType::Face, ElementType::Body];
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
-    const SHADOWS: &'static [ElementType] = &[];
-    const HOST_EFFECT: HostBodyEffect = HostBodyEffect::MutateHost;
+    const SHADOWS: &'static [ElementType] = &[ElementType::Body];
+    const HOST_EFFECT: HostBodyEffect = HostBodyEffect::ShadowHostAndProduce;
     const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
@@ -510,8 +574,8 @@ impl Operation for RevolveAddToBody {
     const INPUTS: &'static [ElementType] =
         &[ElementType::Face, ElementType::Axis, ElementType::Body];
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
-    const SHADOWS: &'static [ElementType] = &[];
-    const HOST_EFFECT: HostBodyEffect = HostBodyEffect::MutateHost;
+    const SHADOWS: &'static [ElementType] = &[ElementType::Body];
+    const HOST_EFFECT: HostBodyEffect = HostBodyEffect::ShadowHostAndProduce;
     const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
@@ -522,8 +586,8 @@ impl Operation for RevolveCutBody {
     const INPUTS: &'static [ElementType] =
         &[ElementType::Face, ElementType::Axis, ElementType::Body];
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
-    const SHADOWS: &'static [ElementType] = &[];
-    const HOST_EFFECT: HostBodyEffect = HostBodyEffect::MutateHost;
+    const SHADOWS: &'static [ElementType] = &[ElementType::Body];
+    const HOST_EFFECT: HostBodyEffect = HostBodyEffect::ShadowHostAndProduce;
     const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
@@ -556,8 +620,8 @@ impl Operation for SweepAddToBody {
     const INPUTS: &'static [ElementType] =
         &[ElementType::Face, ElementType::Path, ElementType::Body];
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
-    const SHADOWS: &'static [ElementType] = &[];
-    const HOST_EFFECT: HostBodyEffect = HostBodyEffect::MutateHost;
+    const SHADOWS: &'static [ElementType] = &[ElementType::Body];
+    const HOST_EFFECT: HostBodyEffect = HostBodyEffect::ShadowHostAndProduce;
     const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
@@ -568,8 +632,8 @@ impl Operation for SweepCutBody {
     const INPUTS: &'static [ElementType] =
         &[ElementType::Face, ElementType::Path, ElementType::Body];
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
-    const SHADOWS: &'static [ElementType] = &[];
-    const HOST_EFFECT: HostBodyEffect = HostBodyEffect::MutateHost;
+    const SHADOWS: &'static [ElementType] = &[ElementType::Body];
+    const HOST_EFFECT: HostBodyEffect = HostBodyEffect::ShadowHostAndProduce;
     const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
@@ -941,10 +1005,72 @@ mod tests {
             ExtrudeMerge::HOST_EFFECT,
             HostBodyEffect::ShadowHostAndProduce
         );
-        assert_eq!(ExtrudeCut::HOST_EFFECT, HostBodyEffect::MutateHost);
+        assert_eq!(
+            ExtrudeCut::HOST_EFFECT,
+            HostBodyEffect::ShadowHostAndProduce
+        );
         assert!(ExtrudeMerge::INPUTS.contains(&ElementType::Body));
         assert!(ExtrudeMerge::SHADOWS.contains(&ElementType::Body));
-        assert!(ExtrudeCut::SHADOWS.is_empty());
+        assert!(ExtrudeCut::SHADOWS.contains(&ElementType::Body));
+    }
+
+    /// #1501: every Output-row Add is one host-effect, and every Cut is one. The
+    /// user-facing New / Add / Cut buttons are the same three choices on Extrude,
+    /// Revolve, Sweep, Loft and Mirror — they must not disagree about what they
+    /// do to the host.
+    #[test]
+    fn output_row_add_and_cut_share_one_host_effect() {
+        use crate::actions::ToolOutputMode;
+        let adds = [
+            (Tool::Extrude, ExtrudeMerge::HOST_EFFECT),
+            (Tool::Revolve, RevolveAddToBody::HOST_EFFECT),
+            (Tool::Sweep, SweepAddToBody::HOST_EFFECT),
+            (Tool::Loft, LoftAddToBody::HOST_EFFECT),
+            (Tool::Mirror, MirrorJoin::HOST_EFFECT),
+        ];
+        let cuts = [
+            (Tool::Extrude, ExtrudeCut::HOST_EFFECT),
+            (Tool::Revolve, RevolveCutBody::HOST_EFFECT),
+            (Tool::Sweep, SweepCutBody::HOST_EFFECT),
+            (Tool::Loft, LoftCutBody::HOST_EFFECT),
+            (Tool::Mirror, MirrorCut::HOST_EFFECT),
+        ];
+        let add = adds[0].1;
+        let cut = cuts[0].1;
+        for (tool, effect) in adds {
+            assert_eq!(
+                effect, add,
+                "{tool:?} Add host-effect {effect:?} != {add:?}"
+            );
+            assert_eq!(
+                output_host_effect(tool, ToolOutputMode::AddToBody),
+                add,
+                "{tool:?} Add helper disagrees with the Operation constant"
+            );
+        }
+        for (tool, effect) in cuts {
+            assert_eq!(
+                effect, cut,
+                "{tool:?} Cut host-effect {effect:?} != {cut:?}"
+            );
+            assert_eq!(
+                output_host_effect(tool, ToolOutputMode::Cut),
+                cut,
+                "{tool:?} Cut helper disagrees with the Operation constant"
+            );
+        }
+        assert_eq!(add, HostBodyEffect::ShadowHostAndProduce);
+        assert_eq!(cut, HostBodyEffect::ShadowHostAndProduce);
+        // The table's `output_modes` column is the same set we just walked.
+        let with_output: HashSet<Tool> = crate::tooltable::all_rows()
+            .iter()
+            .filter(|r| r.output_modes)
+            .map(|r| r.tool)
+            .collect();
+        let walked: HashSet<Tool> = [Tool::Extrude, Tool::Revolve, Tool::Sweep, Tool::Loft, Tool::Mirror]
+            .into_iter()
+            .collect();
+        assert_eq!(with_output, walked);
     }
 
     #[test]

@@ -906,13 +906,31 @@ fn occt_body_shape_uncached(
             crate::primitives::kernel_shape(doc, doc.primitives.get(pi)?)?
         }
         crate::model::BodySource::Revolve(ri) => {
-            occt_revolution_shape(doc, doc.revolutions.get(ri)?)?
+            let rev = doc.revolutions.get(ri)?;
+            occt_attach_tool_to_hosts(
+                doc,
+                occt_revolution_shape(doc, rev)?,
+                revolve_mode_hosts(&rev.mode),
+                matches!(rev.mode, crate::model::RevolveMode::Cut(_)),
+            )?
         }
         crate::model::BodySource::Sweep(fi) => {
-            occt_sweep_shape(doc, doc.sweeps.get(fi)?)?
+            let fp = doc.sweeps.get(fi)?;
+            occt_attach_tool_to_hosts(
+                doc,
+                occt_sweep_shape(doc, fp)?,
+                sweep_mode_hosts(&fp.mode),
+                matches!(fp.mode, crate::model::SweepMode::Cut(_)),
+            )?
         }
         crate::model::BodySource::Loft(li) => {
-            occt_loft_shape(doc, doc.lofts.get(li)?)?
+            let loft = doc.lofts.get(li)?;
+            occt_attach_tool_to_hosts(
+                doc,
+                occt_loft_shape(doc, loft)?,
+                loft_mode_hosts(&loft.mode),
+                matches!(loft.mode, crate::model::LoftMode::Cut(_)),
+            )?
         }
         crate::model::BodySource::Boolean {
             op,
@@ -5015,22 +5033,83 @@ fn occt_face_revolve_solid(
 }
 
 /// The revolutions fusing into (`false`) or cutting (`true`) `body_index`.
+/// Add/Cut that produce their own Revolve-sourced body (#1501) apply the
+/// boolean there, not on the (now shadowed) host.
 pub fn revolutions_targeting(
     doc: &Document,
     body_index: crate::model::BodyKey,
 ) -> Vec<(crate::model::RevolutionKey, bool)> {
     doc.revolutions
         .iter()
-        .filter_map(|(ri, r)| match &r.mode {
-            crate::model::RevolveMode::AddTo(bodies) if bodies.contains(&body_index) => {
-                Some((ri, false))
+        .filter_map(|(ri, r)| {
+            if revolve_has_output_body(doc, ri) {
+                return None;
             }
-            crate::model::RevolveMode::Cut(bodies) if bodies.contains(&body_index) => {
-                Some((ri, true))
+            match &r.mode {
+                crate::model::RevolveMode::AddTo(bodies) if bodies.contains(&body_index) => {
+                    Some((ri, false))
+                }
+                crate::model::RevolveMode::Cut(bodies) if bodies.contains(&body_index) => {
+                    Some((ri, true))
+                }
+                _ => None,
             }
-            _ => None,
         })
         .collect()
+}
+
+fn revolve_has_output_body(doc: &Document, op: crate::model::RevolutionKey) -> bool {
+    doc.bodies
+        .values()
+        .any(|b| b.source == crate::model::BodySource::Revolve(op))
+}
+
+fn revolve_mode_hosts(mode: &crate::model::RevolveMode) -> &[crate::model::BodyKey] {
+    match mode {
+        crate::model::RevolveMode::NewBody => &[],
+        crate::model::RevolveMode::AddTo(b) | crate::model::RevolveMode::Cut(b) => b.as_slice(),
+    }
+}
+
+fn sweep_mode_hosts(mode: &crate::model::SweepMode) -> &[crate::model::BodyKey] {
+    match mode {
+        crate::model::SweepMode::NewBody => &[],
+        crate::model::SweepMode::AddTo(b) | crate::model::SweepMode::Cut(b) => b.as_slice(),
+    }
+}
+
+fn loft_mode_hosts(mode: &crate::model::LoftMode) -> &[crate::model::BodyKey] {
+    match mode {
+        crate::model::LoftMode::NewBody => &[],
+        crate::model::LoftMode::AddTo(b) | crate::model::LoftMode::Cut(b) => b.as_slice(),
+    }
+}
+
+/// Fuse or cut `tool` onto the listed hosts (#1501). No hosts → the standalone tool.
+fn occt_attach_tool_to_hosts(
+    doc: &Document,
+    tool: crate::kernel::Shape,
+    hosts: &[crate::model::BodyKey],
+    cut: bool,
+) -> Option<crate::kernel::Shape> {
+    if hosts.is_empty() {
+        return Some(tool);
+    }
+    let op = if cut {
+        crate::kernel::BoolOp::Cut
+    } else {
+        crate::kernel::BoolOp::Fuse
+    };
+    let mut acc: Option<crate::kernel::Shape> = None;
+    for &h in hosts {
+        let host = occt_body_shape(doc, h)?;
+        let piece = host.boolean(&tool, op)?;
+        acc = Some(match acc {
+            None => piece,
+            Some(prev) => prev.boolean(&piece, crate::kernel::BoolOp::Fuse)?,
+        });
+    }
+    acc
 }
 
 /// Ordered world-space polyline of a sweep's picked path lines (#sweep): each
@@ -5318,16 +5397,27 @@ pub fn sweeps_targeting(
 ) -> Vec<(crate::model::SweepKey, bool)> {
     doc.sweeps
         .iter()
-        .filter_map(|(fi, f)| match &f.mode {
-            crate::model::SweepMode::AddTo(bodies) if bodies.contains(&body_index) => {
-                Some((fi, false))
+        .filter_map(|(fi, f)| {
+            if sweep_has_output_body(doc, fi) {
+                return None;
             }
-            crate::model::SweepMode::Cut(bodies) if bodies.contains(&body_index) => {
-                Some((fi, true))
+            match &f.mode {
+                crate::model::SweepMode::AddTo(bodies) if bodies.contains(&body_index) => {
+                    Some((fi, false))
+                }
+                crate::model::SweepMode::Cut(bodies) if bodies.contains(&body_index) => {
+                    Some((fi, true))
+                }
+                _ => None,
             }
-            _ => None,
         })
         .collect()
+}
+
+fn sweep_has_output_body(doc: &Document, op: crate::model::SweepKey) -> bool {
+    doc.bodies
+        .values()
+        .any(|b| b.source == crate::model::BodySource::Sweep(op))
 }
 
 /// Ruled loft mesh through the given cross sections (in order): each section's boundary is
@@ -5439,16 +5529,27 @@ pub fn lofts_targeting(
 ) -> Vec<(crate::model::LoftKey, bool)> {
     doc.lofts
         .iter()
-        .filter_map(|(li, l)| match &l.mode {
-            crate::model::LoftMode::AddTo(bodies) if bodies.contains(&body_index) => {
-                Some((li, false))
+        .filter_map(|(li, l)| {
+            if loft_has_output_body(doc, li) {
+                return None;
             }
-            crate::model::LoftMode::Cut(bodies) if bodies.contains(&body_index) => {
-                Some((li, true))
+            match &l.mode {
+                crate::model::LoftMode::AddTo(bodies) if bodies.contains(&body_index) => {
+                    Some((li, false))
+                }
+                crate::model::LoftMode::Cut(bodies) if bodies.contains(&body_index) => {
+                    Some((li, true))
+                }
+                _ => None,
             }
-            _ => None,
         })
         .collect()
+}
+
+fn loft_has_output_body(doc: &Document, op: crate::model::LoftKey) -> bool {
+    doc.bodies
+        .values()
+        .any(|b| b.source == crate::model::BodySource::Loft(op))
 }
 
 /// Resample a closed loop to exactly `count` points, evenly spaced by arc length.
@@ -15842,12 +15943,26 @@ mod tests {
             state.apply(crate::actions::Action::CommitExtrusion),
             crate::actions::ActionResult::Ok
         ));
+        let result = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| !b.shadow)
+            .map(|(_, b)| b)
+            .expect("live cut result");
         assert_eq!(
-            state.doc.bodies[live].source.cut_extrusion_indices(),
+            result.source.cut_extrusion_indices(),
             [ei],
             "pending cut must attach to the combined body"
         );
-        let v1 = mesh_signed_volume(&body_solid_mesh(&state.doc, live).expect("cut mesh")).abs();
+        let result_bi = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| !b.shadow)
+            .map(|(k, _)| k)
+            .expect("live cut result");
+        let v1 = mesh_signed_volume(&body_solid_mesh(&state.doc, result_bi).expect("cut mesh")).abs();
         assert!(v1 < v0 - 1.0, "pending cut must remove material: {v1} vs {v0}");
     }
 
