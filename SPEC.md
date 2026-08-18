@@ -4958,14 +4958,13 @@ The model in one place:
       face square to the camera is always clearly lit — roughly as bright as `Solid` — instead
       of dropping to the ambient floor when the fixed light misses it. No materials/textures
       yet — every body renders with the same fixed gloss; per-body/per-face materials are
-      future work. Bodies also cast **contact shadows** along the scene light: onto the
-      ground plane (#1041) and onto other bodies and themselves (#1461). Self-shadows
-      skip tessellation-acne slivers, sit on the receiving face with a slope-scaled
-      depth bias so they do not speckle on grazing walls, and soften into a short sun
-      penumbra. The shade side of a hole or pocket is covered by a cavity overlay so
-      that whole wall sits in shade, not only the Lambert term. Ground-plane
-      shadows stay at z = 0 (no camera-space lift) and stay hidden when looking up from
-      below (#1464/#1476).
+      future work. Bodies also cast **shadows** along the scene light: a planar
+      contact shadow onto the ground (#1041) and a **directional shadow map** onto
+      other bodies and themselves (#1461/#1535). The map is a depth test from the
+      light — light-facing surfaces stay lit, occluded surfaces go to a dimmer
+      headlight fill, and convex exteriors are not painted with hole-cavity decals.
+      Ground-plane shadows stay at z = 0 (no camera-space lift) and stay hidden when
+      looking up from below (#1464/#1476).
 
   **Lighting runs per pixel, on smooth normals (#1037).** Solids carry a world-space normal
   and a lighting-model tag per vertex (`GpuVertex::normal`, whose `w` is a `ShadingModel`);

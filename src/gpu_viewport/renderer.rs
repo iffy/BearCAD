@@ -16,10 +16,16 @@ pub const VIEWPORT_MSAA_SAMPLES: u32 = 4;
 /// sketch fills can be masked to paint each pixel once (#3).
 pub const VIEWPORT_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusStencil8;
 
+/// Directional shadow map for realistic-mode sun occlusion (#1535).
+const SHADOW_MAP_SIZE: u32 = 2048;
+const SHADOW_MAP_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GpuUniforms {
     view_proj: [[f32; 4]; 4],
+    /// Directional light view-projection for the shadow map (#1535).
+    light_view_proj: [[f32; 4]; 4],
     /// Scene light direction (xyz, normalized); `w` is padding for std140 alignment.
     light_dir: [f32; 4],
     /// Camera eye in world space (xyz), for the view-dependent lighting terms in
@@ -73,9 +79,11 @@ pub struct ViewportGpuResources {
     /// Stencil-masked pipeline for coplanar sketch fills: each pixel is painted
     /// exactly once so translucent overlaps don't double-blend (#3).
     sketch_fill_pipeline: wgpu::RenderPipeline,
-    /// Contact shadows on the ground (#1041) and on body faces (#1461): the same
-    /// single-paint trick on its own stencil bit, depth-tested but never depth-writing.
+    /// Contact shadows on the ground (#1041): the same single-paint trick on its
+    /// own stencil bit, depth-tested but never depth-writing.
     ground_shadow_pipeline: wgpu::RenderPipeline,
+    /// Depth-only pass from the directional light (#1535).
+    shadow_pipeline: wgpu::RenderPipeline,
     scene_transparent_pipeline: wgpu::RenderPipeline,
     /// The ground grid (#1073): one footprint quad whose fragment shader draws the lattice
     /// in pixel-measured widths. Depth-tested so bodies occlude it, but never depth-writing
@@ -116,6 +124,8 @@ pub struct ViewportGpuResources {
     blit_bind_group_layout: wgpu::BindGroupLayout,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
+    /// Uniforms only — the light-depth pass cannot bind the shadow map it writes (#1535).
+    shadow_bind_group: wgpu::BindGroup,
     text_texture_bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     font_sampler: wgpu::Sampler,
@@ -126,6 +136,13 @@ pub struct ViewportGpuResources {
     msaa_color_view: Option<wgpu::TextureView>,
     depth_texture: Option<wgpu::Texture>,
     depth_view: Option<wgpu::TextureView>,
+    /// Directional shadow map (#1535): depth from the light, sampled in `fs_main`.
+    /// Texture/sampler are owned so the view and bind group stay valid.
+    #[allow(dead_code)]
+    shadow_texture: wgpu::Texture,
+    shadow_view: wgpu::TextureView,
+    #[allow(dead_code)]
+    shadow_sampler: wgpu::Sampler,
     /// Offscreen R/G mask of selected/hovered body silhouettes (#1110).
     mask_texture: Option<wgpu::Texture>,
     mask_view: Option<wgpu::TextureView>,
@@ -197,25 +214,50 @@ impl ViewportGpuResources {
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
+        let uniform_entry = wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: NonZeroU64::new(std::mem::size_of::<GpuUniforms>() as u64),
+            },
+            count: None,
+        };
+        let shadow_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("bearcad_viewport_shadow_uniform_layout"),
+                entries: &[uniform_entry],
+            });
         let uniform_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("bearcad_viewport_uniform_layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: NonZeroU64::new(std::mem::size_of::<GpuUniforms>() as u64),
+                entries: &[
+                    uniform_entry,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Depth,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                }],
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                        count: None,
+                    },
+                ],
             });
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("bearcad_viewport_uniform"),
             contents: bytemuck::bytes_of(&GpuUniforms {
                 view_proj: Mat4::IDENTITY.to_cols_array_2d(),
+                light_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
                 light_dir: [0.0, 0.0, 1.0, 0.0],
                 eye: [0.0, 0.0, 0.0, 0.0],
                 grid_steps: GpuUniforms::NO_GRID.0,
@@ -228,9 +270,54 @@ impl ViewportGpuResources {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
         });
 
+        let shadow_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("bearcad_viewport_shadow_map"),
+            size: wgpu::Extent3d {
+                width: SHADOW_MAP_SIZE,
+                height: SHADOW_MAP_SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: SHADOW_MAP_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let shadow_view = shadow_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("bearcad_viewport_shadow_sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            compare: Some(wgpu::CompareFunction::LessEqual),
+            ..Default::default()
+        });
+
         let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bearcad_viewport_uniform_bind_group"),
             layout: &uniform_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&shadow_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&shadow_sampler),
+                },
+            ],
+        });
+        let shadow_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bearcad_viewport_shadow_bind_group"),
+            layout: &shadow_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: uniform_buffer.as_entire_binding(),
@@ -241,6 +328,12 @@ impl ViewportGpuResources {
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("bearcad_viewport_scene_layout"),
                 bind_group_layouts: &[Some(&uniform_bind_group_layout)],
+                immediate_size: 0,
+            });
+        let shadow_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("bearcad_viewport_shadow_layout"),
+                bind_group_layouts: &[Some(&shadow_bind_group_layout)],
                 immediate_size: 0,
             });
 
@@ -438,6 +531,43 @@ impl ViewportGpuResources {
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: multisample_state(msaa_sample_count),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // Depth-only from the light (#1535). Slope-scaled bias on the caster
+        // plus a small comparison bias in `fs_main` keep self-shadows clean.
+        let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("bearcad_viewport_shadow_pipeline"),
+            layout: Some(&shadow_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_shadow"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<GpuVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &SCENE_VERTEX_ATTRS,
+                }],
+                compilation_options: Default::default(),
+            },
+            fragment: None,
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: SHADOW_MAP_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState {
+                    constant: 2,
+                    slope_scale: 2.0,
+                    clamp: 0.0,
+                },
+            }),
+            multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
             cache: None,
         });
@@ -1022,6 +1152,7 @@ impl ViewportGpuResources {
             gizmo_pipeline,
             sketch_fill_pipeline,
             ground_shadow_pipeline,
+            shadow_pipeline,
             scene_transparent_pipeline,
             grid_pipeline,
             solid_ground_pipeline,
@@ -1045,6 +1176,7 @@ impl ViewportGpuResources {
             blit_bind_group_layout,
             uniform_buffer,
             uniform_bind_group,
+            shadow_bind_group,
             text_texture_bind_group_layout,
             sampler,
             font_sampler,
@@ -1054,6 +1186,9 @@ impl ViewportGpuResources {
             msaa_color_view: None,
             depth_texture: None,
             depth_view: None,
+            shadow_texture,
+            shadow_view,
+            shadow_sampler,
             mask_texture: None,
             mask_view: None,
             blit_bind_group: None,
@@ -1301,6 +1436,7 @@ impl ViewportGpuResources {
         // Outline mask indices (#1110) ride at the end of the combined index buffer and are
         // drawn in a separate pass into the offscreen R/G mask — never the main colour target.
         let mask_index_count = scene.mask_indices.len();
+        let shadow_caster_index_count = scene.shadow_caster_indices.len();
         let scene_index_count = base_index_count
             + shadow_index_count
             + sketch_fill_index_count
@@ -1309,7 +1445,8 @@ impl ViewportGpuResources {
             + overlay_index_count
             + gizmo_index_count
             + wireframe_index_count;
-        let total_index_count = scene_index_count + mask_index_count;
+        let total_index_count =
+            scene_index_count + mask_index_count + shadow_caster_index_count;
         let index_bytes = (total_index_count * std::mem::size_of::<u32>()) as u64;
         let text_vertex_bytes =
             (scene.text_vertices.len() * std::mem::size_of::<GpuTextVertex>()) as u64;
@@ -1322,6 +1459,7 @@ impl ViewportGpuResources {
             0,
             bytemuck::bytes_of(&GpuUniforms {
                 view_proj: scene.view_proj.to_cols_array_2d(),
+                light_view_proj: scene.light_view_proj.to_cols_array_2d(),
                 light_dir: {
                     let l = super::scene::SCENE_LIGHT_DIR.normalize_or_zero();
                     [l.x, l.y, l.z, 0.0]
@@ -1364,6 +1502,7 @@ impl ViewportGpuResources {
             combined_indices.extend_from_slice(&scene.gizmo_indices);
             combined_indices.extend_from_slice(&scene.wireframe_indices);
             combined_indices.extend_from_slice(&scene.mask_indices);
+            combined_indices.extend_from_slice(&scene.shadow_caster_indices);
             queue.write_buffer(
                 &self.index_buffer,
                 0,
@@ -1568,6 +1707,34 @@ impl ViewportGpuResources {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("bearcad_viewport_scene_encoder"),
         });
+        // Light-space depth (#1535). Always clear so a scene with no casters
+        // samples as fully lit rather than last frame's occluders.
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("bearcad_viewport_shadow_pass"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.shadow_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            if shadow_caster_index_count > 0 && !scene.vertices.is_empty() {
+                let caster_start = (scene_index_count + mask_index_count) as u32;
+                let caster_end = caster_start + shadow_caster_index_count as u32;
+                pass.set_pipeline(&self.shadow_pipeline);
+                pass.set_bind_group(0, &self.shadow_bind_group, &[]);
+                pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(caster_start..caster_end, 0, 0..1);
+            }
+        }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("bearcad_viewport_scene_pass"),
