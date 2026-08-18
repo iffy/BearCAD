@@ -2938,15 +2938,24 @@ pub fn repeat_step_transform(origin: Vec3, dir: Vec3, around: bool, step: f32) -
 }
 
 /// The angles (degrees) of a rotational repeat's copies (#839): the same count/gap/span maths
-/// the linear one uses, with the items treated as points on the circle.
+/// the linear one uses, with the items treated as points on the circle. Count-fit-to-end
+/// (#1473) gives each item a slot of `sweep / n` so the last copy ends at the angle instead
+/// of sitting on the first (360°/5 → 72° steps).
 fn repeat_angles(doc: &Document, op: &crate::model::RepeatOperation) -> Option<Vec<f32>> {
+    use crate::model::RepeatMode;
     let angle = |expr: &str| -> Option<f32> {
         (!expr.trim().is_empty())
             .then(|| crate::value::eval_angle_rad_in_doc(expr, doc).map(f32::to_degrees))
             .flatten()
     };
     let count = repeat_count(doc, op);
-    spacing_offsets(op.mode, 0.0, count, angle(&op.spacing), angle(&op.length))
+    let spacing = angle(&op.spacing);
+    let length = angle(&op.length);
+    let extent = match (op.mode, count, length) {
+        (RepeatMode::CountFitEnds, Some(n), Some(sweep)) if n >= 1 => sweep / n as f32,
+        _ => 0.0,
+    };
+    spacing_offsets(op.mode, extent, count, spacing, length)
 }
 
 /// The op's instance count expression, evaluated and clamped.
@@ -11730,6 +11739,73 @@ mod tests {
         let m = repeat_instance_transform(&doc, &op(false, "10"), 1).expect("transform");
         let p = m.transform_point3(Vec3::new(10.0, 0.0, 0.0));
         assert!((p - Vec3::new(10.0, 0.0, 10.0)).length() < 1e-3, "got {p:?}");
+    }
+
+    /// #1473: the rotational Angle toggle is the Distance start/end measure. Count + 360°
+    /// with the last item *at* the angle stacks the last copy on the first; toggling to
+    /// "end" spaces n distinct items around the sweep (72° steps for 360°/5).
+    #[test]
+    fn rotational_angle_toggle_places_the_last_item_on_the_start_or_short_of_it() {
+        use crate::model::{RepeatMode, RepeatOperation, RevolveAxis};
+        let doc = Document::default();
+        let op = |mode: RepeatMode| RepeatOperation {
+            targets: Vec::new(),
+            plane_targets: vec![pkey(0)],
+            extrusion_targets: Vec::new(),
+            sketch_targets: Vec::new(),
+            sketch_plane_outputs: Vec::new(),
+            sketch_outputs: Vec::new(),
+            axis: RevolveAxis::Z,
+            path_circle: None,
+            around_axis: true,
+            flip: false,
+            mode,
+            count: "5".to_string(),
+            spacing: String::new(),
+            length: "360".to_string(),
+            length_target: None,
+            outputs: Vec::new(),
+            plane_outputs: Vec::new(),
+            name: None,
+        };
+        let close = |got: &[f32], want: &[f32]| {
+            assert_eq!(got.len(), want.len(), "got {got:?} want {want:?}");
+            for (a, b) in got.iter().zip(want) {
+                assert!((a - b).abs() < 1e-3, "got {got:?} want {want:?}");
+            }
+        };
+
+        // Last *starts* at 360°: 90° steps, fifth item on top of the first.
+        close(
+            &repeat_offsets(&doc, &op(RepeatMode::CountFitCenters)).expect("start"),
+            &[90.0, 180.0, 270.0, 360.0],
+        );
+        // Last *ends* at 360°: 72° steps, five distinct items.
+        close(
+            &repeat_offsets(&doc, &op(RepeatMode::CountFitEnds)).expect("end"),
+            &[72.0, 144.0, 216.0, 288.0],
+        );
+
+        let at = |mode: RepeatMode, instance: usize| {
+            repeat_instance_transform(&doc, &op(mode), instance)
+                .expect("transform")
+                .transform_point3(Vec3::new(10.0, 0.0, 0.0))
+        };
+        let last_start = at(RepeatMode::CountFitCenters, 4);
+        assert!(
+            (last_start - Vec3::new(10.0, 0.0, 0.0)).length() < 1e-3,
+            "last at 360° sits on the first, got {last_start:?}"
+        );
+        let last_end = at(RepeatMode::CountFitEnds, 4);
+        let want_end = Vec3::new(
+            10.0 * 288f32.to_radians().cos(),
+            10.0 * 288f32.to_radians().sin(),
+            0.0,
+        );
+        assert!(
+            (last_end - want_end).length() < 1e-3,
+            "last at 288° is a fifth distinct copy, got {last_end:?}"
+        );
     }
 
     /// #837: an extrude's faces split into the solids they make — profiles that touch (nested

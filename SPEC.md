@@ -1377,10 +1377,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     (degrees, `extrude::repeat_angles`) and the copies are rotated about the axis rather than
     slid along it (`extrude::repeat_instance_transform` / `repeat_step_transform`, shared by
     body meshes, kernel shapes, plane and sketch instances, and the ghost preview). In the
-    pane the **Distance** row becomes **Angle** (default 360°, no start/end measure toggle),
-    the **Distance to** picker and the distance drag handle stand down, and the section title
+    pane the **Distance** row becomes **Angle** (default 360°) and keeps the start/end
+    measure toggle: last copy *at* the angle (stacked on the first for a full turn) or
+    ending there so n items divide the sweep (360°/5 → 72° steps, #1473). The
+    **Distance to** picker and the distance drag handle stand down, and the section title
     reads *Rotational repeat*. Scriptable as `bearcad.repeat_bodies{ …, around = true,
-    spacing = "60deg" }`.
+    spacing = "60deg" }` / `mode = "count_fit_ends"` for equal spacing around the sweep.
   - **Flip (#989):** a **Flip** checkbox sits under the **Path** picker — with it, not with the
     spacing, because which way to run is a property of the path and is only answerable once one
     is picked. A path has **two** directions and picking a line, edge or axis says nothing about

@@ -15277,7 +15277,9 @@ impl App {
                             model::RepeatVar::Count => (offsets.len() + 1).to_string(),
                             model::RepeatVar::Gap => deg(offsets.first().copied().unwrap_or(0.0)),
                             model::RepeatVar::Distance => {
-                                deg(offsets.last().copied().unwrap_or(0.0))
+                                let last = offsets.last().copied().unwrap_or(0.0);
+                                let step = offsets.first().copied().unwrap_or(0.0);
+                                deg(if c.distance_is_end { last + step } else { last })
                             }
                         });
                     }

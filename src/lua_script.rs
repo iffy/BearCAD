@@ -8222,6 +8222,38 @@ mod tests {
         assert!(cmax.x.abs() < 4.0, "and no longer along X, got {}", cmax.x);
     }
 
+    /// #1473: `count_fit_ends` on a full-turn rotational repeat spaces n distinct items
+    /// (last short of 360°); `count_fit_centers` puts the last copy on top of the first.
+    #[test]
+    fn lua_rotational_angle_toggle_spaces_distinct_items_or_stacks_the_last() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.rect{ x = 20, y = -3, width = 8, height = 6 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 4 }
+            bearcad.exit_sketch()
+            bearcad.repeat_bodies{ bodies = {0}, axis = "z", around = true,
+                                   mode = "count_fit_ends", count = 5, length = 360 }
+            local src = bearcad.body_stats(0).bbox
+            local last = bearcad.body_stats(4).bbox
+            local function cx(b) return (b.min[1] + b.max[1]) / 2 end
+            local function cy(b) return (b.min[2] + b.max[2]) / 2 end
+            assert(math.abs(cx(src) - cx(last)) > 8,
+                "end-mode last copy must not sit on the first, src x=" .. cx(src) .. " last x=" .. cx(last))
+            assert(cy(last) < -10,
+                "end-mode last copy is at 288°, south of the origin, y=" .. cy(last))
+
+            bearcad.edit_repeat{ index = 0, bodies = {0}, axis = "z", around = true,
+                                 mode = "count_fit_centers", count = 5, length = 360 }
+            last = bearcad.body_stats(4).bbox
+            assert(math.abs(cx(src) - cx(last)) < 1,
+                "start-mode last copy sits on the first, src x=" .. cx(src) .. " last x=" .. cx(last))
+            assert(math.abs(cy(src) - cy(last)) < 1,
+                "start-mode last copy sits on the first, src y=" .. cy(src) .. " last y=" .. cy(last))
+        "#,
+        );
+    }
+
     /// #834: materials from scripts — created with a colour, handed to bodies, reassigned.
     #[test]
     fn lua_materials_are_scriptable() {
