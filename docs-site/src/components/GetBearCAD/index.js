@@ -1,6 +1,6 @@
 import Link from '@docusaurus/Link';
 import {DOWNLOADS, PAY_URL} from '@site/src/site';
-import {DollarIcon, ICONS} from './icons';
+import {ICONS} from './icons';
 import styles from './styles.module.css';
 
 export default function GetBearCAD() {
@@ -14,8 +14,7 @@ export default function GetBearCAD() {
           </p>
         </div>
         <Link className={styles.payButton} href={PAY_URL}>
-          <DollarIcon />
-          Pay Whatever
+          $ Pay Whatever
         </Link>
       </div>
 
