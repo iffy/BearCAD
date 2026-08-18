@@ -7781,6 +7781,91 @@ mod tests {
         );
     }
 
+    /// #1540: a sketch mirror nests under its sketch, and hiding sketch components
+    /// drops the op and its reflected children from the node graph.
+    #[test]
+    fn lua_hiding_sketch_components_hides_sketch_mirror() {
+        use crate::hierarchy::{
+            build_hierarchy, filter_hierarchy, ElementFilter, HierarchyEntry, HierarchyNode,
+        };
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 20, height = 10 }
+            bearcad.line{ x = 0, y = 0, x1 = 0, y1 = 20 }
+            bearcad.mirror_sketch{ sketch = 0, line = 4, lines = {0, 1, 2, 3} }
+            "#,
+        );
+        let (oi, op) = state
+            .doc
+            .sketch_mirror_ops
+            .iter()
+            .next()
+            .expect("one sketch mirror");
+        let sketch = op.sketch;
+        let outputs = op.line_outputs.clone();
+        assert!(!outputs.is_empty(), "mirror should emit reflected lines");
+
+        let tree = build_hierarchy(&state.doc, None);
+        fn find<'a>(entries: &'a [HierarchyEntry], node: HierarchyNode) -> Option<&'a HierarchyEntry> {
+            for e in entries {
+                if e.node == node {
+                    return Some(e);
+                }
+                if let Some(found) = find(&e.children, node) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        assert!(
+            !tree[0]
+                .children
+                .iter()
+                .any(|e| e.node == HierarchyNode::SketchMirrorOp(oi)),
+            "mirror must not sit at the document root"
+        );
+        let sketch_entry = find(&tree, HierarchyNode::Sketch(sketch)).expect("sketch in tree");
+        let mirror_entry = sketch_entry
+            .children
+            .iter()
+            .find(|c| c.node == HierarchyNode::SketchMirrorOp(oi))
+            .expect("mirror nests under its sketch");
+        for &li in &outputs {
+            assert!(
+                mirror_entry
+                    .children
+                    .iter()
+                    .any(|c| c.node == HierarchyNode::Line(li)),
+                "output line {} should nest under the mirror",
+                li.index()
+            );
+        }
+
+        let hidden = filter_hierarchy(
+            &tree,
+            &ElementFilter {
+                sketch_geometry: false,
+                ..ElementFilter::default()
+            },
+        );
+        assert!(
+            find(&hidden, HierarchyNode::SketchMirrorOp(oi)).is_none(),
+            "Sketch components off must hide the sketch mirror"
+        );
+        for &li in &outputs {
+            assert!(
+                find(&hidden, HierarchyNode::Line(li)).is_none(),
+                "Sketch components off must hide mirror child line {}",
+                li.index()
+            );
+        }
+        assert!(
+            find(&hidden, HierarchyNode::Sketch(sketch)).is_some(),
+            "the sketch stays when only sketch components are hidden"
+        );
+    }
+
     /// #494: offsetting a cubic-bezier sketch line must produce a curved copy
     /// (bezier handles present), not a straight chamfer-style segment.
     #[test]
