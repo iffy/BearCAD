@@ -5570,14 +5570,87 @@ pub fn body_face_triangles(
     centroid: [i32; 3],
     normal: [i32; 3],
 ) -> Option<Vec<[Vec3; 3]>> {
-    let solid = body_solid_mesh_for_face_key(doc, body)?;
-    face_group_matching(&solid, centroid, normal)
+    let groups = body_face_key_groups(doc, body)?;
+    face_group_matching_in(&groups, centroid, normal)
+}
+
+thread_local! {
+    /// Pre-add/cut solid used to resolve [`FaceId::BodyMeshFace`] keys (#1466/#1467).
+    /// Hover, orbit, and sketch-frame lookups hit this every frame; rebuilding the
+    /// kernel solid and tessellating it each time is what made the reported model lag.
+    static FACE_KEY_MESH_CACHE: std::cell::RefCell<(
+        u64,
+        HashMap<crate::model::BodyKey, Option<SolidMesh>>,
+    )> = std::cell::RefCell::new((0, HashMap::new()));
+    static FACE_KEY_GROUP_CACHE: std::cell::RefCell<(
+        u64,
+        HashMap<crate::model::BodyKey, std::rc::Rc<Vec<Vec<[Vec3; 3]>>>>,
+    )> = std::cell::RefCell::new((0, HashMap::new()));
+}
+
+/// Coplanar groups of the face-key (pre-add) mesh, memoized with that mesh.
+fn body_face_key_groups(
+    doc: &Document,
+    body: crate::model::BodyKey,
+) -> Option<std::rc::Rc<Vec<Vec<[Vec3; 3]>>>> {
+    let fingerprint = document_pose_fingerprint(doc);
+    let cached = FACE_KEY_GROUP_CACHE.with(|cache| match cache.try_borrow_mut() {
+        Ok(mut cache) => {
+            if cache.0 != fingerprint {
+                cache.0 = fingerprint;
+                cache.1.clear();
+            }
+            cache.1.get(&body).cloned()
+        }
+        Err(_) => None,
+    });
+    if let Some(hit) = cached {
+        return Some(hit);
+    }
+    let groups = std::rc::Rc::new(
+        body_solid_mesh_for_face_key(doc, body)
+            .map(|m| crate::gpu_viewport::solid_mesh_coplanar_faces(&m))
+            .unwrap_or_default(),
+    );
+    FACE_KEY_GROUP_CACHE.with(|cache| {
+        if let Ok(mut cache) = cache.try_borrow_mut() {
+            cache.1.insert(body, groups.clone());
+        }
+    });
+    Some(groups)
 }
 
 /// Mesh used to resolve a [`FaceId::BodyMeshFace`] key. Post-op add/cut extrusions
 /// (#1168/#1338) change the tessellation (and would recurse if a cut's own sketch sits
 /// on this body), so face keys are matched against the base solid they were captured on.
 fn body_solid_mesh_for_face_key(
+    doc: &Document,
+    body: crate::model::BodyKey,
+) -> Option<SolidMesh> {
+    let fingerprint = document_pose_fingerprint(doc);
+    let cached = FACE_KEY_MESH_CACHE.with(|cache| match cache.try_borrow_mut() {
+        Ok(mut cache) => {
+            if cache.0 != fingerprint {
+                cache.0 = fingerprint;
+                cache.1.clear();
+            }
+            cache.1.get(&body).cloned()
+        }
+        Err(_) => None,
+    });
+    if let Some(hit) = cached {
+        return hit;
+    }
+    let mesh = body_solid_mesh_for_face_key_uncached(doc, body);
+    FACE_KEY_MESH_CACHE.with(|cache| {
+        if let Ok(mut cache) = cache.try_borrow_mut() {
+            cache.1.insert(body, mesh.clone());
+        }
+    });
+    mesh
+}
+
+fn body_solid_mesh_for_face_key_uncached(
     doc: &Document,
     body: crate::model::BodyKey,
 ) -> Option<SolidMesh> {
@@ -5633,8 +5706,17 @@ fn body_solid_mesh_for_face_key(
         } if !add.is_empty() || !cut.is_empty() => occt_edge_treated_output_shape(doc, *op, *target),
         _ => return body_solid_mesh(doc, body),
     };
+    #[cfg(test)]
+    FACE_KEY_MESH_BUILDS.with(|c| c.set(c.get().saturating_add(1)));
     let tris = base?.tessellate(OCCT_DEFLECTION as f64);
     (!tris.is_empty()).then_some(SolidMesh { triangles: tris })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times [`body_solid_mesh_for_face_key`] rebuilt a kernel mesh.
+    /// Hover/orbit must not increment this after the first lookup (#1466/#1467).
+    pub(crate) static FACE_KEY_MESH_BUILDS: std::cell::Cell<u32> = std::cell::Cell::new(0);
 }
 
 /// The coplanar-triangle group of `solid` whose quantized centroid+normal match the key —
@@ -5645,17 +5727,24 @@ pub fn face_group_matching(
     centroid: [i32; 3],
     normal: [i32; 3],
 ) -> Option<Vec<[Vec3; 3]>> {
+    let groups = crate::gpu_viewport::solid_mesh_coplanar_faces(solid);
+    face_group_matching_in(&groups, centroid, normal)
+}
+
+fn face_group_matching_in(
+    groups: &[Vec<[Vec3; 3]>],
+    centroid: [i32; 3],
+    normal: [i32; 3],
+) -> Option<Vec<[Vec3; 3]>> {
     let q = crate::hierarchy::quantize_body_point;
-    crate::gpu_viewport::solid_mesh_coplanar_faces(solid)
-        .into_iter()
-        .find(|tris| {
-            let count = (tris.len() * 3).max(1) as f32;
-            let c = tris.iter().flat_map(|t| t.iter()).copied().sum::<Vec3>() / count;
-            let n = (tris[0][1] - tris[0][0])
-                .cross(tris[0][2] - tris[0][0])
-                .normalize_or_zero();
-            q(c) == centroid && q(n) == normal
-        })
+    groups.iter().find(|tris| {
+        let count = (tris.len() * 3).max(1) as f32;
+        let c = tris.iter().flat_map(|t| t.iter()).copied().sum::<Vec3>() / count;
+        let n = (tris[0][1] - tris[0][0])
+            .cross(tris[0][2] - tris[0][0])
+            .normalize_or_zero();
+        q(c) == centroid && q(n) == normal
+    }).cloned()
 }
 
 /// A face group's centre — the average of its triangle vertices, the same formula its
@@ -11511,6 +11600,55 @@ mod tests {
                 .fold(f32::MIN, f32::max)
         };
         assert!(height(&after) > height(&before), "the rebuilt groups are the taller box");
+    }
+
+    /// #1466/#1467: a sketch on a moved body that later gained fused extrudes must
+    /// not remesh/tessellate that body on every hover. Face-key lookups are memoized.
+    #[test]
+    fn issue_1466_body_mesh_face_lookups_are_cached() {
+        let bytes = include_bytes!("../tests/fixtures/issue_1466.json");
+        let mut doc = crate::storage::from_json_bytes(bytes).expect("load");
+        doc.bump_mesh_rev();
+        let face = doc
+            .sketches
+            .values()
+            .find_map(|s| match &s.face {
+                crate::model::FaceId::BodyMeshFace {
+                    body,
+                    centroid,
+                    normal,
+                } => {
+                    // The expensive path is a moved/shelled/boolean body that later
+                    // grew fused extrudes — those rebuild the pre-add solid every lookup.
+                    let src = &doc.bodies.get(*body)?.source;
+                    let has_post_op = !src.extrusion_indices().is_empty()
+                        || !src.cut_extrusion_indices().is_empty();
+                    has_post_op.then_some((*body, *centroid, *normal))
+                }
+                _ => None,
+            })
+            .expect("a report sketch sits on a moved body that later grew extrudes");
+        let (body, centroid, normal) = face;
+        // First call pays for the kernel. After that, repeats must be cache hits.
+        let first = body_face_triangles(&doc, body, centroid, normal).expect("face tris");
+        assert!(!first.is_empty());
+        FACE_KEY_MESH_BUILDS.with(|c| c.set(0));
+        for _ in 0..20 {
+            let again = body_face_triangles(&doc, body, centroid, normal).expect("cached");
+            assert_eq!(again.len(), first.len());
+        }
+        let rebuilds = FACE_KEY_MESH_BUILDS.with(|c| c.get());
+        assert_eq!(
+            rebuilds, 0,
+            "repeated body mesh-face lookups must reuse the cached pre-add solid, rebuilt {rebuilds} times"
+        );
+        doc.bump_mesh_rev();
+        FACE_KEY_MESH_BUILDS.with(|c| c.set(0));
+        let _ = body_face_triangles(&doc, body, centroid, normal);
+        assert!(
+            FACE_KEY_MESH_BUILDS.with(|c| c.get()) >= 1,
+            "a mesh_rev bump must rebuild the face-key solid"
+        );
     }
 
     /// #839: a rotational repeat turns its copies about the axis — six 60° steps put the

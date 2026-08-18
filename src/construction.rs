@@ -5913,4 +5913,46 @@ mod tests {
             t.kind
         );
     }
+
+    /// #1466/#1467: sketches on a moved-with-adds body must not remesh the kernel on
+    /// every hover/orbit frame. After a warmup, pick stays cheap.
+    #[test]
+    fn issue_1466_hover_pick_does_not_remesh_every_frame() {
+        for fixture in [
+            include_bytes!("../tests/fixtures/issue_1466.json").as_slice(),
+            include_bytes!("../tests/fixtures/issue_1467.json").as_slice(),
+        ] {
+            let mut doc = crate::storage::from_json_bytes(fixture).expect("load");
+            doc.bump_mesh_rev();
+            let visibility = crate::hierarchy::ElementVisibility::default();
+            let eye = Vec3::new(200.0, 200.0, 200.0);
+            let occ = PickOcclusion::new(&doc, &visibility, eye);
+            let project = |w: Vec3| Some(Pos2::new(w.x + w.z * 0.3, w.y + w.z * 0.2));
+            let live = doc
+                .bodies
+                .iter()
+                .find(|(_, b)| !b.shadow)
+                .map(|(bi, _)| bi)
+                .expect("live body");
+            let probe = {
+                let mesh = crate::extrude::body_solid_mesh(&doc, live).expect("mesh");
+                let tri = mesh.triangles.first().expect("tri");
+                let c = (tri[0] + tri[1] + tri[2]) / 3.0;
+                project(c).expect("project")
+            };
+            let _ = crate::face::pick_sketch_face(probe, &project, &doc, eye);
+            let _ = resolve_pick_target(probe, &project, Some(Vec3::ZERO), &doc, Some(&occ));
+
+            let started = crate::time::Instant::now();
+            for _ in 0..40 {
+                let _ = crate::face::pick_sketch_face(probe, &project, &doc, eye);
+                let _ = resolve_pick_target(probe, &project, Some(Vec3::ZERO), &doc, Some(&occ));
+            }
+            let each = started.elapsed() / 40;
+            assert!(
+                each < std::time::Duration::from_millis(2),
+                "hover/orbit pick must not rebuild OCCT meshes every frame, took {each:?} per call"
+            );
+        }
+    }
 }

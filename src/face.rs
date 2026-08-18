@@ -1130,6 +1130,36 @@ pub fn analytic_face_from_mesh(
     centroid: [i32; 3],
     normal: [i32; 3],
 ) -> Option<FaceId> {
+    let fingerprint = crate::extrude::document_pose_fingerprint(doc);
+    let key = (body, centroid, normal);
+    let cached = ANALYTIC_FACE_CACHE.with(|cache| match cache.try_borrow_mut() {
+        Ok(mut cache) => {
+            if cache.0 != fingerprint {
+                cache.0 = fingerprint;
+                cache.1.clear();
+            }
+            cache.1.get(&key).cloned()
+        }
+        Err(_) => None,
+    });
+    if let Some(hit) = cached {
+        return hit;
+    }
+    let found = analytic_face_from_mesh_uncached(doc, body, centroid, normal);
+    ANALYTIC_FACE_CACHE.with(|cache| {
+        if let Ok(mut cache) = cache.try_borrow_mut() {
+            cache.1.insert(key, found.clone());
+        }
+    });
+    found
+}
+
+fn analytic_face_from_mesh_uncached(
+    doc: &Document,
+    body: crate::model::BodyKey,
+    centroid: [i32; 3],
+    normal: [i32; 3],
+) -> Option<FaceId> {
     let q = crate::hierarchy::quantize_body_point;
     for face in analytic_faces_of_body(doc, body) {
         let Some(frame) = sketch_frame(doc, face.clone()) else {
@@ -1144,6 +1174,18 @@ pub fn analytic_face_from_mesh(
         }
     }
     None
+}
+
+thread_local! {
+    /// Hover maps every nearby mesh group back to an analytic face (#1466).
+    /// The match walks sketch frames; memoize it on the pose fingerprint.
+    static ANALYTIC_FACE_CACHE: std::cell::RefCell<(
+        u64,
+        std::collections::HashMap<
+            (crate::model::BodyKey, [i32; 3], [i32; 3]),
+            Option<FaceId>,
+        >,
+    )> = std::cell::RefCell::new((0, std::collections::HashMap::new()));
 }
 
 /// Sketchable [`FaceId`] for a coplanar mesh-face triangle group under the cursor (#1173):
