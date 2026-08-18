@@ -354,28 +354,6 @@
   line-height: 1.45;
 }
 
-.part {
-  margin: 2.25rem 0 0;
-}
-
-.partImg {
-  display: block;
-  width: 100%;
-  max-width: 100%;
-  height: auto;
-  border-radius: 14px;
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--ink) 10%, transparent),
-    0 18px 44px rgba(0, 0, 0, 0.22);
-}
-
-.partCap {
-  margin-top: 0.85rem;
-  text-align: center;
-  color: var(--ifm-color-emphasis-600);
-  font-size: 0.95rem;
-}
-
 .more {
   padding: 0 0 4.5rem;
   text-align: center;
@@ -484,10 +462,5 @@
 
   .stat {
     padding: 1rem 0.75rem;
-  }
-
-  .partCap {
-    font-size: 0.9rem;
-    text-wrap: pretty;
   }
 }

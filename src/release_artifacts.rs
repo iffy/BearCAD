@@ -501,6 +501,17 @@ mod tests {
         );
     }
 
+    /// The finished bracket shot belongs on the Quickstart page, not the
+    /// marketing homepage.
+    #[test]
+    fn homepage_does_not_show_quickstart_bracket() {
+        let home = include_str!("../docs-site/src/pages/index.js");
+        assert!(
+            !home.contains("/img/screenshots/quickstart.png"),
+            "landing page should not include the quickstart bracket screenshot"
+        );
+    }
+
     /// #1213 / #1439 / #1440 / #1443: Chromebook install sits next to the other
     /// platform downloads. After the name-your-price landing, the hero
     /// Download CTA jumps to the GetBearCAD block (`#get`); the dedicated
