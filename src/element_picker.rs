@@ -175,6 +175,7 @@ impl ElementKind {
             | SceneElement::Shape(_)
             | SceneElement::SweepOp(_)
             | SceneElement::Loft(_) => ElementKind::Operation,
+            SceneElement::Drawing(_) => ElementKind::Projection,
         }
     }
 

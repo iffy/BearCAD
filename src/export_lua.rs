@@ -856,9 +856,16 @@ impl<'a> EmitCtx<'a> {
                 }
             }
             HierarchyNode::SketchVertexTreatmentOp(key) => {
-                // Emit as individual chamfer_vertex/fillet_vertex per corner.
+                // One call per op (#1519): `point` for a single corner, `points` for several.
+                // Mixed kind/amount corners (a connected chamfer+fillet region) still emit
+                // one call per homogeneous group so replay can rebuild the same op.
                 if let Some(op) = self.doc.sketch_vertex_treatment_ops.get(key) {
                     self.enter_sketch(op.sketch, out);
+                    let mut groups: Vec<(
+                        crate::model::VertexTreatmentKind,
+                        String,
+                        Vec<ConstraintPoint>,
+                    )> = Vec::new();
                     for corner in &op.corners {
                         let Some(&la) = op.line_targets.get(corner.a) else {
                             continue;
@@ -867,11 +874,20 @@ impl<'a> EmitCtx<'a> {
                             line: la,
                             end: corner.a_end,
                         };
+                        if let Some(group) = groups.iter_mut().find(|(k, a, _)| {
+                            *k == corner.kind && a == &corner.amount
+                        }) {
+                            group.2.push(point);
+                        } else {
+                            groups.push((corner.kind, corner.amount.clone(), vec![point]));
+                        }
+                    }
+                    for (kind, amount, points) in groups {
                         out.push_str(
                             &Instruction::VertexTreatment {
-                                point,
-                                kind: corner.kind,
-                                amount: corner.amount.clone(),
+                                points,
+                                kind,
+                                amount,
                             }
                             .as_lua_in(Some(self.doc)),
                         );
@@ -2039,8 +2055,6 @@ fn emit_components(doc: &Document, out: &mut String) {
             continue;
         };
         let Some((kind, index)) = component_member_ref(doc, member) else {
-            // Drawings are component members the Elements pane can file but
-            // `bearcad.move_to_component` has no `kind` for yet (#1525).
             out.push_str(&format!(
                 "-- skipped: {member:?} is in a component, but move_to_component can't name it\n"
             ));
@@ -2068,8 +2082,7 @@ fn component_member_ref(
         M::Extrusion(k) => ord!(extrusions, k, "extrusion"),
         M::Body(k) => ord!(bodies, k, "body"),
         M::Loft(k) => ord!(lofts, k, "loft"),
-        // `move_to_component` has no `kind` for a drawing yet (#1525).
-        M::Drawing(_) => None,
+        M::Drawing(k) => ord!(drawings, k, "drawing"),
         M::BooleanOp(k) => ord!(boolean_ops, k, "boolean_op"),
         M::MoveOp(k) => ord!(move_ops, k, "move_op"),
         M::MirrorOp(k) => ord!(mirror_ops, k, "mirror_op"),
@@ -2249,6 +2262,15 @@ mod tests {
                bearcad.fillet_vertex{ point = { kind = "line", index = 0, ["end"] = "end" }, radius = 3 }"#,
         ),
         (
+            "sketch fillet two corners",
+            r#"bearcad.new()
+               bearcad.rect{ width = 40, height = 30 }
+               bearcad.fillet_vertex{ points = {
+                 { kind = "line", index = 0, ["end"] = "end" },
+                 { kind = "line", index = 1, ["end"] = "end" },
+               }, radius = 3 }"#,
+        ),
+        (
             "sketch offset",
             r#"bearcad.new()
                bearcad.rect{ width = 40, height = 30 }
@@ -2368,6 +2390,15 @@ mod tests {
                bearcad.cuboid{ width = 20, depth = 20, height = 20 }
                bearcad.drawing{}
                bearcad.drawing_view{ drawing = 0, body = 0, orientation = "front" }"#,
+        ),
+        (
+            "drawing in a component",
+            r#"bearcad.new()
+               bearcad.cuboid{ width = 20, depth = 20, height = 20 }
+               bearcad.drawing{}
+               bearcad.drawing_view{ drawing = 0, body = 0, orientation = "front" }
+               bearcad.component{ name = "Sub" }
+               bearcad.move_to_component{ kind = "drawing", index = 0, component = 0 }"#,
         ),
         (
             "sketch on a body face",
@@ -2561,6 +2592,56 @@ mod tests {
         assert!(
             script.contains("x1 = 50"),
             "export must emit the pre-solve seed, got:\n{script}"
+        );
+    }
+
+    /// #1519: a multi-corner sketch fillet exports as one `fillet_vertex{ points = ... }`.
+    #[test]
+    fn multi_corner_fillet_exports_one_call() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 40, height = 30 }
+            bearcad.fillet_vertex{ points = {
+                { kind = "line", index = 0, ["end"] = "end" },
+                { kind = "line", index = 1, ["end"] = "end" },
+            }, radius = 3 }
+            "#,
+        );
+        assert_eq!(state.doc.sketch_vertex_treatment_ops.len(), 1);
+        let script = document_to_lua(&state.doc);
+        let calls = script.matches("fillet_vertex").count();
+        assert_eq!(
+            calls, 1,
+            "exporter must emit one call per op, got {calls} in:\n{script}"
+        );
+        assert!(
+            script.contains("points ="),
+            "multi-corner op must emit `points`, got:\n{script}"
+        );
+    }
+
+    /// #1525: a drawing filed in a component exports as `move_to_component{ kind = "drawing" }`.
+    #[test]
+    fn drawing_in_component_exports_membership() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 20, depth = 20, height = 20 }
+            bearcad.drawing{}
+            bearcad.component{ name = "Sub" }
+            bearcad.move_to_component{ kind = "drawing", index = 0, component = 0 }
+            "#,
+        );
+        assert_eq!(state.doc.component_members.len(), 1);
+        let script = document_to_lua(&state.doc);
+        assert!(
+            !script.contains("skipped:"),
+            "drawing membership must not be skipped, got:\n{script}"
+        );
+        assert!(
+            script.contains("kind = \"drawing\""),
+            "export must name the drawing, got:\n{script}"
         );
     }
 

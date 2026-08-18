@@ -6283,7 +6283,8 @@ pub fn selection_world_bounds(
             | SceneElement::SketchSliceOp(_)
             | SceneElement::SketchText(_)
             | SceneElement::Component(_)
-            | SceneElement::Image(_) => {}
+            | SceneElement::Image(_)
+            | SceneElement::Drawing(_) => {}
         }
     }
     bounds

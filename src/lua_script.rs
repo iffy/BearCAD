@@ -145,6 +145,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::Shape(_) => "shape",
         SceneElement::SweepOp(_) => "sweep",
         SceneElement::Loft(_) => "loft",
+        SceneElement::Drawing(_) => "drawing",
         SceneElement::Component(_) => "component",
         SceneElement::UnitInstance(_) => "unit_instance",
         SceneElement::Joint(_) => "joint",
@@ -174,6 +175,7 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         }
         SceneElement::SweepOp(key) => doc.sweeps.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::Loft(key) => doc.lofts.keys().position(|k| k == key).unwrap_or(0),
+        SceneElement::Drawing(key) => doc.drawings.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::Shape(key) => doc.primitives.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::Body(key) => doc.bodies.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::BooleanOp(key) => {
@@ -316,6 +318,7 @@ pub fn scene_element_from_kind(
         }
         "sweep" | "sweep_op" => Some(SceneElement::SweepOp(doc.sweeps.keys().nth(index)?)),
         "loft" => Some(SceneElement::Loft(doc.lofts.keys().nth(index)?)),
+        "drawing" => Some(SceneElement::Drawing(doc.drawings.keys().nth(index)?)),
         "joint" => Some(SceneElement::Joint(doc.joints.keys().nth(index)?)),
         "shape" | "primitive" => Some(SceneElement::Shape(doc.primitives.keys().nth(index)?)),
         // #1517: the remaining top-level kinds a component can hold, so
@@ -582,13 +585,32 @@ fn parse_element_table(lua: &Lua, table: Table) -> mlua::Result<SceneElement> {
         .ok_or_else(|| mlua::Error::external(format!("unknown element kind '{kind}'")))
 }
 
-/// A `{x, y, z}` / `{1,2,3}` triple used by `body_mesh_face`: already-quantized integers
-/// (export_lua, |component| > 2) or world millimetres / a unit vector (`body_faces`).
-fn parse_quantized_or_world(table: &Table, key: &str) -> mlua::Result<[i32; 3]> {
+/// Read a `{x, y, z}` / `{1,2,3}` triple as floats.
+fn parse_xyz(table: &Table, key: &str) -> mlua::Result<[f32; 3]> {
     let t: Table = table.get(key)?;
     let x: f32 = t.get(1).or_else(|_| t.get("x"))?;
     let y: f32 = t.get(2).or_else(|_| t.get("y"))?;
     let z: f32 = t.get(3).or_else(|_| t.get("z"))?;
+    Ok([x, y, z])
+}
+
+/// Already-quantized integers (what `export_lua` writes for `centroid`).
+fn parse_quantized_ints(table: &Table, key: &str) -> mlua::Result<[i32; 3]> {
+    let [x, y, z] = parse_xyz(table, key)?;
+    Ok([x.round() as i32, y.round() as i32, z.round() as i32])
+}
+
+/// World millimetres (what `body_faces` writes for `face`), quantized on the way in.
+fn parse_world_mm(table: &Table, key: &str) -> mlua::Result<[i32; 3]> {
+    let [x, y, z] = parse_xyz(table, key)?;
+    Ok(crate::hierarchy::quantize_body_point(glam::Vec3::new(x, y, z)))
+}
+
+/// A `{x, y, z}` / `{1,2,3}` triple used by `body_mesh_face` **normals**: already-quantized
+/// integers (export_lua, |component| > 2) or a unit vector (`body_faces`). Magnitude is a
+/// reliable signal for a normal; it is *not* used for `centroid`/`face` (#1523).
+fn parse_quantized_or_world(table: &Table, key: &str) -> mlua::Result<[i32; 3]> {
+    let [x, y, z] = parse_xyz(table, key)?;
     if x.abs() > 2.0 || y.abs() > 2.0 || z.abs() > 2.0 {
         Ok([x.round() as i32, y.round() as i32, z.round() as i32])
     } else {
@@ -728,13 +750,16 @@ fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
             let face = parse_primitive_face_field(&table)?;
             Ok(FaceId::PrimitiveFace { primitive, face })
         }
-        // A remaining flat on a treated/boolean/imported body (#1173/#1338).
-        // `centroid`/`normal` are either already-quantized integers (export_lua) or
-        // world millimetres / a unit vector (`body_faces`); |n| > 2 means quantized.
+        // A remaining flat on a treated/boolean/imported body (#1173/#1338/#1523).
+        // `centroid` is already-quantized integers (export_lua); `face` is world millimetres
+        // (`body_faces`); `normal` still uses the magnitude heuristic (unit vs ±100).
         "body_mesh_face" => {
             let body = body_key_from_ordinal(lua, table.get("body")?)?;
-            let centroid = parse_quantized_or_world(&table, "centroid")
-                .or_else(|_| parse_quantized_or_world(&table, "face"))?;
+            let centroid = if table.contains_key("centroid")? {
+                parse_quantized_ints(&table, "centroid")?
+            } else {
+                parse_world_mm(&table, "face")?
+            };
             let normal = parse_quantized_or_world(&table, "normal")?;
             Ok(FaceId::BodyMeshFace {
                 body,
@@ -1042,6 +1067,23 @@ fn parse_extrusion_edge_table(table: Table) -> mlua::Result<ExtrusionEdgeRef> {
             "unknown extrusion edge kind '{other}' (expected 'vertical' or 'cap')"
         ))),
     }
+}
+
+/// `point` shorthand or `points = { ... }` for `chamfer_vertex`/`fillet_vertex` (#1519).
+fn parse_vertex_treatment_points(lua: &Lua, opts: &Table) -> mlua::Result<Vec<ConstraintPoint>> {
+    if let Some(list) = opts.get::<Option<Vec<Table>>>("points")? {
+        if list.is_empty() {
+            return Err(mlua::Error::external("`points` must name at least one point"));
+        }
+        return list
+            .into_iter()
+            .map(|t| parse_constraint_point_table(lua, t))
+            .collect();
+    }
+    let point_table: Table = opts.get("point").map_err(|_| {
+        mlua::Error::external("chamfer_vertex/fillet_vertex requires `point` or `points`")
+    })?;
+    Ok(vec![parse_constraint_point_table(lua, point_table)?])
 }
 
 /// Parses the edge argument of `bearcad.chamfer_edge`/`fillet_edge`: either a single
@@ -7129,20 +7171,20 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // Chamfer/fillet a sketch vertex where exactly two plain lines meet (#37/#38). `point`
-    // resolves the same way as any other `ConstraintPoint` table arg, e.g.
-    // `{ kind = "line", index = 0, end = "start" }` (see `parse_constraint_point_table`).
+    // Chamfer/fillet sketch vertices where exactly two plain lines meet (#37/#38/#1519).
+    // `point` is the single-corner shorthand; `points = { ... }` treats every listed
+    // corner in one operation. Each entry resolves like any other `ConstraintPoint` table
+    // (see `parse_constraint_point_table`).
     api.set(
         "chamfer_vertex",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let point_table: Table = opts.get("point")?;
-            let point = parse_constraint_point_table(lua, point_table)?;
+            let points = parse_vertex_treatment_points(lua, &opts)?;
             // Number or expression string, so `distance = "leg"` ties the chamfer to a parameter.
             let distance = lua_amount_expr(&opts, "distance")?;
             unsafe {
                 tick.exec(Instruction::VertexTreatment {
-                    point,
+                    points,
                     kind: VertexTreatmentKind::Chamfer,
                     amount: distance,
                 })?;
@@ -7155,13 +7197,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "fillet_vertex",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let point_table: Table = opts.get("point")?;
-            let point = parse_constraint_point_table(lua, point_table)?;
+            let points = parse_vertex_treatment_points(lua, &opts)?;
             // Number or expression string, so `radius = "r"` ties the fillet to a parameter.
             let radius = lua_amount_expr(&opts, "radius")?;
             unsafe {
                 tick.exec(Instruction::VertexTreatment {
-                    point,
+                    points,
                     kind: VertexTreatmentKind::Fillet,
                     amount: radius,
                 })?;
@@ -9156,6 +9197,47 @@ mod tests {
         assert!(bridge.is_curved(), "fillet bridges with a curved line");
     }
 
+    /// #1519: `points = { ... }` is one operation, matching `fillet_edge{ edges = { ... } }`.
+    #[test]
+    fn lua_fillet_vertex_points_is_one_operation() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 40, height = 30 }
+            bearcad.fillet_vertex{ points = {
+                { kind = "line", index = 0, ["end"] = "end" },
+                { kind = "line", index = 1, ["end"] = "end" },
+            }, radius = 3 }
+            "#,
+        );
+        assert_eq!(
+            state.doc.sketch_vertex_treatment_ops.len(),
+            1,
+            "one call must be one sketch_vertex_treatment_op, got {}",
+            state.doc.sketch_vertex_treatment_ops.len()
+        );
+        let op = state.doc.sketch_vertex_treatment_ops.values().next().unwrap();
+        assert_eq!(op.corners.len(), 2, "both corners belong to that one op");
+    }
+
+    /// #1519: `chamfer_vertex{ points = { ... } }` is also one operation.
+    #[test]
+    fn lua_chamfer_vertex_points_is_one_operation() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 40, height = 30 }
+            bearcad.chamfer_vertex{ points = {
+                { kind = "line", index = 0, ["end"] = "end" },
+                { kind = "line", index = 1, ["end"] = "end" },
+            }, distance = 3 }
+            "#,
+        );
+        assert_eq!(state.doc.sketch_vertex_treatment_ops.len(), 1);
+        let op = state.doc.sketch_vertex_treatment_ops.values().next().unwrap();
+        assert_eq!(op.corners.len(), 2);
+    }
+
     /// #110: a corner within ~1° of straight (SPEC §3.1) must be *rejected at commit*, not
     /// silently accepted into a micro-bridge. The second line here leaves the shared vertex
     /// (10,0) toward (20, 0.01) — about 0.06° off dead-straight from the first line.
@@ -10568,6 +10650,95 @@ mod tests {
             2,
             "both cuts must stay on the combined body, not become orphan extrusions"
         );
+    }
+
+    /// #1523: `face` is world millimetres (what `body_faces` emits); no hand-quantize.
+    #[test]
+    fn lua_body_mesh_face_accepts_world_mm_face_from_body_faces() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 40, depth = 40, height = 20 }
+            bearcad.cuboid{ at = {20, 0, 0}, width = 40, depth = 40, height = 20 }
+            bearcad.combine{ op = "combine", a = {0, 1} }
+            local live = bearcad.count("body") - 1
+            local v0 = bearcad.body_stats(live).volume
+            local faces = bearcad.body_faces(live)
+            local top
+            for i = 1, #faces do
+                if faces[i].normal[3] > 0.9 then top = faces[i] break end
+            end
+            assert(top, "combined body has a +Z face")
+            bearcad.begin_sketch{
+                kind = "body_mesh_face",
+                body = live,
+                face = top.face,
+                normal = top.normal,
+            }
+            bearcad.circle{ x = 0, y = 0, r = 6 }
+            bearcad.extrude{ circle = 0, distance = -30, body = "cut" }
+            local v1 = bearcad.body_stats(live).volume
+            assert(v1 < v0 - 50, "cut via world-mm `face` must remove material: " .. v1 .. " vs " .. v0)
+            "#,
+        );
+        let live = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| !b.shadow)
+            .map(|(_, b)| b)
+            .expect("live combined body");
+        assert_eq!(
+            live.source.cut_extrusion_indices().len(),
+            1,
+            "the cut must land on the combined body"
+        );
+    }
+
+    /// #1523: `centroid` stays already-quantized (what `export_lua` writes).
+    #[test]
+    fn lua_body_mesh_face_centroid_is_already_quantized() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 40, depth = 40, height = 20 }
+            bearcad.cuboid{ at = {20, 0, 0}, width = 40, depth = 40, height = 20 }
+            bearcad.combine{ op = "combine", a = {0, 1} }
+            local live = bearcad.count("body") - 1
+            local v0 = bearcad.body_stats(live).volume
+            local faces = bearcad.body_faces(live)
+            local top
+            for i = 1, #faces do
+                if faces[i].normal[3] > 0.9 then top = faces[i] break end
+            end
+            assert(top, "combined body has a +Z face")
+            local function q(v)
+                return {
+                    math.floor(v[1] * 100 + 0.5),
+                    math.floor(v[2] * 100 + 0.5),
+                    math.floor(v[3] * 100 + 0.5),
+                }
+            end
+            bearcad.begin_sketch{
+                kind = "body_mesh_face",
+                body = live,
+                centroid = q(top.face),
+                normal = top.normal,
+            }
+            bearcad.circle{ x = 0, y = 0, r = 6 }
+            bearcad.extrude{ circle = 0, distance = -30, body = "cut" }
+            local v1 = bearcad.body_stats(live).volume
+            assert(v1 < v0 - 50, "cut via quantized `centroid` must remove material: " .. v1 .. " vs " .. v0)
+            "#,
+        );
+        let live = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| !b.shadow)
+            .map(|(_, b)| b)
+            .expect("live combined body");
+        assert_eq!(live.source.cut_extrusion_indices().len(), 1);
     }
 
     /// Shared Lua: sketch a circle on the last body's most +Z face and cut-extrude it.

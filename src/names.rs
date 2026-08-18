@@ -35,6 +35,7 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::Shape(_)
         | SceneElement::SweepOp(_)
         | SceneElement::Loft(_)
+        | SceneElement::Drawing(_)
         | SceneElement::Component(_)
         | SceneElement::UnitInstance(_)
         | SceneElement::Joint(_) => Some(element),
@@ -171,6 +172,7 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         SceneElement::Shape(index) => doc.primitives.get(index)?.name.as_deref(),
         SceneElement::SweepOp(index) => doc.sweeps.get(index)?.name.as_deref(),
         SceneElement::Loft(index) => doc.lofts.get(index)?.name.as_deref(),
+        SceneElement::Drawing(index) => doc.drawings.get(index)?.name.as_deref(),
         SceneElement::Component(index) => doc.components.get(index)?.name.as_deref(),
         SceneElement::UnitInstance(index) => doc.unit_instances.get(index)?.name.as_deref(),
         SceneElement::Joint(index) => doc.joints.get(index)?.name.as_deref(),
@@ -384,6 +386,13 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
                 .get_mut(index)
                 .ok_or_else(|| format!("loft {index:?} not found"))?;
             loft.name = stored;
+        }
+        SceneElement::Drawing(index) => {
+            let drawing = doc
+                .drawings
+                .get_mut(index)
+                .ok_or_else(|| format!("drawing {index:?} not found"))?;
+            drawing.name = stored;
         }
         SceneElement::Image(index) => {
             let image = doc
@@ -845,6 +854,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::Shape(i) => format!("Shape {}", i.index()),
         SceneElement::SweepOp(i) => format!("Sweep {}", i.index()),
         SceneElement::Loft(i) => format!("Loft {}", i.index()),
+        SceneElement::Drawing(i) => format!("Drawing {}", i.index()),
         SceneElement::Joint(i) => format!("Joint {}", i.index()),
     }
 }

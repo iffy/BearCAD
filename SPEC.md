@@ -626,6 +626,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   `bearcad.chamfer_vertex{ point = {...}, distance = }`
   and `bearcad.fillet_vertex{ point = {...}, radius = }`, where `point` is the usual
   `ConstraintPoint` table (e.g. `{ kind = "line", index = 0, ["end"] = "end" }`).
+  `points = { ... }` treats several corners in one operation (mirroring `edges` on
+  the solid verbs).
   - **Live geometry preview (#76):** while the gizmo is being placed or dragged (before commit),
     the actual treated-corner shape is drawn as a preview overlay — the two truncated points and
     the bridge between them (straight for a chamfer, sampled from the fillet's bezier arc) — not

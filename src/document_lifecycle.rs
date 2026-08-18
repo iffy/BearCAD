@@ -97,6 +97,7 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
         SceneElement::Shape(index) => doc.primitives.contains(index),
         SceneElement::SweepOp(index) => doc.sweeps.contains(index),
         SceneElement::Loft(index) => doc.lofts.contains(index),
+        SceneElement::Drawing(index) => doc.drawings.contains(index),
         SceneElement::Image(index) => doc.tracing_images.contains(index),
         SceneElement::SketchText(index) => doc.sketch_texts.contains(index),
         SceneElement::Joint(index) => doc.joints.contains(index),
@@ -544,6 +545,11 @@ pub fn delete_element(doc: &mut Document, element: SceneElement) -> bool {
                 for key in produced {
                     doc.bodies.remove(key);
                 }
+                changed = true;
+            }
+        }
+        SceneElement::Drawing(index) => {
+            if doc.drawings.remove(index).is_some() {
                 changed = true;
             }
         }
