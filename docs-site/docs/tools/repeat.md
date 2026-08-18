@@ -101,7 +101,8 @@ same spacing modes and the same context pane.
 Click the entities to copy — they collect in the **Entities** picker. The **Direction**
 picker takes one sketch line; while it's empty the copies run along the sketch's own X (u)
 axis. Focus it and click a line, or Shift+click a line at any time. Count, Gap and Distance
-work exactly as they do in 3D, green lock and all.
+work exactly as they do in 3D, green lock and all. Double-click the operation (or
+right-click → **Edit**) to reopen it.
 
 ![The Repeat tool's Context pane in a sketch, each field explained](/img/screenshots/pane-repeat-sketch.png)
 

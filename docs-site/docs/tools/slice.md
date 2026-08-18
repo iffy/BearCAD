@@ -72,7 +72,8 @@ cutter is `{ kind = "line", index = i }`.
 ## Slicing sketch geometry in 2D
 
 Split lines where other lines cross them. The sliced line becomes a *shadow* — no longer
-part of any face, but still editable — and each crossing produces a fragment line. From
+part of any face, but still editable — and each crossing produces a fragment line.
+Double-click the operation (or right-click → **Edit**) to reopen the pickers. From
 scripts:
 
 ```lua

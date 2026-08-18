@@ -555,9 +555,9 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
 }
 
 /// The [`SceneElement`] for an operation whose editing is opened the **universal** way — a
-/// double-click on the row or a right-click → "Edit" (#546) — reloading it into its tool. `None`
-/// for elements edited through their own dedicated entry (sketches, planes, extrusions, edge
-/// treatments, drawings) or that aren't operations at all.
+/// double-click on the row or a right-click → "Edit" (#546 / #1486) — reloading it into its tool.
+/// `None` for elements edited through their own dedicated entry (sketches, planes, extrusions,
+/// 3D edge treatments, drawings) or that aren't operations at all.
 pub fn node_editable_operation(node: HierarchyNode) -> Option<SceneElement> {
     match node {
         HierarchyNode::BooleanOp(i) => Some(SceneElement::BooleanOp(i)),
@@ -571,6 +571,9 @@ pub fn node_editable_operation(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::SweepOp(i) => Some(SceneElement::SweepOp(i)),
         HierarchyNode::SketchMirrorOp(i) => Some(SceneElement::SketchMirrorOp(i)),
         HierarchyNode::SketchOffsetOp(i) => Some(SceneElement::SketchOffsetOp(i)),
+        HierarchyNode::SketchRepeatOp(i) => Some(SceneElement::SketchRepeatOp(i)),
+        HierarchyNode::SketchSliceOp(i) => Some(SceneElement::SketchSliceOp(i)),
+        HierarchyNode::SketchVertexTreatmentOp(i) => Some(SceneElement::SketchVertexTreatmentOp(i)),
         HierarchyNode::Joint(i) => Some(SceneElement::Joint(i)),
         _ => None,
     }
@@ -9110,6 +9113,200 @@ label_hidden: false,
             nodes.contains(&HierarchyNode::Sketch(sketch)),
             "a sibling sketch under the shape is untouched"
         );
+    }
+
+    /// How a [`SceneElement`] is re-opened after commit (#1486). Exhaustive so a new
+    /// variant cannot skip the "Edit* action ⇒ Elements-pane row" contract.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum ElementEditPath {
+        /// Double-click / right-click → Edit via [`node_editable_operation`].
+        Row { has_edit_action: bool },
+        /// Own dedicated entry (sketch, plane, extrusion, 3D chamfer/fillet, text, drawing).
+        Dedicated,
+        /// Not an operation.
+        None,
+    }
+
+    fn element_edit_path(element: &SceneElement) -> ElementEditPath {
+        use ElementEditPath::*;
+        match element {
+            SceneElement::BooleanOp(_)
+            | SceneElement::MoveOp(_)
+            | SceneElement::MirrorOp(_)
+            | SceneElement::RepeatOp(_)
+            | SceneElement::SketchRepeatOp(_)
+            | SceneElement::SketchOffsetOp(_)
+            | SceneElement::SketchMirrorOp(_)
+            | SceneElement::SketchSliceOp(_)
+            | SceneElement::SliceOp(_)
+            | SceneElement::ShellOp(_)
+            | SceneElement::Shape(_)
+            | SceneElement::Joint(_) => Row {
+                has_edit_action: true,
+            },
+            // Re-opened through the universal row, but commit is Create-with-`editing`
+            // (revolve/sweep) or `CommitVertexTreatment` (2D chamfer/fillet) rather
+            // than a distinct `Edit*` action.
+            SceneElement::Revolution(_)
+            | SceneElement::SweepOp(_)
+            | SceneElement::SketchVertexTreatmentOp(_) => Row {
+                has_edit_action: false,
+            },
+            SceneElement::ConstructionPlane(_)
+            | SceneElement::Sketch(_)
+            | SceneElement::Extrusion(_)
+            | SceneElement::EdgeTreatmentOp(_)
+            | SceneElement::SketchText(_)
+            | SceneElement::DrawingElement { .. } => Dedicated,
+            SceneElement::Line(_)
+            | SceneElement::Circle(_)
+            | SceneElement::Point(_)
+            | SceneElement::Constraint(_)
+            | SceneElement::Body(_)
+            | SceneElement::FaceEdge(_)
+            | SceneElement::BodyEdge { .. }
+            | SceneElement::BodyVertex { .. }
+            | SceneElement::BodyFace { .. }
+            | SceneElement::BodyCylinder { .. }
+            | SceneElement::BodyAxis { .. }
+            | SceneElement::Image(_)
+            | SceneElement::Origin
+            | SceneElement::GlobalAxis(_)
+            | SceneElement::SketchFace(_)
+            | SceneElement::MovePoint(_)
+            | SceneElement::ExtrusionEdge { .. }
+            | SceneElement::PrimitiveEdge { .. }
+            | SceneElement::RepeatedFace { .. }
+            | SceneElement::Component(_)
+            | SceneElement::UnitInstance(_) => None,
+        }
+    }
+
+    fn sample_every_scene_element() -> Vec<SceneElement> {
+        use crate::construction::GlobalAxis;
+        use crate::model::{
+            annotation_key_for_slot as akey, component_key_for_slot as ckey,
+            drawing_key_for_slot as dkey, extrusion_key_for_slot as xkey,
+            primitive_key_for_slot as primkey, sketch_text_key_for_slot as tkey,
+            unit_instance_key_for_slot as uikey, ConstraintLine, ConstraintPoint, ExtrusionEdgeRef,
+            FaceId, LineEnd, MovePointRef,
+        };
+        let sweep = crate::arena::Key::from_bits(0);
+        let revolution = crate::arena::Key::from_bits(0);
+        vec![
+            SceneElement::DrawingElement {
+                drawing: dkey(0),
+                element: crate::context::DrawingElementRef::Projection(0),
+            },
+            SceneElement::ConstructionPlane(pkey(0)),
+            SceneElement::Sketch(skey(0)),
+            SceneElement::Line(lkey(0)),
+            SceneElement::Circle(rkey(0)),
+            SceneElement::Point(ConstraintPoint::LineEndpoint {
+                line: lkey(0),
+                end: LineEnd::Start,
+            }),
+            SceneElement::Constraint(nkey(0)),
+            SceneElement::Extrusion(xkey(0)),
+            SceneElement::Body(bkey(0)),
+            SceneElement::FaceEdge(ConstraintLine::Line(lkey(0))),
+            SceneElement::BodyEdge {
+                body: bkey(0),
+                a: [0, 0, 0],
+                b: [1, 0, 0],
+            },
+            SceneElement::BodyVertex {
+                body: bkey(0),
+                p: [0, 0, 0],
+            },
+            SceneElement::BodyFace {
+                body: bkey(0),
+                centroid: [0, 0, 0],
+                normal: [0, 0, 1],
+            },
+            SceneElement::BodyCylinder {
+                body: bkey(0),
+                origin: [0, 0, 0],
+                dir: [0, 0, 1],
+                radius: 1,
+            },
+            SceneElement::BodyAxis {
+                body: bkey(0),
+                origin: [0, 0, 0],
+                dir: [0, 0, 1],
+            },
+            SceneElement::Image(crate::arena::Key::from_bits(0)),
+            SceneElement::BooleanOp(bopkey(0)),
+            SceneElement::MoveOp(mopkey(0)),
+            SceneElement::MirrorOp(mirkey(0)),
+            SceneElement::RepeatOp(repkey(0)),
+            SceneElement::SketchRepeatOp(skop(0)),
+            SceneElement::SketchOffsetOp(skop(0)),
+            SceneElement::SketchMirrorOp(skop(0)),
+            SceneElement::SketchVertexTreatmentOp(skop(0)),
+            SceneElement::SketchSliceOp(skop(0)),
+            SceneElement::SketchText(tkey(0)),
+            SceneElement::SliceOp(slckey(0)),
+            SceneElement::ShellOp(crate::model::shell_op_key_for_slot(0)),
+            SceneElement::EdgeTreatmentOp(etkey(0)),
+            SceneElement::Revolution(revolution),
+            SceneElement::Shape(primkey(0)),
+            SceneElement::SweepOp(sweep),
+            SceneElement::Origin,
+            SceneElement::GlobalAxis(GlobalAxis::X),
+            SceneElement::SketchFace(FaceId::ConstructionPlane(pkey(0))),
+            SceneElement::MovePoint(MovePointRef::Origin),
+            SceneElement::ExtrusionEdge {
+                extrusion: xkey(0),
+                edge: ExtrusionEdgeRef::Vertical { face: 0, edge: 0 },
+            },
+            SceneElement::PrimitiveEdge {
+                primitive: primkey(0),
+                edge: ExtrusionEdgeRef::Vertical { face: 0, edge: 0 },
+            },
+            SceneElement::RepeatedFace {
+                face: FaceId::ConstructionPlane(pkey(0)),
+                op: repkey(0),
+                instance: 0,
+            },
+            SceneElement::Component(ckey(0)),
+            SceneElement::UnitInstance(uikey(0)),
+            SceneElement::Joint(jkey(0)),
+            // Keep DrawingElementRef::Text represented so the walk stays a real sample
+            // of every *operation* kind; the drawing page itself is Dedicated above.
+            SceneElement::DrawingElement {
+                drawing: dkey(0),
+                element: crate::context::DrawingElementRef::Text(akey(0)),
+            },
+        ]
+    }
+
+    /// #1486: walking every [`SceneElement`] — an `Edit*` action on an operation
+    /// implies a double-click / right-click Edit on its Elements-pane row.
+    #[test]
+    fn edit_action_implies_row_entry() {
+        for element in sample_every_scene_element() {
+            match element_edit_path(&element) {
+                ElementEditPath::Row { has_edit_action } => {
+                    let node = hierarchy_node_for_element(&element).unwrap_or_else(|| {
+                        panic!("{element:?} is a row-editable operation but has no hierarchy node")
+                    });
+                    assert_eq!(
+                        node_editable_operation(node),
+                        Some(element.clone()),
+                        "{element:?} should have a row entry (edit_action={has_edit_action})"
+                    );
+                }
+                ElementEditPath::Dedicated | ElementEditPath::None => {
+                    if let Some(node) = hierarchy_node_for_element(&element) {
+                        assert!(
+                            node_editable_operation(node).is_none(),
+                            "{element:?} must not use the universal row-edit path"
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 

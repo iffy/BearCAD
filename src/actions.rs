@@ -1140,8 +1140,13 @@ pub struct CreatingSketchRepeat {
     pub sketch: crate::model::SketchId,
     pub line_targets: Vec<crate::model::LineKey>,
     pub circle_targets: Vec<crate::model::CircleKey>,
-    /// A picked sketch line whose direction sets the repeat axis; `None` = the sketch U axis.
+    /// A picked sketch line whose direction sets the repeat axis; `None` = [`Self::dir_u`]/
+    /// [`Self::dir_v`] (the sketch U axis until a re-edit or a Shift+click sets them).
     pub dir_line: Option<crate::model::LineKey>,
+    /// Plane-local direction used when `dir_line` is None — restored from a committed op
+    /// on re-edit (#1486).
+    pub dir_u: f32,
+    pub dir_v: f32,
     pub mode: crate::model::RepeatMode,
     pub count: String,
     pub spacing: String,
@@ -1160,6 +1165,8 @@ impl CreatingSketchRepeat {
             line_targets: Vec::new(),
             circle_targets: Vec::new(),
             dir_line: None,
+            dir_u: 1.0,
+            dir_v: 0.0,
             mode: crate::model::RepeatMode::CountGap,
             count: "3".to_string(),
             spacing: "10".to_string(),
@@ -1235,8 +1242,8 @@ impl CreatingSketchRepeat {
         !self.line_targets.is_empty() || !self.circle_targets.is_empty()
     }
 
-    /// The repeat direction in plane-local coords: the picked direction line's unit vector, or
-    /// the sketch U axis `(1, 0)` when no line is picked or it's degenerate.
+    /// The repeat direction in plane-local coords: the picked direction line's unit vector,
+    /// otherwise the stored `(dir_u, dir_v)`, otherwise the sketch U axis `(1, 0)`.
     pub fn direction(&self, doc: &crate::model::Document) -> (f32, f32) {
         if let Some(li) = self.dir_line {
             if let Some(l) = doc.lines.get(li) {
@@ -1247,7 +1254,12 @@ impl CreatingSketchRepeat {
                 }
             }
         }
-        (1.0, 0.0)
+        let len = (self.dir_u * self.dir_u + self.dir_v * self.dir_v).sqrt();
+        if len > 1e-6 {
+            (self.dir_u / len, self.dir_v / len)
+        } else {
+            (1.0, 0.0)
+        }
     }
 }
 
@@ -11535,9 +11547,18 @@ impl AppState {
                         oi
                     }
                     (Some((oa, pa)), Some((ob, pb))) if oa == ob => {
-                        self.doc.sketch_vertex_treatment_ops[oa]
-                            .corners
-                            .push(mk_corner(pa, end1, pb, end2, amount_expr));
+                        // Re-committing the same corner (double-click Edit, or chamfer_vertex
+                        // on an already-treated vertex) updates its amount/kind rather than
+                        // stacking a duplicate (#1486).
+                        let corners = &mut self.doc.sketch_vertex_treatment_ops[oa].corners;
+                        if let Some(c) = corners.iter_mut().find(|c| {
+                            (c.a == pa && c.b == pb) || (c.a == pb && c.b == pa)
+                        }) {
+                            c.kind = kind;
+                            c.amount = amount_expr;
+                        } else {
+                            corners.push(mk_corner(pa, end1, pb, end2, amount_expr));
+                        }
                         oa
                     }
                     (Some((oa, pa)), Some((ob, pb))) => {
@@ -23787,6 +23808,17 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert_eq!(cr.line_targets, vec![lkey(0)]);
     }
 
+    /// #1486: re-opening a sketch repeat restores its stored direction, not the U-axis default.
+    #[test]
+    fn sketch_repeat_direction_uses_stored_dir_when_no_line() {
+        let mut cr = CreatingSketchRepeat::new(skey(0));
+        cr.dir_u = 0.0;
+        cr.dir_v = 2.0;
+        let doc = crate::model::Document::default();
+        let (du, dv) = cr.direction(&doc);
+        assert!((du - 0.0).abs() < 1e-6 && (dv - 1.0).abs() < 1e-6, "{du} {dv}");
+    }
+
     /// Revolve (SPEC §3.5): committing a face + axis creates the revolution and its body
     /// under one marker; undo removes both. Cut mode requires picked bodies.
     #[test]
@@ -25569,6 +25601,40 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         });
         assert!(matches!(result, ActionResult::Err(_)));
         assert_eq!(state.doc.lines.len(), 2);
+    }
+
+    /// #1486: re-committing the same corner (the row-edit path) updates its amount
+    /// instead of stacking a duplicate.
+    #[test]
+    fn commit_vertex_treatment_updates_an_existing_corner() {
+        let mut state = AppState::default();
+        let (_, point) = two_coincident_lines_at_a_right_angle(&mut state);
+        assert_eq!(
+            state.apply(Action::CommitVertexTreatment {
+                point: point.clone(),
+                kind: VertexTreatmentKind::Chamfer,
+                amount: "3.0".to_string(),
+            }),
+            ActionResult::Ok
+        );
+        assert_eq!(state.doc.sketch_vertex_treatment_ops.len(), 1);
+        let op = state.doc.sketch_vertex_treatment_ops.keys().next().unwrap();
+        assert_eq!(state.doc.sketch_vertex_treatment_ops[op].corners.len(), 1);
+        assert_eq!(state.doc.sketch_vertex_treatment_ops[op].corners[0].amount, "3.0");
+
+        assert_eq!(
+            state.apply(Action::CommitVertexTreatment {
+                point,
+                kind: VertexTreatmentKind::Chamfer,
+                amount: "5.0".to_string(),
+            }),
+            ActionResult::Ok,
+            "status: {}",
+            state.status
+        );
+        assert_eq!(state.doc.sketch_vertex_treatment_ops.len(), 1);
+        assert_eq!(state.doc.sketch_vertex_treatment_ops[op].corners.len(), 1);
+        assert_eq!(state.doc.sketch_vertex_treatment_ops[op].corners[0].amount, "5.0");
     }
 
     #[test]

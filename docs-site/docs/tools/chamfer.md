@@ -13,7 +13,8 @@ Chamfer is [Fillet](./fillet.md)'s angular sibling: instead of rounding a corner
 it off flat. Everything else works the same way —
 
 - **In a sketch:** click a corner where two lines meet, drag the handle or type a cut
-  distance, **Enter**.
+  distance, **Enter**. Double-click the operation (or right-click → **Edit**) to change
+  the amount.
 
 <a
   href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/chamfer-sketch.bearcad.json"))}
