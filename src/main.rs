@@ -27140,6 +27140,8 @@ impl App {
         // Shift/⌘ held: an additive pick, which stays live even while a dimension value is
         // being typed (#780).
         let additive_modifiers_held = ui.input(|i| additive_click_modifiers(&i.modifiers));
+        // A click that *starts* placement must not also drop the label in the same frame.
+        let placing_at_frame_start = self.state.placing_dimension.is_some();
         // Image calibration markers (#163/#424): while placing reference points (guided
         // flow) or with a calibrated image selected, the reference points and their span
         // draw on the image's host plane; points drag to move, click to select (Delete
@@ -27284,9 +27286,10 @@ impl App {
             // so a second edge can join what's being dimensioned (#780).
             && (self.state.editing_committed_dim.is_none()
                 || (self.state.tool == Tool::Dimension && additive_modifiers_held))
-            // Placement leaves picking live under the Dimension tool (#762/#763): hovering
-            // another target must be able to take over from the preview.
-            && (self.state.placing_dimension.is_none() || self.state.tool == Tool::Dimension)
+            // Placement owns the pointer (#1472): a regular click drops the label. Shift+click
+            // can still add a second target (#780).
+            && (self.state.placing_dimension.is_none()
+                || (self.state.tool == Tool::Dimension && additive_modifiers_held))
             && !over_committed_dim_label
             && self.dim_label_drag.is_none()
             && !angle_gizmo_dragging
@@ -27443,8 +27446,7 @@ impl App {
             // already suspended.
             suppress_hover_highlight
                 || self.state.editing_committed_dim.is_some()
-                || (self.state.placing_dimension.is_some()
-                    && self.state.tool != Tool::Dimension)
+                || self.state.placing_dimension.is_some()
                 || over_committed_dim_label
                 || self.dim_label_drag.is_some()
                 || self.state.creating_rect.is_some()
@@ -27849,7 +27851,10 @@ impl App {
             && !exploder_owns_press
             && (self.state.editing_committed_dim.is_none()
                 || (self.state.tool == Tool::Dimension && additive_modifiers_held))
-            && (self.state.placing_dimension.is_none() || self.state.tool == Tool::Dimension)
+            // Placement owns the pointer (#1472): a regular click places the label instead
+            // of selecting the face under it. Shift+click still accumulates a second target.
+            && (self.state.placing_dimension.is_none()
+                || (self.state.tool == Tool::Dimension && additive_modifiers_held))
             && !over_committed_dim_label
             && self.dim_label_drag.is_none()
             && self.angle_gizmo_drag.is_none()
@@ -28592,9 +28597,9 @@ impl App {
         }
 
         // Dimension placement (#40/#763): the preview follows the cursor until a click
-        // drops it and hands off to typing the value. While the cursor is over something
-        // else that could be dimensioned, the preview stands down so that pick can be
-        // hovered and clicked instead (#762).
+        // drops it and hands off to typing the value. Placement owns the pointer (#1472):
+        // nothing else hover-highlights or selects; a regular click always places. Shift+click
+        // still adds a second target (#780).
         let mut placing_preview: Option<PlacingPreviewDraw> = None;
         // While the value is being typed, the dimension it was just placed as stays drawn —
         // lines and arrows, no number, because the number is in the floating input (#774).
@@ -28632,20 +28637,7 @@ impl App {
             }
         }
         if let Some(placing) = self.state.placing_dimension.clone() {
-            let over_pickable = pointer_screen
-                .zip(self.state.sketch_session)
-                .is_some_and(|(pp, session)| {
-                    nearest_sketch_point_in_sketch(pp, &project, &self.state.doc, session.sketch)
-                        .is_some()
-                        || nearest_sketch_line_in_sketch(
-                            pp,
-                            &project,
-                            &self.state.doc,
-                            session.sketch,
-                        )
-                        .is_some()
-                });
-            if let (false, Some(session)) = (over_pickable, self.state.sketch_session) {
+            if let Some(session) = self.state.sketch_session {
                 if let Some(frame) = sketch_geometry_frame(&self.state.doc, session.sketch) {
                     let mut placed_offset = placing.offset;
                     match placing.target.clone() {
@@ -28700,7 +28692,11 @@ impl App {
                                 label,
                             });
                             let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
-                            if primary_pressed && !over_committed_dim_label {
+                            if primary_pressed
+                                && !over_committed_dim_label
+                                && !additive_modifiers_held
+                                && placing_at_frame_start
+                            {
                                 self.state.placing_dimension = None;
                                 self.state.apply(Action::BeginDimensionEdit {
                                     target: model::DimensionTarget::Angle {
@@ -28746,7 +28742,11 @@ impl App {
                                 });
                             }
                             let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
-                            if primary_pressed && !over_committed_dim_label {
+                            if primary_pressed
+                                && !over_committed_dim_label
+                                && !additive_modifiers_held
+                                && placing_at_frame_start
+                            {
                                 self.state.placing_dimension = None;
                                 self.state.apply(Action::BeginDimensionEdit {
                                     target: model::DimensionTarget::Distance(target),
@@ -29257,7 +29257,8 @@ impl App {
             }
         });
         let mut hover_highlight = resolve_viewport_hover_highlight(
-            suppress_hover_highlight,
+            // Placement owns the pointer (#1472): nothing else lights up or can be picked.
+            suppress_hover_highlight || self.state.placing_dimension.is_some(),
             self.state.tool,
             sketch_session,
             self.mate_pick_hover().unwrap_or_else(|| {
