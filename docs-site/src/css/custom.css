@@ -93,6 +93,9 @@ html.plugin-pages[data-theme='dark'] .navbar {
   background: #4c8ce3;
   color: #fff;
 }
+.navbar__item.navbar__link.navbar-pay svg {
+  display: none;
+}
 
 /* Mobile drawer: same pill, full-width so it doesn't look like a leftover chip. */
 .navbar-sidebar .navbar__item.navbar__link[href='/docs/downloads'] {
