@@ -10738,7 +10738,8 @@ mod tests {
             }
             bearcad.circle{ x = 0, y = 0, r = 6 }
             bearcad.extrude{ circle = 0, distance = -30, body = "cut" }
-            local v1 = bearcad.body_stats(live).volume
+            local result = bearcad.count("body") - 1
+            local v1 = bearcad.body_stats(result).volume
             assert(v1 < v0 - 50, "cut via world-mm `face` must remove material: " .. v1 .. " vs " .. v0)
             "#,
         );
@@ -10788,7 +10789,8 @@ mod tests {
             }
             bearcad.circle{ x = 0, y = 0, r = 6 }
             bearcad.extrude{ circle = 0, distance = -30, body = "cut" }
-            local v1 = bearcad.body_stats(live).volume
+            local result = bearcad.count("body") - 1
+            local v1 = bearcad.body_stats(result).volume
             assert(v1 < v0 - 50, "cut via quantized `centroid` must remove material: " .. v1 .. " vs " .. v0)
             "#,
         );
