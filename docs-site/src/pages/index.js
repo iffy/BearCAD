@@ -71,7 +71,9 @@ function Hero() {
           </p>
         </div>
         <div className={styles.heroCtas}>
-          <Link className={clsx(styles.btn, styles.btnPrimary)} href={WEB_APP_PATH}>
+          <Link
+            className={clsx(styles.btn, styles.btnPrimary, styles.heroBrowser)}
+            href={WEB_APP_PATH}>
             Open in your browser
           </Link>
           <Link className={clsx(styles.btn, styles.btnGhost)} href="#get">
