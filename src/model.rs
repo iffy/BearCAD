@@ -3024,6 +3024,17 @@ impl BooleanOpKind {
             Self::Difference => "difference",
         }
     }
+
+    /// The next Mode-row choice the `Y` shortcut walks (#1534): combine → cut →
+    /// intersect → difference → combine. Same order as the pane's icon group.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Combine => Self::Cut,
+            Self::Cut => Self::Intersect,
+            Self::Intersect => Self::Difference,
+            Self::Difference => Self::Combine,
+        }
+    }
 }
 
 /// A boolean operation between whole bodies (the Combine tool). Its inputs become
@@ -5621,6 +5632,19 @@ pub fn effective_angle_unit(doc: &Document, sketch: SketchId) -> AngleUnit {
 mod tests {
     use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
+
+    /// #1534: Y walks Combine's Mode row in the pane's icon order and comes back round.
+    #[test]
+    fn boolean_op_kind_cycles_through_every_kind() {
+        let mut kind = BooleanOpKind::Combine;
+        let mut seen = vec![kind.script_name()];
+        for _ in 0..3 {
+            kind = kind.next();
+            seen.push(kind.script_name());
+        }
+        assert_eq!(seen, vec!["combine", "cut", "intersect", "difference"]);
+        assert_eq!(kind.next().script_name(), "combine", "and round again");
+    }
 
     /// #921: repeated J walks the joint kinds in the dropdown's order and comes back round.
     #[test]

@@ -12816,6 +12816,28 @@ mod tests {
         );
     }
 
+    /// #1534: Y / `tool_mode("next")` walks Combine's Mode the same way it walks
+    /// Extrude Output.
+    #[test]
+    fn lua_combine_tool_mode_cycles_kinds() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.ui.tool("combine")
+            assert(bearcad.ui.tool_mode() == "combine", "SetTool arms Combine mode")
+            bearcad.ui.tool_mode("next")
+            assert(bearcad.ui.tool_mode() == "cut")
+            bearcad.ui.tool_mode("cycle")
+            assert(bearcad.ui.tool_mode() == "intersect")
+            bearcad.ui.tool_mode("next")
+            assert(bearcad.ui.tool_mode() == "difference")
+            bearcad.ui.tool_mode("next")
+            assert(bearcad.ui.tool_mode() == "combine")
+            bearcad.ui.tool_mode("cut")
+            assert(bearcad.ui.tool_mode() == "cut")
+            "#,
+        );
+    }
+
     /// #1320: Shape kinds are scriptable as `bearcad.ui.tool_mode`.
     #[test]
     fn lua_shape_tool_mode_cycles_kinds() {
