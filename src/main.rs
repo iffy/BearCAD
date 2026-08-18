@@ -11239,15 +11239,50 @@ impl App {
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         face: &model::MateRef,
     ) -> Option<model::MovePointRef> {
-        let (tris, world) = self.nearest_mate_face_point(pp, project, face)?;
-        let model::MateRef::Face { body, centroid, normal } = face else {
-            return None;
+        let (_, world) = self.nearest_mate_face_point(pp, project, face)?;
+        extrude::face_snap_on_face_point(&self.state.doc, face, world)
+    }
+
+    /// Face Snap hover (#1458): fill the armed side with an `OnFace` point so the
+    /// ghost uses the same face-against-face placement a click would commit. A
+    /// pending face scopes the snap to that face's nine points; otherwise the
+    /// face under the cursor is the one a click would take next.
+    fn face_snap_hover_preview(
+        &self,
+        cm: &actions::CreatingMove,
+        pp: egui::Pos2,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pick_occlusion: Option<&construction::PickOcclusion>,
+    ) -> Option<actions::CreatingMove> {
+        let on_moving = match self.move_focus() {
+            MoveFocus::StartPointA => true,
+            MoveFocus::EndPointA => false,
+            _ => return None,
         };
-        Some(model::MovePointRef::OnFace {
-            body: *body,
-            centroid: *centroid,
-            normal: *normal,
-            uv: extrude::face_world_uv(&tris, world),
+        let pending = if on_moving {
+            cm.pending_face_a
+        } else {
+            cm.pending_face_b
+        };
+        let point = match pending {
+            Some(face) => self.pick_point_on_mate_face(pp, project, &face)?,
+            None => {
+                let face = self.pick_move_face(pp, project, pick_occlusion, Some(on_moving))?;
+                self.pick_point_on_mate_face(pp, project, &face)?
+            }
+        };
+        Some(if on_moving {
+            actions::CreatingMove {
+                start_point_a: Some(point),
+                pending_face_a: None,
+                ..cm.clone()
+            }
+        } else {
+            actions::CreatingMove {
+                end_point_a: Some(point),
+                pending_face_b: None,
+                ..cm.clone()
+            }
         })
     }
 
@@ -29603,15 +29638,21 @@ impl App {
                 Some(move_hover_probe(cm, self.move_focus(), point))
             })
             .or_else(|| {
-                if !(self.state.tool == Tool::Move
-                    && self.state.sketch_session.is_none()
-                    && self.move_focus() == MoveFocus::EndPointA)
-                {
+                if !(self.state.tool == Tool::Move && self.state.sketch_session.is_none()) {
                     return None;
                 }
-                let pp = pointer_screen?;
-                let point = self.pick_move_point(pp, &project, pick_occlusion, Some(false))?;
                 let cm = self.state.creating_move.as_ref()?;
+                let pp = pointer_screen?;
+                // Face Snap (#1458): hover fills an OnFace point so the ghost uses the
+                // same face-against-face placement a click commits. A bare vertex at
+                // the same spot only translates, slicing through the target.
+                if cm.translate_mode == model::MoveTranslateMode::FaceSnap {
+                    return self.face_snap_hover_preview(cm, pp, &project, pick_occlusion);
+                }
+                if self.move_focus() != MoveFocus::EndPointA {
+                    return None;
+                }
+                let point = self.pick_move_point(pp, &project, pick_occlusion, Some(false))?;
                 Some(actions::CreatingMove { end_point_a: Some(point), ..cm.clone() })
             });
         // Candidates render through the same coloured-mark channel as the A points (#660):
@@ -29654,10 +29695,25 @@ impl App {
         // The A→A connector: the translation the snap pair asks for, drawn as a line between
         // the two points. The Joint tool mates the same way (#997), so its Mate pickers preview
         // the motion exactly as the Move tool's do.
-        let snap_points = self.snap_preview_points();
+        // Prefer the hover probe so the A connector (and Face Snap's bezier) shows
+        // the placement a click would commit, not the still-empty in-progress move.
+        let snap_points = move_hover_preview
+            .as_ref()
+            .map(|cm| SnapPreviewPoints {
+                start_a: cm.start_point_a,
+                end_a: cm.end_point_a,
+                start_b: cm.start_point_b,
+                end_b: cm.end_point_b,
+                start_c: cm.start_point_c,
+                end_c: cm.end_point_c,
+            })
+            .or_else(|| self.snap_preview_points());
+        let snap_cm = move_hover_preview
+            .as_ref()
+            .or(self.state.creating_move.as_ref());
         let mut move_connector: Vec<(Vec3, Vec3, egui::Color32, bool)> =
             if let Some(p) = snap_points.as_ref() {
-                match (p.connector(&self.state.doc), self.state.creating_move.as_ref()) {
+                match (p.connector(&self.state.doc), snap_cm) {
                     (Some((a, b)), Some(cm)) => move_a_connector_segments(&self.state.doc, cm, a, b)
                         .unwrap_or_default(),
                     (Some((a, b)), None) => vec![(a, b, theme::MOVE_CONNECTOR, false)],
@@ -30246,6 +30302,7 @@ impl App {
                 .or(self.state.creating_move.as_ref())
                 .filter(|_| self.state.tool == Tool::Move && self.state.sketch_session.is_none());
             let target = live.and_then(|cm| move_ghost_target_transform(doc, cm));
+            self.state.move_preview_transform = target;
             // The A pair is the move's **pivot**: start A lands on end A and stays there,
             // whatever the rotation does (#826). Easing the composed translation instead
             // let the pivot drift mid-animation, so the body appeared to slide as it turned.

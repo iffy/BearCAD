@@ -3505,6 +3505,63 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // The Move tool's intended preview pose (#1458) — the hover probe when a candidate
+    // is under the cursor, else the in-progress move. Translation + quaternion, and the
+    // AABB of the moving bodies under that pose. `nil` when there is no ghost. Lets a
+    // script assert the placement a click would commit, which is otherwise only visible
+    // as a translucent mesh.
+    api.set(
+        "move_preview",
+        lua.create_function(|lua, ()| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let state = unsafe { tick.state() };
+            let Some(m) = state.move_preview_transform else {
+                return Ok(Value::Nil);
+            };
+            let (_, rot, pos) = m.to_scale_rotation_translation();
+            let entry = lua.create_table()?;
+            entry.set("translation", vec3_lua(lua, pos)?)?;
+            let q = lua.create_table()?;
+            q.set(1, rot.x)?;
+            q.set(2, rot.y)?;
+            q.set(3, rot.z)?;
+            q.set(4, rot.w)?;
+            entry.set("rotation", q)?;
+            let mut bb_min = glam::Vec3::splat(f32::INFINITY);
+            let mut bb_max = glam::Vec3::splat(f32::NEG_INFINITY);
+            let mut any = false;
+            if let Some(cm) = state.creating_move.as_ref() {
+                for &bi in &cm.targets {
+                    let Some(mesh) = crate::extrude::body_solid_mesh(&state.doc, bi) else {
+                        continue;
+                    };
+                    let Some((lo, hi)) = mesh.bounds() else {
+                        continue;
+                    };
+                    for x in [lo.x, hi.x] {
+                        for y in [lo.y, hi.y] {
+                            for z in [lo.z, hi.z] {
+                                let p = m.transform_point3(glam::Vec3::new(x, y, z));
+                                bb_min = bb_min.min(p);
+                                bb_max = bb_max.max(p);
+                                any = true;
+                            }
+                        }
+                    }
+                }
+            }
+            if any {
+                let bbox = lua.create_table()?;
+                bbox.set("min", vec3_lua(lua, bb_min)?)?;
+                bbox.set("max", vec3_lua(lua, bb_max)?)?;
+                entry.set("bbox", bbox)?;
+            }
+            Ok(Value::Table(entry))
+        })?,
+    )?;
+
     // The Selection Exploder's fan (#968): one `{ kind, index }` per leaf, or an empty table
     // when it's closed. The crowd should offer exactly what the focused picker can take.
     api.set(
@@ -11058,6 +11115,19 @@ mod tests {
         assert!(
             (landed - glam::Vec3::new(0.0, 10.0, 0.0)).length() < 1e-2,
             "start C lands on end C, got {landed:?}"
+        );
+    }
+
+    /// #1458: `bearcad.move_preview()` is the Move tool's intended pose. Nothing
+    /// in-progress means no ghost, so it is nil — the same answer a script gets
+    /// before the first hover.
+    #[test]
+    fn lua_move_preview_is_nil_without_a_move() {
+        run_lua_expect_ok(
+            r#"
+            assert(type(bearcad.move_preview) == "function")
+            assert(bearcad.move_preview() == nil, "no move, no ghost")
+            "#,
         );
     }
 

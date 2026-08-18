@@ -5664,6 +5664,34 @@ pub fn face_world_uv(tris: &[[Vec3; 3]], world: Vec3) -> [i32; 2] {
     [(d.dot(u) * 100.0).round() as i32, (d.dot(v) * 100.0).round() as i32]
 }
 
+/// An [`crate::model::MovePointRef::OnFace`] at `world` on `face` (#1458).
+///
+/// Face Snap's rotation needs the face normal. Hovering a corner or edge midpoint used
+/// to store a bare vertex, so the ghost only translated — slicing through the target —
+/// while the click stored this `OnFace` and sat the faces together. Hover and click
+/// both go through here now.
+pub fn face_snap_on_face_point(
+    doc: &Document,
+    face: &crate::model::MateRef,
+    world: Vec3,
+) -> Option<crate::model::MovePointRef> {
+    let crate::model::MateRef::Face {
+        body,
+        centroid,
+        normal,
+    } = *face
+    else {
+        return None;
+    };
+    let tris = body_face_triangles(doc, body, centroid, normal)?;
+    Some(crate::model::MovePointRef::OnFace {
+        body,
+        centroid,
+        normal,
+        uv: face_world_uv(&tris, world),
+    })
+}
+
 /// World bounds of the current selection (#164):/// World bounds of the current selection (#164): union of every selected element's own
 /// geometry (a body's solid, an extrusion's solid, a line/circle's sampled points, a point's
 /// position). `None` when nothing in the selection has world extent (then zoom-to-fit falls
@@ -14408,6 +14436,110 @@ mod tests {
         let plain = m.transform_point3(Vec3::ZERO);
         let turned = spun.transform_point3(Vec3::ZERO);
         assert!((plain - turned).length() > 1.0, "a 90° spin moves the far corner");
+    }
+
+    /// #1458: a Face Snap hover over an edge midpoint must store an `OnFace` on the
+    /// pending face — a bare vertex at the same spot only translates, so the ghost
+    /// slices through the target instead of sitting flush.
+    #[test]
+    fn face_snap_hover_point_orients_like_a_click() {
+        use crate::model::{MateRef, MoveOperation, MovePointRef, MoveTranslateMode};
+        let (mut doc, sketch) = sketch_doc();
+        for (x, slot) in [(0.0f32, 0usize), (40.0, 1)] {
+            let profile = rect_profile(&mut doc, sketch, x, 0.0, 10.0, 10.0);
+            doc.extrusions.insert(extrusion(sketch, vec![profile], 5.0));
+            doc.bodies.insert(crate::model::Body {
+                source: crate::model::BodySource::Extrusion(xkey(slot)),
+                material: None,
+                name: None,
+                shadow: false,
+            });
+        }
+        let cap = |body: usize, want: Vec3| {
+            let solid = body_solid_mesh(&doc, bkey(body)).expect("box mesh");
+            let tris = crate::gpu_viewport::solid_mesh_coplanar_faces(&solid)
+                .into_iter()
+                .find(|t| {
+                    let n = (t[0][1] - t[0][0]).cross(t[0][2] - t[0][0]).normalize_or_zero();
+                    n.dot(want) > 0.9
+                })
+                .expect("a face with that normal");
+            let q = crate::hierarchy::quantize_body_point;
+            let centroid = q(face_group_center(&tris));
+            let normal = q(
+                (tris[0][1] - tris[0][0])
+                    .cross(tris[0][2] - tris[0][0])
+                    .normalize_or_zero(),
+            );
+            (
+                MateRef::Face {
+                    body: bkey(body),
+                    centroid,
+                    normal,
+                },
+                MovePointRef::OnFace {
+                    body: bkey(body),
+                    centroid,
+                    normal,
+                    uv: [0, 0],
+                },
+                face_group_center(&tris),
+            )
+        };
+        let (start_face, start, _) = cap(0, Vec3::Z);
+        let (end_face, _, end_center) = cap(1, Vec3::Z);
+        let _ = start_face;
+        // Midpoint of the target top's -Y edge — the hover the report aimed at.
+        let edge_mid = Vec3::new(end_center.x, end_center.y - 5.0, end_center.z);
+        let on_face = face_snap_on_face_point(&doc, &end_face, edge_mid).expect("OnFace");
+        assert!(
+            matches!(on_face, MovePointRef::OnFace { .. }),
+            "hover must carry the face, got {on_face:?}"
+        );
+        let op = |end: MovePointRef| MoveOperation {
+            keep_inputs: false,
+            targets: vec![bkey(0)],
+            translate_mode: MoveTranslateMode::FaceSnap,
+            start_point_a: Some(start),
+            end_point_a: Some(end),
+            start_point_b: None,
+            end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
+            plane_targets: Vec::new(),
+            image_targets: Vec::new(),
+            instance_targets: Vec::new(),
+            tx: String::new(),
+            ty: String::new(),
+            tz: String::new(),
+            face_flip: false,
+            face_spin: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
+            outputs: Vec::new(),
+            name: None,
+            roll_angle: String::new(),
+            face_offset: String::new(),
+        };
+        // A vertex at the same spot only translates — the moving +Z stays +Z.
+        let vertex = MovePointRef::Vertex {
+            body: bkey(1),
+            p: crate::hierarchy::quantize_body_point(edge_mid),
+        };
+        let sliced = move_op_transform(&doc, &op(vertex)).expect("translation");
+        let sliced_n = sliced.transform_vector3(Vec3::Z).normalize_or_zero();
+        assert!(
+            (sliced_n - Vec3::Z).length() < 1e-3,
+            "a bare vertex cannot flip the face: {sliced_n:?}"
+        );
+        // The OnFace hover (and the click) oppose the two normals so the surfaces touch.
+        let flush = move_op_transform(&doc, &op(on_face)).expect("placement");
+        let flush_n = flush.transform_vector3(Vec3::Z).normalize_or_zero();
+        assert!(
+            (flush_n - Vec3::NEG_Z).length() < 1e-3,
+            "the moving face should sit against the target: {flush_n:?}"
+        );
     }
 
     /// #1076: Free mode grows a rotation — X/Y/Z turns typed alongside the X/Y/Z amounts —
