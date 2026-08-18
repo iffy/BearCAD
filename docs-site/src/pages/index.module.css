@@ -167,6 +167,16 @@
   }
 }
 
+@media (hover: none), (pointer: coarse) {
+  .heroBrowser {
+    display: none;
+  }
+
+  .heroCtas {
+    grid-template-columns: 1fr;
+  }
+}
+
 .btn {
   display: inline-flex;
   align-items: center;

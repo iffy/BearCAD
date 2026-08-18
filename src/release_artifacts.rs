@@ -512,6 +512,46 @@ mod tests {
         );
     }
 
+    /// #1455: landing-page "Open in your browser" stays in the markup for
+    /// mouse/trackpad, but CSS hides it on touch / coarse-pointer. The
+    /// downloads page still offers the hosted web app.
+    #[test]
+    fn homepage_hides_open_in_browser_on_touch() {
+        let home = include_str!("../docs-site/src/pages/index.js");
+        assert!(
+            home.contains("Open in your browser"),
+            "landing page should still offer Open in your browser for fine-pointer devices"
+        );
+        assert!(
+            home.contains("heroBrowser"),
+            "landing Open in your browser CTA needs a class CSS can hide on touch"
+        );
+
+        let css = include_str!("../docs-site/src/pages/index.module.css");
+        assert!(
+            css.contains("(hover: none)") && css.contains("(pointer: coarse)"),
+            "landing CSS should hide the in-browser CTA on hover:none / pointer:coarse"
+        );
+        assert!(
+            css.contains(".heroBrowser") && css.contains("display: none"),
+            "landing CSS should display:none the hero in-browser CTA on touch"
+        );
+
+        let get = include_str!("../docs-site/src/components/GetBearCAD/index.js");
+        let site = include_str!("../docs-site/src/site.js");
+        assert!(
+            get.contains("DOWNLOADS")
+                && site.contains("Browser")
+                && (site.contains("WEB_APP_PATH") || site.contains("pathname:///app/")),
+            "downloads page GetBearCAD should still list the Browser / web app option"
+        );
+        let get_css = include_str!("../docs-site/src/components/GetBearCAD/styles.module.css");
+        assert!(
+            !get_css.contains("display: none"),
+            "GetBearCAD (downloads page) must not hide the Browser card on touch"
+        );
+    }
+
     /// #1213 / #1439 / #1440 / #1443: Chromebook install sits next to the other
     /// platform downloads. After the name-your-price landing, the hero
     /// Download CTA jumps to the GetBearCAD block (`#get`); the dedicated
