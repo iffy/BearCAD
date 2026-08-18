@@ -15,7 +15,7 @@ A material is a name and a colour. Bodies render in their material's colour.
   rel="noopener noreferrer"
   title="Open this model in BearCAD"
 >
-  <img src={useBaseUrl("/img/screenshots/materials.png")} alt="Eight cubes in a 2×2×2, each a different material colour" />
+  <img src={useBaseUrl("/img/screenshots/materials.png")} alt="Nine cubes in a 2×2×2 with a centre cube, each a different material colour, some with a hole, sphere bite, chamfer or fillet" />
 </a>
 
 ## Assigning
