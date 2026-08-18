@@ -24,8 +24,9 @@ thicknesses, clearances, insets.
 1. Pick the **Offset** tool. Outside a sketch, click a face to sketch on it first.
 2. Click lines and circles to add them to the offset (click again to remove). Click a
    **face** — a closed sketch profile, or a body face — to take all of its edges at once.
-3. Drag the **push-pull handle**, or type a distance in the context pane. **Positive
-   grows** a closed loop or circle; negative shrinks — or flips an open chain's side.
+3. Click the **push-pull handle** to grab it (click again to drop), or type a
+   distance. A typed value sticks. **Positive grows** a closed loop or circle;
+   negative shrinks — or flips an open chain's side.
 4. Press **Enter**.
 
 Lines that connect end-to-end offset as one chain with mitered corners; a circle's

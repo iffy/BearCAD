@@ -7021,7 +7021,7 @@ impl App {
             .map(|ce| (ce.faces.clone(), ce.evaluated_distance(&self.state.doc)));
 
         // The handle is a click-to-grab control: one click grabs it, then it follows
-        // the cursor (no held button) until the next click, which finishes the extrude.
+        // the cursor (no held button) until the next click, which *releases* it (#1497).
         let following = self.extrude_gizmo_drag.is_some();
         let mut gizmo_active = false;
         // The pull-handle gizmo sees no pointer while the Selection Exploder is open (#986/#988):
@@ -7100,18 +7100,9 @@ impl App {
         }
 
         // A click while following just **releases** the gizmo, locking in the current distance /
-        // target (#584). The extrusion is completed on Enter or the context "Extrude" button, not
-        // on this click, so the user can keep adjusting the distance field or target picker.
-        //
-        // Touch has no hover, so "grab, follow the cursor, click to drop" can't work with a
-        // finger: the pointer only exists while it's down. There the gesture is the natural
-        // one — press the handle, drag, lift — so the **release** is what locks it in (#829).
-        let release = if touch::active() {
-            ui.input(|i| i.pointer.primary_released())
-        } else {
-            primary_pressed
-        };
-        if following && release {
+        // target (#584/#1497). The extrusion is completed on Enter or the context "Extrude"
+        // button, not on this click. Touch: finger-up drops, because a finger cannot click-to-stick.
+        if value_gizmo_should_release(ui, following) {
             let target = self.pending_extrude_target.take();
             self.state.apply(Action::SetExtrudeTarget { target });
             self.extrude_gizmo_drag = None;
@@ -7383,7 +7374,7 @@ impl App {
 
     /// Chamfer/fillet tool interaction: click a two-line sketch vertex to start, then drag the
     /// gizmo (rendered in the GPU scene, reusing the extrude gizmo's mesh/hit-testing) or type
-    /// an amount, mirroring [`Self::handle_extrude_tool`] closely.
+    /// an amount. Same click-to-stick rule as Extrude: second click releases, Enter/✓ commits.
     fn handle_vertex_treatment_tool(
         &mut self,
         ui: &egui::Ui,
@@ -7476,28 +7467,18 @@ impl App {
                     );
                     if let Some(cvt) = self.state.creating_vertex_treatment.as_mut() {
                         cvt.amount_live = new_amount;
-                        if !cvt.user_edited {
-                            cvt.text = crate::value::format_length_display_in(new_amount, unit);
-                        }
+                        crate::tooltable::refresh_gizmo_field_text(
+                            cvt.user_edited,
+                            &mut cvt.text,
+                            crate::value::format_length_display_in(new_amount, unit),
+                        );
                     }
                 }
             }
         }
 
-        // A click while following commits the treatment(s).
-        if following && primary_pressed {
-            if let Some(mut cvt) = self.state.creating_vertex_treatment.take() {
-                let _ = actions::commit_inline_parameter_defs(&mut self.state.doc, [&mut cvt.text]);
-                // Pass the raw amount expression so an amount typed as a parameter stays parametric.
-                let amount_expr = cvt.amount_expr();
-                for point in cvt.points {
-                    let _ = self.state.apply(Action::CommitVertexTreatment {
-                        point,
-                        kind: cvt.kind,
-                        amount: amount_expr.clone(),
-                    });
-                }
-            }
+        // A click while following just **releases** the gizmo; Enter / ✓ commits (#1497).
+        if value_gizmo_should_release(ui, following) {
             self.vertex_treatment_gizmo_drag = None;
             return;
         }
@@ -7871,8 +7852,8 @@ impl App {
     }
 
     /// Offset tool inside a sketch: click lines/circles to toggle them into the
-    /// offset set; drag the push-pull handle (or type in the context pane) to set the
-    /// signed distance; Enter commits.
+    /// offset set; click-to-stick the push-pull handle (or type in the context pane) to
+    /// set the signed distance; Enter commits. A typed distance is not overwritten (#1502).
     #[allow(clippy::too_many_arguments)]
     fn handle_sketch_offset_tool(
         &mut self,
@@ -7921,20 +7902,23 @@ impl App {
                     hovered || self.offset_gizmo_drag,
                 );
             }
-            if hovered && ui.input(|i| i.pointer.primary_pressed()) {
+            let following = self.offset_gizmo_drag;
+            if !following && hovered && ui.input(|i| i.pointer.primary_pressed()) {
                 self.offset_gizmo_drag = true;
                 // Focus the distance field with its value selected so typing overwrites (#1161).
                 if let Some(c) = self.state.creating_sketch_offset.as_mut() {
-                    c.pending_focus = true;
+                    prepare_gizmo_value_field_focus(&mut c.user_edited, &mut c.pending_focus);
                 }
                 ui.ctx().memory_mut(|m| {
                     m.request_focus(egui::Id::new(SKETCH_OFFSET_DISTANCE_FIELD_ID))
                 });
             }
             if self.offset_gizmo_drag {
-                if !ui.input(|i| i.pointer.primary_down()) {
+                if value_gizmo_should_release(ui, following) {
                     self.offset_gizmo_drag = false;
-                } else if let Some(pp) = pointer_screen {
+                    return;
+                }
+                if let Some(pp) = pointer_screen {
                     if let Some(world) =
                         sketch_plane_point(cam, viewport, vp, &self.state.doc, session, pp)
                     {
@@ -7943,7 +7927,7 @@ impl App {
                         let unit = model::effective_length_unit(&self.state.doc, session.sketch);
                         let d = crate::value::snap_gizmo_length_mm(d, unit);
                         if let Some(c) = self.state.creating_sketch_offset.as_mut() {
-                            c.distance = crate::value::format_length_display_in(d, unit);
+                            c.apply_gizmo_distance(d, unit);
                         }
                     }
                 }
@@ -8262,16 +8246,17 @@ impl App {
             if !typed.is_empty() {
                 if let Some(co) = self.state.creating_sketch_offset.as_mut() {
                     co.distance = typed;
+                    co.user_edited = true;
                     co.pending_focus = true;
                 }
             }
         }
         let sketch = self.state.sketch_session.map(|s| s.sketch);
-        if let Some((mut text, mut want_focus)) = self
+        if let Some((mut text, mut want_focus, user_edited)) = self
             .state
             .creating_sketch_offset
             .as_ref()
-            .map(|c| (c.distance.clone(), c.pending_focus))
+            .map(|c| (c.distance.clone(), c.pending_focus, c.user_edited))
         {
             // Never steal the keyboard back from another field the user moved to (#506).
             want_focus = should_request_pending_tool_focus(
@@ -8279,9 +8264,7 @@ impl App {
                 ctx.memory(|m| m.focused().is_some_and(|f| f != id)),
             );
             // #886 / #1161: the same field the line/dimension distance uses; gizmo grab
-            // arms pending_focus so typing overwrites the dragged value. While focus is
-            // still pending, treat the buffer as not user-edited so select-all stays armed.
-            let user_edited = !want_focus;
+            // arms pending_focus so typing overwrites the dragged value.
             let mut result = SketchDimFieldResult::default();
             let doc = &mut self.state.doc;
             egui::Area::new(egui::Id::new("sketch_offset_distance_area"))
@@ -8308,6 +8291,9 @@ impl App {
             // the field reverted next frame (#517).
             if let Some(co) = self.state.creating_sketch_offset.as_mut() {
                 co.distance = text;
+                if result.changed {
+                    co.user_edited = true;
+                }
                 co.pending_focus = want_focus;
             }
             apply_dimension_field_feedback(&mut self.state, &result);
@@ -8566,7 +8552,7 @@ impl App {
                     }
                 }
             }
-            if primary_pressed {
+            if value_gizmo_should_release(ui, true) {
                 self.revolve_gizmo_drag = None;
             }
             return;
@@ -9278,30 +9264,30 @@ impl App {
                 Some(signed_angle_deg_about_axis(center, axis, zd, hit))
             };
             if let Some(drag) = self.face_spin_drag {
-                if ui.input(|i| i.pointer.primary_down()) {
-                    if let Some(angle) = pointer_screen.and_then(plane_angle) {
-                        let raw = rotation_gizmo_drag_deg(
-                            drag.start_spin,
-                            drag.start_cursor_angle,
-                            angle,
-                        );
-                        // Holding Control snaps the turn to whole 5° steps (#1360).
-                        let spin = if ui.input(|i| i.modifiers.command) {
-                            (raw / 5.0).round() * 5.0
-                        } else {
-                            crate::value::snap_gizmo_angle_deg(
-                                raw,
-                                self.state.doc.default_angle_unit,
-                            )
-                        };
-                        let spin = wrap_signed_deg(spin);
-                        if let Some(cm) = self.state.creating_move.as_mut() {
-                            // format {:.1} matches the 0.1° (or unit) step after snap (#1296).
-                            cm.face_spin = format!("{spin:.1}");
-                        }
-                    }
-                } else {
+                if value_gizmo_should_release(ui, true) {
                     self.face_spin_drag = None;
+                    return;
+                }
+                if let Some(angle) = pointer_screen.and_then(plane_angle) {
+                    let raw = rotation_gizmo_drag_deg(
+                        drag.start_spin,
+                        drag.start_cursor_angle,
+                        angle,
+                    );
+                    // Holding Control snaps the turn to whole 5° steps (#1360).
+                    let spin = if ui.input(|i| i.modifiers.command) {
+                        (raw / 5.0).round() * 5.0
+                    } else {
+                        crate::value::snap_gizmo_angle_deg(
+                            raw,
+                            self.state.doc.default_angle_unit,
+                        )
+                    };
+                    let spin = wrap_signed_deg(spin);
+                    if let Some(cm) = self.state.creating_move.as_mut() {
+                        // format {:.1} matches the 0.1° (or unit) step after snap (#1296).
+                        cm.face_spin = format!("{spin:.1}");
+                    }
                 }
                 return;
             }
@@ -9342,34 +9328,34 @@ impl App {
             let cursor_angle =
                 |pp: egui::Pos2| project(center).map(|c| (pp.y - c.y).atan2(pp.x - c.x));
             if let Some(drag) = self.free_move_rotation_drag {
-                if ui.input(|i| i.pointer.primary_down()) {
-                    if let Some(angle) = pointer_screen.and_then(cursor_angle) {
-                        let axis_dir = extrude::free_move_axis_dir(drag.axis);
-                        let sign = if axis_dir.dot(cam.eye() - center) > 0.0 {
-                            -1.0
-                        } else {
-                            1.0
-                        };
-                        let raw = rotation_gizmo_drag_deg(
-                            drag.start_angle_deg,
-                            sign * drag.start_cursor_angle.to_degrees(),
-                            sign * angle.to_degrees(),
-                        );
-                        // Holding Control snaps the turn to whole 5° steps (#1360).
-                        let deg = if ui.input(|i| i.modifiers.command) {
-                            (raw / 5.0).round() * 5.0
-                        } else {
-                            crate::value::snap_gizmo_angle_deg(
-                                raw,
-                                self.state.doc.default_angle_unit,
-                            )
-                        };
-                        let deg = wrap_signed_deg(deg);
-                        let name = extrude::free_move_rotation_gizmo_name(drag.axis);
-                        crate::actions::set_gizmo(&mut self.state, name, deg.to_radians());
-                    }
-                } else {
+                if value_gizmo_should_release(ui, true) {
                     self.free_move_rotation_drag = None;
+                    return;
+                }
+                if let Some(angle) = pointer_screen.and_then(cursor_angle) {
+                    let axis_dir = extrude::free_move_axis_dir(drag.axis);
+                    let sign = if axis_dir.dot(cam.eye() - center) > 0.0 {
+                        -1.0
+                    } else {
+                        1.0
+                    };
+                    let raw = rotation_gizmo_drag_deg(
+                        drag.start_angle_deg,
+                        sign * drag.start_cursor_angle.to_degrees(),
+                        sign * angle.to_degrees(),
+                    );
+                    // Holding Control snaps the turn to whole 5° steps (#1360).
+                    let deg = if ui.input(|i| i.modifiers.command) {
+                        (raw / 5.0).round() * 5.0
+                    } else {
+                        crate::value::snap_gizmo_angle_deg(
+                            raw,
+                            self.state.doc.default_angle_unit,
+                        )
+                    };
+                    let deg = wrap_signed_deg(deg);
+                    let name = extrude::free_move_rotation_gizmo_name(drag.axis);
+                    crate::actions::set_gizmo(&mut self.state, name, deg.to_radians());
                 }
                 return;
             }
@@ -9429,25 +9415,25 @@ impl App {
         let display_offset = Self::free_move_handle_display_offset();
         if let Some(handles) = self.move_gizmo_arrows() {
             if let Some(drag) = self.move_gizmo_drag {
-                if ui.input(|i| i.pointer.primary_down()) {
-                    if let Some(pp) = pointer_screen {
-                        let name = extrude::free_move_translation_gizmo_name(drag.axis);
-                        let dir = extrude::free_move_axis_dir(drag.axis);
-                        let value = crate::value::snap_gizmo_length_mm(
-                            construction::offset_from_normal_drag(
-                                drag.origin,
-                                dir,
-                                project,
-                                drag.start_translation,
-                                drag.start_screen,
-                                pp,
-                            ),
-                            self.state.doc.default_length_unit,
-                        );
-                        crate::actions::set_gizmo(&mut self.state, name, value);
-                    }
-                } else {
+                if value_gizmo_should_release(ui, true) {
                     self.move_gizmo_drag = None;
+                    return;
+                }
+                if let Some(pp) = pointer_screen {
+                    let name = extrude::free_move_translation_gizmo_name(drag.axis);
+                    let dir = extrude::free_move_axis_dir(drag.axis);
+                    let value = crate::value::snap_gizmo_length_mm(
+                        construction::offset_from_normal_drag(
+                            drag.origin,
+                            dir,
+                            project,
+                            drag.start_translation,
+                            drag.start_screen,
+                            pp,
+                        ),
+                        self.state.doc.default_length_unit,
+                    );
+                    crate::actions::set_gizmo(&mut self.state, name, value);
                 }
                 return;
             }
@@ -10051,6 +10037,8 @@ impl App {
                         distance_is_end,
                         var_mru: computed.as_mru(),
                         editing: Some(op),
+                        user_edited: true,
+                        pending_focus: false,
                     });
                     self.state.apply(Action::SetTool(Tool::Repeat));
                 }
@@ -10175,6 +10163,7 @@ impl App {
                         construction: existing.construction,
                         editing: Some(op),
                         pending_focus: true,
+                        user_edited: true,
                     });
                     self.state.apply(Action::SetTool(Tool::Offset));
                     if self.state.sketch_session.is_none() {
@@ -11649,10 +11638,47 @@ impl App {
             // being dragged instead of the Bodies picker and typing lands there afterwards.
             if let Some(cr) = self.state.creating_repeat.as_mut() {
                 cr.touch_var(model::RepeatVar::Distance);
+                // Distance just became a set variable: seed it from the handle so the
+                // pattern still evaluates before the first follow frame (#1502).
+                if cr.length.trim().is_empty() {
+                    cr.length = crate::value::format_length_display_in(
+                        distance,
+                        self.state.doc.default_length_unit,
+                    );
+                }
+                prepare_gizmo_value_field_focus(&mut cr.user_edited, &mut cr.pending_focus);
             }
             ui.ctx()
                 .memory_mut(|m| m.request_focus(context::repeat_value_field_id("Distance")));
             return true;
+        }
+        // Typing while the handle is following overwrites Distance (#1161/#1502), matching
+        // Extrude/Offset: the pane field may not hold the keyboard in a scripted window.
+        if let Some(cr) = self.state.creating_repeat.as_mut() {
+            let field_id = context::repeat_value_field_id("Distance");
+            let field_focused = ui.ctx().memory(|m| m.has_focus(field_id));
+            let other_wants_kb = ui.ctx().egui_wants_keyboard_input() && !field_focused;
+            if should_grab_unfocused_tool_typing(field_focused, other_wants_kb) {
+                let typed: String = ui.ctx().input(|i| {
+                    i.events
+                        .iter()
+                        .filter_map(|e| match e {
+                            egui::Event::Text(t) => Some(t.as_str()),
+                            _ => None,
+                        })
+                        .collect()
+                });
+                let typed: String = typed
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || "._-+*/()= ".contains(*c))
+                    .collect();
+                if !typed.is_empty() {
+                    cr.length = typed;
+                    cr.user_edited = true;
+                    cr.pending_focus = true;
+                    cr.touch_var(model::RepeatVar::Distance);
+                }
+            }
         }
         // Following: track the cursor every frame, no button required.
         if let (Some(pp), Some(drag)) = (pointer_screen, self.repeat_gizmo_drag) {
@@ -11669,12 +11695,11 @@ impl App {
                 unit,
             );
             if let Some(cr) = self.state.creating_repeat.as_mut() {
-                cr.length = crate::value::format_length_display_in(new_distance.max(0.0), unit);
-                cr.touch_var(model::RepeatVar::Distance);
+                cr.apply_gizmo_distance(new_distance, unit);
             }
         }
         // A click while following just releases the handle; the repeat still commits on Enter.
-        if primary_pressed {
+        if value_gizmo_should_release(ui, true) {
             self.repeat_gizmo_drag = None;
         }
         true
@@ -11979,19 +12004,14 @@ impl App {
                             .max(1e-3);
                             if let Some(cs) = self.state.creating_shell.as_mut() {
                                 cs.thickness_live = new_t;
-                                if !cs.user_edited {
-                                    cs.thickness_text =
-                                        crate::value::format_length_display_in(new_t, unit);
-                                }
+                                crate::tooltable::refresh_gizmo_field_text(
+                                    cs.user_edited,
+                                    &mut cs.thickness_text,
+                                    crate::value::format_length_display_in(new_t, unit),
+                                );
                             }
                         }
-                        // Second click releases the handle (touch: release).
-                        let release = if touch::active() {
-                            ui.input(|i| i.pointer.primary_released())
-                        } else {
-                            primary_pressed && following
-                        };
-                        if release {
+                        if value_gizmo_should_release(ui, following) {
                             self.shell_gizmo_drag = None;
                         }
                         // While the gizmo is active, don't also feed picks into the pickers.
@@ -13235,28 +13255,18 @@ impl App {
                     );
                     if let Some(cet) = self.state.creating_edge_treatment.as_mut() {
                         cet.amount_live = new_amount;
-                        if !cet.user_edited {
-                            cet.text = crate::value::format_length_display_in(new_amount, unit);
-                        }
+                        crate::tooltable::refresh_gizmo_field_text(
+                            cet.user_edited,
+                            &mut cet.text,
+                            crate::value::format_length_display_in(new_amount, unit),
+                        );
                     }
                 }
             }
         }
 
-        // A click while following commits the treatment set.
-        if following && primary_pressed {
-            if let Some(mut cet) = self.state.creating_edge_treatment.take() {
-                // #201: a typed amount can define a parameter (`name = expr`).
-                let _ = actions::commit_inline_parameter_defs(&mut self.state.doc, [&mut cet.text]);
-                let amount = cet.evaluated_amount(&self.state.doc);
-                let expression = cet.amount_expr();
-                self.state.apply(Action::CommitEdgeTreatments {
-                    edges: cet.edges.clone(),
-                    kind: cet.kind,
-                    amount,
-                    expression,
-                });
-            }
+        // A click while following just **releases** the gizmo; Enter / ✓ commits (#1497).
+        if value_gizmo_should_release(ui, following) {
             self.edge_treatment_gizmo_drag = None;
             return;
         }
@@ -15417,6 +15427,7 @@ impl App {
                         .map(|c| !c.targets.is_empty() || !c.plane_targets.is_empty() || !c.sketch_targets.is_empty() || !c.extrusion_targets.is_empty())
                         .unwrap_or(false)
                         && preview.is_some_and(|n| n > 1),
+                    pending_focus: cr.map(|c| c.pending_focus).unwrap_or(false),
                 }
             }),
             sketch_repeat: self.state.creating_sketch_repeat.as_ref().map(|c| {
@@ -16610,7 +16621,12 @@ impl App {
                             }
                             context::RepeatEdit::Distance(v) => {
                                 cr.length = v;
+                                cr.user_edited = true;
+                                cr.pending_focus = false;
                                 cr.touch_var(RepeatVar::Distance);
+                            }
+                            context::RepeatEdit::FocusConsumed => {
+                                cr.pending_focus = false;
                             }
                             context::RepeatEdit::ToggleGapOffset => {
                                 cr.gap_is_offset = !cr.gap_is_offset;
@@ -16655,7 +16671,10 @@ impl App {
                     edit => {
                         if let Some(co) = self.state.creating_sketch_offset.as_mut() {
                             match edit {
-                                context::SketchOffsetEdit::Distance(v) => co.distance = v,
+                                context::SketchOffsetEdit::Distance(v) => {
+                                    co.distance = v;
+                                    co.user_edited = true;
+                                }
                                 context::SketchOffsetEdit::Construction(v) => {
                                     co.construction = v
                                 }
@@ -21617,6 +21636,17 @@ pub(crate) fn should_select_all_rect_value(
 fn prepare_gizmo_value_field_focus(user_edited: &mut bool, pending_focus: &mut bool) {
     *user_edited = false;
     *pending_focus = true;
+}
+
+/// Value-gizmo pointer contract (#1497): click-to-stick, second click releases;
+/// on touch, finger-up drops the handle.
+fn value_gizmo_should_release(ui: &egui::Ui, following: bool) -> bool {
+    crate::tooltable::Gizmo::Value.should_release(
+        following,
+        ui.input(|i| i.pointer.primary_pressed()),
+        ui.input(|i| i.pointer.primary_released()),
+        touch::active(),
+    )
 }
 
 /// Unfocused type-to-edit for floating tool fields (extrude depth, etc.): only grab
@@ -29115,8 +29145,6 @@ impl App {
                 let angle_unit = self.state.doc.default_angle_unit;
                 if let Some(cp) = &mut self.state.creating_plane {
                     let scroll = raw_scroll_y(ui.ctx());
-                    let primary_down = ui.input(|i| i.pointer.primary_down());
-                    let primary_released = ui.input(|i| i.pointer.primary_released());
 
                     // #483: try complementary line+point upgrade *before* gizmo grab so an
                     // endpoint near the offset handle still completes the set.
@@ -29167,7 +29195,8 @@ impl App {
                         }
                     }
 
-                    if primary_pressed && !complemented {
+                    let following = cp.axis_gizmo_drag.is_some();
+                    if !following && primary_pressed && !complemented {
                         match &cp.reference {
                             PlaneReference::Axis {
                                 origin,
@@ -29189,6 +29218,7 @@ impl App {
                                         start_screen: pp,
                                     });
                                     // Focus the field for the grabbed handle so typing overwrites (#1161).
+                                    // Do not unlock the *other* field — a typed angle stays typed (#1502).
                                     match hit {
                                         AxisGizmoHit::Offset => {
                                             cp.focused = PlaneDim::Offset;
@@ -29196,7 +29226,6 @@ impl App {
                                                 &mut cp.user_edited_offset,
                                                 &mut cp.pending_focus,
                                             );
-                                            cp.user_edited_angle = false;
                                             ui.ctx().memory_mut(|m| {
                                                 m.request_focus(egui::Id::new("cp_offset"))
                                             });
@@ -29207,7 +29236,6 @@ impl App {
                                                 &mut cp.user_edited_angle,
                                                 &mut cp.pending_focus,
                                             );
-                                            cp.user_edited_offset = false;
                                             ui.ctx().memory_mut(|m| {
                                                 m.request_focus(egui::Id::new("cp_angle"))
                                             });
@@ -29245,7 +29273,9 @@ impl App {
 
                     let gizmo_drag = cp.axis_gizmo_drag;
                     if let Some(drag) = gizmo_drag {
-                        if primary_down {
+                        if value_gizmo_should_release(ui, following) {
+                            cp.axis_gizmo_drag = None;
+                        } else {
                             match drag.hit {
                                 AxisGizmoHit::Offset => {
                                     let (origin, normal) = match &cp.reference {
@@ -29294,10 +29324,6 @@ impl App {
                                 }
                             }
                         }
-                    }
-
-                    if primary_released {
-                        cp.axis_gizmo_drag = None;
                     }
 
                     if scroll != 0.0

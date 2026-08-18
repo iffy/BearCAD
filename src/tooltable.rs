@@ -68,10 +68,43 @@ pub enum Gizmo {
     /// the cursor, so the next click belongs to the draft and nothing else may take it —
     /// that is the one rule behind [`crate::actions::AppState::draft_blocks_tool_switch`].
     Placement,
-    /// A dragged handle plus a typed field: the value sticks where it is left, and typing
-    /// into the field locks it (`user_edited`). Picks still go to the tool's pickers, so a
-    /// value gizmo never blocks a tool switch.
+    /// A dragged handle plus a typed field: click-to-stick, the second click *releases*
+    /// (Enter/✓ commits), and typing into the field locks it (`user_edited`). On touch,
+    /// finger-up drops the handle — a finger cannot click-to-stick. Picks still go to the
+    /// tool's pickers, so a value gizmo never blocks a tool switch.
     Value,
+}
+
+impl Gizmo {
+    /// #1497: a following value-gizmo handle drops on the second click (mouse) or
+    /// finger-up (touch). Placement tools finish on a click because the pointer *is*
+    /// the value; this never returns true for them.
+    pub fn should_release(
+        self,
+        following: bool,
+        primary_pressed: bool,
+        primary_released: bool,
+        touch: bool,
+    ) -> bool {
+        matches!(self, Self::Value)
+            && following
+            && if touch {
+                primary_released
+            } else {
+                primary_pressed
+            }
+    }
+}
+
+/// Drag writes the live number; only refresh the field text when it is not typed (#1502).
+pub fn refresh_gizmo_field_text(
+    user_edited: bool,
+    text: &mut String,
+    formatted: impl Into<String>,
+) {
+    if !user_edited {
+        *text = formatted.into();
+    }
 }
 
 /// What Esc does (#1484). One rule, so no tool can drift again: the first press empties what
@@ -1204,6 +1237,60 @@ mod tests {
                 kind
             );
         }
+    }
+
+    /// #1497: one pointer rule for every value gizmo — click-to-stick, second click
+    /// releases (does not commit), touch lift drops. Placement tools stay click-to-finish.
+    #[test]
+    fn value_gizmo_second_click_releases() {
+        for r in all_rows() {
+            match r.gizmo {
+                Gizmo::Value => {
+                    assert!(
+                        r.gizmo.should_release(true, true, false, false),
+                        "{:?}/{:?} value gizmo must drop on the second click",
+                        r.tool,
+                        r.space
+                    );
+                    assert!(
+                        !r.gizmo.should_release(true, false, true, false),
+                        "{:?}/{:?} mouse lift must not drop a following value gizmo",
+                        r.tool,
+                        r.space
+                    );
+                    assert!(
+                        r.gizmo.should_release(true, false, true, true),
+                        "{:?}/{:?} touch lift must drop a following value gizmo",
+                        r.tool,
+                        r.space
+                    );
+                    assert!(
+                        !r.gizmo.should_release(false, true, false, false),
+                        "{:?}/{:?} grab click is not a release",
+                        r.tool,
+                        r.space
+                    );
+                }
+                Gizmo::Placement | Gizmo::None => {
+                    assert!(
+                        !r.gizmo.should_release(true, true, true, true),
+                        "{:?}/{:?} is not a value gizmo and must not use the release rule",
+                        r.tool,
+                        r.space
+                    );
+                }
+            }
+        }
+    }
+
+    /// #1502: a typed field is not rewritten by a later live number.
+    #[test]
+    fn typed_gizmo_field_stays_put() {
+        let mut text = "12".to_string();
+        refresh_gizmo_field_text(true, &mut text, "20");
+        assert_eq!(text, "12");
+        refresh_gizmo_field_text(false, &mut text, "20");
+        assert_eq!(text, "20");
     }
 
     /// #1482/#1508: only a placement gizmo owns the next click, so only those rows block a
