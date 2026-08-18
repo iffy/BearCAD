@@ -4667,13 +4667,12 @@ pub(crate) fn shape_field_visible(
 
 /// Off-screen rect for a hidden inspector slot. Each salt keeps a stable unique
 /// rect so the widget stays in the layer (no red flash on mode switch) without
-/// occupying layout space (#1430).
+/// occupying layout space (#1430). Y is spaced far apart so two salts never
+/// share a pixel — `hash % 4000` collided and remounted inner widgets (#1457).
 fn hidden_slot_rect(salt: &impl std::fmt::Debug) -> egui::Rect {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    format!("{salt:?}").hash(&mut hasher);
-    let y = -10_000.0 - (hasher.finish() % 4_000) as f32;
-    egui::Rect::from_min_size(egui::pos2(-10_000.0, y), egui::vec2(240.0, 32.0))
+    let id = egui::Id::new(("hidden_slot_rect", format!("{salt:?}")));
+    let y = -10_000.0 - (id.value() % 1_000_000) as f32 * 80.0;
+    egui::Rect::from_min_size(egui::pos2(-10_000.0, y), egui::vec2(240.0, 64.0))
 }
 
 /// Run `add` for a slot that may be hidden. Unused slots stay in the widget layer
@@ -4686,15 +4685,19 @@ fn with_optional_slot<R>(
     surrender: Option<egui::Id>,
     add: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    // Both paths use `new_child` so auto-ids stay in lockstep when visibility
-    // flips. Hidden children do not `advance_cursor_after_rect`, which is what
-    // used to leave empty gaps between the current mode's rows.
+    // Explicit id, not `id_salt`: child auto-ids must not mix in the parent's
+    // `next_auto_id`. Visible rows call `advance_cursor_after_rect` (which
+    // increments that counter); hidden rows must not, or they leave empty gaps
+    // (#1430). Mixing the counter into the child id remounted hidden widgets
+    // at the same off-layout rect (C4FF→0F4C) and flashed the visible input
+    // red (#1457).
     let dest = (!visible).then(|| hidden_slot_rect(&salt));
-    let mut builder = egui::UiBuilder::new().id_salt(salt);
+    let id = egui::Id::new(("optional_slot", format!("{salt:?}")));
+    let mut builder = egui::UiBuilder::new().id(id);
     if let Some(dest) = dest {
-        if let Some(id) = surrender {
-            if ui.ctx().memory(|m| m.focused()) == Some(id) {
-                ui.ctx().memory_mut(|m| m.surrender_focus(id));
+        if let Some(focus) = surrender {
+            if ui.ctx().memory(|m| m.focused()) == Some(focus) {
+                ui.ctx().memory_mut(|m| m.surrender_focus(focus));
             }
         }
         builder = builder.invisible().max_rect(dest);
@@ -4703,6 +4706,9 @@ fn with_optional_slot<R>(
     let result = add(&mut child);
     if visible {
         ui.advance_cursor_after_rect(child.min_rect());
+    } else {
+        // Same parent auto-id step as the visible path, without taking layout.
+        ui.skip_ahead_auto_ids(1);
     }
     result
 }
@@ -5934,12 +5940,13 @@ pub fn show_pane(
                 pending = Some(MoveEdit::TranslateMode(mode));
             }
         }
-        // Every mode-specific row stays in the widget layer (#1416) so switching
-        // Translate modes does not remount a different input on the same rect
-        // (egui paints that red). Hidden rows paint off-layout so each mode's
-        // own fields pack at the top (#1430). Unused pickers stay unregistered
-        // (#1081). Paint order of the visible rows: Face Snap's mate, then
-        // Free's reference + XYZ, then Rotation.
+        // Every mode-specific row stays in the widget layer (#1416) with a
+        // stable child id (#1457) so switching Translate modes does not remount
+        // a different input on the same rect (egui paints that red). Hidden
+        // rows paint off-layout so each mode's own fields pack at the top
+        // (#1430). Unused pickers stay unregistered (#1081). Paint order of
+        // the visible rows: Face Snap's mate, then Free's reference + XYZ,
+        // then Rotation.
         let tool_pickers = &content.tool_pickers;
         let dummy_picker = ElementPicker::new(
             ElementFilter::kind(ElementKind::Vertex),
@@ -9117,6 +9124,50 @@ mod tests {
         );
     }
 
+    /// #1457: off-layout slots must not share a pixel or their inner widgets
+    /// remount onto each other when a neighbour becomes visible.
+    #[test]
+    fn hidden_slot_rects_do_not_overlap() {
+        let mut salts: Vec<String> = move_picker_slots()
+            .iter()
+            .map(|(id, _, _)| format!("move_slot:{id}"))
+            .chain(move_value_slots().iter().map(|s| format!("move_slot:{s}")))
+            .chain(
+                ["flip", "rotation", "angle_snap"]
+                    .iter()
+                    .map(|s| format!("move_slot:{s}")),
+            )
+            .chain(
+                ["Width", "Depth", "Height", "Radius"]
+                    .iter()
+                    .map(|s| format!("shape_dim:{s}")),
+            )
+            .collect();
+        salts.sort();
+        salts.dedup();
+        let rects: Vec<(String, egui::Rect)> = salts
+            .iter()
+            .map(|salt| {
+                let rect = if let Some(rest) = salt.strip_prefix("move_slot:") {
+                    hidden_slot_rect(&("move_slot", rest))
+                } else if let Some(rest) = salt.strip_prefix("shape_dim:") {
+                    hidden_slot_rect(&("shape_dim", rest))
+                } else {
+                    hidden_slot_rect(salt)
+                };
+                (salt.clone(), rect)
+            })
+            .collect();
+        for (i, (a, ra)) in rects.iter().enumerate() {
+            for (b, rb) in rects.iter().skip(i + 1) {
+                assert!(
+                    !ra.intersects(*rb),
+                    "hidden slots {a} and {b} overlap: {ra:?} vs {rb:?}"
+                );
+            }
+        }
+    }
+
     /// #1430: hidden Move/Shape/Joint slots must stay in the widget layer without
     /// pushing later rows down. Scattering visible fields to keep ids on the same
     /// rect is how the Move inspector grew those empty gaps.
@@ -9203,6 +9254,235 @@ mod tests {
         assert!(move_picker_slot_visible(M::Free, "move_reference_point"));
         assert!(!move_picker_slot_visible(M::Free, "move_end_point_a"));
         assert!(!move_picker_slot_visible(M::InPlace, "move_face_moving"));
+    }
+
+    fn move_slot_auto_id_key(salt: &str) -> egui::Id {
+        egui::Id::new(("move_slot_auto_id", salt))
+    }
+
+    /// Paint the Move pane's always-mounted slots the way [`show_pane`] does, and
+    /// remember each child's first auto-id so tests can see remounts (#1457).
+    fn paint_move_slots_for_id_test(
+        ui: &mut egui::Ui,
+        doc: &Document,
+        mode: crate::model::MoveTranslateMode,
+        dummy: &ElementPicker,
+    ) {
+        use crate::expression_input::ValueKind;
+        for (id, _, label) in move_picker_slots() {
+            with_optional_slot(
+                ui,
+                ("move_slot", *id),
+                move_picker_slot_visible(mode, id),
+                Some(egui::Id::new(*id)),
+                |ui| {
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(move_slot_auto_id_key(id), ui.next_auto_id());
+                    });
+                    labeled_row_top(ui, *label, |ui| {
+                        let _ = crate::element_picker::show(ui, dummy, doc, *id);
+                    });
+                },
+            );
+        }
+        with_optional_slot(
+            ui,
+            ("move_slot", "flip"),
+            mode == crate::model::MoveTranslateMode::FaceSnap,
+            None,
+            |ui| {
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(move_slot_auto_id_key("flip"), ui.next_auto_id());
+                });
+                let mut flip = false;
+                let _ = checkbox_row(ui, "Flip", &mut flip, None);
+            },
+        );
+        for salt in move_value_slots() {
+            let id = move_field_id(salt);
+            with_optional_slot(
+                ui,
+                ("move_slot", *salt),
+                move_value_slot_visible(mode, salt, false),
+                Some(id),
+                |ui| {
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(move_slot_auto_id_key(salt), ui.next_auto_id());
+                    });
+                    labeled_row(ui, *salt, |ui| {
+                        let mut text = "0".to_string();
+                        let _ = crate::expression_input::ValueInput::from_id(id, ValueKind::Length)
+                            .width(90.0)
+                            .show(ui, &mut text, doc);
+                    });
+                },
+            );
+        }
+        with_optional_slot(
+            ui,
+            ("move_slot", "rotation"),
+            mode == crate::model::MoveTranslateMode::PointSnap
+                || mode == crate::model::MoveTranslateMode::Free,
+            None,
+            |ui| {
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(move_slot_auto_id_key("rotation"), ui.next_auto_id());
+                });
+                section_label(ui, "Rotation");
+            },
+        );
+        let snap_id = move_field_id("angle_snap");
+        with_optional_slot(
+            ui,
+            ("move_slot", "angle_snap"),
+            mode == crate::model::MoveTranslateMode::PointSnap,
+            Some(snap_id),
+            |ui| {
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(move_slot_auto_id_key("angle_snap"), ui.next_auto_id());
+                });
+                labeled_row(ui, "Angle snap", |ui| {
+                    let mut degrees = 15.0_f32;
+                    ui.spacing_mut().slider_width = 46.0;
+                    let _ = ui.add(egui::Slider::new(&mut degrees, 0.0..=90.0).show_value(false));
+                    let mut text = "15".to_string();
+                    let _ = crate::expression_input::ValueInput::from_id(snap_id, ValueKind::Angle)
+                        .width(62.0)
+                        .show(ui, &mut text, doc);
+                });
+            },
+        );
+    }
+
+    fn collect_move_slot_auto_ids(ctx: &egui::Context) -> Vec<(&'static str, Option<egui::Id>)> {
+        let mut salts: Vec<&str> = move_picker_slots()
+            .iter()
+            .map(|(id, _, _)| *id)
+            .chain(move_value_slots().iter().copied())
+            .chain(["flip", "rotation", "angle_snap"])
+            .collect();
+        salts.sort_unstable();
+        salts.dedup();
+        salts
+            .into_iter()
+            .map(|salt| {
+                (
+                    salt,
+                    ctx.data(|d| d.get_temp::<egui::Id>(move_slot_auto_id_key(salt))),
+                )
+            })
+            .collect()
+    }
+
+    fn red_id_change_rects(output: &egui::FullOutput) -> Vec<egui::Rect> {
+        fn from_shape(shape: &egui::Shape, out: &mut Vec<egui::Rect>) {
+            match shape {
+                egui::Shape::Rect(r)
+                    if r.stroke.color == egui::Color32::RED && r.stroke.width == 2.0 =>
+                {
+                    out.push(r.rect);
+                }
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        from_shape(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut rects = Vec::new();
+        for clipped in &output.shapes {
+            from_shape(&clipped.shape, &mut rects);
+        }
+        rects
+    }
+
+    /// #1457: a slot's inner auto-ids must not depend on which *other* Move modes
+    /// are visible. `advance_cursor_after_rect` used to increment the parent only
+    /// for visible rows, so hidden rows remounted (C4FF→0F4C) and flashed red.
+    #[test]
+    fn move_slot_auto_ids_do_not_depend_on_visible_mode() {
+        use crate::model::MoveTranslateMode as M;
+        let ctx = egui::Context::default();
+        ctx.options_mut(|o| {
+            o.max_passes = std::num::NonZeroUsize::new(2).unwrap();
+        });
+        let doc = Document::default();
+        let dummy = ElementPicker::new(
+            ElementFilter::kind(ElementKind::Vertex),
+            PickLimit::Finite(1),
+        );
+        let mut by_mode = Vec::new();
+        for mode in [M::FaceSnap, M::PointSnap, M::Free, M::InPlace, M::FaceSnap] {
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                egui::Panel::right("context").default_size(200.0).show(ui, |ui| {
+                    ui.scope_builder(
+                        egui::UiBuilder::new().id(egui::Id::new(("pane_contents", "context"))),
+                        |ui| {
+                            paint_move_slots_for_id_test(ui, &doc, mode, &dummy);
+                        },
+                    );
+                });
+            });
+            by_mode.push((mode, collect_move_slot_auto_ids(&ctx)));
+        }
+        let (first_mode, first_ids) = &by_mode[0];
+        for (mode, ids) in &by_mode[1..] {
+            assert_eq!(
+                ids, first_ids,
+                "Move slot auto-ids changed from {first_mode:?} to {mode:?}"
+            );
+        }
+    }
+
+    /// #1457: switching Face Snap / Point Snap / Free must not paint egui's red
+    /// "Widget rect changed id between passes" overlay on the Move inspector.
+    #[test]
+    fn move_mode_switch_does_not_flash_red_id_change() {
+        use crate::model::MoveTranslateMode as M;
+        let ctx = egui::Context::default();
+        ctx.options_mut(|o| {
+            o.max_passes = std::num::NonZeroUsize::new(2).unwrap();
+        });
+        let doc = Document::default();
+        let dummy = ElementPicker::new(
+            ElementFilter::kind(ElementKind::Vertex),
+            PickLimit::Finite(1),
+        );
+        let mut flashes = Vec::new();
+        for (frame, mode) in [
+            M::FaceSnap,
+            M::FaceSnap,
+            M::PointSnap,
+            M::Free,
+            M::InPlace,
+            M::FaceSnap,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let output = ctx.run_ui(Default::default(), |ui| {
+                egui::Panel::right("context").default_size(200.0).show(ui, |ui| {
+                    ui.scope_builder(
+                        egui::UiBuilder::new().id(egui::Id::new(("pane_contents", "context"))),
+                        |ui| {
+                            paint_move_slots_for_id_test(ui, &doc, mode, &dummy);
+                        },
+                    );
+                });
+            });
+            // Frame 0 settles panel size; after that a mode switch must not flash.
+            if frame > 0 {
+                let rects = red_id_change_rects(&output);
+                if !rects.is_empty() {
+                    flashes.push((frame, mode, rects));
+                }
+            }
+        }
+        assert!(
+            flashes.is_empty(),
+            "Move mode switch painted red id-change rects: {flashes:?}"
+        );
     }
 
     /// #982: with a sketch open, the Select tool's picker view carries the sketch-only rule
