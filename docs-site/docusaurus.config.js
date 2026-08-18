@@ -69,18 +69,6 @@ const config = {
     locales: ['en'],
   },
 
-  // First-paint touch flag: iOS "Request Desktop Website" can report
-  // hover:hover + pointer:fine, so CSS media queries alone miss iPhone.
-  // maxTouchPoints stays 5 on iPhone. Landing page hides .heroBrowser.
-  headTags: [
-    {
-      tagName: 'script',
-      attributes: {type: 'text/javascript'},
-      innerHTML:
-        "if(navigator.maxTouchPoints>0)document.documentElement.classList.add('has-touchscreen')",
-    },
-  ],
-
   stylesheets: [
     {
       href: 'https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Outfit:wght@100&display=swap',

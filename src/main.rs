@@ -772,6 +772,32 @@ mod cli_tests {
         );
     }
 
+    /// #1536: the hosted web app warns on phones, tablets, and small screens.
+    #[test]
+    fn web_index_warns_on_touch_and_small_screens() {
+        let html = include_str!("../web/index.html");
+        assert!(
+            html.contains("doesn't work very well"),
+            "web app should banner that it doesn't work well on awkward devices"
+        );
+        assert!(
+            html.contains("maxTouchPoints") && html.contains("has-touchscreen"),
+            "banner should catch iPhone even when CSS reports a fine pointer"
+        );
+        assert!(
+            html.contains("(pointer: coarse)") && html.contains("(hover: none)"),
+            "banner CSS should show on touch / coarse-pointer devices"
+        );
+        assert!(
+            html.contains("max-width: 700px"),
+            "banner CSS should show on small screens"
+        );
+        assert!(
+            html.contains("id=\"device-banner\""),
+            "banner needs a stable id so dismiss + CSS can target it"
+        );
+    }
+
     #[test]
     fn web_index_prevents_browser_context_menu() {
         let html = include_str!("../web/index.html");

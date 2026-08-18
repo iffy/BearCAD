@@ -512,29 +512,30 @@ mod tests {
         );
     }
 
-    /// #1455: landing-page "Open in your browser" stays in the markup for
-    /// mouse/trackpad, but CSS hides it on touch / coarse-pointer. The
-    /// downloads page still offers the hosted web app.
+    /// #1536: "Open in your browser" stays visible on phones and touch
+    /// devices. The web app itself warns that it works poorly there.
     #[test]
-    fn homepage_hides_open_in_browser_on_touch() {
+    fn homepage_keeps_open_in_browser_on_touch() {
         let home = include_str!("../docs-site/src/pages/index.js");
         assert!(
             home.contains("Open in your browser"),
-            "landing page should still offer Open in your browser for fine-pointer devices"
+            "landing page should offer Open in your browser on every device"
         );
         assert!(
-            home.contains("heroBrowser"),
-            "landing Open in your browser CTA needs a class CSS can hide on touch"
+            !home.contains("heroBrowser"),
+            "landing Open in your browser CTA should not carry a touch-hide class"
         );
 
         let css = include_str!("../docs-site/src/pages/index.module.css");
         assert!(
-            css.contains("(hover: none)") && css.contains("(pointer: coarse)"),
-            "landing CSS should hide the in-browser CTA on hover:none / pointer:coarse"
+            !css.contains("heroBrowser") && !css.contains("has-touchscreen"),
+            "landing CSS should not hide the in-browser CTA on touch"
         );
+
+        let config = include_str!("../docs-site/docusaurus.config.js");
         assert!(
-            css.contains(".heroBrowser") && css.contains("display: none"),
-            "landing CSS should display:none the hero in-browser CTA on touch"
+            !config.contains("has-touchscreen"),
+            "landing page should not flag touchscreens just to hide Open in your browser"
         );
 
         let get = include_str!("../docs-site/src/components/GetBearCAD/index.js");

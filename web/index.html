@@ -24,6 +24,46 @@
       user-select: none;
       -webkit-touch-callout: none;
     }
+    body {
+      display: flex;
+      flex-direction: column;
+    }
+    #device-banner {
+      display: none;
+      flex: 0 0 auto;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 16px;
+      padding-left: max(16px, env(safe-area-inset-left, 0px));
+      padding-right: max(16px, env(safe-area-inset-right, 0px));
+      background: #e8a317;
+      color: #1c1e21;
+      font: 14px/1.35 system-ui, sans-serif;
+      z-index: 2;
+    }
+    #device-banner button {
+      flex: 0 0 auto;
+      margin: 0;
+      padding: 0 6px;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      font: 700 18px/1 system-ui, sans-serif;
+      cursor: pointer;
+    }
+    /* Touch / coarse pointer, plus phone-sized viewports (#1536). */
+    @media (hover: none), (pointer: coarse), (any-pointer: coarse), (max-width: 700px) {
+      #device-banner:not([data-dismissed]) { display: flex; }
+    }
+    /* iOS "Request Desktop Website" can report hover:hover + pointer:fine;
+       maxTouchPoints stays 5, so JS adds this class. */
+    html.has-touchscreen #device-banner:not([data-dismissed]) { display: flex; }
+    #app-root {
+      position: relative;
+      flex: 1 1 auto;
+      min-height: 0;
+    }
     canvas {
       display: block;
       width: 100%;
@@ -72,12 +112,35 @@
   </style>
 </head>
 <body>
-  <div id="loading">
-    <div><strong>BearCAD</strong> is loading…</div>
-    <div class="spinner" aria-hidden="true"></div>
-    <div class="bar" aria-hidden="true"><div class="bar-fill" id="bar-fill"></div></div>
+  <div id="device-banner" role="status">
+    <span>BearCAD doesn't work very well on phones, tablets, or small screens.</span>
+    <button type="button" id="device-banner-dismiss" aria-label="Dismiss">×</button>
   </div>
-  <canvas id="bearcad_canvas"></canvas>
+  <div id="app-root">
+    <div id="loading">
+      <div><strong>BearCAD</strong> is loading…</div>
+      <div class="spinner" aria-hidden="true"></div>
+      <div class="bar" aria-hidden="true"><div class="bar-fill" id="bar-fill"></div></div>
+    </div>
+    <canvas id="bearcad_canvas"></canvas>
+  </div>
+  <script>
+    // First-paint touch flag: iOS desktop-site mode can report a fine pointer.
+    if (navigator.maxTouchPoints > 0) {
+      document.documentElement.classList.add("has-touchscreen");
+    }
+    (function () {
+      const banner = document.getElementById("device-banner");
+      const key = "bearcad-device-banner";
+      try {
+        if (sessionStorage.getItem(key)) banner?.setAttribute("data-dismissed", "");
+      } catch (_) {}
+      document.getElementById("device-banner-dismiss")?.addEventListener("click", () => {
+        banner?.setAttribute("data-dismissed", "");
+        try { sessionStorage.setItem(key, "1"); } catch (_) {}
+      });
+    })();
+  </script>
   <script>
     // iOS Safari implements pinch page-zoom through its proprietary gesture events
     // and ignores user-scalable=no; swallowing these keeps the pinch for the app.
