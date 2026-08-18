@@ -167,16 +167,6 @@
   }
 }
 
-@media (hover: none), (pointer: coarse) {
-  .heroBrowser {
-    display: none;
-  }
-
-  .heroCtas {
-    grid-template-columns: 1fr;
-  }
-}
-
 .btn {
   display: inline-flex;
   align-items: center;
@@ -190,6 +180,38 @@
   text-decoration: none;
   transition: transform 0.15s ease, background 0.15s ease, box-shadow 0.15s ease,
     border-color 0.15s ease;
+}
+
+/* Web-app CTA: hidden unless the primary pointer can hover accurately.
+   .btn.heroBrowser beats .btn { display: inline-flex } (same file, #1455
+   lost to source order). Default-hidden so iOS tap-to-hover (hover:hover)
+   and a missed (hover: none)/(pointer: coarse) match still hide it. */
+.btn.heroBrowser {
+  display: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .btn.heroBrowser {
+    display: inline-flex;
+  }
+}
+
+@media (hover: none), (pointer: coarse), (any-pointer: coarse) {
+  .btn.heroBrowser {
+    display: none;
+  }
+
+  .heroCtas {
+    grid-template-columns: 1fr;
+  }
+}
+
+:global(html.has-touchscreen) .btn.heroBrowser {
+  display: none;
+}
+
+:global(html.has-touchscreen) .heroCtas {
+  grid-template-columns: 1fr;
 }
 
 .btn:hover {
