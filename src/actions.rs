@@ -338,6 +338,17 @@ impl CreatingShape {
     pub fn can_commit(&self, doc: &crate::model::Document) -> bool {
         crate::primitives::mesh(doc, &self.shape).is_some()
     }
+
+    /// Whether the user has started this shape — a click, a typed size, or a re-edit.
+    ///
+    /// The viewport hover ghost fills dimensions while still in [`ShapePhase::Anchor`];
+    /// that is not a pick, so Esc must treat it as an empty draft (#1529).
+    pub fn has_picks(&self) -> bool {
+        self.editing.is_some()
+            || self.phase != ShapePhase::Anchor
+            || self.first_corner.is_some()
+            || self.typed.iter().any(|&t| t)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -10128,6 +10139,8 @@ impl AppState {
             Action::CancelOperation => {
                 // Esc, once and for all (#1484): the first press empties whatever the active
                 // tool has picked and leaves the tool armed; the second returns to Select.
+                // An armed-but-empty draft — including a post-commit Shape hover ghost —
+                // is empty, so the first Esc returns to Select (#1529).
                 //
                 // This used to be a hand-ordered if/else chain over a *subset* of the ~24
                 // drafts. Which branch a tool got was decided the day it was written, so five
@@ -21058,10 +21071,7 @@ impl AppState {
                 .creating_sweep
                 .as_ref()
                 .is_some_and(|c| !c.faces.is_empty() || !c.path.is_empty() || !c.cut_bodies.is_empty()),
-            D::Shape => self
-                .creating_shape
-                .as_ref()
-                .is_some_and(|c| c.editing.is_some() || c.can_commit(&self.doc)),
+            D::Shape => self.creating_shape.as_ref().is_some_and(|c| c.has_picks()),
             D::Boolean => self
                 .creating_boolean
                 .as_ref()
@@ -35488,6 +35498,224 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             state.apply(Action::CancelOperation);
             assert_eq!(state.tool, Tool::Select, "second Esc leaves {tool:?}");
         }
+    }
+
+    /// The viewport's Shape ghost fills preview sizes while still in Anchor. That is not
+    /// a pick — Esc must treat it as an empty draft (#1529).
+    fn fill_shape_hover_preview(state: &mut AppState) {
+        let Some(c) = state.creating_shape.as_mut() else {
+            return;
+        };
+        assert_eq!(c.phase, ShapePhase::Anchor, "hover ghost is Anchor-phase");
+        if c.shape.width.is_empty() {
+            c.shape.width = "10".into();
+        }
+        if c.shape.depth.is_empty() {
+            c.shape.depth = "10".into();
+        }
+        if c.shape.height.is_empty() {
+            c.shape.height = "10".into();
+        }
+        if c.shape.radius.is_empty() {
+            c.shape.radius = "5".into();
+        }
+        assert!(
+            c.can_commit(&state.doc),
+            "the hover ghost is sized enough to mesh"
+        );
+    }
+
+    /// #1529: first Esc on an empty 3D draft returns to Select. Walk every Solid-space
+    /// tool — including Shape after the viewport has filled its hover ghost.
+    #[test]
+    fn escape_on_empty_3d_draft_returns_to_select() {
+        for r in crate::tooltable::all_rows() {
+            if r.space != crate::tooltable::ToolSpace::Solid || r.tool == Tool::Select {
+                continue;
+            }
+            let mut state = AppState::default();
+            state.apply(Action::SetTool(r.tool));
+            if r.tool == Tool::Shape {
+                fill_shape_hover_preview(&mut state);
+            }
+            state.apply(Action::CancelOperation);
+            assert_eq!(
+                state.tool,
+                Tool::Select,
+                "empty {:?} Esc goes to Select (#1529)",
+                r.tool
+            );
+        }
+    }
+
+    /// #1529: after committing a Shape (or another stay-armed 3D feature), Esc goes to
+    /// Select. The post-commit hover ghost must not eat that first Esc.
+    #[test]
+    fn escape_after_committing_3d_tools_returns_to_select() {
+        let mut state = AppState::default();
+        state.apply(Action::SetTool(Tool::Shape));
+        for (field, text) in [
+            (ShapeDimension::Width, "20"),
+            (ShapeDimension::Depth, "20"),
+            (ShapeDimension::Height, "10"),
+        ] {
+            state.apply(Action::SetShapeDimension {
+                field,
+                text: text.into(),
+            });
+        }
+        assert!(
+            matches!(state.apply(Action::CommitShape), ActionResult::Ok),
+            "{}",
+            state.status
+        );
+        assert_eq!(state.tool, Tool::Shape, "Shape stays armed after commit (#1498)");
+        fill_shape_hover_preview(&mut state);
+        state.apply(Action::CancelOperation);
+        assert_eq!(
+            state.tool,
+            Tool::Select,
+            "Esc after a committed Shape goes to Select (#1529)"
+        );
+
+        for tool in [Tool::Extrude, Tool::Revolve, Tool::Sweep, Tool::Loft] {
+            let mut state = AppState::default();
+            state.apply(Action::SetTool(tool));
+            match tool {
+                Tool::Extrude => {
+                    let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+                    let lines = crate::construction::add_line_rectangle(
+                        &mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4],
+                    );
+                    state.creating_extrusion = Some(CreatingExtrusion {
+                        sketch: Some(sketch),
+                        faces: vec![ExtrudeFace::Polygon(lines.to_vec())],
+                        distance: 8.0,
+                        text: "8".into(),
+                        user_edited: false,
+                        pending_focus: false,
+                        target: None,
+                        edit_index: None,
+                        body_mode: ExtrudeBodyMode::NewBody,
+                        merge_candidate: None,
+                        symmetric: false,
+                        taper: 0.0,
+                        taper_text: String::new(),
+                        taper_user_edited: false,
+                        taper_mode: crate::model::ExtrudeTaperMode::Distance,
+                    });
+                    assert!(matches!(state.apply(Action::CommitExtrusion), ActionResult::Ok), "{}", state.status);
+                }
+                Tool::Revolve => {
+                    let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+                    let lines = crate::construction::add_line_rectangle(
+                        &mut state.doc, sketch, 10.0, 0.0, 10.0, 10.0, [false; 4],
+                    );
+                    state.creating_revolve = Some(CreatingRevolve {
+                        sketch: Some(sketch),
+                        faces: vec![ExtrudeFace::Polygon(lines.to_vec())],
+                        axis: Some(crate::model::RevolveAxis::Y),
+                        ..CreatingRevolve::default()
+                    });
+                    assert!(matches!(state.apply(Action::CommitRevolve), ActionResult::Ok), "{}", state.status);
+                }
+                Tool::Sweep => {
+                    let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+                    let lines = crate::construction::add_line_rectangle(
+                        &mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4],
+                    );
+                    state.doc.construction_planes.insert(crate::model::ConstructionPlane {
+                        origin: glam::Vec3::ZERO,
+                        normal: glam::Vec3::Y,
+                        u_axis: glam::Vec3::X,
+                        v_axis: glam::Vec3::Z,
+                        parent: crate::model::ConstructionPlaneParent::Root,
+                        definition: crate::face::default_xy_plane_definition(),
+                        repeat_instance: None,
+                        name: None,
+                        extent: crate::model::PlaneExtent::default(),
+                    });
+                    let path_sketch = state.doc.add_sketch(FaceId::ConstructionPlane(
+                        state.doc.construction_planes.keys().last().unwrap(),
+                    ));
+                    state.doc.lines.insert(crate::model::Line::from_local_endpoints(
+                        path_sketch, 5.0, 0.0, 5.0, 25.0,
+                    ));
+                    let li = state.doc.lines.keys().last().unwrap();
+                    state.creating_sweep = Some(CreatingSweep {
+                        sketch: Some(sketch),
+                        faces: vec![ExtrudeFace::Polygon(lines.to_vec())],
+                        path: vec![li],
+                        ..CreatingSweep::default()
+                    });
+                    assert!(matches!(state.apply(Action::CommitSweep), ActionResult::Ok), "{}", state.status);
+                }
+                Tool::Loft => {
+                    let bottom = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+                    state.doc.circles.insert(crate::model::Circle::from_local_center_radius(
+                        bottom, 0.0, 0.0, 5.0, 0.0,
+                    ));
+                    state.doc.construction_planes.insert(plane_from_definition(
+                        &definition_from_reference(
+                            &PlaneReference::Face {
+                                origin: Vec3::ZERO,
+                                normal: Vec3::Z,
+                                label: "Ground".to_string(),
+                            },
+                            10.0,
+                            0.0,
+                        ),
+                        ConstructionPlaneParent::Root,
+                    ));
+                    let top = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(1)));
+                    state.doc.circles.insert(crate::model::Circle::from_local_center_radius(
+                        top, 0.0, 0.0, 2.0, 0.0,
+                    ));
+                    for (sketch, ci) in [(bottom, rkey(0)), (top, rkey(1))] {
+                        state.apply(Action::ToggleLoftSection {
+                            section: crate::model::LoftSection {
+                                sketch,
+                                face: ExtrudeFace::Circle(ci),
+                            },
+                        });
+                    }
+                    assert!(matches!(state.apply(Action::CommitLoft), ActionResult::Ok), "{}", state.status);
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(state.tool, tool, "{tool:?} stays armed after commit (#1498)");
+            state.apply(Action::CancelOperation);
+            assert_eq!(
+                state.tool,
+                Tool::Select,
+                "Esc after committing {tool:?} goes to Select (#1529)"
+            );
+        }
+    }
+
+    /// #1529: a Shape the user has started placing still uses the two-Esc rule.
+    #[test]
+    fn escape_on_in_progress_shape_clears_then_selects() {
+        let mut state = AppState::default();
+        state.apply(Action::SetTool(Tool::Shape));
+        {
+            let c = state.creating_shape.as_mut().unwrap();
+            c.phase = ShapePhase::Base;
+            c.first_corner = Some(Vec3::ZERO);
+            c.shape.width = "20".into();
+            c.shape.depth = "10".into();
+        }
+        assert!(state.draft_has_picks(state.tool_row().draft), "started Shape has picks");
+
+        state.apply(Action::CancelOperation);
+        assert_eq!(state.tool, Tool::Shape, "first Esc keeps Shape");
+        assert!(
+            !state.draft_has_picks(state.tool_row().draft),
+            "first Esc empties the placement"
+        );
+
+        state.apply(Action::CancelOperation);
+        assert_eq!(state.tool, Tool::Select, "second Esc leaves Shape");
     }
 
     /// #1485: arming a picker that this tool has works even before the pane has built

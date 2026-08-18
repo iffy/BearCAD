@@ -163,6 +163,10 @@ impl CommitWidget {
 
 /// What Esc does (#1484). One rule, so no tool can drift again: the first press empties what
 /// the tool has picked and leaves the tool armed, the second returns to Select.
+///
+/// An armed-but-empty draft is empty — including a post-commit Shape hover ghost that the
+/// pointer has sized but the user has not clicked or typed (#1529). First Esc then returns
+/// to Select; do not require a no-op clear first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Esc {
     /// Empty this row's [`Draft`] if it holds anything, else return to the Select tool.
@@ -1164,6 +1168,23 @@ mod tests {
         for r in all_rows() {
             let expected = if r.tool == Tool::Select { Esc::LeaveSketch } else { Esc::ClearThenSelect };
             assert_eq!(r.esc, expected, "{:?}/{:?}", r.tool, r.space);
+        }
+    }
+
+    /// #1529: every 3D (Solid) tool uses the two-Esc rule. An empty post-commit draft
+    /// is empty, so the first Esc returns to Select — Shape's hover ghost is not a pick.
+    #[test]
+    fn three_d_tools_use_clear_then_select() {
+        for r in all_rows() {
+            if r.space != ToolSpace::Solid || r.tool == Tool::Select {
+                continue;
+            }
+            assert_eq!(
+                r.esc,
+                Esc::ClearThenSelect,
+                "{:?} must return to Select on Esc when its draft is empty (#1529)",
+                r.tool
+            );
         }
     }
 
