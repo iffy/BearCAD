@@ -14,7 +14,7 @@ export default function GetBearCAD() {
           </p>
         </div>
         <Link className={styles.payButton} href={PAY_URL}>
-          $ Pay Whatever
+          Pay Whatever
         </Link>
       </div>
 
