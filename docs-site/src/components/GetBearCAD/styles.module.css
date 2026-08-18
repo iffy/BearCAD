@@ -59,13 +59,6 @@
   transition: transform 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
 }
 
-.wrap .payButton svg {
-  display: block;
-  flex: 0 0 auto;
-  width: 1.15rem;
-  height: 1.15rem;
-}
-
 .wrap .payButton:hover {
   color: #fff;
   text-decoration: none;
