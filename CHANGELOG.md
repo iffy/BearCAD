@@ -1,3 +1,71 @@
+# v0.5.0 - 2026-08-18
+
+- **NEW:** The rotational Repeat Angle field now toggles where the last copy sits, so 360° and 5 items can space equally instead of stacking the last on the first.
+- **NEW:** View → Tool Hints hides the usage line at the bottom of the viewport, and scripts can toggle it with bearcad.ui.tool_hints.
+- **NEW:** Unfinished tutorials light the Tutorials button bright blue, Skip all tutorials turns that prompting off, and a fresh install shows a Want to try some tutorials? tip for the first 30 days that fades once you start modeling.
+- **NEW:** The macOS disk image opens with a honey-toned background that shows you to drag BearCAD into Applications.
+- **NEW:** In realistic shading, bodies now cast shadows on each other and themselves, not only on the ground.
+- **NEW:** On the web, phones, tablets, and small screens show a banner that BearCAD doesn't work very well there.
+- **FIX:** Double-clicking a sketch repeat, slice, or chamfer/fillet in the Elements pane reopens it for editing.
+- **FIX:** Value gizmos now click-to-stick: the second click releases the handle, and Enter or the context button commits.
+- **FIX:** Face Snap hover preview now sits the moving face against the fixed face, matching the placement a click commits.
+- **FIX:** Letter shortcuts only arm a tool the current workbench toolbar would show, so E, R, and L stay on drawing tools while a drawing is open.
+- **FIX:** Lua export files a loft into a component with move_to_component.
+- **FIX:** Lua export can put a loft or drawing in a component via move_to_component{ kind = "loft"|"drawing" }.
+- **FIX:** After a successful commit, Revolve, Sweep, Loft, and Shape stay on the tool with an empty draft, the same as Extrude.
+- **FIX:** Sketch Mirror and Sketch Slice now commit with the same blue confirm button as Offset and Repeat, and Combine's button is labeled Combine rather than Create.
+- **FIX:** Sketches and extrudes drawn on a moved or operated-on body stay in the Elements pane after later features consume that body.
+- **FIX:** Free Move gizmos on a small object now keep a minimum viewport-pixel spacing from each other instead of shrinking into a clump (#1478).
+- **FIX:** Zoom to Fit frames every live tool ghost, including slice, shell, shape, joint, 3D chamfer/fillet, and sketch offset/mirror/repeat/slice.
+- **FIX:** Lua export writes sketch geometry before the ops that consume it, so mirror, fillet, offset, and repeat scripts replay.
+- **FIX:** Last-used tool options — Output mode, Extrude and Revolve symmetric, Combine kind, Joint kind, chamfer and fillet amount, Offset, Shell, and Repeat — are remembered for the session.
+- **FIX:** The rotation gizmo's fading tail stays on the original position line and disappears once the turn is wider than the tail (#1433).
+- **FIX:** Realistic mode no longer paints a hole-cavity shadow onto the outside of a cuboid or cylinder.
+- **FIX:** Lua export keeps rectangle edge names, drawing titles, projected lines, components, and body shadow flags.
+- **FIX:** body_mesh_face treats face as world millimetres from body_faces and centroid as already-quantized integers, so a reported face can be fed back without hand-quantizing.
+- **FIX:** The Move inspector packs each mode's fields at the top instead of leaving empty gaps for hidden rows.
+- **FIX:** Fillet and Chamfer no longer pick an edge through a body, and a moved body's edges pick the same way any other body's do.
+- **FIX:** On the web, Shift+right-drag pans the camera instead of opening the browser context menu.
+- **FIX:** Sketch mirrors nest under their sketch, so filtering out sketch components hides the mirror and its children.
+- **FIX:** Clicking a material's colour swatch in the Context pane dropdown selects that material, the same as clicking its name.
+- **FIX:** Extrude, Revolve, Sweep, Loft and Mirror Output (new / add / cut) is scriptable as bearcad.ui.tool_mode.
+- **FIX:** Repeating a standalone extrude makes a separate body for each instance, and each instance can take its own material.
+- **FIX:** Dragging the Face Snap Turn gizmo a short way now stores the short signed angle, so a clockwise pull reads as −61° instead of wrapping to 299° (#1432).
+- **FIX:** The 2D Mirror tool accepts the sketch origin axes and in-plane world axes as a mirror line.
+- **FIX:** Extrude, Revolve, and Sweep arm their options as soon as you pick the tool, so Y and the Output row work before the first pick.
+- **FIX:** The Y shortcut now cycles the Combine tool's mode (combine / cut / intersect / difference), the same way it cycles Extrude output.
+- **FIX:** Loft can start from a bare body face by building an implicit sketch, matching Extrude, Revolve, and Sweep.
+- **FIX:** Cylinders sitting on the ground no longer shimmer where they meet the floor in realistic shading.
+- **FIX:** Sketch Offset and Repeat gizmos no longer overwrite a value you have already typed.
+- **FIX:** Hovering and orbiting no longer hitch on models with sketches on moved or fused bodies.
+- **FIX:** Add to body and Cut now shadow the host and produce a new body, the same way Merge already did.
+- **FIX:** Switching the Move tool's mode no longer flashes its input fields red.
+- **FIX:** Cut-extruding through a moved body keeps the body, and Extrude's Up to picker now accepts any 3D body face.
+- **FIX:** Tool switching, Enter-to-commit, Esc, and picker focus now follow one table of per-tool rules, so a new tool cannot skip those behaviors.
+- **FIX:** The Parameters pane no longer leaves a large empty gutter to the left of the Name column.
+- **FIX:** Realistic-mode body shadows use a directional shadow map, so light-facing surfaces stay lit and holes no longer paint onto convex exteriors.
+- **FIX:** Lua export no longer double-applies a construction plane's offset when the script is replayed.
+- **FIX:** Realistic-mode self-shadows no longer speckle, soften like sunlight, and put the shade side of a hole in shadow.
+- **FIX:** Esc after committing a Shape or any other empty 3D tool returns to Select on the first press.
+- **FIX:** Ground-plane shadows no longer show when the camera looks up from below the plane.
+- **FIX:** Dragging a Move push/pull gizmo snaps values to 0.1 of the document unit so the typed value and computed subtitle no longer flicker.
+- **FIX:** On the Combine tool, changing the mode after Side A is filled focuses the Side B picker.
+- **FIX:** Chamfer and Fillet now toggle vertices and edges on click in both 2D and 3D, and the HUD describes the dual-mode pick.
+- **FIX:** The Dimension tool can now measure how far a circle sits from the sketch origin, so a hole on a circular face can be located from the centre.
+- **FIX:** Clicking to place a dimension label no longer highlights or selects the face under the cursor
+- **FIX:** fillet_vertex and chamfer_vertex accept points = { ... } so one call is one multi-corner operation, and Lua export emits that form.
+- **FIX:** On macOS, Command+` cycles through every app window, including the McMaster-Carr catalog.
+- **FIX:** Switching tools now carries the current picks into the new tool's primary picker for every tool, including Extrude, Revolve, Sweep, Chamfer, Fillet and Loft.
+- **FIX:** Clicking a hover-highlighted sketch face during Mirror now picks that face's edges as the shapes to reflect.
+- **FIX:** Extrudes sketched on a moved body are real solids: laser-cut and shell commit on them the same as any other body.
+- **FIX:** Extrude Add and Cut onto a Revolve, Sweep, or Loft result now fuse into that body instead of dropping the new extrusion.
+- **FIX:** Loft operations can be selected, hidden, renamed, deleted, and picked in the Elements pane like other operations.
+- **FIX:** Revolve angle, helical pitch, 3D fillet and chamfer amount, and construction-plane offset and angle now store the typed expression so they follow parameters and re-edit restores the original text.
+- **FIX:** Lua export of a constrained sketch uses the coordinates you drew, so replaying the script lands on the same geometry.
+- **FIX:** Which tools start a sketch from a face, leave a sketch, or stay inside one now comes from the tool table, so Constraint and Project click a face, Combine, Joint, and Shell leave, and Move, Mirror, Repeat, and Slice survive opening a sketch.
+- **FIX:** Selecting the Repeat tool in a sketch now shows the Entities picker immediately so you can highlight and pick lines and circles.
+- **FIX:** The Move tool no longer hover-highlights construction planes or offers them in the exploder.
+
 # v0.4.0 - 2026-08-17
 
 - **NEW:** Unit parameter values in the Parameters pane now commit when you press Tab, matching Enter, while letting variable-name autocomplete complete first (#1403).

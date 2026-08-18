@@ -1,1 +1,0 @@
-Unfinished tutorials light the Tutorials button bright blue, Skip all tutorials turns that prompting off, and a fresh install shows a Want to try some tutorials? tip for the first 30 days that fades once you start modeling.

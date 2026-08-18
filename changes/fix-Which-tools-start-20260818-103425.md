@@ -1,1 +1,0 @@
-Which tools start a sketch from a face, leave a sketch, or stay inside one now comes from the tool table, so Constraint and Project click a face, Combine, Joint, and Shell leave, and Move, Mirror, Repeat, and Slice survive opening a sketch.
