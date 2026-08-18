@@ -3457,6 +3457,18 @@ struct App {
     /// (or anything else) asks for a different part/search, the process is restarted.
     #[cfg(not(target_arch = "wasm32"))]
     mcmaster_launched_part: Option<String>,
+    /// Window ⌘` last landed on (or that currently has key focus). Used to walk
+    /// main → detached → Report issue → McMaster (#1477).
+    cycle_focus: mcmaster::CycleWindow,
+    /// Set when this frame already advanced the cycle, so viewport-focus sampling
+    /// does not overwrite the target we just chose.
+    cycled_windows_this_frame: bool,
+    /// Frames to ignore Main's focused bit after a programmatic cycle, so a
+    /// just-focused sibling (or the catalog helper) can take key first.
+    cycle_hold_frames: u8,
+    /// Main-process ⌘` NSEvent monitor (#1477). Must stay alive or AppKit drops it.
+    #[cfg(target_os = "macos")]
+    _cmd_backtick_monitor: Option<objc2::rc::Retained<objc2::runtime::AnyObject>>,
     /// The Keyboard Shortcuts window (#434), toggled from the View/Help menus.
     shortcuts_open: bool,
     /// Persisted app settings (#720), loaded at startup and saved when the Settings
@@ -4720,6 +4732,11 @@ impl App {
             mcmaster: None,
             #[cfg(not(target_arch = "wasm32"))]
             mcmaster_launched_part: None,
+            cycle_focus: mcmaster::CycleWindow::Main,
+            cycled_windows_this_frame: false,
+            cycle_hold_frames: 0,
+            #[cfg(target_os = "macos")]
+            _cmd_backtick_monitor: mcmaster::install_cmd_backtick_cycle_monitor(),
             shortcuts_open: false,
             #[cfg(not(target_arch = "wasm32"))]
             settings,
@@ -4919,6 +4936,16 @@ impl App {
 
     /// Keep the McMaster-Carr catalog window in step with the app (#1022).
     ///
+    fn sync_report_issue_window(&mut self) {
+        if self.state.report_issue_open {
+            if self.report_issue.is_none() {
+                self.report_issue = Some(ReportIssueWindow::open());
+            }
+        } else {
+            self.report_issue = None;
+        }
+    }
+
     /// The window is a **second process** — this same binary under `bearcad mcmaster` — so
     /// there is nothing to draw here: it owns its own OS window and z-order. On macOS it is
     /// an Accessory helper (no Dock tile, #1023), not a peer app. All this does is start it
@@ -5938,10 +5965,13 @@ impl App {
                 self.state.settings_open = true;
             }
             // DEV → Report issue (#627): open (or re-focus) the report window.
-            MenuCommand::ReportIssue => match &mut self.report_issue {
-                Some(window) => window.focus = true,
-                None => self.report_issue = Some(ReportIssueWindow::open()),
-            },
+            MenuCommand::ReportIssue => {
+                self.state.report_issue_open = true;
+                match &mut self.report_issue {
+                    Some(window) => window.focus = true,
+                    None => self.report_issue = Some(ReportIssueWindow::open()),
+                }
+            }
             // Help → Report Problem… (#1372): open the browser at a new-issue form on the repo.
             MenuCommand::ReportProblem => {
                 let url = "https://github.com/iffy/BearCAD/issues/new";
@@ -6206,6 +6236,131 @@ impl App {
         ctx.request_repaint();
     }
 
+    /// Windows ⌘` can land on, in a stable order: main, detached tabs, Report issue,
+    /// McMaster catalog.
+    fn cycleable_windows(&self) -> Vec<mcmaster::CycleWindow> {
+        let mut open = vec![mcmaster::CycleWindow::Main];
+        for win in &self.workspace.windows {
+            if win.id != tabs::WindowId::MAIN {
+                open.push(mcmaster::CycleWindow::Detached(win.viewport_key));
+            }
+        }
+        if self.report_issue.is_some() || self.state.report_issue_open {
+            open.push(mcmaster::CycleWindow::ReportIssue);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.mcmaster.is_some() || self.state.mcmaster_open {
+            open.push(mcmaster::CycleWindow::McMaster);
+        }
+        open
+    }
+
+    fn note_cycle_focus(&mut self, window: mcmaster::CycleWindow) {
+        self.cycle_focus = window.clone();
+        self.state.script_focused_window = window.script_name();
+    }
+
+    fn observe_cycle_focus(&mut self, window: mcmaster::CycleWindow, focused: bool) {
+        if self.cycled_windows_this_frame || !focused {
+            return;
+        }
+        if self.cycle_hold_frames > 0 {
+            if window == self.cycle_focus {
+                self.cycle_hold_frames = 0;
+            } else if window != mcmaster::CycleWindow::Main {
+                self.note_cycle_focus(window);
+                self.cycle_hold_frames = 0;
+            }
+            return;
+        }
+        self.note_cycle_focus(window);
+    }
+
+    fn focus_cycle_window(&mut self, ctx: &egui::Context, target: mcmaster::CycleWindow) {
+        self.note_cycle_focus(target.clone());
+        self.cycled_windows_this_frame = true;
+        self.cycle_hold_frames = 10;
+        match target {
+            mcmaster::CycleWindow::Main => {
+                ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
+            }
+            mcmaster::CycleWindow::Detached(key) => {
+                ctx.send_viewport_cmd_to(
+                    egui::ViewportId::from_hash_of(("detached_tab", key)),
+                    egui::ViewportCommand::Focus,
+                );
+            }
+            mcmaster::CycleWindow::ReportIssue => {
+                ctx.send_viewport_cmd_to(
+                    egui::ViewportId::from_hash_of("report_issue"),
+                    egui::ViewportCommand::Focus,
+                );
+            }
+            mcmaster::CycleWindow::McMaster => {
+                #[cfg(target_os = "macos")]
+                if let Some(session) = &self.mcmaster {
+                    let pid = session.pid();
+                    crate::diag::log(format!("catalog: ⌘` — focusing helper pid {pid}"));
+                    let _ = mcmaster::activate_pid(pid);
+                }
+            }
+        }
+    }
+
+    fn apply_window_cycle(&mut self, ctx: &egui::Context, dir: i8) {
+        if dir == 0 {
+            return;
+        }
+        let open = self.cycleable_windows();
+        let next = mcmaster::next_cycle_window(&open, &self.cycle_focus, dir);
+        if next == self.cycle_focus && open.len() <= 1 {
+            return;
+        }
+        crate::diag::log(format!(
+            "window cycle: {} → {}",
+            self.cycle_focus.script_name(),
+            next.script_name()
+        ));
+        self.focus_cycle_window(ctx, next);
+    }
+
+    fn handle_window_cycle(&mut self, ctx: &egui::Context) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(session) = &self.mcmaster {
+            let dir = session.take_cycle();
+            if dir != 0 {
+                self.note_cycle_focus(mcmaster::CycleWindow::McMaster);
+                self.apply_window_cycle(ctx, dir);
+                return;
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        let from_os = mcmaster::take_pending_cycle();
+        #[cfg(not(target_os = "macos"))]
+        let from_os = 0i8;
+
+        let from_egui_back = ctx.input_mut(|i| {
+            i.consume_key(
+                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                egui::Key::Backtick,
+            )
+        });
+        let from_egui_fwd = ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::COMMAND, egui::Key::Backtick)
+        });
+        let dir = if from_os != 0 {
+            from_os
+        } else if from_egui_back {
+            -1
+        } else if from_egui_fwd {
+            1
+        } else {
+            0
+        };
+        self.apply_window_cycle(ctx, dir);
+    }
+
     fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
         if self.state.command_palette.open {
             return;
@@ -6304,19 +6459,9 @@ impl App {
             self.switch_main_tab_adjacent(1);
         }
 
-        // ⌘` cycles to the McMaster catalog helper when it is open (#1023). The system
-        // shortcut only cycles windows of one process; the catalog is another process, so
-        // we hand it focus ourselves. The helper sends focus back the same way.
-        #[cfg(target_os = "macos")]
-        if self.mcmaster.is_some()
-            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Backtick))
-        {
-            if let Some(session) = &self.mcmaster {
-                let pid = session.pid();
-                crate::diag::log(format!("catalog: ⌘` — focusing helper pid {pid}"));
-                let _ = mcmaster::activate_pid(pid);
-            }
-        }
+        // ⌘` / ⌘⇧` cycle every OS window, including the McMaster catalog helper (#1023 /
+        // #1477). The system shortcut is per-process, so we walk the list ourselves.
+        self.handle_window_cycle(ctx);
 
         // Cmd/Ctrl+/ toggles help mode (#672) — the "?" binding without reaching for
         // Shift. On macOS/Windows the native Help-menu accelerator delivers this; the
@@ -17379,6 +17524,10 @@ impl App {
             });
             ctx.show_viewport_immediate(vp_id, builder, |vui, _class| {
                 theme::apply(vui.ctx());
+                self.observe_cycle_focus(
+                    mcmaster::CycleWindow::Detached(viewport_key),
+                    vui.input(|i| i.focused),
+                );
                 let Some(wi) = self.workspace.window_index(win_id) else {
                     return;
                 };
@@ -17665,6 +17814,14 @@ impl App {
         self.state.script_tab_dirty = dirty;
         self.state.script_active_tab = active;
         self.state.script_window_count = self.workspace.windows.len();
+        self.state.script_detached_windows = self
+            .workspace
+            .windows
+            .iter()
+            .filter(|w| w.id != tabs::WindowId::MAIN)
+            .map(|w| mcmaster::CycleWindow::Detached(w.viewport_key).script_name())
+            .collect();
+        self.state.script_focused_window = self.cycle_focus.script_name();
     }
 
     fn apply_script_tab_op(&mut self, op: script::TabOp) {
@@ -17745,6 +17902,10 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        self.cycled_windows_this_frame = false;
+        if self.cycle_hold_frames > 0 {
+            self.cycle_hold_frames -= 1;
+        }
         // egui 0.35 hands the app a `Ui` instead of a `Context`; panels nest inside it.
         // One line per early frame (#978): a run that traces frames but shows nothing is a
         // painting fault; a run that traces none never got asked to paint at all.
@@ -17847,6 +18008,7 @@ impl eframe::App for App {
 
         self.process_screenshots(ctx);
         self.tick_script(ctx);
+        self.sync_report_issue_window();
         // Drop a stale rollback marker (#524) once its element is gone (deleted, or a
         // new/opened document), so it doesn't linger over unrelated geometry.
         if let Some(marker) = self.rollback_marker.clone() {
@@ -17863,6 +18025,7 @@ impl eframe::App for App {
 
         self.tick_fps_mode(ctx, dt);
         self.handle_keyboard_shortcuts(ctx);
+        self.observe_cycle_focus(mcmaster::CycleWindow::Main, ctx.input(|i| i.focused));
 
         // Aligned-view tool base (#365): on entering the tool, seed its base from a lone selected
         // projection (so you needn't re-pick it); leaving the tool clears it.
@@ -17985,6 +18148,7 @@ impl eframe::App for App {
                 .with_inner_size([480.0, 380.0]);
             let mut close = false;
             let mut submit: Option<(String, bool, bool)> = None;
+            let mut report_focused = false;
             {
                 let window = self.report_issue.as_mut().expect("checked above");
                 ctx.show_viewport_immediate(
@@ -17992,6 +18156,7 @@ impl eframe::App for App {
                     builder,
                     |vui, _class| {
                         theme::apply(vui.ctx());
+                        report_focused = vui.input(|i| i.focused);
                         egui::CentralPanel::default().show(vui, |ui| {
                             ui.label("Describe the issue:");
                             let response = ui.add_sized(
@@ -18058,8 +18223,10 @@ impl eframe::App for App {
                     self.finish_issue_report(text, include_json, None);
                 }
             }
+            self.observe_cycle_focus(mcmaster::CycleWindow::ReportIssue, report_focused);
             if close {
                 self.report_issue = None;
+                self.state.report_issue_open = false;
             }
         }
 

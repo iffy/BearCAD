@@ -2304,6 +2304,8 @@ pub enum Action {
     SkipAllTutorials { skip: bool },
     /// Open/close the McMaster-Carr catalog window (#1022), optionally at a part number.
     SetMcMasterWindow { open: Option<bool>, part: Option<String> },
+    /// Open/close the DEV Report issue window (#627 / #1477).
+    SetReportIssueWindow { open: Option<bool> },
     AddParameter { name: String, expression: String },
     /// Flip a parameter's primary/secondary flag (#727): primary parameters are the
     /// knobs an importing file is offered first; advisory only. UI: gear-options
@@ -3239,6 +3241,7 @@ impl Action {
                     | Action::SetCommandPaletteOpen { .. }
                     | Action::SetPaneVisible { .. }
                     | Action::SetMcMasterWindow { .. }
+                    | Action::SetReportIssueWindow { .. }
                     | Action::SetSettingsWindow { .. }
                     | Action::SetChangelogWindow { .. }
                     | Action::SetTutorialPane { .. }
@@ -3884,6 +3887,9 @@ pub struct AppState {
     /// The McMaster-Carr catalog window (#1022) is open. Here rather than on `App` for the
     /// same reason: scripts drive it for docs captures.
     pub mcmaster_open: bool,
+    /// The DEV Report issue window (#627) is open. Scripts open it so ⌘` cycle tests
+    /// can include it (#1477).
+    pub report_issue_open: bool,
     /// The part number typed in that window's box, if any — it opens straight at that
     /// part's page instead of the catalog's front.
     pub mcmaster_part: String,
@@ -4128,6 +4134,10 @@ pub struct AppState {
     pub script_active_tab: usize,
     /// OS window count for scripts (`bearcad.ui.window_count`), refreshed with the tab snapshot.
     pub script_window_count: usize,
+    /// Detached-tab window names for `bearcad.ui.windows()` (#1477), refreshed with the tab snapshot.
+    pub script_detached_windows: Vec<String>,
+    /// Which cycleable window scripts currently treat as focused (`bearcad.ui.focused_window`).
+    pub script_focused_window: String,
 }
 
 fn unix_now_secs() -> i64 {
@@ -4156,6 +4166,7 @@ impl Default for AppState {
             installed_at_unix: None,
             tutorial_prompt: None,
             mcmaster_open: false,
+            report_issue_open: false,
             mcmaster_part: String::new(),
             dimension_param_name: String::new(),
             dimension_param_auto: String::new(),
@@ -4261,6 +4272,8 @@ impl Default for AppState {
             script_tab_dirty: vec![false],
             script_active_tab: 0,
             script_window_count: 1,
+            script_detached_windows: Vec::new(),
+            script_focused_window: "main".into(),
         }
     }
 }
@@ -4281,6 +4294,19 @@ impl MeshExportFormat {
 }
 
 impl AppState {
+    /// OS windows ⌘` can land on, in cycle order (`bearcad.ui.windows()`, #1477).
+    pub fn script_cycle_windows(&self) -> Vec<String> {
+        let mut names = vec!["main".to_string()];
+        names.extend(self.script_detached_windows.iter().cloned());
+        if self.report_issue_open {
+            names.push("report_issue".into());
+        }
+        if self.mcmaster_open {
+            names.push("mcmaster".into());
+        }
+        names
+    }
+
     /// The single selected projection `(drawing, view)` — `Some` only when exactly one element is
     /// selected and it is a projection, so the view context editor shows for a lone selection (#346).
     pub fn selected_drawing_view(&self) -> Option<(crate::model::DrawingKey, usize)> {
@@ -10828,6 +10854,15 @@ impl AppState {
                     "McMaster-Carr catalog opened".to_string()
                 } else {
                     "McMaster-Carr catalog closed".to_string()
+                };
+                ActionResult::Ok
+            }
+            Action::SetReportIssueWindow { open } => {
+                self.report_issue_open = open.unwrap_or(!self.report_issue_open);
+                self.status = if self.report_issue_open {
+                    "Report issue opened".to_string()
+                } else {
+                    "Report issue closed".to_string()
                 };
                 ActionResult::Ok
             }

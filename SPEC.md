@@ -4221,9 +4221,10 @@ retina machine renders the same composition at 2x, just sharper.
   no second binary to build, sign or package. It owns a `tao` event loop and a `wry` web view
   filling its window: a **real OS window** with real z-order, movable to another monitor. On
   macOS it is an **Accessory** helper (#1023) — no second Dock tile, not a peer app — same
-  multi-process shape as a browser content process. **⌘`** hands focus between the main app
-  and the helper (system window cycling is per-process, so each side activates the other by
-  PID). Hosting the view *inside* the app's window
+  multi-process shape as a browser content process. **⌘`** / **⌘⇧`** cycle every OS window
+  the app owns — main, detached tabs, Report issue, and the catalog helper (#1477). System
+  window cycling is per-process, so each side activates the other by PID and the parent
+  walks the full list. Hosting the view *inside* the app's window
   instead (`build_as_child`) was tried and rejected — the native view composites above the
   wgpu canvas and so floats over every egui window regardless of stacking, and on Linux wry
   **panics** without `gtk::init` and a GTK loop pumped alongside, which eframe/winit never does.
@@ -4279,7 +4280,8 @@ retina machine renders the same composition at 2x, just sharper.
   is one box rather than two. The command palette's **Search McMaster-Carr** is what fills
   it: the first palette command to take an argument (§11.2).
   Native only — on the web build the browser is already the browser. Scriptable:
-  `bearcad.ui.mcmaster("show"|"hide"|"toggle", query?)`.
+  `bearcad.ui.mcmaster("show"|"hide"|"toggle", query?)`, `bearcad.ui.report_issue("show"|"hide"|"toggle")`,
+  `bearcad.ui.windows()` (cycle order), `bearcad.ui.focused_window()`.
 - **BearCAD-file import (#721):** **File → Import → BearCAD File…** (also the command palette's
   "Import BearCAD File" and `bearcad.import_unit{ path =, link = "dynamic"|"static", name = }`)
   imports another `.bearcad` document as a unit (§7.4): reads the file, refuses a cycle, embeds

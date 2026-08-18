@@ -411,9 +411,16 @@ pub fn all_shortcuts() -> Vec<ShortcutSection> {
             (format!("{cmd}1–9"), "Switch to tab 1–9".to_string()),
             (prev_tab_keys, "Previous tab".to_string()),
             (next_tab_keys, "Next tab".to_string()),
-            // macOS: cycle focus with the McMaster catalog helper when it is open (#1023).
-            // Listed for all platforms; the binding only does work on macOS with a live helper.
-            (format!("{cmd}`"), "Focus McMaster-Carr catalog (when open)".to_string()),
+            // Cycle every OS window, including the McMaster catalog helper (#1023 / #1477).
+            (format!("{cmd}`"), "Next window (includes McMaster-Carr catalog when open)".to_string()),
+            (
+                if cfg!(target_os = "macos") {
+                    format!("{cmd}⇧`")
+                } else {
+                    format!("{cmd}Shift+`")
+                },
+                "Previous window".to_string(),
+            ),
             ("Enter".to_string(), "Commit the in-progress shape/value".to_string()),
             (
                 "Esc".to_string(),
@@ -604,6 +611,25 @@ mod shortcut_list_tests {
         assert!(
             labels.iter().any(|d| d.contains("Next tab")),
             "next-tab binding missing: {labels:?}"
+        );
+    }
+
+    /// #1477: ⌘` is listed as cycling every window, not as a catalog-only jump.
+    #[test]
+    fn shortcut_list_covers_window_cycle() {
+        let sections = all_shortcuts();
+        let everywhere = sections
+            .iter()
+            .find(|s| s.title == "Everywhere")
+            .expect("Everywhere section");
+        let labels: Vec<&str> = everywhere.entries.iter().map(|(_, d)| d.as_str()).collect();
+        assert!(
+            labels.iter().any(|d| d.contains("Next window") && d.contains("McMaster")),
+            "window-cycle binding missing: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|d| d.contains("Previous window")),
+            "previous-window binding missing: {labels:?}"
         );
     }
 
