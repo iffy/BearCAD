@@ -594,8 +594,9 @@ pub enum ExtrudeBodyChoice {
 /// In-progress (or being-edited) extrusion: selected faces + live signed distance.
 #[derive(Clone, Debug)]
 pub struct CreatingExtrusion {
-    /// Sketch plane the faces lie on (all faces are coplanar).
-    pub sketch: SketchId,
+    /// Sketch plane the faces lie on (all faces are coplanar). `None` on an empty
+    /// SetTool-armed draft before the first face (#1499).
+    pub sketch: Option<SketchId>,
     pub faces: Vec<ExtrudeFace>,
     /// Live signed distance along the plane normal (gizmo-driven).
     pub distance: f32,
@@ -624,6 +625,27 @@ pub struct CreatingExtrusion {
 }
 
 impl CreatingExtrusion {
+    /// Empty draft: no faces, last-used Output / Symmetric so Y works before a pick (#1499).
+    pub fn pending(output: ToolOutputMode, symmetric: bool) -> Self {
+        Self {
+            sketch: None,
+            faces: Vec::new(),
+            distance: 0.0,
+            text: String::new(),
+            user_edited: false,
+            pending_focus: false,
+            target: None,
+            edit_index: None,
+            body_mode: output.as_extrude_mode(None),
+            merge_candidate: None,
+            symmetric,
+            taper: 0.0,
+            taper_text: String::new(),
+            taper_user_edited: false,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+        }
+    }
+
     /// Evaluated signed distance: typed magnitude (if edited) keeps the live sign.
     pub fn evaluated_distance(&self, doc: &Document) -> f32 {
         if self.user_edited {
@@ -835,7 +857,61 @@ impl From<ExtrudeBodyMode> for ToolOutputMode {
     }
 }
 
+/// Session last-used tool options, keyed by tool (#1500). Not persisted with the file.
+#[derive(Clone, Debug, Default)]
+pub struct ToolPrefs {
+    entries: std::collections::HashMap<Tool, ToolPrefValues>,
+}
+
+/// The last-used bag for one tool. Only the fields that tool's row lists in
+/// [`crate::tooltable::ToolRow::prefs`] are read or written.
+#[derive(Clone, Debug, Default)]
+pub struct ToolPrefValues {
+    pub output_mode: Option<ToolOutputMode>,
+    pub symmetric: Option<bool>,
+    pub amount: Option<f32>,
+    pub boolean_kind: Option<crate::model::BooleanOpKind>,
+    pub keep_b: Option<bool>,
+    pub joint_kind: Option<crate::model::JointKind>,
+    pub offset_distance: Option<String>,
+    pub offset_construction: Option<bool>,
+    pub shell_thickness: Option<f32>,
+    pub repeat_around: Option<bool>,
+    pub repeat_count: Option<String>,
+    pub repeat_spacing: Option<String>,
+    pub revolve_angle: Option<f32>,
+    pub revolve_pitch: Option<f32>,
+}
+
+impl ToolPrefs {
+    pub fn entry(&mut self, tool: Tool) -> &mut ToolPrefValues {
+        self.entries.entry(tool).or_default()
+    }
+
+    pub fn get(&self, tool: Tool) -> Option<&ToolPrefValues> {
+        self.entries.get(&tool)
+    }
+}
+
 impl ToolOutputMode {
+    /// Script / pane name for this choice (#1499).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::NewBody => "new_body",
+            Self::AddToBody => "add",
+            Self::Cut => "cut",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "new_body" | "new" => Some(Self::NewBody),
+            "add" | "add_to_body" | "join" => Some(Self::AddToBody),
+            "cut" => Some(Self::Cut),
+            _ => None,
+        }
+    }
+
     /// Materialize this normalized choice as an [`ExtrudeBodyMode`]. `merge_candidate` is the
     /// host body an add/cut can target (`None` means the sketch has no host, so add degrades
     /// to a profile join and cut is unavailable and wraps to a new body).
@@ -3300,6 +3376,8 @@ pub enum Action {
     SetExtrudeBodyMode { mode: ExtrudeBodyMode },
     /// Toggle symmetric extrude (half distance each way from the sketch plane, #504).
     SetExtrudeSymmetric { symmetric: bool },
+    /// Cycle the active tool's Output mode: new body → add to body → cut → … (#1397/#1499).
+    CycleToolOutputMode,
     /// Enable or disable snapping while drawing/dragging.
     SetSnapping(bool),
     /// Arm one of the active tool's element pickers by its heading (#963/#968), so the next
@@ -3374,6 +3452,7 @@ impl Action {
                     | Action::SetExtrudeTarget { .. }
                     | Action::SetExtrudeBodyMode { .. }
                     | Action::SetExtrudeSymmetric { .. }
+                    | Action::CycleToolOutputMode
                     | Action::SetPlaneOffset { .. }
                     | Action::SetPlaneAngle { .. }
                     | Action::FocusPlaneDim { .. }
@@ -4053,6 +4132,8 @@ pub struct AppState {
     /// Sticky "Symmetric" preference for the Extrude tool (#587), so the toggle can be set before a
     /// face is picked and carries into the extrusion once one is; new extrusions start from it.
     pub pending_extrude_symmetric: bool,
+    /// Session last-used options, keyed by tool (#1500).
+    pub tool_prefs: ToolPrefs,
     /// In-progress chamfer/fillet: picked vertex + live gizmo-driven amount.
     pub creating_vertex_treatment: Option<CreatingVertexTreatment>,
     /// In-progress 3D solid-edge chamfer/fillet (#77): picked extrusion edge + live
@@ -4335,6 +4416,7 @@ impl Default for AppState {
             creating_circle: None,
             creating_extrusion: None,
             pending_extrude_symmetric: false,
+            tool_prefs: ToolPrefs::default(),
             creating_vertex_treatment: None,
             creating_edge_treatment: None,
             creating_loft: None,
@@ -6187,7 +6269,7 @@ impl AppState {
             shadow: false,
         });
         self.doc.shape_order.push(crate::model::ShapeKind::Primitive);
-        self.tool = Tool::Select;
+        self.finish_commit_of(Tool::Shape);
         self.refresh_document_health();
         self.status = format!("Created a {}", label.to_lowercase());
         ActionResult::Ok
@@ -6213,7 +6295,7 @@ impl AppState {
         let name = self.doc.primitives[index].name.clone();
         self.creating_shape = None;
         self.doc.primitives[index] = crate::model::Primitive { name, ..shape };
-        self.tool = Tool::Select;
+        self.finish_commit_of(Tool::Shape);
         self.refresh_document_health();
         self.status = format!(
             "Edited the {}",
@@ -6268,8 +6350,19 @@ impl AppState {
             });
         }
         self.doc.shape_order.push(crate::model::ShapeKind::Revolution);
+        {
+            let prefs = self.tool_prefs.entry(Tool::Revolve);
+            prefs.revolve_angle = Some(angle_deg);
+            prefs.symmetric = Some(symmetric);
+            prefs.revolve_pitch = Some(pitch_mm);
+            prefs.output_mode = Some(match &mode {
+                crate::model::RevolveMode::NewBody => ToolOutputMode::NewBody,
+                crate::model::RevolveMode::AddTo(_) => ToolOutputMode::AddToBody,
+                crate::model::RevolveMode::Cut(_) => ToolOutputMode::Cut,
+            });
+        }
         self.creating_revolve = None;
-        self.tool = Tool::Select;
+        self.finish_commit_of(Tool::Revolve);
         self.refresh_document_health();
         self.status = match &mode {
             crate::model::RevolveMode::NewBody => format!("Revolved ({angle_deg:.0}°)"),
@@ -6356,7 +6449,7 @@ impl AppState {
             _ => {}
         }
         self.creating_revolve = None;
-        self.tool = Tool::Select;
+        self.finish_commit_of(Tool::Revolve);
         self.refresh_document_health();
         self.status = format!("Revolve updated ({angle_deg:.0}°)");
         ActionResult::Ok
@@ -6448,8 +6541,13 @@ impl AppState {
             });
         }
         self.doc.shape_order.push(crate::model::ShapeKind::Sweep);
+        self.tool_prefs.entry(Tool::Sweep).output_mode = Some(match &mode {
+            crate::model::SweepMode::NewBody => ToolOutputMode::NewBody,
+            crate::model::SweepMode::AddTo(_) => ToolOutputMode::AddToBody,
+            crate::model::SweepMode::Cut(_) => ToolOutputMode::Cut,
+        });
         self.creating_sweep = None;
-        self.tool = Tool::Select;
+        self.finish_commit_of(Tool::Sweep);
         self.refresh_document_health();
         self.status = match &mode {
             crate::model::SweepMode::NewBody => "Swept along path".to_string(),
@@ -6520,7 +6618,7 @@ impl AppState {
             _ => {}
         }
         self.creating_sweep = None;
-        self.tool = Tool::Select;
+        self.finish_commit_of(Tool::Sweep);
         self.refresh_document_health();
         self.status = "Sweep updated".to_string();
         ActionResult::Ok
@@ -7025,6 +7123,47 @@ fn extrude_faces_on_host_body(
     false
 }
 
+/// Start a fresh in-progress extrusion for `faces` on `sketch`, seeding Output / Symmetric
+/// from last-used prefs (#1500). The host-based default only applies when the user has
+/// never chosen an Output mode this session.
+fn begin_creating_extrusion(
+    state: &AppState,
+    sketch: SketchId,
+    faces: Vec<ExtrudeFace>,
+) -> CreatingExtrusion {
+    let merge_candidate = extrude_merge_candidate(&state.doc, sketch);
+    let distance = initial_extrude_distance(&state.doc, &faces, state.cam.eye());
+    let body_mode = match state.tool_prefs.get(Tool::Extrude).and_then(|p| p.output_mode) {
+        Some(m) => m.as_extrude_mode(merge_candidate),
+        None => default_extrude_body_mode(&state.doc, sketch, &faces, merge_candidate),
+    };
+    let symmetric = state
+        .tool_prefs
+        .get(Tool::Extrude)
+        .and_then(|p| p.symmetric)
+        .unwrap_or(state.pending_extrude_symmetric);
+    CreatingExtrusion {
+        sketch: Some(sketch),
+        faces,
+        distance,
+        text: crate::value::format_length_display_in(
+            distance.abs(),
+            crate::model::effective_length_unit(&state.doc, sketch),
+        ),
+        user_edited: false,
+        pending_focus: true,
+        target: None,
+        edit_index: None,
+        body_mode,
+        merge_candidate,
+        symmetric,
+        taper: 0.0,
+        taper_text: String::new(),
+        taper_user_edited: false,
+        taper_mode: crate::model::ExtrudeTaperMode::Distance,
+    }
+}
+
 /// Default Output mode when starting an extrude: **Add** only when a profile actually sits
 /// on the host body face; floating coplanar profiles default to **New body** (#1204).
 fn default_extrude_body_mode(
@@ -7259,9 +7398,9 @@ fn operation_preview_world_bounds(state: &AppState) -> Option<(Vec3, Vec3)> {
 
     // Extrude live preview.
     if let Some(ce) = state.creating_extrusion.as_ref() {
-        if !ce.faces.is_empty() {
+        if let Some(sketch) = ce.sketch.filter(|_| !ce.faces.is_empty()) {
             let probe = crate::model::Extrusion {
-                sketch: ce.sketch,
+                sketch,
                 faces: ce.faces.clone(),
                 distance: ce.evaluated_distance(doc),
                 target: ce.target.clone(),
@@ -9321,6 +9460,9 @@ impl AppState {
                 // Seed only a freshly armed draft (#1490): re-picking the same tool must
                 // not toggle what is already in the picker.
                 let seed_dedicated = incoming_dedicated_draft_is_empty(self, tool);
+                if self.tool != tool {
+                    self.capture_tool_prefs(self.tool);
+                }
                 if self.creating_rect.is_some() && tool != Tool::Rectangle {
                     self.creating_rect = None;
                 }
@@ -9336,7 +9478,9 @@ impl AppState {
                 }
                 if self.creating_extrusion.is_some() && tool != Tool::Extrude {
                     if let Some(ce) = self.creating_extrusion.take() {
-                        self.discard_orphan_body_face_extrude_sketch(ce.sketch);
+                        if let Some(sketch) = ce.sketch {
+                            self.discard_orphan_body_face_extrude_sketch(sketch);
+                        }
                     }
                 }
                 if self.creating_vertex_treatment.is_some()
@@ -9355,39 +9499,17 @@ impl AppState {
                 if self.creating_boolean.is_some() && tool != Tool::Combine {
                     self.creating_boolean = None;
                 }
-                if tool == Tool::Combine && self.creating_boolean.is_none() {
-                    self.creating_boolean = Some(CreatingBoolean::default());
-                }
                 if self.creating_move.is_some() && tool != Tool::Move {
                     self.creating_move = None;
                 }
-                if tool == Tool::Move && self.creating_move.is_none() {
-                    self.creating_move = Some(CreatingMove {
-                        translate_mode: self.move_translate_mode,
-                        ..CreatingMove::default()
-                    });
-                }
                 if self.creating_joint.is_some() && tool != Tool::Joint {
                     self.creating_joint = None;
-                }
-                if tool == Tool::Joint && self.creating_joint.is_none() {
-                    self.creating_joint = Some(CreatingJoint::default());
                 }
                 if self.creating_mirror.is_some() && tool != Tool::Mirror {
                     self.creating_mirror = None;
                 }
                 if self.creating_sketch_mirror.is_some() && tool != Tool::Mirror {
                     self.creating_sketch_mirror = None;
-                }
-                if tool == Tool::Mirror && self.sketch_session.is_some() {
-                    if let Some(session) = self.sketch_session {
-                        if self.creating_sketch_mirror.is_none() {
-                            self.creating_sketch_mirror =
-                                Some(CreatingSketchMirror::new(session.sketch));
-                        }
-                    }
-                } else if tool == Tool::Mirror && self.creating_mirror.is_none() {
-                    self.creating_mirror = Some(CreatingMirror::default());
                 }
                 if self.creating_repeat.is_some() && tool != Tool::Repeat {
                     self.creating_repeat = None;
@@ -9399,29 +9521,6 @@ impl AppState {
                 if self.creating_sketch_offset.is_some() && tool != Tool::Offset {
                     self.creating_sketch_offset = None;
                 }
-                // Offset tool always has a draft so its Entities picker shows empty on
-                // enable, not only after the first edge pick (#512).
-                if tool == Tool::Offset {
-                    if let Some(session) = self.sketch_session {
-                        if self.creating_sketch_offset.is_none() {
-                            self.creating_sketch_offset =
-                                Some(CreatingSketchOffset::new(session.sketch));
-                        }
-                    }
-                }
-                // In-sketch Repeat always has a draft so the Entities picker shows empty
-                // on enable, not only after the first edge pick (#1437).
-                if tool == Tool::Repeat {
-                    if let Some(session) = self.sketch_session {
-                        if self.creating_sketch_repeat.is_none() {
-                            self.creating_sketch_repeat =
-                                Some(CreatingSketchRepeat::new(session.sketch));
-                        }
-                    }
-                }
-                if tool == Tool::Repeat && self.creating_repeat.is_none() {
-                    self.creating_repeat = Some(CreatingRepeat::default());
-                }
                 if self.creating_slice.is_some() && tool != Tool::Slice {
                     self.creating_slice = None;
                 }
@@ -9429,14 +9528,8 @@ impl AppState {
                 if self.creating_sketch_slice.is_some() && tool != Tool::Slice {
                     self.creating_sketch_slice = None;
                 }
-                if tool == Tool::Slice && self.creating_slice.is_none() {
-                    self.creating_slice = Some(CreatingSlice::default());
-                }
                 if self.creating_shell.is_some() && tool != Tool::Shell {
                     self.creating_shell = None;
-                }
-                if tool == Tool::Shell && self.creating_shell.is_none() {
-                    self.creating_shell = Some(CreatingShell::default());
                 }
                 if self.creating_revolve.is_some() && tool != Tool::Revolve {
                     self.creating_revolve = None;
@@ -9445,9 +9538,6 @@ impl AppState {
                 // leaving the tool drops it.
                 if self.creating_shape.is_some() && tool != Tool::Shape {
                     self.creating_shape = None;
-                }
-                if tool == Tool::Shape && self.creating_shape.is_none() {
-                    self.creating_shape = Some(CreatingShape::new(self.shape_kind));
                 }
                 if self.creating_sweep.is_some() && tool != Tool::Sweep {
                     self.creating_sweep = None;
@@ -9471,10 +9561,8 @@ impl AppState {
                             } else {
                                 VertexTreatmentKind::Fillet
                             },
-                            amount_live: DEFAULT_VERTEX_TREATMENT_AMOUNT,
-                            text: crate::value::format_length_display(
-                                DEFAULT_VERTEX_TREATMENT_AMOUNT,
-                            ),
+                            amount_live: self.last_amount(),
+                            text: crate::value::format_length_display(self.last_amount()),
                             user_edited: false,
                             pending_focus: true,
                         });
@@ -9486,8 +9574,43 @@ impl AppState {
                 if tool.leaves_sketch() && self.sketch_session.is_some() {
                     self.exit_sketch_session();
                 }
-                if tool == Tool::Loft && self.creating_loft.is_none() {
-                    self.creating_loft = Some(CreatingLoft::default());
+                // Empty creating-state so Y / Output / amounts work before the first pick (#1499).
+                self.arm_empty_draft(tool);
+                // 3D Move draft is armed even inside a sketch (the sketch row's draft is
+                // Selection, so arm_empty_draft's table walk would skip it).
+                if tool == Tool::Move && self.creating_move.is_none() {
+                    self.creating_move = Some(CreatingMove {
+                        translate_mode: self.move_translate_mode,
+                        ..CreatingMove::default()
+                    });
+                }
+                // Dual-mode tools also keep a 3D draft (Repeat still has creating_repeat
+                // while a sketch is open) so leaving the sketch doesn't lose last-used.
+                if self.sketch_session.is_some() && matches!(tool, Tool::Repeat | Tool::Slice) {
+                    let solid = crate::tooltable::row(tool, crate::tooltable::ToolSpace::Solid);
+                    if solid.arm_on_set_tool {
+                        match solid.draft {
+                            crate::tooltable::Draft::Repeat if self.creating_repeat.is_none() => {
+                                let mut cr = CreatingRepeat::default();
+                                if let Some(p) = self.tool_prefs.get(Tool::Repeat) {
+                                    if let Some(a) = p.repeat_around {
+                                        cr.around_axis = a;
+                                    }
+                                    if let Some(c) = &p.repeat_count {
+                                        cr.count = c.clone();
+                                    }
+                                    if let Some(s) = &p.repeat_spacing {
+                                        cr.spacing = s.clone();
+                                    }
+                                }
+                                self.creating_repeat = Some(cr);
+                            }
+                            crate::tooltable::Draft::Slice if self.creating_slice.is_none() => {
+                                self.creating_slice = Some(CreatingSlice::default());
+                            }
+                            _ => {}
+                        }
+                    }
                 }
                 // The floating dimension editor only makes sense under the tools that
                 // can interact with it (Select drags labels, Dimension edits values);
@@ -9641,7 +9764,7 @@ impl AppState {
                         }
                         if !keep.is_empty() {
                             let unit = crate::model::effective_length_unit(&self.doc, sketch);
-                            let amount = 3.0_f32;
+                            let amount = self.last_amount();
                             self.creating_vertex_treatment = Some(CreatingVertexTreatment {
                                 points: keep,
                                 kind,
@@ -12041,7 +12164,7 @@ impl AppState {
                     return ActionResult::Err("Face not found".to_string());
                 };
                 match &mut self.creating_extrusion {
-                    Some(ce) if ce.sketch == sketch => {
+                    Some(ce) if ce.sketch == Some(sketch) => {
                         if let Some(pos) = ce.faces.iter().position(|f| *f == face) {
                             ce.faces.remove(pos);
                         } else {
@@ -12051,40 +12174,11 @@ impl AppState {
                         // and typing an amount should work after every face pick.
                         ce.pending_focus = true;
                     }
-                    // A face on a different plane starts a fresh extrusion.
+                    // Empty draft (SetTool) or a face on a different plane starts a fresh
+                    // extrusion, keeping last-used Output / Symmetric (#1499/#1500).
                     _ => {
-                        let merge_candidate = extrude_merge_candidate(&self.doc, sketch);
-                        let faces = vec![face];
-                        let distance =
-                            initial_extrude_distance(&self.doc, &faces, self.cam.eye());
-                        let body_mode = default_extrude_body_mode(
-                            &self.doc,
-                            sketch,
-                            &faces,
-                            merge_candidate,
-                        );
-                        self.creating_extrusion = Some(CreatingExtrusion {
-                            sketch,
-                            faces,
-                            distance,
-                            text: crate::value::format_length_display_in(
-                                distance.abs(),
-                                crate::model::effective_length_unit(&self.doc, sketch),
-                            ),
-                            user_edited: false,
-                            pending_focus: true,
-                            target: None,
-                            edit_index: None,
-                            body_mode,
-                            merge_candidate,
-                            symmetric: self.pending_extrude_symmetric,
-                        
-                        taper: 0.0,
-                        taper_text: String::new(),
-                        taper_user_edited: false,
-                        taper_mode: crate::model::ExtrudeTaperMode::Distance,
-
-                        });
+                        self.creating_extrusion =
+                            Some(begin_creating_extrusion(self, sketch, vec![face]));
                     }
                 }
                 ActionResult::Ok
@@ -12182,7 +12276,9 @@ impl AppState {
                 // Drop a previous unfinished body-face extrude so its projected boundary
                 // sketch doesn't stack (100+ segment caps thrash picks/solves, #509).
                 if let Some(prev) = self.creating_extrusion.take() {
-                    self.discard_orphan_body_face_extrude_sketch(prev.sketch);
+                    if let Some(sketch) = prev.sketch {
+                        self.discard_orphan_body_face_extrude_sketch(sketch);
+                    }
                 }
                 let (sketch, face) = match begin_profile_from_body_face(&mut self.doc, face_id) {
                     Ok(pair) => pair,
@@ -12192,34 +12288,10 @@ impl AppState {
                     }
                 };
                 // A body face always starts a fresh single-face extrusion, never grouped
-                // with whatever else was in progress (#122).
-                let merge_candidate = extrude_merge_candidate(&self.doc, sketch);
-                let faces = vec![face];
-                let distance = initial_extrude_distance(&self.doc, &faces, self.cam.eye());
-                let body_mode =
-                    default_extrude_body_mode(&self.doc, sketch, &faces, merge_candidate);
-                self.creating_extrusion = Some(CreatingExtrusion {
-                    sketch,
-                    faces,
-                    distance,
-                    text: crate::value::format_length_display_in(
-                        distance.abs(),
-                        crate::model::effective_length_unit(&self.doc, sketch),
-                    ),
-                    user_edited: false,
-                    pending_focus: true,
-                    target: None,
-                    edit_index: None,
-                    body_mode,
-                    merge_candidate,
-                    symmetric: self.pending_extrude_symmetric,
-                
-                taper: 0.0,
-                taper_text: String::new(),
-                taper_user_edited: false,
-                taper_mode: crate::model::ExtrudeTaperMode::Distance,
-
-                });
+                // with whatever else was in progress (#122). Last-used Output / Symmetric
+                // still apply (#1500).
+                self.creating_extrusion =
+                    Some(begin_creating_extrusion(self, sketch, vec![face]));
                 ActionResult::Ok
             }
             Action::CreateBodyFaceExtrusion { face_id, distance, target, body } => {
@@ -12251,10 +12323,10 @@ impl AppState {
                 if let Some(ce) = &mut self.creating_extrusion {
                     ce.distance = distance;
                     if !ce.user_edited {
-                        ce.text = crate::value::format_length_display_in(
-                            distance.abs(),
-                            crate::model::effective_length_unit(&self.doc, ce.sketch),
-                        );
+                        let unit = ce.sketch.map(|s| {
+                            crate::model::effective_length_unit(&self.doc, s)
+                        }).unwrap_or(self.doc.default_length_unit);
+                        ce.text = crate::value::format_length_display_in(distance.abs(), unit);
                     }
                     // #141/#1204: auto-cut only when a profile actually sits on the host body
                     // face (UV overlap) *and* the drag goes into the body (negative distance).
@@ -12262,8 +12334,9 @@ impl AppState {
                     // there's nothing to cut into. On forward drag, only the cut toggle
                     // reverts (an explicit New body choice is left alone).
                     if let Some(bi) = ce.merge_candidate {
-                        let on_host =
-                            extrude_faces_on_host_body(&self.doc, ce.sketch, &ce.faces);
+                        let on_host = ce.sketch.is_some_and(|s| {
+                            extrude_faces_on_host_body(&self.doc, s, &ce.faces)
+                        });
                         if distance < 0.0 {
                             if on_host {
                                 ce.body_mode = ExtrudeBodyMode::Cut(bi);
@@ -12313,6 +12386,7 @@ impl AppState {
                 // Sticky even before a face is picked (#587): remember the preference so the next
                 // extrusion starts symmetric, and apply it to the in-progress one if there is one.
                 self.pending_extrude_symmetric = symmetric;
+                self.tool_prefs.entry(Tool::Extrude).symmetric = Some(symmetric);
                 if let Some(ce) = &mut self.creating_extrusion {
                     ce.symmetric = symmetric;
                 }
@@ -12323,6 +12397,7 @@ impl AppState {
                 };
                 ActionResult::Ok
             }
+            Action::CycleToolOutputMode => self.cycle_tool_output_mode(),
             Action::EditExtrusion { index } => {
                 let Some(extrusion) = self.doc.extrusions.get(index) else {
                     return ActionResult::Err("Extrusion not found".to_string());
@@ -12355,7 +12430,7 @@ impl AppState {
                     ),
                 };
                 self.creating_extrusion = Some(CreatingExtrusion {
-                    sketch: extrusion.sketch,
+                    sketch: Some(extrusion.sketch),
                     faces: extrusion.faces.clone(),
                     distance: extrusion.distance,
                     text: if !extrusion.expression.trim().is_empty() {
@@ -12390,10 +12465,10 @@ impl AppState {
                     Some(ce) => ce,
                     None => return ActionResult::Err("No extrusion in progress".to_string()),
                 };
-                if ce.faces.is_empty() {
+                let Some(sketch) = ce.sketch.filter(|_| !ce.faces.is_empty()) else {
                     self.creating_extrusion = Some(ce);
                     return ActionResult::Err("Select at least one face".to_string());
-                }
+                };
                 // A typed `name = expr` defines a parameter and drives the depth from it, same
                 // as the sketch dimension inputs (#196).
                 if ce.user_edited {
@@ -12458,14 +12533,14 @@ impl AppState {
                         "Updated extrusion ({})",
                         crate::value::format_length_display_in(
                             distance,
-                            crate::model::effective_length_unit(&self.doc, ce.sketch)
+                            crate::model::effective_length_unit(&self.doc, sketch)
                         )
                     );
                     if let Some(w) = taper_warning.clone() {
                         self.status = format!("{}. {w}", self.status);
                     }
                 } else {
-                    let unit = crate::model::effective_length_unit(&self.doc, ce.sketch);
+                    let unit = crate::model::effective_length_unit(&self.doc, sketch);
                     // Profiles that don't touch each make their own body under **New body**
                     // (#837); Add-to-touching and Cut keep them together in the one body.
                     let groups = match ce.body_mode {
@@ -12478,7 +12553,7 @@ impl AppState {
                     let mut ei = None;
                     for group in &groups {
                         let mut ext = Extrusion {
-                            sketch: ce.sketch,
+                            sketch,
                             faces: group.clone(),
                             distance,
                             target: ce.target.clone(),
@@ -12515,6 +12590,13 @@ impl AppState {
                         self.status = format!("{}. {w}", self.status);
                     }
                 }
+                self.pending_extrude_symmetric = ce.symmetric;
+                {
+                    let prefs = self.tool_prefs.entry(Tool::Extrude);
+                    prefs.symmetric = Some(ce.symmetric);
+                    prefs.output_mode = Some(ToolOutputMode::from(ce.body_mode));
+                }
+                self.finish_commit_of(Tool::Extrude);
                 self.refresh_document_health();
                 ActionResult::Ok
             }
@@ -12647,7 +12729,8 @@ impl AppState {
                     }
                 };
                 let _ = loft_key;
-                self.tool = Tool::Select;
+                self.tool_prefs.entry(Tool::Loft).output_mode = Some(ToolOutputMode::from(cl.body_choice));
+                self.finish_commit_of(Tool::Loft);
                 self.status = match &mode {
                     crate::model::LoftMode::NewBody => format!("Added loft ({count} sections)"),
                     crate::model::LoftMode::AddTo(b) => {
@@ -18905,37 +18988,14 @@ pub fn apply_pick(
                 return false;
             };
             match &mut state.creating_extrusion {
-                Some(ce) if ce.sketch == sketch => {
+                Some(ce) if ce.sketch == Some(sketch) => {
                     crate::element_picker::toggle_picked(&mut ce.faces, face);
                     ce.pending_focus = true;
                     true
                 }
                 _ => {
-                    let merge_candidate = extrude_merge_candidate(&state.doc, sketch);
-                    let faces = vec![face];
-                    let distance = initial_extrude_distance(&state.doc, &faces, state.cam.eye());
-                    let body_mode =
-                        default_extrude_body_mode(&state.doc, sketch, &faces, merge_candidate);
-                    state.creating_extrusion = Some(CreatingExtrusion {
-                        sketch,
-                        faces,
-                        distance,
-                        text: crate::value::format_length_display_in(
-                            distance.abs(),
-                            crate::model::effective_length_unit(&state.doc, sketch),
-                        ),
-                        user_edited: false,
-                        pending_focus: true,
-                        target: None,
-                        edit_index: None,
-                        body_mode,
-                        merge_candidate,
-                        symmetric: state.pending_extrude_symmetric,
-                        taper: 0.0,
-                        taper_text: String::new(),
-                        taper_user_edited: false,
-                        taper_mode: crate::model::ExtrudeTaperMode::Distance,
-                    });
+                    state.creating_extrusion =
+                        Some(begin_creating_extrusion(state, sketch, vec![face]));
                     true
                 }
             }
@@ -19801,6 +19861,7 @@ pub fn set_tool_mode(state: &mut AppState, name: &str) -> Result<(), String> {
                 .ok_or_else(|| format!("unknown Combine mode '{name}'"))?;
             let cb = state.creating_boolean.get_or_insert_with(CreatingBoolean::default);
             cb.set_kind(kind);
+            state.tool_prefs.entry(Tool::Combine).boolean_kind = Some(kind);
             Ok(())
         }
         Tool::Move => {
@@ -19823,6 +19884,50 @@ pub fn set_tool_mode(state: &mut AppState, name: &str) -> Result<(), String> {
             let kind = crate::model::PrimitiveKind::from_name(name)
                 .ok_or_else(|| format!("unknown Shape mode '{name}'"))?;
             state.apply(Action::SetShapeKind { kind });
+            Ok(())
+        }
+        tool if state.tool_row().output_modes => {
+            if name == "next" || name == "cycle" {
+                state.cycle_tool_output_mode();
+                return Ok(());
+            }
+            let mode = ToolOutputMode::from_name(&name)
+                .ok_or_else(|| format!("unknown Output mode '{name}'"))?;
+            match tool {
+                Tool::Extrude => {
+                    let symmetric = state.pending_extrude_symmetric;
+                    let ce = state
+                        .creating_extrusion
+                        .get_or_insert_with(|| CreatingExtrusion::pending(mode, symmetric));
+                    ce.body_mode = mode.as_extrude_mode(ce.merge_candidate);
+                }
+                Tool::Revolve => {
+                    state
+                        .creating_revolve
+                        .get_or_insert_with(CreatingRevolve::default)
+                        .body_choice = mode.into();
+                }
+                Tool::Sweep => {
+                    state
+                        .creating_sweep
+                        .get_or_insert_with(CreatingSweep::default)
+                        .body_choice = mode.into();
+                }
+                Tool::Loft => {
+                    state
+                        .creating_loft
+                        .get_or_insert_with(CreatingLoft::default)
+                        .body_choice = mode.into();
+                }
+                Tool::Mirror => {
+                    state
+                        .creating_mirror
+                        .get_or_insert_with(CreatingMirror::default)
+                        .mode = mode.into();
+                }
+                _ => {}
+            }
+            state.tool_prefs.entry(tool).output_mode = Some(mode);
             Ok(())
         }
         other => Err(format!("the {other:?} tool has no modes")),
@@ -20024,6 +20129,391 @@ impl AppState {
         crate::tooltable::row(self.tool, self.tool_space())
     }
 
+    /// Cycle the active tool's Output mode (#1397/#1499). No-op unless the row has
+    /// `output_modes` and a creating-state to mutate.
+    pub fn cycle_tool_output_mode(&mut self) -> ActionResult {
+        if !self.tool_row().output_modes {
+            return ActionResult::Ok;
+        }
+        let next = match self.tool {
+            Tool::Extrude => {
+                let Some(ce) = self.creating_extrusion.as_mut() else {
+                    return ActionResult::Ok;
+                };
+                let next = ToolOutputMode::from(ce.body_mode).next();
+                ce.body_mode = next.as_extrude_mode(ce.merge_candidate);
+                next
+            }
+            Tool::Revolve => {
+                let Some(cr) = self.creating_revolve.as_mut() else {
+                    return ActionResult::Ok;
+                };
+                let next = ToolOutputMode::from(cr.body_choice).next();
+                cr.body_choice = next.into();
+                next
+            }
+            Tool::Sweep => {
+                let Some(cf) = self.creating_sweep.as_mut() else {
+                    return ActionResult::Ok;
+                };
+                let next = ToolOutputMode::from(cf.body_choice).next();
+                cf.body_choice = next.into();
+                next
+            }
+            Tool::Loft => {
+                let Some(cl) = self.creating_loft.as_mut() else {
+                    return ActionResult::Ok;
+                };
+                let next = ToolOutputMode::from(cl.body_choice).next();
+                cl.body_choice = next.into();
+                next
+            }
+            Tool::Mirror => {
+                let Some(cm) = self.creating_mirror.as_mut() else {
+                    return ActionResult::Ok;
+                };
+                let next = ToolOutputMode::from(cm.mode).next();
+                cm.mode = next.into();
+                next
+            }
+            _ => return ActionResult::Ok,
+        };
+        self.tool_prefs.entry(self.tool).output_mode = Some(next);
+        self.status = format!(
+            "{} output: {}",
+            crate::opsigs::tool_label(self.tool),
+            next.name().replace('_', " ")
+        );
+        ActionResult::Ok
+    }
+
+    /// Snapshot this tool's last-used options into the session store (#1500).
+    fn capture_tool_prefs(&mut self, tool: Tool) {
+        use crate::tooltable::Pref;
+        let row = crate::tooltable::row(tool, self.tool_space());
+        if row.prefs.is_empty() {
+            return;
+        }
+        let mut values = self.tool_prefs.get(tool).cloned().unwrap_or_default();
+        for &pref in row.prefs {
+            match pref {
+                Pref::OutputMode => {
+                    if let Some(mode) = self.current_output_mode(tool) {
+                        values.output_mode = Some(mode);
+                    }
+                }
+                Pref::Symmetric => match tool {
+                    Tool::Extrude => {
+                        values.symmetric = Some(
+                            self.creating_extrusion
+                                .as_ref()
+                                .map(|c| c.symmetric)
+                                .unwrap_or(self.pending_extrude_symmetric),
+                        );
+                    }
+                    Tool::Revolve => {
+                        if let Some(c) = &self.creating_revolve {
+                            values.symmetric = Some(c.symmetric);
+                        }
+                    }
+                    _ => {}
+                },
+                Pref::Amount => {
+                    let amount = self
+                        .creating_vertex_treatment
+                        .as_ref()
+                        .map(|c| c.evaluated_amount(&self.doc))
+                        .or_else(|| {
+                            self.creating_edge_treatment
+                                .as_ref()
+                                .map(|c| c.evaluated_amount(&self.doc))
+                        });
+                    if let Some(a) = amount {
+                        values.amount = Some(a);
+                    }
+                }
+                Pref::BooleanKind => {
+                    if let Some(c) = &self.creating_boolean {
+                        values.boolean_kind = Some(c.kind);
+                        values.keep_b = Some(c.keep_b);
+                    }
+                }
+                Pref::KeepB => {
+                    if let Some(c) = &self.creating_boolean {
+                        values.keep_b = Some(c.keep_b);
+                    }
+                }
+                Pref::JointKind => {
+                    if let Some(c) = &self.creating_joint {
+                        values.joint_kind = Some(c.kind.clone());
+                    }
+                }
+                Pref::OffsetDistance => {
+                    if let Some(c) = &self.creating_sketch_offset {
+                        values.offset_distance = Some(c.distance.clone());
+                    }
+                }
+                Pref::OffsetConstruction => {
+                    if let Some(c) = &self.creating_sketch_offset {
+                        values.offset_construction = Some(c.construction);
+                    }
+                }
+                Pref::ShellThickness => {
+                    if let Some(c) = &self.creating_shell {
+                        values.shell_thickness = Some(c.thickness_live);
+                    }
+                }
+                Pref::RepeatAround => {
+                    if let Some(c) = &self.creating_repeat {
+                        values.repeat_around = Some(c.around_axis);
+                    }
+                }
+                Pref::RepeatCount => {
+                    if let Some(c) = &self.creating_repeat {
+                        values.repeat_count = Some(c.count.clone());
+                    } else if let Some(c) = &self.creating_sketch_repeat {
+                        values.repeat_count = Some(c.count.clone());
+                    }
+                }
+                Pref::RepeatSpacing => {
+                    if let Some(c) = &self.creating_repeat {
+                        values.repeat_spacing = Some(c.spacing.clone());
+                    } else if let Some(c) = &self.creating_sketch_repeat {
+                        values.repeat_spacing = Some(c.spacing.clone());
+                    }
+                }
+                Pref::RevolveAngle => {
+                    if let Some(c) = &self.creating_revolve {
+                        values.revolve_angle = Some(c.evaluated_angle_deg(&self.doc));
+                    }
+                }
+                Pref::RevolvePitch => {
+                    if let Some(c) = &self.creating_revolve {
+                        values.revolve_pitch = Some(c.evaluated_pitch_mm(&self.doc));
+                    }
+                }
+            }
+        }
+        *self.tool_prefs.entry(tool) = values;
+    }
+
+    fn current_output_mode(&self, tool: Tool) -> Option<ToolOutputMode> {
+        match tool {
+            Tool::Extrude => self.creating_extrusion.as_ref().map(|c| ToolOutputMode::from(c.body_mode)),
+            Tool::Revolve => self.creating_revolve.as_ref().map(|c| ToolOutputMode::from(c.body_choice)),
+            Tool::Sweep => self.creating_sweep.as_ref().map(|c| ToolOutputMode::from(c.body_choice)),
+            Tool::Loft => self.creating_loft.as_ref().map(|c| ToolOutputMode::from(c.body_choice)),
+            Tool::Mirror => self.creating_mirror.as_ref().map(|c| ToolOutputMode::from(c.mode)),
+            _ => None,
+        }
+    }
+
+    fn last_output_mode(&self, tool: Tool) -> ToolOutputMode {
+        self.tool_prefs
+            .get(tool)
+            .and_then(|p| p.output_mode)
+            .unwrap_or(ToolOutputMode::NewBody)
+    }
+
+    fn last_symmetric(&self, tool: Tool) -> bool {
+        self.tool_prefs
+            .get(tool)
+            .and_then(|p| p.symmetric)
+            .unwrap_or(if tool == Tool::Extrude {
+                self.pending_extrude_symmetric
+            } else {
+                false
+            })
+    }
+
+    fn last_amount(&self) -> f32 {
+        self.tool_prefs
+            .get(self.tool)
+            .and_then(|p| p.amount)
+            .unwrap_or(DEFAULT_VERTEX_TREATMENT_AMOUNT)
+    }
+
+    /// Arm an empty creating-state so options work before the first pick (#1499).
+    fn arm_empty_draft(&mut self, tool: Tool) {
+        use crate::tooltable::Draft as D;
+        let row = crate::tooltable::row(tool, self.tool_space());
+        if !row.arm_on_set_tool {
+            return;
+        }
+        match row.draft {
+            D::Extrusion if self.creating_extrusion.is_none() => {
+                self.creating_extrusion = Some(CreatingExtrusion::pending(
+                    self.last_output_mode(Tool::Extrude),
+                    self.last_symmetric(Tool::Extrude),
+                ));
+            }
+            D::Revolve if self.creating_revolve.is_none() => {
+                let mut cr = CreatingRevolve::default();
+                if let Some(p) = self.tool_prefs.get(Tool::Revolve) {
+                    if let Some(m) = p.output_mode {
+                        cr.body_choice = m.into();
+                    }
+                    if let Some(s) = p.symmetric {
+                        cr.symmetric = s;
+                    }
+                    if let Some(a) = p.revolve_angle {
+                        cr.angle_live = a;
+                        cr.user_edited = false;
+                        cr.refresh_angle_text_from_live();
+                    }
+                    if let Some(pitch) = p.revolve_pitch {
+                        cr.pitch_live = pitch;
+                        cr.gap_user_edited = false;
+                        cr.refresh_gap_text_from_live(&self.doc);
+                    }
+                }
+                self.creating_revolve = Some(cr);
+            }
+            D::Sweep if self.creating_sweep.is_none() => {
+                let mut cf = CreatingSweep::default();
+                if let Some(m) = self.tool_prefs.get(Tool::Sweep).and_then(|p| p.output_mode) {
+                    cf.body_choice = m.into();
+                }
+                self.creating_sweep = Some(cf);
+            }
+            D::Loft if self.creating_loft.is_none() => {
+                let mut cl = CreatingLoft::default();
+                if let Some(m) = self.tool_prefs.get(Tool::Loft).and_then(|p| p.output_mode) {
+                    cl.body_choice = m.into();
+                }
+                self.creating_loft = Some(cl);
+            }
+            D::Boolean if self.creating_boolean.is_none() => {
+                let mut cb = CreatingBoolean::default();
+                if let Some(p) = self.tool_prefs.get(Tool::Combine) {
+                    if let Some(k) = p.boolean_kind {
+                        cb.set_kind(k);
+                    }
+                    if let Some(keep) = p.keep_b {
+                        cb.keep_b = keep;
+                    }
+                }
+                self.creating_boolean = Some(cb);
+            }
+            D::Move if self.creating_move.is_none() => {
+                self.creating_move = Some(CreatingMove {
+                    translate_mode: self.move_translate_mode,
+                    ..CreatingMove::default()
+                });
+            }
+            D::Joint if self.creating_joint.is_none() => {
+                let mut cj = CreatingJoint::default();
+                if let Some(k) = self.tool_prefs.get(Tool::Joint).and_then(|p| p.joint_kind.clone())
+                {
+                    cj.kind = k;
+                }
+                self.creating_joint = Some(cj);
+            }
+            D::Mirror if self.creating_mirror.is_none() => {
+                let mut cm = CreatingMirror::default();
+                if let Some(m) = self.tool_prefs.get(Tool::Mirror).and_then(|p| p.output_mode) {
+                    cm.mode = m.into();
+                }
+                self.creating_mirror = Some(cm);
+            }
+            D::SketchMirror if self.creating_sketch_mirror.is_none() => {
+                if let Some(session) = self.sketch_session {
+                    self.creating_sketch_mirror = Some(CreatingSketchMirror::new(session.sketch));
+                }
+            }
+            D::Repeat if self.creating_repeat.is_none() => {
+                let mut cr = CreatingRepeat::default();
+                if let Some(p) = self.tool_prefs.get(Tool::Repeat) {
+                    if let Some(a) = p.repeat_around {
+                        cr.around_axis = a;
+                    }
+                    if let Some(c) = &p.repeat_count {
+                        cr.count = c.clone();
+                    }
+                    if let Some(s) = &p.repeat_spacing {
+                        cr.spacing = s.clone();
+                    }
+                }
+                self.creating_repeat = Some(cr);
+            }
+            D::SketchRepeat if self.creating_sketch_repeat.is_none() => {
+                if let Some(session) = self.sketch_session {
+                    let mut cr = CreatingSketchRepeat::new(session.sketch);
+                    if let Some(p) = self.tool_prefs.get(Tool::Repeat) {
+                        if let Some(c) = &p.repeat_count {
+                            cr.count = c.clone();
+                        }
+                        if let Some(s) = &p.repeat_spacing {
+                            cr.spacing = s.clone();
+                        }
+                    }
+                    self.creating_sketch_repeat = Some(cr);
+                }
+            }
+            D::SketchOffset if self.creating_sketch_offset.is_none() => {
+                if let Some(session) = self.sketch_session {
+                    let mut c = CreatingSketchOffset::new(session.sketch);
+                    if let Some(p) = self.tool_prefs.get(Tool::Offset) {
+                        if let Some(d) = &p.offset_distance {
+                            c.distance = d.clone();
+                        }
+                        if let Some(cons) = p.offset_construction {
+                            c.construction = cons;
+                        }
+                    }
+                    self.creating_sketch_offset = Some(c);
+                }
+            }
+            D::Slice if self.creating_slice.is_none() => {
+                self.creating_slice = Some(CreatingSlice::default());
+            }
+            D::SketchSlice if self.creating_sketch_slice.is_none() => {
+                if let Some(session) = self.sketch_session {
+                    self.creating_sketch_slice = Some(CreatingSketchSlice::new(session.sketch));
+                }
+            }
+            D::Shell if self.creating_shell.is_none() => {
+                let mut cs = CreatingShell::default();
+                if let Some(t) = self.tool_prefs.get(Tool::Shell).and_then(|p| p.shell_thickness)
+                {
+                    cs.thickness_live = t;
+                    cs.thickness_text = format!("{t}");
+                }
+                self.creating_shell = Some(cs);
+            }
+            D::Shape if self.creating_shape.is_none() => {
+                self.creating_shape = Some(CreatingShape::new(self.shape_kind));
+            }
+            _ => {}
+        }
+        // 3D Move is always armed with the tool, including inside a sketch — CommitMove
+        // and the pane read `creating_move` after leaving, and in-sketch SetTool used
+        // to seed it the same way.
+        if tool == Tool::Move && self.creating_move.is_none() {
+            self.creating_move = Some(CreatingMove {
+                translate_mode: self.move_translate_mode,
+                ..CreatingMove::default()
+            });
+        }
+    }
+
+    /// After a successful commit: stay on the tool with an empty draft (#1498).
+    fn finish_commit_of(&mut self, tool: Tool) {
+        if self.tool != tool {
+            return;
+        }
+        let row = self.tool_row();
+        if !row.stay_armed {
+            if self.tool != Tool::Select {
+                let _ = self.apply_inner(Action::SetTool(Tool::Select));
+            }
+            return;
+        }
+        self.capture_tool_prefs(tool);
+        self.clear_draft(row.draft);
+        self.arm_empty_draft(tool);
+    }
+
     /// Whether an in-progress draft owns the next click, so a bare-letter tool shortcut must
     /// not steal it (#1482).
     ///
@@ -20064,7 +20554,10 @@ impl AppState {
             D::Line => self.creating_line.is_some(),
             D::Circle => self.creating_circle.is_some(),
             D::Plane => self.creating_plane.is_some() || self.pending_plane_line.is_some(),
-            D::Extrusion => self.creating_extrusion.is_some(),
+            D::Extrusion => self
+                .creating_extrusion
+                .as_ref()
+                .is_some_and(|c| !c.faces.is_empty() || c.edit_index.is_some()),
             D::VertexTreatment => self.creating_vertex_treatment.is_some(),
             D::EdgeTreatment => self
                 .creating_edge_treatment
@@ -20158,7 +20651,9 @@ impl AppState {
             }
             D::Extrusion => {
                 if let Some(ce) = self.creating_extrusion.take() {
-                    self.discard_orphan_body_face_extrude_sketch(ce.sketch);
+                    if let Some(sketch) = ce.sketch {
+                        self.discard_orphan_body_face_extrude_sketch(sketch);
+                    }
                 }
             }
             D::VertexTreatment => self.creating_vertex_treatment = None,
@@ -20214,6 +20709,10 @@ impl AppState {
         }
         // A cleared draft has no armed picker to remember (#1485).
         self.picker_focus = None;
+        // Tools that arm on SetTool keep an empty creating-state so Y / options still work (#1499).
+        if self.tool_row().draft == draft {
+            self.arm_empty_draft(self.tool);
+        }
     }
 }
 
@@ -22863,8 +23362,11 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         state.apply(Action::CommitShape);
         assert_eq!(state.doc.primitives.len(), 1);
         assert_eq!(state.doc.bodies.len(), 1);
-        assert!(state.creating_shape.is_none(), "committing disarms the tool");
-        assert_eq!(state.tool, Tool::Select);
+        assert!(
+            state.creating_shape.as_ref().is_some_and(|c| c.phase == ShapePhase::Anchor),
+            "stay armed with an empty draft (#1498)"
+        );
+        assert_eq!(state.tool, Tool::Shape);
     }
 
     /// #1102: a freshly armed cuboid's Base phase starts with the width field focused.
@@ -30077,14 +30579,17 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         };
         state.apply(Action::SetTool(Tool::Extrude));
         state.apply(Action::ExtrudeBodyFace { face_id });
-        let sketch = state.creating_extrusion.as_ref().unwrap().sketch;
+        let sketch = state.creating_extrusion.as_ref().unwrap().sketch.expect("body-face extrude has a sketch");
         assert!(state.doc.sketches.contains(sketch));
         state.apply(Action::CancelOperation);
         assert!(
             !state.doc.sketches.contains(sketch),
             "orphan body-face sketch should be removed on cancel"
         );
-        assert!(state.creating_extrusion.is_none());
+        assert!(
+            !state.draft_has_picks(state.tool_row().draft),
+            "cancel empties the extrude draft"
+        );
     }
 
     /// #122: a circular cap gets a real `Circle` in the implicit sketch, not a tessellated
@@ -33580,6 +34085,223 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert!(
             !state.draft_blocks_tool_switch(),
             "a value-gizmo extrude does not own the next click"
+        );
+    }
+
+    /// #1498: committing Extrude / Revolve / Sweep / Loft leaves the tool armed with
+    /// an empty draft, ready for another.
+    #[test]
+    fn commit_leaves_feature_tools_armed() {
+        for tool in [Tool::Extrude, Tool::Revolve, Tool::Sweep, Tool::Loft] {
+            let mut state = AppState::default();
+            state.apply(Action::SetTool(tool));
+            match tool {
+                Tool::Extrude => {
+                    let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+                    let lines = crate::construction::add_line_rectangle(
+                        &mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4],
+                    );
+                    state.creating_extrusion = Some(CreatingExtrusion {
+                        sketch: Some(sketch),
+                        faces: vec![ExtrudeFace::Polygon(lines.to_vec())],
+                        distance: 8.0,
+                        text: "8".into(),
+                        user_edited: false,
+                        pending_focus: false,
+                        target: None,
+                        edit_index: None,
+                        body_mode: ExtrudeBodyMode::NewBody,
+                        merge_candidate: None,
+                        symmetric: false,
+                        taper: 0.0,
+                        taper_text: String::new(),
+                        taper_user_edited: false,
+                        taper_mode: crate::model::ExtrudeTaperMode::Distance,
+                    });
+                    assert!(matches!(state.apply(Action::CommitExtrusion), ActionResult::Ok), "{}", state.status);
+                }
+                Tool::Revolve => {
+                    let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+                    let lines = crate::construction::add_line_rectangle(
+                        &mut state.doc, sketch, 10.0, 0.0, 10.0, 10.0, [false; 4],
+                    );
+                    state.creating_revolve = Some(CreatingRevolve {
+                        sketch: Some(sketch),
+                        faces: vec![ExtrudeFace::Polygon(lines.to_vec())],
+                        axis: Some(crate::model::RevolveAxis::Y),
+                        ..CreatingRevolve::default()
+                    });
+                    assert!(matches!(state.apply(Action::CommitRevolve), ActionResult::Ok), "{}", state.status);
+                }
+                Tool::Sweep => {
+                    let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+                    let lines = crate::construction::add_line_rectangle(
+                        &mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4],
+                    );
+                    state.doc.construction_planes.insert(crate::model::ConstructionPlane {
+                        origin: glam::Vec3::ZERO,
+                        normal: glam::Vec3::Y,
+                        u_axis: glam::Vec3::X,
+                        v_axis: glam::Vec3::Z,
+                        parent: crate::model::ConstructionPlaneParent::Root,
+                        definition: crate::face::default_xy_plane_definition(),
+                        repeat_instance: None,
+                        name: None,
+                        extent: crate::model::PlaneExtent::default(),
+                    });
+                    let path_sketch = state.doc.add_sketch(FaceId::ConstructionPlane(
+                        state.doc.construction_planes.keys().last().unwrap(),
+                    ));
+                    state.doc.lines.insert(crate::model::Line::from_local_endpoints(
+                        path_sketch, 5.0, 0.0, 5.0, 25.0,
+                    ));
+                    let li = state.doc.lines.keys().last().unwrap();
+                    state.creating_sweep = Some(CreatingSweep {
+                        sketch: Some(sketch),
+                        faces: vec![ExtrudeFace::Polygon(lines.to_vec())],
+                        path: vec![li],
+                        ..CreatingSweep::default()
+                    });
+                    assert!(matches!(state.apply(Action::CommitSweep), ActionResult::Ok), "{}", state.status);
+                }
+                Tool::Loft => {
+                    let bottom = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+                    state.doc.circles.insert(crate::model::Circle::from_local_center_radius(
+                        bottom, 0.0, 0.0, 5.0, 0.0,
+                    ));
+                    state.doc.construction_planes.insert(plane_from_definition(
+                        &definition_from_reference(
+                            &PlaneReference::Face {
+                                origin: Vec3::ZERO,
+                                normal: Vec3::Z,
+                                label: "Ground".to_string(),
+                            },
+                            10.0,
+                            0.0,
+                        ),
+                        ConstructionPlaneParent::Root,
+                    ));
+                    let top = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(1)));
+                    state.doc.circles.insert(crate::model::Circle::from_local_center_radius(
+                        top, 0.0, 0.0, 2.0, 0.0,
+                    ));
+                    for (sketch, ci) in [(bottom, rkey(0)), (top, rkey(1))] {
+                        state.apply(Action::ToggleLoftSection {
+                            section: crate::model::LoftSection {
+                                sketch,
+                                face: ExtrudeFace::Circle(ci),
+                            },
+                        });
+                    }
+                    assert!(matches!(state.apply(Action::CommitLoft), ActionResult::Ok), "{}", state.status);
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(state.tool, tool, "{tool:?} must stay armed after commit (#1498)");
+            assert!(
+                !state.draft_has_picks(state.tool_row().draft),
+                "{tool:?} must have an empty draft after commit"
+            );
+        }
+    }
+
+    /// #1499: SetTool each Output-row tool, then cycle — the mode changes immediately,
+    /// before any pick.
+    #[test]
+    fn set_tool_arms_output_row_tools_so_cycle_changes_mode() {
+        for tool in [Tool::Extrude, Tool::Revolve, Tool::Sweep, Tool::Loft, Tool::Mirror] {
+            let mut state = AppState::default();
+            state.apply(Action::SetTool(tool));
+            let before = match tool {
+                Tool::Extrude => ToolOutputMode::from(
+                    state.creating_extrusion.as_ref().expect("Extrude armed on SetTool").body_mode,
+                ),
+                Tool::Revolve => ToolOutputMode::from(
+                    state.creating_revolve.as_ref().expect("Revolve armed on SetTool").body_choice,
+                ),
+                Tool::Sweep => ToolOutputMode::from(
+                    state.creating_sweep.as_ref().expect("Sweep armed on SetTool").body_choice,
+                ),
+                Tool::Loft => ToolOutputMode::from(
+                    state.creating_loft.as_ref().expect("Loft armed on SetTool").body_choice,
+                ),
+                Tool::Mirror => ToolOutputMode::from(
+                    state.creating_mirror.as_ref().expect("Mirror armed on SetTool").mode,
+                ),
+                _ => unreachable!(),
+            };
+            state.apply(Action::CycleToolOutputMode);
+            let after = match tool {
+                Tool::Extrude => ToolOutputMode::from(state.creating_extrusion.as_ref().unwrap().body_mode),
+                Tool::Revolve => ToolOutputMode::from(state.creating_revolve.as_ref().unwrap().body_choice),
+                Tool::Sweep => ToolOutputMode::from(state.creating_sweep.as_ref().unwrap().body_choice),
+                Tool::Loft => ToolOutputMode::from(state.creating_loft.as_ref().unwrap().body_choice),
+                Tool::Mirror => ToolOutputMode::from(state.creating_mirror.as_ref().unwrap().mode),
+                _ => unreachable!(),
+            };
+            assert_eq!(after, before.next(), "{tool:?} Y must change the Output mode before a pick (#1499)");
+        }
+    }
+
+    /// #1500: last-used output mode, combine kind, joint kind, and revolve symmetric
+    /// survive leaving the tool.
+    #[test]
+    fn last_used_options_survive_leaving_the_tool() {
+        let mut state = AppState::default();
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::CycleToolOutputMode);
+        let saved = ToolOutputMode::from(state.creating_extrusion.as_ref().unwrap().body_mode);
+        state.apply(Action::SetTool(Tool::Select));
+        state.apply(Action::SetTool(Tool::Extrude));
+        assert_eq!(
+            ToolOutputMode::from(state.creating_extrusion.as_ref().unwrap().body_mode),
+            saved,
+            "Extrude output mode is last-used (#1500)"
+        );
+
+        state.apply(Action::SetTool(Tool::Combine));
+        set_tool_mode(&mut state, "cut").unwrap();
+        assert_eq!(state.creating_boolean.as_ref().unwrap().kind, crate::model::BooleanOpKind::Cut);
+        state.apply(Action::SetTool(Tool::Select));
+        state.apply(Action::SetTool(Tool::Combine));
+        assert_eq!(
+            state.creating_boolean.as_ref().unwrap().kind,
+            crate::model::BooleanOpKind::Cut,
+            "Combine kind is last-used (#1500)"
+        );
+
+        state.apply(Action::SetTool(Tool::Revolve));
+        state.creating_revolve.as_mut().unwrap().symmetric = true;
+        state.tool_prefs.entry(Tool::Revolve).symmetric = Some(true);
+        state.apply(Action::SetTool(Tool::Select));
+        state.apply(Action::SetTool(Tool::Revolve));
+        assert!(
+            state.creating_revolve.as_ref().unwrap().symmetric,
+            "Revolve symmetric is last-used (#1500)"
+        );
+    }
+
+    /// #1500: chamfer/fillet have one default amount — the stray sketch-selection 3.0 is gone.
+    #[test]
+    fn chamfer_fillet_use_one_default_amount() {
+        let mut state = AppState::default();
+        let (sketch, point) = two_coincident_lines_at_a_right_angle(&mut state);
+        let _ = sketch;
+        state.scene_selection.clear();
+        click_scene_selection(
+            &mut state.scene_selection,
+            SceneElement::Point(point.clone()),
+            false,
+        );
+        state.apply(Action::SetTool(Tool::Chamfer));
+        let amount = state
+            .creating_vertex_treatment
+            .as_ref()
+            .expect("seeded from the treatable vertex")
+            .amount_live;
+        assert!(
+            (amount - DEFAULT_VERTEX_TREATMENT_AMOUNT).abs() < 1e-6,
+            "sketch chamfer seed must use DEFAULT_VERTEX_TREATMENT_AMOUNT, got {amount}"
         );
     }
 

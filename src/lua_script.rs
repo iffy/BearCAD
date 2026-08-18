@@ -3682,6 +3682,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         entry.set("esc", row.esc.label())?;
         entry.set("commit_on_enter", row.commit_on_enter)?;
         entry.set("output_modes", row.output_modes)?;
+        entry.set("stay_armed", row.stay_armed)?;
+        entry.set("arm_on_set_tool", row.arm_on_set_tool)?;
+        let prefs = lua.create_table()?;
+        for (i, p) in row.prefs.iter().enumerate() {
+            prefs.set(i + 1, p.label())?;
+        }
+        entry.set("prefs", prefs)?;
         entry.set("opens_sketch", row.face_click_opens_sketch)?;
         entry.set("leaves_sketch", crate::tooltable::is_3d_only(row.tool))?;
         entry.set("dual_mode", crate::tooltable::is_dual_mode(row.tool))?;

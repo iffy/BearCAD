@@ -6628,7 +6628,7 @@ impl App {
             if !self.state.draft_blocks_tool_switch()
                 && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Y))
             {
-                self.cycle_tool_output_mode();
+                self.state.apply(Action::CycleToolOutputMode);
             }
 
             if !self.state.draft_blocks_tool_switch()
@@ -6795,61 +6795,6 @@ impl App {
     fn tool_enter_commits(&self, ctx: &egui::Context) -> bool {
         let row = self.state.tool_row();
         row.commit_on_enter && tooltable::enter_commits(ctx, row.commit_fields)
-    }
-
-    fn cycle_tool_output_mode(&mut self) {
-        if !self.state.tool_row().output_modes {
-            return;
-        }
-        use actions::ToolOutputMode;
-        let name = |m: ToolOutputMode| match m {
-            ToolOutputMode::NewBody => "new body",
-            ToolOutputMode::AddToBody => "add to body",
-            ToolOutputMode::Cut => "cut",
-        };
-        match self.state.tool {
-            Tool::Extrude => {
-                let Some(ce) = self.state.creating_extrusion.as_mut() else {
-                    return;
-                };
-                let next = ToolOutputMode::from(ce.body_mode).next();
-                ce.body_mode = next.as_extrude_mode(ce.merge_candidate);
-                self.state.status = format!("Extrude output: {}", name(next));
-            }
-            Tool::Revolve => {
-                let Some(cr) = self.state.creating_revolve.as_mut() else {
-                    return;
-                };
-                let next = ToolOutputMode::from(cr.body_choice).next();
-                cr.body_choice = next.into();
-                self.state.status = format!("Revolve output: {}", name(next));
-            }
-            Tool::Sweep => {
-                let Some(cf) = self.state.creating_sweep.as_mut() else {
-                    return;
-                };
-                let next = ToolOutputMode::from(cf.body_choice).next();
-                cf.body_choice = next.into();
-                self.state.status = format!("Sweep output: {}", name(next));
-            }
-            Tool::Loft => {
-                let Some(cl) = self.state.creating_loft.as_mut() else {
-                    return;
-                };
-                let next = ToolOutputMode::from(cl.body_choice).next();
-                cl.body_choice = next.into();
-                self.state.status = format!("Loft output: {}", name(next));
-            }
-            Tool::Mirror => {
-                let Some(cm) = self.state.creating_mirror.as_mut() else {
-                    return;
-                };
-                let next = ToolOutputMode::from(cm.mode).next();
-                cm.mode = next.into();
-                self.state.status = format!("Mirror output: {}", name(next));
-            }
-            _ => {}
-        }
     }
 
     fn process_screenshots(&mut self, ctx: &egui::Context) {
@@ -7291,7 +7236,7 @@ impl App {
                 }
             }
         }
-        let sketch = self.state.creating_extrusion.as_ref().map(|ce| ce.sketch);
+        let sketch = self.state.creating_extrusion.as_ref().and_then(|ce| ce.sketch);
         if let Some((mut text, mut want_focus, user_edited)) = self
             .state
             .creating_extrusion
@@ -16234,9 +16179,14 @@ impl App {
                                 }
                             };
                             ce.taper = val;
-                            let unit = model::effective_length_unit(&self.state.doc, ce.sketch);
-                            let angle_unit =
-                                model::effective_angle_unit(&self.state.doc, ce.sketch);
+                            let unit = ce
+                                .sketch
+                                .map(|s| model::effective_length_unit(&self.state.doc, s))
+                                .unwrap_or(self.state.doc.default_length_unit);
+                            let angle_unit = ce
+                                .sketch
+                                .map(|s| model::effective_angle_unit(&self.state.doc, s))
+                                .unwrap_or(self.state.doc.default_angle_unit);
                             ce.taper_text = match ce.taper_mode {
                                 model::ExtrudeTaperMode::Distance => {
                                     crate::value::format_length_display_in(val, unit)
@@ -20901,8 +20851,9 @@ fn build_viewport_scene_input<'a>(
 
     let preview_extrusion = creating_extrusion
         .and_then(|ce| {
-            (!ce.faces.is_empty()).then(|| model::Extrusion {
-                sketch: ce.sketch,
+            let sketch = ce.sketch.filter(|_| !ce.faces.is_empty())?;
+            Some(model::Extrusion {
+                sketch,
                 faces: ce.faces.clone(),
                 distance: ce.evaluated_distance(doc),
                 // While dragging the gizmo, the target is only known live (not yet committed
@@ -22579,7 +22530,9 @@ fn draw_extrude_height_dimension<Project>(
     };
     let label = crate::value::format_length_display_in(
         distance.abs(),
-        crate::model::effective_length_unit(doc, ce.sketch),
+        ce.sketch
+            .map(|s| crate::model::effective_length_unit(doc, s))
+            .unwrap_or(doc.default_length_unit),
     );
     draw_linear_dimension::<fn(Vec3) -> Option<egui::Pos2>>(
         painter,
