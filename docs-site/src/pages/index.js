@@ -72,7 +72,7 @@ function Hero() {
         </div>
         <div className={styles.heroCtas}>
           <Link
-            className={clsx(styles.btn, styles.btnPrimary, styles.heroBrowser)}
+            className={clsx(styles.btn, styles.btnPrimary)}
             href={WEB_APP_PATH}>
             Open in your browser
           </Link>
