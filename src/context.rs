@@ -4522,20 +4522,20 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "Whether this becomes a new body, joins the body it touches, or cuts into it.",
         ),
         (Some(Tool::Chamfer), "Selection") => Some(
-            "The sketch corners to cut flat. Click a corner where two lines meet; the cut \
-             distance is typed in the 3D view.",
+            "The sketch corners to cut flat. Click a corner where two lines meet; click \
+             again to drop it. The cut distance is typed in the 3D view.",
         ),
         (Some(Tool::Chamfer), "Edges") => Some(
-            "The body edges to cut flat, one row each. Shift+click for several; the cut \
-             distance is typed in the 3D view.",
+            "The body edges to cut flat, one row each. Click an edge to add it, click \
+             it again to drop it. The cut distance is typed in the 3D view.",
         ),
         (Some(Tool::Fillet), "Selection") => Some(
-            "The sketch corners to round. Click a corner where two lines meet; the radius is \
-             typed in the 3D view.",
+            "The sketch corners to round. Click a corner where two lines meet; click \
+             again to drop it. The radius is typed in the 3D view.",
         ),
         (Some(Tool::Fillet), "Edges") => Some(
-            "The body edges to round, one row each. Shift+click for several; the radius is \
-             typed in the 3D view.",
+            "The body edges to round, one row each. Click an edge to add it, click \
+             it again to drop it. The radius is typed in the 3D view.",
         ),
 
         (Some(Tool::Combine), "Bodies") => {

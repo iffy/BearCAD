@@ -105,12 +105,12 @@ tools! {
     Constraint,
     /// Click coplanar faces to include them, then set a distance to extrude a solid.
     Extrude,
-    /// Click a sketch vertex where exactly two plain lines meet, then set a straight-cut
-    /// distance via gizmo/text input to truncate and bridge them (#37). 2D sketch vertices
-    /// only — see SPEC §3.1/§3.4 for why there's no 3D solid-edge chamfer in this version.
+    /// Dual-mode: in a sketch, click a vertex where two lines meet; on a solid, click a
+    /// body edge. Click toggles membership (Offset's rule, #1504). Set the cut distance
+    /// via gizmo/text input, Enter commits.
     Chamfer,
-    /// Same vertex-selection flow as [`Tool::Chamfer`], but bridges the truncated lines with a
-    /// rounded single-cubic-bezier arc instead of a straight cut (#38).
+    /// Dual-mode sibling of [`Tool::Chamfer`]: same click-toggle, but rounds instead of
+    /// cutting flat — a bezier arc on a sketch vertex, a fillet on a body edge.
     Fillet,
     /// In a sketch: pick lines/circles, then set a signed distance (push-pull gizmo or
     /// text input) to create parallel offset copies grouped under a
@@ -712,6 +712,22 @@ pub struct CreatingVertexTreatment {
 }
 
 impl CreatingVertexTreatment {
+    /// Start a draft with the shared default amount (#1504).
+    pub fn new(
+        points: Vec<ConstraintPoint>,
+        kind: VertexTreatmentKind,
+        unit: crate::value::LengthUnit,
+    ) -> Self {
+        Self {
+            points,
+            kind,
+            amount_live: DEFAULT_VERTEX_TREATMENT_AMOUNT,
+            text: crate::value::format_length_display_in(DEFAULT_VERTEX_TREATMENT_AMOUNT, unit),
+            user_edited: false,
+            pending_focus: true,
+        }
+    }
+
     /// Evaluated amount: typed magnitude (if edited), otherwise the live gizmo-driven value.
     /// Always non-negative.
     pub fn evaluated_amount(&self, doc: &Document) -> f32 {
@@ -2017,21 +2033,24 @@ pub struct CreatingEdgeTreatment {
 }
 
 impl CreatingEdgeTreatment {
+    /// Start a draft with the shared default amount (#1504).
+    pub fn new(
+        edges: Vec<(crate::model::TreatableSolid, ExtrusionEdgeRef)>,
+        kind: VertexTreatmentKind,
+    ) -> Self {
+        Self {
+            edges,
+            kind,
+            amount_live: DEFAULT_VERTEX_TREATMENT_AMOUNT,
+            text: crate::value::format_length_display(DEFAULT_VERTEX_TREATMENT_AMOUNT),
+            user_edited: false,
+            pending_focus: true,
+        }
+    }
+
     /// The gizmo-anchoring edge (the first in the set).
     pub fn primary(&self) -> Option<(crate::model::TreatableSolid, ExtrusionEdgeRef)> {
         self.edges.first().copied()
-    }
-
-    /// Toggle an edge's membership in the set (#166; shift+click). Removing the last edge
-    /// is refused — an in-progress treatment always keeps at least one edge.
-    pub fn toggle_edge(&mut self, entry: (crate::model::TreatableSolid, ExtrusionEdgeRef)) {
-        if let Some(pos) = self.edges.iter().position(|e| *e == entry) {
-            if self.edges.len() > 1 {
-                self.edges.remove(pos);
-            }
-        } else {
-            self.edges.push(entry);
-        }
     }
 
     /// Evaluated amount: typed magnitude (if edited), otherwise the live gizmo-driven value.
@@ -9455,31 +9474,6 @@ impl AppState {
                 if self.creating_calibration.is_some() && tool != Tool::Select {
                     self.creating_calibration = None;
                 }
-                // #157/#166: switching to Chamfer/Fillet with body edges already selected
-                // preloads them (filtered to treatable edges) so the gizmo shows right away.
-                if matches!(tool, Tool::Chamfer | Tool::Fillet)
-                    && self.sketch_session.is_none()
-                    && self.creating_edge_treatment.is_none()
-                {
-                    let edges =
-                        crate::extrude::treatable_edges_in_selection(&self.doc, &self.scene_selection);
-                    if !edges.is_empty() {
-                        self.creating_edge_treatment = Some(CreatingEdgeTreatment {
-                            edges,
-                            kind: if tool == Tool::Chamfer {
-                                VertexTreatmentKind::Chamfer
-                            } else {
-                                VertexTreatmentKind::Fillet
-                            },
-                            amount_live: DEFAULT_VERTEX_TREATMENT_AMOUNT,
-                            text: crate::value::format_length_display(
-                                DEFAULT_VERTEX_TREATMENT_AMOUNT,
-                            ),
-                            user_edited: false,
-                            pending_focus: true,
-                        });
-                    }
-                }
                 // 3D-only tools act on the solid, not sketch geometry: leave the sketch
                 // so Combine/Joint/Shell (and every later 3D-only tool) cannot sit armed
                 // and ignore clicks (#1495). Dual-mode tools stay.
@@ -9608,49 +9602,22 @@ impl AppState {
                         "Aligned view — click a projection, then move the mouse and click to place a lined-up view".to_string()
                     }
                 };
-                // #492: Chamfer/Fillet in a sketch keep only treatable vertices selected
-                // and seed the multi-vertex treatment set from them.
-                if matches!(tool, Tool::Chamfer | Tool::Fillet) {
-                    if let Some(session) = self.sketch_session {
-                        let sketch = session.sketch;
-                        let kind = match tool {
-                            Tool::Chamfer => VertexTreatmentKind::Chamfer,
-                            _ => VertexTreatmentKind::Fillet,
-                        };
-                        let mut keep = Vec::new();
-                        for el in self.scene_selection.ordered() {
-                            if let SceneElement::Point(p) = el {
-                                if crate::vertex_drag::incident_two_lines(
-                                    &self.doc,
-                                    sketch,
-                                    p.clone(),
-                                )
-                                .is_some()
-                                {
-                                    keep.push(p);
-                                }
-                            }
-                        }
-                        self.scene_selection.clear();
-                        for p in &keep {
-                            click_scene_selection(
-                                &mut self.scene_selection,
-                                SceneElement::Point(p.clone()),
-                                true,
-                            );
-                        }
-                        if !keep.is_empty() {
-                            let unit = crate::model::effective_length_unit(&self.doc, sketch);
-                            let amount = 3.0_f32;
-                            self.creating_vertex_treatment = Some(CreatingVertexTreatment {
-                                points: keep,
-                                kind,
-                                amount_live: amount,
-                                text: crate::value::format_length_display_in(amount, unit),
-                                user_edited: false,
-                                pending_focus: true,
-                            });
-                        }
+                // #492/#1504: Chamfer/Fillet in a sketch keep only treatable vertices
+                // and seed the draft from them with the same default amount a click uses.
+                if matches!(tool, Tool::Chamfer | Tool::Fillet) && self.sketch_session.is_some() {
+                    let points: Vec<_> = self
+                        .scene_selection
+                        .ordered()
+                        .into_iter()
+                        .filter_map(|el| match el {
+                            SceneElement::Point(p) => Some(p),
+                            _ => None,
+                        })
+                        .collect();
+                    self.creating_vertex_treatment = None;
+                    self.scene_selection.clear();
+                    for p in points {
+                        pick_treatment_vertex(self, p);
                     }
                 }
                 if tool == Tool::Dimension {
@@ -19178,23 +19145,13 @@ pub fn apply_pick(
             }) else {
                 return false;
             };
-            match state.creating_edge_treatment.as_mut() {
-                Some(cet) => cet.toggle_edge(resolved),
-                None => {
-                    state.creating_edge_treatment = Some(CreatingEdgeTreatment {
-                        edges: vec![resolved],
-                        kind: match state.tool {
-                            Tool::Fillet => VertexTreatmentKind::Fillet,
-                            _ => VertexTreatmentKind::Chamfer,
-                        },
-                        amount_live: DEFAULT_VERTEX_TREATMENT_AMOUNT,
-                        text: String::new(),
-                        user_edited: false,
-                        pending_focus: true,
-                    })
-                }
-            }
-            true
+            pick_treatment_edges(state, [resolved])
+        }
+        (P::Selection, SceneElement::Point(p))
+            if matches!(state.tool, Tool::Chamfer | Tool::Fillet)
+                && state.sketch_session.is_some() =>
+        {
+            pick_treatment_vertex(state, p.clone())
         }
         // A Revolve axis and a Repeat path are the same sort of pick — one straight reference
         // — so both convert through `as_revolve_axis` rather than through a `match` on the
@@ -19351,6 +19308,74 @@ pub fn apply_pick(
         }
         (_, SceneElement::Body(bi)) => toggle_body_in_active_tool(state, *bi),
         _ => false,
+    }
+}
+
+/// Apply Chamfer/Fillet's multi-pick rule to a sketch vertex (#1504).
+pub fn pick_treatment_vertex(state: &mut AppState, point: ConstraintPoint) -> bool {
+    let Some(session) = state.sketch_session else {
+        return false;
+    };
+    if crate::vertex_drag::incident_two_lines(&state.doc, session.sketch, point.clone()).is_none() {
+        return false;
+    }
+    let kind = match state.tool {
+        Tool::Chamfer => VertexTreatmentKind::Chamfer,
+        Tool::Fillet => VertexTreatmentKind::Fillet,
+        _ => return false,
+    };
+    let rule = crate::tooltable::row(state.tool, crate::tooltable::ToolSpace::Sketch).multi_pick;
+    if let Some(cvt) = state.creating_vertex_treatment.as_mut() {
+        rule.apply(&mut cvt.points, point);
+        if cvt.points.is_empty() {
+            state.creating_vertex_treatment = None;
+        }
+    } else {
+        let unit = crate::model::effective_length_unit(&state.doc, session.sketch);
+        state.creating_vertex_treatment = Some(CreatingVertexTreatment::new(vec![point], kind, unit));
+    }
+    sync_vertex_treatment_selection(state);
+    true
+}
+
+/// Apply Chamfer/Fillet's multi-pick rule to one or more 3D edges (#1504).
+pub fn pick_treatment_edges(
+    state: &mut AppState,
+    edges: impl IntoIterator<Item = (crate::model::TreatableSolid, crate::model::ExtrusionEdgeRef)>,
+) -> bool {
+    let kind = match state.tool {
+        Tool::Fillet => VertexTreatmentKind::Fillet,
+        Tool::Chamfer => VertexTreatmentKind::Chamfer,
+        _ => return false,
+    };
+    let rule = crate::tooltable::row(state.tool, crate::tooltable::ToolSpace::Solid).multi_pick;
+    let incoming: Vec<_> = edges.into_iter().collect();
+    if incoming.is_empty() {
+        return false;
+    }
+    if let Some(cet) = state.creating_edge_treatment.as_mut() {
+        for edge in incoming {
+            rule.apply(&mut cet.edges, edge);
+        }
+        if cet.edges.is_empty() {
+            state.creating_edge_treatment = None;
+        }
+    } else {
+        state.creating_edge_treatment = Some(CreatingEdgeTreatment::new(incoming, kind));
+    }
+    true
+}
+
+fn sync_vertex_treatment_selection(state: &mut AppState) {
+    state.scene_selection.clear();
+    if let Some(cvt) = &state.creating_vertex_treatment {
+        for p in &cvt.points {
+            crate::selection::click_scene_selection(
+                &mut state.scene_selection,
+                SceneElement::Point(p.clone()),
+                true,
+            );
+        }
     }
 }
 
@@ -31833,6 +31858,115 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         state.apply(Action::ExitSketch);
         state.apply(Action::SetTool(Tool::Chamfer));
         assert!(state.creating_edge_treatment.is_none());
+    }
+
+    /// #1504: sketch-selection seed uses the same default amount as a click, not a stray 3.0.
+    #[test]
+    fn switching_to_chamfer_in_sketch_uses_the_default_amount() {
+        let mut state = AppState::default();
+        let (_, point) = two_coincident_lines_at_a_right_angle(&mut state);
+        state.scene_selection.insert(SceneElement::Point(point));
+        state.apply(Action::SetTool(Tool::Chamfer));
+        let cvt = state
+            .creating_vertex_treatment
+            .as_ref()
+            .expect("selection should seed the treatment");
+        assert_eq!(cvt.amount_live, DEFAULT_VERTEX_TREATMENT_AMOUNT);
+        assert_eq!(cvt.points.len(), 1);
+    }
+
+    /// #1504: the 3D picker toggles, including the last edge — emptying cancels the draft.
+    #[test]
+    fn chamfer_edge_picker_toggles() {
+        use crate::hierarchy::quantize_body_point;
+        let mut state = box_extrusion_state();
+        state.apply(Action::ExitSketch);
+        state.apply(Action::SetTool(Tool::Chamfer));
+        let treatable = crate::extrude::treatable_edges(&state.doc);
+        assert!(treatable.len() >= 2, "a box has more than one treatable edge");
+        let edge = |i: usize| {
+            let (_, _, a, b) = treatable[i].clone();
+            SceneElement::BodyEdge {
+                body: bkey(0),
+                a: quantize_body_point(a),
+                b: quantize_body_point(b),
+            }
+        };
+        assert!(apply_pick(
+            &mut state,
+            crate::context::PickerTarget::TreatmentEdges,
+            &edge(0),
+        ));
+        assert_eq!(state.creating_edge_treatment.as_ref().unwrap().edges.len(), 1);
+        assert!(apply_pick(
+            &mut state,
+            crate::context::PickerTarget::TreatmentEdges,
+            &edge(1),
+        ));
+        assert_eq!(
+            state.creating_edge_treatment.as_ref().unwrap().edges.len(),
+            2,
+            "a second edge adds, it does not replace"
+        );
+        assert!(apply_pick(
+            &mut state,
+            crate::context::PickerTarget::TreatmentEdges,
+            &edge(0),
+        ));
+        assert_eq!(state.creating_edge_treatment.as_ref().unwrap().edges.len(), 1);
+        assert!(apply_pick(
+            &mut state,
+            crate::context::PickerTarget::TreatmentEdges,
+            &edge(1),
+        ));
+        assert!(
+            state.creating_edge_treatment.is_none(),
+            "toggling the last edge off cancels the draft"
+        );
+    }
+
+    /// #1504: the 2D click path uses the same toggle as the 3D picker.
+    #[test]
+    fn chamfer_vertex_click_toggles() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        let lines = crate::construction::add_line_rectangle(
+            &mut state.doc,
+            sketch,
+            0.0,
+            0.0,
+            10.0,
+            10.0,
+            [false; 4],
+        );
+        state.apply(Action::SetTool(Tool::Chamfer));
+        let a = ConstraintPoint::LineEndpoint {
+            line: lines[0],
+            end: crate::model::LineEnd::Start,
+        };
+        let b = ConstraintPoint::LineEndpoint {
+            line: lines[1],
+            end: crate::model::LineEnd::Start,
+        };
+        assert!(pick_treatment_vertex(&mut state, a.clone()));
+        assert_eq!(state.creating_vertex_treatment.as_ref().unwrap().points, vec![a.clone()]);
+        assert_eq!(
+            state.creating_vertex_treatment.as_ref().unwrap().amount_live,
+            DEFAULT_VERTEX_TREATMENT_AMOUNT
+        );
+        assert!(pick_treatment_vertex(&mut state, b.clone()));
+        assert_eq!(
+            state.creating_vertex_treatment.as_ref().unwrap().points,
+            vec![a.clone(), b.clone()],
+            "a second vertex adds, it does not replace"
+        );
+        assert!(pick_treatment_vertex(&mut state, a.clone()));
+        assert_eq!(state.creating_vertex_treatment.as_ref().unwrap().points, vec![b.clone()]);
+        assert!(pick_treatment_vertex(&mut state, b));
+        assert!(
+            state.creating_vertex_treatment.is_none(),
+            "toggling the last vertex off cancels the draft"
+        );
     }
 
     #[test]

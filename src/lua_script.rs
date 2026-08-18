@@ -3690,6 +3690,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             crate::tooltable::survives_begin_sketch(row.tool),
         )?;
         entry.set("draft", format!("{:?}", row.draft))?;
+        entry.set("multi_pick", row.multi_pick.label())?;
         let pickers = lua.create_table()?;
         for (i, p) in row.pickers.iter().enumerate() {
             pickers.set(i + 1, p.heading)?;
@@ -12329,6 +12330,13 @@ mod tests {
             assert(tools["shape"], "Shape must have a row (#1481)")
             assert(shape.gizmo == "placement", "Shape is a placement tool")
             assert(shape.commit_on_enter, "Shape commits on Enter")
+
+            local chamfer
+            for _, row in ipairs(table) do
+                if row.tool == "chamfer" then chamfer = row end
+            end
+            assert(chamfer and chamfer.multi_pick == "toggle",
+              "Chamfer/Fillet share Offset's toggle (#1504)")
 
             bearcad.ui.tool("revolve")
             local row = bearcad.tool_row()

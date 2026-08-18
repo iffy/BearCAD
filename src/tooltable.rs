@@ -107,6 +107,36 @@ pub fn refresh_gizmo_field_text(
     }
 }
 
+/// How a tool gathers a multi-item set on click (#1504).
+///
+/// Chamfer/Fillet used to have three rules (2D add-only, 3D replace/Shift-toggle, picker
+/// toggle). One column, one rule: click toggles membership, Shift is not required — the same
+/// rule Offset already uses. Both the 2D vertex click and the 3D edge picker read this.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MultiPick {
+    /// Click toggles membership. Shift is not required.
+    Toggle,
+    /// This row does not collect a multi-item set via this rule.
+    None,
+}
+
+impl MultiPick {
+    /// Apply this row's rule to `set` for one clicked `item`.
+    pub fn apply<T: PartialEq>(self, set: &mut Vec<T>, item: T) {
+        match self {
+            Self::Toggle => crate::element_picker::toggle_picked(set, item),
+            Self::None => {}
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Toggle => "toggle",
+            Self::None => "none",
+        }
+    }
+}
+
 /// What Esc does (#1484). One rule, so no tool can drift again: the first press empties what
 /// the tool has picked and leaves the tool armed, the second returns to Select.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -266,6 +296,8 @@ pub struct ToolRow {
     /// Edit (#546 / #1486). `None` when the tool has a dedicated edit path or no
     /// row-editable operation.
     pub row_edit: Option<RowEdit>,
+    /// How this tool gathers a multi-item set on click (#1504).
+    pub multi_pick: MultiPick,
 }
 
 /// The spaces a tool has a row in. Exhaustive: a new `Tool` variant does not compile until
@@ -541,6 +573,7 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
         output_modes: false,
         pickers: &[],
         row_edit: None,
+        multi_pick: MultiPick::None,
     };
     let sketch = space == ToolSpace::Sketch;
     match tool {
@@ -632,6 +665,7 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             // 2D chamfer/fillet re-opens through the universal row; 3D has its own
             // `EditEdgeTreatmentOp` path (#531).
             row_edit: if sketch { Some(RowEdit::SketchVertexTreatment) } else { None },
+            multi_pick: MultiPick::Toggle,
             ..base
         },
         Tool::Offset => ToolRow {
@@ -642,6 +676,7 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             draft: Draft::SketchOffset,
             pickers: OFFSET_PICKERS,
             row_edit: Some(RowEdit::SketchOffset),
+            multi_pick: MultiPick::Toggle,
             ..base
         },
         Tool::Loft => ToolRow {
@@ -1220,6 +1255,25 @@ mod tests {
                 assert_eq!(r.picker_named(p.heading), Some(p.target));
             }
         }
+    }
+
+    /// #1504: Chamfer/Fillet share Offset's toggle — one rule for both spaces, so the
+    /// 2D click path and the 3D picker cannot drift again.
+    #[test]
+    fn chamfer_fillet_and_offset_toggle() {
+        for tool in [Tool::Chamfer, Tool::Fillet] {
+            for &space in spaces(tool) {
+                assert_eq!(
+                    row(tool, space).multi_pick,
+                    MultiPick::Toggle,
+                    "{tool:?}/{space:?} must toggle"
+                );
+            }
+        }
+        assert_eq!(
+            row(Tool::Offset, ToolSpace::Sketch).multi_pick,
+            MultiPick::Toggle
+        );
     }
 
     /// #1486: a tool-table `row_edit` is the Elements-pane double-click / right-click
