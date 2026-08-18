@@ -3280,6 +3280,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         cut.set(i + 1, doc.extrusions.keys().position(|k| k == *ei))?;
                     }
                     t.set("cut", cut)?;
+                    t.set(
+                        "material",
+                        body.material
+                            .and_then(|mi| doc.materials.keys().position(|k| k == mi)),
+                    )?;
+                    t.set("shadow", body.shadow)?;
                 }
                 "parameter" => {
                     // The script's `index` is the parameter's ordinal (#1055).
@@ -8178,6 +8184,72 @@ mod tests {
         // resolves that to the key the body actually holds (#1055).
         let steel = state.doc.materials.keys().nth(seeded + 1).expect("Steel");
         assert_eq!(state.doc.bodies[bkey(0)].material, Some(steel), "reassigned to Steel");
+    }
+
+    /// #1475/#1474: repeating a standalone add extrusion of disjoint cylinders makes one
+    /// body per instance, and each instance can take its own material.
+    #[test]
+    fn lua_repeat_add_extrusion_makes_separate_bodies_with_materials() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.circle{ x = 20, y = 0, r = 2 }
+            bearcad.extrude{ circle = 0, distance = 10 }
+            bearcad.repeat_cut{ cuts = {0}, axis = "z", around = true,
+                                mode = "count_fit_ends", count = 6, length = 360 }
+            bearcad.set_material{ body = 2, material = 1 }
+            assert(bearcad.count("body") == 6, "expected 6 bodies, got " .. bearcad.count("body"))
+            local v0 = bearcad.body_stats(0).volume
+            for i = 1, 5 do
+                local v = bearcad.body_stats(i).volume
+                assert(math.abs(v - v0) < v0 * 0.15,
+                    "instance " .. i .. " volume " .. v .. " vs source " .. v0)
+            end
+            assert(bearcad.get{ kind = "body", index = 2 }.material == 1)
+            assert(bearcad.get{ kind = "body", index = 0 }.material == nil
+                or bearcad.get{ kind = "body", index = 0 }.material == 0)
+        "#,
+        );
+        let live: Vec<_> = state
+            .doc
+            .bodies
+            .iter()
+            .filter(|(_, b)| !b.shadow)
+            .collect();
+        assert_eq!(live.len(), 6, "disjoint repeated extrudes are separate bodies");
+        let blue = state.doc.materials.keys().nth(1).expect("Blue");
+        let painted = live
+            .iter()
+            .filter(|(_, b)| b.material == Some(blue))
+            .count();
+        assert_eq!(painted, 1, "only the assigned instance is Blue");
+    }
+
+    /// #1475: the reported polar-repeat-of-an-extrude document has one body per
+    /// cylinder, not one compound of all six.
+    #[test]
+    fn lua_issue_1475_repeated_cylinders_are_separate_bodies() {
+        let path = format!(
+            "{}/tests/fixtures/issue_1475.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let path = path.replace('\\', "\\\\");
+        let state = run_lua(&format!(r#"bearcad.open("{path}")"#));
+        let live: Vec<_> = state
+            .doc
+            .bodies
+            .iter()
+            .filter(|(_, b)| !b.shadow)
+            .collect();
+        assert_eq!(
+            live.len(),
+            7,
+            "disk + 6 cylinders; got {} live bodies",
+            live.len()
+        );
+        let op = state.doc.repeat_ops.values().next().expect("repeat");
+        assert_eq!(op.outputs.len(), 5, "6 instances = original + 5 copies");
+        assert_eq!(op.targets.len(), 1);
     }
 
     /// #1218: scripts can turn any body into a shadow body (and back).

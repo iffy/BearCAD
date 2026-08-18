@@ -13287,6 +13287,9 @@ impl AppState {
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
+                promote_standalone_repeat_extrusions(&mut self.doc, op_index);
+                let targets = self.doc.repeat_ops[op_index].targets.clone();
+                let extrusion_targets = self.doc.repeat_ops[op_index].extrusion_targets.clone();
                 self.doc.shape_order.push(ShapeKind::RepeatOperation);
                 let mut outputs = Vec::new();
                 for instance in 1..=offsets.len() {
@@ -17577,6 +17580,32 @@ fn slice_face_loop(
 /// two output lists to `instances × targets` and refreshing every surviving copy's geometry from
 /// its source shifted along the (normalized) direction. Returns `false` (leaving the op's outputs
 /// untouched) when the configuration doesn't evaluate to at least one extra instance.
+/// Move standalone add-extrusion targets onto the body list so each instance is its
+/// own body (#1475). Cuts and add-to-body extrusions stay as feature replay.
+fn promote_standalone_repeat_extrusions(
+    doc: &mut crate::model::Document,
+    op: crate::model::RepeatOpKey,
+) {
+    let Some(entry) = doc.repeat_ops.get(op) else {
+        return;
+    };
+    let mut targets = entry.targets.clone();
+    let mut extrusion_targets = Vec::new();
+    for ei in entry.extrusion_targets.clone() {
+        if let Some(body) = crate::model::standalone_body_for_add_extrusion(doc, ei) {
+            if !targets.contains(&body) {
+                targets.push(body);
+            }
+        } else {
+            extrusion_targets.push(ei);
+        }
+    }
+    if let Some(entry) = doc.repeat_ops.get_mut(op) {
+        entry.targets = targets;
+        entry.extrusion_targets = extrusion_targets;
+    }
+}
+
 /// Resize one body-repeat op's outputs (bodies + plane instances + repeated sketches) to
 /// match its currently-evaluated offsets (#1187). Returns `false` when the op is gone or
 /// its expressions no longer evaluate — leaves the previous outputs in place so a bad
@@ -17585,6 +17614,10 @@ pub fn rebuild_body_repeat(
     doc: &mut crate::model::Document,
     op: crate::model::RepeatOpKey,
 ) -> bool {
+    if doc.repeat_ops.get(op).is_none() {
+        return false;
+    }
+    promote_standalone_repeat_extrusions(doc, op);
     let Some(entry) = doc.repeat_ops.get(op).cloned() else {
         return false;
     };
@@ -27203,6 +27236,48 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             additive: false,
         });
         assert!(state.creating_repeat.as_ref().unwrap().extrusion_targets.is_empty());
+    }
+
+    /// #1475: repeating a standalone add extrusion (the Repeat tool's extrusion target)
+    /// emits one body per instance, not a fused compound.
+    #[test]
+    fn repeat_add_extrusion_creates_separate_bodies() {
+        let mut state = two_box_state(false);
+        let before = state.doc.bodies.len();
+        let result = state.apply(Action::CreateRepeatOperation {
+            targets: Vec::new(),
+            plane_targets: Vec::new(),
+            extrusion_targets: vec![xkey(0)],
+            sketch_targets: Vec::new(),
+            axis: crate::model::RevolveAxis::X,
+            path_circle: None,
+            around_axis: false,
+            flip: false,
+            mode: crate::model::RepeatMode::CountGap,
+            count: "3".to_string(),
+            spacing: "20".to_string(),
+            length: String::new(),
+            length_target: None,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        let op = state.doc.repeat_ops.values().nth(0).unwrap().clone();
+        assert_eq!(op.targets.len(), 1, "the add extrusion promotes to its body");
+        assert!(
+            op.extrusion_targets.is_empty(),
+            "standalone add is no longer a fused replay"
+        );
+        assert_eq!(op.outputs.len(), 2, "3 instances = original + 2 copies");
+        assert_eq!(state.doc.bodies.len(), before + 2);
+        let src = crate::extrude::body_solid_mesh(&state.doc, op.targets[0]).unwrap();
+        let src_vol = crate::extrude::mesh_signed_volume(&src).abs();
+        for &out in &op.outputs {
+            let mesh = crate::extrude::body_solid_mesh(&state.doc, out).unwrap();
+            let vol = crate::extrude::mesh_signed_volume(&mesh).abs();
+            assert!(
+                (vol - src_vol).abs() < src_vol * 0.15,
+                "copy {out:?} volume {vol} vs source {src_vol}"
+            );
+        }
     }
 
     /// #221: repeating a construction plane ×3 along X emits two offset instance planes at the

@@ -567,18 +567,20 @@ fn occt_fused_extrusions(
             continue;
         }
         let shape = occt_extrusion_shape(doc, extrusion, distance)?;
-        // Placements this add contributes: the base, plus one per repeat-op replay offset (#220
-        // add-replay) — an add extrusion targeted by a repeat op is fused again at each instance,
-        // growing N bumps instead of one.
+        // Placements this add contributes: the base, plus one per repeat-op replay offset
+        // for add-to-body feature patterns (#220). A standalone add extrusion is copied as
+        // separate bodies (#1475), so it is not fused again here.
         let mut placements: Vec<glam::Mat4> = vec![glam::Mat4::IDENTITY];
-        for op in doc.repeat_ops.values() {
-            if !op.extrusion_targets.contains(&ei) {
-                continue;
-            }
-            if let Some(offsets) = repeat_offsets(doc, op) {
-                for off in offsets {
-                    if let Some(m) = repeat_offset_transform(doc, op, off) {
-                        placements.push(m);
+        if crate::model::standalone_body_for_add_extrusion(doc, ei).is_none() {
+            for op in doc.repeat_ops.values() {
+                if !op.extrusion_targets.contains(&ei) {
+                    continue;
+                }
+                if let Some(offsets) = repeat_offsets(doc, op) {
+                    for off in offsets {
+                        if let Some(m) = repeat_offset_transform(doc, op, off) {
+                            placements.push(m);
+                        }
                     }
                 }
             }
@@ -12361,10 +12363,10 @@ mod tests {
         );
     }
 
-    /// #220: repeating an *add* extrusion fuses the solid at each offset — one box becomes three
-    /// disjoint boxes (union volume triples).
+    /// #1475: repeating a standalone add extrusion does not fuse the copies into the
+    /// source body. The original stays one box; extra instances are separate bodies.
     #[test]
-    fn repeat_add_extrusion_grows_n_bodies() {
+    fn repeat_add_extrusion_does_not_fuse_disjoint_copies() {
         use crate::model::{RepeatMode, RepeatOperation, RevolveAxis};
         let (mut doc, sketch) = sketch_doc();
         let box_face = rect_profile(&mut doc, sketch, 0.0, 0.0, 4.0, 4.0); // 4×4
@@ -12377,7 +12379,6 @@ mod tests {
         });
         assert!((mesh_signed_volume(&body_solid_mesh(&doc, bkey(0)).unwrap()).abs() - 80.0).abs() < 1.0);
 
-        // Replay the add ×3 along X at 10mm gap → boxes at x = 0, 10, 20 (disjoint).
         doc.repeat_ops.insert(RepeatOperation {
             targets: Vec::new(),
             plane_targets: Vec::new(),
@@ -12399,7 +12400,10 @@ mod tests {
             name: None,
         });
         let vol = mesh_signed_volume(&body_solid_mesh(&doc, bkey(0)).unwrap()).abs();
-        assert!((vol - 240.0).abs() < 3.0, "expected ~240 (3 boxes), got {vol}");
+        assert!(
+            (vol - 80.0).abs() < 1.0,
+            "source body stays one box, got {vol}"
+        );
     }
 
     /// Ancestor→descendant propagation: a body moved by a parameter expression follows edits to
