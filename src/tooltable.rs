@@ -146,6 +146,7 @@ pub enum RowEdit {
     Revolution,
     Shape,
     Sweep,
+    Loft,
     Joint,
     SketchVertexTreatment,
 }
@@ -170,6 +171,7 @@ impl RowEdit {
             Self::Revolution => H::Revolution(Key::from_bits(0)),
             Self::Shape => H::Shape(Key::from_bits(0)),
             Self::Sweep => H::SweepOp(Key::from_bits(0)),
+            Self::Loft => H::Loft(Key::from_bits(0)),
             Self::Joint => H::Joint(Key::from_bits(0)),
             Self::SketchVertexTreatment => H::SketchVertexTreatmentOp(Key::from_bits(0)),
         }
@@ -568,6 +570,7 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             draft: Draft::Loft,
             output_modes: true,
             pickers: LOFT_PICKERS,
+            row_edit: Some(RowEdit::Loft),
             ..base
         },
         Tool::Revolve => ToolRow {

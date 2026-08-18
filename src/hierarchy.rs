@@ -9182,6 +9182,7 @@ label_hidden: false,
             // than a distinct `Edit*` action.
             SceneElement::Revolution(_)
             | SceneElement::SweepOp(_)
+            | SceneElement::Loft(_)
             | SceneElement::SketchVertexTreatmentOp(_) => Row {
                 has_edit_action: false,
             },
@@ -9285,6 +9286,7 @@ label_hidden: false,
             SceneElement::Revolution(revolution),
             SceneElement::Shape(primkey(0)),
             SceneElement::SweepOp(sweep),
+            SceneElement::Loft(crate::arena::Key::from_bits(0)),
             SceneElement::Origin,
             SceneElement::GlobalAxis(GlobalAxis::X),
             SceneElement::SketchFace(FaceId::ConstructionPlane(pkey(0))),
