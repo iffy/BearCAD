@@ -8154,6 +8154,94 @@ mod tests {
         );
     }
 
+    /// Modeling half of `docs-site/screenshots/materials.lua` (the capture/quit tail is
+    /// stripped so this can run without a GPU frame).
+    fn materials_screenshot_modeling_lua() -> String {
+        let src = include_str!("../docs-site/screenshots/materials.lua");
+        let cut = src
+            .find("bearcad.clear_selection()")
+            .expect("materials.lua should separate modeling from the capture tail");
+        src[..cut].to_string()
+    }
+
+    /// The materials screenshot is eight coloured corner cubes plus a same-size centre
+    /// cube that overlaps them all, with a through-hole, a sphere bite, a chamfer and a
+    /// fillet each on a different corner cube.
+    #[test]
+    fn lua_materials_screenshot_scene_connects_cubes_and_features() {
+        let state = run_lua(&materials_screenshot_modeling_lua());
+
+        let cuboids: Vec<_> = state
+            .doc
+            .primitives
+            .values()
+            .filter(|p| p.kind == crate::model::PrimitiveKind::Cuboid)
+            .collect();
+        let spheres: Vec<_> = state
+            .doc
+            .primitives
+            .values()
+            .filter(|p| p.kind == crate::model::PrimitiveKind::Sphere)
+            .collect();
+        assert_eq!(cuboids.len(), 9, "eight corners plus a centre cube");
+        assert_eq!(spheres.len(), 1, "one sphere to subtract from a side");
+        assert_eq!(state.doc.extrusions.len(), 1, "circle extruded through one cube");
+        assert_eq!(state.doc.boolean_ops.len(), 1, "sphere subtract is a Combine cut");
+        assert_eq!(
+            state.doc.boolean_ops.values().next().unwrap().kind,
+            crate::model::BooleanOpKind::Cut
+        );
+        assert_eq!(
+            state.doc.edge_treatment_ops.len(),
+            2,
+            "one chamfer and one fillet"
+        );
+        let kinds: Vec<_> = state
+            .doc
+            .edge_treatment_ops
+            .values()
+            .map(|op| op.kind)
+            .collect();
+        assert!(kinds.contains(&VertexTreatmentKind::Chamfer));
+        assert!(kinds.contains(&VertexTreatmentKind::Fillet));
+
+        let live: Vec<_> = state
+            .doc
+            .bodies
+            .iter()
+            .filter(|(_, b)| !b.shadow)
+            .collect();
+        assert_eq!(live.len(), 9, "nine live coloured bodies (sphere is a shadow)");
+
+        let mats: std::collections::HashSet<_> =
+            live.iter().filter_map(|(_, b)| b.material).collect();
+        assert_eq!(mats.len(), 9, "each live body keeps a distinct material");
+
+        let mut volumes: Vec<f32> = live
+            .iter()
+            .filter_map(|(k, _)| {
+                crate::extrude::body_solid_mesh(&state.doc, *k)
+                    .map(|m| crate::extrude::mesh_signed_volume(&m).abs())
+            })
+            .collect();
+        volumes.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(volumes.len(), 9);
+        let full = 20.0 * 20.0 * 20.0;
+        let treated = volumes.iter().filter(|&&v| v < full - 50.0).count();
+        assert!(
+            treated >= 4,
+            "hole, sphere bite, chamfer and fillet should each remove volume, got {volumes:?}"
+        );
+
+        let centre = cuboids
+            .iter()
+            .find(|p| (p.origin[0]).abs() < 1e-3 && (p.origin[1]).abs() < 1e-3)
+            .expect("a same-size cube centred in the cluster");
+        assert_eq!(centre.width, "20");
+        assert_eq!(centre.depth, "20");
+        assert_eq!(centre.height, "20");
+    }
+
     #[test]
     fn lua_material_rejects_a_bad_colour() {
         let mut runner = ScriptRunner::from_lua_source(
