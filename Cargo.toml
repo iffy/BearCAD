@@ -41,7 +41,8 @@ ab_glyph = "0.2"
 # the native binary. Backends are selected per-OS below.
 eframe = { version = "0.35", default-features = false, features = ["wgpu_no_default_features", "default_fonts", "x11", "wayland"] }
 egui = "0.35"
-rfd = { version = "0.15", default-features = false }
+# 0.17 skips the Linux-backend check on wasm32 (0.15 required gtk3/xdg-portal).
+rfd = { version = "0.17", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 glam = { version = "0.29", features = ["serde"] }
@@ -67,12 +68,12 @@ bytemuck = { version = "1", features = ["derive"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 mlua = { version = "0.10", features = ["lua54", "vendored"] }
 
-# Linux file dialogs use the desktop portal (same as rfd's previous default).
-# macOS/Windows use native panels and don't need ashpd.
+# Linux file dialogs use the desktop portal (rfd's default). macOS/Windows
+# use native panels and don't need the portal/wayland crates.
 [target.'cfg(target_os = "linux")'.dependencies.rfd]
-version = "0.15"
+version = "0.17"
 default-features = false
-features = ["xdg-portal", "async-std"]
+features = ["xdg-portal", "wayland"]
 
 # The McMaster-Carr catalog window (#1022): a platform web view (WKWebView / WebView2 /
 # WebKitGTK) in a window of its own, run by the `bearcad mcmaster` subcommand — a second

@@ -172,9 +172,16 @@ make_styled_macos_dmg() {
   rm -f "$rw_dmg"
   hdiutil create -volname "$volname" -srcfolder "$stage" -ov -format UDRW -fs HFS+ "$rw_dmg"
 
-  # Slack for .DS_Store + the background TIFF Finder will write onto the volume.
+  # Slack for .DS_Store + the background TIFF. macOS 15+ prints one
+  # min/cur/max line (older releases print a header first); take the first
+  # numeric current-size column so we don't resize below the image.
   local sectors
-  sectors="$(hdiutil resize -limits "$rw_dmg" | awk 'NR==2 {print $2}')"
+  sectors="$(hdiutil resize -limits "$rw_dmg" | awk '$2 ~ /^[0-9]+$/ { print $2; exit }')"
+  if [[ -z "$sectors" ]]; then
+    echo "failed to parse current sector count from hdiutil resize -limits:" >&2
+    hdiutil resize -limits "$rw_dmg" >&2
+    exit 1
+  fi
   hdiutil resize -sectors "$((sectors + 20000))" "$rw_dmg"
 
   # Detach any leftover mount from a previous failed run.
