@@ -572,7 +572,7 @@ pub struct RepeatControl {
     /// The picked path (#439/#955): a straight reference, or a circle to ride round (#840).
     pub path: Option<crate::hierarchy::SceneElement>,
     /// Repeat **around** the path instead of along it (#839). While set, Distance becomes an
-    /// Angle and the distance-target picker stands down.
+    /// Angle (its start/end toggle still applies, #1473) and the distance-target picker stands down.
     pub around_axis: bool,
     /// Whether the picked path can be turned about at all (#840): a curved one is only ever
     /// followed, so its "around" option is disabled.
@@ -4331,8 +4331,9 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "Lay the copies out along the path, or turn them around it as an axis.",
         ),
         (Some(Tool::Repeat), "Angle") => Some(
-            "How far around the axis the pattern sweeps. The green lock marks the value \
-             computed from the other two.",
+            "How far around the axis the pattern sweeps. The icon toggles whether the \
+             last copy starts or ends there — end spaces n items around a full turn \
+             instead of stacking the last on the first.",
         ),
         (Some(Tool::Repeat), "Count") => Some(
             "How many copies. The green lock marks the value computed from the other two.",
@@ -7087,12 +7088,19 @@ pub fn show_pane(
                     // one, just disabled (#654) — a hand-rolled `TextEdit` sized its *text*
                     // rather than its box, coming out both wider and shorter than its
                     // neighbours.
+                    let kind = if var == RepeatVar::Count {
+                        crate::expression_input::ValueKind::Count
+                    } else if control.around_axis {
+                        crate::expression_input::ValueKind::Angle
+                    } else {
+                        crate::expression_input::ValueKind::Length
+                    };
                     let read_only = |ui: &mut egui::Ui, shown: Option<String>, hover: &str| {
                         let mut text = shown.unwrap_or_default();
                         ui.add_enabled_ui(false, |ui| {
                             crate::expression_input::ValueInput::from_id(
                                 repeat_value_field_id(label).with("computed"),
-                                crate::expression_input::ValueKind::Length,
+                                kind,
                             )
                             .width(VAR_FIELD_W)
                             .show(ui, &mut text, doc)
@@ -7117,11 +7125,6 @@ pub fn show_pane(
                         );
                     } else {
                         let mut text = value.to_string();
-                        let kind = if var == RepeatVar::Count {
-                            crate::expression_input::ValueKind::Count
-                        } else {
-                            crate::expression_input::ValueKind::Length
-                        };
                         let resp = crate::expression_input::ValueInput::from_id(
                             repeat_value_field_id(label),
                             kind,
@@ -7181,19 +7184,16 @@ pub fn show_pane(
                 crate::icons::IconId::RepeatDistStart
             };
             // Turning about the axis measures a sweep, not a length (#839): the row becomes
-            // **Angle** and loses the start/end measure toggle, which means nothing for a turn.
-            if control.around_axis {
-                var_row(ui, RepeatVar::Distance, "Angle", &control.length, None, &RepeatEdit::Distance);
-            } else {
-                var_row(
-                    ui,
-                    RepeatVar::Distance,
-                    "Distance",
-                    &control.length,
-                    Some((dist_icon, RepeatEdit::ToggleDistanceEnd)),
-                    &RepeatEdit::Distance,
-                );
-            }
+            // **Angle**. The start/end toggle still applies (#1473): last copy *at* the
+            // angle, or last copy ending there so n items divide the sweep (no stack on 360°).
+            var_row(
+                ui,
+                RepeatVar::Distance,
+                if control.around_axis { "Angle" } else { "Distance" },
+                &control.length,
+                Some((dist_icon, RepeatEdit::ToggleDistanceEnd)),
+                &RepeatEdit::Distance,
+            );
         }
         // Distance-target picker (#645): a face, construction plane, or vertex the pattern
         // runs out to, so the distance follows that geometry instead of a typed number —

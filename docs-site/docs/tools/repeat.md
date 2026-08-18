@@ -58,9 +58,13 @@ bearcad.repeat_bodies{ bodies = {0}, axis = "x", count = 4, gap = 5, flip = true
 Under the **Path** picker, two icons choose how the copies run: **along** the path, or
 **around** it as an axis of rotation. Turning replaces **Distance** with **Angle** (360° by
 default) — Count, Gap and Angle interlink exactly as Count, Gap and Distance do — and the
-distance handle and **Distance to** picker stand down.
+distance handle and **Distance to** picker stand down. Click the **Angle** icon (or label)
+to toggle where the last copy sits: *at* the angle (a 360°/5 pattern stacks the fifth on
+the first) or ending there so five items space 72° apart.
 
 ```lua
+bearcad.repeat_bodies{ bodies = {0}, axis = "z", around = true,
+                       mode = "count_fit_ends", count = 5, length = 360 }
 bearcad.repeat_bodies{ bodies = {0}, axis = "z", around = true,
                        mode = "count_gap", count = 6, spacing = "60deg" }
 ```
