@@ -688,7 +688,8 @@ pub const DEFAULT_VERTEX_TREATMENT_AMOUNT: f32 = 2.0;
 
 /// In-progress (pre-commit) chamfer/fillet: the vertex picked, which kind, and the live
 /// gizmo-driven amount (chamfer distance or fillet radius). Mirrors [`CreatingExtrusion`]'s
-/// shape closely — same click-to-grab gizmo drag and floating text-input pattern.
+/// shape closely — same click-to-stick gizmo (second click releases, Enter/✓ commits) and
+/// floating text-input pattern (#1497).
 #[derive(Clone, Debug)]
 pub struct CreatingVertexTreatment {
     /// One or more treatable sketch vertices sharing the same amount (#492).
@@ -978,6 +979,11 @@ pub struct CreatingRepeat {
     pub var_mru: [crate::model::RepeatVar; 3],
     /// `Some(op)` while re-editing a committed operation.
     pub editing: Option<crate::model::RepeatOpKey>,
+    /// `true` once the user has typed Distance; the handle still moves the live number
+    /// underneath but must not steal the field back (#1502).
+    pub user_edited: bool,
+    /// Request keyboard on the Distance field after a gizmo grab (#1161/#1497).
+    pub pending_focus: bool,
 }
 
 impl Default for CreatingRepeat {
@@ -1005,6 +1011,8 @@ impl Default for CreatingRepeat {
                 crate::model::RepeatVar::Distance,
             ],
             editing: None,
+            user_edited: false,
+            pending_focus: false,
         }
     }
 }
@@ -1041,6 +1049,15 @@ impl CreatingRepeat {
         self.recompute_mode();
     }
 
+    /// Drag writes Distance; the field text only follows while it is not typed (#1502).
+    pub fn apply_gizmo_distance(&mut self, d: f32, unit: crate::value::LengthUnit) {
+        if self.user_edited {
+            return;
+        }
+        self.length = crate::value::format_length_display_in(d.max(0.0), unit);
+        self.touch_var(crate::model::RepeatVar::Distance);
+    }
+
     /// Record that the user edited variable `v` (moving it to the front of the MRU, so the
     /// third variable becomes the computed one), then re-derive `mode`.
     pub fn touch_var(&mut self, v: crate::model::RepeatVar) {
@@ -1074,6 +1091,8 @@ pub struct CreatingSketchOffset {
     pub editing: Option<crate::model::SketchOffsetOpKey>,
     /// Request keyboard on the floating distance field (e.g. after a gizmo grab, #1161).
     pub pending_focus: bool,
+    /// `true` once the user has typed the distance; gizmo drags leave the text alone (#1502).
+    pub user_edited: bool,
 }
 
 impl CreatingSketchOffset {
@@ -1088,7 +1107,17 @@ impl CreatingSketchOffset {
             construction: false,
             editing: None,
             pending_focus: false,
+            user_edited: false,
         }
+    }
+
+    /// Drag writes the live number; the field text only follows while it is not typed (#1502).
+    pub fn apply_gizmo_distance(&mut self, d: f32, unit: crate::value::LengthUnit) {
+        crate::tooltable::refresh_gizmo_field_text(
+            self.user_edited,
+            &mut self.distance,
+            crate::value::format_length_display_in(d, unit),
+        );
     }
 
     pub fn has_targets(&self) -> bool {
@@ -19477,6 +19506,50 @@ fn treatment_gizmo_name(kind: crate::model::VertexTreatmentKind) -> &'static str
     }
 }
 
+/// Live Distance and handle position for the Repeat tool's along-axis gizmo (#644/#1497).
+fn repeat_distance_gizmo_info(
+    state: &AppState,
+    cr: &CreatingRepeat,
+) -> Option<(f32, glam::Vec3)> {
+    if cr.around_axis {
+        return None;
+    }
+    let axis = cr.axis?;
+    let (anchor, dir) = crate::extrude::repeat_gizmo_anchor(&state.doc, &cr.targets, axis)?;
+    let probe = crate::model::RepeatOperation {
+        targets: cr.targets.clone(),
+        plane_targets: cr.plane_targets.clone(),
+        extrusion_targets: cr.extrusion_targets.clone(),
+        sketch_targets: cr.sketch_targets.clone(),
+        sketch_plane_outputs: Vec::new(),
+        sketch_outputs: Vec::new(),
+        axis,
+        path_circle: cr.path_circle,
+        around_axis: cr.around_axis,
+        flip: cr.flip,
+        mode: cr.mode,
+        count: cr.count.clone(),
+        spacing: cr.spacing.clone(),
+        length: cr.length.clone(),
+        length_target: None,
+        outputs: Vec::new(),
+        plane_outputs: Vec::new(),
+        name: None,
+    };
+    let value = if let Some(d) = crate::value::eval_length_mm_in_doc(&cr.length, &state.doc) {
+        d.abs()
+    } else {
+        let offsets = crate::extrude::repeat_offsets(&state.doc, &probe)?;
+        let last = offsets.last().copied().unwrap_or(0.0);
+        if cr.distance_is_end {
+            last + crate::extrude::repeat_extent(&state.doc, &probe).unwrap_or(0.0)
+        } else {
+            last
+        }
+    };
+    Some((value, anchor + dir * value))
+}
+
 /// The gizmos the current state exposes, with their live values (#214). Push/pull and offset
 /// values are millimetres; rotate values are radians. At most one of each is active at a time.
 pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
@@ -19506,6 +19579,28 @@ pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
     }
     if let Some(cp) = &state.creating_plane {
         gizmos.push(GizmoInfo { kind: "offset", name: "offset", value: cp.offset_live, position: None });
+    }
+    // Sketch Offset (#939/#1502): signed-distance push/pull once something is picked.
+    if let Some(co) = &state.creating_sketch_offset {
+        if co.has_targets() {
+            gizmos.push(GizmoInfo {
+                kind: "push_pull",
+                name: "sketch_offset",
+                value: co.distance_mm(&state.doc).unwrap_or(0.0),
+                position: None,
+            });
+        }
+    }
+    // Repeat distance handle (#644/#1502): along-axis span while not turning about the path.
+    if let Some(cr) = &state.creating_repeat {
+        if let Some((value, position)) = repeat_distance_gizmo_info(state, cr) {
+            gizmos.push(GizmoInfo {
+                kind: "push_pull",
+                name: "repeat",
+                value,
+                position: Some(position),
+            });
+        }
     }
     // Shell tool (#1164): wall-thickness push/pull once at least one body is targeted.
     if let Some(cs) = &state.creating_shell {
@@ -19737,6 +19832,30 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
             if state.creating_plane.is_some() {
                 // Force millimetres so the value matches the mm-valued `offset` gizmo reading.
                 state.apply(Action::SetPlaneOffset { value: format!("{value}mm") });
+                true
+            } else {
+                false
+            }
+        }
+        "sketch_offset" => {
+            if let Some(co) = state.creating_sketch_offset.as_mut() {
+                if !co.has_targets() {
+                    return false;
+                }
+                co.user_edited = false;
+                co.apply_gizmo_distance(value, state.doc.default_length_unit);
+                true
+            } else {
+                false
+            }
+        }
+        "repeat" => {
+            if let Some(cr) = state.creating_repeat.as_mut() {
+                if cr.around_axis || cr.axis.is_none() {
+                    return false;
+                }
+                cr.user_edited = false;
+                cr.apply_gizmo_distance(value, state.doc.default_length_unit);
                 true
             } else {
                 false
@@ -28678,6 +28797,36 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert!((state.creating_shell.as_ref().unwrap().thickness_live - 4.5).abs() < 1e-4);
     }
 
+    /// #1502: Offset and Repeat gizmos write the live number but leave a typed field alone.
+    #[test]
+    fn offset_and_repeat_gizmo_drags_lock_a_typed_value() {
+        let mut co = CreatingSketchOffset::new(crate::model::SketchId::from_bits(0));
+        co.apply_gizmo_distance(14.0, crate::value::LengthUnit::Mm);
+        assert!(
+            crate::value::eval_length_mm_in_doc(&co.distance, &Document::default())
+                .is_some_and(|d| (d - 14.0).abs() < 1e-3),
+            "untyped drag should write the field, got {}",
+            co.distance
+        );
+        co.user_edited = true;
+        co.distance = "12".to_string();
+        co.apply_gizmo_distance(20.0, crate::value::LengthUnit::Mm);
+        assert_eq!(co.distance, "12", "typed offset must not be overwritten by the handle");
+
+        let mut cr = CreatingRepeat::default();
+        cr.apply_gizmo_distance(30.0, crate::value::LengthUnit::Mm);
+        assert!(
+            crate::value::eval_length_mm_in_doc(&cr.length, &Document::default())
+                .is_some_and(|d| (d - 30.0).abs() < 1e-3),
+            "untyped repeat drag should write Distance, got {}",
+            cr.length
+        );
+        cr.user_edited = true;
+        cr.length = "25".to_string();
+        cr.apply_gizmo_distance(40.0, crate::value::LengthUnit::Mm);
+        assert_eq!(cr.length, "25", "typed repeat Distance must not be overwritten by the handle");
+    }
+
     /// #1126: a sketch line on the top face of a box laser-cuts through the body, splitting
     /// it into two fragments just like a mid-plane cutter would.
     #[test]
@@ -34219,6 +34368,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                     construction: op.construction,
                     editing: state.doc.sketch_offset_ops.keys().next(),
                     pending_focus: false,
+                    user_edited: true,
                 };
                 assert_eq!(restored.distance, "gap");
             }

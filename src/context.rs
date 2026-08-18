@@ -612,6 +612,8 @@ pub struct RepeatControl {
     pub computed_value: Option<String>,
     pub editing: bool,
     pub can_commit: bool,
+    /// Gizmo grab arms this so the Distance field takes the keyboard with its value selected (#1161/#1497).
+    pub pending_focus: bool,
 }
 
 /// What the in-sketch Repeat tool's context section shows (#232): the picked entities, the
@@ -739,6 +741,8 @@ pub enum RepeatEdit {
     SetAroundAxis(bool),
     /// Run the pattern the other way along the picked path (#989).
     SetFlip(bool),
+    /// Distance field landed focus after a gizmo grab.
+    FocusConsumed,
     Commit,
 }
 
@@ -7151,12 +7155,36 @@ pub fn show_pane(
                         );
                     } else {
                         let mut text = value.to_string();
-                        let resp = crate::expression_input::ValueInput::from_id(
-                            repeat_value_field_id(label),
-                            kind,
-                        )
-                        .width(VAR_FIELD_W)
-                        .show(ui, &mut text, doc);
+                        let id = repeat_value_field_id(label);
+                        let resp = crate::expression_input::ValueInput::from_id(id, kind)
+                            .width(VAR_FIELD_W)
+                            .show(ui, &mut text, doc);
+                        // Grabbing the distance handle selects this field for overwrite (#1161/#1497).
+                        if control.pending_focus && var == RepeatVar::Distance {
+                            resp.request_focus();
+                            if crate::should_select_all_rect_value(
+                                resp.gained_focus(),
+                                ui.ctx().memory(|m| m.focused()) == Some(id) || resp.has_focus(),
+                                true,
+                                true,
+                                false,
+                                resp.changed(),
+                            ) {
+                                let len = text.chars().count();
+                                if let Some(mut state) =
+                                    egui::widgets::text_edit::TextEditState::load(ui.ctx(), id)
+                                {
+                                    state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                                        egui::text::CCursor::default(),
+                                        egui::text::CCursor::new(len),
+                                    )));
+                                    state.store(ui.ctx(), id);
+                                }
+                            }
+                            if ui.ctx().memory(|m| m.focused()) == Some(id) {
+                                pending = Some(RepeatEdit::FocusConsumed);
+                            }
+                        }
                         if resp.changed() {
                             pending = Some(make(text.clone()));
                         }
@@ -10820,6 +10848,7 @@ mod tests {
                 computed_value: None,
                 editing: false,
                 can_commit: true,
+                pending_focus: false,
             }),
             ..input(&doc, &selection)
         };
@@ -10944,6 +10973,7 @@ mod tests {
             computed_value: None,
             editing: false,
             can_commit: true,
+            pending_focus: false,
             }
         };
         let x_axis = || {
