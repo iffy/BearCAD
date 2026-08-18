@@ -22,6 +22,10 @@ pub struct ContextInput<'a> {
     /// Per-element visibility toggles (#1152): drives the Select tool's Visible checkbox.
     pub element_visibility: &'a ElementVisibility,
     pub tool: Tool,
+    /// The picker armed by hand (#1485): `AppState::picker_focus`. Applied after the tool's
+    /// own pickers are built, so a click on a picker row (or a scripted `picker_focus`) wins
+    /// over whatever focus the tool would otherwise derive from the state of its picks.
+    pub picker_focus: Option<PickerTarget>,
     /// True while a technical drawing is open (#317): the model-only "Selection" element picker
     /// is suppressed, since drawing projections/annotations have their own selection state.
     pub in_drawing_workbench: bool,
@@ -2951,8 +2955,26 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
             tool_pickers.push(side_b);
         }
     }
+    apply_picker_focus_override(&mut tool_pickers, input.picker_focus);
     tool_pickers
 }
+
+/// Move focus onto the hand-armed picker (#1485).
+///
+/// Focus lives on the picker set, not on twenty per-tool flags: whichever picker was armed by
+/// a pane click or a script takes it, and every other one loses it. An override naming a
+/// picker this tool does not have is ignored — the tool's own derived focus stands, and the
+/// caller clears the stale override.
+fn apply_picker_focus_override(views: &mut [ToolPickerView], armed: Option<PickerTarget>) {
+    let Some(armed) = armed else { return };
+    if !views.iter().any(|v| v.target == armed) {
+        return;
+    }
+    for view in views.iter_mut() {
+        view.picker.set_focused(view.target == armed);
+    }
+}
+
 pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let tool_title = tool_context_title(input);
     let name = single_nameable_from_selection(input.selection).map(|element| NameControl { element });
@@ -4823,20 +4845,24 @@ pub(crate) fn move_field_id(salt: &str) -> egui::Id {
     egui::Id::new(("move_field", salt))
 }
 
-/// ValueInput slots the Move pane always mounts (#1416).
+/// ValueInput slots the Move pane always mounts (#1416). Also the Move tool's own-field
+/// list for Enter-to-commit (#1483) — one definition, so a new row cannot be a field the
+/// pane draws but Enter refuses to commit from.
+pub(crate) const MOVE_VALUE_SLOTS: &[&str] = &[
+    "face_spin",
+    "angle_snap",
+    "roll",
+    "tx",
+    "ty",
+    "tz",
+    "rx",
+    "ry",
+    "rz",
+];
+
 #[cfg(test)]
 pub(crate) fn move_value_slots() -> &'static [&'static str] {
-    &[
-        "face_spin",
-        "angle_snap",
-        "roll",
-        "tx",
-        "ty",
-        "tz",
-        "rx",
-        "ry",
-        "rz",
-    ]
+    MOVE_VALUE_SLOTS
 }
 
 /// Which Move ValueInput rows the given translate mode shows.
@@ -9704,6 +9730,7 @@ mod tests {
             selection,
             element_visibility: empty_visibility(),
             tool: Tool::Select,
+            picker_focus: None,
             in_drawing_workbench: false,
             open_drawing: None,
             draw_rect_construction: None,
@@ -10124,6 +10151,7 @@ mod tests {
             selection: &selection,
             element_visibility: empty_visibility(),
             tool: Tool::Select,
+            picker_focus: None,
             in_drawing_workbench: false,
             open_drawing: None,
             draw_rect_construction: None,
@@ -11138,6 +11166,21 @@ mod tests {
                     focused.len() <= 1,
                     "{tool:?} (in_sketch={in_sketch}) focuses {focused:?}"
                 );
+                let listed: Vec<_> = crate::tooltable::spaces(tool)
+                    .iter()
+                    .flat_map(|&space| crate::tooltable::row(tool, space).pickers.iter())
+                    .map(|p| (p.target, p.heading))
+                    .collect();
+                for view in &context_pane_content(&input).tool_pickers {
+                    assert!(
+                        listed.iter().any(|&(target, heading)| {
+                            target == view.target && heading == view.heading
+                        }),
+                        "{tool:?} (in_sketch={in_sketch}) shows picker {} ({:?}) not listed in the tool table",
+                        view.heading,
+                        view.target
+                    );
+                }
                 seen += context_pane_content(&input).tool_pickers.len();
             }
         }
@@ -11558,6 +11601,7 @@ mod tests {
             selection: &SceneSelection::default(),
             element_visibility: empty_visibility(),
             tool: Tool::Select,
+            picker_focus: None,
             in_drawing_workbench: false,
             open_drawing: None,
             draw_rect_construction: Some(true),
@@ -11714,6 +11758,7 @@ mod tests {
             selection: &SceneSelection::default(),
             element_visibility: empty_visibility(),
             tool: Tool::Line,
+            picker_focus: None,
             in_drawing_workbench: false,
             open_drawing: None,
             draw_rect_construction: None,
@@ -11978,6 +12023,7 @@ mod tests {
             selection: &SceneSelection::default(),
             element_visibility: empty_visibility(),
             tool: Tool::Select,
+            picker_focus: None,
             in_drawing_workbench: false,
             open_drawing: None,
             draw_rect_construction: Some(false),
@@ -12059,6 +12105,7 @@ mod tests {
             selection: &sel,
             element_visibility: empty_visibility(),
             tool: Tool::Select,
+            picker_focus: None,
             in_drawing_workbench: false,
             open_drawing: None,
             draw_rect_construction: Some(true),
@@ -12216,6 +12263,7 @@ mod tests {
             selection: &SceneSelection::default(),
             element_visibility: empty_visibility(),
             tool: Tool::Constraint,
+            picker_focus: None,
             in_drawing_workbench: false,
             open_drawing: None,
             draw_rect_construction: None,
