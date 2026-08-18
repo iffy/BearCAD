@@ -3697,6 +3697,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             crate::tooltable::survives_begin_sketch(row.tool),
         )?;
         entry.set("draft", format!("{:?}", row.draft))?;
+        entry.set("multi_pick", row.multi_pick.label())?;
         let pickers = lua.create_table()?;
         for (i, p) in row.pickers.iter().enumerate() {
             pickers.set(i + 1, p.heading)?;
@@ -12384,6 +12385,13 @@ mod tests {
             assert(shape.gizmo == "placement", "Shape is a placement tool")
             assert(shape.commit_on_enter, "Shape commits on Enter")
 
+            local chamfer
+            for _, row in ipairs(table) do
+                if row.tool == "chamfer" then chamfer = row end
+            end
+            assert(chamfer and chamfer.multi_pick == "toggle",
+              "Chamfer/Fillet share Offset's toggle (#1504)")
+
             bearcad.ui.tool("revolve")
             local row = bearcad.tool_row()
             assert(row.tool == "revolve")
@@ -12407,15 +12415,16 @@ mod tests {
     /// names work on Revolve/Sweep/Loft/Mirror.
     #[test]
     fn lua_extrude_tool_mode_sets_and_reads_output() {
-        // No draft: setting a mode is an error (same as Move with nothing in progress).
+        // #1499: SetTool arms an empty Extrude draft so Output is readable and settable
+        // before the first pick. #1524: the names are new/merge/cut.
         run_lua(
             r#"
             bearcad.ui.tool("extrude")
-            local ok, err = pcall(bearcad.ui.tool_mode, "cut")
-            assert(not ok, "the Extrude tool has no draft yet")
-            assert(tostring(err):find("progress") or tostring(err):find("mode"),
-                "unexpected error: " .. tostring(err))
-            assert(bearcad.ui.tool_mode() == nil, "no armed output without a draft")
+            assert(bearcad.ui.tool_mode() == "new", "SetTool arms Output (#1499)")
+            bearcad.ui.tool_mode("cut")
+            assert(bearcad.ui.tool_mode() == "cut")
+            bearcad.ui.tool_mode("new")
+            assert(bearcad.ui.tool_mode() == "new")
             "#,
         );
 

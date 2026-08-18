@@ -12,9 +12,10 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 Chamfer is [Fillet](./fillet.md)'s angular sibling: instead of rounding a corner, it cuts
 it off flat. Everything else works the same way —
 
-- **In a sketch:** click a corner where two lines meet, drag the handle or type a cut
-  distance, **Enter** (a second click on the handle drops it, it does not commit).
-  Double-click the operation (or right-click → **Edit**) to change the amount.
+- **In a sketch:** click a corner where two lines meet (click again to drop it), drag
+  the handle or type a cut distance, **Enter** (a second click on the handle drops it,
+  it does not commit). Double-click the operation (or right-click → **Edit**) to change
+  the amount.
 
 <a
   href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/chamfer-sketch.bearcad.json"))}
@@ -25,7 +26,7 @@ it off flat. Everything else works the same way —
   <img src={useBaseUrl("/img/screenshots/chamfer-sketch.png")} alt="A rectangle profile with its top-right corner chamfered flat" />
 </a>
 
-- **On a solid:** click an edge (Shift+click for several), set the distance, **Enter**.
+- **On a solid:** click an edge (click again to drop it), set the distance, **Enter**.
   The Context pane mirrors the **Distance**, with a ✓ to commit.
 
 <a

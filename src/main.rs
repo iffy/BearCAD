@@ -113,9 +113,7 @@ use actions::{
     constraint_is_circle_diameter, Action, AppState, CreatingCircle, CreatingConstructionPlane,
     CreatingEdgeTreatment, CreatingExtrusion, CreatingLine, CreatingRect, CreatingVertexTreatment,
     DimEditTarget, DimLabelTarget, Pane, RectAxis, SketchSession, Tool,
-    DEFAULT_VERTEX_TREATMENT_AMOUNT,
 };
-use model::VertexTreatmentKind;
 use constraint_viewport::{
     build_constraint_icon_hits, draw_constraint_connectors, draw_constraint_icons,
     pointer_over_constraint_icon, viewport_constraints_for_selection,
@@ -7331,11 +7329,9 @@ impl App {
             self.vertex_treatment_gizmo_drag = None;
             return;
         };
-        let kind = match self.state.tool {
-            Tool::Chamfer => VertexTreatmentKind::Chamfer,
-            Tool::Fillet => VertexTreatmentKind::Fillet,
-            _ => return,
-        };
+        if !matches!(self.state.tool, Tool::Chamfer | Tool::Fillet) {
+            return;
+        }
         let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
 
         // If the in-progress treatment went away (committed or cancelled), stop following.
@@ -7431,35 +7427,13 @@ impl App {
             return;
         }
 
-        // Click a treatable vertex to add it (#492), or start the set if empty.
+        // Click a treatable vertex to toggle it (#1504), or start the set if empty.
         if primary_pressed {
             if let Some(pp) = pointer_screen {
                 if let Some((point, _)) =
                     nearest_sketch_point_in_sketch(pp, project, &self.state.doc, session.sketch)
                 {
-                    if vertex_incident_line_count(&self.state.doc, session.sketch, point.clone()) == 2 {
-                        let unit = crate::model::effective_length_unit(
-                            &self.state.doc,
-                            session.sketch,
-                        );
-                        if let Some(cvt) = self.state.creating_vertex_treatment.as_mut() {
-                            if !cvt.points.iter().any(|p| p == &point) {
-                                cvt.points.push(point);
-                            }
-                        } else {
-                            self.state.creating_vertex_treatment = Some(CreatingVertexTreatment {
-                                points: vec![point],
-                                kind,
-                                amount_live: DEFAULT_VERTEX_TREATMENT_AMOUNT,
-                                text: crate::value::format_length_display_in(
-                                    DEFAULT_VERTEX_TREATMENT_AMOUNT,
-                                    unit,
-                                ),
-                                user_edited: false,
-                                pending_focus: true,
-                            });
-                        }
-                    }
+                    let _ = actions::pick_treatment_vertex(&mut self.state, point);
                 }
             }
         }
@@ -13134,11 +13108,9 @@ impl App {
             self.edge_treatment_gizmo_drag = None;
             return;
         }
-        let kind = match self.state.tool {
-            Tool::Chamfer => VertexTreatmentKind::Chamfer,
-            Tool::Fillet => VertexTreatmentKind::Fillet,
-            _ => return,
-        };
+        if !matches!(self.state.tool, Tool::Chamfer | Tool::Fillet) {
+            return;
+        }
         let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
 
         // If the in-progress treatment went away (committed or cancelled), stop following.
@@ -13219,15 +13191,10 @@ impl App {
             return;
         }
 
-        // Click a treatable analytic edge (vertical or side/cap) to begin; with a treatment
-        // already in progress, Shift+click toggles the edge in the set (#166) and a plain
-        // click on another edge restarts with just that edge.
+        // Click a treatable analytic edge (or a face, meaning all of that face's edges)
+        // to toggle it into the set (#1504). Same rule as Offset and the 2D path.
         if primary_pressed {
             if let Some(pp) = pointer_screen {
-                let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
-                // An edge under the cursor is the pick. Failing that, a **face** is: this
-                // picker takes edges and not faces, so clicking a face means all of that
-                // face's edges (#960) — otherwise it's a dead click with nothing to say why.
                 let picked = construction::pick_treatable_edges(
                     pp,
                     project,
@@ -13235,27 +13202,8 @@ impl App {
                     self.state.cam.eye(),
                     pick_occlusion,
                 );
-                if let Some(&first) = picked.first() {
-                    match self.state.creating_edge_treatment.as_mut() {
-                        Some(cet) if additive => {
-                            for entry in &picked {
-                                cet.toggle_edge(*entry);
-                            }
-                        }
-                        _ => {
-                            self.state.creating_edge_treatment = Some(CreatingEdgeTreatment {
-                                edges: picked.clone(),
-                                kind,
-                                amount_live: DEFAULT_VERTEX_TREATMENT_AMOUNT,
-                                text: crate::value::format_length_display(
-                                    DEFAULT_VERTEX_TREATMENT_AMOUNT,
-                                ),
-                                user_edited: false,
-                                pending_focus: true,
-                            });
-                            let _ = first;
-                        }
-                    }
+                if !picked.is_empty() {
+                    let _ = actions::pick_treatment_edges(&mut self.state, picked);
                 }
             }
         }
@@ -24026,6 +23974,33 @@ fn nearest_bezier_handle_in_sketch(
 
 /// Number of distinct plain lines meeting at `point` (via `Coincident` constraints) — a
 /// right-clicked vertex only offers "Convert to bezier curve" when this is exactly 2.
+/// Viewport HUD for Chamfer/Fillet (#1504): dual-mode, not "open a sketch".
+fn treatment_viewport_hint(chamfer: bool, state: &AppState) -> &'static str {
+    if state.creating_vertex_treatment.is_some() {
+        if chamfer {
+            "k: chamfer  •  Drag the arrow or type a distance • Click more corners to add/remove • Enter: commit • Esc: cancel"
+        } else {
+            "f: fillet  •  Drag the arrow or type a radius • Click more corners to add/remove • Enter: commit • Esc: cancel"
+        }
+    } else if state.creating_edge_treatment.is_some() {
+        if chamfer {
+            "k: chamfer  •  Drag the arrow or type a distance • Click more edges to add/remove • Enter: commit • Esc: cancel"
+        } else {
+            "f: fillet  •  Drag the arrow or type a radius • Click more edges to add/remove • Enter: commit • Esc: cancel"
+        }
+    } else if state.sketch_session.is_none() {
+        if chamfer {
+            "k: chamfer  •  Click a body edge"
+        } else {
+            "f: fillet  •  Click a body edge"
+        }
+    } else if chamfer {
+        "k: chamfer  •  Click a vertex where two lines meet"
+    } else {
+        "f: fillet  •  Click a vertex where two lines meet"
+    }
+}
+
 fn vertex_incident_line_count(
     doc: &model::Document,
     sketch: model::SketchId,
@@ -32325,24 +32300,8 @@ impl App {
                     "e: extrude  •  Click a flat face to start an extrusion"
                 }
             }
-            Tool::Chamfer => {
-                if self.state.creating_vertex_treatment.is_some() {
-                    "k: chamfer  •  Drag the arrow or type a distance • Click/Enter: commit • Esc: cancel"
-                } else if self.state.sketch_session.is_none() {
-                    "k: chamfer  •  Open a sketch to chamfer a vertex"
-                } else {
-                    "k: chamfer  •  Click a vertex where two lines meet"
-                }
-            }
-            Tool::Fillet => {
-                if self.state.creating_vertex_treatment.is_some() {
-                    "f: fillet  •  Drag the arrow or type a radius • Click/Enter: commit • Esc: cancel"
-                } else if self.state.sketch_session.is_none() {
-                    "f: fillet  •  Open a sketch to fillet a vertex"
-                } else {
-                    "f: fillet  •  Click a vertex where two lines meet"
-                }
-            }
+            Tool::Chamfer => treatment_viewport_hint(true, &self.state),
+            Tool::Fillet => treatment_viewport_hint(false, &self.state),
         };
         // On touch devices the mouse wording is wrong: swap the navigation clauses
         // for the gesture equivalents at display time.
@@ -33069,6 +33028,29 @@ mod tests {
             "hovering the main window again updates the cursor"
         );
         assert_eq!(sticky_report_cursor_pos(None, None), None);
+    }
+
+    /// #1504: the HUD describes dual-mode Chamfer/Fillet, not "open a sketch".
+    #[test]
+    fn chamfer_fillet_hud_describes_dual_mode() {
+        let mut state = AppState::default();
+        state.tool = Tool::Chamfer;
+        let hint = treatment_viewport_hint(true, &state);
+        assert!(
+            hint.contains("Click a body edge"),
+            "outside a sketch the HUD must name the 3D pick, got {hint:?}"
+        );
+        assert!(
+            !hint.contains("Open a sketch"),
+            "the HUD must not tell you to open a sketch while 3D chamfer is live, got {hint:?}"
+        );
+        state.tool = Tool::Fillet;
+        let hint = treatment_viewport_hint(false, &state);
+        assert!(
+            hint.contains("Click a body edge"),
+            "fillet outside a sketch names the 3D pick, got {hint:?}"
+        );
+        assert!(!hint.contains("Open a sketch"), "got {hint:?}");
     }
 
     /// #1283: the painted arrow is a classic pointer silhouette, tip at the hot-spot.

@@ -3,8 +3,9 @@
 //! `opsigs` is the compile-time contract for what an operation *makes*. This is the contract
 //! for how its tool *behaves*: where it lives, what its drafts are, what Enter and Esc do,
 //! whether the pointer places a value, whether the tool has a New/Add/Cut output, whether
-//! it stays armed after commit (#1498), whether SetTool arms an empty draft (#1499), and
-//! which last-used options the session remembers (#1500).
+//! it stays armed after commit (#1498), whether SetTool arms an empty draft (#1499),
+//! which last-used options the session remembers (#1500), and how multi-item clicks
+//! toggle membership (#1504).
 //!
 //! Before this module those policies were a dozen separate `matches!` lists spread across
 //! `SetTool`, `CancelOperation`, `handle_shortcuts`, `is_sketch_edit_tool` and seventeen
@@ -106,6 +107,36 @@ pub fn refresh_gizmo_field_text(
 ) {
     if !user_edited {
         *text = formatted.into();
+    }
+}
+
+/// How a tool gathers a multi-item set on click (#1504).
+///
+/// Chamfer/Fillet used to have three rules (2D add-only, 3D replace/Shift-toggle, picker
+/// toggle). One column, one rule: click toggles membership, Shift is not required — the same
+/// rule Offset already uses. Both the 2D vertex click and the 3D edge picker read this.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MultiPick {
+    /// Click toggles membership. Shift is not required.
+    Toggle,
+    /// This row does not collect a multi-item set via this rule.
+    None,
+}
+
+impl MultiPick {
+    /// Apply this row's rule to `set` for one clicked `item`.
+    pub fn apply<T: PartialEq>(self, set: &mut Vec<T>, item: T) {
+        match self {
+            Self::Toggle => crate::element_picker::toggle_picked(set, item),
+            Self::None => {}
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Toggle => "toggle",
+            Self::None => "none",
+        }
     }
 }
 
@@ -322,6 +353,8 @@ pub struct ToolRow {
     pub arm_on_set_tool: bool,
     /// Session last-used options this row remembers (#1500).
     pub prefs: &'static [Pref],
+    /// How this tool gathers a multi-item set on click (#1504).
+    pub multi_pick: MultiPick,
 }
 
 /// The spaces a tool has a row in. Exhaustive: a new `Tool` variant does not compile until
@@ -618,6 +651,7 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
         stay_armed: false,
         arm_on_set_tool: false,
         prefs: &[],
+        multi_pick: MultiPick::None,
     };
     let sketch = space == ToolSpace::Sketch;
     match tool {
@@ -718,6 +752,7 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             row_edit: if sketch { Some(RowEdit::SketchVertexTreatment) } else { None },
             stay_armed: true,
             prefs: AMOUNT_PREFS,
+            multi_pick: MultiPick::Toggle,
             ..base
         },
         Tool::Offset => ToolRow {
@@ -731,6 +766,7 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             stay_armed: true,
             arm_on_set_tool: true,
             prefs: OFFSET_PREFS,
+            multi_pick: MultiPick::Toggle,
             ..base
         },
         Tool::Loft => ToolRow {
@@ -1339,6 +1375,25 @@ mod tests {
                 assert_eq!(r.picker_named(p.heading), Some(p.target));
             }
         }
+    }
+
+    /// #1504: Chamfer/Fillet share Offset's toggle — one rule for both spaces, so the
+    /// 2D click path and the 3D picker cannot drift again.
+    #[test]
+    fn chamfer_fillet_and_offset_toggle() {
+        for tool in [Tool::Chamfer, Tool::Fillet] {
+            for &space in spaces(tool) {
+                assert_eq!(
+                    row(tool, space).multi_pick,
+                    MultiPick::Toggle,
+                    "{tool:?}/{space:?} must toggle"
+                );
+            }
+        }
+        assert_eq!(
+            row(Tool::Offset, ToolSpace::Sketch).multi_pick,
+            MultiPick::Toggle
+        );
     }
 
     /// #1486: a tool-table `row_edit` is the Elements-pane double-click / right-click

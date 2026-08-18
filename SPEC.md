@@ -587,9 +587,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     solve to stay a circular arc tangent to its neighbours, so constraint-driven reshaping
     (e.g. a parameter-driven angle change) keeps the bend smooth instead of folding it.
   - Scriptable via `bearcad.line{ x=, y=, x1=, y1=, bezier = { {cx0, cy0}, {cx1, cy1} } }`.
-- **Chamfer and fillet (#37/#38/#538), 2D sketch vertices only — a parametric operation:** both
+- **Chamfer and fillet (#37/#38/#538/#1504), dual-mode — a parametric operation:** both
   are tools ("push/pull" gizmo + text-entry input, mirroring the extrude tool) that operate on a
-  sketch vertex where exactly two plain lines meet. A commit creates (or extends) a
+  sketch vertex where exactly two plain lines meet, or on a solid edge when no sketch is open.
+  Click toggles a treatable vertex or edge (Offset's rule). A commit creates (or extends) a
   `SketchVertexTreatmentOperation` — a first-class parametric node in the Elements pane, alongside
   in-sketch offset/mirror/slice — using a **shadow + replace** model (#538, standard CAD):
   - The two source edges of a treated corner become **shadow** lines (`Line.shadow = true`): they
@@ -1882,7 +1883,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     outside a sketch, the context pane shows a **selection picker** — one row per edge in
     the in-progress set (named by owning extrusion + analytic edge), each with a remove
     button, plus a clear-all; when the set is empty it shows a pick hint ("Click an edge —
-    Shift+click adds more"). The picker is the first instance of the generalized per-tool
+    click again to remove"). The picker is the first instance of the generalized per-tool
     selection input (future tools may host several, e.g. boolean A/B sets).
   - **Coplanar profiles: smaller wins (#822)**: when the cursor is inside two sketch
     profiles on the same plane — a hole inside a plate outline — the **smaller** one takes
@@ -1894,11 +1895,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     `ExtrusionEdgeRef` (`ViewportHoverHighlight::Curve`), so a hole's rim reads as the one
     circle it is to the tools instead of the single tessellation facet under the pointer.
     (The rim is still *drawn* as chords — analytic curve rendering is a separate matter.)
-  - **Multi-edge sets (#157/#166)**: the in-progress treatment holds a *set* of edges sharing
-    one amount/gizmo. Shift/⌘+click toggles additional treatable edges into the set (a plain
-    click restarts with just the clicked edge); switching to Chamfer/Fillet with body edges
-    already selected (Select mode, #156) **preloads** the selection — filtered to treatable
-    edges — and shows the gizmo immediately. One commit builds **one operation** carrying every
+  - **Multi-edge sets (#157/#166/#1504)**: the in-progress treatment holds a *set* of edges sharing
+    one amount/gizmo. Click toggles a treatable edge (or a face's edges) into the set — the
+    same rule as Offset, and the same rule the 2D vertex path uses. Switching to Chamfer/Fillet
+    with body edges already selected (Select mode, #156) **preloads** the selection — filtered
+    to treatable edges — and shows the gizmo immediately. One commit builds **one operation** carrying every
     edge in the set; edges that individually fail (e.g. a vertex-miter conflict) are skipped
     with a status note while the rest apply. Because the whole operation is a single undo group,
     **Undo removes it entirely** (releasing its shadow inputs and beveled outputs) without
@@ -4597,7 +4598,7 @@ The model in one place:
   drags, Enter-to-commit, preview state — and the pick itself goes through `actions::apply_pick`,
   the same function a pane click and a script use.
 
-  Four kinds of pick genuinely can't be an "element under the cursor", and their tools keep
+  Three kinds of pick genuinely can't be an "element under the cursor", and their tools keep
   their own resolution — this is the whole list, and a new tool needs a reason this good to
   join it:
   - **A profile region** (Extrude, Revolve, Sweep, Loft): what's picked is the region the
@@ -4610,8 +4611,6 @@ The model in one place:
   - **A geometric relation to an earlier pick** (a Sweep path line must leave the profile's
     plane; an Extrude/Repeat "up to" target must lie ahead along the normal): the test is
     against another pick, not a property of the element.
-  - **Restart-on-plain-click** (3D Chamfer/Fillet): a plain click starts a new edge set and
-    only ⌘/Shift adds, which is the opposite of the picker's toggle.
 - **Switching tools carries the picked set** from the outgoing tool's primary picker to the new
   one's, keeping what it accepts (#956).
 - **What a picker holds is styled as selected** in the viewport and in the Elements pane, in
