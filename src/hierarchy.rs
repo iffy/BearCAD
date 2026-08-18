@@ -7995,7 +7995,7 @@ label_hidden: false,
         doc.sketch_mirror_ops
             .insert(crate::model::SketchMirrorOperation {
                 sketch,
-                line: lkey(1),
+                line: lkey(1).into(),
                 line_targets: vec![lkey(0)],
                 circle_targets: Vec::new(),
                 line_outputs: vec![lkey(2)],
@@ -8045,7 +8045,7 @@ label_hidden: false,
         doc.sketch_mirror_ops
             .insert(crate::model::SketchMirrorOperation {
                 sketch,
-                line: lkey(0),
+                line: lkey(0).into(),
                 line_targets: Vec::new(),
                 circle_targets: Vec::new(),
                 line_outputs: Vec::new(),
@@ -8078,7 +8078,7 @@ label_hidden: false,
         doc.sketch_mirror_ops
             .insert(crate::model::SketchMirrorOperation {
                 sketch,
-                line: lkey(1),
+                line: lkey(1).into(),
                 line_targets: vec![lkey(0)],
                 circle_targets: Vec::new(),
                 line_outputs: vec![lkey(2)],
