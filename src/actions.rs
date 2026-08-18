@@ -6735,13 +6735,19 @@ fn validate_extrude_target(
                 .map(|_| ())
                 .ok_or_else(|| "Extrude target repeated face does not resolve".to_string())
         }
+        // Any **3D body** face is a plane the extrusion can stop at (#1492): an extrusion
+        // cap/wall, a primitive's face, a revolve's flat side, a repeat instance's or a
+        // unit's face, or a `BodyMeshFace` on a surface with no analytic identity (a
+        // moved/shelled/combined body). A flat *sketch* region is not one — it has its own
+        // `ExtrudeTarget::Face`/`Plane` variants — so it is still refused here.
         ExtrudeTarget::BodyFace(face_id) => {
-            if !matches!(
+            use crate::model::FaceId;
+            if matches!(
                 face_id,
-                crate::model::FaceId::ExtrudeCap { .. } | crate::model::FaceId::ExtrudeSide { .. }
+                FaceId::Circle(_) | FaceId::Polygon(_) | FaceId::ConstructionPlane(_)
             ) {
                 return Err(
-                    "Extrude target: body face must be an extrusion cap or side wall".to_string(),
+                    "Extrude target: body face must be a face of a 3D body".to_string(),
                 );
             }
             crate::face::sketch_frame(doc, face_id.clone())

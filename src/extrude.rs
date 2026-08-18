@@ -7722,19 +7722,25 @@ pub fn preview_cut_body_mesh(doc: &Document, body_index: crate::model::BodyKey, 
             }
             let mut clone = doc.clone();
             let cut_index = clone.extrusions.insert(cut.clone());
-            let mut cut_indices = body.source.cut_extrusion_indices().to_vec();
-            cut_indices.push(cut_index);
-            let mesh = occt_body_mesh(&clone, body.source.extrusion_indices(), &cut_indices)
-                // That path rebuilds the body from its extrusions, which only works for
-                // extrusion-sourced bodies. A body that came out of a fillet, a boolean, a
-                // move… has no add list, so the preview used to vanish exactly where cuts are
-                // most common: drilling into an already-finished part (#805). Fall back to
-                // subtracting the tool from whatever solid the body actually is.
-                .or_else(|| {
-                    let target = occt_body_shape(doc, body_index)?;
-                    let result = occt_subtract_cut_extrusions(&clone, target, &[cut_index])?;
+            // Subtract the tool from whatever solid the body actually *is* — the memoized
+            // BREP that its whole history (primitive, move, shell, boolean, fillet…) built,
+            // with its own cuts already in it. Rebuilding the body from its add/cut lists
+            // instead only describes an extrusion-sourced body: an op-produced body keeps
+            // its post-op adds in that same list, so the rebuild silently dropped the base
+            // the op produced and the body vanished the moment a cut was armed (#1491 — a
+            // moved body with a fused extrude on it; #805 for op bodies with no add list).
+            let mesh = occt_body_shape(doc, body_index)
+                .and_then(|target| occt_subtract_cut_extrusions(&clone, target, &[cut_index]))
+                .and_then(|result| {
                     let tris = result.tessellate(OCCT_PREVIEW_DEFLECTION as f64);
                     (!tris.is_empty()).then_some(SolidMesh { triangles: tris })
+                })
+                // A body the kernel can't hand back as one solid still previews from its
+                // extrusion lists, as it always did.
+                .or_else(|| {
+                    let mut cut_indices = body.source.cut_extrusion_indices().to_vec();
+                    cut_indices.push(cut_index);
+                    occt_body_mesh(&clone, body.source.extrusion_indices(), &cut_indices)
                 });
             *cache.borrow_mut() = Some((key, mesh.clone()));
             mesh
@@ -7851,9 +7857,10 @@ pub fn target_top_plane(doc: &Document, extrusion: &Extrusion) -> Option<(Vec3, 
     }
 }
 
-/// The `(point, normal)` plane of a 3D body face target (#126) — another (or the same)
-/// extrusion's cap or side wall, unlike [`face_plane`] which only handles flat sketch
-/// profiles. `sketch_frame` already resolves the plane of any `FaceId`, cap/side included.
+/// The `(point, normal)` plane of a 3D body face target (#126/#1492) — an extrusion
+/// cap/wall, a primitive/revolve/repeat/unit face, or a `BodyMeshFace`. Unlike
+/// [`face_plane`], this is not a flat sketch profile. `sketch_frame` already resolves
+/// any `FaceId`.
 pub fn body_face_plane(doc: &Document, face_id: &crate::model::FaceId) -> Option<(Vec3, Vec3)> {
     let frame = sketch_frame(doc, face_id.clone())?;
     Some((frame.origin, frame.normal))
@@ -15686,6 +15693,93 @@ mod tests {
         assert!(
             extra <= 2,
             "changing cut distance must reuse the target body (at most Common+Cut), got {extra} booleans"
+        );
+    }
+
+    /// #1491: the reported document's target is a **moved** body that later grew a fused
+    /// extrusion (`Moved { add: [..] }`). The live cut preview rebuilt the body from its
+    /// add-list alone, so the moved base vanished and the body appeared to be deleted the
+    /// moment the cut was armed. The preview must be the real body minus the tool.
+    fn issue_1491_cut_setup() -> (Document, crate::model::BodyKey, Extrusion) {
+        let bytes = include_bytes!("../tests/fixtures/issue_1491.json");
+        let mut doc = crate::storage::from_json_bytes(bytes).expect("load issue 1491");
+        doc.bump_mesh_rev();
+        let circle = doc.circles.keys().next().expect("circle on the body face");
+        let sketch = doc.circles[circle].sketch;
+        let body = match doc.sketches[sketch].face {
+            crate::model::FaceId::BodyMeshFace { body, .. } => body,
+            ref other => panic!("the reported sketch sits on a body face, got {other:?}"),
+        };
+        assert!(
+            matches!(
+                doc.bodies[body].source,
+                crate::model::BodySource::Moved { ref add, .. } if !add.is_empty()
+            ),
+            "the reported target is a moved body with a fused extrusion"
+        );
+        let mut cut = Extrusion {
+            sketch,
+            faces: vec![ExtrudeFace::Circle(circle)],
+            distance: 44.7,
+            target: None,
+            expression: String::new(),
+            symmetric: false,
+            name: None,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
+            edge_treatments: Vec::new(),
+        };
+        // Same inward flip the extrude tool applies (`resolve_cut_direction` / #805).
+        if cut_tool_bites(&doc, body, &cut) == Some(false) {
+            cut.distance = -cut.distance;
+        }
+        (doc, body, cut)
+    }
+
+    /// #1491: arming the cut must not make the body disappear — the preview keeps every
+    /// bit of the moved base except the drilled hole.
+    #[test]
+    fn issue_1491_cut_preview_keeps_the_moved_base() {
+        let (doc, body, cut) = issue_1491_cut_setup();
+        let intact = body_solid_mesh(&doc, body).expect("intact moved body");
+        let intact_vol = mesh_signed_volume(&intact).abs();
+        let preview = preview_cut_body_mesh(&doc, body, &cut).expect("cut preview");
+        let preview_vol = mesh_signed_volume(&preview).abs();
+        assert!(
+            preview_vol < intact_vol - 1.0,
+            "the cut should remove material: {preview_vol} vs {intact_vol}"
+        );
+        // The hole is a ~9.5 mm-radius bore through a ~28 mm-thick slab: a fifth of the
+        // body at most. Losing the moved base drops this far below half.
+        assert!(
+            preview_vol > intact_vol * 0.5,
+            "the cut preview dropped the moved base: {preview_vol} vs {intact_vol}"
+        );
+        // …and the preview still spans the whole body, not just the fused extrusion.
+        let (imin, imax) = intact.bounds().expect("intact bounds");
+        let (pmin, pmax) = preview.bounds().expect("preview bounds");
+        assert!(
+            (pmin - imin).abs().max_element() < 0.5 && (pmax - imax).abs().max_element() < 0.5,
+            "the cut preview must cover the same body: {pmin:?}..{pmax:?} vs {imin:?}..{imax:?}"
+        );
+    }
+
+    /// #1491: committing that cut leaves the same solid the preview showed.
+    #[test]
+    fn issue_1491_committed_cut_matches_the_preview() {
+        let (doc, body, cut) = issue_1491_cut_setup();
+        let preview_vol =
+            mesh_signed_volume(&preview_cut_body_mesh(&doc, body, &cut).expect("preview")).abs();
+        let mut doc = doc;
+        let ei = doc.extrusions.insert(cut);
+        doc.shape_order.push(crate::model::ShapeKind::Extrusion);
+        doc.bodies[body].source.append_cut_extrusion(ei);
+        doc.bump_mesh_rev();
+        let after = mesh_signed_volume(&body_solid_mesh(&doc, body).expect("cut body")).abs();
+        assert!(
+            (after - preview_vol).abs() < preview_vol * 0.02,
+            "the committed cut ({after}) should match its preview ({preview_vol})"
         );
     }
 

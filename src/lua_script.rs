@@ -850,10 +850,11 @@ fn parse_boolean_face_table(lua: &Lua, table: &Table) -> mlua::Result<crate::mod
 
 /// An `ExtrudeTarget` from a `to = {...}` table (#114): `{plane = i}` (construction plane),
 /// `{face = <face spec>}` (a flat sketch profile's extended plane), `{face = <FaceId table>}`
-/// (a 3D body's cap/side wall, #126 — the same `{kind = "extrude_cap"|"extrude_side", ...}`
-/// shape `parse_face_id_table`/`begin_sketch` use, distinguished from the flat-profile shape
-/// by the presence of a `kind`/`type` key), or `{vertex = <point table>}` (the plane through
-/// that vertex). Mirrors `extrude_target_lua_table` in src/script.rs.
+/// (a 3D body face, #126/#1492 — the same `{kind = "extrude_cap"|"primitive_face"|
+/// "body_mesh_face"|…}` shape `parse_face_id_table`/`begin_sketch` use, distinguished from
+/// the flat-profile shape by the presence of a `kind`/`type` key), or `{vertex = <point
+/// table>}` (the plane through that vertex). Mirrors `extrude_target_lua_table` in
+/// src/script.rs.
 fn parse_extrude_target_table(
     lua: &Lua,
     table: &Table,
@@ -8358,6 +8359,97 @@ mod tests {
         assert_eq!(op.targets.len(), 1);
     }
 
+    /// #1492: "Up to" the bottom face of the reported body — a **moved** body, whose
+    /// surfaces have no analytic identity, so its faces are `BodyMeshFace`s. Every target
+    /// that was not an extrusion cap or side wall used to be refused outright ("body face
+    /// must be an extrusion cap or side wall"), which is why the cut could not be aimed at
+    /// the face right under it.
+    #[test]
+    fn lua_issue_1492_cut_up_to_a_moved_bodys_bottom_face() {
+        let path = format!(
+            "{}/tests/fixtures/issue_1491.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let path = path.replace('\\', "\\\\");
+        let state = run_lua(&format!(
+            r#"
+            bearcad.open("{path}")
+            local function q(v)
+              return {{ math.floor(v[1]*100+0.5), math.floor(v[2]*100+0.5), math.floor(v[3]*100+0.5) }}
+            end
+            -- The sketched circle sits on body 4's top face; aim the cut at its bottom.
+            local bottom
+            for _, f in ipairs(bearcad.body_faces(4)) do
+              if f.normal[3] < -0.9 and (bottom == nil or f.face[3] < bottom.face[3]) then
+                bottom = f
+              end
+            end
+            assert(bottom, "the moved body has a downward-facing bottom")
+            local before = bearcad.body_stats(4).volume
+            bearcad.extrude{{ circle = 0, body = "cut", to = {{ face = {{
+              kind = "body_mesh_face", body = 4,
+              centroid = q(bottom.face), normal = q(bottom.normal) }} }} }}
+            local after = bearcad.body_stats(4).volume
+            assert(after < before - 1000,
+              "the bore should run to the bottom face: " .. after .. " vs " .. before)
+            assert(after > before * 0.5,
+              "and the body must survive it: " .. after .. " vs " .. before)
+            "#
+        ));
+        let ext = state.doc.extrusions.values().last().expect("the cut extrusion");
+        assert!(
+            matches!(
+                ext.target,
+                Some(crate::model::ExtrudeTarget::BodyFace(
+                    crate::model::FaceId::BodyMeshFace { .. }
+                ))
+            ),
+            "the cut is target-driven by the mesh face, got {:?}",
+            ext.target
+        );
+    }
+
+    /// #1492: a Shape-tool cuboid's own faces are valid "Up to" planes, not just
+    /// extrusion caps/side walls.
+    #[test]
+    fn lua_issue_1492_cut_up_to_a_primitive_bottom_face() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 40, depth = 30, height = 20 }
+            bearcad.begin_sketch{ kind = "primitive_face", primitive = 0, face = "top" }
+            bearcad.circle{ x = 20, y = 15, r = 6 }
+            local before = bearcad.body_stats(0).volume
+            bearcad.extrude{ circle = 0, body = "cut", to = { face = {
+              kind = "primitive_face", primitive = 0, face = "bottom" } } }
+            local after = bearcad.body_stats(0).volume
+            assert(after < before - 100,
+              "the bore should remove material: " .. after .. " vs " .. before)
+            assert(after > before * 0.5,
+              "the cuboid must survive the cut: " .. after .. " vs " .. before)
+            "#,
+        );
+        let ext = state.doc.extrusions.values().next().expect("the cut");
+        assert!(
+            matches!(
+                ext.target,
+                Some(crate::model::ExtrudeTarget::BodyFace(
+                    crate::model::FaceId::PrimitiveFace {
+                        face: crate::model::PrimitiveFace::CuboidBottom,
+                        ..
+                    }
+                ))
+            ),
+            "the cut is target-driven by the cuboid bottom, got {:?}",
+            ext.target
+        );
+        let depth = crate::extrude::effective_distance(&state.doc, ext);
+        assert!(
+            (depth.abs() - 20.0).abs() < 0.05,
+            "up to the bottom should be 20 mm, got {depth}"
+        );
+    }
+
     /// #1218: scripts can turn any body into a shadow body (and back).
     #[test]
     fn lua_set_body_shadow_is_scriptable() {
@@ -12904,10 +12996,11 @@ mod tests {
         assert!((depth - 8.0).abs() < 1e-3, "should reach the first extrusion's 8mm cap, got {depth}");
     }
 
-    /// #126: a body-face target must actually be a cap/side wall — a `kind` that resolves to
-    /// some other `FaceId` (e.g. a plain circle) is rejected rather than silently misused.
+    /// #126/#1492: a body-face target must actually be a face of a 3D body — a `kind` that
+    /// resolves to a flat sketch profile or a datum plane (e.g. a plain circle, which has
+    /// its own `ExtrudeTarget::Face`) is rejected rather than silently misused.
     #[test]
-    fn lua_extrude_to_body_face_rejects_non_cap_side_face_kinds() {
+    fn lua_extrude_to_body_face_rejects_flat_sketch_face_kinds() {
         let mut runner = ScriptRunner::from_lua_source(
             r#"
             bearcad.circle{ r = 5, name = "Hole" }
@@ -12926,8 +13019,8 @@ mod tests {
         while !runner.done {
             runner.tick(&mut state, &mut synthetic, None, &ctx);
         }
-        let err = runner.error.expect("non-cap/side body face target should error");
-        assert!(err.contains("cap or side wall"), "unexpected error: {err}");
+        let err = runner.error.expect("a flat sketch face as a body-face target should error");
+        assert!(err.contains("face of a 3D body"), "unexpected error: {err}");
     }
 
     /// SPEC §3.5 Revolve: a square revolved 360° around the global Y axis makes a

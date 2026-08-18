@@ -1274,10 +1274,11 @@ pub enum ExtrudeTarget {
     Face(ExtrudeFace),
     /// Up to a construction plane.
     Plane(ConstructionPlaneKey),
-    /// Up to the extended plane of a 3D body face — another (or the same) extrusion's cap
-    /// or side wall (#126), not a flat sketch profile. Always `FaceId::ExtrudeCap` or
-    /// `FaceId::ExtrudeSide`; other `FaceId` kinds don't reach this variant (they already
-    /// have their own — `Face`/`Plane` above).
+    /// Up to the extended plane of a 3D body face — an extrusion's cap or side wall
+    /// (#126), a primitive's face, a revolve's flat side, a repeat instance's or a unit's
+    /// face, or a `BodyMeshFace` on a surface with no analytic identity at all: a moved,
+    /// shelled or combined body (#1492). Never a flat sketch profile or a datum plane —
+    /// those have their own `Face`/`Plane` variants above.
     BodyFace(FaceId),
     /// Up to a **repeated instance's** face (#452): the source extrusion face's plane
     /// translated along the repeat axis by instance `instance`'s offset. Parametric — the
