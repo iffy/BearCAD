@@ -4956,7 +4956,10 @@ The model in one place:
       face square to the camera is always clearly lit — roughly as bright as `Solid` — instead
       of dropping to the ambient floor when the fixed light misses it. No materials/textures
       yet — every body renders with the same fixed gloss; per-body/per-face materials are
-      future work.
+      future work. Bodies also cast **contact shadows** along the scene light: onto the
+      ground plane (#1041) and onto other bodies and themselves (#1461). Ground-plane
+      shadows stay at z = 0 (no camera-space lift) and stay hidden when looking up from
+      below (#1464/#1476).
 
   **Lighting runs per pixel, on smooth normals (#1037).** Solids carry a world-space normal
   and a lighting-model tag per vertex (`GpuVertex::normal`, whose `w` is a `ShadingModel`);
