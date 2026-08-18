@@ -211,8 +211,6 @@ pub const SOLID_GROUND_COLOR: Color32 = Color32::from_rgb(42, 50, 64);
 /// Contact shadows on the build plane (#1041): dark and mostly transparent, so the grid and
 /// the ground's own colour still read through rather than being blacked out.
 pub const GROUND_SHADOW_FILL: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 90);
-/// Lift a contact shadow off the plane it lies on, so it doesn't z-fight the ground fill.
-pub const GROUND_SHADOW_DEPTH_BIAS: f32 = 0.04;
 /// On-screen width of the origin X/Y/Z axes, in pixels (#1072).
 pub const ORIGIN_AXIS_WIDTH_PX: f32 = 2.0;
 /// Hover thickness for a world origin axis (#1124) — same as [`push_segment_hover`].
@@ -1286,6 +1284,8 @@ impl ViewportScene {
                     // A contact shadow on the build plane (#1041), Realistic only. Without
                     // one a part resting on the ground and a part hovering 50 mm above it
                     // look identical — there is no cue for where geometry sits at all.
+                    // Ground-coplanar faces are skipped so a resting cap does not z-fight
+                    // its own projection (#1476).
                     mesh.push_ground_shadow(solid, input.cam);
                 }
             }
@@ -2227,12 +2227,17 @@ impl<'a> SceneMesh<'a> {
     /// The receiver is one known plane, so this needs no shadow map and no second depth pass
     /// — the projection is a line-plane intersection per vertex. Triangles that dip below the
     /// plane are dropped rather than projected backwards through the light, so a half-buried
-    /// part shadows only the half that is above it.
+    /// part shadows only the half that is above it. Ground-coplanar triangles are the contact
+    /// face, not a shadow, and stay off this layer (#1476).
+    ///
+    /// Shadows sit at exact z = 0: the ground fill does not write depth, and a camera-space
+    /// lift z-fights the resting cap. The pass depth-tests `Less` without writing, so the
+    /// already-drawn body hides the footprint.
     ///
     /// A silhouette overlaps itself, and overlapping translucent triangles blend twice into
     /// blotches; the stencil pass this layer draws through paints each pixel once, exactly as
     /// coplanar sketch fills do (#3).
-    fn push_ground_shadow(&mut self, solid: &crate::extrude::SolidMesh, cam: &Camera) {
+    fn push_ground_shadow(&mut self, solid: &crate::extrude::SolidMesh, _cam: &Camera) {
         let light = SCENE_LIGHT_DIR.normalize_or_zero();
         // A light parallel to the plane casts no shadow onto it.
         if light.z.abs() < 1e-3 {
@@ -2240,24 +2245,18 @@ impl<'a> SceneMesh<'a> {
         }
         let prev = self.index_layer;
         self.set_index_layer(MeshIndexLayer::GroundShadow);
-        let eye = cam.eye();
         for tri in &solid.triangles {
             if tri.iter().any(|p| p.z < 0.0) {
+                continue;
+            }
+            if triangle_on_plane(tri, Vec3::ZERO, Vec3::Z) {
                 continue;
             }
             let flat: [Vec3; 3] = std::array::from_fn(|i| {
                 let p = tri[i];
                 p - light * (p.z / light.z)
             });
-            // Lifted off the plane the same way every other decal is, or it z-fights the
-            // ground fill it sits on.
-            let lifted = offset_corners_toward_camera(
-                [flat[0], flat[1], flat[2], flat[0]],
-                Vec3::Z,
-                eye,
-                GROUND_SHADOW_DEPTH_BIAS,
-            );
-            self.push_triangle(lifted[0], lifted[1], lifted[2], GROUND_SHADOW_FILL);
+            self.push_triangle(flat[0], flat[1], flat[2], GROUND_SHADOW_FILL);
         }
         self.set_index_layer(prev);
     }
@@ -5949,6 +5948,7 @@ pub fn line_screen_quad(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::circle_key_for_slot as rkey;
     use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::retain_ground_plane_only;
@@ -6119,6 +6119,47 @@ mod tests {
         });
         assert_eq!(state.doc.bodies.len(), 1);
         state
+    }
+
+    /// Wide, short cylinder sitting on z = 0 — the #1476 report shape.
+    fn state_with_ground_cylinder() -> AppState {
+        use crate::actions::Action;
+        use crate::model::ExtrudeFace;
+
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(pkey(0)),
+            viewport: None,
+        });
+        let sketch = state.sketch_session.unwrap().sketch;
+        state.apply(Action::CreateCircle {
+            cx: 0.0,
+            cy: 0.0,
+            r: 127.0,
+            diameter_expr: None,
+        });
+        state.apply(Action::CreateExtrusion {
+            expression: None,
+            sketch,
+            faces: vec![ExtrudeFace::Circle(rkey(0))],
+            distance: 19.05,
+            body: crate::actions::ExtrudeBodyChoice::New,
+            target: None,
+            symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+        });
+        assert_eq!(state.doc.bodies.len(), 1, "cylinder extrusion should make a body");
+        state
+    }
+
+    fn shadow_vertices(scene: &ViewportScene) -> Vec<Vec3> {
+        scene
+            .shadow_indices
+            .iter()
+            .map(|&i| Vec3::from(scene.vertices[i as usize].position))
+            .collect()
     }
 
     /// #743: a preview ghost's feature edges draw into the always-on-top wireframe
@@ -8051,6 +8092,95 @@ mod tests {
         assert!(
             on_ground,
             "body_over_plane vertices for a ground-resting body should sit on z = 0"
+        );
+    }
+
+    /// #1476: realistic contact shadows sit on z = 0. A world-space lift toward the
+    /// camera z-fights the cylinder's bottom cap (the ground fill does not write depth,
+    /// so the lift was never needed).
+    #[test]
+    fn realistic_cylinder_on_ground_casts_an_unbiased_contact_shadow() {
+        use crate::camera::ShadingMode;
+        let state = state_with_ground_cylinder();
+        let scene = build_scene_with_shading(&state, ShadingMode::Realistic);
+        let shadows = shadow_vertices(&scene);
+        assert!(
+            !shadows.is_empty(),
+            "realistic mode should cast a contact shadow"
+        );
+        let max_abs_z = shadows
+            .iter()
+            .map(|p| p.z.abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_abs_z < 1e-5,
+            "contact shadows must sit on z = 0 with no distance bias; max |z|={max_abs_z}"
+        );
+        let eye = state.cam.eye();
+        let lifted = shadows.iter().any(|p| {
+            let to_cam = (eye - Vec3::new(p.x, p.y, 0.0)).normalize_or_zero();
+            (*p - Vec3::new(p.x, p.y, 0.0)).dot(to_cam) > 1e-4
+        });
+        assert!(
+            !lifted,
+            "contact shadows must not be offset toward the camera"
+        );
+        assert!(
+            scene.body_over_plane_indices.len() >= 3,
+            "the cylinder's ground cap must re-draw after plane fills"
+        );
+        let cap_off_ground = scene
+            .body_over_plane_indices
+            .iter()
+            .map(|&i| scene.vertices[i as usize].position[2].abs())
+            .any(|z| z > 1e-2);
+        assert!(
+            !cap_off_ground,
+            "body_over_plane for a ground-resting cylinder must stay on z = 0"
+        );
+    }
+
+    /// #1476: the bottom cap already lies on the ground. Projecting it as a shadow
+    /// duplicates the face and z-fights it in realistic mode.
+    #[test]
+    fn realistic_cylinder_does_not_shadow_its_own_ground_cap() {
+        use crate::camera::ShadingMode;
+        let state = state_with_ground_cylinder();
+        let scene = build_scene_with_shading(&state, ShadingMode::Realistic);
+        let shadows = shadow_vertices(&scene);
+        assert!(
+            !shadows.is_empty(),
+            "walls / top still cast a contact shadow onto the ground"
+        );
+        // Every on-ground body triangle is the contact face; none of those three
+        // corners should reappear as a shadow triangle.
+        let solid = crate::extrude::body_solid_mesh(&state.doc, bkey(0))
+            .expect("cylinder has a mesh");
+        let cap_tris: Vec<[Vec3; 3]> = solid
+            .triangles
+            .iter()
+            .copied()
+            .filter(|tri| tri.iter().all(|p| p.z.abs() < 1e-3))
+            .collect();
+        assert!(
+            !cap_tris.is_empty(),
+            "cylinder must have a ground-cap to rest on"
+        );
+        let shadow_tris: Vec<[Vec3; 3]> = shadows
+            .chunks_exact(3)
+            .map(|c| [c[0], c[1], c[2]])
+            .collect();
+        let duplicated = cap_tris.iter().any(|cap| {
+            shadow_tris.iter().any(|sh| {
+                cap.iter().all(|c| {
+                    sh.iter()
+                        .any(|s| (s.x - c.x).abs() < 1e-3 && (s.y - c.y).abs() < 1e-3)
+                })
+            })
+        });
+        assert!(
+            !duplicated,
+            "ground-cap triangles must not be re-emitted as contact shadows"
         );
     }
 
