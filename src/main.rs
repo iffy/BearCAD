@@ -29266,7 +29266,7 @@ impl App {
         // arrow as the construction-plane offset gizmo) through the GPU scene.
         let mut extrude_gizmo = None;
         if self.state.tool == Tool::Extrude {
-            if self.extrude_gizmo_drag.is_none() {
+            if self.extrude_gizmo_drag.is_none() && !suppress_hover_highlight {
                 hover_highlight = pointer_screen
                     .and_then(|pp| {
                         // A sketch text under the cursor (#285/#307): hover the whole text so
