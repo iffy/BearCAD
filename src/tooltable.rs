@@ -2,7 +2,9 @@
 //!
 //! `opsigs` is the compile-time contract for what an operation *makes*. This is the contract
 //! for how its tool *behaves*: where it lives, what its drafts are, what Enter and Esc do,
-//! whether the pointer places a value, and whether the tool has a New/Add/Cut output.
+//! whether the pointer places a value, whether the tool has a New/Add/Cut output, whether
+//! it stays armed after commit (#1498), whether SetTool arms an empty draft (#1499), and
+//! which last-used options the session remembers (#1500).
 //!
 //! Before this module those policies were a dozen separate `matches!` lists spread across
 //! `SetTool`, `CancelOperation`, `handle_shortcuts`, `is_sketch_edit_tool` and seventeen
@@ -164,6 +166,52 @@ pub struct ToolPicker {
     pub heading: &'static str,
 }
 
+/// A session last-used option this row remembers (#1500).
+///
+/// These are "how I last used this tool" — not file state. One store on `AppState`, keyed
+/// by tool, seeds each new `creating_*` and is written back on change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pref {
+    /// New body / add / cut — Extrude, Revolve, Sweep, Loft, Mirror.
+    OutputMode,
+    /// Extrude or Revolve symmetric.
+    Symmetric,
+    /// Chamfer distance / fillet radius.
+    Amount,
+    BooleanKind,
+    KeepB,
+    JointKind,
+    OffsetDistance,
+    OffsetConstruction,
+    ShellThickness,
+    RepeatAround,
+    RepeatCount,
+    RepeatSpacing,
+    RevolveAngle,
+    RevolvePitch,
+}
+
+impl Pref {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::OutputMode => "output mode",
+            Self::Symmetric => "symmetric",
+            Self::Amount => "amount",
+            Self::BooleanKind => "boolean kind",
+            Self::KeepB => "keep b",
+            Self::JointKind => "joint kind",
+            Self::OffsetDistance => "offset distance",
+            Self::OffsetConstruction => "offset construction",
+            Self::ShellThickness => "shell thickness",
+            Self::RepeatAround => "repeat around",
+            Self::RepeatCount => "repeat count",
+            Self::RepeatSpacing => "repeat spacing",
+            Self::RevolveAngle => "revolve angle",
+            Self::RevolvePitch => "revolve pitch",
+        }
+    }
+}
+
 /// The operation a tool re-opens from an Elements-pane row via
 /// [`crate::hierarchy::node_editable_operation`] (#546 / #1486). Dual-mode tools have one
 /// per space. `None` for tools with a dedicated edit path (Extrude, 3D Chamfer/Fillet,
@@ -266,6 +314,14 @@ pub struct ToolRow {
     /// Edit (#546 / #1486). `None` when the tool has a dedicated edit path or no
     /// row-editable operation.
     pub row_edit: Option<RowEdit>,
+    /// After a successful commit, stay on this tool with an empty draft (#1498).
+    /// Feature tools (Extrude, Revolve, …) and placement tools (Line/Rect/Circle).
+    pub stay_armed: bool,
+    /// Arm an empty `creating_*` on `SetTool` so options (Y / Output / amounts) work
+    /// before the first pick (#1499).
+    pub arm_on_set_tool: bool,
+    /// Session last-used options this row remembers (#1500).
+    pub prefs: &'static [Pref],
 }
 
 /// The spaces a tool has a row in. Exhaustive: a new `Tool` variant does not compile until
@@ -494,6 +550,24 @@ const DRAWING_SELECT_PICKERS: &[ToolPicker] =
 const DRAWING_ALIGN_PICKERS: &[ToolPicker] =
     &[ToolPicker { target: P::DrawingAlignBase, heading: "Base view" }];
 
+// ── Last-used prefs (#1500) ─────────────────────────────────────────────────
+
+const EXTRUDE_PREFS: &[Pref] = &[Pref::OutputMode, Pref::Symmetric];
+const REVOLVE_PREFS: &[Pref] = &[
+    Pref::OutputMode,
+    Pref::Symmetric,
+    Pref::RevolveAngle,
+    Pref::RevolvePitch,
+];
+const OUTPUT_MODE_PREFS: &[Pref] = &[Pref::OutputMode];
+const COMBINE_PREFS: &[Pref] = &[Pref::BooleanKind, Pref::KeepB];
+const JOINT_PREFS: &[Pref] = &[Pref::JointKind];
+const AMOUNT_PREFS: &[Pref] = &[Pref::Amount];
+const OFFSET_PREFS: &[Pref] = &[Pref::OffsetDistance, Pref::OffsetConstruction];
+const SHELL_PREFS: &[Pref] = &[Pref::ShellThickness];
+const REPEAT_PREFS: &[Pref] = &[Pref::RepeatAround, Pref::RepeatCount, Pref::RepeatSpacing];
+const SKETCH_REPEAT_PREFS: &[Pref] = &[Pref::RepeatCount, Pref::RepeatSpacing];
+
 impl ToolSpace {
     pub const fn label(self) -> &'static str {
         match self {
@@ -541,6 +615,9 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
         output_modes: false,
         pickers: &[],
         row_edit: None,
+        stay_armed: false,
+        arm_on_set_tool: false,
+        prefs: &[],
     };
     let sketch = space == ToolSpace::Sketch;
     match tool {
@@ -557,6 +634,7 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             gizmo: Gizmo::Placement,
             draft: Draft::Rect,
             pickers: SELECTION,
+            stay_armed: true,
             ..base
         },
         Tool::Line => ToolRow {
@@ -564,6 +642,7 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             gizmo: Gizmo::Placement,
             draft: Draft::Line,
             pickers: SELECTION,
+            stay_armed: true,
             ..base
         },
         Tool::Circle => ToolRow {
@@ -571,6 +650,7 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             gizmo: Gizmo::Placement,
             draft: Draft::Circle,
             pickers: SELECTION,
+            stay_armed: true,
             ..base
         },
         Tool::Text => ToolRow {
@@ -585,6 +665,7 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             commit_fields: PLANE_FIELDS,
             draft: Draft::Plane,
             pickers: PLANE_PICKERS,
+            stay_armed: true,
             ..base
         },
         Tool::Sketch => ToolRow {
@@ -621,6 +702,9 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             draft: Draft::Extrusion,
             output_modes: true,
             pickers: EXTRUDE_PICKERS,
+            stay_armed: true,
+            arm_on_set_tool: true,
+            prefs: EXTRUDE_PREFS,
             ..base
         },
         Tool::Chamfer | Tool::Fillet => ToolRow {
@@ -632,6 +716,8 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             // 2D chamfer/fillet re-opens through the universal row; 3D has its own
             // `EditEdgeTreatmentOp` path (#531).
             row_edit: if sketch { Some(RowEdit::SketchVertexTreatment) } else { None },
+            stay_armed: true,
+            prefs: AMOUNT_PREFS,
             ..base
         },
         Tool::Offset => ToolRow {
@@ -642,6 +728,9 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             draft: Draft::SketchOffset,
             pickers: OFFSET_PICKERS,
             row_edit: Some(RowEdit::SketchOffset),
+            stay_armed: true,
+            arm_on_set_tool: true,
+            prefs: OFFSET_PREFS,
             ..base
         },
         Tool::Loft => ToolRow {
@@ -650,6 +739,9 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             output_modes: true,
             pickers: LOFT_PICKERS,
             row_edit: Some(RowEdit::Loft),
+            stay_armed: true,
+            arm_on_set_tool: true,
+            prefs: OUTPUT_MODE_PREFS,
             ..base
         },
         Tool::Revolve => ToolRow {
@@ -660,6 +752,9 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             output_modes: true,
             pickers: REVOLVE_PICKERS,
             row_edit: Some(RowEdit::Revolution),
+            stay_armed: true,
+            arm_on_set_tool: true,
+            prefs: REVOLVE_PREFS,
             ..base
         },
         Tool::Sweep => ToolRow {
@@ -668,6 +763,9 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             output_modes: true,
             pickers: SWEEP_PICKERS,
             row_edit: Some(RowEdit::Sweep),
+            stay_armed: true,
+            arm_on_set_tool: true,
+            prefs: OUTPUT_MODE_PREFS,
             ..base
         },
         Tool::Shape => ToolRow {
@@ -676,6 +774,8 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             commit_fields: SHAPE_FIELDS,
             draft: Draft::Shape,
             row_edit: Some(RowEdit::Shape),
+            stay_armed: true,
+            arm_on_set_tool: true,
             ..base
         },
         Tool::Combine => ToolRow {
@@ -683,6 +783,9 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             draft: Draft::Boolean,
             pickers: COMBINE_PICKERS,
             row_edit: Some(RowEdit::Boolean),
+            stay_armed: true,
+            arm_on_set_tool: true,
+            prefs: COMBINE_PREFS,
             ..base
         },
         Tool::Move => ToolRow {
@@ -693,6 +796,8 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             draft: if sketch { Draft::Selection } else { Draft::Move },
             pickers: if sketch { SELECTION } else { MOVE_PICKERS },
             row_edit: if sketch { None } else { Some(RowEdit::Move) },
+            stay_armed: !sketch,
+            arm_on_set_tool: !sketch,
             ..base
         },
         Tool::Mirror => ToolRow {
@@ -701,6 +806,9 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             output_modes: !sketch,
             pickers: if sketch { MIRROR_SKETCH_PICKERS } else { MIRROR_SOLID_PICKERS },
             row_edit: Some(if sketch { RowEdit::SketchMirror } else { RowEdit::Mirror }),
+            stay_armed: true,
+            arm_on_set_tool: true,
+            prefs: if sketch { &[] } else { OUTPUT_MODE_PREFS },
             ..base
         },
         Tool::Repeat => ToolRow {
@@ -710,6 +818,9 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             draft: if sketch { Draft::SketchRepeat } else { Draft::Repeat },
             pickers: if sketch { REPEAT_SKETCH_PICKERS } else { REPEAT_SOLID_PICKERS },
             row_edit: Some(if sketch { RowEdit::SketchRepeat } else { RowEdit::Repeat }),
+            stay_armed: true,
+            arm_on_set_tool: true,
+            prefs: if sketch { SKETCH_REPEAT_PREFS } else { REPEAT_PREFS },
             ..base
         },
         Tool::Slice => ToolRow {
@@ -717,6 +828,8 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             draft: if sketch { Draft::SketchSlice } else { Draft::Slice },
             pickers: if sketch { SLICE_SKETCH_PICKERS } else { SLICE_SOLID_PICKERS },
             row_edit: Some(if sketch { RowEdit::SketchSlice } else { RowEdit::Slice }),
+            stay_armed: true,
+            arm_on_set_tool: true,
             ..base
         },
         Tool::Shell => ToolRow {
@@ -726,6 +839,9 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             draft: Draft::Shell,
             pickers: SHELL_PICKERS,
             row_edit: Some(RowEdit::Shell),
+            stay_armed: true,
+            arm_on_set_tool: true,
+            prefs: SHELL_PREFS,
             ..base
         },
         Tool::Joint => ToolRow {
@@ -734,6 +850,9 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             draft: Draft::Joint,
             pickers: JOINT_PICKERS,
             row_edit: Some(RowEdit::Joint),
+            stay_armed: true,
+            arm_on_set_tool: true,
+            prefs: JOINT_PREFS,
             ..base
         },
 
@@ -1279,6 +1398,125 @@ mod tests {
                         r.space
                     );
                 }
+            }
+        }
+    }
+
+    /// #1498: feature tools and placement drawing tools stay armed after commit.
+    /// Select / Sketch / drawing-only tools have nothing to stay on.
+    #[test]
+    fn stay_armed_column_covers_feature_and_placement_tools() {
+        let stay: HashSet<Tool> = all_rows()
+            .iter()
+            .filter(|r| r.stay_armed)
+            .map(|r| r.tool)
+            .collect();
+        for tool in [
+            Tool::Extrude,
+            Tool::Revolve,
+            Tool::Sweep,
+            Tool::Loft,
+            Tool::Shape,
+            Tool::Combine,
+            Tool::Move,
+            Tool::Joint,
+            Tool::Mirror,
+            Tool::Repeat,
+            Tool::Slice,
+            Tool::Shell,
+            Tool::Offset,
+            Tool::ConstructionPlane,
+            Tool::Chamfer,
+            Tool::Fillet,
+            Tool::Rectangle,
+            Tool::Line,
+            Tool::Circle,
+        ] {
+            assert!(stay.contains(&tool), "{tool:?} must stay armed after commit (#1498)");
+        }
+        for tool in [Tool::Select, Tool::Sketch, Tool::DrawingAdd, Tool::DrawingAlign] {
+            assert!(!stay.contains(&tool), "{tool:?} is not a stay-armed feature tool");
+        }
+        for r in all_rows() {
+            if r.stay_armed && r.space == ToolSpace::Solid && r.commit_on_enter {
+                assert!(
+                    r.draft != Draft::None,
+                    "{:?}/{:?} stays armed but names no draft to empty",
+                    r.tool,
+                    r.space
+                );
+            }
+        }
+    }
+
+    /// #1499: every Output-row tool, plus the pane-option tools, arm an empty draft on SetTool.
+    #[test]
+    fn arm_on_set_tool_covers_output_row_and_pane_option_tools() {
+        for r in all_rows() {
+            if r.output_modes {
+                assert!(
+                    r.arm_on_set_tool,
+                    "{:?}/{:?} has an Output row but does not arm on SetTool (#1499)",
+                    r.tool,
+                    r.space
+                );
+            }
+        }
+        for tool in [
+            Tool::Extrude,
+            Tool::Revolve,
+            Tool::Sweep,
+            Tool::Loft,
+            Tool::Mirror,
+            Tool::Combine,
+            Tool::Move,
+            Tool::Joint,
+            Tool::Repeat,
+            Tool::Slice,
+            Tool::Shell,
+            Tool::Shape,
+            Tool::Offset,
+        ] {
+            let armed = spaces(tool).iter().any(|&s| row(tool, s).arm_on_set_tool);
+            assert!(armed, "{tool:?} must arm creating-state on SetTool (#1499)");
+        }
+    }
+
+    /// #1500: the prefs column is the one list of last-used options. Output-row tools
+    /// remember OutputMode; tools with a typed amount remember that amount.
+    #[test]
+    fn prefs_column_lists_last_used_options() {
+        for r in all_rows() {
+            if r.output_modes {
+                assert!(
+                    r.prefs.contains(&Pref::OutputMode),
+                    "{:?}/{:?} has an Output row but does not remember it (#1500)",
+                    r.tool,
+                    r.space
+                );
+            }
+            if r.prefs.contains(&Pref::OutputMode) {
+                assert!(
+                    r.output_modes,
+                    "{:?}/{:?} remembers OutputMode but has no Output row",
+                    r.tool,
+                    r.space
+                );
+            }
+        }
+        assert!(row(Tool::Extrude, ToolSpace::Solid).prefs.contains(&Pref::Symmetric));
+        assert!(row(Tool::Revolve, ToolSpace::Solid).prefs.contains(&Pref::Symmetric));
+        assert!(row(Tool::Revolve, ToolSpace::Solid).prefs.contains(&Pref::RevolveAngle));
+        assert!(row(Tool::Combine, ToolSpace::Solid).prefs.contains(&Pref::BooleanKind));
+        assert!(row(Tool::Joint, ToolSpace::Solid).prefs.contains(&Pref::JointKind));
+        assert!(row(Tool::Chamfer, ToolSpace::Solid).prefs.contains(&Pref::Amount));
+        assert!(row(Tool::Fillet, ToolSpace::Sketch).prefs.contains(&Pref::Amount));
+        assert!(row(Tool::Offset, ToolSpace::Sketch).prefs.contains(&Pref::OffsetDistance));
+        assert!(row(Tool::Shell, ToolSpace::Solid).prefs.contains(&Pref::ShellThickness));
+        assert!(row(Tool::Repeat, ToolSpace::Solid).prefs.contains(&Pref::RepeatCount));
+        for r in all_rows() {
+            for p in r.prefs {
+                assert!(!p.label().is_empty(), "{:?} pref has an empty label", r.tool);
             }
         }
     }
