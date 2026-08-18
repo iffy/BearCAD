@@ -315,6 +315,20 @@ pub fn scene_element_from_kind(
         "sweep" | "sweep_op" => Some(SceneElement::SweepOp(doc.sweeps.keys().nth(index)?)),
         "joint" => Some(SceneElement::Joint(doc.joints.keys().nth(index)?)),
         "shape" | "primitive" => Some(SceneElement::Shape(doc.primitives.keys().nth(index)?)),
+        // #1517: the remaining top-level kinds a component can hold, so
+        // `bearcad.move_to_component` can name every member the document has.
+        "repeat_op" | "repeat" => Some(SceneElement::RepeatOp(doc.repeat_ops.keys().nth(index)?)),
+        "slice_op" | "slice" => Some(SceneElement::SliceOp(doc.slice_ops.keys().nth(index)?)),
+        "shell_op" | "shell" => Some(SceneElement::ShellOp(doc.shell_ops.keys().nth(index)?)),
+        "edge_treatment_op" | "fillet_edge_op" | "chamfer_edge_op" => Some(
+            SceneElement::EdgeTreatmentOp(doc.edge_treatment_ops.keys().nth(index)?),
+        ),
+        "sketch_repeat_op" => Some(SceneElement::SketchRepeatOp(
+            doc.sketch_repeat_ops.keys().nth(index)?,
+        )),
+        "sketch_slice_op" => Some(SceneElement::SketchSliceOp(
+            doc.sketch_slice_ops.keys().nth(index)?,
+        )),
         // The world axes (#952) index as 0/1/2 for X/Y/Z, matching `element_index`.
         "axis" | "global_axis" => Some(SceneElement::GlobalAxis(match index {
             0 => crate::construction::GlobalAxis::X,
@@ -584,43 +598,67 @@ fn parse_quantized_or_world(table: &Table, key: &str) -> mlua::Result<[i32; 3]> 
 /// they can't go through the plain `(kind, index)` `FaceId::from_script` path; everything else
 /// does. Shared by `begin_sketch` and the `face` arms of `parse_constraint_point_table`/
 /// `parse_constraint_line_table` below (#26/#27's `FaceVertex`/`FaceEdge` from a script).
+/// The `profile = ...` half of a face spec, shared by every host that has one (#1512).
+///
+/// `circle` takes `profile_index`, `polygon` takes `profile_lines = {..}` (a rectangle is a
+/// `Polygon` loop since #66), `boolean` takes the same descriptor `extrude`'s `boolean =`
+/// does, `region` names a hosted sketch's plane region by its seed point, and `text_glyph`
+/// names one glyph of a sketch text — the last two so a document that has them exports to a
+/// script that replays.
+fn parse_extrude_profile(lua: &Lua, table: &Table) -> mlua::Result<crate::model::ExtrudeFace> {
+    let profile_kind: String = table.get("profile").or_else(|_| table.get("profile_kind"))?;
+    let profile_index: usize = table
+        .get("profile_index")
+        .or_else(|_| table.get("index"))
+        .unwrap_or(0);
+    match profile_kind.to_ascii_lowercase().as_str() {
+        "circle" => Ok(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(
+            lua,
+            profile_index,
+        )?)),
+        "polygon" => {
+            let lines: Vec<usize> = table.get("profile_lines").or_else(|_| table.get("lines"))?;
+            Ok(crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(
+                lua, lines,
+            )?))
+        }
+        "boolean" => {
+            let spec: Table = table.get("boolean")?;
+            parse_boolean_face_table(lua, &spec)
+        }
+        "region" => {
+            let sketch: usize = table
+                .get::<Option<usize>>("sketch")?
+                .unwrap_or(profile_index);
+            let seed: Table = table.get("seed")?;
+            let (u, v): (f32, f32) = (seed.get(1)?, seed.get(2)?);
+            let (seed_u, seed_v) = crate::model::sketch_region_seed(u, v);
+            Ok(crate::model::ExtrudeFace::SketchRegion {
+                sketch: sketch_key_from_ordinal(lua, sketch)?,
+                seed_u,
+                seed_v,
+            })
+        }
+        "text_glyph" => {
+            let text: usize = table.get::<Option<usize>>("text")?.unwrap_or(profile_index);
+            let glyph: usize = table.get::<Option<usize>>("glyph")?.unwrap_or(0);
+            Ok(crate::model::ExtrudeFace::TextGlyph {
+                text: sketch_text_key_from_ordinal(lua, text)?,
+                glyph,
+            })
+        }
+        other => Err(mlua::Error::external(format!(
+            "unknown profile kind '{other}' (circle|polygon|boolean|region|text_glyph)"
+        ))),
+    }
+}
+
 fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
     let kind: String = table.get("kind").or_else(|_| table.get("type"))?;
     match kind.to_ascii_lowercase().as_str() {
         "extrude_cap" | "extrude_side" => {
             let extrusion = extrusion_key_from_ordinal(lua, table.get("extrusion")?)?;
-            let profile_kind: String =
-                table.get("profile").or_else(|_| table.get("profile_kind"))?;
-            let profile_index: usize = table
-                .get("profile_index")
-                .or_else(|_| table.get("index"))
-                .unwrap_or(0);
-            let profile = match profile_kind.to_ascii_lowercase().as_str() {
-                "circle" => crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(
-                    lua,
-                    profile_index,
-                )?),
-                // A rectangle is now a `Polygon` loop (#66); give its four line indices as
-                // `profile_lines = {..}`.
-                "polygon" => {
-                    let lines: Vec<usize> = table
-                        .get("profile_lines")
-                        .or_else(|_| table.get("lines"))?;
-                    crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(lua, lines)?)
-                }
-                // A boolean-combined profile's cap (#406): `profile = "boolean",
-                // boolean = { op, a = <face spec>, b = <face spec> }` — the same
-                // descriptor `extrude`'s `boolean =` takes.
-                "boolean" => {
-                    let spec: Table = table.get("boolean")?;
-                    parse_boolean_face_table(lua, &spec)?
-                }
-                other => {
-                    return Err(mlua::Error::external(format!(
-                        "unknown extrude profile kind '{other}' (circle|polygon|boolean)"
-                    )))
-                }
-            };
+            let profile = parse_extrude_profile(lua, &table)?;
             if kind.eq_ignore_ascii_case("extrude_cap") {
                 let top: bool = table.get("top").unwrap_or(true);
                 Ok(FaceId::ExtrudeCap {
@@ -653,33 +691,7 @@ fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
                 .nth(ordinal)
                 .ok_or_else(|| mlua::Error::external(format!("no revolution {ordinal}")))?;
             drop(tick);
-            let profile_kind: String =
-                table.get("profile").or_else(|_| table.get("profile_kind"))?;
-            let profile_index: usize = table
-                .get("profile_index")
-                .or_else(|_| table.get("index"))
-                .unwrap_or(0);
-            let profile = match profile_kind.to_ascii_lowercase().as_str() {
-                "circle" => crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(
-                    lua,
-                    profile_index,
-                )?),
-                "polygon" => {
-                    let lines: Vec<usize> = table
-                        .get("profile_lines")
-                        .or_else(|_| table.get("lines"))?;
-                    crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(lua, lines)?)
-                }
-                "boolean" => {
-                    let spec: Table = table.get("boolean")?;
-                    parse_boolean_face_table(lua, &spec)?
-                }
-                other => {
-                    return Err(mlua::Error::external(format!(
-                        "unknown revolve profile kind '{other}' (circle|polygon|boolean)"
-                    )))
-                }
-            };
+            let profile = parse_extrude_profile(lua, &table)?;
             if kind.eq_ignore_ascii_case("revolve_cap") {
                 let end: bool = table.get("end").unwrap_or(false);
                 Ok(FaceId::RevolveCap {

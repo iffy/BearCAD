@@ -4768,11 +4768,16 @@ pub fn solid_mesh_unique_edges(solid: &crate::extrude::SolidMesh) -> Vec<(Vec3, 
                 .push(normal);
         }
     }
-    by_edge
-        .into_values()
-        .filter(|(_, _, normals)| is_feature_edge(normals))
-        .map(|(a, b, _)| (a, b))
-        .collect()
+    // Sorted by the quantized edge key so the result is the same on every run: a `HashMap`
+    // iterates in a per-process random order, which leaked into everything downstream —
+    // most visibly the order `bearcad.project` creates a body's projected sketch lines in,
+    // making the same script build a different document each time it ran.
+    let mut edges: Vec<_> = by_edge
+        .into_iter()
+        .filter(|(_, (_, _, normals))| is_feature_edge(normals))
+        .collect();
+    edges.sort_by_key(|(key, _)| *key);
+    edges.into_iter().map(|(_, (a, b, _))| (a, b)).collect()
 }
 
 /// Turn threshold for chaining feature segments into one smooth "curve edge" (#626):

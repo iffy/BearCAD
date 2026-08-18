@@ -255,6 +255,18 @@ pub struct Sketch {
     pub angle_unit: Option<AngleUnit>,
 }
 
+/// User-placed endpoints from the last create or drag, before the solver
+/// nudged them to satisfy constraints (#1518). Lua export emits these so
+/// replay follows the same solve trajectory. `None` on documents saved
+/// before seeds existed — those export the live coordinates.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LineSeed {
+    pub x0: f32,
+    pub y0: f32,
+    pub x1: f32,
+    pub y1: f32,
+}
+
 /// A line segment in face-local coordinates (millimetres, per SPEC §5.3).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Line {
@@ -263,6 +275,9 @@ pub struct Line {
     pub y0: f32,
     pub x1: f32,
     pub y1: f32,
+    /// See [`LineSeed`].
+    #[serde(default)]
+    pub seed: Option<LineSeed>,
     /// Length was explicitly typed by the user (show dimension in sketch edit mode).
     #[serde(default)]
     pub length_locked: bool,
@@ -347,6 +362,12 @@ impl Line {
             y0: v0,
             x1: u1,
             y1: v1,
+            seed: Some(LineSeed {
+                x0: u0,
+                y0: v0,
+                x1: u1,
+                y1: v1,
+            }),
             length_locked: false,
             length_dim_offset: None,
             length_expr: None,
@@ -388,6 +409,24 @@ impl Line {
 
     pub fn is_curved(&self) -> bool {
         self.bezier.is_some()
+    }
+
+    /// Endpoints Lua export should write: the pre-solve seed when we have one (#1518).
+    pub fn export_endpoints(&self) -> (f32, f32, f32, f32) {
+        match self.seed {
+            Some(s) => (s.x0, s.y0, s.x1, s.y1),
+            None => (self.x0, self.y0, self.x1, self.y1),
+        }
+    }
+
+    /// Record the live endpoints as the user-placed seed (create or drag).
+    pub fn capture_seed(&mut self) {
+        self.seed = Some(LineSeed {
+            x0: self.x0,
+            y0: self.y0,
+            x1: self.x1,
+            y1: self.y1,
+        });
     }
 
     /// Sample this segment as a polyline in local coords (`segments + 1` points).
@@ -694,6 +733,15 @@ pub struct EdgeTreatment {
     pub amount: f32,
 }
 
+/// User-placed centre and radius from the last create or drag, before the
+/// solver nudged them (#1518). Same role as [`LineSeed`].
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CircleSeed {
+    pub cx: f32,
+    pub cy: f32,
+    pub r: f32,
+}
+
 /// A circle in face-local coordinates (millimetres, per SPEC §5.3).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Circle {
@@ -701,6 +749,9 @@ pub struct Circle {
     pub cx: f32,
     pub cy: f32,
     pub r: f32,
+    /// See [`CircleSeed`].
+    #[serde(default)]
+    pub seed: Option<CircleSeed>,
     /// Diameter was explicitly typed by the user (show dimension in sketch edit mode).
     #[serde(default)]
     pub diameter_locked: bool,
@@ -740,6 +791,7 @@ impl Circle {
             cx,
             cy,
             r,
+            seed: Some(CircleSeed { cx, cy, r }),
             diameter_locked: false,
             diameter_dim_offset: None,
             diameter_expr: None,
@@ -752,6 +804,23 @@ impl Circle {
 
     pub fn diameter(&self) -> f32 {
         self.r * 2.0
+    }
+
+    /// Centre and radius Lua export should write: the pre-solve seed when we have one (#1518).
+    pub fn export_center_radius(&self) -> (f32, f32, f32) {
+        match self.seed {
+            Some(s) => (s.cx, s.cy, s.r),
+            None => (self.cx, self.cy, self.r),
+        }
+    }
+
+    /// Record the live centre and radius as the user-placed seed (create or drag).
+    pub fn capture_seed(&mut self) {
+        self.seed = Some(CircleSeed {
+            cx: self.cx,
+            cy: self.cy,
+            r: self.r,
+        });
     }
 }
 

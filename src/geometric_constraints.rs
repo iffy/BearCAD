@@ -866,6 +866,7 @@ pub fn set_line_uv_endpoints(
             entity.y0 = start.1;
             entity.x1 = end.0;
             entity.y1 = end.1;
+            entity.capture_seed();
             Ok(())
         }
         // Fixed by the body's own geometry, not by the sketch — mirrors how
@@ -957,6 +958,7 @@ pub fn set_point_uv(
                     entity.y1 = v;
                 }
             }
+            entity.capture_seed();
             Ok(())
         }
         ConstraintPoint::CircleCenter(circle) => {
@@ -966,6 +968,7 @@ pub fn set_point_uv(
                 .ok_or_else(|| format!("Circle {} not found", circle.index()))?;
             entity.cx = u;
             entity.cy = v;
+            entity.capture_seed();
             Ok(())
         }
         // Fixed by the body's own geometry, not by the sketch — mirrors how
