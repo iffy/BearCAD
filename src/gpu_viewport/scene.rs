@@ -2317,10 +2317,12 @@ impl<'a> SceneMesh<'a> {
 
     /// Contact shadows onto body faces (#1461): each caster triangle projected along the
     /// scene light onto every light-facing receiver triangle, clipped to that face.
-    /// Shade-side faces (n·L ≤ 0) get a cavity overlay instead: casters in front of the
-    /// wall project along the wall normal, so the far side of a hole covers that whole
-    /// wall (#1493). Ground stays on [`Self::push_ground_shadow`]; these sit on the mesh
-    /// (a tiny lift along the receiver normal, never toward the camera).
+    /// Shade-side faces (n·L ≤ 0) get a cavity overlay instead: same-body casters in
+    /// front of the wall project along the wall normal, so the far side of a hole
+    /// covers that whole wall (#1493). A neighbour is not a hole — pairing across
+    /// bodies painted convex exteriors (#1531/#1532). Ground stays on
+    /// [`Self::push_ground_shadow`]; these sit on the mesh (a tiny lift along the
+    /// receiver normal, never toward the camera).
     fn push_body_shadows(&mut self, solids: &[&crate::extrude::SolidMesh]) {
         let light = SCENE_LIGHT_DIR.normalize_or_zero();
         if light.length_squared() < 1e-8 {
@@ -2329,7 +2331,7 @@ impl<'a> SceneMesh<'a> {
         let (lu, lv) = plane_basis(light);
         let mut receivers = Vec::new();
         let mut casters = Vec::new();
-        for solid in solids {
+        for (body, solid) in solids.iter().enumerate() {
             for tri in &solid.triangles {
                 let n = (tri[1] - tri[0]).cross(tri[2] - tri[0]);
                 let area = n.length();
@@ -2337,12 +2339,17 @@ impl<'a> SceneMesh<'a> {
                     continue;
                 }
                 let n = n / area;
-                casters.push(CasterTri { tri: *tri, normal: n });
+                casters.push(CasterTri {
+                    tri: *tri,
+                    normal: n,
+                    body,
+                });
                 receivers.push(ReceiverTri {
                     tri: *tri,
                     origin: tri[0],
                     normal: n,
                     ndotl: n.dot(light),
+                    body,
                 });
             }
         }
@@ -2383,11 +2390,15 @@ impl<'a> SceneMesh<'a> {
                     seen[ri] = stamp;
                     let rec = &receivers[ri];
                     // Sun-facing: project along the light. Shade-side: along the wall
-                    // normal, so a hole's far wall covers the near wall (#1493).
+                    // normal, so a hole's far wall covers the near wall (#1493). A
+                    // different body is not a hole — skip it so convex exteriors stay
+                    // lit (#1531/#1532).
                     let proj = if rec.ndotl > 1e-4 {
                         light
-                    } else {
+                    } else if caster.body == rec.body {
                         rec.normal
+                    } else {
+                        continue;
                     };
                     for tri in contact_shadow_on_triangle(&caster.tri, caster.normal, rec, proj) {
                         self.push_contact_shadow_triangle(tri.verts, tri.colors);
@@ -4589,11 +4600,16 @@ struct ReceiverTri {
     origin: Vec3,
     normal: Vec3,
     ndotl: f32,
+    /// Which body this triangle belongs to. Cavity overlays (#1493) only pair
+    /// a shade-side wall with casters from the same body — a neighbour is not
+    /// a hole (#1531/#1532).
+    body: usize,
 }
 
 struct CasterTri {
     tri: [Vec3; 3],
     normal: Vec3,
+    body: usize,
 }
 
 struct ContactShadowTri {
@@ -8915,6 +8931,7 @@ mod tests {
             origin: tri[0],
             normal: n,
             ndotl: n.dot(light),
+            body: 0,
         }
     }
 
@@ -9092,6 +9109,118 @@ mod tests {
         assert!(
             !ground_tri,
             "ground-plane shadows must stay hidden from below"
+        );
+    }
+
+    /// The two-cuboid document from #1531: short box toward −Y, tall box toward +Y.
+    fn state_with_issue_1531_cuboids() -> AppState {
+        use crate::actions::Action;
+        use crate::model::{Primitive, PrimitiveKind};
+
+        let mut state = AppState::default();
+        let mut short = Primitive::new(PrimitiveKind::Cuboid);
+        short.origin = [64.17298, 34.062336, 0.0];
+        short.width = "42.95".into();
+        short.depth = "30.348".into();
+        short.height = "65.815".into();
+        state.apply(Action::CreateShape { shape: short });
+        let mut tall = Primitive::new(PrimitiveKind::Cuboid);
+        tall.origin = [30.118729, 73.63769, 0.0];
+        tall.width = "46.086".into();
+        tall.depth = "27.855".into();
+        tall.height = "101.857".into();
+        state.apply(Action::CreateShape { shape: tall });
+        assert_eq!(state.doc.bodies.len(), 2);
+        state
+    }
+
+    /// #1531: a neighbour must not paint the shade-side *exterior* of a convex
+    /// cuboid. That cavity overlay is for hole interiors (#1493); on a box it
+    /// reads as a shadow on the camera-facing wall the headlight should light.
+    #[test]
+    fn realistic_cuboid_exterior_is_not_cavity_shadowed_by_a_neighbour() {
+        use crate::camera::ShadingMode;
+        let state = state_with_issue_1531_cuboids();
+        let scene = build_scene_with_shading(&state, ShadingMode::Realistic);
+        // Tall cuboid −Y face: y = 73.63769 − 27.855/2 ≈ 59.71, lifted −0.25 along −Y.
+        let on_shade_wall: Vec<Vec3> = off_ground_shadows(&scene)
+            .into_iter()
+            .filter(|p| {
+                (p.y - 59.46).abs() < 0.6
+                    && p.x > 6.0
+                    && p.x < 54.0
+                    && p.z > 1.0
+                    && p.z < 102.0
+            })
+            .collect();
+        assert!(
+            on_shade_wall.is_empty(),
+            "convex cuboid shade-side must not get a cavity overlay from a neighbour; sample={:?}",
+            on_shade_wall.iter().take(8).collect::<Vec<_>>()
+        );
+    }
+
+    /// #1532: the same two cuboids plus the reported horizontal cylinder.
+    fn state_with_issue_1532_cylinder() -> AppState {
+        use crate::actions::Action;
+        use crate::model::{Primitive, PrimitiveKind};
+
+        let mut state = state_with_issue_1531_cuboids();
+        let mut cyl = Primitive::new(PrimitiveKind::Cylinder);
+        cyl.origin = [73.395935, 49.236336, 41.352936];
+        cyl.normal = [0.0, 1.0, 0.0];
+        cyl.u_axis = [-1.0, 0.0, 0.0];
+        cyl.height = "68.902".into();
+        cyl.radius = "5.55".into();
+        state.apply(Action::CreateShape { shape: cyl });
+        assert_eq!(state.doc.bodies.len(), 3);
+        state
+    }
+
+    /// #1532: a convex cylinder's sun-facing flank is not a cavity. Neighbours
+    /// must not plaster it with contact-shadow decals (those also show through
+    /// the thin wall onto the lit side).
+    #[test]
+    fn realistic_cylinder_lit_side_is_not_cavity_shadowed_by_neighbours() {
+        use crate::camera::ShadingMode;
+        let state = state_with_issue_1532_cylinder();
+        let scene = build_scene_with_shading(&state, ShadingMode::Realistic);
+        let light = SCENE_LIGHT_DIR.normalize_or_zero();
+        let center = Vec3::new(73.395935, 0.0, 41.352936);
+        let radius = 5.55f32;
+        let on_cyl_wall = |p: &Vec3| {
+            let dx = p.x - center.x;
+            let dz = p.z - center.z;
+            let rad = (dx * dx + dz * dz).sqrt();
+            // Mid-span wall only: the cuboid's +Y face sits at y ≈ 49.24
+            // and may pick up a real contact ring around the mount.
+            (rad - radius).abs() <= 0.6 && p.y > 52.0 && p.y < 115.0
+        };
+        let lit_on_cyl: Vec<Vec3> = off_ground_shadows(&scene)
+            .into_iter()
+            .filter(|p| {
+                if !on_cyl_wall(p) {
+                    return false;
+                }
+                let n = Vec3::new(p.x - center.x, 0.0, p.z - center.z).normalize_or_zero();
+                n.dot(light) > 0.05
+            })
+            .collect();
+        assert!(
+            lit_on_cyl.is_empty(),
+            "cylinder light-facing side must not receive neighbour cavity shadows; sample={:?}",
+            lit_on_cyl.iter().take(8).collect::<Vec<_>>()
+        );
+        // Shade-side wall (bottom) was plastered by the cuboid "in front" along
+        // −Z; those decals show through the thin wall onto the lit side.
+        let shade_on_cyl: Vec<Vec3> = off_ground_shadows(&scene)
+            .into_iter()
+            .filter(|p| on_cyl_wall(p) && p.z < center.z - 1.0)
+            .collect();
+        assert!(
+            shade_on_cyl.is_empty(),
+            "cylinder shade-side must not get a cavity overlay from a neighbour; sample={:?}",
+            shade_on_cyl.iter().take(8).collect::<Vec<_>>()
         );
     }
 
