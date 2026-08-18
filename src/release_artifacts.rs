@@ -344,9 +344,9 @@ mod tests {
         );
     }
 
-    /// #1450: the pay CTA is "Pay Whatever" (with a leading $), and a
-    /// matching blue button sits in the top nav next to Download.
-    /// #1452: the $ is a plain character, not a dollar-in-circle SVG.
+    /// #1450: the pay CTA is "Pay Whatever", and a matching blue button
+    /// sits in the top nav next to Download.
+    /// #1470: no dollar sign on the Pay Whatever buttons.
     #[test]
     fn pay_whatever_button_and_navbar() {
         let get = include_str!("../docs-site/src/components/GetBearCAD/index.js");
@@ -359,12 +359,12 @@ mod tests {
             "download/pay block should not use the old Name a price label"
         );
         assert!(
-            get.contains("$"),
-            "Pay Whatever button should start with a $ character"
+            !get.contains("$"),
+            "Pay Whatever button should not have a $ prefix"
         );
         assert!(
             !get.contains("DollarIcon") && !get.contains("<svg"),
-            "Pay Whatever button should use a $ character, not a dollar SVG icon"
+            "Pay Whatever button should not use a dollar SVG icon"
         );
 
         let icons = include_str!("../docs-site/src/components/GetBearCAD/icons.js");
@@ -395,8 +395,8 @@ mod tests {
             "navbar Pay Whatever should be the same blue as the GetBearCAD pay button"
         );
         assert!(
-            css.contains("content: '$'"),
-            "navbar Pay Whatever should prefix a $ character, not a dollar icon"
+            !css.contains("content: '$'"),
+            "navbar Pay Whatever should not prefix a $ character"
         );
     }
 
