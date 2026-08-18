@@ -4532,6 +4532,32 @@ fn checkbox_row(
     changed
 }
 
+/// Colour-swatch size in the material combo list (#1460).
+const MATERIAL_SWATCH_SIZE: f32 = 12.0;
+
+/// A material combo row: colour swatch then name. Both are click targets (#1460).
+fn selectable_swatch_label(
+    ui: &mut egui::Ui,
+    color: [u8; 3],
+    selected: bool,
+    label: impl Into<egui::WidgetText>,
+) -> egui::Response {
+    ui.horizontal(|ui| {
+        let (rect, swatch) = ui.allocate_exact_size(
+            egui::vec2(MATERIAL_SWATCH_SIZE, MATERIAL_SWATCH_SIZE),
+            egui::Sense::click(),
+        );
+        ui.painter().rect_filled(
+            rect,
+            2.0,
+            egui::Color32::from_rgb(color[0], color[1], color[2]),
+        );
+        let text = ui.selectable_label(selected, label);
+        swatch.union(text)
+    })
+    .inner
+}
+
 /// A field label that is itself a click target (#640): it tints gold on hover, exactly like the
 /// [`crate::icons::icon_button_hover_gold`] toggle beside it, so the label and the icon read as
 /// one control. Used where a row's label names a mode the click cycles.
@@ -8293,22 +8319,7 @@ pub fn show_pane(
                     .show_ui(ui, |ui| {
                         for (index, name, color) in &control.materials {
                             let selected = control.current == Some(Some(*index));
-                            if ui
-                                .horizontal(|ui| {
-                                    let (rect, _) = ui.allocate_exact_size(
-                                        egui::vec2(12.0, 12.0),
-                                        egui::Sense::hover(),
-                                    );
-                                    ui.painter().rect_filled(
-                                        rect,
-                                        2.0,
-                                        egui::Color32::from_rgb(color[0], color[1], color[2]),
-                                    );
-                                    ui.selectable_label(selected, name)
-                                })
-                                .inner
-                                .clicked()
-                            {
+                            if selectable_swatch_label(ui, *color, selected, name).clicked() {
                                 pending = Some(MaterialEdit::Assign(Some(*index)));
                             }
                         }
@@ -10297,6 +10308,62 @@ mod tests {
         let mut tool_input = input(&doc, &bodies);
         tool_input.tool = Tool::Move;
         assert!(context_pane_content(&tool_input).material.is_none());
+    }
+
+    fn pointer_click_input(pos: egui::Pos2) -> egui::RawInput {
+        let mut input = egui::RawInput::default();
+        input.events.extend([
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        input
+    }
+
+    /// #1460: the material list's colour swatch is a click target, same as the name.
+    #[test]
+    fn material_swatch_click_selects_like_the_name() {
+        let red = [232_u8, 97, 92];
+
+        let click_row = |on_swatch: bool| -> (bool, egui::Rect) {
+            let ctx = egui::Context::default();
+            let mut row = egui::Rect::NOTHING;
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                row = selectable_swatch_label(ui, red, false, "Red").rect;
+            });
+            let pos = if on_swatch {
+                egui::pos2(row.min.x + MATERIAL_SWATCH_SIZE * 0.5, row.center().y)
+            } else {
+                egui::pos2(row.min.x + MATERIAL_SWATCH_SIZE + 16.0, row.center().y)
+            };
+            let mut clicked = false;
+            let _ = ctx.run_ui(pointer_click_input(pos), |ui| {
+                clicked = selectable_swatch_label(ui, red, false, "Red").clicked();
+            });
+            (clicked, row)
+        };
+
+        let (name_clicked, name_row) = click_row(false);
+        assert!(
+            name_clicked,
+            "clicking the material name should select it (row {name_row:?})"
+        );
+
+        let (swatch_clicked, swatch_row) = click_row(true);
+        assert!(
+            swatch_clicked,
+            "clicking the colour swatch should select the material, same as the name (row {swatch_row:?})"
+        );
     }
 
     /// #1081: a mode only registers the pickers it actually offers. Registering all six point
