@@ -893,6 +893,51 @@ pub fn occt_body_shape(doc: &Document, body_index: crate::model::BodyKey) -> Opt
     shape
 }
 
+/// Kernel solid of a [`BodySource::Fused`] inner source (#1527).
+fn occt_fused_inner_shape(
+    doc: &Document,
+    inner: &crate::model::BodySource,
+) -> Option<crate::kernel::Shape> {
+    match inner {
+        crate::model::BodySource::Revolve(ri) => {
+            let rev = doc.revolutions.get(*ri)?;
+            occt_attach_tool_to_hosts(
+                doc,
+                occt_revolution_shape(doc, rev)?,
+                revolve_mode_hosts(&rev.mode),
+                matches!(rev.mode, crate::model::RevolveMode::Cut(_)),
+            )
+        }
+        crate::model::BodySource::Sweep(fi) => {
+            let fp = doc.sweeps.get(*fi)?;
+            occt_attach_tool_to_hosts(
+                doc,
+                occt_sweep_shape(doc, fp)?,
+                sweep_mode_hosts(&fp.mode),
+                matches!(fp.mode, crate::model::SweepMode::Cut(_)),
+            )
+        }
+        crate::model::BodySource::Loft(li) => {
+            let loft = doc.lofts.get(*li)?;
+            occt_attach_tool_to_hosts(
+                doc,
+                occt_loft_shape(doc, loft)?,
+                loft_mode_hosts(&loft.mode),
+                matches!(loft.mode, crate::model::LoftMode::Cut(_)),
+            )
+        }
+        crate::model::BodySource::Fused {
+            inner,
+            add,
+            cut,
+        } => {
+            let base = occt_fused_inner_shape(doc, inner)?;
+            occt_fuse_then_cut_extrusions(doc, base, add, cut)
+        }
+        _ => None,
+    }
+}
+
 fn occt_body_shape_uncached(
     doc: &Document,
     body_index: crate::model::BodyKey,
@@ -931,6 +976,14 @@ fn occt_body_shape_uncached(
                 loft_mode_hosts(&loft.mode),
                 matches!(loft.mode, crate::model::LoftMode::Cut(_)),
             )?
+        }
+        crate::model::BodySource::Fused {
+            ref inner,
+            ref add,
+            ref cut,
+        } => {
+            let base = occt_fused_inner_shape(doc, inner)?;
+            return occt_fuse_then_cut_extrusions(doc, base, add, cut);
         }
         crate::model::BodySource::Boolean {
             op,
@@ -5853,6 +5906,11 @@ fn body_solid_mesh_for_face_key_uncached(
             add,
             cut,
         } if !add.is_empty() || !cut.is_empty() => occt_edge_treated_output_shape(doc, *op, *target),
+        crate::model::BodySource::Fused { inner, add, cut }
+            if !add.is_empty() || !cut.is_empty() =>
+        {
+            occt_fused_inner_shape(doc, inner)
+        }
         _ => return body_solid_mesh(doc, body),
     };
     #[cfg(test)]
@@ -6567,6 +6625,34 @@ fn hash_body_deps(
                 for section in &v.sections {
                     hash_sketch(doc, section.sketch, writer);
                 }
+            }
+        }
+        crate::model::BodySource::Fused { inner, add, cut } => {
+            match inner.as_ref() {
+                crate::model::BodySource::Revolve(k) => {
+                    if let Some(v) = doc.revolutions.get(*k) {
+                        hash_json(writer, v);
+                        hash_sketch(doc, v.sketch, writer);
+                    }
+                }
+                crate::model::BodySource::Sweep(k) => {
+                    if let Some(v) = doc.sweeps.get(*k) {
+                        hash_json(writer, v);
+                        hash_sketch(doc, v.sketch, writer);
+                    }
+                }
+                crate::model::BodySource::Loft(k) => {
+                    if let Some(v) = doc.lofts.get(*k) {
+                        hash_json(writer, v);
+                        for section in &v.sections {
+                            hash_sketch(doc, section.sketch, writer);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            for &k in add.iter().chain(cut.iter()) {
+                hash_extrusion(doc, k, writer);
             }
         }
         crate::model::BodySource::Revolve(k) => {
@@ -7656,6 +7742,25 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: crate::model::BodyKey) -
     if let crate::model::BodySource::Loft(li) = body.source {
         let loft = doc.lofts.get(li)?;
         return loft_mesh(doc, loft);
+    }
+    if let crate::model::BodySource::Fused { ref inner, ref add, .. } = body.source {
+        let mut mesh = match inner.as_ref() {
+            crate::model::BodySource::Revolve(ri) => {
+                revolve_mesh(doc, doc.revolutions.get(*ri)?)?
+            }
+            crate::model::BodySource::Sweep(fi) => sweep_mesh(doc, doc.sweeps.get(*fi)?)?,
+            crate::model::BodySource::Loft(li) => loft_mesh(doc, doc.lofts.get(*li)?)?,
+            _ => SolidMesh::default(),
+        };
+        for &ei in add {
+            let Some(extrusion) = doc.extrusions.get(ei) else {
+                continue;
+            };
+            if let Some(solid) = extrusion_mesh(doc, extrusion) {
+                mesh.triangles.extend(solid.triangles);
+            }
+        }
+        return (!mesh.is_empty()).then_some(mesh);
     }
     let mut mesh = SolidMesh::default();
     // A `Solid` body's primitive base (#1104): its mesh joins the additive extrusions in

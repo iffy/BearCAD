@@ -2948,6 +2948,12 @@ pub fn owning_component(
                 }
                 BodySource::Solid { .. } => None,
                 BodySource::UnitInstance(_) | BodySource::UnitCut { .. } => None,
+                BodySource::Fused { inner, .. } => match inner.as_ref() {
+                    BodySource::Loft(l) => doc.component_of(CM::Loft(*l)),
+                    BodySource::Revolve(r) => doc.component_of(CM::Revolution(*r)),
+                    BodySource::Sweep(f) => doc.component_of(CM::Sweep(*f)),
+                    _ => None,
+                },
             }
         }),
         SceneElement::Image(i) => doc

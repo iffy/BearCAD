@@ -10730,6 +10730,47 @@ mod tests {
         }
     }
 
+    /// #1527: a cut into a Revolve result must record the extrusion on that live body
+    /// and actually subtract (the source used to drop the cut).
+    #[test]
+    fn lua_cut_extrude_into_revolve_subtracts() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ x = 10, y = 0, width = 10, height = 10 }
+            bearcad.exit_sketch()
+            bearcad.revolve{ polygon = {0,1,2,3}, axis = "y", angle = 180 }
+            local v0 = bearcad.body_stats(0).volume
+            bearcad.begin_sketch{
+                kind = "revolve_cap",
+                revolution = 0,
+                ["end"] = true,
+                profile = "polygon",
+                profile_lines = {0,1,2,3},
+            }
+            bearcad.circle{ x = 5, y = -5, r = 3 }
+            bearcad.extrude{ circle = 0, distance = -8, body = "cut" }
+            local result = bearcad.count("body") - 1
+            local v1 = bearcad.body_stats(result).volume
+            assert(v1 < v0 - 20, "revolve: cut must remove material: " .. v1 .. " vs " .. v0)
+            "#,
+        );
+        let live = state
+            .doc
+            .bodies
+            .iter()
+            .filter(|(_, b)| !b.shadow)
+            .last()
+            .map(|(_, b)| b)
+            .expect("expected a live body");
+        assert_eq!(
+            live.source.cut_extrusion_indices().len(),
+            1,
+            "cut must stay on the revolve result, source={:?}",
+            live.source
+        );
+    }
+
     /// Elements-pane rows after the default filter (shadow bodies pruned), matching
     /// what `show_pane` lists.
     fn pane_visible_nodes(doc: &crate::model::Document) -> Vec<crate::hierarchy::HierarchyNode> {
