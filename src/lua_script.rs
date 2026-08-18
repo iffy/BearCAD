@@ -3683,6 +3683,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         entry.set("commit_on_enter", row.commit_on_enter)?;
         entry.set("output_modes", row.output_modes)?;
         entry.set("opens_sketch", row.face_click_opens_sketch)?;
+        entry.set("leaves_sketch", crate::tooltable::is_3d_only(row.tool))?;
+        entry.set("dual_mode", crate::tooltable::is_dual_mode(row.tool))?;
+        entry.set(
+            "survives_begin_sketch",
+            crate::tooltable::survives_begin_sketch(row.tool),
+        )?;
         entry.set("draft", format!("{:?}", row.draft))?;
         let pickers = lua.create_table()?;
         for (i, p) in row.pickers.iter().enumerate() {
@@ -11348,7 +11354,7 @@ mod tests {
             assert(s.shape == "B", "Shape should show B, got " .. tostring(s.shape))
             assert(s.sketch == "S")
             assert(s.select == nil, "Select has no shortcut")
-            assert(s.project == nil, "Project is sketch-only")
+            assert(s.project == "P", "Project stays on the bar and clicks a face")
             bearcad.begin_sketch("construction_plane", 0)
             s = bearcad.ui.toolbar_shortcuts()
             assert(s.project == "P", "Project should show P in a sketch")

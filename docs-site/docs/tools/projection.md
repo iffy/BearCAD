@@ -5,8 +5,9 @@ title: Projection
 
 # Projection
 
-Available inside a sketch (**P**), **Projection** pulls outside 3D geometry onto the sketch
-plane as reference lines you can snap, dimension, and constrain against.
+**Projection** (**P**) pulls outside 3D geometry onto the sketch plane as reference lines
+you can snap, dimension, and constrain against. Outside a sketch it clicks a face to start
+one, like Offset.
 
 - Select outside **body edges** (a **face** or **corner** takes the whole body), or a
   **construction plane**, then press **Enter** (or the blue commit button) to project.

@@ -6510,11 +6510,9 @@ impl App {
             }
 
             // J joins parts (#921); pressing it again cycles the joint kind. Changing kind
-            // goes through the pane's own edit so the positions reset with it.
-            if !self.state.draft_blocks_tool_switch()
-                && self.state.sketch_session.is_none()
-                && consume_joint_tool_key(ctx)
-            {
+            // goes through the pane's own edit so the positions reset with it. 3D-only, so
+            // SetTool leaves an open sketch (#1495) — same as the toolbar button.
+            if !self.state.draft_blocks_tool_switch() && consume_joint_tool_key(ctx) {
                 if self.state.tool != Tool::Joint {
                     self.state.apply(Action::SetTool(Tool::Joint));
                 } else if let Some(cj) = self.state.creating_joint.as_mut() {
@@ -6530,10 +6528,8 @@ impl App {
             }
 
             // B places shapes (#909); pressing it again cycles cuboid → cylinder → sphere.
-            if !self.state.draft_blocks_tool_switch()
-                && self.state.sketch_session.is_none()
-                && consume_shape_tool_key(ctx)
-            {
+            // 3D-only: SetTool leaves an open sketch, matching the toolbar (#1495).
+            if !self.state.draft_blocks_tool_switch() && consume_shape_tool_key(ctx) {
                 if self.state.tool != Tool::Shape {
                     self.state.apply(Action::SetTool(Tool::Shape));
                 } else {
@@ -14155,11 +14151,9 @@ impl App {
                 self.tool_button(ui, icons::IconId::Chamfer, Tool::Chamfer, "Chamfer");
                 self.tool_button(ui, icons::IconId::Offset, Tool::Offset, "Offset");
                 self.tool_button(ui, icons::IconId::Text, Tool::Text, "Text");
-                // Project (#140/#1193): sketch mode only — select outside geometry, Enter
-                // projects (or un-projects when only projected lines are selected).
-                if self.state.sketch_session.is_some() {
-                    self.tool_button(ui, icons::IconId::Project, Tool::Project, "Projection");
-                }
+                // Project (#1494): sketch-only like Offset — stays on the bar and clicks a
+                // face to start a sketch, then projects outside geometry.
+                self.tool_button(ui, icons::IconId::Project, Tool::Project, "Projection");
                 self.tool_button(ui, icons::IconId::Plane, Tool::ConstructionPlane, "Plane");
                 self.tool_button(ui, icons::IconId::Extrude, Tool::Extrude, "Extrude");
                 self.tool_button(ui, icons::IconId::Sweep, Tool::Sweep, "Sweep");
@@ -27702,10 +27696,11 @@ impl App {
                         exploder_owns_press = true;
                     }
                 }
-                // The Sketch tool opens the sketch on exactly the face the handle stands for
-                // (#860) — re-picking at the redirected anchor would land back on whatever is
-                // in front of it, which is the crowd the exploder was opened to get past.
-                if self.state.tool == Tool::Sketch {
+                // Face-click tools open the sketch on exactly the face the handle stands
+                // for (#860/#1494) — re-picking at the redirected anchor would land back
+                // on whatever is in front of it, which is the crowd the exploder was
+                // opened to get past.
+                if self.state.tool.opens_sketch_on_face_click() {
                     if let construction::PickTargetKind::SketchFace(face) = &target {
                         self.state.apply(Action::BeginSketch {
                             face: face.clone(),
@@ -28060,7 +28055,8 @@ impl App {
         if matches!(
             self.state.tool,
             Tool::Select | Tool::Constraint | Tool::Dimension
-        ) && !plane_resizing
+        ) && !(self.state.tool.opens_sketch_on_face_click() && sketch_session.is_none())
+            && !plane_resizing
             && !joint_dragging
             && !exploder_owns_press
             && (self.state.editing_committed_dim.is_none()
@@ -28162,17 +28158,27 @@ impl App {
             }
         }
 
-        if self.state.tool == Tool::Sketch {
+        // One face-click path for every tool whose row says so (#1494). Uses the
+        // start-of-frame session so a BeginSketch on this press does not also start
+        // drawing. The Exploder already applied BeginSketch on the exact handle.
+        if sketch_session.is_none()
+            && !exploder_owns_press
+            && self.state.tool.opens_sketch_on_face_click()
+        {
             if let Some(pp) = pointer_screen {
                 if ui.input(|i| i.pointer.primary_pressed()) {
-                    if let Some(face) = pick_sketch_face(pp, &project, &self.state.doc, self.state.cam.eye()) {
+                    if let Some(face) =
+                        pick_sketch_face(pp, &project, &self.state.doc, self.state.cam.eye())
+                    {
                         self.state.apply(Action::BeginSketch {
                             face,
                             viewport: Some(viewport),
                         });
                     }
                 } else if !self.gpu_viewport && !suppress_hover_highlight {
-                    if let Some(face) = pick_sketch_face(pp, &project, &self.state.doc, self.state.cam.eye()) {
+                    if let Some(face) =
+                        pick_sketch_face(pp, &project, &self.state.doc, self.state.cam.eye())
+                    {
                         draw_face_highlight(
                             &painter,
                             &project,
@@ -28186,30 +28192,7 @@ impl App {
         }
 
         if self.state.tool == Tool::Rectangle {
-            if self.state.sketch_session.is_none() {
-                if let Some(pp) = pointer_screen {
-                    if ui.input(|i| i.pointer.primary_pressed()) {
-                        if let Some(face) = pick_sketch_face(pp, &project, &self.state.doc, self.state.cam.eye()) {
-                            self.state.apply(Action::BeginSketch {
-                                face,
-                                viewport: Some(viewport),
-                            });
-                        }
-                    } else if !self.gpu_viewport && !suppress_hover_highlight {
-                        if let Some(face) = pick_sketch_face(pp, &project, &self.state.doc, self.state.cam.eye()) {
-                            draw_face_highlight(
-                                &painter,
-                                &project,
-                                &self.state.doc,
-                                face,
-                                construction::PICK_HOVER_RGBA,
-                            );
-                        }
-                    }
-                }
-            } else if let (Some(session), Some(pp)) =
-                (self.state.sketch_session, pointer_screen)
-            {
+            if let (Some(session), Some(pp)) = (sketch_session, pointer_screen) {
                 if let Some(gp) =
                     sketch_plane_point(&cam, viewport, &vp, &self.state.doc, session, pp)
                 {
@@ -28305,30 +28288,7 @@ impl App {
         }
 
         if self.state.tool == Tool::Circle {
-            if self.state.sketch_session.is_none() {
-                if let Some(pp) = pointer_screen {
-                    if ui.input(|i| i.pointer.primary_pressed()) {
-                        if let Some(face) = pick_sketch_face(pp, &project, &self.state.doc, self.state.cam.eye()) {
-                            self.state.apply(Action::BeginSketch {
-                                face,
-                                viewport: Some(viewport),
-                            });
-                        }
-                    } else if !self.gpu_viewport && !suppress_hover_highlight {
-                        if let Some(face) = pick_sketch_face(pp, &project, &self.state.doc, self.state.cam.eye()) {
-                            draw_face_highlight(
-                                &painter,
-                                &project,
-                                &self.state.doc,
-                                face,
-                                construction::PICK_HOVER_RGBA,
-                            );
-                        }
-                    }
-                }
-            } else if let (Some(session), Some(pp)) =
-                (self.state.sketch_session, pointer_screen)
-            {
+            if let (Some(session), Some(pp)) = (sketch_session, pointer_screen) {
                 if let Some(gp) =
                     sketch_plane_point(&cam, viewport, &vp, &self.state.doc, session, pp)
                 {
@@ -28396,30 +28356,7 @@ impl App {
         }
 
         if self.state.tool == Tool::Line {
-            if self.state.sketch_session.is_none() {
-                if let Some(pp) = pointer_screen {
-                    if ui.input(|i| i.pointer.primary_pressed()) {
-                        if let Some(face) = pick_sketch_face(pp, &project, &self.state.doc, self.state.cam.eye()) {
-                            self.state.apply(Action::BeginSketch {
-                                face,
-                                viewport: Some(viewport),
-                            });
-                        }
-                    } else if !self.gpu_viewport && !suppress_hover_highlight {
-                        if let Some(face) = pick_sketch_face(pp, &project, &self.state.doc, self.state.cam.eye()) {
-                            draw_face_highlight(
-                                &painter,
-                                &project,
-                                &self.state.doc,
-                                face,
-                                construction::PICK_HOVER_RGBA,
-                            );
-                        }
-                    }
-                }
-            } else if let (Some(session), Some(pp)) =
-                (self.state.sketch_session, pointer_screen)
-            {
+            if let (Some(session), Some(pp)) = (sketch_session, pointer_screen) {
                 if let Some(gp) =
                     sketch_plane_point(&cam, viewport, &vp, &self.state.doc, session, pp)
                 {
@@ -28611,33 +28548,12 @@ impl App {
         }
 
         if self.state.tool == Tool::Offset {
-            if let Some(session) = self.state.sketch_session {
+            if let Some(session) = sketch_session {
                 self.handle_sketch_offset_tool(
                     ui, &painter, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion,
                     session,
                 );
                 self.show_sketch_offset_distance_input(ui, &project);
-            } else if let Some(pp) = pointer_screen {
-                // Outside a sketch the Offset tool clicks a face to begin sketching there,
-                // like the draw tools.
-                if ui.input(|i| i.pointer.primary_pressed()) {
-                    if let Some(face) = pick_sketch_face(pp, &project, &self.state.doc, self.state.cam.eye()) {
-                        self.state.apply(Action::BeginSketch {
-                            face,
-                            viewport: Some(viewport),
-                        });
-                    }
-                } else if !self.gpu_viewport && !suppress_hover_highlight {
-                    if let Some(face) = pick_sketch_face(pp, &project, &self.state.doc, self.state.cam.eye()) {
-                        draw_face_highlight(
-                            &painter,
-                            &project,
-                            &self.state.doc,
-                            face,
-                            construction::PICK_HOVER_RGBA,
-                        );
-                    }
-                }
             }
         }
 
@@ -28668,35 +28584,7 @@ impl App {
         }
 
         if self.state.tool == Tool::Text {
-            // Outside a sketch, the Text tool clicks a face to begin sketching there (#383),
-            // exactly like the Rectangle/Line/Circle draw tools; the text placement then
-            // starts on the next press inside the new sketch.
-            if self.state.sketch_session.is_none() {
-                if let Some(pp) = pointer_screen {
-                    if ui.input(|i| i.pointer.primary_pressed()) {
-                        if let Some(face) =
-                            pick_sketch_face(pp, &project, &self.state.doc, self.state.cam.eye())
-                        {
-                            self.state.apply(Action::BeginSketch {
-                                face,
-                                viewport: Some(viewport),
-                            });
-                        }
-                    } else if !self.gpu_viewport && !suppress_hover_highlight {
-                        if let Some(face) =
-                            pick_sketch_face(pp, &project, &self.state.doc, self.state.cam.eye())
-                        {
-                            draw_face_highlight(
-                                &painter,
-                                &project,
-                                &self.state.doc,
-                                face,
-                                construction::PICK_HOVER_RGBA,
-                            );
-                        }
-                    }
-                }
-            } else {
+            if sketch_session.is_some() {
                 self.handle_text_tool(ui, &painter, &project, pointer_screen, &cam, viewport, &vp);
             }
         }
@@ -28704,7 +28592,7 @@ impl App {
         // Project tool (#140/#1193): select outside geometry (or already-projected lines),
         // then Enter projects (or un-projects when the selection is only projected lines).
         if self.state.tool == Tool::Project {
-            if let Some(session) = self.state.sketch_session {
+            if let Some(session) = sketch_session {
                 if self.tool_enter_commits(ui.ctx())
                     && !self.state.scene_selection.is_empty()
                 {
@@ -32230,7 +32118,11 @@ impl App {
                 "Shape — b cycles cuboid/cylinder/sphere • type the sizes • Enter: create • Esc: cancel"
             }
             Tool::Project => {
-                "Projection — select outside edges/bodies/planes, Enter projects as solid cyan references; select projected lines and Enter to un-project • Esc: done"
+                if self.state.sketch_session.is_none() {
+                    "Projection — click a face to sketch on, then select outside edges to project"
+                } else {
+                    "Projection — select outside edges/bodies/planes, Enter projects as solid cyan references; select projected lines and Enter to un-project • Esc: done"
+                }
             }
             Tool::Loft => {
                 if self
@@ -32369,7 +32261,7 @@ impl App {
             }
             Tool::Constraint => {
                 if self.state.sketch_session.is_none() {
-                    "c: constraint  •  Open a sketch to add geometric constraints"
+                    "c: constraint  •  Click a face to sketch on"
                 } else {
                     "c: constraint  •  Shift+click multi-select • 1–7 apply constraint • context pane shows options"
                 }

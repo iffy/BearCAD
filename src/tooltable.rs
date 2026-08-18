@@ -15,6 +15,9 @@
 //!    so a new tool can never fall out of an exhaustive walk (#1481).
 //! 2. Add its arm to [`spaces`] and to [`row`]. Both matches are exhaustive, so **the build
 //!    fails until the row exists**. That is the point: a new tool cannot skip the table.
+//!    `spaces` is also the sketch-mode classification (#1494/#1495/#1496): sketch-only
+//!    tools start a sketch on a face click, 3D-only tools leave a sketch on `SetTool`,
+//!    dual-mode tools survive `BeginSketch`.
 //! 3. `tooltable::tests::every_tool_has_a_row` and the per-column walks below then check the
 //!    row is coherent (a tool with a draft must clear it on Esc, a `Placement` gizmo must own
 //!    the next click, and so on).
@@ -207,8 +210,9 @@ impl ToolField {
 pub struct ToolRow {
     pub tool: Tool,
     pub space: ToolSpace,
-    /// Clicking a face with this tool outside a sketch opens a sketch on that face and the
-    /// tool survives into it — `Tool::is_sketch_edit_tool` reads this (#1494).
+    /// Clicking a face with this tool outside a sketch opens a sketch on that face.
+    /// Sketch-only tools plus the Sketch tool (#1494). Dual-mode tools keep their 3D click.
+    /// Must match [`opens_sketch_on_face_click`].
     pub face_click_opens_sketch: bool,
     /// What the pointer drives while the draft is open (#1497/#1502).
     pub gizmo: Gizmo,
@@ -247,9 +251,10 @@ pub fn spaces(tool: Tool) -> &'static [ToolSpace] {
         | Tool::Project
         | Tool::Text => &[Sketch],
         // Dual-mode: a distinct draft and a distinct pick vocabulary per space.
+        // Move's 3D draft is CreatingMove; in a sketch it gizmo-drags the selection (#1496).
         Tool::Dimension | Tool::Chamfer | Tool::Fillet | Tool::Mirror | Tool::Repeat
-        | Tool::Slice => &[Sketch, Solid],
-        // 3D-only.
+        | Tool::Slice | Tool::Move => &[Sketch, Solid],
+        // 3D-only: SetTool leaves an open sketch (#1495).
         Tool::ConstructionPlane
         | Tool::Sketch
         | Tool::Extrude
@@ -258,12 +263,48 @@ pub fn spaces(tool: Tool) -> &'static [ToolSpace] {
         | Tool::Shape
         | Tool::Sweep
         | Tool::Combine
-        | Tool::Move
         | Tool::Shell
         | Tool::Joint => &[Solid],
         // Drawing workbench only.
         Tool::DrawingAdd | Tool::DrawingAlign => &[Drawing],
     }
+}
+
+/// Whether this tool has a row in `space`.
+pub fn has_space(tool: Tool, space: ToolSpace) -> bool {
+    spaces(tool).contains(&space)
+}
+
+/// Solid only — no sketch mode. `SetTool` leaves an open sketch (#1495).
+pub fn is_3d_only(tool: Tool) -> bool {
+    matches!(spaces(tool), [ToolSpace::Solid])
+}
+
+/// Sketch only — no 3D mode. A face click starts a sketch and the tool survives into it
+/// (#1494). The Sketch tool itself is 3D-only (it *is* the face click) and is included
+/// separately by [`opens_sketch_on_face_click`].
+pub fn is_sketch_only(tool: Tool) -> bool {
+    matches!(spaces(tool), [ToolSpace::Sketch])
+}
+
+/// A row in both Sketch and Solid (and nowhere else). Stays when a sketch opens;
+/// does not start one (#1496). Select lives in every space and is not dual-mode.
+pub fn is_dual_mode(tool: Tool) -> bool {
+    matches!(
+        spaces(tool),
+        [ToolSpace::Sketch, ToolSpace::Solid] | [ToolSpace::Solid, ToolSpace::Sketch]
+    )
+}
+
+/// Clicking a face outside a sketch begins one. Sketch-only tools plus the Sketch tool
+/// (#1494) — not dual-mode tools, whose 3D mode owns the click.
+pub fn opens_sketch_on_face_click(tool: Tool) -> bool {
+    is_sketch_only(tool) || tool == Tool::Sketch
+}
+
+/// Has an in-sketch mode, so `BeginSketch` / `enter_sketch` keeps the tool (#1496).
+pub fn survives_begin_sketch(tool: Tool) -> bool {
+    has_space(tool, ToolSpace::Sketch)
 }
 
 
@@ -513,9 +554,14 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             pickers: PLANE_PICKERS,
             ..base
         },
-        Tool::Sketch => ToolRow { pickers: SELECTION, ..base },
-        Tool::Dimension => ToolRow {
+        Tool::Sketch => ToolRow {
+            // The Sketch tool *is* the face click: it starts a sketch and then
+            // resets to Select (`begin_sketch_from_sketch_tool_resets_to_select`).
             face_click_opens_sketch: true,
+            pickers: SELECTION,
+            ..base
+        },
+        Tool::Dimension => ToolRow {
             gizmo: Gizmo::Placement,
             pickers: SELECTION,
             ..base
@@ -545,7 +591,6 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             ..base
         },
         Tool::Chamfer | Tool::Fillet => ToolRow {
-            face_click_opens_sketch: true,
             gizmo: Gizmo::Value,
             commit_on_enter: true,
             commit_fields: if sketch { VERTEX_TREATMENT_FIELDS } else { EDGE_TREATMENT_FIELDS },
@@ -608,12 +653,13 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             ..base
         },
         Tool::Move => ToolRow {
-            gizmo: Gizmo::Value,
-            commit_on_enter: true,
-            commit_fields: MOVE_FIELDS,
-            draft: Draft::Move,
-            pickers: MOVE_PICKERS,
-            row_edit: Some(RowEdit::Move),
+            gizmo: if sketch { Gizmo::None } else { Gizmo::Value },
+            commit_on_enter: !sketch,
+            commit_fields: if sketch { &[] } else { MOVE_FIELDS },
+            // In-sketch Move gizmo-drags the current selection (#306); 3D Move has its own draft.
+            draft: if sketch { Draft::Selection } else { Draft::Move },
+            pickers: if sketch { SELECTION } else { MOVE_PICKERS },
+            row_edit: if sketch { None } else { Some(RowEdit::Move) },
             ..base
         },
         Tool::Mirror => ToolRow {
@@ -687,7 +733,7 @@ impl ToolRow {
 /// field with a distinctive expression and asserts the committed op stores that
 /// text and that re-edit restores it verbatim.
 #[cfg(test)]
-pub fn stored_value_fields(tool: Tool, _space: ToolSpace) -> &'static [&'static str] {
+pub fn stored_value_fields(tool: Tool, space: ToolSpace) -> &'static [&'static str] {
     match tool {
         Tool::Select
         | Tool::Rectangle
@@ -711,17 +757,20 @@ pub fn stored_value_fields(tool: Tool, _space: ToolSpace) -> &'static [&'static 
         Tool::Offset => &["distance"],
         Tool::Revolve => &["angle", "pitch"],
         Tool::Shape => &["width", "depth", "height", "radius"],
-        Tool::Move => &[
-            "tx",
-            "ty",
-            "tz",
-            "rx",
-            "ry",
-            "rz",
-            "roll_angle",
-            "face_spin",
-            "face_offset",
-        ],
+        Tool::Move => match space {
+            ToolSpace::Sketch => &[],
+            _ => &[
+                "tx",
+                "ty",
+                "tz",
+                "rx",
+                "ry",
+                "rz",
+                "roll_angle",
+                "face_spin",
+                "face_offset",
+            ],
+        },
         Tool::Repeat => &["count", "spacing", "length"],
         Tool::Shell => &["thickness"],
         Tool::Joint => &["lead", "offset", "min", "max", "angle", "distance"],
@@ -965,19 +1014,126 @@ mod tests {
         assert_eq!(with_output, expected);
     }
 
-    /// #1494: the sketch-edit set the runtime uses is the column, not a second list.
+    /// #1494/#1495/#1496: `spaces()` is the one classification. Every tool is sketch-only,
+    /// dual-mode, 3D-only, drawing-only, or Select (all three). A new tool cannot skip it.
     #[test]
-    fn is_sketch_edit_tool_reads_the_row() {
+    fn spaces_partition_every_tool() {
+        for tool in Tool::ALL {
+            let n = spaces(tool).len();
+            assert!(n >= 1, "{tool:?} claims no space");
+            let flags = (
+                is_sketch_only(tool),
+                is_dual_mode(tool),
+                is_3d_only(tool),
+                matches!(spaces(tool), [ToolSpace::Drawing]),
+                tool == Tool::Select,
+            );
+            let kinds = [flags.0, flags.1, flags.2, flags.3, flags.4]
+                .into_iter()
+                .filter(|b| *b)
+                .count();
+            assert_eq!(
+                kinds, 1,
+                "{tool:?} must be exactly one of sketch-only / dual / 3D-only / drawing / Select, got {flags:?}"
+            );
+        }
+        let sketch_only: HashSet<Tool> = Tool::ALL.iter().copied().filter(|t| is_sketch_only(*t)).collect();
+        assert_eq!(
+            sketch_only,
+            [
+                Tool::Rectangle,
+                Tool::Line,
+                Tool::Circle,
+                Tool::Constraint,
+                Tool::Offset,
+                Tool::Project,
+                Tool::Text,
+            ]
+            .into_iter()
+            .collect()
+        );
+        let dual: HashSet<Tool> = Tool::ALL.iter().copied().filter(|t| is_dual_mode(*t)).collect();
+        assert_eq!(
+            dual,
+            [
+                Tool::Dimension,
+                Tool::Chamfer,
+                Tool::Fillet,
+                Tool::Mirror,
+                Tool::Repeat,
+                Tool::Slice,
+                Tool::Move,
+            ]
+            .into_iter()
+            .collect()
+        );
+        let three_d: HashSet<Tool> = Tool::ALL.iter().copied().filter(|t| is_3d_only(*t)).collect();
+        assert_eq!(
+            three_d,
+            [
+                Tool::ConstructionPlane,
+                Tool::Sketch,
+                Tool::Extrude,
+                Tool::Loft,
+                Tool::Revolve,
+                Tool::Shape,
+                Tool::Sweep,
+                Tool::Combine,
+                Tool::Shell,
+                Tool::Joint,
+            ]
+            .into_iter()
+            .collect()
+        );
+    }
+
+    /// #1494: face-click BeginSketch is sketch-only tools plus Sketch — not dual-mode
+    /// (their 3D mode owns the click) and not a second hand-written list.
+    #[test]
+    fn face_click_opens_sketch_is_sketch_only_plus_sketch_tool() {
         for tool in Tool::ALL {
             let from_row = spaces(tool)
                 .iter()
                 .any(|&s| row(tool, s).face_click_opens_sketch);
             assert_eq!(
-                tool.is_sketch_edit_tool(),
                 from_row,
-                "{tool:?} disagrees with its row"
+                opens_sketch_on_face_click(tool),
+                "{tool:?} face_click column disagrees with the classification"
+            );
+            assert_eq!(
+                opens_sketch_on_face_click(tool),
+                is_sketch_only(tool) || tool == Tool::Sketch,
+                "{tool:?}"
             );
         }
+    }
+
+    /// #1496: surviving BeginSketch is "has a Sketch space", not the face-click column.
+    #[test]
+    fn is_sketch_edit_tool_is_has_sketch_space() {
+        for tool in Tool::ALL {
+            assert_eq!(
+                tool.is_sketch_edit_tool(),
+                survives_begin_sketch(tool),
+                "{tool:?} disagrees with survives_begin_sketch"
+            );
+            assert_eq!(
+                tool.is_sketch_edit_tool(),
+                has_space(tool, ToolSpace::Sketch),
+                "{tool:?} is_sketch_edit_tool should be 'has a Sketch space'"
+            );
+        }
+        // Dual-mode tools the old face-click list dropped.
+        for tool in [Tool::Move, Tool::Mirror, Tool::Repeat, Tool::Slice] {
+            assert!(
+                tool.is_sketch_edit_tool(),
+                "{tool:?} has an in-sketch mode and must survive BeginSketch"
+            );
+            assert!(!opens_sketch_on_face_click(tool), "{tool:?} is dual-mode");
+        }
+        // Sketch starts a sketch but does not survive into it.
+        assert!(opens_sketch_on_face_click(Tool::Sketch));
+        assert!(!Tool::Sketch.is_sketch_edit_tool());
     }
 
     /// #1485/#1508: a heading listed on the row resolves, and a name that isn't there does not.

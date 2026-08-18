@@ -196,7 +196,7 @@ pub fn tool_script_name(tool: Tool) -> &'static str {
 }
 
 /// Tools on the current workbench toolbar, left to right.
-pub fn visible_toolbar_tools(drawing: bool, in_sketch: bool) -> Vec<Tool> {
+pub fn visible_toolbar_tools(drawing: bool, _in_sketch: bool) -> Vec<Tool> {
     if drawing {
         return vec![
             Tool::Select,
@@ -217,10 +217,9 @@ pub fn visible_toolbar_tools(drawing: bool, in_sketch: bool) -> Vec<Tool> {
         Tool::Chamfer,
         Tool::Offset,
         Tool::Text,
+        // Sketch-only like Offset: stays on the bar and clicks a face to start (#1494).
+        Tool::Project,
     ];
-    if in_sketch {
-        tools.push(Tool::Project);
-    }
     tools.extend([
         Tool::ConstructionPlane,
         Tool::Extrude,
@@ -809,19 +808,33 @@ mod tests {
         }
     }
 
-    /// #1319: Projection (P) only sits on the toolbar inside a sketch.
+    /// #1494: Projection sits on the toolbar outside a sketch (it clicks a face, like Offset).
     #[test]
-    fn toolbar_help_shortcuts_include_project_only_in_a_sketch() {
+    fn toolbar_help_shortcuts_include_project_outside_a_sketch() {
         let outside = toolbar_help_shortcuts(true, false, false);
         assert!(
-            !outside.iter().any(|(n, _)| *n == "project"),
-            "Project is sketch-only: {outside:?}"
+            outside.iter().any(|(n, k)| *n == "project" && k == "P"),
+            "Project should show P outside a sketch, got {outside:?}"
         );
         let inside = toolbar_help_shortcuts(true, false, true);
         assert!(
             inside.iter().any(|(n, k)| *n == "project" && k == "P"),
             "Project should show P in a sketch, got {inside:?}"
         );
+    }
+
+    /// #1494: every face-click tool has a toolbar button outside a sketch.
+    #[test]
+    fn face_click_tools_sit_on_the_toolbar_outside_a_sketch() {
+        let bar = visible_toolbar_tools(false, false);
+        for tool in crate::actions::Tool::ALL {
+            if crate::tooltable::opens_sketch_on_face_click(tool) {
+                assert!(
+                    bar.contains(&tool),
+                    "{tool:?} clicks a face to start a sketch but is hidden outside one"
+                );
+            }
+        }
     }
 
     /// #1319: every tool letter has a toolbar button to hang its badge on.

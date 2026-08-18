@@ -1659,20 +1659,20 @@ fn selection_picker_for(
             p.set_focused(true);
             p
         }
-        // Sketch / Text outside a sketch: pick a single face plane to open (#497). A body's own
-        // cap or side wall is sketchable too (#465), and that is the *analytic* face — the
+        // Face-click tools (#1494): pick a single face plane to open. A body's own cap
+        // or side wall is sketchable too (#465), and that is the *analytic* face — the
         // plane the sketch sits on, not the triangles it renders as (#957).
         //
-        // The draw tools join them (#958): outside a sketch, a Rectangle/Line/Circle/Offset
-        // click picks the face to sketch on before it draws anything, which is the same pick.
-        // Saying so gives all six the same hover and the same Exploder fan — reaching a datum
-        // plane buried behind a body is exactly what the fan is for.
+        // The set is the table's `opens_sketch_on_face_click` (sketch-only plus Sketch),
+        // so Constraint/Project get the same hover and Exploder fan as Offset/Text.
         Tool::Sketch
         | Tool::Text
         | Tool::Rectangle
         | Tool::Line
         | Tool::Circle
         | Tool::Offset
+        | Tool::Constraint
+        | Tool::Project
             if !in_sketch =>
         {
             let mut p = ElementPicker::new(
