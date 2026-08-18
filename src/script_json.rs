@@ -158,6 +158,7 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
         SceneElement::Shape(_) => "shape",
         SceneElement::SweepOp(_) => "sweep",
         SceneElement::Loft(_) => "loft",
+        SceneElement::Drawing(_) => "drawing",
         SceneElement::Component(_) => "component",
         SceneElement::UnitInstance(_) => "unit_instance",
         SceneElement::Joint(_) => "joint",
@@ -212,6 +213,7 @@ pub fn scene_element_selection_index(
         SceneElement::Revolution(key) => doc.revolutions.keys().position(|k| k == *key),
         SceneElement::SweepOp(key) => doc.sweeps.keys().position(|k| k == *key),
         SceneElement::Loft(key) => doc.lofts.keys().position(|k| k == *key),
+        SceneElement::Drawing(key) => doc.drawings.keys().position(|k| k == *key),
         SceneElement::Shape(key) => doc.primitives.keys().position(|k| k == *key),
         // A body face (#555) names a sub-feature with no flat index, like Point/FaceEdge.
         SceneElement::Point(_)
@@ -756,17 +758,14 @@ pub fn instruction_from_json(
 
         // ----- Chamfer/fillet a sketch vertex (#37/#38) or an extrusion's 3D edge (#77). -----
         "chamfer_vertex" | "fillet_vertex" => {
-            let point = constraint_point_from_json(
-                doc,
-                o.get("point").ok_or_else(|| format!("{name} requires a `point`"))?,
-            )?;
+            let points = vertex_treatment_points_from_json(doc, o, name)?;
             let (kind, amount_key) = if name == "chamfer_vertex" {
                 (VertexTreatmentKind::Chamfer, "distance")
             } else {
                 (VertexTreatmentKind::Fillet, "radius")
             };
             Ok(Instruction::VertexTreatment {
-                point,
+                points,
                 kind,
                 amount: req_amount_expr(o, amount_key, name)?,
             })
@@ -1335,6 +1334,32 @@ fn boolean_face_from_json(doc: &crate::model::Document, v: &Value) -> Result<Ext
     let a = extrude_face_from_json(doc, t.get("a").ok_or("boolean face requires `a`")?)?;
     let b = extrude_face_from_json(doc, t.get("b").ok_or("boolean face requires `b`")?)?;
     Ok(ExtrudeFace::Boolean { op, a: Box::new(a), b: Box::new(b) })
+}
+
+/// `point` shorthand or `points = [...]` for `chamfer_vertex`/`fillet_vertex` (#1519).
+fn vertex_treatment_points_from_json(
+    doc: &crate::model::Document,
+    o: &serde_json::Map<String, Value>,
+    name: &str,
+) -> Result<Vec<ConstraintPoint>, String> {
+    if let Some(list) = o.get("points") {
+        let list = list
+            .as_array()
+            .ok_or_else(|| format!("{name} `points` must be an array"))?;
+        if list.is_empty() {
+            return Err(format!("{name} `points` must name at least one point"));
+        }
+        return list
+            .iter()
+            .map(|v| constraint_point_from_json(doc, v))
+            .collect();
+    }
+    let point = constraint_point_from_json(
+        doc,
+        o.get("point")
+            .ok_or_else(|| format!("{name} requires `point` or `points`"))?,
+    )?;
+    Ok(vec![point])
 }
 
 /// A `ConstraintPoint` from a point object (mirrors `parse_constraint_point_table`): a line
@@ -3717,7 +3742,7 @@ mod tests {
                 &json!({ "point": { "kind": "line", "index": 0, "end": "start" }, "distance": 2 })
             ),
             Ok(Instruction::VertexTreatment {
-                point: ConstraintPoint::LineEndpoint { line: lkey(0), end: LineEnd::Start },
+                points: vec![ConstraintPoint::LineEndpoint { line: lkey(0), end: LineEnd::Start }],
                 kind: VertexTreatmentKind::Chamfer,
                 amount: "2".to_string(),
             })
@@ -3728,7 +3753,24 @@ mod tests {
                 &json!({ "point": { "kind": "circle", "index": 1 }, "radius": 3 })
             ),
             Ok(Instruction::VertexTreatment {
-                point: ConstraintPoint::CircleCenter(rkey(1)),
+                points: vec![ConstraintPoint::CircleCenter(rkey(1))],
+                kind: VertexTreatmentKind::Fillet,
+                amount: "3".to_string(),
+            })
+        );
+        assert_eq!(
+            instruction_from_json(&doc,
+                "fillet_vertex",
+                &json!({ "points": [
+                    { "kind": "line", "index": 0, "end": "end" },
+                    { "kind": "line", "index": 1, "end": "end" }
+                ], "radius": 3 })
+            ),
+            Ok(Instruction::VertexTreatment {
+                points: vec![
+                    ConstraintPoint::LineEndpoint { line: lkey(0), end: LineEnd::End },
+                    ConstraintPoint::LineEndpoint { line: lkey(1), end: LineEnd::End },
+                ],
                 kind: VertexTreatmentKind::Fillet,
                 amount: "3".to_string(),
             })

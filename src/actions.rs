@@ -8300,6 +8300,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::Shape(i) => format!("Shape {}", i.index()),
         SceneElement::SweepOp(i) => format!("Sweep operation {}", i.index()),
         SceneElement::Loft(i) => format!("Loft operation {}", i.index()),
+        SceneElement::Drawing(i) => format!("Drawing {}", i.index()),
         SceneElement::Joint(i) => format!("Joint {}", i.index()),
         SceneElement::Origin => "Origin".to_string(),
         SceneElement::GlobalAxis(axis) => axis.label().to_string(),

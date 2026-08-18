@@ -776,12 +776,13 @@ pub enum Instruction {
         u: f32,
         v: f32,
     },
-    /// Chamfer or fillet a sketch vertex where exactly two plain lines meet (#37/#38):
+    /// Chamfer or fillet sketch vertices where exactly two plain lines meet (#37/#38/#1519):
     /// truncates both lines back from the vertex and bridges them with a new line (straight
     /// for a chamfer, single-cubic-bezier arc for a fillet). `amount` is the chamfer distance
-    /// or fillet radius depending on `kind`.
+    /// or fillet radius depending on `kind`. One instruction is one operation: `points` holds
+    /// every corner in the call (`point` in Lua is the single-corner shorthand).
     VertexTreatment {
-        point: ConstraintPoint,
+        points: Vec<ConstraintPoint>,
         kind: VertexTreatmentKind,
         /// Chamfer distance / fillet radius as a parametric expression (mm), so tying it to a
         /// parameter keeps the bevel following that parameter (#538/#554).
@@ -1812,7 +1813,7 @@ impl Instruction {
                 "bearcad.ui.drag_line({}, {anchor_u}, {anchor_v}, {u}, {v})",
                 constraint_line_lua_ref(target, doc)
             ),
-            Instruction::VertexTreatment { point, kind, amount } => {
+            Instruction::VertexTreatment { points, kind, amount } => {
                 let (fname, amount_key) = match kind {
                     VertexTreatmentKind::Chamfer => ("chamfer_vertex", "distance"),
                     VertexTreatmentKind::Fillet => ("fillet_vertex", "radius"),
@@ -1823,10 +1824,22 @@ impl Instruction {
                 } else {
                     format!("{amount:?}")
                 };
-                format!(
-                    "bearcad.{fname}{{ point = {}, {amount_key} = {amount_lua} }}",
-                    constraint_point_lua_ref(point, doc)
-                )
+                match points.as_slice() {
+                    [point] => format!(
+                        "bearcad.{fname}{{ point = {}, {amount_key} = {amount_lua} }}",
+                        constraint_point_lua_ref(point, doc)
+                    ),
+                    many => {
+                        let list = many
+                            .iter()
+                            .map(|p| constraint_point_lua_ref(p, doc))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!(
+                            "bearcad.{fname}{{ points = {{ {list} }}, {amount_key} = {amount_lua} }}"
+                        )
+                    }
+                }
             }
             Instruction::EdgeTreatment { edges, kind, amount, expression } => {
                 let (fname, amount_key) = match kind {
@@ -2539,6 +2552,11 @@ fn element_script_tokens(
         SceneElement::Loft(i) => ElementScriptTokens {
             kind: "loft",
             index: ordinal_or_slot(doc.map(|d| d.lofts.keys().position(|k| k == i)), i.index()),
+            point: None,
+        },
+        SceneElement::Drawing(i) => ElementScriptTokens {
+            kind: "drawing",
+            index: ordinal_or_slot(doc.map(|d| d.drawings.keys().position(|k| k == i)), i.index()),
             point: None,
         },
         // The component's arena slot, not its ordinal (#1070).
@@ -3406,7 +3424,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         }),
         Action::CommitVertexTreatment { point, kind, amount } => {
             Some(Instruction::VertexTreatment {
-                point: point.clone(),
+                points: vec![point.clone()],
                 kind: *kind,
                 amount: amount.clone(),
             })
@@ -6598,9 +6616,15 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::VertexTreatment { point, kind, amount } => {
-                let result = state.apply(Action::CommitVertexTreatment { point, kind, amount });
-                self.record_action_error(result);
+            Instruction::VertexTreatment { points, kind, amount } => {
+                for point in points {
+                    let result = state.apply(Action::CommitVertexTreatment {
+                        point,
+                        kind,
+                        amount: amount.clone(),
+                    });
+                    self.record_action_error(result);
+                }
                 StepResult::Continue
             }
             Instruction::EdgeTreatment { edges, kind, amount, expression } => {
@@ -8579,7 +8603,7 @@ mod tests {
     fn vertex_treatment_instruction_renders_as_the_matching_lua_call() {
         let point = ConstraintPoint::LineEndpoint { line: lkey(0), end: crate::model::LineEnd::End };
         let chamfer = Instruction::VertexTreatment {
-            point: point.clone(),
+            points: vec![point.clone()],
             kind: VertexTreatmentKind::Chamfer,
             amount: "3".to_string(),
         };
@@ -8588,7 +8612,7 @@ mod tests {
             "bearcad.chamfer_vertex{ point = { kind = \"line\", index = 0, [\"end\"] = \"end\" }, distance = 3 }"
         );
         let fillet = Instruction::VertexTreatment {
-            point: point.clone(),
+            points: vec![point.clone()],
             kind: VertexTreatmentKind::Fillet,
             amount: "2.5".to_string(),
         };
@@ -8598,13 +8622,25 @@ mod tests {
         );
         // A parametric amount records as a quoted string so it survives replay.
         let parametric = Instruction::VertexTreatment {
-            point,
+            points: vec![point.clone()],
             kind: VertexTreatmentKind::Fillet,
             amount: "r".to_string(),
         };
         assert_eq!(
             parametric.as_lua(),
             "bearcad.fillet_vertex{ point = { kind = \"line\", index = 0, [\"end\"] = \"end\" }, radius = \"r\" }"
+        );
+        let two = Instruction::VertexTreatment {
+            points: vec![
+                point.clone(),
+                ConstraintPoint::LineEndpoint { line: lkey(1), end: crate::model::LineEnd::End },
+            ],
+            kind: VertexTreatmentKind::Fillet,
+            amount: "3".to_string(),
+        };
+        assert_eq!(
+            two.as_lua(),
+            "bearcad.fillet_vertex{ points = { { kind = \"line\", index = 0, [\"end\"] = \"end\" }, { kind = \"line\", index = 1, [\"end\"] = \"end\" } }, radius = 3 }"
         );
     }
 
@@ -8620,7 +8656,7 @@ mod tests {
         assert_eq!(
             instruction_from_action(&action, &doc),
             Some(Instruction::VertexTreatment {
-                point,
+                points: vec![point],
                 kind: VertexTreatmentKind::Fillet,
                 amount: "4".to_string(),
             })

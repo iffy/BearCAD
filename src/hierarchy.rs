@@ -235,6 +235,8 @@ pub enum SceneElement {
     SweepOp(crate::model::SweepKey),
     /// A loft (Loft tool, #1487).
     Loft(crate::model::LoftKey),
+    /// A drawing page (#1525): named by `move_to_component{ kind = "drawing" }`.
+    Drawing(crate::model::DrawingKey),
     /// The origin, selectable in a sketch so a point can be constrained coincident to it from
     /// the constraint tool (#189). Fixed geometry with no owning entity, like `FaceEdge`.
     Origin,
@@ -807,6 +809,7 @@ impl ElementVisibility {
             SceneElement::Shape(_) => true,
             SceneElement::SweepOp(_) => true,
             SceneElement::Loft(_) => true,
+            SceneElement::Drawing(_) => true,
             // A joint is a relationship, not geometry — its icon shows whenever its
             // parts do (#891).
             SceneElement::Joint(_) => true,
@@ -1885,6 +1888,7 @@ pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNod
         SceneElement::Shape(i) => HierarchyNode::Shape(*i),
         SceneElement::SweepOp(i) => HierarchyNode::SweepOp(*i),
         SceneElement::Loft(i) => HierarchyNode::Loft(*i),
+        SceneElement::Drawing(i) => HierarchyNode::Drawing(*i),
         SceneElement::Component(i) => HierarchyNode::Component(*i),
         SceneElement::UnitInstance(i) => HierarchyNode::UnitInstance(*i),
         SceneElement::Joint(i) => HierarchyNode::Joint(*i),
@@ -1977,6 +1981,7 @@ fn visibility_sort_key(element: &SceneElement) -> (u8, u64) {
         SceneElement::Shape(i) => (21, i.index() as u64),
         SceneElement::SweepOp(i) => (22, i.index() as u64),
         SceneElement::Loft(i) => (22, i.index() as u64 + 100_000),
+        SceneElement::Drawing(i) => (22, i.index() as u64 + 200_000),
         SceneElement::Component(i) => (23, i.index() as u64),
         SceneElement::UnitInstance(i) => (24, i.index() as u64),
         SceneElement::Joint(i) => (25, i.index() as u64),
@@ -2826,8 +2831,7 @@ fn topological_flat_sort(
     result
 }
 
-/// The [`SceneElement`] a component member points at (#423). Drawings are display-only
-/// (no scene element).
+/// The [`SceneElement`] a component member points at (#423/#1525).
 pub fn component_member_element(member: crate::model::ComponentMember) -> Option<SceneElement> {
     use crate::model::ComponentMember as CM;
     Some(match member {
@@ -2844,7 +2848,7 @@ pub fn component_member_element(member: crate::model::ComponentMember) -> Option
         CM::Revolution(i) => SceneElement::Revolution(i),
         CM::Sweep(i) => SceneElement::SweepOp(i),
         CM::Loft(i) => SceneElement::Loft(i),
-        CM::Drawing(_) => return None,
+        CM::Drawing(i) => SceneElement::Drawing(i),
     })
 }
 
@@ -2870,6 +2874,7 @@ pub fn component_member_for_element(
         SceneElement::Revolution(i) => CM::Revolution(*i),
         SceneElement::SweepOp(i) => CM::Sweep(*i),
         SceneElement::Loft(i) => CM::Loft(*i),
+        SceneElement::Drawing(i) => CM::Drawing(*i),
         _ => return None,
     })
 }
@@ -2966,6 +2971,7 @@ pub fn owning_component(
         SceneElement::Shape(_) => None,
         SceneElement::SweepOp(i) => doc.component_of(CM::Sweep(*i)),
         SceneElement::Loft(i) => doc.component_of(CM::Loft(*i)),
+        SceneElement::Drawing(i) => doc.component_of(CM::Drawing(*i)),
         // In-sketch geometry cascades through its sketch's plane (handled by the sketch's
         // own effective-visibility recursion); everything else has no owning component.
         _ => None,
@@ -3066,6 +3072,7 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
         SceneElement::Revolution(_) | SceneElement::Shape(_) => None,
         SceneElement::SweepOp(_) => None,
         SceneElement::Loft(_) => None,
+        SceneElement::Drawing(_) => None,
         // A joint is always a top-level row (#891).
         SceneElement::Joint(_) => None,
     }
@@ -3391,6 +3398,7 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                 }
             }
         }
+        SceneElement::Drawing(_) => {}
     }
 }
 
@@ -9201,6 +9209,7 @@ label_hidden: false,
             | SceneElement::Extrusion(_)
             | SceneElement::EdgeTreatmentOp(_)
             | SceneElement::SketchText(_)
+            | SceneElement::Drawing(_)
             | SceneElement::DrawingElement { .. } => Dedicated,
             SceneElement::Line(_)
             | SceneElement::Circle(_)
@@ -9297,6 +9306,7 @@ label_hidden: false,
             SceneElement::Shape(primkey(0)),
             SceneElement::SweepOp(sweep),
             SceneElement::Loft(crate::arena::Key::from_bits(0)),
+            SceneElement::Drawing(dkey(0)),
             SceneElement::Origin,
             SceneElement::GlobalAxis(GlobalAxis::X),
             SceneElement::SketchFace(FaceId::ConstructionPlane(pkey(0))),

@@ -193,13 +193,19 @@ bearcad.line{
 
 ## Chamfer and fillet
 
-Both operate on a sketch vertex where exactly two plain lines meet:
+Both operate on a sketch vertex where exactly two plain lines meet. `point` is one
+corner; `points` treats several in **one** operation — the same rule as `edges` on
+the solid verbs:
 
 ```lua
 local corner = { kind = "line", index = 0, ["end"] = "end" }
 bearcad.chamfer_vertex{ point = corner, distance = 3 }
--- or:
 bearcad.fillet_vertex{ point = corner, radius = 3 }
+
+bearcad.fillet_vertex{ points = {
+  { kind = "line", index = 0, ["end"] = "end" },
+  { kind = "line", index = 1, ["end"] = "end" },
+}, radius = 3 }
 ```
 
 On a solid, `chamfer_edge`/`fillet_edge` take an analytic edge of an extrusion or a
