@@ -73,8 +73,8 @@ pub struct ViewportGpuResources {
     /// Stencil-masked pipeline for coplanar sketch fills: each pixel is painted
     /// exactly once so translucent overlaps don't double-blend (#3).
     sketch_fill_pipeline: wgpu::RenderPipeline,
-    /// Contact shadows on the build plane (#1041): the same single-paint trick on its own
-    /// stencil bit, depth-tested but never depth-writing.
+    /// Contact shadows on the ground (#1041) and on body faces (#1461): the same
+    /// single-paint trick on its own stencil bit, depth-tested but never depth-writing.
     ground_shadow_pipeline: wgpu::RenderPipeline,
     scene_transparent_pipeline: wgpu::RenderPipeline,
     /// The ground grid (#1073): one footprint quad whose fragment shader draws the lattice
@@ -1285,8 +1285,8 @@ impl ViewportGpuResources {
 
         let vertex_bytes = (scene.vertices.len() * std::mem::size_of::<GpuVertex>()) as u64;
         let base_index_count = scene.indices.len();
-        // Contact shadows (#1041) sit between the opaque scene and the coplanar fills: after
-        // the ground they lie on, before the decals that sit on top of everything.
+        // Contact shadows (#1041/#1461) sit between the opaque scene and the coplanar fills:
+        // after the surfaces they lie on, before the decals that sit on top of everything.
         let shadow_index_count = scene.shadow_indices.len();
         let sketch_fill_index_count = scene.sketch_fill_indices.len();
         let plane_fill_index_count = scene.plane_fill_indices.len();

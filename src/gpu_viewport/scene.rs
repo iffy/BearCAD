@@ -41,7 +41,7 @@ use crate::selection::SceneSelection;
 use crate::value::LengthUnit;
 use eframe::egui::Color32;
 use egui::Rect as UiRect;
-use glam::{Mat4, Quat, Vec3};
+use glam::{Mat4, Quat, Vec2, Vec3};
 
 pub const GRID_EXTENT: f32 = 200.0;
 pub const GRID_STEP: f32 = 20.0;
@@ -208,9 +208,12 @@ pub const GRID_DEPTH_BIAS: f32 = -0.05;
 /// background and distinct from pure black. Not derived from the grid grey (that scaled too
 /// dark and read as black).
 pub const SOLID_GROUND_COLOR: Color32 = Color32::from_rgb(42, 50, 64);
-/// Contact shadows on the build plane (#1041): dark and mostly transparent, so the grid and
-/// the ground's own colour still read through rather than being blacked out.
+/// Contact shadows on the build plane (#1041) and on body faces (#1461): dark and mostly
+/// transparent, so the grid, the ground, and the receiving surface still read through.
 pub const GROUND_SHADOW_FILL: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 90);
+/// Lift a body-on-body contact shadow along the receiver's outward normal so it depth-tests
+/// in front of the face it sits on. Not a camera-space bias — ground shadows stay at z = 0.
+const BODY_SHADOW_LIFT: f32 = 0.08;
 /// On-screen width of the origin X/Y/Z axes, in pixels (#1072).
 pub const ORIGIN_AXIS_WIDTH_PX: f32 = 2.0;
 /// Hover thickness for a world origin axis (#1124) — same as [`push_segment_hover`].
@@ -311,9 +314,9 @@ pub struct ViewportScene {
     /// Committed coplanar sketch-shape fills, drawn with a stencil mask so each
     /// pixel is painted once (avoids translucent overlaps darkening — #3).
     pub sketch_fill_indices: Vec<u32>,
-    /// Contact shadows on the build plane (#1041): each body's triangles projected onto
-    /// z = 0 along the scene's fixed light. Drawn through a stencil so the silhouette's own
-    /// overlaps paint once — a self-overlapping shadow blended twice reads as blotches.
+    /// Contact shadows (#1041/#1461): each body's triangles projected along the scene's
+    /// fixed light onto the ground and onto receiving body faces. Drawn through a stencil
+    /// so a silhouette's own overlaps paint once — blended twice they read as blotches.
     pub shadow_indices: Vec<u32>,
     /// Construction-plane fills and translucent solids — shadow bodies, previews, ghosts,
     /// faded bodies — drawn after the opaque scene, so they tint what they cover. A datum
@@ -1051,6 +1054,9 @@ impl ViewportScene {
                 })
                 .collect();
 
+        // Live realistic bodies, collected so contact shadows can land on other bodies
+        // and on a body's own faces (#1461) after every mesh is known.
+        let mut realistic_shadow_bodies: Vec<crate::model::BodyKey> = Vec::new();
         // Extruded solid bodies (3D, depth-tested, flat-shaded).
         for (bi, body) in input.doc.bodies.iter() {
             if let Some(editing) = input.editing_extrusion {
@@ -1287,8 +1293,16 @@ impl ViewportScene {
                     // Ground-coplanar faces are skipped so a resting cap does not z-fight
                     // its own projection (#1476).
                     mesh.push_ground_shadow(solid, input.cam);
+                    realistic_shadow_bodies.push(bi);
                 }
             }
+        }
+        if !realistic_shadow_bodies.is_empty() {
+            let solids: Vec<&crate::extrude::SolidMesh> = realistic_shadow_bodies
+                .iter()
+                .filter_map(|bi| body_meshes.get(bi).and_then(|m| m.as_ref()))
+                .collect();
+            mesh.push_body_shadows(&solids);
         }
         // Imported unit instances (#722/#724) render through the ordinary body loop above:
         // each instance materializes as a derived body (`BodySource::UnitInstance`), so
@@ -2105,7 +2119,7 @@ enum MeshIndexLayer {
     /// pixel is painted exactly once, preventing translucent overlap regions from
     /// being alpha-blended twice (which made overlaps render darker — #3).
     SketchFill,
-    /// Contact shadows on the build plane (#1041).
+    /// Contact shadows on the build plane (#1041) and on body faces (#1461).
     GroundShadow,
 
     PlaneFill,
@@ -2264,6 +2278,75 @@ impl<'a> SceneMesh<'a> {
                 p - light * (p.z / light.z)
             });
             self.push_triangle(flat[0], flat[1], flat[2], GROUND_SHADOW_FILL);
+        }
+        self.set_index_layer(prev);
+    }
+
+    /// Contact shadows onto body faces (#1461): each caster triangle projected along the
+    /// scene light onto every light-facing receiver triangle, clipped to that face.
+    /// Ground stays on [`Self::push_ground_shadow`]; these sit on the mesh (a tiny lift
+    /// along the receiver normal, never toward the camera).
+    fn push_body_shadows(&mut self, solids: &[&crate::extrude::SolidMesh]) {
+        let light = SCENE_LIGHT_DIR.normalize_or_zero();
+        if light.length_squared() < 1e-8 {
+            return;
+        }
+        let (lu, lv) = plane_basis(light);
+        let mut receivers = Vec::new();
+        let mut casters = Vec::new();
+        for solid in solids {
+            for tri in &solid.triangles {
+                let n = (tri[1] - tri[0]).cross(tri[2] - tri[0]);
+                let area = n.length();
+                if area < 1e-8 {
+                    continue;
+                }
+                casters.push(*tri);
+                let n = n / area;
+                let ndotl = n.dot(light);
+                if ndotl > 1e-4 {
+                    receivers.push(ReceiverTri {
+                        tri: *tri,
+                        origin: tri[0],
+                        normal: n,
+                        ndotl,
+                    });
+                }
+            }
+        }
+        if casters.is_empty() || receivers.is_empty() {
+            return;
+        }
+
+        let cell = shadow_grid_cell(&receivers);
+        let mut grid: std::collections::HashMap<(i32, i32), Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, rec) in receivers.iter().enumerate() {
+            let (mn, mx) = projected_bounds(&rec.tri, lu, lv);
+            for key in grid_keys(mn, mx, cell) {
+                grid.entry(key).or_default().push(i);
+            }
+        }
+
+        let prev = self.index_layer;
+        self.set_index_layer(MeshIndexLayer::GroundShadow);
+        let mut seen = vec![usize::MAX; receivers.len()];
+        for (stamp, caster) in casters.iter().enumerate() {
+            let (mn, mx) = projected_bounds(caster, lu, lv);
+            for key in grid_keys(mn, mx, cell) {
+                let Some(hits) = grid.get(&key) else {
+                    continue;
+                };
+                for &ri in hits {
+                    if seen[ri] == stamp {
+                        continue;
+                    }
+                    seen[ri] = stamp;
+                    for tri in contact_shadow_on_triangle(caster, &receivers[ri], light) {
+                        self.push_triangle(tri[0], tri[1], tri[2], GROUND_SHADOW_FILL);
+                    }
+                }
+            }
         }
         self.set_index_layer(prev);
     }
@@ -4450,6 +4533,181 @@ fn triangle_on_plane(tri: &[Vec3; 3], origin: Vec3, normal: Vec3) -> bool {
         return false;
     }
     tri.iter().all(|p| (*p - origin).dot(n).abs() < 1e-3)
+}
+
+struct ReceiverTri {
+    tri: [Vec3; 3],
+    origin: Vec3,
+    normal: Vec3,
+    ndotl: f32,
+}
+
+/// Orthonormal tangent frame for the plane with unit normal `n` (`u × v = n`).
+fn plane_basis(n: Vec3) -> (Vec3, Vec3) {
+    let n = n.normalize_or_zero();
+    let u = if n.z.abs() < 0.9 {
+        n.cross(Vec3::Z).normalize_or_zero()
+    } else {
+        n.cross(Vec3::X).normalize_or_zero()
+    };
+    let v = n.cross(u).normalize_or_zero();
+    (u, v)
+}
+
+fn to_plane2(p: Vec3, origin: Vec3, u: Vec3, v: Vec3) -> Vec2 {
+    let d = p - origin;
+    Vec2::new(d.dot(u), d.dot(v))
+}
+
+fn projected_bounds(tri: &[Vec3; 3], u: Vec3, v: Vec3) -> (Vec2, Vec2) {
+    let a = Vec2::new(tri[0].dot(u), tri[0].dot(v));
+    let b = Vec2::new(tri[1].dot(u), tri[1].dot(v));
+    let c = Vec2::new(tri[2].dot(u), tri[2].dot(v));
+    (a.min(b).min(c), a.max(b).max(c))
+}
+
+fn shadow_grid_cell(receivers: &[ReceiverTri]) -> f32 {
+    let mut acc = 0.0;
+    let mut n = 0u32;
+    for rec in receivers.iter().take(64) {
+        let e = (rec.tri[1] - rec.tri[0])
+            .length()
+            .max((rec.tri[2] - rec.tri[0]).length())
+            .max((rec.tri[2] - rec.tri[1]).length());
+        if e > 1e-3 {
+            acc += e;
+            n += 1;
+        }
+    }
+    if n == 0 {
+        20.0
+    } else {
+        (acc / n as f32).clamp(8.0, 40.0)
+    }
+}
+
+fn grid_keys(mn: Vec2, mx: Vec2, cell: f32) -> impl Iterator<Item = (i32, i32)> {
+    let x0 = (mn.x / cell).floor() as i32;
+    let y0 = (mn.y / cell).floor() as i32;
+    let x1 = (mx.x / cell).floor() as i32;
+    let y1 = (mx.y / cell).floor() as i32;
+    (y0..=y1).flat_map(move |y| (x0..=x1).map(move |x| (x, y)))
+}
+
+/// Caster triangle projected onto `receiver` along `-light` and clipped to that face.
+fn contact_shadow_on_triangle(
+    caster: &[Vec3; 3],
+    receiver: &ReceiverTri,
+    light: Vec3,
+) -> Vec<[Vec3; 3]> {
+    const IN_FRONT: f32 = 1e-3;
+    let keep = |p: Vec3| (p - receiver.origin).dot(receiver.normal) - IN_FRONT;
+    if keep(caster[0]) <= 0.0 && keep(caster[1]) <= 0.0 && keep(caster[2]) <= 0.0 {
+        return Vec::new();
+    }
+    let clipped = clip_poly_halfspace(&[caster[0], caster[1], caster[2]], keep);
+    if clipped.len() < 3 {
+        return Vec::new();
+    }
+    let projected: Vec<Vec3> = clipped
+        .into_iter()
+        .map(|p| {
+            let t = (p - receiver.origin).dot(receiver.normal) / receiver.ndotl;
+            p - light * t
+        })
+        .collect();
+    let (u, v) = plane_basis(receiver.normal);
+    let rec2 = [
+        to_plane2(receiver.tri[0], receiver.origin, u, v),
+        to_plane2(receiver.tri[1], receiver.origin, u, v),
+        to_plane2(receiver.tri[2], receiver.origin, u, v),
+    ];
+    let poly2: Vec<Vec2> = projected
+        .iter()
+        .map(|p| to_plane2(*p, receiver.origin, u, v))
+        .collect();
+    let clipped2 = clip_convex_polygon_2d(&poly2, &rec2);
+    if clipped2.len() < 3 {
+        return Vec::new();
+    }
+    let lift = receiver.normal * BODY_SHADOW_LIFT;
+    let pts: Vec<Vec3> = clipped2
+        .into_iter()
+        .map(|p| receiver.origin + u * p.x + v * p.y + lift)
+        .collect();
+    fan_triangles(&pts)
+}
+
+fn clip_poly_halfspace(poly: &[Vec3], keep: impl Fn(Vec3) -> f32) -> Vec<Vec3> {
+    if poly.len() < 3 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(poly.len() + 1);
+    for i in 0..poly.len() {
+        let a = poly[i];
+        let b = poly[(i + 1) % poly.len()];
+        let da = keep(a);
+        let db = keep(b);
+        let a_in = da > 0.0;
+        let b_in = db > 0.0;
+        if a_in {
+            out.push(a);
+        }
+        if a_in != b_in {
+            let denom = da - db;
+            if denom.abs() > 1e-12 {
+                out.push(a + (b - a) * (da / denom));
+            }
+        }
+    }
+    out
+}
+
+fn clip_convex_polygon_2d(poly: &[Vec2], clip: &[Vec2; 3]) -> Vec<Vec2> {
+    let mut output = poly.to_vec();
+    for i in 0..3 {
+        if output.len() < 3 {
+            return Vec::new();
+        }
+        let a = clip[i];
+        let b = clip[(i + 1) % 3];
+        let edge = b - a;
+        let input = output;
+        output = Vec::with_capacity(input.len() + 1);
+        for j in 0..input.len() {
+            let p = input[j];
+            let q = input[(j + 1) % input.len()];
+            let dp = edge.perp_dot(p - a);
+            let dq = edge.perp_dot(q - a);
+            let p_in = dp >= -1e-6;
+            let q_in = dq >= -1e-6;
+            if p_in {
+                output.push(p);
+            }
+            if p_in != q_in {
+                let denom = dp - dq;
+                if denom.abs() > 1e-12 {
+                    output.push(p + (q - p) * (dp / denom));
+                }
+            }
+        }
+    }
+    output
+}
+
+fn fan_triangles(pts: &[Vec3]) -> Vec<[Vec3; 3]> {
+    if pts.len() < 3 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(pts.len() - 2);
+    for i in 1..pts.len() - 1 {
+        let tri = [pts[0], pts[i], pts[i + 1]];
+        let area = (tri[1] - tri[0]).cross(tri[2] - tri[0]).length();
+        if area > 1e-4 {
+            out.push(tri);
+        }
+    }
+    out
 }
 
 /// Quantize a world position to a hashable key so coincident vertices (within a tight
@@ -8289,6 +8547,190 @@ mod tests {
         assert!(
             from_below.shadow_indices.is_empty(),
             "contact shadows must not show when looking up from below"
+        );
+    }
+
+    /// Short box on the origin and a taller box toward the light (+Y), so the tall
+    /// silhouette falls on the short box's top — not only on the ground (#1461).
+    fn state_with_overhanging_boxes() -> AppState {
+        use crate::actions::Action;
+        use crate::model::ExtrudeFace;
+
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(pkey(0)),
+            viewport: None,
+        });
+        let sketch0 = state.sketch_session.unwrap().sketch;
+        let rec0 = crate::construction::add_line_rectangle(
+            &mut state.doc,
+            sketch0,
+            0.0,
+            0.0,
+            40.0,
+            40.0,
+            [false; 4],
+        );
+        state.apply(Action::CreateExtrusion {
+            expression: None,
+            sketch: sketch0,
+            faces: vec![ExtrudeFace::Polygon(rec0.to_vec())],
+            distance: 20.0,
+            body: crate::actions::ExtrudeBodyChoice::New,
+            target: None,
+            symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+        });
+
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(pkey(0)),
+            viewport: None,
+        });
+        let sketch1 = state.sketch_session.unwrap().sketch;
+        let rec1 = crate::construction::add_line_rectangle(
+            &mut state.doc,
+            sketch1,
+            10.0,
+            50.0,
+            20.0,
+            20.0,
+            [false; 4],
+        );
+        state.apply(Action::CreateExtrusion {
+            expression: None,
+            sketch: sketch1,
+            faces: vec![ExtrudeFace::Polygon(rec1.to_vec())],
+            distance: 60.0,
+            body: crate::actions::ExtrudeBodyChoice::New,
+            target: None,
+            symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+        });
+        assert_eq!(state.doc.bodies.len(), 2, "two live extruded boxes");
+        state
+    }
+
+    /// L-prism: the +Y/+X arm sits toward the light so it shadows the inner step (#1461).
+    fn state_with_l_body() -> AppState {
+        use crate::actions::Action;
+        use crate::model::ExtrudeFace;
+
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(pkey(0)),
+            viewport: None,
+        });
+        let sketch = state.sketch_session.unwrap().sketch;
+        let lines = crate::construction::add_line_polygon(
+            &mut state.doc,
+            sketch,
+            &[
+                (0.0, 0.0),
+                (80.0, 0.0),
+                (80.0, 80.0),
+                (40.0, 80.0),
+                (40.0, 20.0),
+                (0.0, 20.0),
+            ],
+        );
+        state.apply(Action::CreateExtrusion {
+            expression: None,
+            sketch,
+            faces: vec![ExtrudeFace::Polygon(lines)],
+            distance: 40.0,
+            body: crate::actions::ExtrudeBodyChoice::New,
+            target: None,
+            symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+        });
+        assert_eq!(state.doc.bodies.len(), 1, "one L-shaped body");
+        state
+    }
+
+    fn off_ground_shadows(scene: &ViewportScene) -> Vec<Vec3> {
+        shadow_vertices(scene)
+            .into_iter()
+            .filter(|p| p.z > 1e-2)
+            .collect()
+    }
+
+    /// #1461: a tall body toward the light must darken the short neighbour's top face,
+    /// not only the ground plane.
+    #[test]
+    fn realistic_body_casts_a_contact_shadow_onto_another_body() {
+        use crate::camera::ShadingMode;
+        let state = state_with_overhanging_boxes();
+        let solid = build_scene_with_shading(&state, ShadingMode::Solid);
+        assert!(
+            solid.shadow_indices.is_empty(),
+            "solid mode has no contact shadows"
+        );
+
+        let scene = build_scene_with_shading(&state, ShadingMode::Realistic);
+        let on_body = off_ground_shadows(&scene);
+        assert!(
+            !on_body.is_empty(),
+            "realistic mode should cast a contact shadow onto the neighbouring body"
+        );
+        let on_receiver_top = on_body.iter().filter(|p| {
+            p.x > -1.0 && p.x < 41.0 && p.y > -1.0 && p.y < 41.0 && (p.z - 20.0).abs() < 0.5
+        });
+        assert!(
+            on_receiver_top.clone().count() >= 3,
+            "shadow must land on the short box's top (z ≈ 20); sample={:?}",
+            on_body.iter().take(6).collect::<Vec<_>>()
+        );
+    }
+
+    /// #1461: a concave body shadows its own inner step, not only the ground.
+    #[test]
+    fn realistic_body_casts_a_self_shadow() {
+        use crate::camera::ShadingMode;
+        let state = state_with_l_body();
+        let scene = build_scene_with_shading(&state, ShadingMode::Realistic);
+        let on_body = off_ground_shadows(&scene);
+        assert!(
+            !on_body.is_empty(),
+            "an L-shaped body should self-shadow in realistic mode"
+        );
+        let on_inner = on_body.iter().any(|p| {
+            (p.y - 20.0).abs() < 1.0 && p.x > -1.0 && p.x < 41.0 && p.z > 1.0 && p.z < 41.0
+        });
+        assert!(
+            on_inner,
+            "self-shadow should land on the inner +Y step (y ≈ 20); sample={:?}",
+            on_body.iter().take(8).collect::<Vec<_>>()
+        );
+    }
+
+    /// #1461/#1464: body-on-body shadows sit on the mesh. Looking up from below
+    /// hides the ground-plane blotch, not the shadows on the bodies.
+    #[test]
+    fn body_shadows_remain_when_camera_is_below() {
+        use crate::camera::ShadingMode;
+        let mut state = state_with_overhanging_boxes();
+        state.cam.pitch = -1.4;
+        assert!(
+            state.cam.eye().z < 0.0,
+            "test setup: camera must be below the ground plane"
+        );
+        let scene = build_scene_with_shading(&state, ShadingMode::Realistic);
+        assert!(
+            !off_ground_shadows(&scene).is_empty(),
+            "body contact shadows stay in the scene when looking up from below"
+        );
+        let ground_tri = shadow_vertices(&scene)
+            .chunks_exact(3)
+            .any(|c| c.iter().all(|p| p.z.abs() < 1e-2));
+        assert!(
+            !ground_tri,
+            "ground-plane shadows must stay hidden from below"
         );
     }
 
