@@ -697,7 +697,9 @@ fn run_app(script_opts: script::ScriptOptions) -> eframe::Result<()> {
             if script_opts.rebuild {
                 app.state.apply(Action::ForceRebuildGeometry);
             }
-            // Re-attach after EventLoop exists (winit's delegate class is live).
+            // Re-attach odoc after EventLoop exists (winit's delegate class is live).
+            // `application:openURLs:` waits until the first frame — adding it during
+            // `applicationDidFinishLaunching:` aborts (#1542).
             file_association::install_repaint_context(cc.egui_ctx.clone());
             file_association::install_open_documents_handler();
             // `--tutorial <name>` starts that walkthrough on launch (#765), the desktop
@@ -18009,6 +18011,8 @@ impl eframe::App for App {
         // OS open-documents (Finder double-click at launch or while running) (#1285, #1326).
         #[cfg(not(target_arch = "wasm32"))]
         {
+            // After winit's cannot-unwind `applicationDidFinishLaunching:` has returned.
+            file_association::attach_runtime_open_url_hooks();
             let pending = file_association::take_os_open_documents();
             for path in pending {
                 self.state.apply(Action::Open { path });
