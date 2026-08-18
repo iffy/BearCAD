@@ -19457,6 +19457,10 @@ pub fn apply_pick(
             let sm = state
                 .creating_sketch_mirror
                 .get_or_insert_with(|| CreatingSketchMirror::new(sketch));
+            // The axis itself is never a reflected shape.
+            if sm.line.is_some_and(|a| a.as_line_key() == Some(*li)) {
+                return false;
+            }
             crate::element_picker::toggle_picked(&mut sm.line_targets, *li);
             true
         }
@@ -21935,6 +21939,78 @@ mod tests {
         assert!(
             loops.iter().any(|l| l.iter().all(|li| outs.contains(li))),
             "a face is formed from the reflected lines: {loops:?}"
+        );
+    }
+
+    /// Seed the in-sketch Mirror pickers the way a pane frame does (#1539).
+    fn arm_sketch_mirror_shapes(state: &mut AppState, sketch: crate::model::SketchId) {
+        use crate::element_picker::{ElementFilter, ElementKind, ElementPicker, PickLimit};
+        let mut line = ElementPicker::new(
+            ElementFilter::kind(ElementKind::Line)
+                .rule(crate::element_picker::PickRule::InSketch(sketch)),
+            PickLimit::Finite(1),
+        );
+        line.set_focused(false);
+        let mut shapes = ElementPicker::new(
+            ElementFilter::kinds(&[ElementKind::Line, ElementKind::Circle])
+                .rule(crate::element_picker::PickRule::InSketch(sketch)),
+            PickLimit::Infinite,
+        );
+        shapes.set_focused(true);
+        state.tool_pickers = vec![
+            crate::context::ToolPickerView {
+                heading: "Mirror line",
+                picker: line,
+                target: crate::context::PickerTarget::SketchMirrorLine,
+                separator_above: true,
+                render: crate::context::PickerRender::Inline,
+            },
+            crate::context::ToolPickerView {
+                heading: "Shapes",
+                picker: shapes,
+                target: crate::context::PickerTarget::SketchMirrorShapes,
+                separator_above: false,
+                render: crate::context::PickerRender::Inline,
+            },
+        ];
+    }
+
+    /// #1539: offering a closed sketch profile to the Shapes picker means its boundary
+    /// lines, the same expansion a hover-highlighted face click must take.
+    #[test]
+    fn sketch_mirror_shape_pick_takes_a_profile_as_its_lines() {
+        use crate::hierarchy::SceneElement;
+        use crate::model::{FaceId, Line};
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, -20.0, 0.0, 20.0)); // 0 axis
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 2.0, 2.0, 6.0, 2.0)); // 1
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 6.0, 2.0, 6.0, 6.0)); // 2
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 6.0, 6.0, 2.0, 6.0)); // 3
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 2.0, 6.0, 2.0, 2.0)); // 4
+        state.apply(Action::SetTool(Tool::Mirror));
+        let sm = state
+            .creating_sketch_mirror
+            .get_or_insert_with(|| CreatingSketchMirror::new(sketch));
+        sm.line = Some(lkey(0).into());
+        arm_sketch_mirror_shapes(&mut state, sketch);
+        let face = SceneElement::from_face_id(FaceId::Polygon(vec![
+            lkey(1),
+            lkey(2),
+            lkey(3),
+            lkey(4),
+        ]));
+        state.apply(Action::ClickSceneElement {
+            element: face,
+            additive: false,
+        });
+        let sm = state.creating_sketch_mirror.as_ref().expect("mirror armed");
+        let mut got = sm.line_targets.clone();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![lkey(1), lkey(2), lkey(3), lkey(4)],
+            "a face pick should gather the profile's four lines, got {got:?}"
         );
     }
 

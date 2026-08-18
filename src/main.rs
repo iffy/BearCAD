@@ -10487,9 +10487,10 @@ impl App {
         };
     }
 
-    /// In-sketch Mirror (#523/#528/#1538): the focused picker takes the click — first the
-    /// mirror line (a straight sketch line, origin axis, or in-plane world axis), then
-    /// shapes to reflect. Enter commits. Hover and the Exploder share this picker path.
+    /// In-sketch Mirror (#523/#528/#1538/#1539): the focused picker takes the click — first
+    /// the mirror line (a straight sketch line, origin axis, or in-plane world axis), then
+    /// shapes to reflect (a hover-highlighted face expands to its edges). Enter commits.
+    /// Hover and the Exploder share this picker path.
     fn handle_sketch_mirror_tool(
         &mut self,
         ui: &egui::Ui,
@@ -10518,6 +10519,8 @@ impl App {
         let Some(pp) = pointer_screen else {
             return;
         };
+        // Same path the hover uses (#970/#1539): a closed profile expands to its
+        // boundary lines, so what lights up is what lands.
         if !self.click_into_focused_picker(tool_pickers, pp, _project, pick_occlusion) {
             return;
         }
@@ -10527,6 +10530,9 @@ impl App {
             .get_or_insert_with(|| actions::CreatingSketchMirror::new(session.sketch));
         self.state.status = match sm.line {
             None => "Mirror: click a line or axis to mirror across".to_string(),
+            Some(_) if !sm.has_targets() => {
+                "Mirror: axis set — now click shapes to mirror".to_string()
+            }
             Some(_) => format!(
                 "Mirror: {} shape(s) picked",
                 sm.line_targets.len() + sm.circle_targets.len()
@@ -37061,6 +37067,79 @@ mod tests {
             ),
             "hovering the X axis with 2D Mirror should highlight it, got {hover:?}"
         );
+    }
+
+    /// #1539: once the mirror line is set, hovering the interior of a closed profile
+    /// lights the profile's boundary — what a click should take as the mirrored shapes.
+    #[test]
+    fn mirror_tool_hovers_a_closed_profile_as_its_edges() {
+        use super::gpu_viewport;
+        use super::resolve_viewport_hover_highlight;
+        use crate::actions::SketchSession;
+
+        let mut doc = crate::model::Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
+        // A closed rectangle (with coincidences) centred on the origin, so a click
+        // at (0,0) is well inside the face.
+        crate::construction::add_line_rectangle(
+            &mut doc,
+            sketch,
+            -20.0,
+            -15.0,
+            40.0,
+            30.0,
+            [false; 4],
+        );
+
+        let mut cam = crate::camera::Camera::default();
+        let (yaw, pitch) = crate::camera::StandardView::Top.yaw_pitch();
+        cam.yaw = yaw;
+        cam.pitch = pitch;
+        cam.distance = 200.0;
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let vp = cam.view_proj(viewport);
+        let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
+        let mid = project(glam::Vec3::ZERO).expect("origin projects into the viewport");
+
+        let pickers = test_pickers(
+            crate::element_picker::ElementFilter::kinds(&[
+                crate::element_picker::ElementKind::Line,
+                crate::element_picker::ElementKind::Circle,
+            ])
+            .rule(crate::element_picker::PickRule::InSketch(sketch)),
+            context::PickerTarget::SketchMirrorShapes,
+            crate::element_picker::PickLimit::Infinite,
+        );
+        let hover = resolve_viewport_hover_highlight(
+            false,
+            crate::actions::Tool::Mirror,
+            Some(SketchSession { sketch }),
+            MovePickHover::Bodies,
+            false,
+            false,
+            false,
+            false,
+            Some(mid),
+            &cam,
+            viewport,
+            &vp,
+            &doc,
+            &project,
+            None,
+            &pickers,
+        );
+        match hover {
+            Some(gpu_viewport::ViewportHoverHighlight::Curve { segments }) => {
+                assert_eq!(
+                    segments.len(),
+                    4,
+                    "the four edges of the face should light up, got {segments:?}"
+                );
+            }
+            other => panic!(
+                "hovering the face interior should light its four edges, got {other:?}"
+            ),
+        }
     }
 
     #[test]
