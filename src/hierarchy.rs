@@ -2116,25 +2116,19 @@ pub fn build_hierarchy(
                     | crate::model::BodySource::UnitInstance(_)
             )
         {
-            roots.push(HierarchyEntry {
-                node: HierarchyNode::Body(bi),
-                children: Vec::new(),
-            });
+            push_body_and_mesh_sketches(&mut roots, doc, bi, sketch_session);
         }
     }
     // Lofts (#252): the loft is an operation node with its output body nested beneath it (its
     // cross-section sketches feed it as graph inputs, see `graph_dependency_edges`). Previously
     // the loft body surfaced as a bare top-level element with no sign of what produced it.
     for (li, _loft) in doc.lofts.iter() {
-        let children = doc
-            .bodies
-            .iter()
-            .filter(|(_, b)| matches!(b.source, crate::model::BodySource::Loft(l) if l == li))
-            .map(|(bi, _)| HierarchyEntry {
-                node: HierarchyNode::Body(bi),
-                children: Vec::new(),
-            })
-            .collect();
+        let mut children = Vec::new();
+        for (bi, b) in doc.bodies.iter() {
+            if matches!(b.source, crate::model::BodySource::Loft(l) if l == li) {
+                push_body_and_mesh_sketches(&mut children, doc, bi, sketch_session);
+            }
+        }
         roots.push(HierarchyEntry {
             node: HierarchyNode::Loft(li),
             children,
@@ -2144,60 +2138,40 @@ pub fn build_hierarchy(
     // output bodies nested beneath it — outputs depend on the operation, the operation on
     // its (shadow) inputs.
     for (oi, op) in doc.boolean_ops.iter() {
-        let children = op
-            .outputs
-            .iter()
-            .filter(|&&bi| doc.bodies.contains(bi))
-            .map(|&bi| HierarchyEntry {
-                node: HierarchyNode::Body(bi),
-                children: Vec::new(),
-            })
-            .collect();
+        let mut children = Vec::new();
+        for &bi in &op.outputs {
+            push_body_and_mesh_sketches(&mut children, doc, bi, sketch_session);
+        }
         roots.push(HierarchyEntry {
             node: HierarchyNode::BooleanOp(oi),
             children,
         });
     }
     for (oi, op) in doc.move_ops.iter() {
-        let children = op
-            .outputs
-            .iter()
-            .filter(|&&bi| doc.bodies.contains(bi))
-            .map(|&bi| HierarchyEntry {
-                node: HierarchyNode::Body(bi),
-                children: Vec::new(),
-            })
-            .collect();
+        let mut children = Vec::new();
+        for &bi in &op.outputs {
+            push_body_and_mesh_sketches(&mut children, doc, bi, sketch_session);
+        }
         roots.push(HierarchyEntry {
             node: HierarchyNode::MoveOp(oi),
             children,
         });
     }
     for (oi, op) in doc.mirror_ops.iter() {
-        let children = op
-            .outputs
-            .iter()
-            .filter(|&&bi| doc.bodies.contains(bi))
-            .map(|&bi| HierarchyEntry {
-                node: HierarchyNode::Body(bi),
-                children: Vec::new(),
-            })
-            .collect();
+        let mut children = Vec::new();
+        for &bi in &op.outputs {
+            push_body_and_mesh_sketches(&mut children, doc, bi, sketch_session);
+        }
         roots.push(HierarchyEntry {
             node: HierarchyNode::MirrorOp(oi),
             children,
         });
     }
     for (oi, op) in doc.repeat_ops.iter() {
-        let mut children: Vec<HierarchyEntry> = op
-            .outputs
-            .iter()
-            .filter(|&&bi| doc.bodies.contains(bi))
-            .map(|&bi| HierarchyEntry {
-                node: HierarchyNode::Body(bi),
-                children: Vec::new(),
-            })
-            .collect();
+        let mut children = Vec::new();
+        for &bi in &op.outputs {
+            push_body_and_mesh_sketches(&mut children, doc, bi, sketch_session);
+        }
         // Generated construction-plane instances (#221) nest under the op too.
         children.extend(
             op.plane_outputs
@@ -2303,15 +2277,10 @@ pub fn build_hierarchy(
     // Slice operations (Slice tool): the operation is its own element, with its fragment
     // bodies nested beneath it.
     for (oi, op) in doc.slice_ops.iter() {
-        let children = op
-            .outputs
-            .iter()
-            .filter(|&&bi| doc.bodies.contains(bi))
-            .map(|&bi| HierarchyEntry {
-                node: HierarchyNode::Body(bi),
-                children: Vec::new(),
-            })
-            .collect();
+        let mut children = Vec::new();
+        for &bi in &op.outputs {
+            push_body_and_mesh_sketches(&mut children, doc, bi, sketch_session);
+        }
         roots.push(HierarchyEntry {
             node: HierarchyNode::SliceOp(oi),
             children,
@@ -2319,15 +2288,10 @@ pub fn build_hierarchy(
     }
     // Shell operations (#1156): hollowed output bodies nest under the op.
     for (oi, op) in doc.shell_ops.iter() {
-        let children = op
-            .outputs
-            .iter()
-            .filter(|&&bi| doc.bodies.contains(bi))
-            .map(|&bi| HierarchyEntry {
-                node: HierarchyNode::Body(bi),
-                children: Vec::new(),
-            })
-            .collect();
+        let mut children = Vec::new();
+        for &bi in &op.outputs {
+            push_body_and_mesh_sketches(&mut children, doc, bi, sketch_session);
+        }
         roots.push(HierarchyEntry {
             node: HierarchyNode::ShellOp(oi),
             children,
@@ -2336,15 +2300,10 @@ pub fn build_hierarchy(
     // Edge chamfer/fillet operations (#531): the operation is its own element, with its beveled
     // output bodies nested beneath it (the shadowed input bodies stay listed, dimmed).
     for (oi, op) in doc.edge_treatment_ops.iter() {
-        let children = op
-            .outputs
-            .iter()
-            .filter(|&&bi| doc.bodies.contains(bi))
-            .map(|&bi| HierarchyEntry {
-                node: HierarchyNode::Body(bi),
-                children: Vec::new(),
-            })
-            .collect();
+        let mut children = Vec::new();
+        for &bi in &op.outputs {
+            push_body_and_mesh_sketches(&mut children, doc, bi, sketch_session);
+        }
         roots.push(HierarchyEntry {
             node: HierarchyNode::EdgeTreatmentOp(oi),
             children,
@@ -2353,15 +2312,12 @@ pub fn build_hierarchy(
     // Revolved solids (Revolve tool, #211): the operation is its own element, with its output
     // body (linked by `BodySource::Revolve`) nested beneath it.
     for (oi, _rev) in doc.revolutions.iter() {
-        let children = doc
-            .bodies
-            .iter()
-            .filter(|(_, b)| b.source == crate::model::BodySource::Revolve(oi))
-            .map(|(bi, _)| HierarchyEntry {
-                node: HierarchyNode::Body(bi),
-                children: Vec::new(),
-            })
-            .collect();
+        let mut children = Vec::new();
+        for (bi, b) in doc.bodies.iter() {
+            if b.source == crate::model::BodySource::Revolve(oi) {
+                push_body_and_mesh_sketches(&mut children, doc, bi, sketch_session);
+            }
+        }
         roots.push(HierarchyEntry {
             node: HierarchyNode::Revolution(oi),
             children,
@@ -2372,15 +2328,12 @@ pub fn build_hierarchy(
     // and the combined solid nests under the extrusion that produced it — not under the
     // Shape. Sketches on the shape's faces (#1103/#1105) nest here too.
     for (oi, shape) in doc.primitives.iter() {
-        let mut children: Vec<HierarchyEntry> = doc
-            .bodies
-            .iter()
-            .filter(|(_, b)| matches!(b.source, crate::model::BodySource::Primitive(p) if p == oi))
-            .map(|(bi, _)| HierarchyEntry {
-                node: HierarchyNode::Body(bi),
-                children: Vec::new(),
-            })
-            .collect();
+        let mut children = Vec::new();
+        for (bi, b) in doc.bodies.iter() {
+            if matches!(b.source, crate::model::BodySource::Primitive(p) if p == oi) {
+                push_body_and_mesh_sketches(&mut children, doc, bi, sketch_session);
+            }
+        }
         for face in crate::primitives::flat_faces(shape) {
             children.extend(build_face_sketches(
                 doc,
@@ -2402,15 +2355,12 @@ pub fn build_hierarchy(
         if crate::document_lifecycle::sketch_alive(doc, fp.sketch) {
             continue;
         }
-        let children = doc
-            .bodies
-            .iter()
-            .filter(|(_, b)| b.source == crate::model::BodySource::Sweep(oi))
-            .map(|(bi, _)| HierarchyEntry {
-                node: HierarchyNode::Body(bi),
-                children: Vec::new(),
-            })
-            .collect();
+        let mut children = Vec::new();
+        for (bi, b) in doc.bodies.iter() {
+            if b.source == crate::model::BodySource::Sweep(oi) {
+                push_body_and_mesh_sketches(&mut children, doc, bi, sketch_session);
+            }
+        }
         roots.push(HierarchyEntry {
             node: HierarchyNode::SweepOp(oi),
             children,
@@ -2477,6 +2427,27 @@ pub fn build_hierarchy(
                 node: HierarchyNode::Joint(ji),
                 children: Vec::new(),
             });
+        }
+    }
+    // Sketches on body mesh faces that no producing feature claimed (#1465) still
+    // surface at the top level so they never disappear from the pane.
+    {
+        fn collect_sketches(entries: &[HierarchyEntry], out: &mut HashSet<SketchId>) {
+            for e in entries {
+                if let HierarchyNode::Sketch(s) = e.node {
+                    out.insert(s);
+                }
+                collect_sketches(&e.children, out);
+            }
+        }
+        let mut seen = HashSet::new();
+        collect_sketches(&roots, &mut seen);
+        for (si, _) in doc.sketches.iter() {
+            if !seen.contains(&si) && sketch_alive(doc, si) {
+                let entry = build_sketch_entry(doc, si, sketch_session);
+                collect_sketches(std::slice::from_ref(&entry), &mut seen);
+                roots.push(entry);
+            }
         }
     }
     // Components (#423): move member roots under their component's entry, then nest
@@ -2754,9 +2725,10 @@ pub fn prune_unit_children(tree: &mut Vec<HierarchyEntry>) {
 
 /// Drop every [`HierarchyNode::Body`] whose body is a shadow (#1109) — a consumed input
 /// kept for editing, not a live result. Bodies are always leaves in the hierarchy tree
-/// (`build_hierarchy` gives them no children), so dropping one never strands a child. The
-/// prune is recursive so a shadow nested under any node (a Shape, an operation, a unit
-/// instance's read-only contents) is removed wherever it sits.
+/// (`build_hierarchy` gives them no children; mesh-face sketches sit as siblings, #1465),
+/// so dropping one never strands a child. The prune is recursive so a shadow nested under
+/// any node (a Shape, an operation, a unit instance's read-only contents) is removed
+/// wherever it sits.
 pub fn prune_shadow_bodies(tree: &mut Vec<HierarchyEntry>, doc: &Document) {
     tree.retain(|e| {
         !matches!(
@@ -3184,6 +3156,10 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                 if body.source.producing_extrusion() == Some(index) {
                     out.insert(SceneElement::Body(bi));
                     collect_descendants(doc, SceneElement::Body(bi), out);
+                    for si in sketches_on_body_mesh(doc, bi) {
+                        out.insert(SceneElement::Sketch(si));
+                        collect_descendants(doc, SceneElement::Sketch(si), out);
+                    }
                 }
             }
             // Sketches placed on this extrusion's cap or side-wall faces.
@@ -3223,6 +3199,10 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                 for &output in &op.outputs {
                     out.insert(SceneElement::Body(output));
                     collect_descendants(doc, SceneElement::Body(output), out);
+                    for si in sketches_on_body_mesh(doc, output) {
+                        out.insert(SceneElement::Sketch(si));
+                        collect_descendants(doc, SceneElement::Sketch(si), out);
+                    }
                 }
             }
         }
@@ -3231,6 +3211,10 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                 for &output in &op.outputs {
                     out.insert(SceneElement::Body(output));
                     collect_descendants(doc, SceneElement::Body(output), out);
+                    for si in sketches_on_body_mesh(doc, output) {
+                        out.insert(SceneElement::Sketch(si));
+                        collect_descendants(doc, SceneElement::Sketch(si), out);
+                    }
                 }
             }
         }
@@ -3239,6 +3223,10 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                 for &output in &op.outputs {
                     out.insert(SceneElement::Body(output));
                     collect_descendants(doc, SceneElement::Body(output), out);
+                    for si in sketches_on_body_mesh(doc, output) {
+                        out.insert(SceneElement::Sketch(si));
+                        collect_descendants(doc, SceneElement::Sketch(si), out);
+                    }
                 }
             }
         }
@@ -3247,6 +3235,10 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                 for &output in &op.outputs {
                     out.insert(SceneElement::Body(output));
                     collect_descendants(doc, SceneElement::Body(output), out);
+                    for si in sketches_on_body_mesh(doc, output) {
+                        out.insert(SceneElement::Sketch(si));
+                        collect_descendants(doc, SceneElement::Sketch(si), out);
+                    }
                 }
                 for &output in &op.plane_outputs {
                     out.insert(SceneElement::ConstructionPlane(output));
@@ -3302,6 +3294,10 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                 for &output in &op.outputs {
                     out.insert(SceneElement::Body(output));
                     collect_descendants(doc, SceneElement::Body(output), out);
+                    for si in sketches_on_body_mesh(doc, output) {
+                        out.insert(SceneElement::Sketch(si));
+                        collect_descendants(doc, SceneElement::Sketch(si), out);
+                    }
                 }
             }
         }
@@ -3310,6 +3306,10 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                 for &output in &op.outputs {
                     out.insert(SceneElement::Body(output));
                     collect_descendants(doc, SceneElement::Body(output), out);
+                    for si in sketches_on_body_mesh(doc, output) {
+                        out.insert(SceneElement::Sketch(si));
+                        collect_descendants(doc, SceneElement::Sketch(si), out);
+                    }
                 }
             }
         }
@@ -3318,6 +3318,10 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                 for &output in &op.outputs {
                     out.insert(SceneElement::Body(output));
                     collect_descendants(doc, SceneElement::Body(output), out);
+                    for si in sketches_on_body_mesh(doc, output) {
+                        out.insert(SceneElement::Sketch(si));
+                        collect_descendants(doc, SceneElement::Sketch(si), out);
+                    }
                 }
             }
         }
@@ -3338,6 +3342,10 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                 if matches!(body.source, crate::model::BodySource::Primitive(p) if p == index) {
                     out.insert(SceneElement::Body(bi));
                     collect_descendants(doc, SceneElement::Body(bi), out);
+                    for si in sketches_on_body_mesh(doc, bi) {
+                        out.insert(SceneElement::Sketch(si));
+                        collect_descendants(doc, SceneElement::Sketch(si), out);
+                    }
                 }
             }
             if let Some(shape) = doc.primitives.get(index) {
@@ -3912,6 +3920,44 @@ fn build_face_sketches(
         .collect()
 }
 
+/// Sketches hosted on a body's live mesh face (#1173 / #1465). Bodies stay leaves —
+/// these nest as **siblings** of the host under the feature that produced it, so a
+/// later merge-extrude that shadows the host does not drop them from the pane.
+fn sketches_on_body_mesh(doc: &Document, body: crate::model::BodyKey) -> impl Iterator<Item = SketchId> + '_ {
+    doc.sketches.iter().filter_map(move |(si, sk)| {
+        match sk.face {
+            FaceId::BodyMeshFace { body: b, .. } if b == body && sketch_alive(doc, si) => Some(si),
+            _ => None,
+        }
+    })
+}
+
+fn build_body_mesh_sketches(
+    doc: &Document,
+    body: crate::model::BodyKey,
+    sketch_session: Option<SketchSession>,
+) -> Vec<HierarchyEntry> {
+    sketches_on_body_mesh(doc, body)
+        .map(|sketch| build_sketch_entry(doc, sketch, sketch_session))
+        .collect()
+}
+
+fn push_body_and_mesh_sketches(
+    children: &mut Vec<HierarchyEntry>,
+    doc: &Document,
+    body: crate::model::BodyKey,
+    sketch_session: Option<SketchSession>,
+) {
+    if !doc.bodies.contains(body) {
+        return;
+    }
+    children.push(HierarchyEntry {
+        node: HierarchyNode::Body(body),
+        children: Vec::new(),
+    });
+    children.extend(build_body_mesh_sketches(doc, body, sketch_session));
+}
+
 fn build_sketch_child_planes(
     doc: &Document,
     sketch: SketchId,
@@ -4089,15 +4135,12 @@ fn build_sketch_entry(
         if fp.sketch != sketch {
             continue;
         }
-        let bodies = doc
-            .bodies
-            .iter()
-            .filter(|(_, b)| b.source == crate::model::BodySource::Sweep(oi))
-            .map(|(bi, _)| HierarchyEntry {
-                node: HierarchyNode::Body(bi),
-                children: Vec::new(),
-            })
-            .collect();
+        let mut bodies = Vec::new();
+        for (bi, b) in doc.bodies.iter() {
+            if b.source == crate::model::BodySource::Sweep(oi) {
+                push_body_and_mesh_sketches(&mut bodies, doc, bi, sketch_session);
+            }
+        }
         children.push(HierarchyEntry {
             node: HierarchyNode::SweepOp(oi),
             children: bodies,
@@ -4125,15 +4168,12 @@ fn build_sketch_extrusions(
             // combine/cut result is the extrusion's output. Intermediate shadow solids that
             // still list this extrusion further down their add list stay under their own
             // producing extrusion.
-            let mut children: Vec<HierarchyEntry> = doc
-                .bodies
-                .iter()
-                .filter(|(_, body)| body.source.producing_extrusion() == Some(ei))
-                .map(|(bi, _)| HierarchyEntry {
-                    node: HierarchyNode::Body(bi),
-                    children: Vec::new(),
-                })
-                .collect();
+            let mut children = Vec::new();
+            for (bi, body) in doc.bodies.iter() {
+                if body.source.producing_extrusion() == Some(ei) {
+                    push_body_and_mesh_sketches(&mut children, doc, bi, sketch_session);
+                }
+            }
             for (si, sk) in doc.sketches.iter() {
                 if matches!(sk.face,
                         FaceId::ExtrudeCap { extrusion, .. } | FaceId::ExtrudeSide { extrusion, .. }

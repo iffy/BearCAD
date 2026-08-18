@@ -10302,6 +10302,117 @@ mod tests {
         }
     }
 
+    /// Elements-pane rows after the default filter (shadow bodies pruned), matching
+    /// what `show_pane` lists.
+    fn pane_visible_nodes(doc: &crate::model::Document) -> Vec<crate::hierarchy::HierarchyNode> {
+        use crate::hierarchy::{
+            build_hierarchy, filter_hierarchy, prune_shadow_bodies, ElementFilter, HierarchyEntry,
+            HierarchyNode,
+        };
+        let filter = ElementFilter::default();
+        let mut tree = filter_hierarchy(&build_hierarchy(doc, None), &filter);
+        prune_shadow_bodies(&mut tree, doc);
+        fn collect(entries: &[HierarchyEntry], out: &mut Vec<HierarchyNode>) {
+            for e in entries {
+                out.push(e.node);
+                collect(&e.children, out);
+            }
+        }
+        let mut out = Vec::new();
+        collect(&tree, &mut out);
+        out
+    }
+
+    /// #1465: sketches and extrudes on a face-snapped (moved) body must stay in the
+    /// Elements pane after later extrudes shadow the host — otherwise they cannot be edited.
+    #[test]
+    fn lua_sketches_on_moved_body_stay_in_elements_pane() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 40, depth = 40, height = 20 }
+            bearcad.cuboid{ width = 30, depth = 30, height = 20, at = {80, 0, 0} }
+            bearcad.move_bodies{ bodies = {1}, x = -50 }
+            bearcad.shell{
+                bodies = {0},
+                faces = {{ kind = "primitive_face", primitive = 0, face = "top" }},
+                thickness = "2.7 mm"
+            }
+            local live = bearcad.count("body") - 1
+            local faces = bearcad.body_faces(live)
+            local top
+            local best = -2
+            for i = 1, #faces do
+                local nz = faces[i].normal[3]
+                if nz > best then best = nz; top = faces[i] end
+            end
+            assert(top, "moved body has no faces")
+            local function q(v)
+                return {
+                    math.floor(v[1] * 100 + 0.5),
+                    math.floor(v[2] * 100 + 0.5),
+                    math.floor(v[3] * 100 + 0.5),
+                }
+            end
+            bearcad.begin_sketch{
+                kind = "body_mesh_face",
+                body = live,
+                centroid = q(top.face),
+                normal = q(top.normal),
+            }
+            bearcad.rect{ x = -8, y = -6, width = 16, height = 12 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 30, body = "merge" }
+            "#,
+        );
+        assert_eq!(state.doc.sketches.len(), 1, "one sketch on the moved body");
+        assert_eq!(state.doc.extrusions.len(), 1, "one extrude from that sketch");
+        assert!(
+            matches!(
+                state.doc.sketches.values().next().unwrap().face,
+                crate::model::FaceId::BodyMeshFace { .. }
+            ),
+            "the sketch is hosted on the moved body's mesh face"
+        );
+        let nodes = pane_visible_nodes(&state.doc);
+        let si = state.doc.sketches.keys().next().unwrap();
+        let ei = state.doc.extrusions.keys().next().unwrap();
+        assert!(
+            nodes.contains(&crate::hierarchy::HierarchyNode::Sketch(si)),
+            "sketch should show in the elements pane so it can be edited; pane={nodes:?}"
+        );
+        assert!(
+            nodes.contains(&crate::hierarchy::HierarchyNode::Extrusion(ei)),
+            "extrusion should show in the elements pane so it can be edited; pane={nodes:?}"
+        );
+    }
+
+    /// #1465: the reported document (green block face-snapped to orange, orange shelled,
+    /// then sketched/extruded on the green block) must list those sketches and extrudes.
+    #[test]
+    fn lua_issue_1465_report_sketches_appear_in_elements_pane() {
+        let path = format!(
+            "{}/tests/fixtures/issue_1465.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let path = path.replace('\\', "\\\\");
+        let state = run_lua(&format!(r#"bearcad.open("{path}")"#));
+        assert_eq!(state.doc.sketches.len(), 2);
+        assert_eq!(state.doc.extrusions.len(), 2);
+        let nodes = pane_visible_nodes(&state.doc);
+        for (si, _) in state.doc.sketches.iter() {
+            assert!(
+                nodes.contains(&crate::hierarchy::HierarchyNode::Sketch(si)),
+                "report sketch {si:?} missing from elements pane; pane={nodes:?}"
+            );
+        }
+        for (ei, _) in state.doc.extrusions.iter() {
+            assert!(
+                nodes.contains(&crate::hierarchy::HierarchyNode::Extrusion(ei)),
+                "report extrusion {ei:?} missing from elements pane; pane={nodes:?}"
+            );
+        }
+    }
+
     /// #1104/#1105/#1106: shape keeps its pure (shadow) body + face sketch; the combined
     /// body nests under the extrusion as its output.
     #[test]
