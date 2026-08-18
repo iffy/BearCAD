@@ -1019,6 +1019,54 @@ mod tests {
         );
     }
 
+    /// The shipped `.dmg` is a classic drag-to-Applications installer (#1451): a
+    /// committed honey-toned background plus Finder icon-view layout so the window
+    /// is not a blank folder.
+    #[test]
+    fn macos_dmg_has_drag_to_applications_background() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let bg = root.join("macos/dmg-background.png");
+        assert!(
+            bg.is_file(),
+            "macos/dmg-background.png must exist (Finder window backdrop)"
+        );
+        let bytes = std::fs::read(&bg).expect("read dmg background");
+        assert!(
+            bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+            "dmg background must be a PNG"
+        );
+        let img = image::load_from_memory(&bytes).expect("decode dmg background PNG");
+        // 2× of the 660×400 Finder window so the HiDPI TIFF is sharp on Retina.
+        assert_eq!(
+            (img.width(), img.height()),
+            (1320, 800),
+            "dmg background must be 1320×800 (2× the 660×400 window)"
+        );
+
+        let pkg = std::fs::read_to_string(root.join("scripts/package-release.sh"))
+            .expect("package-release.sh");
+        for needle in [
+            "macos/dmg-background.png",
+            ".background",
+            "background picture",
+            "icon view",
+            "BearCAD.app",
+            "Applications",
+            "tiffutil",
+            "UDRW",
+        ] {
+            assert!(
+                pkg.contains(needle),
+                "package-release.sh must wire the dmg background ({needle})"
+            );
+        }
+        // Icon positions: app on the left, Applications drop-link on the right.
+        assert!(
+            pkg.contains("{160, 185}") && pkg.contains("{500, 185}"),
+            "package-release.sh must place BearCAD.app left and Applications right"
+        );
+    }
+
     /// Release `.app` / `.dmg` must be Developer ID signed, notarized, and stapled
     /// when packaging on CI. Local builds without a cert still ad-hoc sign.
     #[test]
