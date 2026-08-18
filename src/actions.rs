@@ -13351,25 +13351,19 @@ impl AppState {
                     if self.doc.drawings.get(di).is_none() {
                         return ActionResult::Err(format!("No drawing {}", di.index()));
                     }
-                    // The Drawing workbench offers Select/Projection/Aligned view/Dimension/Text
-                    // (#271, #295 dropped Move, #289 Projection, #296 Aligned view, #312 Text);
-                    // anything else drops to Select.
-                    if !matches!(
-                        self.tool,
-                        Tool::Select
-                            | Tool::Dimension
-                            | Tool::DrawingAdd
-                            | Tool::DrawingAlign
-                            | Tool::Text
-                    ) {
+                    // Same list as the toolbar (#1506): a tool the drawing bar wouldn't
+                    // show drops to Select (#271, #295 dropped Move).
+                    if !crate::tooltable::visible_toolbar_tools(true, false).contains(&self.tool) {
                         self.tool = Tool::Select;
                     }
                 }
                 if self.editing_drawing != drawing {
                     self.clear_drawing_selection();
                 }
-                // The Add-view / Aligned-view tools are drawing-workbench-only (#289/#296).
-                if drawing.is_none() && matches!(self.tool, Tool::DrawingAdd | Tool::DrawingAlign) {
+                // Leaving a drawing drops tools that only live on that bar (#289/#296).
+                if drawing.is_none()
+                    && !crate::tooltable::visible_toolbar_tools(false, false).contains(&self.tool)
+                {
                     self.tool = Tool::Select;
                 }
                 self.editing_drawing = drawing;

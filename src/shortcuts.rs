@@ -195,49 +195,9 @@ pub fn tool_script_name(tool: Tool) -> &'static str {
     }
 }
 
-/// Tools on the current workbench toolbar, left to right.
-pub fn visible_toolbar_tools(drawing: bool, _in_sketch: bool) -> Vec<Tool> {
-    if drawing {
-        return vec![
-            Tool::Select,
-            Tool::DrawingAdd,
-            Tool::DrawingAlign,
-            Tool::Dimension,
-            Tool::Text,
-        ];
-    }
-    let mut tools = vec![
-        Tool::Select,
-        Tool::Sketch,
-        Tool::Rectangle,
-        Tool::Line,
-        Tool::Circle,
-        Tool::Shape,
-        Tool::Fillet,
-        Tool::Chamfer,
-        Tool::Offset,
-        Tool::Text,
-        // Sketch-only like Offset: stays on the bar and clicks a face to start (#1494).
-        Tool::Project,
-    ];
-    tools.extend([
-        Tool::ConstructionPlane,
-        Tool::Extrude,
-        Tool::Sweep,
-        Tool::Loft,
-        Tool::Revolve,
-        Tool::Combine,
-        Tool::Move,
-        Tool::Mirror,
-        Tool::Repeat,
-        Tool::Slice,
-        Tool::Shell,
-        Tool::Joint,
-        Tool::Dimension,
-        Tool::Constraint,
-    ]);
-    tools
-}
+/// Tools on the current workbench toolbar, left to right. Defined in the tool table
+/// so letter keys, the bar, and `EditDrawing` cannot drift (#1506).
+pub use crate::tooltable::visible_toolbar_tools;
 
 /// Shortcut labels shown on the toolbar when help mode is on.
 ///
@@ -456,7 +416,7 @@ pub fn all_shortcuts() -> Vec<ShortcutSection> {
     ];
     sections.push(ShortcutSection {
         title: "Tools",
-        scope: Some("3D modeling workbench"),
+        scope: Some("3D modeling workbench (letters do not switch to these while a drawing is open)"),
         entries: {
             let mut entries: Vec<(String, String)> = tools
                 .iter()

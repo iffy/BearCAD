@@ -4,8 +4,9 @@
 //! for how its tool *behaves*: where it lives, what its drafts are, what Enter and Esc do,
 //! whether the pointer places a value, whether the tool has a New/Add/Cut output, whether
 //! it stays armed after commit (#1498), whether SetTool arms an empty draft (#1499),
-//! which last-used options the session remembers (#1500), and how multi-item clicks
-//! toggle membership (#1504).
+//! which last-used options the session remembers (#1500), how multi-item clicks
+//! toggle membership (#1504), which commit widget the pane shows (#1505), and which
+//! tools the current workbench toolbar — and therefore the letter keys — offer (#1506).
 //!
 //! Before this module those policies were a dozen separate `matches!` lists spread across
 //! `SetTool`, `CancelOperation`, `handle_shortcuts`, `is_sketch_edit_tool` and seventeen
@@ -135,6 +136,26 @@ impl MultiPick {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Toggle => "toggle",
+            Self::None => "none",
+        }
+    }
+}
+
+/// The pane commit control (#1505). One widget so Sketch Mirror/Slice cannot drift
+/// back to a grey text button while Offset/Repeat (and every 3D sibling) use the blue
+/// confirm in the right column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommitWidget {
+    /// Blue confirm icon; Enter fires it when nothing else holds the keyboard.
+    Primary,
+    /// No pane commit button (Select, placement tools, drawing-only tools).
+    None,
+}
+
+impl CommitWidget {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
             Self::None => "none",
         }
     }
@@ -355,6 +376,8 @@ pub struct ToolRow {
     pub prefs: &'static [Pref],
     /// How this tool gathers a multi-item set on click (#1504).
     pub multi_pick: MultiPick,
+    /// The pane commit control (#1505). `Primary` for every `commit_on_enter` row.
+    pub commit_widget: CommitWidget,
 }
 
 /// The spaces a tool has a row in. Exhaustive: a new `Tool` variant does not compile until
@@ -427,6 +450,81 @@ pub fn opens_sketch_on_face_click(tool: Tool) -> bool {
 /// Has an in-sketch mode, so `BeginSketch` / `enter_sketch` keeps the tool (#1496).
 pub fn survives_begin_sketch(tool: Tool) -> bool {
     has_space(tool, ToolSpace::Sketch)
+}
+
+/// Tools on the current workbench toolbar, left to right (#1506).
+///
+/// The letter keys, the toolbar, and `EditDrawing`'s drop-to-Select all read this list
+/// so a new drawing tool or a new 3D letter cannot drift.
+pub fn visible_toolbar_tools(drawing: bool, _in_sketch: bool) -> Vec<Tool> {
+    if drawing {
+        return vec![
+            Tool::Select,
+            Tool::DrawingAdd,
+            Tool::DrawingAlign,
+            Tool::Dimension,
+            Tool::Text,
+        ];
+    }
+    let mut tools = vec![
+        Tool::Select,
+        Tool::Sketch,
+        Tool::Rectangle,
+        Tool::Line,
+        Tool::Circle,
+        Tool::Shape,
+        Tool::Fillet,
+        Tool::Chamfer,
+        Tool::Offset,
+        Tool::Text,
+        // Sketch-only like Offset: stays on the bar and clicks a face to start (#1494).
+        Tool::Project,
+    ];
+    tools.extend([
+        Tool::ConstructionPlane,
+        Tool::Extrude,
+        Tool::Sweep,
+        Tool::Loft,
+        Tool::Revolve,
+        Tool::Combine,
+        Tool::Move,
+        Tool::Mirror,
+        Tool::Repeat,
+        Tool::Slice,
+        Tool::Shell,
+        Tool::Joint,
+        Tool::Dimension,
+        Tool::Constraint,
+    ]);
+    tools
+}
+
+/// Whether a letter key may arm this tool right now (#1506).
+///
+/// Same list as [`visible_toolbar_tools`] for the current workbench. Project is on the
+/// 3D bar outside a sketch (it clicks a face) but its letter only fires inside one.
+pub fn letter_shortcut_arms(tool: Tool, drawing: bool, in_sketch: bool) -> bool {
+    if tool == Tool::Project && !in_sketch {
+        return false;
+    }
+    visible_toolbar_tools(drawing, in_sketch).contains(&tool)
+}
+
+/// Hover/Enter label for the pane commit button (#1505).
+///
+/// New tool: the tool name. Re-editing: `"Apply changes"`. Plane and Dimension keep
+/// the phrasing they already show ("Create plane", "Set dimension").
+pub fn commit_label(tool: Tool, editing: bool) -> &'static str {
+    if editing {
+        return "Apply changes";
+    }
+    match tool {
+        Tool::ConstructionPlane => "Create plane",
+        Tool::Dimension => "Set dimension",
+        // The toolbar says Projection; the commit button kept the shorter verb.
+        Tool::Project => "Project",
+        other => crate::opsigs::tool_label(other),
+    }
 }
 
 
@@ -652,9 +750,10 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
         arm_on_set_tool: false,
         prefs: &[],
         multi_pick: MultiPick::None,
+        commit_widget: CommitWidget::None,
     };
     let sketch = space == ToolSpace::Sketch;
-    match tool {
+    let mut r = match tool {
         Tool::Select => ToolRow {
             esc: Esc::LeaveSketch,
             pickers: if space == ToolSpace::Drawing { DRAWING_SELECT_PICKERS } else { SELECTION },
@@ -899,7 +998,13 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             pickers: DRAWING_ALIGN_PICKERS,
             ..base
         },
+    };
+    // #1505: every Enter-to-commit tool uses the same blue primary button. Derived
+    // here so a new `commit_on_enter` row cannot ship a grey text `Button`.
+    if r.commit_on_enter {
+        r.commit_widget = CommitWidget::Primary;
     }
+    r
 }
 
 impl ToolRow {
@@ -1584,6 +1689,101 @@ mod tests {
         assert_eq!(text, "12");
         refresh_gizmo_field_text(false, &mut text, "20");
         assert_eq!(text, "20");
+    }
+
+    /// #1505: every tool that commits on Enter uses the shared blue primary button, so
+    /// Sketch Mirror/Slice cannot drift back to a grey text `Button`.
+    #[test]
+    fn commit_on_enter_uses_the_primary_button() {
+        for r in all_rows() {
+            let expected = if r.commit_on_enter {
+                CommitWidget::Primary
+            } else {
+                CommitWidget::None
+            };
+            assert_eq!(
+                r.commit_widget, expected,
+                "{:?}/{:?} commit_widget disagrees with commit_on_enter",
+                r.tool, r.space
+            );
+        }
+        assert_eq!(
+            row(Tool::Mirror, ToolSpace::Sketch).commit_widget,
+            CommitWidget::Primary
+        );
+        assert_eq!(
+            row(Tool::Slice, ToolSpace::Sketch).commit_widget,
+            CommitWidget::Primary
+        );
+        assert_eq!(
+            row(Tool::Offset, ToolSpace::Sketch).commit_widget,
+            CommitWidget::Primary
+        );
+        assert_eq!(
+            row(Tool::Repeat, ToolSpace::Sketch).commit_widget,
+            CommitWidget::Primary
+        );
+    }
+
+    /// #1505: Combine's new-tool label is the tool name, not "Create"; re-edit is
+    /// "Apply changes" for every committing tool.
+    #[test]
+    fn commit_label_is_the_tool_name_or_apply_changes() {
+        assert_eq!(commit_label(Tool::Combine, false), "Combine");
+        assert_eq!(commit_label(Tool::Combine, true), "Apply changes");
+        assert_eq!(commit_label(Tool::Mirror, false), "Mirror");
+        assert_eq!(commit_label(Tool::Slice, false), "Slice");
+        assert_eq!(commit_label(Tool::Offset, false), "Offset");
+        assert_eq!(commit_label(Tool::Repeat, true), "Apply changes");
+        assert_eq!(commit_label(Tool::Extrude, false), "Extrude");
+        assert_eq!(commit_label(Tool::Extrude, true), "Apply changes");
+        assert_eq!(commit_label(Tool::Shape, false), "Shape");
+        assert_eq!(commit_label(Tool::ConstructionPlane, false), "Create plane");
+        assert_eq!(commit_label(Tool::Dimension, false), "Set dimension");
+        assert_eq!(commit_label(Tool::Project, false), "Project");
+        assert_ne!(commit_label(Tool::Combine, false), "Create");
+        assert_ne!(commit_label(Tool::Shape, false), "Create");
+    }
+
+    /// #1506: letter keys only arm a tool the current workbench toolbar would show.
+    #[test]
+    fn letter_shortcuts_only_arm_visible_toolbar_tools() {
+        for tool in [
+            Tool::Extrude,
+            Tool::Rectangle,
+            Tool::Line,
+            Tool::Sketch,
+            Tool::Move,
+            Tool::Chamfer,
+            Tool::Fillet,
+            Tool::Constraint,
+            Tool::Circle,
+            Tool::Shape,
+            Tool::Joint,
+        ] {
+            assert!(
+                !letter_shortcut_arms(tool, true, false),
+                "{tool:?} must not arm from a letter while a drawing is open"
+            );
+            assert!(
+                visible_toolbar_tools(false, false).contains(&tool),
+                "{tool:?} should still sit on the 3D toolbar"
+            );
+        }
+        for tool in [Tool::Select, Tool::Dimension, Tool::Text, Tool::DrawingAdd, Tool::DrawingAlign]
+        {
+            assert!(
+                visible_toolbar_tools(true, false).contains(&tool),
+                "{tool:?} belongs on the drawing toolbar"
+            );
+        }
+        assert!(letter_shortcut_arms(Tool::Dimension, true, false));
+        assert!(letter_shortcut_arms(Tool::Text, true, false));
+        assert!(letter_shortcut_arms(Tool::Select, true, false));
+        assert!(!letter_shortcut_arms(Tool::Project, false, false));
+        assert!(letter_shortcut_arms(Tool::Project, false, true));
+        assert!(letter_shortcut_arms(Tool::Extrude, false, false));
+        assert!(letter_shortcut_arms(Tool::Rectangle, false, true));
     }
 
     /// #1482/#1508: only a placement gizmo owns the next click, so only those rows block a
