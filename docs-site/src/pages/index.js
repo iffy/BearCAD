@@ -66,8 +66,10 @@ function Hero() {
             </span>
           </Heading>
           <p className={styles.sub}>
-            Sketch, extrude, revolve, import/export, constrain and 3D print. Half-second launch. No
-            account.
+            Sketch, extrude, revolve, import, export, constrain, 3D print, 2D drawings.
+            Half-second launch.
+            Pay whatever.
+            No account needed.
           </p>
         </div>
         <div className={styles.heroCtas}>
