@@ -5915,7 +5915,8 @@ mod tests {
     }
 
     /// #1466/#1467: sketches on a moved-with-adds body must not remesh the kernel on
-    /// every hover/orbit frame. After a warmup, pick stays cheap.
+    /// every hover/orbit frame. After a warmup, pick is a cache hit — do not assert a
+    /// wall-clock budget; debug Linux CI can miss a 2 ms cutoff even when the cache works.
     #[test]
     fn issue_1466_hover_pick_does_not_remesh_every_frame() {
         for fixture in [
@@ -5943,15 +5944,25 @@ mod tests {
             let _ = crate::face::pick_sketch_face(probe, &project, &doc, eye);
             let _ = resolve_pick_target(probe, &project, Some(Vec3::ZERO), &doc, Some(&occ));
 
-            let started = crate::time::Instant::now();
+            crate::extrude::FACE_KEY_MESH_BUILDS.with(|c| c.set(0));
+            crate::extrude::reset_mesh_cache_stats();
             for _ in 0..40 {
                 let _ = crate::face::pick_sketch_face(probe, &project, &doc, eye);
                 let _ = resolve_pick_target(probe, &project, Some(Vec3::ZERO), &doc, Some(&occ));
             }
-            let each = started.elapsed() / 40;
+            let rebuilds = crate::extrude::FACE_KEY_MESH_BUILDS.with(|c| c.get());
+            let stats = crate::extrude::mesh_cache_stats();
+            assert_eq!(
+                rebuilds, 0,
+                "hover/orbit pick must reuse the cached pre-add solid, rebuilt {rebuilds} times"
+            );
+            assert_eq!(
+                stats.misses, 0,
+                "hover/orbit pick must not remesh OCCT bodies, cache {stats:?}"
+            );
             assert!(
-                each < std::time::Duration::from_millis(2),
-                "hover/orbit pick must not rebuild OCCT meshes every frame, took {each:?} per call"
+                stats.hits > 0,
+                "hover/orbit pick should hit the body mesh cache, cache {stats:?}"
             );
         }
     }
