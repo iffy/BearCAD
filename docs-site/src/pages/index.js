@@ -135,17 +135,6 @@ function Traits() {
             </div>
           ))}
         </div>
-        <figure className={styles.part}>
-          <img
-            className={styles.partImg}
-            src={useBaseUrl('/img/screenshots/quickstart.png')}
-            alt="A 120-degree angle bracket with rounded corners and countersunk holes"
-          />
-          <figcaption className={styles.partCap}>
-            The <Link to="/docs/quickstart">Quickstart</Link> bracket: sketched
-            freehand, squared up, rebuilt from parameters.
-          </figcaption>
-        </figure>
       </div>
     </section>
   );
