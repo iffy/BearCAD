@@ -10408,7 +10408,15 @@ impl App {
     ) {
         // Inside a sketch, Mirror reflects sketch geometry across a line (#523/#528).
         if let Some(session) = self.state.sketch_session {
-            self.handle_sketch_mirror_tool(ui, painter, project, pointer_screen, session);
+            self.handle_sketch_mirror_tool(
+                ui,
+                painter,
+                project,
+                pointer_screen,
+                pick_occlusion,
+                tool_pickers,
+                session,
+            );
             return;
         }
         let enter = self.tool_enter_commits(ui.ctx());
@@ -10454,12 +10462,15 @@ impl App {
     /// In-sketch Mirror (#523/#528): the first click picks a straight sketch line as the
     /// mirror axis; further clicks toggle lines/circles into the reflected set; Enter commits.
     /// Draws a translucent preview of the reflected geometry.
+    #[allow(clippy::too_many_arguments)]
     fn handle_sketch_mirror_tool(
         &mut self,
         ui: &egui::Ui,
         painter: &egui::Painter,
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         pointer_screen: Option<egui::Pos2>,
+        pick_occlusion: Option<&construction::PickOcclusion>,
+        tool_pickers: &[context::ToolPickerView],
         session: SketchSession,
     ) {
         let enter = self.tool_enter_commits(ui.ctx());
@@ -10497,59 +10508,25 @@ impl App {
         let Some(pp) = pointer_screen else {
             return;
         };
-        let Some(target) = resolve_pick_target(pp, project, None, &self.state.doc, None) else {
+        // Same path the hover uses (#970/#1539): a closed profile expands to its
+        // boundary lines, so what lights up is what lands.
+        if !self.click_into_focused_picker(tool_pickers, pp, project, pick_occlusion) {
             return;
-        };
+        }
         let sm = self
             .state
             .creating_sketch_mirror
             .get_or_insert_with(|| actions::CreatingSketchMirror::new(session.sketch));
-        match target.kind {
-            construction::PickTargetKind::Line(li) => {
-                // First straight-line pick becomes the mirror axis; later line picks toggle
-                // into the reflected set (the mirror line itself never reflects).
-                if sm.line.is_none() {
-                    let straight = self
-                        .state
-                        .doc
-                        .lines
-                        .get(li)
-                        .is_some_and(|l| l.bezier.is_none());
-                    if straight {
-                        if let Some(sm) = self.state.creating_sketch_mirror.as_mut() {
-                            sm.line = Some(li);
-                        }
-                        self.state.status =
-                            "Mirror: axis set — now click shapes to mirror".to_string();
-                        return;
-                    }
-                }
-                if sm.line == Some(li) {
-                    return;
-                }
-                if let Some(pos) = sm.line_targets.iter().position(|x| *x == li) {
-                    sm.line_targets.remove(pos);
-                } else {
-                    sm.line_targets.push(li);
-                }
-                self.state.status = format!(
-                    "Mirror: {} shape(s) picked",
-                    sm.line_targets.len() + sm.circle_targets.len()
-                );
+        self.state.status = match sm.line {
+            None => "Mirror: click a straight line to mirror across".to_string(),
+            Some(_) if !sm.has_targets() => {
+                "Mirror: axis set — now click shapes to mirror".to_string()
             }
-            construction::PickTargetKind::Circle(ci) => {
-                if let Some(pos) = sm.circle_targets.iter().position(|x| *x == ci) {
-                    sm.circle_targets.remove(pos);
-                } else {
-                    sm.circle_targets.push(ci);
-                }
-                self.state.status = format!(
-                    "Mirror: {} shape(s) picked",
-                    sm.line_targets.len() + sm.circle_targets.len()
-                );
-            }
-            _ => {}
-        }
+            Some(_) => format!(
+                "Mirror: {} shape(s) picked",
+                sm.line_targets.len() + sm.circle_targets.len()
+            ),
+        };
     }
 
     /// Draw the translucent preview of an in-progress in-sketch mirror (#528): each target
@@ -37021,6 +36998,79 @@ mod tests {
             ),
             "hovering a line with the Mirror tool should highlight it, got {hover:?}"
         );
+    }
+
+    /// #1539: once the mirror line is set, hovering the interior of a closed profile
+    /// lights the profile's boundary — what a click should take as the mirrored shapes.
+    #[test]
+    fn mirror_tool_hovers_a_closed_profile_as_its_edges() {
+        use super::gpu_viewport;
+        use super::resolve_viewport_hover_highlight;
+        use crate::actions::SketchSession;
+
+        let mut doc = crate::model::Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
+        // A closed rectangle (with coincidences) centred on the origin, so a click
+        // at (0,0) is well inside the face.
+        crate::construction::add_line_rectangle(
+            &mut doc,
+            sketch,
+            -20.0,
+            -15.0,
+            40.0,
+            30.0,
+            [false; 4],
+        );
+
+        let mut cam = crate::camera::Camera::default();
+        let (yaw, pitch) = crate::camera::StandardView::Top.yaw_pitch();
+        cam.yaw = yaw;
+        cam.pitch = pitch;
+        cam.distance = 200.0;
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let vp = cam.view_proj(viewport);
+        let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
+        let mid = project(glam::Vec3::ZERO).expect("origin projects into the viewport");
+
+        let pickers = test_pickers(
+            crate::element_picker::ElementFilter::kinds(&[
+                crate::element_picker::ElementKind::Line,
+                crate::element_picker::ElementKind::Circle,
+            ])
+            .rule(crate::element_picker::PickRule::InSketch(sketch)),
+            context::PickerTarget::SketchMirrorShapes,
+            crate::element_picker::PickLimit::Infinite,
+        );
+        let hover = resolve_viewport_hover_highlight(
+            false,
+            crate::actions::Tool::Mirror,
+            Some(SketchSession { sketch }),
+            MovePickHover::Bodies,
+            false,
+            false,
+            false,
+            false,
+            Some(mid),
+            &cam,
+            viewport,
+            &vp,
+            &doc,
+            &project,
+            None,
+            &pickers,
+        );
+        match hover {
+            Some(gpu_viewport::ViewportHoverHighlight::Curve { segments }) => {
+                assert_eq!(
+                    segments.len(),
+                    4,
+                    "the four edges of the face should light up, got {segments:?}"
+                );
+            }
+            other => panic!(
+                "hovering the face interior should light its four edges, got {other:?}"
+            ),
+        }
     }
 
     #[test]

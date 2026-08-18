@@ -2054,9 +2054,8 @@ pub fn picker_filter(target: PickerTarget) -> ElementFilter {
         PickerTarget::SketchOffsetEntities
         | PickerTarget::SketchRepeatEntities
         | PickerTarget::SketchMirrorShapes => ElementFilter::kinds(&[K::Line, K::Circle]),
-        PickerTarget::SketchMirrorLine | PickerTarget::SketchRepeatDirection => {
-            ElementFilter::kind(K::Line)
-        }
+        PickerTarget::SketchRepeatDirection => ElementFilter::kind(K::Line),
+        PickerTarget::SketchMirrorLine => ElementFilter::kind(K::Line).rule(PickRule::Straight),
         PickerTarget::SketchSliceTargets => {
             ElementFilter::kinds(&[K::Line, K::Circle, K::Profile])
         }
@@ -2916,7 +2915,10 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         // The in-sketch Mirror tool (#534): the mirror line comes first, then the shapes — so
         // exactly one of the two is armed, whichever the next click should feed.
         let mut line = ElementPicker::new(
-            in_sketch(ElementFilter::kinds(&[ElementKind::Line]), input.open_sketch),
+            in_sketch(
+                ElementFilter::kinds(&[ElementKind::Line]).rule(PickRule::Straight),
+                input.open_sketch,
+            ),
             PickLimit::Finite(1),
         );
         line.set_focused(m.line.is_none());
