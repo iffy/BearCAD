@@ -2590,6 +2590,15 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     pos.set("y", p.y)?;
                     pos.set("z", p.z)?;
                     entry.set("position", pos)?;
+                    if let Some(viewport) = tick.viewport {
+                        let vp = state.cam.view_proj(viewport);
+                        if let Some(sp) = state.cam.project(p, viewport, &vp) {
+                            let screen = lua.create_table()?;
+                            screen.set("x", sp.x)?;
+                            screen.set("y", sp.y)?;
+                            entry.set("screen", screen)?;
+                        }
+                    }
                 }
                 arr.set(i + 1, entry)?;
             }

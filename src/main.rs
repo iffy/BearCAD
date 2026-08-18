@@ -8749,7 +8749,13 @@ impl App {
         // The arrows ride the preview: shift the anchor AABB by the live Free translation so
         // the gizmos travel with the moving body instead of staying on the original (#1379).
         let shift = Vec3::new(translations[0], translations[1], translations[2]);
-        let handles = extrude::free_move_translation_handles(min + shift, max + shift);
+        let spacing = extrude::free_move_gizmo_min_spacing_world(
+            &self.state.cam,
+            self.state.viewport_aspect,
+            self.state.viewport_height,
+        );
+        let (min, max) = extrude::free_move_gizmo_bounds(min + shift, max + shift, spacing);
+        let handles = extrude::free_move_translation_handles(min, max);
         Some(std::array::from_fn(|i| {
             let h = handles[i];
             (
@@ -8773,7 +8779,21 @@ impl App {
         // translation so they orbit the moving body rather than the original.
         let mm = |s: &str| crate::value::eval_length_mm_in_doc(s, &self.state.doc).unwrap_or(0.0);
         let shift = Vec3::new(mm(&cm.tx), mm(&cm.ty), mm(&cm.tz));
-        Some(extrude::free_move_rotation_ring(min + shift, max + shift))
+        let rings = extrude::free_move_rotation_rings(
+            &self.state.doc,
+            min,
+            max,
+            shift,
+            &cm.rx,
+            &cm.ry,
+            &cm.rz,
+            extrude::free_move_gizmo_min_spacing_world(
+                &self.state.cam,
+                self.state.viewport_aspect,
+                self.state.viewport_height,
+            ),
+        )?;
+        Some((rings[0].center, rings[0].radius))
     }
 
     /// Free-move rotation rings with object-equator axes and handle positions (#1413/#1422).
@@ -8797,6 +8817,11 @@ impl App {
             &cm.rx,
             &cm.ry,
             &cm.rz,
+            extrude::free_move_gizmo_min_spacing_world(
+                &self.state.cam,
+                self.state.viewport_aspect,
+                self.state.viewport_height,
+            ),
         )
     }
 
