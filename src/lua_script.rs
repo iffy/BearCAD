@@ -3652,6 +3652,52 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // The per-tool behaviour table (#1508): every row the runtime reads, so a script can
+    // assert the policy rather than reverse-engineer it. `bearcad.tool_table()` is the whole
+    // table; `bearcad.tool_row()` is the active tool's row in the space the app is in.
+    fn push_tool_row(
+        lua: &Lua,
+        row: &crate::tooltable::ToolRow,
+    ) -> mlua::Result<Table> {
+        let entry = lua.create_table()?;
+        entry.set("tool", crate::shortcuts::tool_script_name(row.tool))?;
+        entry.set("space", row.space.label())?;
+        entry.set("gizmo", row.gizmo.label())?;
+        entry.set("esc", row.esc.label())?;
+        entry.set("commit_on_enter", row.commit_on_enter)?;
+        entry.set("output_modes", row.output_modes)?;
+        entry.set("opens_sketch", row.face_click_opens_sketch)?;
+        entry.set("draft", format!("{:?}", row.draft))?;
+        let pickers = lua.create_table()?;
+        for (i, p) in row.pickers.iter().enumerate() {
+            pickers.set(i + 1, p.heading)?;
+        }
+        entry.set("pickers", pickers)?;
+        Ok(entry)
+    }
+
+    api.set(
+        "tool_table",
+        lua.create_function(|lua, ()| {
+            let out = lua.create_table()?;
+            for (i, row) in crate::tooltable::all_rows().iter().enumerate() {
+                out.set(i + 1, push_tool_row(lua, row)?)?;
+            }
+            Ok(out)
+        })?,
+    )?;
+
+    api.set(
+        "tool_row",
+        lua.create_function(|lua, ()| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let state = unsafe { tick.state() };
+            push_tool_row(lua, &state.tool_row())
+        })?,
+    )?;
+
     // Materials (#834): `bearcad.material{ name = "Steel", color = "#b0b6be", bodies = {0} }`
     // adds one and hands it to the listed bodies; `bearcad.set_material{ body = 0, material =
     // 0 }` (or `material = nil`) assigns/clears one.
@@ -8169,7 +8215,8 @@ mod tests {
                                     "add_constraint", "parameter", "export_stl", "export_3mf",
                                     "export_step", "export_preview",
                                     "import_stl", "import_step", "import_lua", "chamfer_vertex",
-                                    "fillet_vertex", "chamfer_edge", "fillet_edge", "project" }) do
+                                    "fillet_vertex", "chamfer_edge", "fillet_edge", "project",
+                                    "tool_table", "tool_row" }) do
                 assert(type(bearcad[name]) == "function", "bearcad." .. name .. " should stay top-level")
             end
         "#,
@@ -12102,6 +12149,41 @@ mod tests {
         let cm = state.creating_move.as_ref().expect("move armed");
         assert_eq!(cm.translate_mode, crate::model::MoveTranslateMode::Free);
         assert_eq!(cm.rz, "90.0 deg");
+    }
+
+    /// #1508/#1481/#1485: the tool table is scriptable, includes Shape, and names pickers.
+    #[test]
+    fn lua_tool_table_walks_every_tool_and_picker_focus_errors() {
+        run_lua_expect_ok(
+            r#"
+            local table = bearcad.tool_table()
+            assert(#table > 0, "the tool table is empty")
+            local tools = {}
+            local shape
+            for _, row in ipairs(table) do
+                tools[row.tool] = true
+                if row.tool == "shape" then shape = row end
+            end
+            assert(tools["shape"], "Shape must have a row (#1481)")
+            assert(shape.gizmo == "placement", "Shape is a placement tool")
+            assert(shape.commit_on_enter, "Shape commits on Enter")
+
+            bearcad.ui.tool("revolve")
+            local row = bearcad.tool_row()
+            assert(row.tool == "revolve")
+            assert(row.space == "solid")
+            local has_axis = false
+            for _, name in ipairs(row.pickers) do
+                if name == "Axis" then has_axis = true end
+            end
+            assert(has_axis, "Revolve lists Axis")
+
+            bearcad.ui.picker_focus("Axis")
+            local ok, err = pcall(bearcad.ui.picker_focus, "nope")
+            assert(not ok, "unknown picker must error (#1485)")
+            assert(tostring(err):find("nope"), "unexpected error: " .. tostring(err))
+            "#,
+        );
     }
 
     /// #1320: Shape kinds are scriptable as `bearcad.ui.tool_mode`.

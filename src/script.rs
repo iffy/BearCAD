@@ -7048,7 +7048,9 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::FocusPicker { name } => {
-                let _ = state.apply(Action::FocusPicker(name));
+                // #1485: arming a picker that isn't there fails the script.
+                let result = state.apply(Action::FocusPicker(name));
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::SetMoveAngleSnap { degrees } => {

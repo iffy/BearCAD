@@ -827,12 +827,7 @@ mod tests {
     /// #1319: every tool letter has a toolbar button to hang its badge on.
     #[test]
     fn every_tool_shortcut_has_a_toolbar_home() {
-        let mut tools = Tool::ALL.to_vec();
-        // Tool::ALL is missing Shape (pre-existing); the toolbar still shows it.
-        if !tools.contains(&Tool::Shape) {
-            tools.push(Tool::Shape);
-        }
-        for tool in tools {
+        for tool in Tool::ALL {
             if tool_shortcut(tool).is_none() {
                 continue;
             }

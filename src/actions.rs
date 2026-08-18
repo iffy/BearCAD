@@ -56,9 +56,33 @@ use crate::value::{parse_positive_length_or_in_doc, AngleUnit, LengthUnit};
 use eframe::egui;
 use glam::Vec3;
 
-/// The active viewport tool.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Default, Debug)]
-pub enum Tool {
+/// Declares the `Tool` enum **and** [`Tool::ALL`] from one list (#1481).
+///
+/// `ALL` used to be a hand-maintained array, and `Tool::Shape` silently fell out of it — so
+/// three "every tool" invariants skipped it, and `shortcuts.rs` carried a local patch to add
+/// it back. Generating both from the same list makes that impossible: a new variant is in
+/// `ALL` the moment it exists, and the exhaustive matches in `tooltable` then refuse to
+/// compile until it has a row.
+macro_rules! tools {
+    ($( $(#[$attr:meta])* $name:ident ),+ $(,)?) => {
+        /// The active viewport tool.
+        #[derive(Clone, Copy, PartialEq, Eq, Hash, Default, Debug)]
+        pub enum Tool {
+            $( $(#[$attr])* $name, )+
+        }
+
+        impl Tool {
+            /// Every tool — exhaustive checks, opsigs coverage, the tool table's walks.
+            /// Generated from the enum above, never written by hand. An array (not a
+            /// slice) so `for tool in Tool::ALL` still yields `Tool`, matching every
+            /// existing walk.
+            #[allow(dead_code)] // consumed by the exhaustive walks in tests and by `tooltable`
+            pub const ALL: [Self; { [$(stringify!($name),)+].len() }] = [ $( Self::$name, )+ ];
+        }
+    };
+}
+
+tools! {
     /// Orbit/zoom only; no drawing.
     #[default]
     Select,
@@ -147,38 +171,8 @@ pub enum Tool {
     DrawingAlign,
 }
 
-impl Tool {
-    /// Every tool — exhaustive checks, opsigs coverage, etc.
-    #[allow(dead_code)] // used by opsigs tests and any exhaustive tool walks
-    pub const ALL: [Self; 26] = [
-        Self::Select,
-        Self::Rectangle,
-        Self::Line,
-        Self::Circle,
-        Self::ConstructionPlane,
-        Self::Sketch,
-        Self::Dimension,
-        Self::Constraint,
-        Self::Extrude,
-        Self::Chamfer,
-        Self::Fillet,
-        Self::Offset,
-        Self::Project,
-        Self::Loft,
-        Self::Revolve,
-        Self::Sweep,
-        Self::Combine,
-        Self::Move,
-        Self::Mirror,
-        Self::Repeat,
-        Self::Slice,
-        Self::Shell,
-        Self::Joint,
-        Self::Text,
-        Self::DrawingAdd,
-        Self::DrawingAlign,
-    ];
 
+impl Tool {
     pub fn from_name(name: &str) -> Option<Self> {
         match name.to_ascii_lowercase().as_str() {
             "select" => Some(Tool::Select),
@@ -214,25 +208,13 @@ impl Tool {
         }
     }
 
+    /// Clicking a face with this tool outside a sketch begins a sketch on that face and the
+    /// tool survives into it. Read from the tool table's `face_click_opens_sketch` column
+    /// (#1494/#1508) — not a second list that can drift from it.
     pub fn is_sketch_edit_tool(self) -> bool {
-        matches!(
-            self,
-            Tool::Rectangle
-                | Tool::Line
-                | Tool::Circle
-                | Tool::Dimension
-                | Tool::Constraint
-                | Tool::Chamfer
-                | Tool::Fillet
-                // Text draws in sketches too (#383/#391): clicking a face with it begins a
-                // sketch and the tool must survive into it, like the other draw tools.
-                | Tool::Text
-                // Project only means anything inside a sketch (#140).
-                | Tool::Project
-                // Offset operates on sketch geometry (#594): clicking a face begins a sketch on it
-                // and the Offset tool must survive into that sketch, like the other draw tools.
-                | Tool::Offset
-        )
+        crate::tooltable::spaces(self)
+            .iter()
+            .any(|&space| crate::tooltable::row(self, space).face_click_opens_sketch)
     }
 }
 
@@ -4055,6 +4037,15 @@ pub struct AppState {
     /// — the pane rebuilds them every frame — but parked here so a script can read what each
     /// picker accepts and holds, which is otherwise invisible from outside the UI.
     pub tool_pickers: Vec<crate::context::ToolPickerView>,
+    /// The picker armed by hand (#1485): a click on a picker row in the context pane, or the
+    /// scripted `bearcad.ui.picker_focus`. Focus is a property of the *picker set*, not of
+    /// each tool's private flags — before this, `focus_tool_picker` had nothing to set for
+    /// about twenty of the targets and silently did nothing.
+    ///
+    /// The pane applies it while building `tool_pickers`, so it wins over whatever the tool
+    /// would otherwise derive. Cleared when the tool changes, when the draft is emptied, and
+    /// when the picker it names is no longer among the tool's pickers.
+    pub picker_focus: Option<crate::context::PickerTarget>,
     /// Whether **Control** is held as of the last frame (#984): an edge pick then takes only
     /// the single edge under the cursor rather than its whole tangent-continuous run. Mirrored
     /// from the input each frame by the viewport, like `tool_pickers`.
@@ -4241,6 +4232,7 @@ impl Default for AppState {
             hover_element: None,
             move_preview_transform: None,
             tool_pickers: Vec::new(),
+            picker_focus: None,
             editing_committed_dim: None,
             placing_dimension: None,
             status: String::new(),
@@ -9093,6 +9085,8 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::SetTool(tool) => {
+                // A hand-armed picker belongs to the tool that showed it (#1485).
+                self.picker_focus = None;
                 // What the outgoing tool's **primary** picker was holding (#956) — its first,
                 // the main set the tool works on. The new tool's primary picker walks this and
                 // keeps whatever it can accept, so gathering a set in one tool and then
@@ -9628,6 +9622,16 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::CancelOperation => {
+                // Esc, once and for all (#1484): the first press empties whatever the active
+                // tool has picked and leaves the tool armed; the second returns to Select.
+                //
+                // This used to be a hand-ordered if/else chain over a *subset* of the ~24
+                // drafts. Which branch a tool got was decided the day it was written, so five
+                // tools cleared their picks and stayed, the rest threw the tool away on the
+                // first press — and because the chain tested drafts in field order, an armed
+                // Extrude beat an armed Move regardless of which tool was active. The rule
+                // now comes from the active tool's row in the tool table, so it is the same
+                // rule for every tool and a new tool inherits it by having a row.
                 self.line_start_snap = None;
                 self.line_end_snap = None;
                 self.rect_origin_snap = None;
@@ -9635,104 +9639,24 @@ impl AppState {
                 self.circle_center_snap = None;
                 self.extension_anchors.clear();
                 self.normal_inference_anchor = None;
+                self.picker_focus = None;
+                let row = self.tool_row();
+                // Modal placements that belong to no tool's draft: a dimension being placed or
+                // re-edited, and a pending paste, back out first.
                 if self.editing_committed_dim.take().is_some()
                     || self.placing_dimension.take().is_some()
                 {
                     self.status = "Cancelled".to_string();
-                } else if let Some(ce) = self.creating_extrusion.take() {
-                    self.discard_orphan_body_face_extrude_sketch(ce.sketch);
-                    self.status = "Cancelled extrusion".to_string();
-                } else if self.creating_loft.take().is_some() {
-                    self.status = "Cancelled loft".to_string();
-                } else if self.creating_revolve.take().is_some() {
-                    self.status = "Cancelled revolve".to_string();
-                } else if self.creating_sweep.take().is_some() {
-                    self.status = "Cancelled sweep".to_string();
-                } else if self
-                    .creating_shape
-                    .as_ref()
-                    .is_some_and(|c| c.editing.is_some() || c.can_commit(&self.doc))
-                {
-                    // Esc drops the shape being placed (#909), leaving the tool armed and
-                    // empty; a second Esc returns to Select through the usual path.
-                    self.creating_shape = Some(CreatingShape::new(self.shape_kind));
-                    self.status = "Cancelled shape".to_string();
-                } else if self.creating_calibration.take().is_some() {
-                    self.status = "Cancelled calibration".to_string();
-                } else if self
-                    .creating_repeat
-                    .as_ref()
-                    .is_some_and(|c| {
-                        !c.targets.is_empty()
-                            || !c.plane_targets.is_empty()
-                            || !c.sketch_targets.is_empty()
-                            || !c.extrusion_targets.is_empty()
-                            || c.axis.is_some()
-                    })
-                {
-                    // Esc drops the in-progress repeat (#450): the ghost previews follow
-                    // the picked set, so clearing it clears them.
-                    self.creating_repeat = Some(CreatingRepeat::default());
-                    self.status = "Cancelled repeat".to_string();
-                } else if self
-                    .creating_sketch_offset
-                    .as_ref()
-                    .is_some_and(|c| c.has_targets())
-                {
-                    self.creating_sketch_offset = Some(CreatingSketchOffset::new(
-                        self.creating_sketch_offset.as_ref().unwrap().sketch,
-                    ));
-                    self.status = "Cancelled offset".to_string();
                 } else if self.creating_paste.is_some() {
                     let _ = self.apply_inner(Action::CancelPaste);
-                } else if self.creating_move.as_ref().is_some_and(|c| {
-                    !c.targets.is_empty()
-                        || !c.plane_targets.is_empty()
-                        || !c.image_targets.is_empty()
-                        || !c.instance_targets.is_empty()
-                        || c.start_point_a.is_some()
-                        || c.editing.is_some()
-                }) {
-                    // Esc drops the in-progress move (#749): the destination ghost and
-                    // point marks follow the picked state, so clearing it clears them.
-                    self.creating_move = Some(CreatingMove {
-                        translate_mode: self.move_translate_mode,
-                        ..CreatingMove::default()
-                    });
-                    self.status = "Cancelled move".to_string();
-                } else if self.creating_joint.as_ref().is_some_and(|c| {
-                    !c.members.is_empty()
-                        || c.placement.start_point_a.is_some()
-                        || c.editing.is_some()
-                }) {
-                    // Esc drops the in-progress joint (#894), like a move.
-                    self.creating_joint = Some(CreatingJoint::default());
-                    self.status = "Cancelled joint".to_string();
-                } else if self.creating_rect.take().is_some()
-                    || self.discard_creating_line()
-                    || self.creating_circle.take().is_some()
-                    || self.creating_plane.take().is_some()
-                    || self.pending_plane_line.take().is_some()
-                    || self.creating_vertex_treatment.take().is_some()
-                {
-                    self.status = "Cancelled".to_string();
-                } else if self.sketch_session.is_some() {
-                    if self.tool == Tool::Select {
-                        self.exit_sketch_session();
-                        self.status = "Exited sketch".to_string();
-                    } else {
-                        self.creating_rect = None;
-                        self.discard_creating_line();
-                        self.creating_circle = None;
-                        // Route through SetTool for the same reason the no-sketch branch
-                        // below does (#941): a bare `self.tool = …` left the in-sketch
-                        // Offset/Repeat/Mirror drafts alive, so their context blocks (and
-                        // their own Construction checkbox) stayed up under the Select tool.
-                        let result = self.apply_inner(Action::SetTool(Tool::Select));
-                        self.status =
-                            "Select tool — Delete/Backspace removes selection".to_string();
-                        return result;
-                    }
+                } else if self.creating_calibration.take().is_some() {
+                    self.status = "Cancelled calibration".to_string();
+                } else if self.draft_has_picks(row.draft) {
+                    self.clear_draft(row.draft);
+                    self.status = format!("Cancelled {}", crate::opsigs::tool_label(self.tool).to_lowercase());
+                } else if self.sketch_session.is_some() && row.esc == crate::tooltable::Esc::LeaveSketch {
+                    self.exit_sketch_session();
+                    self.status = "Exited sketch".to_string();
                 } else if self.tool != Tool::Select {
                     // Route through SetTool so every tool's in-progress state gets its
                     // usual tool-switch cleanup (#749) — a bare `self.tool = …` left
@@ -15686,11 +15610,31 @@ op,
                 ActionResult::Ok
             }
             Action::FocusPicker(name) => {
-                match tool_picker_target(self, &name) {
-                    Some(target) => focus_tool_picker(self, target),
-                    None => self.status = format!("No picker called '{name}'"),
+                // A target this tool cannot arm is an error, not a silent success (#1485):
+                // a script that means to fill a picker must fail loudly when the picker
+                // isn't there, rather than feed its clicks to whatever was armed instead.
+                //
+                // Prefer the live pane headings (what the user sees), then the tool table
+                // so a script can arm a picker before the pane has built this frame's views.
+                let target = tool_picker_target(self, &name)
+                    .or_else(|| self.tool_row().picker_named(&name));
+                match target {
+                    Some(target) => {
+                        focus_tool_picker(self, target);
+                        ActionResult::Ok
+                    }
+                    None => {
+                        let mut names: Vec<&str> =
+                            self.tool_pickers.iter().map(|v| v.heading).collect();
+                        if names.is_empty() {
+                            names = self.tool_row().pickers.iter().map(|p| p.heading).collect();
+                        }
+                        ActionResult::Err(format!(
+                            "No picker called '{name}' on this tool (has: {})",
+                            if names.is_empty() { "none".to_string() } else { names.join(", ") }
+                        ))
+                    }
                 }
-                ActionResult::Ok
             }
             Action::ClearSceneSelection => {
                 self.scene_selection.clear();
@@ -18628,15 +18572,21 @@ fn move_handoff(
     (bodies, instances)
 }
 
-/// Make one tool picker the focused one (#963/#968), by setting whichever backing flag its tool
-/// uses to remember which of its sets the next pick feeds. One definition, so a click on a
-/// picker in the pane and a scripted `picker_focus` arm the same thing.
+/// Make one tool picker the focused one (#963/#968/#1485) — the one definition a click on a
+/// picker row in the context pane and a scripted `picker_focus` both go through.
 ///
-/// Pickers whose focus is *derived* rather than stored — Mirror's plane (focused while unset),
-/// Revolve's axis, Repeat's path — have nothing to set; their turn comes from the state of the
-/// pick itself, so focusing them by hand is a no-op.
+/// Focus is stored on the picker *set* (`AppState::picker_focus`), not on each tool's private
+/// flag. That is the whole fix: `focus_tool_picker` used to store focus for only eight targets
+/// and was an empty `{}` for the other twenty, because those tools derived focus from the state
+/// of the pick instead — so `bearcad.picker_focus("Axis")` succeeded and did nothing, and the
+/// pane's picker rows were inert for most tools.
+///
+/// The legacy per-tool flags are still set for the tools that read them elsewhere (Slice's and
+/// Shell's `picking_*`, Combine's `picking_b`, the in-sketch repeat's direction arm), so the
+/// derived rules and the override agree rather than fight.
 pub fn focus_tool_picker(state: &mut AppState, target: crate::context::PickerTarget) {
     use crate::context::PickerTarget as P;
+    state.picker_focus = Some(target);
     match target {
         P::SliceTargets => {
             if let Some(cs) = state.creating_slice.as_mut() {
@@ -18669,9 +18619,7 @@ pub fn focus_tool_picker(state: &mut AppState, target: crate::context::PickerTar
             }
         }
         P::SketchRepeatDirection => state.sketch_repeat_direction_pick = true,
-        // The selection picker never blurs while its tool is up — there is nothing to arm.
-        // Nor do the drawing workbench's two, each its tool's only picker (#967).
-        P::Selection | P::DrawingSelection | P::DrawingAlignBase => {}
+        P::SketchRepeatEntities => state.sketch_repeat_direction_pick = false,
         P::CombineA => {
             if let Some(cb) = state.creating_boolean.as_mut() {
                 cb.picking_b = false;
@@ -18682,60 +18630,20 @@ pub fn focus_tool_picker(state: &mut AppState, target: crate::context::PickerTar
                 cb.picking_b = true;
             }
         }
-        P::RevolveCut
-        | P::SweepCut
-        | P::LoftCut
-        | P::MoveTargets
-        | P::MirrorPlane
-        | P::MirrorTargets
-        | P::RepeatTargets
-        | P::ExtrudeProfile
-        | P::TreatmentEdges
-        | P::LoftSections
-        | P::RevolveProfile
-        | P::RevolveAxis
-        | P::SweepProfile
-        | P::SweepPath
-        // Repeat's path: its turn comes once there is something to repeat, not from a flag.
-        | P::RepeatPath
-        // The in-sketch tools' sets: each is armed by the state of the pick before it (the
-        // mirror line, the direction), not by a flag of its own.
-        | P::SketchRepeatEntities
-        | P::SketchOffsetEntities
-        | P::SketchMirrorLine
-        | P::SketchMirrorShapes
-        // The Joint tool's members: its focus is the chain's, not a stored flag.
-        | P::JointMembers
-        // The two side slots step themselves: whichever is empty takes the next click (#991).
-        | P::JointMobile
-        | P::JointFixed
-        // The plane's anchor is the only thing that tool picks, so it is always the focused
-        // one; there is nothing to arm (#955).
-        | P::PlaneAnchor => {}
-        // The Move tool's point pickers arm through the focus chain's override, which the
-        // pane sets directly — the chain, not a flag on the tool state (#954).
-        P::MoveFaceMoving
-        | P::MoveFaceFixed
-        | P::MoveStartA
-        | P::MoveEndA
-        | P::MoveStartB
-        | P::MoveEndB
-        | P::MoveStartC
-        | P::MoveEndC
-        // Likewise the Joint tool's mate rows and stops: the chain, not a stored flag.
-        | P::JointMovingFace
-        | P::JointFixedFace
-        | P::JointMinStop
-        | P::JointMaxStop
-        | P::JointFrameOrigin
-        | P::JointFramePrimary
-        | P::JointFrameSecondary => {}
         // Extrude's "Up to" and Repeat's "Distance to" are pick *modes* rather than sets: each
-        // has a flag on the tool that the next click reads. Their pane rows set it directly, and
-        // so does this — without which `picker_focus` silently did nothing for them (#988) and
-        // neither could be armed from a script at all, so neither was testable.
+        // has a flag on the tool that the next click reads (#988).
         P::ExtrudeUpTo => state.extrude_target_pick = true,
         P::RepeatDistanceTo => state.repeat_target_pick = true,
+        // Everything else needs no flag of its own: the override is what arms it.
+        _ => {}
+    }
+    // Leaving "Up to" / "Distance to" armed while a different picker takes the click would
+    // send that click to the wrong place.
+    if target != P::ExtrudeUpTo {
+        state.extrude_target_pick = false;
+    }
+    if target != P::RepeatDistanceTo {
+        state.repeat_target_pick = false;
     }
 }
 
@@ -19620,6 +19528,216 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
             false
         }
         _ => false,
+    }
+}
+
+
+// ── Tool-table policy the runtime reads (#1508) ─────────────────────────────
+
+impl AppState {
+    /// The space the app is in, for looking a tool's row up.
+    pub fn tool_space(&self) -> crate::tooltable::ToolSpace {
+        crate::tooltable::ToolSpace::current(
+            self.sketch_session.is_some(),
+            self.editing_drawing.is_some(),
+        )
+    }
+
+    /// The active tool's row.
+    pub fn tool_row(&self) -> crate::tooltable::ToolRow {
+        crate::tooltable::row(self.tool, self.tool_space())
+    }
+
+    /// Whether an in-progress draft owns the next click, so a bare-letter tool shortcut must
+    /// not steal it (#1482).
+    ///
+    /// One rule for every letter, replacing the seven different hand-written prefixes that
+    /// used to guard them (`R`/`L` blocked on two drafts, `C`/`D`/`M`/`E`/`K`/`F`/`Y` on four,
+    /// `T`/`X`/`N`/`V`/`Z` on none). The rule is the tool table's [`Gizmo::Placement`] column:
+    /// a placement draft *is* the pointer — between its first click and its last, the next
+    /// click belongs to it. Pickers are not drafts in this sense: switching tools discards
+    /// picks, which is what the switch is for.
+    pub fn draft_blocks_tool_switch(&self) -> bool {
+        use crate::tooltable::{Draft as D, Gizmo};
+        let row = self.tool_row();
+        if row.gizmo != Gizmo::Placement {
+            return false;
+        }
+        match row.draft {
+            D::Rect => self.creating_rect.is_some(),
+            D::Line => self.creating_line.is_some(),
+            D::Circle => self.creating_circle.is_some(),
+            D::Plane => self.creating_plane.is_some() || self.pending_plane_line.is_some(),
+            D::Shape => self
+                .creating_shape
+                .as_ref()
+                .is_some_and(|c| c.phase != ShapePhase::Anchor),
+            // Dimension's placement is a modal that belongs to no creating_* draft.
+            D::None => self.placing_dimension.is_some(),
+            _ => false,
+        }
+    }
+
+    /// Whether the named draft is holding anything Esc should empty (#1484).
+    pub fn draft_has_picks(&self, draft: crate::tooltable::Draft) -> bool {
+        use crate::tooltable::Draft as D;
+        match draft {
+            D::None => false,
+            D::Selection => !self.scene_selection.is_empty(),
+            D::Rect => self.creating_rect.is_some(),
+            D::Line => self.creating_line.is_some(),
+            D::Circle => self.creating_circle.is_some(),
+            D::Plane => self.creating_plane.is_some() || self.pending_plane_line.is_some(),
+            D::Extrusion => self.creating_extrusion.is_some(),
+            D::VertexTreatment => self.creating_vertex_treatment.is_some(),
+            D::EdgeTreatment => self
+                .creating_edge_treatment
+                .as_ref()
+                .is_some_and(|c| !c.edges.is_empty()),
+            D::SketchOffset => self
+                .creating_sketch_offset
+                .as_ref()
+                .is_some_and(|c| c.has_targets()),
+            D::Loft => self
+                .creating_loft
+                .as_ref()
+                .is_some_and(|c| !c.sections.is_empty() || !c.cut_bodies.is_empty()),
+            D::Revolve => self
+                .creating_revolve
+                .as_ref()
+                .is_some_and(|c| !c.faces.is_empty() || c.axis.is_some() || !c.cut_bodies.is_empty()),
+            D::Sweep => self
+                .creating_sweep
+                .as_ref()
+                .is_some_and(|c| !c.faces.is_empty() || !c.path.is_empty() || !c.cut_bodies.is_empty()),
+            D::Shape => self
+                .creating_shape
+                .as_ref()
+                .is_some_and(|c| c.editing.is_some() || c.can_commit(&self.doc)),
+            D::Boolean => self
+                .creating_boolean
+                .as_ref()
+                .is_some_and(|c| !c.a.is_empty() || !c.b.is_empty()),
+            D::Move => self.creating_move.as_ref().is_some_and(|c| {
+                !c.targets.is_empty()
+                    || !c.plane_targets.is_empty()
+                    || !c.image_targets.is_empty()
+                    || !c.instance_targets.is_empty()
+                    || c.start_point_a.is_some()
+                    || c.editing.is_some()
+            }),
+            D::Mirror => self
+                .creating_mirror
+                .as_ref()
+                .is_some_and(|c| !c.targets.is_empty() || c.plane.is_some()),
+            D::SketchMirror => self
+                .creating_sketch_mirror
+                .as_ref()
+                .is_some_and(|c| c.has_targets() || c.line.is_some()),
+            D::Repeat => self.creating_repeat.as_ref().is_some_and(|c| {
+                !c.targets.is_empty()
+                    || !c.plane_targets.is_empty()
+                    || !c.sketch_targets.is_empty()
+                    || !c.extrusion_targets.is_empty()
+                    || c.axis.is_some()
+            }),
+            D::SketchRepeat => self
+                .creating_sketch_repeat
+                .as_ref()
+                .is_some_and(|c| c.has_targets() || c.dir_line.is_some()),
+            D::Slice => self
+                .creating_slice
+                .as_ref()
+                .is_some_and(|c| !c.targets.is_empty() || !c.cutters.is_empty()),
+            D::SketchSlice => self
+                .creating_sketch_slice
+                .as_ref()
+                .is_some_and(|c| c.has_targets() || c.has_cutters()),
+            D::Shell => self
+                .creating_shell
+                .as_ref()
+                .is_some_and(|c| !c.targets.is_empty() || !c.open_faces.is_empty()),
+            D::Joint => self.creating_joint.as_ref().is_some_and(|c| {
+                !c.members.is_empty() || c.placement.start_point_a.is_some() || c.editing.is_some()
+            }),
+        }
+    }
+
+    /// Empty the named draft, leaving the tool armed and ready for a fresh set of picks
+    /// (#1484). Drafts a tool re-arms on entry are reset to empty rather than dropped, so
+    /// the tool's pane block stays up.
+    pub fn clear_draft(&mut self, draft: crate::tooltable::Draft) {
+        use crate::tooltable::Draft as D;
+        match draft {
+            D::None => {}
+            D::Selection => self.scene_selection.clear(),
+            D::Rect => self.creating_rect = None,
+            D::Line => {
+                self.discard_creating_line();
+            }
+            D::Circle => self.creating_circle = None,
+            D::Plane => {
+                self.creating_plane = None;
+                self.pending_plane_line = None;
+            }
+            D::Extrusion => {
+                if let Some(ce) = self.creating_extrusion.take() {
+                    self.discard_orphan_body_face_extrude_sketch(ce.sketch);
+                }
+            }
+            D::VertexTreatment => self.creating_vertex_treatment = None,
+            D::EdgeTreatment => self.creating_edge_treatment = None,
+            D::SketchOffset => {
+                if let Some(sketch) = self.creating_sketch_offset.as_ref().map(|c| c.sketch) {
+                    self.creating_sketch_offset = Some(CreatingSketchOffset::new(sketch));
+                }
+            }
+            D::Loft => self.creating_loft = None,
+            D::Revolve => self.creating_revolve = None,
+            D::Sweep => self.creating_sweep = None,
+            D::Shape => self.creating_shape = Some(CreatingShape::new(self.shape_kind)),
+            D::Boolean => {
+                let kind = self.creating_boolean.as_ref().map(|c| c.kind);
+                let mut cb = CreatingBoolean::default();
+                if let Some(kind) = kind {
+                    cb.kind = kind;
+                }
+                self.creating_boolean = Some(cb);
+            }
+            D::Move => {
+                self.creating_move = Some(CreatingMove {
+                    translate_mode: self.move_translate_mode,
+                    ..CreatingMove::default()
+                });
+                self.move_focus_override = None;
+            }
+            D::Mirror => self.creating_mirror = Some(CreatingMirror::default()),
+            D::SketchMirror => {
+                if let Some(sketch) = self.creating_sketch_mirror.as_ref().map(|c| c.sketch) {
+                    self.creating_sketch_mirror = Some(CreatingSketchMirror::new(sketch));
+                }
+            }
+            D::Repeat => self.creating_repeat = Some(CreatingRepeat::default()),
+            D::SketchRepeat => {
+                if let Some(sketch) = self.creating_sketch_repeat.as_ref().map(|c| c.sketch) {
+                    self.creating_sketch_repeat = Some(CreatingSketchRepeat::new(sketch));
+                }
+                self.sketch_repeat_direction_pick = false;
+            }
+            D::Slice => self.creating_slice = Some(CreatingSlice::default()),
+            D::SketchSlice => {
+                if let Some(sketch) = self.creating_sketch_slice.as_ref().map(|c| c.sketch) {
+                    self.creating_sketch_slice = Some(CreatingSketchSlice::new(sketch));
+                }
+            }
+            D::Shell => self.creating_shell = Some(CreatingShell::default()),
+            D::Joint => {
+                self.creating_joint = Some(CreatingJoint::default());
+                self.joint_focus_override = None;
+            }
+        }
+        // A cleared draft has no armed picker to remember (#1485).
+        self.picker_focus = None;
     }
 }
 
@@ -29324,6 +29442,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             profile,
             edge: 0,
         };
+        state.apply(Action::SetTool(Tool::Extrude));
         state.apply(Action::ExtrudeBodyFace { face_id });
         let sketch = state.creating_extrusion.as_ref().unwrap().sketch;
         assert!(state.doc.sketches.contains(sketch));
@@ -32317,6 +32436,103 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         state.apply(Action::CancelOperation);
         assert_eq!(state.tool, Tool::Select, "second Esc leaves the tool");
         assert!(state.creating_move.is_none(), "the switch cleans the move state up");
+    }
+
+    /// #1481: ALL is generated from the enum, so Shape cannot fall out of it again.
+    #[test]
+    fn tool_all_includes_shape_and_has_no_duplicates() {
+        assert!(Tool::ALL.contains(&Tool::Shape));
+        let mut seen = std::collections::HashSet::new();
+        for tool in Tool::ALL {
+            assert!(seen.insert(tool), "{tool:?} listed twice in Tool::ALL");
+        }
+    }
+
+    /// #1482: a placement draft owns the next click and blocks a letter-key switch;
+    /// a value-gizmo or picker draft never does. One predicate, every letter.
+    #[test]
+    fn placement_drafts_block_a_tool_switch_and_value_drafts_do_not() {
+        let mut state = AppState::default();
+        begin_default_sketch(&mut state);
+        state.apply(Action::SetTool(Tool::Circle));
+        assert!(!state.draft_blocks_tool_switch(), "empty circle does not block");
+        state.creating_circle = Some(CreatingCircle {
+            origin: Vec3::ZERO,
+            text: String::new(),
+            last_mouse: Vec3::new(10.0, 0.0, 0.0),
+            user_edited: false,
+            pending_focus: false,
+            construction: false,
+            anchor: CircleAnchor::Center,
+        });
+        assert!(state.draft_blocks_tool_switch(), "a half-drawn circle owns the next click");
+
+        state.apply(Action::SetTool(Tool::Extrude));
+        assert!(
+            !state.draft_blocks_tool_switch(),
+            "a value-gizmo extrude does not own the next click"
+        );
+    }
+
+    /// #1484: tools that used to throw the tool away on the first Esc now clear picks
+    /// and stay armed, matching Move. The rule comes from the table, so a new tool
+    /// inherits it by having a draft.
+    #[test]
+    fn escape_clears_combine_mirror_slice_and_shell_then_leaves() {
+        for (tool, fill) in [
+            (Tool::Combine, (|s: &mut AppState| {
+                s.creating_boolean.as_mut().unwrap().a.push(bkey(0));
+            }) as fn(&mut AppState)),
+            (Tool::Mirror, |s| {
+                s.creating_mirror.as_mut().unwrap().targets.push(bkey(0));
+            }),
+            (Tool::Slice, |s| {
+                s.creating_slice.as_mut().unwrap().targets.push(bkey(0));
+            }),
+            (Tool::Shell, |s| {
+                s.creating_shell.as_mut().unwrap().targets.push(bkey(0));
+            }),
+        ] {
+            let mut state = AppState::default();
+            state.apply(Action::SetTool(tool));
+            fill(&mut state);
+            assert!(state.draft_has_picks(state.tool_row().draft), "{tool:?} filled");
+
+            state.apply(Action::CancelOperation);
+            assert_eq!(state.tool, tool, "first Esc keeps {tool:?}");
+            assert!(
+                !state.draft_has_picks(state.tool_row().draft),
+                "first Esc empties {tool:?}"
+            );
+
+            state.apply(Action::CancelOperation);
+            assert_eq!(state.tool, Tool::Select, "second Esc leaves {tool:?}");
+        }
+    }
+
+    /// #1485: arming a picker that this tool has works even before the pane has built
+    /// this frame's views (the table names it); a name that isn't there is an error.
+    #[test]
+    fn focus_picker_arms_from_the_table_and_errors_on_unknown() {
+        let mut state = AppState::default();
+        state.apply(Action::SetTool(Tool::Revolve));
+        assert!(state.tool_pickers.is_empty(), "no pane views yet");
+
+        let result = state.apply(Action::FocusPicker("Axis".into()));
+        assert!(
+            matches!(result, ActionResult::Ok),
+            "table names Revolve's Axis: {result:?}"
+        );
+        assert_eq!(state.picker_focus, Some(crate::context::PickerTarget::RevolveAxis));
+
+        let result = state.apply(Action::FocusPicker("nope".into()));
+        match result {
+            ActionResult::Err(msg) => {
+                assert!(msg.contains("nope"), "{msg}");
+                assert!(msg.contains("Axis") || msg.contains("Profile"), "{msg}");
+            }
+            other => panic!("unknown picker should error, got {other:?}"),
+        }
     }
 
     #[test]

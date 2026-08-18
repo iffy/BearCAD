@@ -65,6 +65,7 @@ mod polygon_boolean;
 mod model;
 mod offset;
 mod opsigs;
+mod tooltable;
 mod tutorial;
 mod units;
 mod touch;
@@ -6485,9 +6486,7 @@ impl App {
                 }
             }
 
-            if self.state.creating_rect.is_none()
-                && self.state.creating_line.is_none()
-                && self.state.creating_plane.is_none()
+            if !self.state.draft_blocks_tool_switch()
                 && ctx.input(|i| i.key_pressed(egui::Key::S))
             {
                 if self.state.tool != Tool::Sketch {
@@ -6495,8 +6494,7 @@ impl App {
                 }
             }
 
-            if self.state.creating_rect.is_none()
-                && self.state.creating_line.is_none()
+            if !self.state.draft_blocks_tool_switch()
                 && ctx.input(|i| i.key_pressed(egui::Key::R))
             {
                 if self.state.tool != Tool::Rectangle {
@@ -6513,8 +6511,7 @@ impl App {
 
             // J joins parts (#921); pressing it again cycles the joint kind. Changing kind
             // goes through the pane's own edit so the positions reset with it.
-            if self.state.creating_rect.is_none()
-                && self.state.creating_line.is_none()
+            if !self.state.draft_blocks_tool_switch()
                 && self.state.sketch_session.is_none()
                 && consume_joint_tool_key(ctx)
             {
@@ -6533,8 +6530,7 @@ impl App {
             }
 
             // B places shapes (#909); pressing it again cycles cuboid → cylinder → sphere.
-            if self.state.creating_rect.is_none()
-                && self.state.creating_line.is_none()
+            if !self.state.draft_blocks_tool_switch()
                 && self.state.sketch_session.is_none()
                 && consume_shape_tool_key(ctx)
             {
@@ -6546,8 +6542,7 @@ impl App {
                 }
             }
 
-            if self.state.creating_rect.is_none()
-                && self.state.creating_line.is_none()
+            if !self.state.draft_blocks_tool_switch()
                 && ctx.input(|i| i.key_pressed(egui::Key::L))
             {
                 if self.state.tool != Tool::Line {
@@ -6555,10 +6550,7 @@ impl App {
                 }
             }
 
-            if self.state.creating_rect.is_none()
-                && self.state.creating_line.is_none()
-                && self.state.creating_circle.is_none()
-                && self.state.creating_plane.is_none()
+            if !self.state.draft_blocks_tool_switch()
                 && ctx.input(|i| i.key_pressed(egui::Key::C))
             {
                 if self.state.tool == Tool::Constraint && !self.state.scene_selection.is_empty() {
@@ -6575,9 +6567,7 @@ impl App {
                 }
             }
 
-            if self.state.creating_rect.is_none()
-                && self.state.creating_line.is_none()
-                && self.state.creating_circle.is_none()
+            if !self.state.draft_blocks_tool_switch()
                 && ctx.input(|i| i.key_pressed(egui::Key::O))
             {
                 if self.state.tool != Tool::Circle {
@@ -6592,19 +6582,13 @@ impl App {
                 }
             }
 
-            if self.state.creating_rect.is_none()
-                && self.state.creating_line.is_none()
-                && self.state.creating_circle.is_none()
-                && self.state.creating_plane.is_none()
+            if !self.state.draft_blocks_tool_switch()
                 && ctx.input(|i| i.key_pressed(egui::Key::D))
             {
                 self.state.apply(Action::SetTool(Tool::Dimension));
             }
 
-            if self.state.creating_rect.is_none()
-                && self.state.creating_line.is_none()
-                && self.state.creating_circle.is_none()
-                && self.state.creating_plane.is_none()
+            if !self.state.draft_blocks_tool_switch()
                 && ctx.input(|i| i.key_pressed(egui::Key::M))
             {
                 if self.state.tool != Tool::Move {
@@ -6626,10 +6610,7 @@ impl App {
                 }
             }
 
-            if self.state.creating_rect.is_none()
-                && self.state.creating_line.is_none()
-                && self.state.creating_circle.is_none()
-                && self.state.creating_plane.is_none()
+            if !self.state.draft_blocks_tool_switch()
                 && ctx.input(|i| i.key_pressed(egui::Key::E))
             {
                 if self.state.tool != Tool::Extrude {
@@ -6637,10 +6618,7 @@ impl App {
                 }
             }
 
-            if self.state.creating_rect.is_none()
-                && self.state.creating_line.is_none()
-                && self.state.creating_circle.is_none()
-                && self.state.creating_plane.is_none()
+            if !self.state.draft_blocks_tool_switch()
                 && ctx.input(|i| i.key_pressed(egui::Key::K))
             {
                 if self.state.tool != Tool::Chamfer {
@@ -6651,19 +6629,13 @@ impl App {
             // Y cycles the active tool's Output mode — new body → add to body → cut → …
             // (#1397). No-op except on the tools with an Output row (Extrude/Revolve/Sweep/
             // Loft/Mirror); `consume_key(NONE, …)` never catches a plain typing key.
-            if self.state.creating_rect.is_none()
-                && self.state.creating_line.is_none()
-                && self.state.creating_circle.is_none()
-                && self.state.creating_plane.is_none()
+            if !self.state.draft_blocks_tool_switch()
                 && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Y))
             {
                 self.cycle_tool_output_mode();
             }
 
-            if self.state.creating_rect.is_none()
-                && self.state.creating_line.is_none()
-                && self.state.creating_circle.is_none()
-                && self.state.creating_plane.is_none()
+            if !self.state.draft_blocks_tool_switch()
                 && ctx.input(|i| i.key_pressed(egui::Key::F))
             {
                 if self.state.tool != Tool::Fillet {
@@ -6708,7 +6680,9 @@ impl App {
                         .any(|e| matches!(e, SceneElement::Point(_)));
                 if tangent_context {
                     self.state.apply(Action::ToggleTangentConstraint);
-                } else if self.state.tool != Tool::Text {
+                } else if self.state.tool != Tool::Text
+                    && !self.state.draft_blocks_tool_switch()
+                {
                     self.state.apply(Action::SetTool(Tool::Text));
                 }
             }
@@ -6813,7 +6787,24 @@ impl App {
     /// The `Y` shortcut (#1397): cycle the active tool's Output mode — new body → add to
     /// body → cut → new body. Only the tools that offer an Output row do anything; the
     /// normalized cycle is applied back onto each tool's own mode enum.
+    /// Enter was pressed and it belongs to the active tool (#1483).
+    ///
+    /// The single test all seventeen viewport handlers now run. They used to decide the
+    /// keyboard-focus rule one at a time and arrived at four different answers: four tools
+    /// committed while an unrelated text field held the keyboard, ten refused to commit even
+    /// from their *own* value box (type a shell thickness, press Enter, nothing happens), and
+    /// two got it right. The right answer — commit when nothing holds the keyboard, or when
+    /// what holds it is one of this tool's own fields — is the tool table's `commit_fields`
+    /// column, so it is now the same answer everywhere.
+    fn tool_enter_commits(&self, ctx: &egui::Context) -> bool {
+        let row = self.state.tool_row();
+        row.commit_on_enter && tooltable::enter_commits(ctx, row.commit_fields)
+    }
+
     fn cycle_tool_output_mode(&mut self) {
+        if !self.state.tool_row().output_modes {
+            return;
+        }
         use actions::ToolOutputMode;
         let name = |m: ToolOutputMode| match m {
             ToolOutputMode::NewBody => "new body",
@@ -7276,7 +7267,10 @@ impl App {
 
         // Enter commits the extrusion even when the distance field is unfocused (e.g.
         // while driving depth with the pull handle), matching the other sketch tools.
-        if !ctx.memory(|m| m.has_focus(id)) && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+        // The field's own Enter is handled where it renders; this is the *unfocused* path,
+        // and it defers to the shared rule so a foreign text field's Enter never lands here
+        // (#1483).
+        if !ctx.memory(|m| m.has_focus(id)) && self.tool_enter_commits(ctx) {
             self.state.apply(Action::CommitExtrusion);
             return;
         }
@@ -7610,7 +7604,10 @@ impl App {
         let mut commit = false;
 
         // Enter commits even when the field is unfocused (e.g. while dragging the gizmo).
-        if !ctx.memory(|m| m.has_focus(id)) && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+        // The field's own Enter is handled where it renders; this is the *unfocused* path,
+        // and it defers to the shared rule so a foreign text field's Enter never lands here
+        // (#1483).
+        if !ctx.memory(|m| m.has_focus(id)) && self.tool_enter_commits(ctx) {
             commit = true;
         }
 
@@ -7895,23 +7892,15 @@ impl App {
         // field itself may report `egui_wants_keyboard_input` with a fragile Area focus
         // that is already gone by the time that field's own enter_commit runs — so treat
         // our field id as non-blocking (#1275 / CI sketch_offset_gizmo_*).
-        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+        if self.tool_enter_commits(ui.ctx())
             && self
                 .state
                 .creating_sketch_offset
                 .as_ref()
                 .is_some_and(|c| c.has_targets())
         {
-            let offset_field = egui::Id::new(SKETCH_OFFSET_DISTANCE_FIELD_ID);
-            let focused = ui.ctx().memory(|m| m.focused());
-            if offset_enter_commits_despite_keyboard(
-                ui.ctx().egui_wants_keyboard_input(),
-                focused,
-                offset_field,
-            ) {
-                self.commit_sketch_offset();
-                return;
-            }
+            self.commit_sketch_offset();
+            return;
         }
         let Some(frame) = sketch_geometry_frame(&self.state.doc, session.sketch) else {
             return;
@@ -8238,7 +8227,10 @@ impl App {
         let ctx = ui.ctx();
         let id = egui::Id::new(SKETCH_OFFSET_DISTANCE_FIELD_ID);
         let mut commit = false;
-        if !ctx.memory(|m| m.has_focus(id)) && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+        // The field's own Enter is handled where it renders; this is the *unfocused* path,
+        // and it defers to the shared rule so a foreign text field's Enter never lands here
+        // (#1483).
+        if !ctx.memory(|m| m.has_focus(id)) && self.tool_enter_commits(ctx) {
             if self
                 .state
                 .creating_sketch_offset
@@ -8540,7 +8532,7 @@ impl App {
         if self.state.sketch_session.is_some() {
             return;
         }
-        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+        if self.tool_enter_commits(ui.ctx())
             && self
                 .state
                 .creating_revolve
@@ -8690,7 +8682,7 @@ impl App {
         if self.state.sketch_session.is_some() {
             return;
         }
-        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+        if self.tool_enter_commits(ui.ctx())
             && self
                 .state
                 .creating_sweep
@@ -8832,7 +8824,7 @@ impl App {
         if self.state.sketch_session.is_some() {
             return;
         }
-        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+        if self.tool_enter_commits(ui.ctx())
             && self
                 .state
                 .creating_boolean
@@ -9490,13 +9482,12 @@ impl App {
             self.move_gizmo_drag = None;
         }
 
-        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+        if self.tool_enter_commits(ui.ctx())
             && self
                 .state
                 .creating_move
                 .as_ref()
                 .is_some_and(|c| !c.targets.is_empty() || !c.plane_targets.is_empty() || !c.image_targets.is_empty())
-            && !ui.ctx().egui_wants_keyboard_input()
         {
             self.state.apply(Action::CommitMove);
             return;
@@ -9728,13 +9719,12 @@ impl App {
         if self.state.sketch_session.is_some() {
             return;
         }
-        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+        if self.tool_enter_commits(ui.ctx())
             && self
                 .state
                 .creating_joint
                 .as_ref()
                 .is_some_and(|c| c.members.len() >= 2)
-            && !ui.ctx().egui_wants_keyboard_input()
         {
             self.state.apply(Action::CommitJoint);
             return;
@@ -10380,16 +10370,14 @@ impl App {
             self.handle_sketch_mirror_tool(ui, painter, project, pointer_screen, session);
             return;
         }
+        let enter = self.tool_enter_commits(ui.ctx());
         let cm = self
             .state
             .creating_mirror
             .get_or_insert_with(actions::CreatingMirror::default);
 
         // Enter commits once a plane and at least one body are picked.
-        if ui.input(|i| i.key_pressed(egui::Key::Enter))
-            && !ui.ctx().egui_wants_keyboard_input()
-            && cm.can_commit()
-        {
+        if enter && cm.can_commit() {
             self.state.apply(Action::CommitMirror);
             return;
         }
@@ -10433,15 +10421,13 @@ impl App {
         pointer_screen: Option<egui::Pos2>,
         session: SketchSession,
     ) {
+        let enter = self.tool_enter_commits(ui.ctx());
         let sm = self
             .state
             .creating_sketch_mirror
             .get_or_insert_with(|| actions::CreatingSketchMirror::new(session.sketch));
 
-        if ui.input(|i| i.key_pressed(egui::Key::Enter))
-            && !ui.ctx().egui_wants_keyboard_input()
-            && sm.can_commit()
-        {
+        if enter && sm.can_commit() {
             self.state.apply(Action::CommitSketchMirror);
             return;
         }
@@ -10691,7 +10677,7 @@ impl App {
             self.handle_sketch_repeat_tool(ui, project, pointer_screen, session);
             return;
         }
-        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+        if self.tool_enter_commits(ui.ctx())
             && self
                 .state
                 .creating_repeat
@@ -10702,10 +10688,6 @@ impl App {
                         || !c.sketch_targets.is_empty()
                         || !c.extrusion_targets.is_empty()
                 })
-            // Enter still commits from the tool's own value fields (#655) — typing a
-            // distance and pressing Enter is the whole point of them holding focus.
-            && (!ui.ctx().egui_wants_keyboard_input()
-                || context::repeat_value_field_focused(ui.ctx()))
         {
             self.state.apply(Action::CommitRepeat);
             return;
@@ -11694,8 +11676,7 @@ impl App {
         if self.state.creating_sketch_repeat.is_none() {
             self.state.sketch_repeat_direction_pick = false;
         }
-        if ui.input(|i| i.key_pressed(egui::Key::Enter))
-            && !ui.ctx().egui_wants_keyboard_input()
+        if self.tool_enter_commits(ui.ctx())
             && self
                 .state
                 .creating_sketch_repeat
@@ -11800,13 +11781,12 @@ impl App {
             self.handle_sketch_slice_tool(ui, project, pointer_screen, cam, viewport, vp, session);
             return;
         }
-        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+        if self.tool_enter_commits(ui.ctx())
             && self
                 .state
                 .creating_slice
                 .as_ref()
                 .is_some_and(|c| !c.targets.is_empty() && !c.cutters.is_empty())
-            && !ui.ctx().egui_wants_keyboard_input()
         {
             self.state.apply(Action::CommitSlice);
             return;
@@ -11850,13 +11830,12 @@ impl App {
         if self.state.creating_shell.is_none() {
             self.shell_gizmo_drag = None;
         }
-        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+        if self.tool_enter_commits(ui.ctx())
             && self
                 .state
                 .creating_shell
                 .as_ref()
                 .is_some_and(|c| !c.targets.is_empty())
-            && !ui.ctx().egui_wants_keyboard_input()
         {
             self.shell_gizmo_drag = None;
             self.state.apply(Action::CommitShell);
@@ -11974,8 +11953,7 @@ impl App {
         vp: &glam::Mat4,
         session: SketchSession,
     ) {
-        if ui.input(|i| i.key_pressed(egui::Key::Enter))
-            && !ui.ctx().egui_wants_keyboard_input()
+        if self.tool_enter_commits(ui.ctx())
             && self
                 .state
                 .creating_sketch_slice
@@ -13024,10 +13002,7 @@ impl App {
             .creating_shape
             .as_ref()
             .is_some_and(|c| c.can_commit(&self.state.doc));
-        if ready
-            && ui.input(|i| i.key_pressed(egui::Key::Enter))
-            && !ui.ctx().egui_wants_keyboard_input()
-        {
+        if ready && self.tool_enter_commits(ui.ctx()) {
             self.state.apply(Action::CommitShape);
         }
     }
@@ -13049,7 +13024,7 @@ impl App {
         if self.state.sketch_session.is_some() {
             return;
         }
-        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+        if self.tool_enter_commits(ui.ctx())
             && self
                 .state
                 .creating_loft
@@ -13270,7 +13245,10 @@ impl App {
         let id = egui::Id::new(EDGE_TREATMENT_AMOUNT_FIELD_ID);
         let mut commit = false;
 
-        if !ctx.memory(|m| m.has_focus(id)) && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+        // The field's own Enter is handled where it renders; this is the *unfocused* path,
+        // and it defers to the shared rule so a foreign text field's Enter never lands here
+        // (#1483).
+        if !ctx.memory(|m| m.has_focus(id)) && self.tool_enter_commits(ctx) {
             commit = true;
         }
 
@@ -14892,6 +14870,7 @@ impl App {
             selection: &self.state.scene_selection,
             element_visibility: &self.state.element_visibility,
             tool: self.state.tool,
+            picker_focus: self.state.picker_focus,
             in_drawing_workbench: self.state.editing_drawing.is_some(),
             open_drawing: self.state.editing_drawing,
             draw_rect_construction: self.state.rect_draw_construction_mode(),
@@ -15785,6 +15764,13 @@ impl App {
         };
         // Park the pickers where a script can read them (#968); they're rebuilt every frame.
         self.state.tool_pickers = content.tool_pickers.clone();
+        // Drop a hand-armed picker the active tool no longer shows (#1485), so the override
+        // can never outlive the picker set it belonged to.
+        if let Some(armed) = self.state.picker_focus {
+            if !self.state.tool_pickers.iter().any(|v| v.target == armed) {
+                self.state.picker_focus = None;
+            }
+        }
         // Control means "just the edge under the cursor", not its tangent run (#984) —
         // mirrored every frame so the click handlers and the hover agree on it.
         self.state.pick_single_edge = ctx.input(|i| i.modifiers.ctrl);
@@ -17044,6 +17030,13 @@ impl App {
                 }
             }
             if let Some((target, edit)) = tool_picker_edit {
+                // Clicking any picker row arms it (#1485). One line, before the per-target
+                // arms below, because focus is a property of the picker set rather than of
+                // each tool's private flag — the pane's affordance used to be inert for every
+                // picker whose arm the per-target chain had left as an empty block.
+                if edit == context::ToolPickerAction::Focus {
+                    actions::focus_tool_picker(&mut self.state, target);
+                }
                 // Remove one row (or clear) from a tool-owned element picker (#213).
                 match target {
                     context::PickerTarget::RevolveCut => {
@@ -21611,53 +21604,6 @@ fn should_commit_sketch_on_enter(
     enter_pressed: bool,
 ) -> bool {
     field_enter_commit || (enter_pressed && !dim_field_focused)
-}
-
-/// Whether the Offset tool's Enter handler should commit despite `egui_wants_keyboard_input`.
-///
-/// The floating distance field's Area focus is fragile: memory can still name that field
-/// (so `wants_keyboard` is true) while the field's own `enter_commit` already sees no focus
-/// and never fires. Treat our field — and a wants-keyboard with no focused id — as non-blocking.
-fn offset_enter_commits_despite_keyboard(
-    wants_keyboard: bool,
-    focused: Option<egui::Id>,
-    offset_field: egui::Id,
-) -> bool {
-    if !wants_keyboard {
-        return true;
-    }
-    match focused {
-        None => true,
-        Some(id) => id == offset_field,
-    }
-}
-
-/// Whether the construction-plane tool should commit on Enter.
-///
-/// Own offset/angle fields (or wants_keyboard with no focused id) never block: live focus-hold
-/// can leave memory pointing at the field while the field's own enter_commit missed the
-/// keystroke after TextEdit surrendered (#1275 pattern; CI plane_*).
-fn plane_enter_commits(
-    field_enter_commit: bool,
-    enter_pressed: bool,
-    wants_keyboard: bool,
-    focused: Option<egui::Id>,
-    id_offset: egui::Id,
-    id_angle: egui::Id,
-) -> bool {
-    if field_enter_commit {
-        return true;
-    }
-    if !enter_pressed {
-        return false;
-    }
-    if !wants_keyboard {
-        return true;
-    }
-    match focused {
-        None => true,
-        Some(id) => id == id_offset || id == id_angle,
-    }
 }
 
 /// Show a sketch dimension field; selects all text when it gains focus so typing replaces
@@ -28644,8 +28590,7 @@ impl App {
         // then Enter projects (or un-projects when the selection is only projected lines).
         if self.state.tool == Tool::Project {
             if let Some(session) = self.state.sketch_session {
-                if ui.input(|i| i.key_pressed(egui::Key::Enter))
-                    && !ui.ctx().egui_wants_keyboard_input()
+                if self.tool_enter_commits(ui.ctx())
                     && !self.state.scene_selection.is_empty()
                 {
                     self.state.apply(Action::ProjectSelection);
@@ -31958,19 +31903,19 @@ impl App {
                 }
 
                 // Enter commits the plane when nothing *else* holds the keyboard. Own
-                // offset/angle fields are non-blocking (#1275 pattern / CI plane_*): live
-                // focus-hold re-requests the keyboard after TextEdit surrenders on Enter, so
-                // the old `dim_field_focused` gate suppressed both the field's enter_commit
-                // and the unfocused path. Treat our fields (and wants_keyboard with no id)
-                // like the Offset tool does.
-                if plane_enter_commits(
-                    commit_plane,
-                    sketch_dimension_enter_pressed(ui),
-                    ctx.egui_wants_keyboard_input(),
-                    current,
-                    id_offset,
-                    id_angle,
-                ) {
+                // offset/angle fields are non-blocking (#1275/#1483): live focus-hold
+                // re-requests the keyboard after TextEdit surrenders on Enter, so the old
+                // `dim_field_focused` gate suppressed both the field's enter_commit and the
+                // unfocused path. The tool table's shared rule is that answer.
+                let row = self.state.tool_row();
+                if commit_plane
+                    || (sketch_dimension_enter_pressed(ui)
+                        && tooltable::enter_focus_allows_commit(
+                            ctx.egui_wants_keyboard_input(),
+                            current,
+                            row.commit_fields,
+                        ))
+                {
                     if !commit_plane {
                         consume_sketch_dimension_enter(ui);
                     }
@@ -35673,25 +35618,19 @@ mod tests {
         assert!(!should_commit_sketch_on_enter(false, false, false));
     }
 
-    /// #1275: Offset Enter commits even when the floating distance field is why
-    /// `egui_wants_keyboard_input` is true (or when that flag is stale with no focus).
+    /// #1275/#1483: Offset Enter commits even when the floating distance field is why
+    /// `egui_wants_keyboard_input` is true (or when that flag is stale with no focus) — the
+    /// tool table's shared rule, which this tool's one-off helper became.
     #[test]
     fn offset_enter_commits_despite_own_distance_field_keyboard() {
-        use super::offset_enter_commits_despite_keyboard;
+        use crate::tooltable::{enter_focus_allows_commit, row, ToolSpace};
+        let fields = row(Tool::Offset, ToolSpace::Sketch).commit_fields;
         let field = egui::Id::new("sketch_offset_distance_input");
         let other = egui::Id::new("parameters_name");
-        assert!(offset_enter_commits_despite_keyboard(false, None, field));
-        assert!(offset_enter_commits_despite_keyboard(true, None, field));
-        assert!(offset_enter_commits_despite_keyboard(
-            true,
-            Some(field),
-            field
-        ));
-        assert!(!offset_enter_commits_despite_keyboard(
-            true,
-            Some(other),
-            field
-        ));
+        assert!(enter_focus_allows_commit(false, None, fields));
+        assert!(enter_focus_allows_commit(true, None, fields));
+        assert!(enter_focus_allows_commit(true, Some(field), fields));
+        assert!(!enter_focus_allows_commit(true, Some(other), fields));
     }
 
     /// Floating dim Enter: singleline TextEdit surrenders focus the same frame, so a
@@ -35714,26 +35653,21 @@ mod tests {
 
     /// Plane Enter commits even when the floating offset/angle field holds the keyboard
     /// (live focus-hold after settle; CI plane_line_and_point / plane_curve / plane_normal).
+    /// The rule is the tool table's (#1483), not a one-off helper.
     #[test]
     fn plane_enter_commits_despite_own_offset_field() {
-        use super::plane_enter_commits;
+        use crate::tooltable::{enter_focus_allows_commit, row, ToolSpace};
+        let fields = row(Tool::ConstructionPlane, ToolSpace::Solid).commit_fields;
         let off = egui::Id::new("cp_offset");
         let ang = egui::Id::new("cp_angle");
+        let pane_off = egui::Id::new("plane_offset_ctx");
         let other = egui::Id::new("parameters_name");
-        // Field already reported enter_commit.
-        assert!(plane_enter_commits(true, false, true, Some(off), off, ang));
-        // Enter, nothing wants the keyboard.
-        assert!(plane_enter_commits(false, true, false, None, off, ang));
-        // Enter while our offset field is focused.
-        assert!(plane_enter_commits(false, true, true, Some(off), off, ang));
-        // Enter while our angle field is focused.
-        assert!(plane_enter_commits(false, true, true, Some(ang), off, ang));
-        // Enter with wants_keyboard but no focused id (fragile Area).
-        assert!(plane_enter_commits(false, true, true, None, off, ang));
-        // Another widget has the keyboard — do not steal.
-        assert!(!plane_enter_commits(false, true, true, Some(other), off, ang));
-        // No Enter.
-        assert!(!plane_enter_commits(false, false, true, Some(off), off, ang));
+        assert!(enter_focus_allows_commit(false, None, fields));
+        assert!(enter_focus_allows_commit(true, Some(off), fields));
+        assert!(enter_focus_allows_commit(true, Some(ang), fields));
+        assert!(enter_focus_allows_commit(true, Some(pane_off), fields));
+        assert!(enter_focus_allows_commit(true, None, fields));
+        assert!(!enter_focus_allows_commit(true, Some(other), fields));
     }
 
     #[test]
