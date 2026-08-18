@@ -213,7 +213,24 @@ pub const SOLID_GROUND_COLOR: Color32 = Color32::from_rgb(42, 50, 64);
 pub const GROUND_SHADOW_FILL: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 90);
 /// Lift a body-on-body contact shadow along the receiver's outward normal so it depth-tests
 /// in front of the face it sits on. Not a camera-space bias — ground shadows stay at z = 0.
-const BODY_SHADOW_LIFT: f32 = 0.08;
+/// 0.25 mm clears 24-bit depth on face-on surfaces; grazing walls also get a slope-scaled
+/// bias in `shader.wgsl` (`MODE_CONTACT_SHADOW`).
+const BODY_SHADOW_LIFT: f32 = 0.25;
+/// Ignore casters closer than this to the receiver plane — tessellation wrinkles, not occluders
+/// (#1480). A real wall is tens of mm away.
+const SHADOW_MIN_CASTER_HEIGHT: f32 = 0.55;
+/// Same-facing surfaces within this height of each other are one tessellated face, not a step.
+const SHADOW_SAME_SURFACE_HEIGHT: f32 = 2.5;
+/// cos(20°): casters whose normal is this close to the receiver's are the same surface.
+const SHADOW_SAME_SURFACE_COS: f32 = 0.9397;
+/// Soft sun penumbra: a floor so even a close contact isn't a razor (#1488), plus a
+/// term that grows with caster height so distant silhouettes bloom more.
+const SHADOW_PENUMBRA_MIN: f32 = 1.2;
+const SHADOW_PENUMBRA_PER_HEIGHT: f32 = 0.05;
+const SHADOW_PENUMBRA_MAX: f32 = 5.0;
+/// Shade-side receivers are padded this far in the light-space grid so the
+/// opposite wall of a hole still pairs with them (#1493).
+const SHADOW_CAVITY_RANGE: f32 = 80.0;
 /// On-screen width of the origin X/Y/Z axes, in pixels (#1072).
 pub const ORIGIN_AXIS_WIDTH_PX: f32 = 2.0;
 /// Hover thickness for a world origin axis (#1124) — same as [`push_segment_hover`].
@@ -296,6 +313,9 @@ pub enum ShadingModel {
     Lambert = 1,
     /// Ambient + diffuse + Blinn-Phong specular, the `Realistic` mode look (#83).
     Realistic = 2,
+    /// Unlit contact-shadow decal with a slope-scaled depth bias so the overlay
+    /// wins the depth test on grazing walls (#1480/#1493).
+    ContactShadow = 3,
 }
 
 impl ShadingModel {
@@ -2199,6 +2219,17 @@ impl<'a> SceneMesh<'a> {
             .extend_from_slice(&[base, base + 1, base + 2]);
     }
 
+    /// A body-on-body contact shadow triangle (#1461/#1480): unlit colour, tagged
+    /// so the shader applies a slope-scaled depth bias.
+    fn push_contact_shadow_triangle(&mut self, verts: [Vec3; 3], colors: [Color32; 3]) {
+        let base = self.scene.vertices.len() as u32;
+        for (v, c) in verts.iter().zip(colors.iter()) {
+            self.push_lit_vertex(*v, *c, Vec3::ZERO, ShadingModel::ContactShadow);
+        }
+        self.indices_mut()
+            .extend_from_slice(&[base, base + 1, base + 2]);
+    }
+
     /// A triangle the shader lights per pixel, with its own normal per corner (#1037).
     fn push_lit_triangle(
         &mut self,
@@ -2286,8 +2317,10 @@ impl<'a> SceneMesh<'a> {
 
     /// Contact shadows onto body faces (#1461): each caster triangle projected along the
     /// scene light onto every light-facing receiver triangle, clipped to that face.
-    /// Ground stays on [`Self::push_ground_shadow`]; these sit on the mesh (a tiny lift
-    /// along the receiver normal, never toward the camera).
+    /// Shade-side faces (n·L ≤ 0) get a cavity overlay instead: casters in front of the
+    /// wall project along the wall normal, so the far side of a hole covers that whole
+    /// wall (#1493). Ground stays on [`Self::push_ground_shadow`]; these sit on the mesh
+    /// (a tiny lift along the receiver normal, never toward the camera).
     fn push_body_shadows(&mut self, solids: &[&crate::extrude::SolidMesh]) {
         let light = SCENE_LIGHT_DIR.normalize_or_zero();
         if light.length_squared() < 1e-8 {
@@ -2303,17 +2336,14 @@ impl<'a> SceneMesh<'a> {
                 if area < 1e-8 {
                     continue;
                 }
-                casters.push(*tri);
                 let n = n / area;
-                let ndotl = n.dot(light);
-                if ndotl > 1e-4 {
-                    receivers.push(ReceiverTri {
-                        tri: *tri,
-                        origin: tri[0],
-                        normal: n,
-                        ndotl,
-                    });
-                }
+                casters.push(CasterTri { tri: *tri, normal: n });
+                receivers.push(ReceiverTri {
+                    tri: *tri,
+                    origin: tri[0],
+                    normal: n,
+                    ndotl: n.dot(light),
+                });
             }
         }
         if casters.is_empty() || receivers.is_empty() {
@@ -2325,7 +2355,14 @@ impl<'a> SceneMesh<'a> {
             std::collections::HashMap::new();
         for (i, rec) in receivers.iter().enumerate() {
             let (mn, mx) = projected_bounds(&rec.tri, lu, lv);
-            for key in grid_keys(mn, mx, cell) {
+            // Sun-facing pairs must overlap in light space. Shade-side cavity
+            // pairs sit across the pocket, so pad until the opposite wall hits.
+            let pad = if rec.ndotl > 1e-4 {
+                0.0
+            } else {
+                SHADOW_CAVITY_RANGE
+            };
+            for key in grid_keys(mn - Vec2::splat(pad), mx + Vec2::splat(pad), cell) {
                 grid.entry(key).or_default().push(i);
             }
         }
@@ -2334,7 +2371,7 @@ impl<'a> SceneMesh<'a> {
         self.set_index_layer(MeshIndexLayer::GroundShadow);
         let mut seen = vec![usize::MAX; receivers.len()];
         for (stamp, caster) in casters.iter().enumerate() {
-            let (mn, mx) = projected_bounds(caster, lu, lv);
+            let (mn, mx) = projected_bounds(&caster.tri, lu, lv);
             for key in grid_keys(mn, mx, cell) {
                 let Some(hits) = grid.get(&key) else {
                     continue;
@@ -2344,8 +2381,16 @@ impl<'a> SceneMesh<'a> {
                         continue;
                     }
                     seen[ri] = stamp;
-                    for tri in contact_shadow_on_triangle(caster, &receivers[ri], light) {
-                        self.push_triangle(tri[0], tri[1], tri[2], GROUND_SHADOW_FILL);
+                    let rec = &receivers[ri];
+                    // Sun-facing: project along the light. Shade-side: along the wall
+                    // normal, so a hole's far wall covers the near wall (#1493).
+                    let proj = if rec.ndotl > 1e-4 {
+                        light
+                    } else {
+                        rec.normal
+                    };
+                    for tri in contact_shadow_on_triangle(&caster.tri, caster.normal, rec, proj) {
+                        self.push_contact_shadow_triangle(tri.verts, tri.colors);
                     }
                 }
             }
@@ -4546,6 +4591,16 @@ struct ReceiverTri {
     ndotl: f32,
 }
 
+struct CasterTri {
+    tri: [Vec3; 3],
+    normal: Vec3,
+}
+
+struct ContactShadowTri {
+    verts: [Vec3; 3],
+    colors: [Color32; 3],
+}
+
 /// Orthonormal tangent frame for the plane with unit normal `n` (`u × v = n`).
 fn plane_basis(n: Vec3) -> (Vec3, Vec3) {
     let n = n.normalize_or_zero();
@@ -4598,14 +4653,33 @@ fn grid_keys(mn: Vec2, mx: Vec2, cell: f32) -> impl Iterator<Item = (i32, i32)> 
     (y0..=y1).flat_map(move |y| (x0..=x1).map(move |x| (x, y)))
 }
 
-/// Caster triangle projected onto `receiver` along `-light` and clipped to that face.
+/// Caster triangle projected onto `receiver` along `-proj` and clipped to that face.
+/// `proj` is the scene light for sun-facing walls, or the wall normal for a cavity
+/// overlay on the shade side of a hole (#1493).
 fn contact_shadow_on_triangle(
     caster: &[Vec3; 3],
+    caster_n: Vec3,
     receiver: &ReceiverTri,
-    light: Vec3,
-) -> Vec<[Vec3; 3]> {
-    const IN_FRONT: f32 = 1e-3;
-    let keep = |p: Vec3| (p - receiver.origin).dot(receiver.normal) - IN_FRONT;
+    proj: Vec3,
+) -> Vec<ContactShadowTri> {
+    let denom = receiver.normal.dot(proj);
+    if denom.abs() < 1e-4 {
+        return Vec::new();
+    }
+    let h0 = (caster[0] - receiver.origin).dot(receiver.normal);
+    let h1 = (caster[1] - receiver.origin).dot(receiver.normal);
+    let h2 = (caster[2] - receiver.origin).dot(receiver.normal);
+    let max_h = h0.max(h1).max(h2);
+    if max_h < SHADOW_MIN_CASTER_HEIGHT {
+        return Vec::new();
+    }
+    // Same-facing, almost-coplanar: tessellation acne, not a step (#1480).
+    if caster_n.dot(receiver.normal) > SHADOW_SAME_SURFACE_COS
+        && max_h < SHADOW_SAME_SURFACE_HEIGHT
+    {
+        return Vec::new();
+    }
+    let keep = |p: Vec3| (p - receiver.origin).dot(receiver.normal) - SHADOW_MIN_CASTER_HEIGHT;
     if keep(caster[0]) <= 0.0 && keep(caster[1]) <= 0.0 && keep(caster[2]) <= 0.0 {
         return Vec::new();
     }
@@ -4616,8 +4690,8 @@ fn contact_shadow_on_triangle(
     let projected: Vec<Vec3> = clipped
         .into_iter()
         .map(|p| {
-            let t = (p - receiver.origin).dot(receiver.normal) / receiver.ndotl;
-            p - light * t
+            let t = (p - receiver.origin).dot(receiver.normal) / denom;
+            p - proj * t
         })
         .collect();
     let (u, v) = plane_basis(receiver.normal);
@@ -4630,16 +4704,132 @@ fn contact_shadow_on_triangle(
         .iter()
         .map(|p| to_plane2(*p, receiver.origin, u, v))
         .collect();
-    let clipped2 = clip_convex_polygon_2d(&poly2, &rec2);
-    if clipped2.len() < 3 {
+    let hard = clip_convex_polygon_2d(&poly2, &rec2);
+    if hard.len() < 3 {
         return Vec::new();
     }
+    let penumbra = (SHADOW_PENUMBRA_MIN + SHADOW_PENUMBRA_PER_HEIGHT * max_h)
+        .clamp(SHADOW_PENUMBRA_MIN, SHADOW_PENUMBRA_MAX);
+    let soft = clip_convex_polygon_2d(&offset_polygon_2d(&hard, penumbra), &rec2);
+    let outline = if soft.len() >= 3 { soft } else { hard.clone() };
     let lift = receiver.normal * BODY_SHADOW_LIFT;
-    let pts: Vec<Vec3> = clipped2
-        .into_iter()
-        .map(|p| receiver.origin + u * p.x + v * p.y + lift)
-        .collect();
-    fan_triangles(&pts)
+    let mut out = Vec::new();
+    if outline.len() < 3 {
+        return out;
+    }
+    let p0 = outline[0];
+    let c0 = fade_shadow(shadow_coverage(p0, &hard, penumbra));
+    let v0 = receiver.origin + u * p0.x + v * p0.y + lift;
+    for i in 1..outline.len() - 1 {
+        let pa = outline[i];
+        let pb = outline[i + 1];
+        let va = receiver.origin + u * pa.x + v * pa.y + lift;
+        let vb = receiver.origin + u * pb.x + v * pb.y + lift;
+        let tri = [v0, va, vb];
+        let area = (tri[1] - tri[0]).cross(tri[2] - tri[0]).length();
+        if area <= 1e-4 {
+            continue;
+        }
+        out.push(ContactShadowTri {
+            verts: tri,
+            colors: [
+                c0,
+                fade_shadow(shadow_coverage(pa, &hard, penumbra)),
+                fade_shadow(shadow_coverage(pb, &hard, penumbra)),
+            ],
+        });
+    }
+    out
+}
+
+fn fade_shadow(coverage: f32) -> Color32 {
+    let a = (GROUND_SHADOW_FILL.a() as f32 * coverage.clamp(0.0, 1.0)).round() as u8;
+    Color32::from_rgba_premultiplied(0, 0, 0, a)
+}
+
+/// 1 inside the hard silhouette, 0 at `penumbra` outside, linear in between.
+fn shadow_coverage(p: Vec2, hard: &[Vec2], penumbra: f32) -> f32 {
+    if penumbra <= 1e-6 {
+        return if point_in_convex_2d(p, hard) { 1.0 } else { 0.0 };
+    }
+    if point_in_convex_2d(p, hard) {
+        return 1.0;
+    }
+    (1.0 - dist_to_polygon_2d(p, hard) / penumbra).clamp(0.0, 1.0)
+}
+
+fn point_in_convex_2d(p: Vec2, poly: &[Vec2]) -> bool {
+    if poly.len() < 3 {
+        return false;
+    }
+    let mut sign = 0.0;
+    for i in 0..poly.len() {
+        let a = poly[i];
+        let b = poly[(i + 1) % poly.len()];
+        let c = (b - a).perp_dot(p - a);
+        if c.abs() <= 1e-6 {
+            continue;
+        }
+        let s = c.signum();
+        if sign != 0.0 && s != sign {
+            return false;
+        }
+        sign = s;
+    }
+    true
+}
+
+fn dist_to_polygon_2d(p: Vec2, poly: &[Vec2]) -> f32 {
+    if poly.len() < 2 {
+        return 0.0;
+    }
+    let mut best = f32::MAX;
+    for i in 0..poly.len() {
+        let a = poly[i];
+        let b = poly[(i + 1) % poly.len()];
+        let ab = b - a;
+        let denom = ab.length_squared();
+        let t = if denom > 1e-12 {
+            ((p - a).dot(ab) / denom).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        best = best.min((p - (a + ab * t)).length());
+    }
+    best
+}
+
+fn offset_polygon_2d(poly: &[Vec2], width: f32) -> Vec<Vec2> {
+    let n = poly.len();
+    if n < 3 || width <= 0.0 {
+        return poly.to_vec();
+    }
+    let area = {
+        let mut a = 0.0;
+        for i in 0..n {
+            a += poly[i].perp_dot(poly[(i + 1) % n]);
+        }
+        a
+    };
+    let outward = if area >= 0.0 { 1.0 } else { -1.0 };
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let prev = poly[(i + n - 1) % n];
+        let curr = poly[i];
+        let next = poly[(i + 1) % n];
+        let e0 = (curr - prev).normalize_or_zero();
+        let e1 = (next - curr).normalize_or_zero();
+        let n0 = Vec2::new(e0.y, -e0.x) * outward;
+        let n1 = Vec2::new(e1.y, -e1.x) * outward;
+        let bis = (n0 + n1).normalize_or_zero();
+        if bis.length_squared() < 1e-8 {
+            out.push(curr + n0 * width);
+            continue;
+        }
+        let miter = (width / bis.dot(n0).max(0.25)).min(width * 3.0);
+        out.push(curr + bis * miter);
+    }
+    out
 }
 
 fn clip_poly_halfspace(poly: &[Vec3], keep: impl Fn(Vec3) -> f32) -> Vec<Vec3> {
@@ -4697,21 +4887,6 @@ fn clip_convex_polygon_2d(poly: &[Vec2], clip: &[Vec2; 3]) -> Vec<Vec2> {
         }
     }
     output
-}
-
-fn fan_triangles(pts: &[Vec3]) -> Vec<[Vec3; 3]> {
-    if pts.len() < 3 {
-        return Vec::new();
-    }
-    let mut out = Vec::with_capacity(pts.len() - 2);
-    for i in 1..pts.len() - 1 {
-        let tri = [pts[0], pts[i], pts[i + 1]];
-        let area = (tri[1] - tri[0]).cross(tri[2] - tri[0]).length();
-        if area > 1e-4 {
-            out.push(tri);
-        }
-    }
-    out
 }
 
 /// Quantize a world position to a hashable key so coincident vertices (within a tight
@@ -6546,9 +6721,9 @@ mod tests {
         // Every entry point the renderer names must exist.
         let entries: Vec<&str> = module.entry_points.iter().map(|e| e.name.as_str()).collect();
         for name in [
-            "vs_main", "fs_main", "vs_axis", "fs_axis", "vs_grid", "fs_grid",
-            "fs_solid_ground", "vs_blit", "fs_blit", "fs_outline", "vs_text",
-            "fs_text", "fs_image",
+            "vs_main", "fs_main", "fs_contact_shadow", "vs_axis", "fs_axis",
+            "vs_grid", "fs_grid", "fs_solid_ground", "vs_blit", "fs_blit",
+            "fs_outline", "vs_text", "fs_text", "fs_image",
         ] {
             assert!(entries.contains(&name), "shader.wgsl has no `{name}`: {entries:?}");
         }
@@ -6577,11 +6752,14 @@ mod tests {
         ] {
             assert_eq!(shader_const(name), rust, "{name} drifted from the shader");
         }
+        assert_eq!(shader_const("CONTACT_SHADOW_SLOPE"), 2.0);
+        assert_eq!(shader_const("CONTACT_SHADOW_BIAS"), 0.0002);
         // The lighting-model discriminants the shader branches on ride in normal.w.
         for (name, model) in [
             ("MODE_UNLIT", ShadingModel::Unlit),
             ("MODE_LAMBERT", ShadingModel::Lambert),
             ("MODE_REALISTIC", ShadingModel::Realistic),
+            ("MODE_CONTACT_SHADOW", ShadingModel::ContactShadow),
         ] {
             assert_eq!(shader_const(name), model.as_w(), "{name} drifted");
         }
@@ -6596,12 +6774,16 @@ mod tests {
         let lit = scene
             .vertices
             .iter()
-            .filter(|v| v.normal[3] != ShadingModel::Unlit.as_w())
+            .filter(|v| {
+                let m = v.normal[3];
+                m != ShadingModel::Unlit.as_w() && m != ShadingModel::ContactShadow.as_w()
+            })
             .count();
         assert!(lit > 0, "the body should contribute lit vertices");
         // Every lit vertex carries a usable normal; an unlit one is never lit by accident.
         for v in &scene.vertices {
-            if v.normal[3] != ShadingModel::Unlit.as_w() {
+            let m = v.normal[3];
+            if m != ShadingModel::Unlit.as_w() && m != ShadingModel::ContactShadow.as_w() {
                 let n = Vec3::from_slice(&v.normal[..3]);
                 assert!(n.length() > 0.5, "a lit vertex needs a unit normal, got {n}");
             }
@@ -8716,6 +8898,175 @@ mod tests {
             on_inner,
             "self-shadow should land on the inner +Y step (y ≈ 20); sample={:?}",
             on_body.iter().take(8).collect::<Vec<_>>()
+        );
+    }
+
+    /// Floor facing +Z, lit from the scene's fixed light.
+    fn floor_receiver() -> ReceiverTri {
+        let light = SCENE_LIGHT_DIR.normalize_or_zero();
+        let tri = [
+            Vec3::new(-20.0, -20.0, 0.0),
+            Vec3::new(20.0, -20.0, 0.0),
+            Vec3::new(0.0, 20.0, 0.0),
+        ];
+        let n = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize();
+        ReceiverTri {
+            tri,
+            origin: tri[0],
+            normal: n,
+            ndotl: n.dot(light),
+        }
+    }
+
+    /// #1480: a tessellation wrinkle — a parallel sliver sitting a fraction of a
+    /// millimetre above the face — must not cast. Those slivers are the mottled
+    /// self-shadow acne.
+    #[test]
+    fn contact_shadow_ignores_tessellation_acne() {
+        let light = SCENE_LIGHT_DIR.normalize_or_zero();
+        let receiver = floor_receiver();
+        // Same-facing triangle hovering 0.35 mm over the floor: OCCT / facet
+        // noise, not a real occluder.
+        let caster = [
+            Vec3::new(-8.0, -8.0, 0.35),
+            Vec3::new(8.0, -8.0, 0.35),
+            Vec3::new(0.0, 8.0, 0.35),
+        ];
+        let caster_n = (caster[1] - caster[0]).cross(caster[2] - caster[0]).normalize();
+        let shadows = contact_shadow_on_triangle(&caster, caster_n, &receiver, light);
+        assert!(
+            shadows.is_empty(),
+            "nearly-coplanar neighbours must not self-shadow; got {} triangle(s)",
+            shadows.len()
+        );
+    }
+
+    /// #1488: a real occluder (a wall standing on the floor) still casts, and the
+    /// silhouette is a soft penumbra rather than a razor edge.
+    #[test]
+    fn contact_shadow_from_a_wall_has_a_soft_penumbra() {
+        let light = SCENE_LIGHT_DIR.normalize_or_zero();
+        let receiver = floor_receiver();
+        let caster = [
+            Vec3::new(-10.0, 8.0, 0.0),
+            Vec3::new(10.0, 8.0, 0.0),
+            Vec3::new(0.0, 8.0, 25.0),
+        ];
+        let caster_n = (caster[1] - caster[0]).cross(caster[2] - caster[0]).normalize();
+        let shadows = contact_shadow_on_triangle(&caster, caster_n, &receiver, light);
+        assert!(
+            !shadows.is_empty(),
+            "a wall standing on the floor must still cast a contact shadow"
+        );
+        let scene_alphas = {
+            // Drive the same geometry through the scene so we can read vertex alpha.
+            let state = state_with_l_body();
+            let scene = build_scene_with_shading(&state, crate::camera::ShadingMode::Realistic);
+            shadow_vertex_alphas(&scene)
+        };
+        let faded = scene_alphas.iter().any(|&a| a < 0.25);
+        let solid = scene_alphas.iter().any(|&a| a > 0.28);
+        assert!(
+            faded && solid,
+            "self-shadows need a soft penumbra (some faded verts, some solid); alphas={scene_alphas:?}"
+        );
+    }
+
+    fn shadow_vertex_alphas(scene: &ViewportScene) -> Vec<f32> {
+        scene
+            .shadow_indices
+            .iter()
+            .map(|&i| scene.vertices[i as usize].color[3])
+            .collect()
+    }
+
+    /// 80×80×50 cuboid with a Ø32 hole cut 40 mm down from the top (#1493).
+    fn state_with_holed_cuboid() -> AppState {
+        use crate::actions::Action;
+        use crate::model::{ExtrudeFace, Primitive, PrimitiveFace, PrimitiveKind};
+
+        let mut state = AppState::default();
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.width = "80".into();
+        shape.depth = "80".into();
+        shape.height = "50".into();
+        state.apply(Action::CreateShape { shape });
+        let pi = state
+            .doc
+            .primitives
+            .iter()
+            .next()
+            .expect("cuboid primitive")
+            .0;
+        state.apply(Action::BeginSketch {
+            face: FaceId::PrimitiveFace {
+                primitive: pi,
+                face: PrimitiveFace::CuboidTop,
+            },
+            viewport: None,
+        });
+        let sketch = state.sketch_session.unwrap().sketch;
+        // CuboidTop's sketch origin is a corner; (40, 40) is the cap centre.
+        state.apply(Action::CreateCircle {
+            cx: 40.0,
+            cy: 40.0,
+            r: 16.0,
+            diameter_expr: None,
+        });
+        let r = state.apply(Action::CreateExtrusion {
+            expression: None,
+            sketch,
+            faces: vec![ExtrudeFace::Circle(rkey(0))],
+            distance: -40.0,
+            body: crate::actions::ExtrudeBodyChoice::Cut,
+            target: None,
+            symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+        });
+        assert_eq!(
+            r,
+            crate::actions::ActionResult::Ok,
+            "cut a hole in the cuboid; status={}",
+            state.status
+        );
+        state
+    }
+
+    /// #1493: light comes from +X. The hole's +X inner wall faces away from the
+    /// sun (into the cavity) so the whole of that side should sit in shade —
+    /// not a sliver, and not only the Lambert falloff the headlight washes out.
+    #[test]
+    fn realistic_hole_left_wall_is_in_shade() {
+        use crate::camera::ShadingMode;
+        let state = state_with_holed_cuboid();
+        let scene = build_scene_with_shading(&state, ShadingMode::Realistic);
+        let on_shade_wall: Vec<Vec3> = off_ground_shadows(&scene)
+            .into_iter()
+            .filter(|p| {
+                (p.x - 16.0).abs() < 2.5 && p.y.abs() < 17.0 && p.z > 10.0 && p.z < 51.0
+            })
+            .collect();
+        assert!(
+            !on_shade_wall.is_empty(),
+            "the shade-side inner wall of the hole must receive a contact shadow; sample={:?}",
+            off_ground_shadows(&scene)
+                .iter()
+                .take(12)
+                .collect::<Vec<_>>()
+        );
+        let z_min = on_shade_wall
+            .iter()
+            .map(|p| p.z)
+            .fold(f32::MAX, f32::min);
+        let z_max = on_shade_wall
+            .iter()
+            .map(|p| p.z)
+            .fold(f32::MIN, f32::max);
+        assert!(
+            z_max - z_min > 20.0,
+            "the whole left side should be in shade, not a sliver; z range {z_min}..{z_max}"
         );
     }
 

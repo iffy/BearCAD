@@ -25,6 +25,12 @@ struct Uniforms {
 const MODE_UNLIT: f32 = 0.0;
 const MODE_LAMBERT: f32 = 1.0;
 const MODE_REALISTIC: f32 = 2.0;
+const MODE_CONTACT_SHADOW: f32 = 3.0;
+
+// Slope-scaled polygon offset for body contact shadows (#1480/#1493). Ground
+// shadows stay MODE_UNLIT so they keep sitting on z = 0 with no bias.
+const CONTACT_SHADOW_SLOPE: f32 = 2.0;
+const CONTACT_SHADOW_BIAS: f32 = 0.0002;
 
 // Solid-mode Lambert terms. Like the realistic weights below, these are **linear-space**
 // (#1038): 0.1332 and 0.8668 re-encode to the 0.40/0.60 the sRGB-space maths used before,
@@ -145,6 +151,27 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
         + vec3f(REALISTIC_SPECULAR * specular);
     let lit = linear_to_srgb(tonemap(shaded));
     return vec4f(lit * alpha, alpha);
+}
+
+// Body contact shadows (#1480/#1493): unlit colour plus a slope-scaled depth
+// offset so the overlay still wins on a wall viewed end-on. Ground shadows
+// stay MODE_UNLIT and keep their unbiased z = 0 depth. A dedicated entry
+// point so the main scene pass does not write frag_depth (and lose early-z).
+struct ShadowFsOut {
+    @location(0) color: vec4f,
+    @builtin(frag_depth) depth: f32,
+}
+
+@fragment
+fn fs_contact_shadow(input: VertexOutput) -> ShadowFsOut {
+    var out: ShadowFsOut;
+    out.color = input.color;
+    out.depth = input.clip_position.z;
+    if (input.mode > 2.5) {
+        let dz = max(abs(dpdx(input.clip_position.z)), abs(dpdy(input.clip_position.z)));
+        out.depth = input.clip_position.z - CONTACT_SHADOW_SLOPE * dz - CONTACT_SHADOW_BIAS;
+    }
+    return out;
 }
 
 // ---- Screen-space lines: origin axes (#1072) and sketch strokes (#1157) ----
