@@ -458,8 +458,10 @@ fn reg_delete(key: &str) -> Result<(), String> {
 /// Must be registered **before** `eframe::run_native` so we observe
 /// `NSApplicationWillFinishLaunchingNotification`. winit's `EventLoop::new` creates
 /// `NSApplication` and claims `odoc`; the launch document is dispatched *after*
-/// willFinishLaunching, which is when we add `application:openURLs:` to winit's
-/// delegate (it does not implement that method).
+/// willFinishLaunching. At that moment we only steal the `odoc` Apple Event —
+/// `class_addMethod` on `WinitApplicationDelegate` during `_handleAEOpenEvent`
+/// panics in winit's cannot-unwind `applicationDidFinishLaunching:` (#1542).
+/// [`attach_runtime_open_url_hooks`] adds `application:openURLs:` after launch.
 #[cfg(target_os = "macos")]
 pub fn install_open_documents_handler() {
     use std::sync::Once;
@@ -469,11 +471,25 @@ pub fn install_open_documents_handler() {
             crate::diag::warn(format!("open-documents handler: {e}"));
         }
     });
-    attach_open_file_hooks();
+    attach_launch_odoc_handler();
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn install_open_documents_handler() {}
+
+/// Add `application:openURLs:` to winit's delegate after launch has finished.
+/// Safe to call more than once; no-op until `WinitApplicationDelegate` exists.
+#[cfg(target_os = "macos")]
+pub fn attach_runtime_open_url_hooks() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let _ = add_open_urls_to_app_delegate();
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn attach_runtime_open_url_hooks() {}
 
 #[cfg(target_os = "macos")]
 fn register_bundle_with_launch_services() {
@@ -509,16 +525,15 @@ fn register_bundle_with_launch_services() {
     }
 }
 
+/// Steal the launch `odoc` Apple Event. Must not `class_addMethod` on
+/// `WinitApplicationDelegate` — that runs inside `_handleAEOpenEvent` (#1542).
 #[cfg(target_os = "macos")]
-fn attach_open_file_hooks() {
-    if add_open_urls_to_app_delegate() {
+fn attach_launch_odoc_handler() {
+    if objc2::runtime::AnyClass::get(c"WinitApplicationDelegate").is_none() {
         return;
     }
-    // Fallback if the delegate class is not up yet, or method add failed: steal `odoc`.
-    if objc2::runtime::AnyClass::get(c"WinitApplicationDelegate").is_some() {
-        if let Err(e) = install_odoc_apple_event_handler() {
-            crate::diag::warn(format!("open-documents Apple Event handler: {e}"));
-        }
+    if let Err(e) = install_odoc_apple_event_handler() {
+        crate::diag::warn(format!("open-documents Apple Event handler: {e}"));
     }
 }
 
@@ -542,9 +557,11 @@ fn add_open_urls_to_app_delegate() -> bool {
         _app: *mut AnyObject,
         urls: *mut AnyObject,
     ) {
-        for path in nsarray_urls_to_paths(urls) {
-            queue_open_path(path);
-        }
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            for path in nsarray_urls_to_paths(urls) {
+                queue_open_path(path);
+            }
+        }));
     }
 
     unsafe extern "C-unwind" fn application_open_file(
@@ -553,9 +570,11 @@ fn add_open_urls_to_app_delegate() -> bool {
         _app: *mut AnyObject,
         filename: *mut AnyObject,
     ) -> Bool {
-        if let Some(s) = nsstring_to_rust(filename) {
-            queue_open_path(s);
-        }
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Some(s) = nsstring_to_rust(filename) {
+                queue_open_path(s);
+            }
+        }));
         Bool::YES
     }
 
@@ -565,9 +584,11 @@ fn add_open_urls_to_app_delegate() -> bool {
         _app: *mut AnyObject,
         filenames: *mut AnyObject,
     ) {
-        for path in nsarray_strings_to_paths(filenames) {
-            queue_open_path(path);
-        }
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            for path in nsarray_strings_to_paths(filenames) {
+                queue_open_path(path);
+            }
+        }));
     }
 
     // `application:openURLs:` is the modern Finder path (macOS 10.13+).
@@ -705,18 +726,23 @@ fn register_will_finish_launching_observer() -> Result<(), String> {
             fn app_will_finish_launching(&self, _notification: *mut AnyObject) {
                 // NSApplicationWillFinishLaunchingNotification: NSApp exists, winit's
                 // delegate is set, the queued launch `odoc` has not been dispatched yet.
-                attach_open_file_hooks();
+                // Steal odoc only — do not class_addMethod on the winit delegate (#1542).
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    attach_launch_odoc_handler();
+                }));
             }
 
             #[unsafe(method(handleOpenDocuments:withReplyEvent:))]
             fn handle_open_documents(&self, event: *mut AnyObject, _reply: *mut AnyObject) {
-                if event.is_null() {
-                    return;
-                }
-                let event: &AnyObject = unsafe { &*event };
-                for path in paths_from_odoc_event(event) {
-                    queue_open_path(path);
-                }
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    if event.is_null() {
+                        return;
+                    }
+                    let event: &AnyObject = unsafe { &*event };
+                    for path in paths_from_odoc_event(event) {
+                        queue_open_path(path);
+                    }
+                }));
             }
         }
 
@@ -955,6 +981,43 @@ mod tests {
         assert!(
             src.contains("application:openURLs:"),
             "must implement application:openURLs: on the app delegate; winit's does not"
+        );
+    }
+
+    /// #1542: `class_addMethod` on `WinitApplicationDelegate` during
+    /// `applicationWillFinishLaunching:` runs in the middle of AppKit's
+    /// `_handleAEOpenEvent`. A panic there becomes `panic_cannot_unwind` in
+    /// winit's `applicationDidFinishLaunching:` and aborts. Launch-time opens
+    /// go through the stolen `odoc` Apple Event; `application:openURLs:` is
+    /// added only after that notification has returned.
+    #[test]
+    fn will_finish_launching_must_not_mutate_winit_delegate_class() {
+        let src = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/file_association.rs"),
+        )
+        .expect("file_association.rs");
+        let start = src
+            .find("fn app_will_finish_launching")
+            .expect("app_will_finish_launching handler");
+        let body = src[start..]
+            .split("fn handle_open_documents")
+            .next()
+            .expect("handler body");
+        assert!(
+            !body.contains("attach_open_file_hooks") && !body.contains("add_open_urls"),
+            "willFinishLaunching must not class_addMethod on WinitApplicationDelegate:\n{body}"
+        );
+        assert!(
+            body.contains("odoc") || body.contains("install_odoc"),
+            "willFinishLaunching must still steal odoc for launch-time Finder opens:\n{body}"
+        );
+        let main = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+        )
+        .expect("main.rs");
+        assert!(
+            main.contains("attach_runtime_open_url_hooks"),
+            "application:openURLs: must attach after didFinishLaunching, from the first frame"
         );
     }
 

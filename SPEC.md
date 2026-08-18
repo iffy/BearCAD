@@ -47,7 +47,8 @@ must declare `.bearcad` as a document type (`CFBundleDocumentTypes` +
 `UTExportedTypeDeclarations` for UTI `com.bearcad.document`) so double-click *launches*
 BearCAD. The path is not argv: AppKit delivers `application:openURLs:` after
 `applicationWillFinishLaunching:` (winit's delegate does not implement that method; we
-add it, plus an `odoc` Apple Event fallback) (#1285, #1326). The bundle
+steal the launch `odoc` Apple Event there and add `application:openURLs:` after launch)
+(#1285, #1326). The bundle
 ships a QuickLook Preview Extension at `Contents/PlugIns/BearCADQuickLook.appex`
 (`com.bearcad.app.quicklook`) that claims the same UTI and renders the `preview_stl` mesh
 snapshot embedded on save, with SceneKit camera control (rotate/pan/zoom like system STL)
