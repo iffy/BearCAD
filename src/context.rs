@@ -6544,10 +6544,21 @@ pub fn show_pane(
             control.can_commit && controls_enabled,
             crate::tooltable::commit_label(Tool::Shape, control.editing),
         );
-        if create || (enter_commit && control.can_commit) {
+        // The hover ghost fills every size, so `can_commit` is true (and the primary
+        // button's unfocused-Enter shortcut is live) from the first click. A mouse
+        // click on Create still commits; Enter on Radius / cuboid Base advances.
+        let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if create && !enter_pressed {
             on_shape_edit(ShapeEdit::Commit);
-        } else if enter_commit && !control.can_commit {
-            on_shape_edit(ShapeEdit::AdvancePhase);
+        } else if enter_commit || (create && enter_pressed) {
+            ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+            if crate::actions::shape_enter_finishes_placement(control.kind, control.focus_field)
+                && control.can_commit
+            {
+                on_shape_edit(ShapeEdit::Commit);
+            } else {
+                on_shape_edit(ShapeEdit::AdvancePhase);
+            }
         }
     }
 

@@ -13074,19 +13074,21 @@ impl App {
         vec![width_result, depth_result]
     }
 
-    /// Create Shape tool (#909): while it's active, Enter commits the shape once every
-    /// dimension it needs has a size. The placement clicks live in `handle_shape_placement`.
+    /// Create Shape tool (#909): Enter advances the placement (Base → Height → commit)
+    /// the same way a click does. The hover ghost seeds every dimension, so `can_commit`
+    /// is true from the first click — committing here would skip Height and land a second
+    /// body on the next Enter (CI `shape_snaps_to_a_corner`).
     fn handle_shape_tool_keys(&mut self, ui: &egui::Ui) {
         if self.state.tool != Tool::Shape || self.state.sketch_session.is_some() {
             return;
         }
-        let ready = self
-            .state
-            .creating_shape
-            .as_ref()
-            .is_some_and(|c| c.can_commit(&self.state.doc));
-        if ready && self.tool_enter_commits(ui.ctx()) {
-            self.state.apply(Action::CommitShape);
+        // The context pane owns Enter while it's open (advance vs commit per phase).
+        // Running both handlers on the same key would skip Height.
+        if self.state.panes.is_visible(Pane::Context) {
+            return;
+        }
+        if self.tool_enter_commits(ui.ctx()) {
+            self.advance_shape_phase();
         }
     }
 
@@ -29171,24 +29173,17 @@ impl App {
                                     Some(target.reference.clone()),
                                     next_is_point,
                                 );
-                                cp.reference = new_ref;
-                                cp.anchor_source = new_source;
-                                cp.anchor_labels = labels;
-                                cp.anchor_line = line;
-                                cp.anchor_point = pt;
-                                cp.normal_candidates.clear();
-                                cp.normal_choice = 0;
-                                cp.user_edited_angle = false;
-                                cp.axis_angle_deg = 0.0;
-                                cp.angle_text.clear();
-                                cp.axis_gizmo_drag = None;
+                                cp.apply_complemented_anchor(new_ref, new_source, labels, line, pt);
                                 complemented = true;
                             }
                         }
                     }
 
                     let following = cp.axis_gizmo_drag.is_some();
-                    if !following && primary_pressed && !complemented {
+                    // The click that starts the plane lands on the handle (offset 0 is
+                    // at the pick). Grabbing it that same frame makes click-to-stick
+                    // follow the cursor to the next pick and leave a leftover offset.
+                    if was_creating && !following && primary_pressed && !complemented {
                         match &cp.reference {
                             PlaneReference::Axis {
                                 origin,

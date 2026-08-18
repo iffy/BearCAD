@@ -273,6 +273,21 @@ pub fn shape_tab_advances_height(kind: crate::model::PrimitiveKind, phase: Shape
     kind == crate::model::PrimitiveKind::Cylinder && phase == ShapePhase::Base
 }
 
+/// Enter in the pane/viewport finishes the shape only on the last dimension.
+/// Earlier steps (Radius, cuboid Base) advance even when the hover ghost has already
+/// filled every size so `can_commit` is true (CI `shape_snaps_to_a_corner`).
+pub fn shape_enter_finishes_placement(
+    kind: crate::model::PrimitiveKind,
+    focus_field: Option<ShapeDimension>,
+) -> bool {
+    match kind {
+        crate::model::PrimitiveKind::Sphere => {
+            matches!(focus_field, Some(ShapeDimension::Radius))
+        }
+        _ => matches!(focus_field, Some(ShapeDimension::Height)),
+    }
+}
+
 /// Clicking the Height ValueInput while still in Base advances to Height (#1309).
 pub fn shape_field_click_advances_height(
     kind: crate::model::PrimitiveKind,
@@ -2264,6 +2279,31 @@ pub struct PendingPlaneLine {
 }
 
 impl CreatingConstructionPlane {
+    /// Apply a line+point complement (#483). The new origin is the complementary pick;
+    /// a leftover offset-gizmo drag from the first half would slide it.
+    pub fn apply_complemented_anchor(
+        &mut self,
+        reference: PlaneReference,
+        source: crate::construction::PlaneAnchorSource,
+        labels: Vec<String>,
+        line: Option<crate::model::LineKey>,
+        pt: Option<crate::model::ConstraintPoint>,
+    ) {
+        self.reference = reference;
+        self.anchor_source = source;
+        self.anchor_labels = labels;
+        self.anchor_line = line;
+        self.anchor_point = pt;
+        self.normal_candidates.clear();
+        self.normal_choice = 0;
+        self.user_edited_angle = false;
+        self.axis_angle_deg = 0.0;
+        self.angle_text.clear();
+        self.axis_gizmo_drag = None;
+        self.offset_live = 0.0;
+        self.user_edited_offset = false;
+    }
+
     pub fn preview_plane(&self) -> ConstructionPlane {
         let (live_offset, live_angle) = self.live_dims();
         resolve_plane(
@@ -12721,12 +12761,20 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::SetExtrudeTarget { target } => {
-                if let Some(ce) = &mut self.creating_extrusion {
+                if self.creating_extrusion.is_some() {
                     let has_target = target.is_some();
-                    ce.target = target;
-                    // Typing a distance again clears the object constraint.
+                    if let Some(ce) = &mut self.creating_extrusion {
+                        ce.target = target;
+                        // Typing a distance again clears the object constraint.
+                        if has_target {
+                            ce.user_edited = false;
+                        }
+                    }
+                    // A taken single-item pick drops the hand-armed override so
+                    // "Up to" does not stay focused after filling (#1485).
                     if has_target {
-                        ce.user_edited = false;
+                        self.picker_focus = None;
+                        self.extrude_target_pick = false;
                     }
                 }
                 ActionResult::Ok
@@ -24118,6 +24166,19 @@ translate_mode: crate::model::MoveTranslateMode::Free,
     /// a static one waits until told; a sync that orphans a reference reports unhealthy
     /// and undoes cleanly; a missing source leaves the document fully usable.
 
+    /// Hover-seeded sizes make `can_commit` true from the first click; Enter on Radius
+    /// must still be an advance, not a commit.
+    #[test]
+    fn shape_enter_finishes_only_on_the_last_dimension() {
+        use crate::model::PrimitiveKind as K;
+        assert!(!shape_enter_finishes_placement(K::Cylinder, Some(ShapeDimension::Radius)));
+        assert!(shape_enter_finishes_placement(K::Cylinder, Some(ShapeDimension::Height)));
+        assert!(!shape_enter_finishes_placement(K::Cuboid, None));
+        assert!(shape_enter_finishes_placement(K::Cuboid, Some(ShapeDimension::Height)));
+        assert!(shape_enter_finishes_placement(K::Sphere, Some(ShapeDimension::Radius)));
+        assert!(!shape_enter_finishes_placement(K::Sphere, Some(ShapeDimension::Height)));
+    }
+
     /// #909/#911: the Shape tool arms a shape of the last-used kind, its shortcut cycles
     /// which shape, and committing lands a body.
     #[test]
@@ -26483,12 +26544,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 &point_ref,
             )
             .expect("axis + point complements");
-            cp.reference = new_ref;
-            cp.anchor_source = source;
-            cp.anchor_labels = labels;
-            cp.anchor_line = line;
-            cp.anchor_point = pt;
-            cp.offset_live = 0.0;
+            cp.apply_complemented_anchor(new_ref, source, labels, line, pt);
         }
         state.apply(Action::CommitConstructionPlane);
         assert_eq!(state.doc.construction_planes.len(), 2);
@@ -26501,6 +26557,55 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert!(
             (plane.origin - Vec3::new(10.0, 20.0, 0.0)).length() < 1e-2,
             "origin {:?}",
+            plane.origin
+        );
+    }
+
+    /// A leftover offset-gizmo drag from the first (axis) pick must not slide the
+    /// complemented origin. CI `plane_line_and_point` saw (10,20) become (-5,20).
+    #[test]
+    fn line_plus_point_complement_drops_a_leftover_gizmo_offset() {
+        use crate::construction::{
+            complement_plane_anchor, PickTargetKind, PlaneAnchorSource, PlaneReference,
+        };
+        use crate::model::ConstraintPoint;
+
+        let mut state = ground_plane_only_state();
+        state.apply(Action::BeginConstructionPlane {
+            reference: PlaneReference::Axis {
+                origin: Vec3::new(15.0, 5.0, 0.0),
+                direction: Vec3::X,
+                label: "Line".to_string(),
+            },
+            parent: ConstructionPlaneParent::Root,
+        });
+        {
+            let cp = state.creating_plane.as_mut().unwrap();
+            cp.anchor_source = PlaneAnchorSource::Axis;
+            // Same-click gizmo grab + click-to-stick (#1497) dragged offset along −X.
+            cp.offset_live = -15.0;
+            let point_ref = PlaneReference::Face {
+                origin: Vec3::new(10.0, 20.0, 0.0),
+                normal: Vec3::Z,
+                label: "Point".to_string(),
+            };
+            let (new_ref, source, labels, line, pt) = complement_plane_anchor(
+                &state.doc,
+                cp.anchor_source,
+                &cp.reference,
+                None,
+                None,
+                &PickTargetKind::Point(ConstraintPoint::CircleCenter(rkey(0))),
+                &point_ref,
+            )
+            .expect("axis + point complements");
+            cp.apply_complemented_anchor(new_ref, source, labels, line, pt);
+        }
+        state.apply(Action::CommitConstructionPlane);
+        let plane = &state.doc.construction_planes[pkey(1)];
+        assert!(
+            (plane.origin - Vec3::new(10.0, 20.0, 0.0)).length() < 1e-2,
+            "origin should stay on the point, got {:?}",
             plane.origin
         );
     }
@@ -35942,6 +36047,28 @@ translate_mode: crate::model::MoveTranslateMode::Free,
 
         state.apply(Action::CancelOperation);
         assert_eq!(state.tool, Tool::Select, "second Esc leaves Shape");
+    }
+
+    /// A filled "Up to" pick drops the hand-armed override so the picker does not stay
+    /// focused after taking its one item (CI `extrude_up_to_a_primitive_face`).
+    #[test]
+    fn set_extrude_target_disarms_the_up_to_picker() {
+        let mut state = AppState::default();
+        state.creating_extrusion = Some(CreatingExtrusion::pending(ToolOutputMode::NewBody, false));
+        state.picker_focus = Some(crate::context::PickerTarget::ExtrudeUpTo);
+        state.extrude_target_pick = true;
+        assert!(matches!(
+            state.apply(Action::SetExtrudeTarget {
+                target: Some(crate::model::ExtrudeTarget::Plane(pkey(0))),
+            }),
+            ActionResult::Ok
+        ));
+        assert!(
+            state.picker_focus.is_none(),
+            "a taken Up to pick must drop the override, got {:?}",
+            state.picker_focus
+        );
+        assert!(!state.extrude_target_pick, "and the pick-mode flag");
     }
 
     /// #1485: arming a picker that this tool has works even before the pane has built

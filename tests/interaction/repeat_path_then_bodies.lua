@@ -14,7 +14,7 @@ bearcad.ui.auto_zoom(false)
 bearcad.ui.ground("off")
 bearcad.ui.view("top")
 bearcad.ui.wait(5)
-bearcad.ui.zoom_fit()
+bearcad.ui.camera{ target = {15, 10, 5}, distance = 220 }
 bearcad.ui.wait(5)
 
 local function picker(name)
