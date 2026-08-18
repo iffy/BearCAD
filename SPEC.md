@@ -5410,8 +5410,8 @@ was built. Scriptable as `bearcad.ui.changelog("show"|"hide"|"toggle")`;
 GitHub draft releases take their version from `changer next-version` plus the existing
 `YYMMDD-###` build number (`vX.Y.Z-build.YYMMDD-###`), and their notes from
 `changer bump -n`. Publishing a draft runs `changer bump` so the repo CHANGELOG matches
-that release, leaves later snippets for the next draft, and tags the released commit
-`vX.Y.Z`.
+that release, leaves later snippets for the next draft, tags the released commit
+`vX.Y.Z`, and dispatches a website rebuild so the landing page shows the new version.
 
 ### 11.z Settings window & app settings store (#720)
 
