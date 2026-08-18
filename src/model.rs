@@ -8,6 +8,10 @@
 use crate::value::{AngleUnit, LengthUnit};
 use serde::{Deserialize, Serialize};
 
+fn default_true() -> bool {
+    true
+}
+
 /// A sketchable face that lines and rectangles can be drawn on.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -845,6 +849,12 @@ pub struct PlaneDefinition {
     pub anchor: PlaneAnchor,
     pub offset_mm: f32,
     pub angle_deg: f32,
+    /// Optional expression driving `offset_mm` (empty = gizmo/free number).
+    #[serde(default)]
+    pub offset_expression: String,
+    /// Optional expression driving `angle_deg` (empty = gizmo/free number).
+    #[serde(default)]
+    pub angle_expression: String,
 }
 
 impl PlaneDefinition {
@@ -2808,11 +2818,24 @@ pub struct Revolution {
     /// multi-turn are allowed (#1242): negative reverses the turn, and values past ±360
     /// keep winding when [`Self::pitch_mm`] is non-zero.
     pub angle_deg: f32,
+    /// Optional expression driving `angle_deg` (empty = gizmo/free number).
+    #[serde(default)]
+    pub angle_expression: String,
+    /// When true, [`Self::angle_expression`] is a turn count (`× 360`), not degrees.
+    #[serde(default)]
+    pub angle_is_revolutions: bool,
     /// Axial travel per full 360° revolution in millimetres (#1242). Zero is a pure revolve;
     /// non-zero makes a helix so successive coils of a spring sit this far apart
     /// start-to-start. Signed: negative advances the other way along the axis.
     #[serde(default)]
     pub pitch_mm: f32,
+    /// Optional expression driving the Gap/Offset field (empty = gizmo/free number).
+    /// Evaluated as pitch when [`Self::gap_is_offset`] is true, otherwise as clear gap.
+    #[serde(default)]
+    pub pitch_expression: String,
+    /// When true the pitch field is Offset (start-to-start); when false it's Gap.
+    #[serde(default = "default_true")]
+    pub gap_is_offset: bool,
     /// Sweep `angle_deg/2` to each side of the profile plane instead of one way.
     #[serde(default)]
     pub symmetric: bool,
@@ -3886,6 +3909,9 @@ pub struct EdgeTreatmentOperation {
     pub kind: VertexTreatmentKind,
     /// Chamfer distance / fillet radius (mm); must be positive to have any effect.
     pub amount: f32,
+    /// Optional expression driving `amount` (empty = gizmo/free number).
+    #[serde(default)]
+    pub expression: String,
     /// Output bodies, matching `targets` order.
     #[serde(default)]
     pub outputs: Vec<BodyKey>,

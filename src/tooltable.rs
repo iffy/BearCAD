@@ -24,8 +24,8 @@
 //! Add the field to [`ToolRow`], fill it in for every arm of [`row`] (the compiler lists the
 //! arms for you), point the handler that used to `matches!` at the field, and add a walk in
 //! `tests`. Columns that exist so far are documented on [`ToolRow`]; later issues still move
-//! commit buttons, SceneElement / re-edit path, expression storage, preview bounds and
-//! default amounts here.
+//! commit buttons, SceneElement / re-edit path, preview bounds and default amounts here.
+//! Expression storage is [`stored_value_fields`] (#1489).
 
 use crate::actions::Tool;
 use eframe::egui;
@@ -607,6 +607,56 @@ impl ToolRow {
     }
 }
 
+/// A committed numeric field that sits behind a value input (#1489).
+///
+/// The name is the storage field (e.g. `"angle"`, `"thickness"`), not the widget id.
+/// [`stored_value_fields`] is exhaustive over [`Tool`]: a new tool does not compile
+/// until it declares its fields (or explicitly none). The walk in
+/// `actions::tests::every_value_input_round_trips_its_expression` then commits each
+/// field with a distinctive expression and asserts the committed op stores that
+/// text and that re-edit restores it verbatim.
+#[cfg(test)]
+pub fn stored_value_fields(tool: Tool, _space: ToolSpace) -> &'static [&'static str] {
+    match tool {
+        Tool::Select
+        | Tool::Rectangle
+        | Tool::Line
+        | Tool::Circle
+        | Tool::Sketch
+        | Tool::Dimension
+        | Tool::Constraint
+        | Tool::Project
+        | Tool::Loft
+        | Tool::Sweep
+        | Tool::Combine
+        | Tool::Mirror
+        | Tool::Slice
+        | Tool::Text
+        | Tool::DrawingAdd
+        | Tool::DrawingAlign => &[],
+        Tool::ConstructionPlane => &["offset", "angle"],
+        Tool::Extrude => &["distance", "taper"],
+        Tool::Chamfer | Tool::Fillet => &["amount"],
+        Tool::Offset => &["distance"],
+        Tool::Revolve => &["angle", "pitch"],
+        Tool::Shape => &["width", "depth", "height", "radius"],
+        Tool::Move => &[
+            "tx",
+            "ty",
+            "tz",
+            "rx",
+            "ry",
+            "rz",
+            "roll_angle",
+            "face_spin",
+            "face_offset",
+        ],
+        Tool::Repeat => &["count", "spacing", "length"],
+        Tool::Shell => &["thickness"],
+        Tool::Joint => &["lead", "offset", "min", "max", "angle", "distance"],
+    }
+}
+
 /// Every row: each tool once per space it lives in. The walks in `tests` (and any future
 /// exhaustive check) iterate this, so a tool that falls out of [`Tool::ALL`] cannot hide.
 pub fn all_rows() -> Vec<ToolRow> {
@@ -742,6 +792,31 @@ mod tests {
                 assert!(
                     r.commit_fields.is_empty(),
                     "{:?}/{:?} lists commit fields but never commits on Enter",
+                    r.tool,
+                    r.space
+                );
+            }
+        }
+    }
+
+    /// #1489: a value input without a stored-expression field is how Revolve/3D fillet
+    /// drifted. Every row that has commit fields must declare what it stores; a row with
+    /// no typed value must declare none.
+    #[test]
+    fn value_inputs_declare_expression_storage() {
+        for r in all_rows() {
+            let stored = stored_value_fields(r.tool, r.space);
+            if r.commit_fields.is_empty() {
+                assert!(
+                    stored.is_empty(),
+                    "{:?}/{:?} lists stored value fields but has no value input",
+                    r.tool,
+                    r.space
+                );
+            } else {
+                assert!(
+                    !stored.is_empty(),
+                    "{:?}/{:?} has a value input but lists no stored expression field",
                     r.tool,
                     r.space
                 );

@@ -22,6 +22,10 @@ use std::collections::BTreeMap;
 
 use super::Result;
 
+fn default_true() -> bool {
+    true
+}
+
 /// Bump when the on-disk schema changes. v1 was the `dag_nodes` dump; this is the typed
 /// one-table-per-arena format. Pre-alpha: no reader for the old dump.
 const SCHEMA_VERSION: i64 = 2;
@@ -1122,6 +1126,10 @@ fn save_revolutions(tx: &Connection, arena: &Arena<Revolution>) -> Result<()> {
                     "faces": r.faces,
                     "axis": r.axis,
                     "mode": r.mode,
+                    "angle_expression": r.angle_expression,
+                    "angle_is_revolutions": r.angle_is_revolutions,
+                    "pitch_expression": r.pitch_expression,
+                    "gap_is_offset": r.gap_is_offset,
                 }))?,
             ],
         )
@@ -1352,6 +1360,7 @@ fn save_edge_treatment_ops(tx: &Connection, arena: &Arena<EdgeTreatmentOperation
                     "targets": op.targets,
                     "edges": op.edges,
                     "outputs": op.outputs,
+                    "expression": op.expression,
                 }))?,
             ],
         )
@@ -2445,6 +2454,14 @@ struct RevolutionPayload {
     faces: Vec<crate::model::ExtrudeFace>,
     axis: crate::model::RevolveAxis,
     mode: crate::model::RevolveMode,
+    #[serde(default)]
+    angle_expression: String,
+    #[serde(default)]
+    angle_is_revolutions: bool,
+    #[serde(default)]
+    pitch_expression: String,
+    #[serde(default = "default_true")]
+    gap_is_offset: bool,
 }
 
 fn load_revolutions(conn: &Connection) -> Result<Arena<Revolution>> {
@@ -2478,7 +2495,11 @@ fn load_revolutions(conn: &Connection) -> Result<Arena<Revolution>> {
                 faces: payload.faces,
                 axis: payload.axis,
                 angle_deg: angle_deg as f32,
+                angle_expression: payload.angle_expression,
+                angle_is_revolutions: payload.angle_is_revolutions,
                 pitch_mm: pitch_mm as f32,
+                pitch_expression: payload.pitch_expression,
+                gap_is_offset: payload.gap_is_offset,
                 symmetric: symmetric != 0,
                 mode: payload.mode,
                 name,
@@ -2945,6 +2966,8 @@ struct EdgeTreatmentPayload {
     edges: Vec<crate::model::TreatedEdge>,
     #[serde(default)]
     outputs: Vec<crate::model::BodyKey>,
+    #[serde(default)]
+    expression: String,
 }
 
 fn load_edge_treatment_ops(conn: &Connection) -> Result<Arena<EdgeTreatmentOperation>> {
@@ -2973,6 +2996,7 @@ fn load_edge_treatment_ops(conn: &Connection) -> Result<Arena<EdgeTreatmentOpera
                 edges: payload.edges,
                 kind: from_json(&kind)?,
                 amount: amount as f32,
+                expression: payload.expression,
                 outputs: payload.outputs,
                 name,
             },

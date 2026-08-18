@@ -25,6 +25,8 @@ pub fn default_xy_plane_definition() -> PlaneDefinition {
         },
         offset_mm: 0.0,
         angle_deg: 0.0,
+        offset_expression: String::new(),
+        angle_expression: String::new(),
     }
 }
 
@@ -69,6 +71,8 @@ pub fn default_datum_planes() -> crate::arena::Arena<ConstructionPlane> {
             },
             offset_mm: 0.0,
             angle_deg: 0.0,
+            offset_expression: String::new(),
+            angle_expression: String::new(),
         },
         repeat_instance: None,
         name: Some(label.to_string()),

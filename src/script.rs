@@ -413,7 +413,10 @@ pub enum Instruction {
         faces: Vec<crate::model::ExtrudeFace>,
         axis: crate::model::RevolveAxis,
         angle_deg: f32,
+        angle_expression: String,
+        angle_is_revolutions: bool,
         pitch_mm: f32,
+        pitch_expression: String,
         symmetric: bool,
         body: crate::actions::RevolveBodyChoice,
         bodies: Vec<usize>,
@@ -796,6 +799,7 @@ pub enum Instruction {
         edges: Vec<(TreatableSolidRef, crate::model::ExtrusionEdgeRef)>,
         kind: VertexTreatmentKind,
         amount: f32,
+        expression: String,
     },
     SetLineLength { value: String },
     SetCircleDiameter { value: String },
@@ -1429,7 +1433,10 @@ impl Instruction {
                 faces,
                 axis,
                 angle_deg,
+                angle_expression,
+                angle_is_revolutions,
                 pitch_mm,
+                pitch_expression,
                 symmetric,
                 body,
                 bodies,
@@ -1459,8 +1466,18 @@ impl Instruction {
                     }
                 }
                 parts.push(format!("axis = {}", revolve_axis_lua(*axis)));
-                parts.push(format!("angle = {angle_deg}"));
-                if pitch_mm.abs() > 1e-9 {
+                if !angle_expression.trim().is_empty() {
+                    if *angle_is_revolutions {
+                        parts.push(format!("revolutions = {:?}", angle_expression));
+                    } else {
+                        parts.push(format!("angle = {:?}", angle_expression));
+                    }
+                } else {
+                    parts.push(format!("angle = {angle_deg}"));
+                }
+                if !pitch_expression.trim().is_empty() {
+                    parts.push(format!("pitch = {:?}", pitch_expression));
+                } else if pitch_mm.abs() > 1e-9 {
                     parts.push(format!("pitch = {pitch_mm}"));
                 }
                 if *symmetric {
@@ -1811,7 +1828,7 @@ impl Instruction {
                     constraint_point_lua_ref(point, doc)
                 )
             }
-            Instruction::EdgeTreatment { edges, kind, amount } => {
+            Instruction::EdgeTreatment { edges, kind, amount, expression } => {
                 let (fname, amount_key) = match kind {
                     VertexTreatmentKind::Chamfer => ("chamfer_edge", "distance"),
                     VertexTreatmentKind::Fillet => ("fillet_edge", "radius"),
@@ -1820,10 +1837,16 @@ impl Instruction {
                     TreatableSolidRef::Extrusion(i) => format!("extrusion = {i}"),
                     TreatableSolidRef::Primitive(i) => format!("primitive = {i}"),
                 };
+                let amount_lua = if !expression.trim().is_empty() && expression.trim().parse::<f32>().is_err()
+                {
+                    format!("{expression:?}")
+                } else {
+                    amount.to_string()
+                };
                 // One edge keeps the singular, readable form; a set spells out `edges`.
                 match edges.as_slice() {
                     [(host, edge)] => format!(
-                        "bearcad.{fname}{{ {}, edge = {}, {amount_key} = {amount} }}",
+                        "bearcad.{fname}{{ {}, edge = {}, {amount_key} = {amount_lua} }}",
                         host_lua(*host),
                         extrusion_edge_lua_ref(*edge)
                     ),
@@ -1836,7 +1859,7 @@ impl Instruction {
                             })
                             .collect::<Vec<_>>()
                             .join(", ");
-                        format!("bearcad.{fname}{{ edges = {{ {list} }}, {amount_key} = {amount} }}")
+                        format!("bearcad.{fname}{{ edges = {{ {list} }}, {amount_key} = {amount_lua} }}")
                     }
                 }
             }
@@ -3384,7 +3407,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             })
         }
         Action::ZoomToFit => Some(Instruction::ZoomFit),
-        Action::CommitEdgeTreatments { edges, kind, amount } => Some(Instruction::EdgeTreatment {
+        Action::CommitEdgeTreatments { edges, kind, amount, expression } => Some(Instruction::EdgeTreatment {
             edges: edges
                 .iter()
                 .map(|(solid, edge)| {
@@ -3401,6 +3424,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 .collect::<Option<Vec<_>>>()?,
             kind: *kind,
             amount: *amount,
+            expression: expression.clone(),
         }),
         Action::ProjectSelection => Some(Instruction::Project { elements: vec![] }),
         Action::ProjectElement { element } => Some(Instruction::Project {
@@ -3590,7 +3614,10 @@ pub fn instruction_for_new_revolution(doc: &crate::model::Document) -> Option<In
         faces: rev.faces.clone(),
         axis: rev.axis,
         angle_deg: rev.angle_deg,
+        angle_expression: rev.angle_expression.clone(),
+        angle_is_revolutions: rev.angle_is_revolutions,
         pitch_mm: rev.pitch_mm,
+        pitch_expression: rev.pitch_expression.clone(),
         symmetric: rev.symmetric,
         body,
         bodies: body_ordinals(doc, &bodies)?,
@@ -3649,6 +3676,7 @@ pub fn instructions_for_new_edge_treatment_op(
         edges,
         kind: op.kind,
         amount: op.amount,
+        expression: op.expression.clone(),
     }]
 }
 
@@ -6509,7 +6537,10 @@ impl ScriptRunner {
                 faces,
                 axis,
                 angle_deg,
+                angle_expression,
+                angle_is_revolutions,
                 pitch_mm,
+                pitch_expression,
                 symmetric,
                 body,
                 bodies,
@@ -6529,7 +6560,11 @@ impl ScriptRunner {
                     faces,
                     axis,
                     angle_deg,
+                    angle_expression,
+                    angle_is_revolutions,
                     pitch_mm,
+                    pitch_expression,
+                    gap_is_offset: true,
                     symmetric,
                     body,
                     bodies,
@@ -6563,7 +6598,7 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::EdgeTreatment { edges, kind, amount } => {
+            Instruction::EdgeTreatment { edges, kind, amount, expression } => {
                 let Some(edges) = edges
                     .iter()
                     .map(|(host, edge)| {
@@ -6586,7 +6621,7 @@ impl ScriptRunner {
                     self.last_action_error = Some("No such extrusion or primitive".to_string());
                     return StepResult::Continue;
                 };
-                let result = state.apply(Action::CommitEdgeTreatments { edges, kind, amount });
+                let result = state.apply(Action::CommitEdgeTreatments { edges, kind, amount, expression });
                 self.record_action_error(result);
                 StepResult::Continue
             }
@@ -8595,6 +8630,7 @@ mod tests {
             edges: vec![(TreatableSolidRef::Extrusion(1), edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 3.0,
+            expression: String::new(),
         };
         assert_eq!(
             chamfer.as_lua(),
@@ -8605,6 +8641,7 @@ mod tests {
             edges: vec![(TreatableSolidRef::Extrusion(0), cap_edge)],
             kind: VertexTreatmentKind::Fillet,
             amount: 1.5,
+            expression: String::new(),
         };
         assert_eq!(
             fillet.as_lua(),
@@ -8618,6 +8655,7 @@ mod tests {
             ],
             kind: VertexTreatmentKind::Fillet,
             amount: 8.0,
+            expression: String::new(),
         };
         assert_eq!(
             set.as_lua(),
@@ -8656,6 +8694,7 @@ mod tests {
             edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(2)), edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.5,
+            expression: String::new(),
         };
         assert_eq!(
             instruction_from_action(&action, &doc),
@@ -8663,6 +8702,7 @@ mod tests {
                 edges: vec![(TreatableSolidRef::Extrusion(2), edge)],
                 kind: VertexTreatmentKind::Chamfer,
                 amount: 2.5,
+                expression: String::new(),
             })
         );
     }

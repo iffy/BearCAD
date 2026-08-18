@@ -1801,7 +1801,11 @@ impl CreatingRevolve {
             faces: self.faces.clone(),
             axis,
             angle_deg: 360.0,
+            angle_expression: String::new(),
+            angle_is_revolutions: false,
             pitch_mm: 0.0,
+            pitch_expression: String::new(),
+            gap_is_offset: true,
             symmetric: false,
             mode: crate::model::RevolveMode::NewBody,
             name: None,
@@ -1851,6 +1855,62 @@ impl CreatingRevolve {
         self.gap_is_offset = !self.gap_is_offset;
         self.gap_user_edited = false;
         self.refresh_gap_text_from_live(doc);
+    }
+
+    /// Angle text to store on the committed op: typed text when edited, else empty
+    /// (gizmo-driven, no parameter to follow).
+    pub fn angle_expr(&self) -> String {
+        let text = self.text.trim();
+        if self.user_edited && !text.is_empty() {
+            text.to_string()
+        } else {
+            String::new()
+        }
+    }
+
+    /// Pitch/gap text to store on the committed op.
+    pub fn pitch_expr(&self) -> String {
+        let text = self.gap_text.trim();
+        if self.gap_user_edited && !text.is_empty() {
+            text.to_string()
+        } else {
+            String::new()
+        }
+    }
+
+    /// Re-open a committed revolve: restore stored expression text verbatim (#1489).
+    pub fn from_committed(existing: &crate::model::Revolution, op: crate::model::RevolutionKey) -> Self {
+        let (body_choice, cut_bodies) = match &existing.mode {
+            crate::model::RevolveMode::NewBody => (RevolveBodyChoice::NewBody, Vec::new()),
+            crate::model::RevolveMode::AddTo(_) => (RevolveBodyChoice::AddTouching, Vec::new()),
+            crate::model::RevolveMode::Cut(b) => (RevolveBodyChoice::Cut, b.clone()),
+        };
+        Self {
+            sketch: Some(existing.sketch),
+            faces: existing.faces.clone(),
+            axis: Some(existing.axis),
+            angle_live: existing.angle_deg,
+            text: if !existing.angle_expression.trim().is_empty() {
+                existing.angle_expression.clone()
+            } else {
+                format_compact_number(existing.angle_deg)
+            },
+            user_edited: !existing.angle_expression.trim().is_empty(),
+            pending_focus: false,
+            angle_is_revolutions: existing.angle_is_revolutions,
+            pitch_live: existing.pitch_mm,
+            gap_text: if !existing.pitch_expression.trim().is_empty() {
+                existing.pitch_expression.clone()
+            } else {
+                format_compact_number(existing.pitch_mm)
+            },
+            gap_user_edited: !existing.pitch_expression.trim().is_empty(),
+            gap_is_offset: existing.gap_is_offset,
+            symmetric: existing.symmetric,
+            body_choice,
+            cut_bodies,
+            editing: Some(op),
+        }
     }
 }
 
@@ -1930,6 +1990,37 @@ impl CreatingEdgeTreatment {
             parse_positive_length_or_in_doc(&self.text, doc, self.amount_live.max(0.0))
         } else {
             self.amount_live.max(0.0)
+        }
+    }
+
+    /// Amount text to store on the committed op: typed text when edited, else empty.
+    pub fn amount_expr(&self) -> String {
+        let text = self.text.trim();
+        if self.user_edited && !text.is_empty() {
+            text.to_string()
+        } else {
+            String::new()
+        }
+    }
+
+    /// Re-open a committed 3D chamfer/fillet: restore stored expression text verbatim (#1489).
+    pub fn from_committed(operation: &crate::model::EdgeTreatmentOperation) -> Self {
+        let edges = operation
+            .edges
+            .iter()
+            .map(|te| (te.solid, te.edge))
+            .collect();
+        Self {
+            edges,
+            kind: operation.kind,
+            amount_live: operation.amount,
+            text: if !operation.expression.trim().is_empty() {
+                operation.expression.clone()
+            } else {
+                crate::value::format_length_display(operation.amount)
+            },
+            user_edited: !operation.expression.trim().is_empty(),
+            pending_focus: true,
         }
     }
 }
@@ -2042,7 +2133,14 @@ impl CreatingConstructionPlane {
         } else {
             live_angle
         };
-        definition_from_reference(&self.reference, offset, angle)
+        let mut def = definition_from_reference(&self.reference, offset, angle);
+        if self.user_edited_offset {
+            def.offset_expression = self.offset_text.trim().to_string();
+        }
+        if self.user_edited_angle {
+            def.angle_expression = self.angle_text.trim().to_string();
+        }
+        def
     }
 
     pub fn live_dims(&self) -> (f32, f32) {
@@ -2475,6 +2573,8 @@ pub enum Action {
         edges: Vec<(crate::model::TreatableSolid, ExtrusionEdgeRef)>,
         kind: VertexTreatmentKind,
         amount: f32,
+        /// Typed amount expression (empty = gizmo-driven number).
+        expression: String,
     },
     /// Re-open a legacy (extrusion-baked) chamfer/fillet for editing with its push/pull gizmo +
     /// amount input (#259). Removes the baked treatment from the extrusion and reloads its edge,
@@ -2759,8 +2859,12 @@ pub enum Action {
         faces: Vec<ExtrudeFace>,
         axis: crate::model::RevolveAxis,
         angle_deg: f32,
+        angle_expression: String,
+        angle_is_revolutions: bool,
         /// Helical pitch (mm per full turn); 0 = pure revolve (#1242).
         pitch_mm: f32,
+        pitch_expression: String,
+        gap_is_offset: bool,
         symmetric: bool,
         body: RevolveBodyChoice,
         bodies: Vec<crate::model::BodyKey>,
@@ -4980,6 +5084,8 @@ impl AppState {
                             },
                             offset_mm: 0.0,
                             angle_deg: 0.0,
+                            offset_expression: String::new(),
+                            angle_expression: String::new(),
                         },
                         repeat_instance: None,
                         name: name.clone(),
@@ -5747,6 +5853,7 @@ impl AppState {
         edges: Vec<(crate::model::TreatableSolid, ExtrusionEdgeRef)>,
         kind: VertexTreatmentKind,
         amount: f32,
+        expression: String,
     ) -> ActionResult {
         use crate::model::{
             Body, BodySource, EdgeTreatmentOperation, ShapeKind, TreatableSolid, TreatedEdge,
@@ -5754,6 +5861,11 @@ impl AppState {
         if edges.is_empty() {
             return ActionResult::Err("No edges to treat".to_string());
         }
+        let amount = if !expression.trim().is_empty() {
+            crate::value::eval_length_mm_in_doc(&expression, &self.doc).unwrap_or(amount)
+        } else {
+            amount
+        };
         if !(amount > 0.0) {
             // #1321: a zero-radius fillet / zero-distance chamfer is a no-op — not a
             // feature that deletes geometry, and not an error.
@@ -5855,6 +5967,7 @@ impl AppState {
             edges: treated,
             kind,
             amount,
+            expression,
             outputs: Vec::new(),
             name: None,
         };
@@ -5950,7 +6063,11 @@ impl AppState {
                     faces: faces.to_vec(),
                     axis,
                     angle_deg,
+                    angle_expression: String::new(),
+                    angle_is_revolutions: false,
                     pitch_mm: 0.0,
+                    pitch_expression: String::new(),
+                    gap_is_offset: true,
                     symmetric,
                     mode: crate::model::RevolveMode::NewBody,
                     name: None,
@@ -6059,7 +6176,11 @@ impl AppState {
         faces: Vec<ExtrudeFace>,
         axis: crate::model::RevolveAxis,
         angle_deg: f32,
+        angle_expression: String,
+        angle_is_revolutions: bool,
         pitch_mm: f32,
+        pitch_expression: String,
+        gap_is_offset: bool,
         symmetric: bool,
         mode: crate::model::RevolveMode,
     ) -> ActionResult {
@@ -6068,7 +6189,11 @@ impl AppState {
             faces,
             axis,
             angle_deg,
+            angle_expression,
+            angle_is_revolutions,
             pitch_mm,
+            pitch_expression,
+            gap_is_offset,
             symmetric,
             mode: mode.clone(),
             name: None,
@@ -6115,7 +6240,11 @@ impl AppState {
         faces: Vec<ExtrudeFace>,
         axis: crate::model::RevolveAxis,
         angle_deg: f32,
+        angle_expression: String,
+        angle_is_revolutions: bool,
         pitch_mm: f32,
+        pitch_expression: String,
+        gap_is_offset: bool,
         symmetric: bool,
         mode: crate::model::RevolveMode,
     ) -> ActionResult {
@@ -6127,7 +6256,11 @@ impl AppState {
             faces,
             axis,
             angle_deg,
+            angle_expression,
+            angle_is_revolutions,
             pitch_mm,
+            pitch_expression,
+            gap_is_offset,
             symmetric,
             mode: mode.clone(),
             name: existing.name.clone(),
@@ -7089,7 +7222,11 @@ fn operation_preview_world_bounds(state: &AppState) -> Option<(Vec3, Vec3)> {
                     faces: cr.faces.clone(),
                     axis,
                     angle_deg: cr.evaluated_angle_deg(doc),
+                    angle_expression: String::new(),
+                    angle_is_revolutions: false,
                     pitch_mm: cr.evaluated_pitch_mm(doc),
+                    pitch_expression: String::new(),
+                    gap_is_offset: true,
                     symmetric: cr.symmetric,
                     mode: crate::model::RevolveMode::NewBody,
                     name: None,
@@ -10410,13 +10547,21 @@ impl AppState {
                     edit_index: Some(index),
                     reference,
                     parent: plane.parent,
-                    offset_text: format!("{offset_live:.1}"),
-                    angle_text: format!("{axis_angle_deg:.0}"),
+                    offset_text: if !plane.definition.offset_expression.trim().is_empty() {
+                        plane.definition.offset_expression.clone()
+                    } else {
+                        format!("{offset_live:.1}")
+                    },
+                    angle_text: if !plane.definition.angle_expression.trim().is_empty() {
+                        plane.definition.angle_expression.clone()
+                    } else {
+                        format!("{axis_angle_deg:.0}")
+                    },
                     focused: PlaneDim::Offset,
                     offset_live,
                     axis_angle_deg,
-                    user_edited_offset: false,
-                    user_edited_angle: false,
+                    user_edited_offset: !plane.definition.offset_expression.trim().is_empty(),
+                    user_edited_angle: !plane.definition.angle_expression.trim().is_empty(),
                     pending_focus: true,
                     axis_gizmo_drag: None,
                     normal_candidates: Vec::new(),
@@ -10458,7 +10603,21 @@ impl AppState {
                         return ActionResult::Err(e);
                     }
                 }
-                let definition = cp.resolved_definition();
+                let mut definition = cp.resolved_definition();
+                if cp.user_edited_offset {
+                    if let Some(v) =
+                        crate::value::eval_length_mm_in_doc(&cp.offset_text, &self.doc)
+                    {
+                        definition.offset_mm = v;
+                    }
+                }
+                if cp.user_edited_angle {
+                    if let Some(r) =
+                        crate::value::eval_angle_rad_in_doc(&cp.angle_text, &self.doc)
+                    {
+                        definition.angle_deg = r.to_degrees();
+                    }
+                }
                 let live_offset = definition.offset_mm;
                 if let Some(index) = cp.edit_index {
                     // Snapshot all planes before the edit so Undo can revert it (the edit
@@ -10510,6 +10669,8 @@ impl AppState {
                     anchor,
                     offset_mm,
                     angle_deg: 0.0,
+                    offset_expression: String::new(),
+                    angle_expression: String::new(),
                 };
                 self.add_construction_plane(definition, ConstructionPlaneParent::Root)
             }
@@ -11598,8 +11759,8 @@ impl AppState {
                 };
                 ActionResult::Ok
             }
-            Action::CommitEdgeTreatments { edges, kind, amount } => {
-                self.commit_edge_treatment_op(edges, kind, amount)
+            Action::CommitEdgeTreatments { edges, kind, amount, expression } => {
+                self.commit_edge_treatment_op(edges, kind, amount, expression)
             }
             Action::EditEdgeTreatment { extrusion, index } => {
                 let Some(treatment) = self
@@ -11645,25 +11806,14 @@ impl AppState {
                 let Some(operation) = self.doc.edge_treatment_ops.get(op).cloned() else {
                     return ActionResult::Err("Edge treatment not found".to_string());
                 };
-                let edges = operation
-                    .edges
-                    .iter()
-                    .map(|te| (te.solid, te.edge))
-                    .collect();
+                let creating = CreatingEdgeTreatment::from_committed(&operation);
                 // Tombstone the op (releasing its shadow inputs and beveled outputs) so the
                 // gizmo commit rebuilds it from the reloaded edges/amount.
                 crate::document_lifecycle::delete_element(
                     &mut self.doc,
                     SceneElement::EdgeTreatmentOp(op),
                 );
-                self.creating_edge_treatment = Some(CreatingEdgeTreatment {
-                    edges,
-                    kind: operation.kind,
-                    amount_live: operation.amount,
-                    text: crate::value::format_length_display(operation.amount),
-                    user_edited: false,
-                    pending_focus: true,
-                });
+                self.creating_edge_treatment = Some(creating);
                 self.tool = match operation.kind {
                     VertexTreatmentKind::Chamfer => Tool::Chamfer,
                     VertexTreatmentKind::Fillet => Tool::Fillet,
@@ -12292,8 +12442,12 @@ impl AppState {
                     sketch: extrusion.sketch,
                     faces: extrusion.faces.clone(),
                     distance: extrusion.distance,
-                    text: crate::value::format_length_display_in(extrusion.distance.abs(), unit),
-                    user_edited: false,
+                    text: if !extrusion.expression.trim().is_empty() {
+                        extrusion.expression.clone()
+                    } else {
+                        crate::value::format_length_display_in(extrusion.distance.abs(), unit)
+                    },
+                    user_edited: !extrusion.expression.trim().is_empty(),
                     pending_focus: true,
                     target: extrusion.target.clone(),
                     edit_index: Some(index),
@@ -15194,6 +15348,10 @@ op,
                     return ActionResult::Err(e);
                 }
                 let pitch_mm = cr.evaluated_pitch_mm(&self.doc);
+                let angle_expression = cr.angle_expr();
+                let pitch_expression = cr.pitch_expr();
+                let angle_is_revolutions = cr.angle_is_revolutions;
+                let gap_is_offset = cr.gap_is_offset;
                 let mode = match self.resolve_revolve_mode(
                     sketch,
                     &cr.faces,
@@ -15217,7 +15375,11 @@ op,
                         cr.faces.clone(),
                         axis,
                         angle,
+                        angle_expression,
+                        angle_is_revolutions,
                         pitch_mm,
+                        pitch_expression,
+                        gap_is_offset,
                         cr.symmetric,
                         mode,
                     ),
@@ -15226,7 +15388,11 @@ op,
                         cr.faces.clone(),
                         axis,
                         angle,
+                        angle_expression,
+                        angle_is_revolutions,
                         pitch_mm,
+                        pitch_expression,
+                        gap_is_offset,
                         cr.symmetric,
                         mode,
                     ),
@@ -15352,7 +15518,11 @@ op,
                 faces,
                 axis,
                 angle_deg,
+                angle_expression,
+                angle_is_revolutions,
                 pitch_mm,
+                pitch_expression,
+                gap_is_offset,
                 symmetric,
                 body,
                 bodies,
@@ -15366,7 +15536,19 @@ op,
                         return ActionResult::Err(e);
                     }
                 };
-                self.create_revolution(sketch, faces, axis, angle_deg, pitch_mm, symmetric, mode)
+                self.create_revolution(
+                    sketch,
+                    faces,
+                    axis,
+                    angle_deg,
+                    angle_expression,
+                    angle_is_revolutions,
+                    pitch_mm,
+                    pitch_expression,
+                    gap_is_offset,
+                    symmetric,
+                    mode,
+                )
             }
             Action::SetSnapping(enabled) => {
                 self.snapping_enabled = enabled;
@@ -30176,6 +30358,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             )],
             kind: VertexTreatmentKind::Fillet,
             amount: 1.5,
+            expression: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         let live = state
@@ -31091,6 +31274,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             edges: edges.clone(),
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.0,
+            expression: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         assert_eq!(state.doc.edge_treatment_ops.len(), 1, "one operation created");
@@ -31126,6 +31310,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.0,
+            expression: String::new(),
         });
         assert_eq!(state.doc.edge_treatment_ops.len(), 1);
         assert!(state.doc.bodies.values().nth(0).unwrap().shadow);
@@ -31184,6 +31369,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.0,
+            expression: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         assert_eq!(state.doc.edge_treatment_ops.len(), 1);
@@ -31207,6 +31393,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), edge)],
             kind: VertexTreatmentKind::Fillet,
             amount: 1.5,
+            expression: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         assert_eq!(state.doc.edge_treatment_ops.values().nth(0).unwrap().kind, VertexTreatmentKind::Fillet);
@@ -31223,6 +31410,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 3.0,
+            expression: String::new(),
         });
 
         let result = state.apply(Action::EditEdgeTreatmentOp { op: etkey(0) });
@@ -31246,6 +31434,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 1.5,
+            expression: String::new(),
         });
         let live: Vec<_> = state
             .doc
@@ -31266,12 +31455,14 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 1.0,
+            expression: String::new(),
         });
         state.apply(Action::EditEdgeTreatmentOp { op: etkey(0) });
         state.apply(Action::CommitEdgeTreatments {
             edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), edge)],
             kind: VertexTreatmentKind::Fillet,
             amount: 2.5,
+            expression: String::new(),
         });
         let live: Vec<_> = state
             .doc
@@ -31296,6 +31487,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             ],
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.0,
+            expression: String::new(),
         });
         // The first edge applies, the conflicting second is skipped — still Ok overall.
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
@@ -31317,6 +31509,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })],
             kind: VertexTreatmentKind::Fillet,
             amount: 0.0,
+            expression: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         assert!(
@@ -31337,6 +31530,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 99 })],
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.0,
+            expression: String::new(),
         });
         assert!(matches!(out_of_range, ActionResult::Err(_)));
         assert!(state.doc.edge_treatment_ops.is_empty(), "nothing committed");
@@ -31355,6 +31549,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), first)],
                 kind: VertexTreatmentKind::Fillet,
                 amount: 2.0,
+                expression: String::new(),
             }),
             ActionResult::Ok
         ));
@@ -31363,6 +31558,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), second)],
                 kind: VertexTreatmentKind::Fillet,
                 amount: 1.0,
+                expression: String::new(),
             }),
             ActionResult::Ok
         ));
@@ -31410,6 +31606,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })],
             kind: VertexTreatmentKind::Fillet,
             amount: 500.0,
+            expression: String::new(),
         });
         assert!(matches!(result, ActionResult::Err(_)), "{result:?}");
         assert!(
@@ -31508,6 +31705,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 2 })],
             kind: VertexTreatmentKind::Chamfer,
             amount: 1.0,
+            expression: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         assert!(
@@ -31545,6 +31743,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })],
             kind: VertexTreatmentKind::Chamfer,
             amount: 1.0,
+            expression: String::new(),
         });
         assert!(matches!(result, ActionResult::Err(_)));
     }
@@ -33613,5 +33812,552 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert_eq!(O::AddToBody.as_extrude_mode(None), E::JoinNew);
         assert_eq!(O::Cut.as_extrude_mode(Some(bi)), E::Cut(bi));
         assert_eq!(O::Cut.as_extrude_mode(None), E::NewBody);
+    }
+
+    /// #1489: walk every tooltable value input and assert the committed op stores the
+    /// typed expression and that re-edit restores that text verbatim (not a reformatted
+    /// float). A new tool with `commit_fields` fails `stored_value_fields` at compile
+    /// time, then this walk the day its fields are listed.
+    #[test]
+    fn every_value_input_round_trips_its_expression() {
+        for row in crate::tooltable::all_rows() {
+            for field in crate::tooltable::stored_value_fields(row.tool, row.space) {
+                round_trip_value_field(row.tool, row.space, field);
+            }
+        }
+    }
+
+    fn add_param(state: &mut AppState, name: &str, expr: &str) {
+        assert!(
+            matches!(
+                state.apply(Action::AddParameter {
+                    name: name.to_string(),
+                    expression: expr.to_string(),
+                }),
+                ActionResult::Ok
+            ),
+            "add parameter {name}={expr}"
+        );
+    }
+
+    fn sketch_rect(state: &mut AppState, x: f32, y: f32, w: f32, h: f32) -> (SketchId, Vec<crate::model::LineKey>) {
+        let sketch = begin_default_sketch(state);
+        let lines = crate::construction::add_line_rectangle(&mut state.doc, sketch, x, y, w, h, [false; 4]);
+        (sketch, lines.to_vec())
+    }
+
+    fn round_trip_value_field(tool: Tool, space: crate::tooltable::ToolSpace, field: &str) {
+        match (tool, space, field) {
+            (Tool::Revolve, _, "angle") => {
+                let mut state = AppState::default();
+                add_param(&mut state, "turn", "37.5");
+                let (sketch, lines) = sketch_rect(&mut state, 10.0, 0.0, 10.0, 10.0);
+                state.creating_revolve = Some(CreatingRevolve {
+                    sketch: Some(sketch),
+                    faces: vec![crate::model::ExtrudeFace::Polygon(lines)],
+                    axis: Some(crate::model::RevolveAxis::Y),
+                    text: "turn".to_string(),
+                    user_edited: true,
+                    ..CreatingRevolve::default()
+                });
+                assert!(matches!(state.apply(Action::CommitRevolve), ActionResult::Ok));
+                let rev = state.doc.revolutions.values().next().unwrap();
+                assert_eq!(rev.angle_expression, "turn", "revolve angle stores the expression");
+                assert!((rev.angle_deg - 37.5).abs() < 1e-3, "got {}", rev.angle_deg);
+                let op = state.doc.revolutions.keys().next().unwrap();
+                let cr = CreatingRevolve::from_committed(&state.doc.revolutions[op], op);
+                assert_eq!(cr.text, "turn", "re-edit restores the stored angle text");
+                // 37.5 must not reformat to "38".
+                state.doc.revolutions[op].angle_expression.clear();
+                state.doc.revolutions[op].angle_deg = 37.5;
+                let cr = CreatingRevolve::from_committed(&state.doc.revolutions[op], op);
+                assert_eq!(cr.text, "37.5", "gizmo 37.5° must not reformat to 38");
+            }
+            (Tool::Revolve, _, "pitch") => {
+                let mut state = AppState::default();
+                add_param(&mut state, "coil", "2.5");
+                let (sketch, lines) = sketch_rect(&mut state, 10.0, 0.0, 10.0, 10.0);
+                state.creating_revolve = Some(CreatingRevolve {
+                    sketch: Some(sketch),
+                    faces: vec![crate::model::ExtrudeFace::Polygon(lines)],
+                    axis: Some(crate::model::RevolveAxis::Y),
+                    gap_text: "coil".to_string(),
+                    gap_user_edited: true,
+                    ..CreatingRevolve::default()
+                });
+                assert!(matches!(state.apply(Action::CommitRevolve), ActionResult::Ok));
+                let rev = state.doc.revolutions.values().next().unwrap();
+                assert_eq!(rev.pitch_expression, "coil");
+                assert!((rev.pitch_mm - 2.5).abs() < 1e-3, "got {}", rev.pitch_mm);
+                let op = state.doc.revolutions.keys().next().unwrap();
+                let cr = CreatingRevolve::from_committed(&state.doc.revolutions[op], op);
+                assert_eq!(cr.gap_text, "coil");
+            }
+            (Tool::Chamfer | Tool::Fillet, crate::tooltable::ToolSpace::Solid, "amount") => {
+                let mut state = box_extrusion_state();
+                add_param(&mut state, "wall", "1.5");
+                let result = state.apply(Action::CommitEdgeTreatments {
+                    edges: vec![(
+                        crate::model::TreatableSolid::Extrusion(xkey(0)),
+                        crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 },
+                    )],
+                    kind: if tool == Tool::Chamfer {
+                        VertexTreatmentKind::Chamfer
+                    } else {
+                        VertexTreatmentKind::Fillet
+                    },
+                    amount: 1.5,
+                    expression: "wall".to_string(),
+                });
+                assert!(matches!(result, ActionResult::Ok), "{result:?}");
+                let op = state.doc.edge_treatment_ops.values().next().unwrap();
+                assert_eq!(op.expression, "wall");
+                assert!((op.amount - 1.5).abs() < 1e-3);
+                let cet = CreatingEdgeTreatment::from_committed(op);
+                assert_eq!(cet.text, "wall");
+            }
+            (Tool::Chamfer | Tool::Fillet, crate::tooltable::ToolSpace::Sketch, "amount") => {
+                let mut state = AppState::default();
+                let (_, point) = two_coincident_lines_at_a_right_angle(&mut state);
+                add_param(&mut state, "leg", "3");
+                let result = state.apply(Action::CommitVertexTreatment {
+                    point,
+                    kind: if tool == Tool::Chamfer {
+                        VertexTreatmentKind::Chamfer
+                    } else {
+                        VertexTreatmentKind::Fillet
+                    },
+                    amount: "leg".to_string(),
+                });
+                assert!(matches!(result, ActionResult::Ok), "{result:?}");
+                let amount = &state.doc.sketch_vertex_treatment_ops.values().next().unwrap().corners[0].amount;
+                assert_eq!(amount, "leg");
+            }
+            (Tool::Extrude, _, "distance") => {
+                let mut state = AppState::default();
+                let (sketch, lines) = sketch_rect(&mut state, 0.0, 0.0, 10.0, 10.0);
+                add_param(&mut state, "wall", "20");
+                state.apply(Action::SetTool(Tool::Extrude));
+                state.apply(Action::ToggleExtrudeFace {
+                    face: crate::model::ExtrudeFace::Polygon(lines),
+                });
+                {
+                    let ce = state.creating_extrusion.as_mut().unwrap();
+                    ce.text = "wall".to_string();
+                    ce.user_edited = true;
+                    let _ = sketch;
+                }
+                assert!(matches!(state.apply(Action::CommitExtrusion), ActionResult::Ok));
+                assert_eq!(state.doc.extrusions[xkey(0)].expression, "wall");
+                assert!(matches!(
+                    state.apply(Action::EditExtrusion { index: xkey(0) }),
+                    ActionResult::Ok
+                ));
+                assert_eq!(
+                    state.creating_extrusion.as_ref().unwrap().text,
+                    "wall"
+                );
+            }
+            (Tool::Extrude, _, "taper") => {
+                let mut state = AppState::default();
+                let (_sketch, lines) = sketch_rect(&mut state, 0.0, 0.0, 10.0, 10.0);
+                add_param(&mut state, "draft", "1.5");
+                state.apply(Action::SetTool(Tool::Extrude));
+                state.apply(Action::ToggleExtrudeFace {
+                    face: crate::model::ExtrudeFace::Polygon(lines),
+                });
+                {
+                    let ce = state.creating_extrusion.as_mut().unwrap();
+                    ce.text = "8".to_string();
+                    ce.user_edited = true;
+                    ce.taper_text = "draft".to_string();
+                    ce.taper_user_edited = true;
+                }
+                assert!(matches!(state.apply(Action::CommitExtrusion), ActionResult::Ok));
+                assert_eq!(state.doc.extrusions[xkey(0)].taper_expression, "draft");
+                assert!(matches!(
+                    state.apply(Action::EditExtrusion { index: xkey(0) }),
+                    ActionResult::Ok
+                ));
+                assert_eq!(
+                    state.creating_extrusion.as_ref().unwrap().taper_text,
+                    "draft"
+                );
+            }
+            (Tool::Shell, _, "thickness") => {
+                let mut state = box_extrusion_state();
+                add_param(&mut state, "wall", "1.25");
+                state.creating_shell = Some(CreatingShell {
+                    targets: vec![bkey(0)],
+                    thickness_text: "wall".to_string(),
+                    user_edited: true,
+                    ..CreatingShell::default()
+                });
+                assert!(
+                    matches!(state.apply(Action::CommitShell), ActionResult::Ok),
+                    "{}",
+                    state.status
+                );
+                let op = state.doc.shell_ops.values().next().unwrap();
+                assert_eq!(op.thickness, "wall");
+                let live = crate::value::eval_length_mm_in_doc(&op.thickness, &state.doc).unwrap();
+                let cs = CreatingShell {
+                    targets: op.targets.clone(),
+                    open_faces: op.open_faces.clone(),
+                    picking_faces: false,
+                    thickness_text: op.thickness.clone(),
+                    thickness_live: live,
+                    user_edited: true,
+                    pending_focus: false,
+                    editing: state.doc.shell_ops.keys().next(),
+                };
+                assert_eq!(cs.thickness_text, "wall");
+            }
+            (Tool::Offset, _, "distance") => {
+                let mut state = AppState::default();
+                let (sketch, lines) = sketch_rect(&mut state, 0.0, 0.0, 10.0, 10.0);
+                add_param(&mut state, "gap", "2");
+                assert!(
+                    matches!(
+                        state.apply(Action::CreateSketchOffsetOperation {
+                            sketch,
+                            line_targets: vec![lines[0]],
+                            circle_targets: Vec::new(),
+                            distance: "gap".to_string(),
+                            construction: false,
+                        }),
+                        ActionResult::Ok
+                    ),
+                    "{}",
+                    state.status
+                );
+                let op = state.doc.sketch_offset_ops.values().next().unwrap();
+                assert_eq!(op.distance, "gap");
+                let restored = CreatingSketchOffset {
+                    sketch: op.sketch,
+                    line_targets: op.line_targets.clone(),
+                    circle_targets: op.circle_targets.clone(),
+                    distance: op.distance.clone(),
+                    construction: op.construction,
+                    editing: state.doc.sketch_offset_ops.keys().next(),
+                    pending_focus: false,
+                };
+                assert_eq!(restored.distance, "gap");
+            }
+            (Tool::Repeat, crate::tooltable::ToolSpace::Solid, "count")
+            | (Tool::Repeat, crate::tooltable::ToolSpace::Solid, "spacing")
+            | (Tool::Repeat, crate::tooltable::ToolSpace::Solid, "length") => {
+                let mut state = box_extrusion_state();
+                add_param(&mut state, "n", "3");
+                add_param(&mut state, "d", "12");
+                add_param(&mut state, "l", "24");
+                state.creating_repeat = Some(CreatingRepeat {
+                    targets: vec![bkey(0)],
+                    axis: Some(crate::model::RevolveAxis::X),
+                    count: "n".to_string(),
+                    spacing: "d".to_string(),
+                    length: "l".to_string(),
+                    ..CreatingRepeat::default()
+                });
+                assert!(
+                    matches!(state.apply(Action::CommitRepeat), ActionResult::Ok),
+                    "{}",
+                    state.status
+                );
+                let op = state.doc.repeat_ops.values().next().unwrap();
+                assert_eq!(op.count, "n");
+                assert_eq!(op.spacing, "d");
+                assert_eq!(op.length, "l");
+            }
+            (Tool::Repeat, crate::tooltable::ToolSpace::Sketch, "count")
+            | (Tool::Repeat, crate::tooltable::ToolSpace::Sketch, "spacing")
+            | (Tool::Repeat, crate::tooltable::ToolSpace::Sketch, "length") => {
+                let mut state = AppState::default();
+                let (sketch, lines) = sketch_rect(&mut state, 0.0, 0.0, 10.0, 10.0);
+                add_param(&mut state, "n", "3");
+                add_param(&mut state, "d", "12");
+                add_param(&mut state, "l", "24");
+                assert!(
+                    matches!(
+                        state.apply(Action::CreateSketchRepeatOperation {
+                            sketch,
+                            line_targets: vec![lines[0]],
+                            circle_targets: Vec::new(),
+                            dir_u: 1.0,
+                            dir_v: 0.0,
+                            mode: crate::model::RepeatMode::CountGap,
+                            count: "n".to_string(),
+                            spacing: "d".to_string(),
+                            length: "l".to_string(),
+                        }),
+                        ActionResult::Ok
+                    ),
+                    "{}",
+                    state.status
+                );
+                let op = state.doc.sketch_repeat_ops.values().next().unwrap();
+                assert_eq!(op.count, "n");
+                assert_eq!(op.spacing, "d");
+                assert_eq!(op.length, "l");
+            }
+            (Tool::Shape, _, "width")
+            | (Tool::Shape, _, "depth")
+            | (Tool::Shape, _, "height")
+            | (Tool::Shape, _, "radius") => {
+                let mut state = AppState::default();
+                add_param(&mut state, "w", "20");
+                add_param(&mut state, "dep", "15");
+                add_param(&mut state, "h", "10");
+                add_param(&mut state, "r", "8");
+                let mut shape = crate::model::Primitive::new(crate::model::PrimitiveKind::Cuboid);
+                shape.origin = [0.0, 0.0, 0.0];
+                shape.normal = [0.0, 0.0, 1.0];
+                shape.u_axis = [1.0, 0.0, 0.0];
+                shape.width = "w".to_string();
+                shape.depth = "dep".to_string();
+                shape.height = "h".to_string();
+                shape.radius = "r".to_string();
+                assert!(matches!(
+                    state.apply(Action::CreateShape { shape: shape.clone() }),
+                    ActionResult::Ok
+                ));
+                let stored = state.doc.primitives.values().next().unwrap();
+                assert_eq!(stored.width, "w");
+                assert_eq!(stored.depth, "dep");
+                assert_eq!(stored.height, "h");
+                assert_eq!(stored.radius, "r");
+            }
+            (Tool::Move, _, field) => {
+                let mut state = box_extrusion_state();
+                add_param(&mut state, "dx", "5");
+                state.creating_move = Some(CreatingMove {
+                    targets: vec![bkey(0)],
+                    tx: "dx".to_string(),
+                    ty: "0".to_string(),
+                    tz: "0".to_string(),
+                    rx: "0".to_string(),
+                    ry: "0".to_string(),
+                    rz: "0".to_string(),
+                    roll_angle: "0".to_string(),
+                    face_spin: "0".to_string(),
+                    face_offset: "0".to_string(),
+                    ..CreatingMove::default()
+                });
+                assert!(
+                    matches!(state.apply(Action::CommitMove), ActionResult::Ok),
+                    "{}",
+                    state.status
+                );
+                let op = state.doc.move_ops.values().next().unwrap();
+                assert_eq!(op.tx, "dx");
+                let _ = field;
+            }
+            (Tool::Joint, _, field) => {
+                // Joint value inputs are expressions on the stored joint (limits / pose /
+                // screw lead). from_joint restores them verbatim.
+                let mut joint = crate::model::Joint {
+                    members: vec![
+                        crate::model::JointRef::Body(bkey(0)),
+                        crate::model::JointRef::Body(bkey(1)),
+                    ],
+                    base: 1,
+                    kind: crate::model::JointKind::Revolute,
+                    placement: crate::model::MoveOperation::default(),
+                    frame: crate::model::JointFrame::default(),
+                    position: String::new(),
+                    position2: String::new(),
+                    position3: String::new(),
+                    rest: String::new(),
+                    rest2: String::new(),
+                    rest3: String::new(),
+                    limits: crate::model::JointLimits::default(),
+                    name: None,
+                };
+                match field {
+                    "lead" => {
+                        joint.kind = crate::model::JointKind::Screw {
+                            lead: "2".to_string(),
+                        };
+                    }
+                    "offset" => joint.placement.face_offset = "1".to_string(),
+                    "min" => joint.limits.turn_min = "-10".to_string(),
+                    "max" => joint.limits.turn_max = "10".to_string(),
+                    "angle" => joint.placement.face_spin = "45".to_string(),
+                    "distance" => joint.position = "3".to_string(),
+                    _ => panic!("unknown joint field {field}"),
+                }
+                let restored = CreatingJoint::from_joint(&joint, crate::model::joint_key_for_slot(0));
+                match field {
+                    "lead" => match restored.kind {
+                        crate::model::JointKind::Screw { lead, .. } => assert_eq!(lead, "2"),
+                        other => panic!("expected screw, got {other:?}"),
+                    },
+                    "offset" => assert_eq!(restored.placement.face_offset, "1"),
+                    "min" => assert_eq!(restored.limits.turn_min, "-10"),
+                    "max" => assert_eq!(restored.limits.turn_max, "10"),
+                    "angle" => assert_eq!(restored.placement.face_spin, "45"),
+                    "distance" => assert_eq!(restored.position, "3"),
+                    _ => {}
+                }
+            }
+            (Tool::ConstructionPlane, _, "offset") => {
+                let mut state = AppState::default();
+                add_param(&mut state, "off", "12.5");
+                state.apply(Action::BeginConstructionPlane {
+                    reference: PlaneReference::Face {
+                        origin: glam::Vec3::ZERO,
+                        normal: glam::Vec3::Z,
+                        label: "Ground".to_string(),
+                    },
+                    parent: ConstructionPlaneParent::Root,
+                });
+                state.apply(Action::SetPlaneOffset {
+                    value: "off".to_string(),
+                });
+                assert!(
+                    matches!(state.apply(Action::CommitConstructionPlane), ActionResult::Ok),
+                    "{}",
+                    state.status
+                );
+                let plane = state
+                    .doc
+                    .construction_planes
+                    .values()
+                    .find(|p| !p.definition.offset_expression.is_empty())
+                    .expect("a plane with an offset expression");
+                assert_eq!(plane.definition.offset_expression, "off");
+                assert!((plane.definition.offset_mm - 12.5).abs() < 1e-3);
+                let key = state
+                    .doc
+                    .construction_planes
+                    .iter()
+                    .find(|(_, p)| p.definition.offset_expression == "off")
+                    .map(|(k, _)| k)
+                    .unwrap();
+                assert!(matches!(
+                    state.apply(Action::BeginEditConstructionPlane { index: key }),
+                    ActionResult::Ok
+                ));
+                assert_eq!(
+                    state.creating_plane.as_ref().unwrap().offset_text,
+                    "off"
+                );
+            }
+            (Tool::ConstructionPlane, _, "angle") => {
+                let mut state = AppState::default();
+                state.apply(Action::BeginConstructionPlane {
+                    reference: PlaneReference::Axis {
+                        origin: glam::Vec3::ZERO,
+                        direction: glam::Vec3::Z,
+                        label: "Z".to_string(),
+                    },
+                    parent: ConstructionPlaneParent::Root,
+                });
+                state.apply(Action::SetPlaneAngle {
+                    value: "37.5".to_string(),
+                });
+                assert!(
+                    matches!(state.apply(Action::CommitConstructionPlane), ActionResult::Ok),
+                    "{}",
+                    state.status
+                );
+                let plane = state
+                    .doc
+                    .construction_planes
+                    .values()
+                    .find(|p| p.definition.angle_expression == "37.5")
+                    .expect("a plane with the typed angle expression");
+                assert_eq!(plane.definition.angle_expression, "37.5");
+                let key = state
+                    .doc
+                    .construction_planes
+                    .iter()
+                    .find(|(_, p)| p.definition.angle_expression == "37.5")
+                    .map(|(k, _)| k)
+                    .unwrap();
+                assert!(matches!(
+                    state.apply(Action::BeginEditConstructionPlane { index: key }),
+                    ActionResult::Ok
+                ));
+                assert_eq!(
+                    state.creating_plane.as_ref().unwrap().angle_text,
+                    "37.5",
+                    "re-edit must not reformat 37.5° to 38"
+                );
+            }
+            other => panic!("no expression round-trip for {other:?}"),
+        }
+    }
+
+    /// #1489: a revolve angle typed as a parameter follows edits on recompute.
+    #[test]
+    fn revolve_angle_as_a_parameter_follows_edits_on_recompute() {
+        let mut state = AppState::default();
+        add_param(&mut state, "turn", "90");
+        let (sketch, lines) = sketch_rect(&mut state, 10.0, 0.0, 10.0, 10.0);
+        state.creating_revolve = Some(CreatingRevolve {
+            sketch: Some(sketch),
+            faces: vec![crate::model::ExtrudeFace::Polygon(lines)],
+            axis: Some(crate::model::RevolveAxis::Y),
+            text: "turn".to_string(),
+            user_edited: true,
+            ..CreatingRevolve::default()
+        });
+        assert!(matches!(state.apply(Action::CommitRevolve), ActionResult::Ok));
+        let rev = state.doc.revolutions.keys().next().unwrap();
+        assert!((state.doc.revolutions[rev].angle_deg - 90.0).abs() < 1e-3);
+        let idx = state
+            .doc
+            .parameters
+            .iter()
+            .find_map(|(k, p)| (p.name == "turn").then_some(k))
+            .unwrap();
+        state.apply(Action::CommitParameterExpression {
+            index: idx,
+            expression: "180".to_string(),
+        });
+        crate::parameters::recompute_document_geometry(&mut state.doc).unwrap();
+        assert!(
+            (state.doc.revolutions[rev].angle_deg - 180.0).abs() < 1e-3,
+            "revolve should follow turn → 180, got {}",
+            state.doc.revolutions[rev].angle_deg
+        );
+    }
+
+    /// #1489: a 3D fillet radius typed as a parameter follows edits on recompute.
+    #[test]
+    fn edge_treatment_amount_as_a_parameter_follows_edits_on_recompute() {
+        let mut state = box_extrusion_state();
+        add_param(&mut state, "fillet_r", "1.0");
+        assert!(matches!(
+            state.apply(Action::CommitEdgeTreatments {
+                edges: vec![(
+                    crate::model::TreatableSolid::Extrusion(xkey(0)),
+                    crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 },
+                )],
+                kind: VertexTreatmentKind::Fillet,
+                amount: 1.0,
+                expression: "fillet_r".to_string(),
+            }),
+            ActionResult::Ok
+        ));
+        let op = state.doc.edge_treatment_ops.keys().next().unwrap();
+        assert!((state.doc.edge_treatment_ops[op].amount - 1.0).abs() < 1e-3);
+        let idx = state
+            .doc
+            .parameters
+            .iter()
+            .find_map(|(k, p)| (p.name == "fillet_r").then_some(k))
+            .unwrap();
+        state.apply(Action::CommitParameterExpression {
+            index: idx,
+            expression: "2.0".to_string(),
+        });
+        crate::parameters::recompute_document_geometry(&mut state.doc).unwrap();
+        assert!(
+            (state.doc.edge_treatment_ops[op].amount - 2.0).abs() < 1e-3,
+            "fillet should follow fillet_r → 2, got {}",
+            state.doc.edge_treatment_ops[op].amount
+        );
     }
 }

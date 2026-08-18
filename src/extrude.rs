@@ -13100,7 +13100,11 @@ mod tests {
             faces,
             axis: crate::model::RevolveAxis::Y,
             angle_deg: angle,
+            angle_expression: String::new(),
+            angle_is_revolutions: false,
             pitch_mm: 0.0,
+            pitch_expression: String::new(),
+            gap_is_offset: true,
             symmetric,
             mode,
             name: None,
@@ -13494,7 +13498,11 @@ mod tests {
             faces: vec![tube],
             axis: crate::model::RevolveAxis::X,
             angle_deg: 360.0,
+            angle_expression: String::new(),
+            angle_is_revolutions: false,
             pitch_mm: 0.0,
+            pitch_expression: String::new(),
+            gap_is_offset: true,
             symmetric: false,
             mode: crate::model::RevolveMode::Cut(vec![bkey(0)]),
             name: None,
@@ -15522,6 +15530,7 @@ mod tests {
                 edges: vec![(solid, edge)],
                 kind: crate::model::VertexTreatmentKind::Fillet,
                 amount: 3.0,
+                expression: String::new(),
             }),
             crate::actions::ActionResult::Ok
         ));
@@ -15567,6 +15576,7 @@ mod tests {
                 edges: vec![(solid, edge)],
                 kind: crate::model::VertexTreatmentKind::Fillet,
                 amount: 3.0,
+                expression: String::new(),
             }),
             crate::actions::ActionResult::Ok
         ));
