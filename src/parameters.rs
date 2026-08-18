@@ -1019,6 +1019,45 @@ fn substitute_name_everywhere(doc: &mut Document, old: &str, new: &str) {
         extrusion.taper_expression =
             substitute_parameter_name(&extrusion.taper_expression, old, new);
     }
+    for rev in doc.revolutions.values_mut() {
+        rev.angle_expression = substitute_parameter_name(&rev.angle_expression, old, new);
+        rev.pitch_expression = substitute_parameter_name(&rev.pitch_expression, old, new);
+    }
+    for op in doc.edge_treatment_ops.values_mut() {
+        op.expression = substitute_parameter_name(&op.expression, old, new);
+    }
+    for plane in doc.construction_planes.values_mut() {
+        plane.definition.offset_expression =
+            substitute_parameter_name(&plane.definition.offset_expression, old, new);
+        plane.definition.angle_expression =
+            substitute_parameter_name(&plane.definition.angle_expression, old, new);
+    }
+    for op in doc.shell_ops.values_mut() {
+        op.thickness = substitute_parameter_name(&op.thickness, old, new);
+    }
+    for op in doc.sketch_offset_ops.values_mut() {
+        op.distance = substitute_parameter_name(&op.distance, old, new);
+    }
+    for prim in doc.primitives.values_mut() {
+        for expr in [
+            &mut prim.width,
+            &mut prim.depth,
+            &mut prim.height,
+            &mut prim.radius,
+        ] {
+            *expr = substitute_parameter_name(expr, old, new);
+        }
+    }
+    for op in doc.sketch_vertex_treatment_ops.values_mut() {
+        for corner in &mut op.corners {
+            corner.amount = substitute_parameter_name(&corner.amount, old, new);
+        }
+    }
+    for op in doc.sketch_repeat_ops.values_mut() {
+        for expr in [&mut op.count, &mut op.spacing, &mut op.length] {
+            *expr = substitute_parameter_name(expr, old, new);
+        }
+    }
     for op in doc.move_ops.values_mut() {
         for expr in [&mut op.tx, &mut op.ty, &mut op.tz] {
             *expr = substitute_parameter_name(expr, old, new);
@@ -1082,6 +1121,9 @@ pub fn recompute_document_geometry(doc: &mut Document) -> Result<(), String> {
     // seed profiles) settle so extrusions and body-edge axes see current geometry.
     let result = solve_document_constraints(doc);
     rebake_extrusion_distances(doc);
+    rebake_revolution_values(doc);
+    rebake_edge_treatment_amounts(doc);
+    rebake_plane_definitions(doc);
     // Offset outputs track their sources and distance expressions.
     crate::actions::rebuild_sketch_offsets(doc);
     // Mirror outputs track their sources and mirror line (#523).
@@ -1104,6 +1146,9 @@ pub fn recompute_document_geometry(doc: &mut Document) -> Result<(), String> {
     // references rewritten in the new frame; free geometry already sits on the pins.
     crate::projection::refresh_projections(doc);
     rebake_extrusion_distances(doc);
+    rebake_revolution_values(doc);
+    rebake_edge_treatment_amounts(doc);
+    rebake_plane_definitions(doc);
     crate::actions::rebuild_sketch_offsets(doc);
     crate::actions::rebuild_sketch_mirrors(doc);
     crate::actions::rebuild_sketch_vertex_treatments(doc);
@@ -1225,6 +1270,86 @@ pub fn rebake_extrusion_distances(doc: &mut Document) {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Re-evaluate each revolution's stored angle/pitch from its expressions (#1489).
+pub fn rebake_revolution_values(doc: &mut Document) {
+    for i in doc.revolutions.keys().collect::<Vec<_>>() {
+        let (angle_expr, angle_is_revs, pitch_expr, gap_is_offset) = {
+            let r = &doc.revolutions[i];
+            (
+                r.angle_expression.clone(),
+                r.angle_is_revolutions,
+                r.pitch_expression.clone(),
+                r.gap_is_offset,
+            )
+        };
+        if !angle_expr.trim().is_empty() {
+            let eval = if angle_is_revs {
+                crate::value::eval_length_mm_in_doc(&angle_expr, doc).map(|turns| turns * 360.0)
+            } else {
+                crate::value::eval_angle_rad_in_doc(&angle_expr, doc).map(|r| r.to_degrees())
+            };
+            if let Some(v) = eval {
+                doc.revolutions[i].angle_deg = v;
+            }
+        }
+        if !pitch_expr.trim().is_empty() {
+            if let Some(raw) = crate::value::eval_length_mm_in_doc(&pitch_expr, doc) {
+                doc.revolutions[i].pitch_mm = if gap_is_offset {
+                    raw
+                } else {
+                    raw + crate::extrude::revolve_profile_axial_extent(doc, &doc.revolutions[i])
+                        .unwrap_or(0.0)
+                };
+            }
+        }
+    }
+}
+
+/// Re-evaluate each 3D chamfer/fillet amount from its expression (#1489).
+pub fn rebake_edge_treatment_amounts(doc: &mut Document) {
+    for i in doc.edge_treatment_ops.keys().collect::<Vec<_>>() {
+        let expr = doc.edge_treatment_ops[i].expression.clone();
+        if expr.trim().is_empty() {
+            continue;
+        }
+        if let Some(v) = crate::value::eval_length_mm_in_doc(&expr, doc) {
+            if v > 0.0 {
+                doc.edge_treatment_ops[i].amount = v;
+            }
+        }
+    }
+}
+
+/// Re-evaluate construction-plane offset/angle from stored expressions (#1489).
+pub fn rebake_plane_definitions(doc: &mut Document) {
+    for i in doc.construction_planes.keys().collect::<Vec<_>>() {
+        let def = doc.construction_planes[i].definition.clone();
+        let mut next = def.clone();
+        let mut changed = false;
+        if !def.offset_expression.trim().is_empty() {
+            if let Some(v) = crate::value::eval_length_mm_in_doc(&def.offset_expression, doc) {
+                if (v - next.offset_mm).abs() > 1e-6 {
+                    next.offset_mm = v;
+                    changed = true;
+                }
+            }
+        }
+        if !def.angle_expression.trim().is_empty() {
+            if let Some(r) = crate::value::eval_angle_rad_in_doc(&def.angle_expression, doc) {
+                let v = r.to_degrees();
+                if (v - next.angle_deg).abs() > 1e-6 {
+                    next.angle_deg = v;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            let parent = doc.construction_planes[i].parent;
+            let _ = crate::construction::apply_construction_plane_edit(doc, i, &next, parent);
         }
     }
 }

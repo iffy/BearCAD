@@ -7552,10 +7552,12 @@ impl App {
             // #201: a typed amount can define a parameter (`name = expr`).
             let _ = actions::commit_inline_parameter_defs(&mut self.state.doc, [&mut cet.text]);
             let amount = cet.evaluated_amount(&self.state.doc);
+            let expression = cet.amount_expr();
             self.state.apply(Action::CommitEdgeTreatments {
                 edges: cet.edges.clone(),
                 kind: cet.kind,
                 amount,
+                expression,
             });
         } else if let Some(mut cvt) = self.state.creating_vertex_treatment.take() {
             let _ = actions::commit_inline_parameter_defs(&mut self.state.doc, [&mut cvt.text]);
@@ -8482,7 +8484,11 @@ impl App {
             faces: cr.faces.clone(),
             axis,
             angle_deg: 360.0,
+            angle_expression: String::new(),
+            angle_is_revolutions: false,
             pitch_mm: 0.0,
+            pitch_expression: String::new(),
+            gap_is_offset: true,
             symmetric: false,
             mode: model::RevolveMode::NewBody,
             name: None,
@@ -10098,43 +10104,8 @@ impl App {
             }
             SE::Revolution(op) => {
                 if let Some(existing) = self.state.doc.revolutions.get(op).cloned() {
-                    let (body_choice, cut_bodies) = match &existing.mode {
-                        model::RevolveMode::NewBody => {
-                            (actions::RevolveBodyChoice::NewBody, Vec::new())
-                        }
-                        model::RevolveMode::AddTo(_) => {
-                            (actions::RevolveBodyChoice::AddTouching, Vec::new())
-                        }
-                        model::RevolveMode::Cut(b) => (actions::RevolveBodyChoice::Cut, b.clone()),
-                    };
-                    self.state.creating_revolve = Some(actions::CreatingRevolve {
-                        sketch: Some(existing.sketch),
-                        faces: existing.faces,
-                        axis: Some(existing.axis),
-                        angle_live: existing.angle_deg,
-                        text: format!("{:.0}", existing.angle_deg),
-                        user_edited: true,
-                        pending_focus: false,
-                        angle_is_revolutions: false,
-                        pitch_live: existing.pitch_mm,
-                        gap_text: {
-                            let v = existing.pitch_mm;
-                            if (v - v.round()).abs() < 1e-4 {
-                                format!("{}", v.round() as i64)
-                            } else {
-                                format!("{v:.4}")
-                                    .trim_end_matches('0')
-                                    .trim_end_matches('.')
-                                    .to_string()
-                            }
-                        },
-                        gap_user_edited: true,
-                        gap_is_offset: true,
-                        symmetric: existing.symmetric,
-                        body_choice,
-                        cut_bodies,
-                        editing: Some(op),
-                    });
+                    self.state.creating_revolve =
+                        Some(actions::CreatingRevolve::from_committed(&existing, op));
                     self.state.apply(Action::SetTool(Tool::Revolve));
                 }
             }
@@ -13282,10 +13253,12 @@ impl App {
                 // #201: a typed amount can define a parameter (`name = expr`).
                 let _ = actions::commit_inline_parameter_defs(&mut self.state.doc, [&mut cet.text]);
                 let amount = cet.evaluated_amount(&self.state.doc);
+                let expression = cet.amount_expr();
                 self.state.apply(Action::CommitEdgeTreatments {
                     edges: cet.edges.clone(),
                     kind: cet.kind,
                     amount,
+                    expression,
                 });
             }
             self.edge_treatment_gizmo_drag = None;
@@ -13448,10 +13421,12 @@ impl App {
                 // #201: a typed amount can define a parameter (`name = expr`).
                 let _ = actions::commit_inline_parameter_defs(&mut self.state.doc, [&mut cet.text]);
                 let amount = cet.evaluated_amount(&self.state.doc);
+                let expression = cet.amount_expr();
                 self.state.apply(Action::CommitEdgeTreatments {
                     edges: cet.edges.clone(),
                     kind: cet.kind,
                     amount,
+                    expression,
                 });
             }
         }
@@ -20821,7 +20796,11 @@ fn build_viewport_scene_input<'a>(
             faces: cr.faces.clone(),
             axis,
             angle_deg: cr.evaluated_angle_deg(doc),
+            angle_expression: String::new(),
+            angle_is_revolutions: false,
             pitch_mm: cr.evaluated_pitch_mm(doc),
+            pitch_expression: String::new(),
+            gap_is_offset: true,
             symmetric: cr.symmetric,
             mode: model::RevolveMode::NewBody,
             name: None,
@@ -34963,6 +34942,7 @@ mod tests {
                 edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), first)],
                 kind: VertexTreatmentKind::Fillet,
                 amount: 2.0,
+                expression: String::new(),
             }),
             crate::actions::ActionResult::Ok
         ));

@@ -539,7 +539,10 @@ pub fn instruction_from_json(
                 faces,
                 axis,
                 angle_deg,
+                angle_expression: String::new(),
+                angle_is_revolutions: false,
                 pitch_mm,
+                pitch_expression: String::new(),
                 symmetric,
                 body,
                 bodies,
@@ -774,10 +777,13 @@ pub fn instruction_from_json(
             } else {
                 (VertexTreatmentKind::Fillet, "radius")
             };
+            let expression = req_amount_expr(o, amount_key, name)?;
+            let amount = expression.trim().parse::<f32>().unwrap_or(0.0);
             Ok(Instruction::EdgeTreatment {
                 edges: extrusion_edge_set_from_json(o, name)?,
                 kind,
-                amount: req_f32(o, amount_key, name)?,
+                amount,
+                expression,
             })
         }
 
@@ -2937,7 +2943,10 @@ mod tests {
                 faces: vec![ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)])],
                 axis: RevolveAxis::Y,
                 angle_deg: 360.0,
+                angle_expression: String::new(),
+                angle_is_revolutions: false,
                 pitch_mm: 0.0,
+                pitch_expression: String::new(),
                 symmetric: false,
                 body: RevolveBodyChoice::NewBody,
                 bodies: vec![],
@@ -2953,7 +2962,10 @@ mod tests {
                 faces: vec![ExtrudeFace::Circle(rkey(0))],
                 axis: RevolveAxis::Line(lkey(3)),
                 angle_deg: 90.0,
+                angle_expression: String::new(),
+                angle_is_revolutions: false,
                 pitch_mm: 0.0,
+                pitch_expression: String::new(),
                 symmetric: true,
                 body: RevolveBodyChoice::Cut,
                 bodies: vec![1, 2],
@@ -2970,7 +2982,10 @@ mod tests {
                 faces: vec![ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)])],
                 axis: RevolveAxis::Y,
                 angle_deg: 900.0,
+                angle_expression: String::new(),
+                angle_is_revolutions: false,
                 pitch_mm: 5.0,
+                pitch_expression: String::new(),
                 symmetric: false,
                 body: RevolveBodyChoice::NewBody,
                 bodies: vec![],
@@ -3727,6 +3742,7 @@ mod tests {
                 edges: vec![(crate::script::TreatableSolidRef::Extrusion(0), ExtrusionEdgeRef::Vertical { face: 0, edge: 2 })],
                 kind: VertexTreatmentKind::Fillet,
                 amount: 1.5,
+                expression: "1.5".to_string(),
             })
         );
         assert_eq!(
@@ -3738,6 +3754,7 @@ mod tests {
                 edges: vec![(crate::script::TreatableSolidRef::Extrusion(1), ExtrusionEdgeRef::Cap { face: 0, edge: 3, top: true })],
                 kind: VertexTreatmentKind::Chamfer,
                 amount: 2.0,
+                expression: "2".to_string(),
             })
         );
         // The plural form (#672): one call, one operation over the whole set.
@@ -3756,6 +3773,7 @@ mod tests {
                 ],
                 kind: VertexTreatmentKind::Fillet,
                 amount: 8.0,
+                expression: "8".to_string(),
             })
         );
         assert!(instruction_from_json(&doc,"fillet_edge", &json!({ "edges": [], "radius": 1 })).is_err());

@@ -6355,17 +6355,50 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             }
             let axis = parse_revolve_axis(lua, opts.get::<mlua::Value>("axis")?, "revolve")?;
             // #1242: `revolutions` (turns) wins over `angle` (degrees) when both are set.
-            let angle_deg: f32 = if let Some(turns) = opts.get::<Option<f32>>("revolutions")? {
-                turns * 360.0
-            } else {
-                opts.get::<Option<f32>>("angle")?.unwrap_or(360.0)
-            };
+            // Either may be a number or an expression string (#1489).
+            let (angle_deg, angle_expression, angle_is_revolutions) =
+                if let Some((turns, turns_expr)) = scalar_arg(lua, &opts, "revolutions")? {
+                    let expr = turns_expr.unwrap_or_default();
+                    let turns = if expr.is_empty() {
+                        turns
+                    } else {
+                        crate::value::eval_length_mm_in_doc(&expr, unsafe { &tick.state().doc })
+                            .unwrap_or(turns)
+                    };
+                    (turns * 360.0, expr, true)
+                } else if let Some((deg, deg_expr)) = scalar_arg(lua, &opts, "angle")? {
+                    let expr = deg_expr.unwrap_or_default();
+                    let deg = if expr.is_empty() {
+                        deg
+                    } else {
+                        crate::value::eval_angle_rad_in_doc(&expr, unsafe { &tick.state().doc })
+                            .map(|r| r.to_degrees())
+                            .unwrap_or(deg)
+                    };
+                    (deg, expr, false)
+                } else {
+                    (360.0, String::new(), false)
+                };
             // Helical pitch (mm per full turn): `pitch` / `offset` preferred; `gap` as alias.
-            let pitch_mm: f32 = opts
-                .get::<Option<f32>>("pitch")?
-                .or(opts.get::<Option<f32>>("offset")?)
-                .or(opts.get::<Option<f32>>("gap")?)
-                .unwrap_or(0.0);
+            let pitch_arg = match scalar_arg(lua, &opts, "pitch")? {
+                Some(v) => Some(v),
+                None => match scalar_arg(lua, &opts, "offset")? {
+                    Some(v) => Some(v),
+                    None => scalar_arg(lua, &opts, "gap")?,
+                },
+            };
+            let (pitch_mm, pitch_expression) = if let Some((v, e)) = pitch_arg {
+                let expr = e.unwrap_or_default();
+                let v = if expr.is_empty() {
+                    v
+                } else {
+                    crate::value::eval_length_mm_in_doc(&expr, unsafe { &tick.state().doc })
+                        .unwrap_or(v)
+                };
+                (v, expr)
+            } else {
+                (0.0, String::new())
+            };
             let symmetric: bool = opts.get::<Option<bool>>("symmetric")?.unwrap_or(false);
             let bodies: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
             let body = match opts.get::<Option<String>>("body")?.as_deref() {
@@ -6378,7 +6411,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     faces,
                     axis,
                     angle_deg,
+                    angle_expression,
+                    angle_is_revolutions,
                     pitch_mm,
+                    pitch_expression,
                     symmetric,
                     body,
                     bodies,
@@ -7138,12 +7174,18 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let edges = parse_extrusion_edge_set(&opts)?;
-            let distance: f32 = opts.get("distance")?;
+            let expression = lua_amount_expr(&opts, "distance")?;
+            let amount = crate::value::eval_length_mm_in_doc(
+                &expression,
+                unsafe { &tick.state().doc },
+            )
+            .unwrap_or(0.0);
             unsafe {
                 tick.exec(Instruction::EdgeTreatment {
                     edges,
                     kind: VertexTreatmentKind::Chamfer,
-                    amount: distance,
+                    amount,
+                    expression,
                 })?;
             }
             Ok(())
@@ -7155,12 +7197,18 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let edges = parse_extrusion_edge_set(&opts)?;
-            let radius: f32 = opts.get("radius")?;
+            let expression = lua_amount_expr(&opts, "radius")?;
+            let amount = crate::value::eval_length_mm_in_doc(
+                &expression,
+                unsafe { &tick.state().doc },
+            )
+            .unwrap_or(0.0);
             unsafe {
                 tick.exec(Instruction::EdgeTreatment {
                     edges,
                     kind: VertexTreatmentKind::Fillet,
-                    amount: radius,
+                    amount,
+                    expression,
                 })?;
             }
             Ok(())
@@ -9428,6 +9476,7 @@ mod tests {
                 edges: vec![(crate::model::TreatableSolid::Extrusion(xkey(0)), edge)],
                 kind: VertexTreatmentKind::Fillet,
                 amount: 2.75,
+                expression: String::new(),
             }),
             crate::actions::ActionResult::Ok
         );

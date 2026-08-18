@@ -524,6 +524,7 @@ impl<'a> EmitCtx<'a> {
                                 edges,
                                 kind: et.kind,
                                 amount: et.amount,
+                                expression: String::new(),
                             };
                             out.push_str(&instr.as_lua_in(Some(self.doc)));
                             out.push('\n');
@@ -714,6 +715,7 @@ impl<'a> EmitCtx<'a> {
                                 edges,
                                 kind: op.kind,
                                 amount: op.amount,
+                                expression: op.expression.clone(),
                             }
                             .as_lua_in(Some(self.doc)),
                         );
@@ -1986,7 +1988,10 @@ fn instruction_for_revolution(
         faces: rev.faces.clone(),
         axis: rev.axis,
         angle_deg: rev.angle_deg,
+        angle_expression: rev.angle_expression.clone(),
+        angle_is_revolutions: rev.angle_is_revolutions,
         pitch_mm: rev.pitch_mm,
+        pitch_expression: rev.pitch_expression.clone(),
         symmetric: rev.symmetric,
         body,
         bodies: body_ords(doc, &bodies),

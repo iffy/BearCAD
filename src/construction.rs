@@ -473,6 +473,8 @@ pub fn definition_from_reference(
         anchor,
         offset_mm,
         angle_deg,
+        offset_expression: String::new(),
+        angle_expression: String::new(),
     }
 }
 
