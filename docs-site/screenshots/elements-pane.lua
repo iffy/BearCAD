@@ -12,6 +12,9 @@
 
 local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/elements-pane.png"
 
+-- Hide the viewport usage overlay so it doesn't cover the model (#1509).
+bearcad.ui.tool_hints(false)
+
 bearcad.new()
 bearcad.rect{ width = 80, height = 50, name = "Plate" }
 -- Explicit closed-loop extrude (the `rect = 0` shorthand currently wedges the

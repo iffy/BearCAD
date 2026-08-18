@@ -5360,6 +5360,18 @@ it.
 - A scripted Context-pane capture widens to include the notes, which is how the documentation's
   annotated pane pictures are made (§9.3).
 
+### 11.x Viewport tool hints (#1509)
+
+The usage line painted at the bottom of the 3D viewport (tool-specific: click to select,
+orbit/zoom, Enter to commit, …). On by default, session-only.
+
+- **View → Tool Hints** is a checked OS-menu item (web: View → Tool hints). The command
+  palette offers *Hide Tool Hints* / *Show Tool Hints*. Scripts: `bearcad.ui.tool_hints([on])`
+  (no argument toggles).
+- A pending scripted screenshot suppresses the line for that frame, the same way a
+  viewport shot hides the view bear. Docs scripts also call `bearcad.ui.tool_hints(false)`
+  so window shots stay clean.
+
 ### 11.y Keyboard Shortcuts window (#434)
 
 **View → Keyboard Shortcuts** / **Help → Keyboard Shortcuts** (and the palette entry

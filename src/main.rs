@@ -6023,6 +6023,7 @@ impl App {
             .sync_pane_checks(|pane| self.state.panes.is_visible(pane));
         self.native_menu.sync_fps_mode(self.state.fps.is_some());
         self.native_menu.sync_help_mode(self.state.help_mode);
+        self.native_menu.sync_tool_hints(self.state.show_tool_hints);
     }
 
     fn dispatch_palette_outcome(&mut self, outcome: PaletteOutcome) {
@@ -32310,13 +32311,19 @@ impl App {
         } else {
             hint.to_string()
         };
-        painter.text(
-            viewport.left_bottom() + egui::vec2(8.0, -8.0),
-            egui::Align2::LEFT_BOTTOM,
-            hint,
-            egui::FontId::proportional(13.0),
-            egui::Color32::from_gray(150),
-        );
+        let suppress_hints_for_screenshot = self
+            .script
+            .as_ref()
+            .is_some_and(|runner| runner.screenshot_suppresses_tool_hints());
+        if self.state.show_tool_hints && !suppress_hints_for_screenshot {
+            painter.text(
+                viewport.left_bottom() + egui::vec2(8.0, -8.0),
+                egui::Align2::LEFT_BOTTOM,
+                hint,
+                egui::FontId::proportional(13.0),
+                egui::Color32::from_gray(150),
+            );
+        }
 
         for result in inline_parameter_field_results {
             apply_dimension_field_feedback(&mut self.state, &result);

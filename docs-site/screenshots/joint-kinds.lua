@@ -7,6 +7,9 @@
 
 local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/joint-kinds"
 
+-- Hide the viewport usage overlay so it doesn't cover the model (#1509).
+bearcad.ui.tool_hints(false)
+
 -- Faces and edges are named by their own geometry, which `body_faces`/`body_edges` report.
 local function near(p, q)
   return math.abs(p[1] - q[1]) < 0.01 and math.abs(p[2] - q[2]) < 0.01

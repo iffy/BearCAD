@@ -16,6 +16,9 @@
 
 local out = os.getenv("BEARCAD_SCREENSHOT_OUT") or "."
 
+-- Hide the viewport usage overlay so it doesn't cover the model (#1509).
+bearcad.ui.tool_hints(false)
+
 -- The slab is 22 long, 9 wide, 5 thick, parked just off the plate so both it and where
 -- it's going fit the same frame — and above it, on a construction plane, so the line from
 -- start A to end A runs through open air instead of being buried in the plate it's heading

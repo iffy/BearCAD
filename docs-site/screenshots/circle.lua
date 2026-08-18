@@ -8,6 +8,9 @@
 
 local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/circle.png"
 
+-- Hide the viewport usage overlay so it doesn't cover the model (#1509).
+bearcad.ui.tool_hints(false)
+
 bearcad.new()
 bearcad.ui.pane("elements", "hide")
 bearcad.ui.pane("context", "hide")

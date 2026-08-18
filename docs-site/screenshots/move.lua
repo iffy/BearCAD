@@ -5,6 +5,9 @@
 
 local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/move.png"
 
+-- Hide the viewport usage overlay so it doesn't cover the model (#1509).
+bearcad.ui.tool_hints(false)
+
 bearcad.new()
 bearcad.ui.pane("context", "hide")
 bearcad.ui.pane("parameters", "hide")

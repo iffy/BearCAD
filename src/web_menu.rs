@@ -130,6 +130,10 @@ pub fn bar(ui: &mut egui::Ui, pane_visible: impl Fn(Pane) -> bool) -> Option<Men
                     picked = Some(MenuCommand::ToggleFpsMode);
                     ui.close();
                 }
+                if ui.button("Tool hints").clicked() {
+                    picked = Some(MenuCommand::ToggleToolHints);
+                    ui.close();
+                }
                 if ui.button("Keyboard shortcuts").clicked() {
                     picked = Some(MenuCommand::ShowShortcuts);
                     ui.close();
