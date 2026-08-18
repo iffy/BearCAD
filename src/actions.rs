@@ -17200,12 +17200,17 @@ fn repeat_input_status(bodies: usize, planes: usize, cuts: usize) -> String {
 /// `(dx, dy)`, with all dimension/name/projection metadata cleared so the copy is plain driven
 /// geometry (it keeps only the shape and the construction flag).
 fn shifted_line_copy(src: &crate::model::Line, dx: f32, dy: f32) -> crate::model::Line {
+    let x0 = src.x0 + dx;
+    let y0 = src.y0 + dy;
+    let x1 = src.x1 + dx;
+    let y1 = src.y1 + dy;
     crate::model::Line {
         sketch: src.sketch,
-        x0: src.x0 + dx,
-        y0: src.y0 + dy,
-        x1: src.x1 + dx,
-        y1: src.y1 + dy,
+        x0,
+        y0,
+        x1,
+        y1,
+        seed: Some(crate::model::LineSeed { x0, y0, x1, y1 }),
         length_locked: false,
         length_dim_offset: None,
         length_expr: None,
@@ -17221,11 +17226,14 @@ fn shifted_line_copy(src: &crate::model::Line, dx: f32, dy: f32) -> crate::model
 /// A plane-local shifted copy of a sketch circle (#222): center moved by `(dx, dy)`, radius kept,
 /// dimension/name metadata cleared.
 fn shifted_circle_copy(src: &crate::model::Circle, dx: f32, dy: f32) -> crate::model::Circle {
+    let cx = src.cx + dx;
+    let cy = src.cy + dy;
     crate::model::Circle {
         sketch: src.sketch,
-        cx: src.cx + dx,
-        cy: src.cy + dy,
+        cx,
+        cy,
         r: src.r,
+        seed: Some(crate::model::CircleSeed { cx, cy, r: src.r }),
         diameter_locked: false,
         diameter_dim_offset: None,
         diameter_expr: None,

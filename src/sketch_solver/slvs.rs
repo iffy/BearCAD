@@ -268,7 +268,10 @@ impl SlvsOutcome {
     /// bridge's `apply_to_document`).
     pub fn apply_to_document(&self, doc: &mut Document, sketch: SketchId) -> Result<(), String> {
         for (point, (u, v)) in &self.moved_points {
-            crate::geometric_constraints::set_point_uv(doc, sketch, point.clone(), *u, *v)?;
+            // Write the solved position without touching the user seed (#1518):
+            // `set_point_uv` is the user/drag path and would overwrite the seed
+            // the Lua exporter needs to replay the same solve.
+            apply_solved_point(doc, sketch, point, *u, *v)?;
         }
         for (index, r) in &self.circle_radii {
             if let Some(c) = doc.circles.get_mut(*index) {
@@ -276,6 +279,49 @@ impl SlvsOutcome {
             }
         }
         Ok(())
+    }
+}
+
+fn apply_solved_point(
+    doc: &mut Document,
+    sketch: SketchId,
+    point: &ConstraintPoint,
+    u: f32,
+    v: f32,
+) -> Result<(), String> {
+    match point {
+        ConstraintPoint::LineEndpoint { line, end } => {
+            let entity = doc
+                .lines
+                .get_mut(*line)
+                .ok_or_else(|| format!("Line {} not found", line.index()))?;
+            if entity.projection.is_some() {
+                return Err("Projected line endpoints are fixed and cannot be moved".to_string());
+            }
+            match end {
+                LineEnd::Start => {
+                    entity.x0 = u;
+                    entity.y0 = v;
+                }
+                LineEnd::End => {
+                    entity.x1 = u;
+                    entity.y1 = v;
+                }
+            }
+            Ok(())
+        }
+        ConstraintPoint::CircleCenter(circle) => {
+            let entity = doc
+                .circles
+                .get_mut(*circle)
+                .ok_or_else(|| format!("Circle {} not found", circle.index()))?;
+            entity.cx = u;
+            entity.cy = v;
+            Ok(())
+        }
+        // Text/image anchors still go through `set_point_uv` — they have no seed
+        // and that path translates the whole entity.
+        _ => crate::geometric_constraints::set_point_uv(doc, sketch, point.clone(), u, v),
     }
 }
 

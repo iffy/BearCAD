@@ -101,6 +101,9 @@ pub fn document_to_lua(doc: &Document) -> String {
         out.push('\n');
     }
 
+    // Components and their memberships, once every element they can hold exists (#1517).
+    emit_components(doc, &mut out);
+
     // Custom materials beyond the defaults (by name/color), assigned after bodies exist.
     emit_materials(doc, &mut out);
 
@@ -114,12 +117,40 @@ pub fn normalize_for_compare(doc: &mut Document) {
     doc.undo_groups.clear();
     for c in doc.constraints.values_mut() {
         c.dim_offset = None;
+        canonicalize_constraint_kind(&mut c.kind);
     }
     for line in doc.lines.values_mut() {
         line.length_dim_offset = None;
     }
     for circle in doc.circles.values_mut() {
         circle.diameter_dim_offset = None;
+    }
+}
+
+/// Coincident / parallel / equal / tangent don't care which side is `a`. The solver
+/// and the geometric-constraint verb don't store them in the same order, so a
+/// round-trip that rebuilds the same constraint can fail `PartialEq` on swap alone.
+fn canonicalize_constraint_kind(kind: &mut ConstraintKind) {
+    let swap = |a: &str, b: &str| a > b;
+    match kind {
+        ConstraintKind::Coincident { a, b } => {
+            if swap(&format!("{a:?}"), &format!("{b:?}")) {
+                std::mem::swap(a, b);
+            }
+        }
+        ConstraintKind::Parallel { line_a, line_b }
+        | ConstraintKind::Perpendicular { line_a, line_b }
+        | ConstraintKind::Equal { line_a, line_b } => {
+            if swap(&format!("{line_a:?}"), &format!("{line_b:?}")) {
+                std::mem::swap(line_a, line_b);
+            }
+        }
+        ConstraintKind::Tangent { a, b } => {
+            if swap(&format!("{a:?}"), &format!("{b:?}")) {
+                std::mem::swap(a, b);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -149,7 +180,19 @@ pub fn document_diff(a: &Document, b: &Document) -> Vec<String> {
             if na != nb {
                 diffs.push(format!("{}: {} vs {}", $label, na, nb));
             } else if a.$field != b.$field {
-                diffs.push(format!("{} content differs ({} entries)", $label, na));
+                // #1520: name the first record that differs — "content differs (N entries)"
+                // on its own costs a bisect every time an export gap shows up.
+                let mut detail = String::new();
+                for (i, (va, vb)) in a.$field.values().zip(b.$field.values()).enumerate() {
+                    if va != vb {
+                        detail = format!("\n    #{i} was {va:?}\n    #{i} got {vb:?}");
+                        break;
+                    }
+                }
+                diffs.push(format!(
+                    "{} content differs ({} entries){}",
+                    $label, na, detail
+                ));
             }
         };
     }
@@ -223,6 +266,8 @@ struct EmitCtx<'a> {
     emitted_circles: HashSet<crate::model::CircleKey>,
     /// Datum planes present at `bearcad.new()` — don't re-emit.
     default_planes: HashSet<crate::model::ConstructionPlaneKey>,
+    /// Sketches whose free geometry has been emitted (#1511) — ops must not run first.
+    sketch_contents_done: HashSet<SketchId>,
 }
 
 impl<'a> EmitCtx<'a> {
@@ -276,6 +321,7 @@ impl<'a> EmitCtx<'a> {
             emitted_lines: HashSet::new(),
             emitted_circles: HashSet::new(),
             default_planes,
+            sketch_contents_done: HashSet::new(),
         }
     }
 
@@ -323,13 +369,41 @@ impl<'a> EmitCtx<'a> {
         match node {
             HierarchyNode::Document
             | HierarchyNode::Drawings
-            | HierarchyNode::Body(_)
             | HierarchyNode::UnitChild { .. }
             | HierarchyNode::DrawingDimension { .. }
             | HierarchyNode::DrawingProjection { .. }
             | HierarchyNode::DrawingAnnotation { .. }
             | HierarchyNode::EdgeTreatment { .. }
+            // Components and their memberships are emitted last, once every element they
+            // can hold exists (see `emit_components`).
             | HierarchyNode::Component(_) => {}
+
+            // A body is made by the operation above it, but what the *user* set on it
+            // afterwards is the body's own (#1517).
+            HierarchyNode::Body(key) => {
+                let Some(body) = self.doc.bodies.get(key) else {
+                    return;
+                };
+                // A body an operation consumed carries the same `shadow` flag the user's
+                // "make this a shadow body" sets, and re-emitting it would make the op
+                // refuse its own input ("already consumed by another operation").
+                let shadow = body.shadow && !body_is_op_input(self.doc, key);
+                if !shadow && body.name.is_none() {
+                    return;
+                }
+                self.close_sketch(out);
+                let ord = self.doc.bodies.keys().position(|k| k == key).unwrap_or(0);
+                if shadow {
+                    out.push_str(&format!(
+                        "bearcad.set_body_shadow{{ body = {ord}, shadow = true }}\n"
+                    ));
+                }
+                if let Some(name) = &body.name {
+                    out.push_str(&format!(
+                        "bearcad.set_name({{ kind = \"body\", index = {ord} }}, {name:?})\n"
+                    ));
+                }
+            }
 
             HierarchyNode::ConstructionPlane(key) => {
                 if self.default_planes.contains(&key) {
@@ -341,14 +415,43 @@ impl<'a> EmitCtx<'a> {
                 if plane.repeat_instance.is_some() {
                     return; // produced by a repeat op
                 }
-                // Prefer offset-from-parent form when the definition is a simple face offset.
+                // #1510: `bearcad.plane` adds `offset` on top of `origin`, so the plane's
+                // *world* origin is the wrong anchor to emit — replaying it moved the plane
+                // by another `offset`. Emit what the definition actually says: the
+                // offset-from-parent form when the anchor is another construction plane,
+                // otherwise the anchor face's own origin and normal.
                 let offset = plane.definition.offset_mm;
-                let origin = plane.origin;
-                let normal = plane.normal;
-                out.push_str(&format!(
-                    "bearcad.plane{{ offset = {offset}, origin = {{{}, {}, {}}}, normal = {{{}, {}, {}}} }}\n",
-                    origin.x, origin.y, origin.z, normal.x, normal.y, normal.z
-                ));
+                match &plane.definition.anchor {
+                    crate::model::PlaneAnchor::Face {
+                        origin,
+                        normal,
+                        label,
+                    } => {
+                        let parent = (label == "Construction plane")
+                            .then(|| {
+                                self.doc.construction_planes.iter().position(|(_, p)| {
+                                    (p.origin - *origin).length() < 1e-5
+                                        && (p.normal - *normal).length() < 1e-5
+                                })
+                            })
+                            .flatten();
+                        match parent {
+                            Some(from) => out.push_str(&format!(
+                                "bearcad.plane{{ offset = {offset}, from = {from} }}\n"
+                            )),
+                            None => out.push_str(&format!(
+                                "bearcad.plane{{ offset = {offset}, origin = {{{}, {}, {}}}, normal = {{{}, {}, {}}} }}\n",
+                                origin.x, origin.y, origin.z, normal.x, normal.y, normal.z
+                            )),
+                        }
+                    }
+                    crate::model::PlaneAnchor::Axis { .. } => {
+                        out.push_str(
+                            "-- skipped: construction plane anchored on an axis (no scripting verb)\n",
+                        );
+                        return;
+                    }
+                }
                 if let Some(name) = &plane.name {
                     let ord = self
                         .doc
@@ -641,7 +744,7 @@ impl<'a> EmitCtx<'a> {
 
             HierarchyNode::SketchOffsetOp(key) => {
                 if let Some(op) = self.doc.sketch_offset_ops.get(key) {
-                    self.ensure_sketch(op.sketch, out);
+                    self.enter_sketch(op.sketch, out);
                     let sketch = self
                         .doc
                         .sketches
@@ -665,7 +768,7 @@ impl<'a> EmitCtx<'a> {
             }
             HierarchyNode::SketchRepeatOp(key) => {
                 if let Some(op) = self.doc.sketch_repeat_ops.get(key) {
-                    self.ensure_sketch(op.sketch, out);
+                    self.enter_sketch(op.sketch, out);
                     let sketch = self
                         .doc
                         .sketches
@@ -685,21 +788,30 @@ impl<'a> EmitCtx<'a> {
                         crate::model::RepeatMode::FillGapSpan => "fill_gap_span",
                         crate::model::RepeatMode::FillPitchSpan => "fill_pitch_span",
                     };
-                    out.push_str(&format!(
-                        "bearcad.repeat_sketch{{ sketch = {sketch}, lines = {{{}}}, circles = {{{}}}, du = {}, dv = {}, mode = {mode:?}, count = {:?}, spacing = {:?}, length = {:?} }}\n",
+                    // #1513: the reader takes `dir = {du, dv}`, not two scalar keys, and an
+                    // empty expression string is not the same as an omitted field.
+                    let mut parts = format!(
+                        "sketch = {sketch}, lines = {{{}}}, circles = {{{}}}, dir = {{{}, {}}}, mode = {mode:?}",
                         list_usizes(&lines),
                         list_usizes(&circles),
                         op.dir_u,
                         op.dir_v,
-                        op.count,
-                        op.spacing,
-                        op.length
-                    ));
+                    );
+                    for (key, expr) in [
+                        ("count", &op.count),
+                        ("spacing", &op.spacing),
+                        ("length", &op.length),
+                    ] {
+                        if !expr.trim().is_empty() {
+                            parts.push_str(&format!(", {key} = {expr:?}"));
+                        }
+                    }
+                    out.push_str(&format!("bearcad.repeat_sketch{{ {parts} }}\n"));
                 }
             }
             HierarchyNode::SketchMirrorOp(key) => {
                 if let Some(op) = self.doc.sketch_mirror_ops.get(key) {
-                    self.ensure_sketch(op.sketch, out);
+                    self.enter_sketch(op.sketch, out);
                     let sketch = self
                         .doc
                         .sketches
@@ -723,7 +835,7 @@ impl<'a> EmitCtx<'a> {
             }
             HierarchyNode::SketchSliceOp(key) => {
                 if let Some(op) = self.doc.sketch_slice_ops.get(key) {
-                    self.ensure_sketch(op.sketch, out);
+                    self.enter_sketch(op.sketch, out);
                     let sketch = self
                         .doc
                         .sketches
@@ -744,7 +856,7 @@ impl<'a> EmitCtx<'a> {
             HierarchyNode::SketchVertexTreatmentOp(key) => {
                 // Emit as individual chamfer_vertex/fillet_vertex per corner.
                 if let Some(op) = self.doc.sketch_vertex_treatment_ops.get(key) {
-                    self.ensure_sketch(op.sketch, out);
+                    self.enter_sketch(op.sketch, out);
                     for corner in &op.corners {
                         let Some(&la) = op.line_targets.get(corner.a) else {
                             continue;
@@ -853,7 +965,14 @@ impl<'a> EmitCtx<'a> {
                         out.push('\n');
                     }
                 }
-                for ann in d.annotations.values() {
+                // #1516: `bearcad.drawing{}` seeds its own title annotation. Re-emitting it
+                // as a `drawing_text` left the replayed drawing with two overlapping titles,
+                // and every further round trip added another.
+                let seeded = seeded_drawing_title(d, dord);
+                for (ai, ann) in d.annotations.iter() {
+                    if Some(ai) == seeded {
+                        continue;
+                    }
                     out.push_str(
                         &Instruction::AddDrawingAnnotation {
                             drawing: dord,
@@ -888,6 +1007,9 @@ impl<'a> EmitCtx<'a> {
     /// remaining constraints. Sketch ops that nest under the sketch are still visited as
     /// their own hierarchy nodes later.
     fn emit_sketch_contents(&mut self, sketch: SketchId, out: &mut String) {
+        if !self.sketch_contents_done.insert(sketch) {
+            return;
+        }
         // Rectangles first (each consumes four lines).
         let line_keys: Vec<_> = self
             .doc
@@ -905,7 +1027,7 @@ impl<'a> EmitCtx<'a> {
             if self.emitted_lines.contains(&key) {
                 continue;
             }
-            if let Some(rect) = find_rect_from_line(self.doc, key) {
+            if let Some(rect) = find_rect_from_line(self.doc, key, &self.generated_lines) {
                 self.emit_rect(rect, out);
             }
         }
@@ -920,6 +1042,7 @@ impl<'a> EmitCtx<'a> {
         for key in line_keys {
             self.emit_line(key, out);
         }
+        self.emit_projections(sketch, out);
         let circle_keys: Vec<_> = self
             .doc
             .circles
@@ -964,6 +1087,70 @@ impl<'a> EmitCtx<'a> {
         }
     }
 
+    /// `bearcad.project{...}` for whatever outside geometry a sketch references (#1517).
+    /// Projected lines are *derived*, so they can't be emitted as `bearcad.line` calls — the
+    /// export used to skip them and lose a projection-only sketch entirely.
+    fn emit_projections(&mut self, sketch: SketchId, out: &mut String) {
+        use crate::model::ProjectionSource;
+        let mut bodies: Vec<usize> = Vec::new();
+        let mut planes: Vec<usize> = Vec::new();
+        let mut unresolved = false;
+        for line in self.doc.lines.values() {
+            if line.sketch != sketch {
+                continue;
+            }
+            match &line.projection {
+                None => {}
+                Some(ProjectionSource::BodyEdge { body, .. }) => {
+                    if let Some(ord) = self.doc.bodies.keys().position(|k| k == *body) {
+                        if !bodies.contains(&ord) {
+                            bodies.push(ord);
+                        }
+                    }
+                }
+                Some(ProjectionSource::Plane { plane }) => {
+                    if let Some(ord) = self.doc.construction_planes.keys().position(|k| k == *plane)
+                    {
+                        if !planes.contains(&ord) {
+                            planes.push(ord);
+                        }
+                    }
+                }
+                // A unit instance's face edge has no `bearcad.project` spelling.
+                Some(ProjectionSource::UnitEdge { .. }) => unresolved = true,
+            }
+        }
+        if bodies.is_empty() && planes.is_empty() && !unresolved {
+            return;
+        }
+        self.ensure_sketch(sketch, out);
+        if !bodies.is_empty() {
+            out.push_str(&format!(
+                "bearcad.project{{ bodies = {{{}}} }}\n",
+                list_usizes(&bodies)
+            ));
+        }
+        if !planes.is_empty() {
+            out.push_str(&format!(
+                "bearcad.project{{ planes = {{{}}} }}\n",
+                list_usizes(&planes)
+            ));
+        }
+        if unresolved {
+            out.push_str("-- skipped: projection of an imported unit's edge (no scripting verb)\n");
+        }
+    }
+
+    /// Open `sketch` with everything it holds already created (#1511). A sketch-level op
+    /// is a separate hierarchy node that can be visited before the Sketch node, and calling
+    /// `mirror_sketch`/`fillet_vertex`/… before its lines exist makes the replay die on
+    /// "no line 0". Emitting the sketch's contents on first reference fixes the order
+    /// whichever way the element list happens to run.
+    fn enter_sketch(&mut self, sketch: SketchId, out: &mut String) {
+        self.emit_sketch_contents(sketch, out);
+        self.ensure_sketch(sketch, out);
+    }
+
     fn emit_line(&mut self, key: crate::model::LineKey, out: &mut String) {
         if self.generated_lines.contains(&key) || self.emitted_lines.contains(&key) {
             return;
@@ -974,7 +1161,7 @@ impl<'a> EmitCtx<'a> {
         if line.projection.is_some() {
             return;
         }
-        if let Some(rect) = find_rect_from_line(self.doc, key) {
+        if let Some(rect) = find_rect_from_line(self.doc, key, &self.generated_lines) {
             self.emit_rect(rect, out);
             return;
         }
@@ -983,11 +1170,13 @@ impl<'a> EmitCtx<'a> {
         if let Some(ck) = line_length_constraint_key(self.doc, key) {
             self.absorbed_constraints.insert(ck);
         }
+        // #1518: export the pre-solve seed so replay follows the same solve trajectory.
+        let (x0, y0, x1, y1) = line.export_endpoints();
         let instr = Instruction::CreateLine {
-            x0: line.x0,
-            y0: line.y0,
-            x1: line.x1,
-            y1: line.y1,
+            x0,
+            y0,
+            x1,
+            y1,
             bezier: line.bezier,
             dimension: dim,
         };
@@ -1016,15 +1205,16 @@ impl<'a> EmitCtx<'a> {
             return;
         };
         self.ensure_sketch(circle.sketch, out);
+        let (cx, cy, r) = circle.export_center_radius();
         let diameter_expr =
-            circle_diameter_expr(self.doc, key).or_else(|| Some((circle.r * 2.0).to_string()));
+            circle_diameter_expr(self.doc, key).or_else(|| Some((r * 2.0).to_string()));
         if let Some(ck) = circle_diameter_constraint_key(self.doc, key) {
             self.absorbed_constraints.insert(ck);
         }
         let instr = Instruction::CreateCircle {
-            cx: circle.cx,
-            cy: circle.cy,
-            r: circle.r,
+            cx,
+            cy,
+            r,
             diameter_expr,
         };
         out.push_str(&instr.as_lua_in(Some(self.doc)));
@@ -1066,9 +1256,26 @@ impl<'a> EmitCtx<'a> {
             }
             _ => {}
         }
+        // #1514: `offset_sketch`/`repeat_sketch` have no `constraint_outputs` field, so the
+        // coincidences chaining their generated lines look like free constraints. Anything
+        // that only touches op-generated geometry belongs to the op, not to the script.
+        if self.constraint_is_generated(c) {
+            return;
+        }
         self.ensure_sketch(c.sketch, out);
         emit_constraint(self.doc, c, out);
         self.absorbed_constraints.insert(key);
+    }
+
+    /// True when every line/circle a constraint names was produced by a sketch op — the op
+    /// re-creates the constraint on replay, and the entities don't exist before it runs.
+    fn constraint_is_generated(&self, c: &crate::model::Constraint) -> bool {
+        let (lines, circles) = constraint_refs(&c.kind);
+        if lines.is_empty() && circles.is_empty() {
+            return false;
+        }
+        lines.iter().all(|l| self.generated_lines.contains(l))
+            && circles.iter().all(|c| self.generated_circles.contains(c))
     }
 
     fn emit_sketch_text(&mut self, key: crate::model::SketchTextKey, out: &mut String) {
@@ -1102,31 +1309,185 @@ impl<'a> EmitCtx<'a> {
             return;
         };
         self.ensure_sketch(line0.sketch, out);
-        let w_expr = line_length_expr(self.doc, rect.lines[0]);
-        let h_expr = line_length_expr(self.doc, rect.lines[1]);
+        let w_expr = symbolic_expr(line_length_expr(self.doc, rect.lines[0]));
+        let h_expr = symbolic_expr(line_length_expr(self.doc, rect.lines[1]));
         for &lk in &rect.lines {
             self.emitted_lines.insert(lk);
             if let Some(ck) = line_length_constraint_key(self.doc, lk) {
                 self.absorbed_constraints.insert(ck);
             }
         }
-        for ck in rect.constraints {
-            self.absorbed_constraints.insert(ck);
+        for ck in &rect.constraints {
+            self.absorbed_constraints.insert(*ck);
         }
+        // Prefer the bottom/right edges' seeds so a later constraint solve doesn't
+        // bake post-solve coordinates into the rect call (#1518).
+        let (x, y, w, h) = rect_export_xywh(self.doc, &rect);
         let instr = Instruction::CreateRect {
-            x: rect.x,
-            y: rect.y,
-            width: rect.w,
-            height: rect.h,
+            x,
+            y,
+            width: w,
+            height: h,
             width_expr: w_expr,
             height_expr: h_expr,
         };
         out.push_str(&instr.as_lua_in(Some(self.doc)));
         out.push('\n');
+        // #1515: `bearcad.rect` folds four lines into one call, so anything set on an
+        // individual edge — its name, its construction flag — has to follow the call.
+        for &lk in &rect.lines {
+            let Some(line) = self.doc.lines.get(lk) else {
+                continue;
+            };
+            if !line.construction && line.name.is_none() {
+                continue;
+            }
+            let ord = self.doc.lines.keys().position(|k| k == lk).unwrap_or(0);
+            if line.construction {
+                out.push_str(&format!(
+                    "bearcad.set_construction({{ kind = \"line\", index = {ord} }}, true)\n"
+                ));
+            }
+            if let Some(name) = &line.name {
+                out.push_str(&format!(
+                    "bearcad.set_name({{ kind = \"line\", index = {ord} }}, {name:?})\n"
+                ));
+            }
+        }
     }
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
+
+/// Every line and circle a constraint refers to, for deciding whether it is op-generated.
+fn constraint_refs(
+    kind: &ConstraintKind,
+) -> (Vec<crate::model::LineKey>, Vec<crate::model::CircleKey>) {
+    let mut lines = Vec::new();
+    let mut circles = Vec::new();
+    fn point(
+        p: &ConstraintPoint,
+        lines: &mut Vec<crate::model::LineKey>,
+        circles: &mut Vec<crate::model::CircleKey>,
+    ) {
+        match p {
+            ConstraintPoint::LineEndpoint { line, .. } => lines.push(*line),
+            ConstraintPoint::CircleCenter(c) => circles.push(*c),
+            _ => {}
+        }
+    }
+    fn line_ref(l: &ConstraintLine, lines: &mut Vec<crate::model::LineKey>) {
+        if let ConstraintLine::Line(i) = l {
+            lines.push(*i);
+        }
+    }
+    fn entity(
+        e: &ConstraintEntity,
+        lines: &mut Vec<crate::model::LineKey>,
+        circles: &mut Vec<crate::model::CircleKey>,
+    ) {
+        match e {
+            ConstraintEntity::Point(p) => point(p, lines, circles),
+            ConstraintEntity::Line(l) => line_ref(l, lines),
+            ConstraintEntity::Circle(c) => circles.push(*c),
+            ConstraintEntity::Origin => {}
+        }
+    }
+    match kind {
+        ConstraintKind::Distance { target } => match target {
+            DistanceTarget::LineLength(i) => lines.push(*i),
+            DistanceTarget::CircleDiameter(i) => circles.push(*i),
+            DistanceTarget::PointPointDistance { anchor, mover, .. } => {
+                point(anchor, &mut lines, &mut circles);
+                point(mover, &mut lines, &mut circles);
+            }
+            DistanceTarget::PointLineDistance { point: p, line, .. } => {
+                point(p, &mut lines, &mut circles);
+                line_ref(line, &mut lines);
+            }
+            DistanceTarget::LineLineDistance { line_a, line_b, .. } => {
+                line_ref(line_a, &mut lines);
+                line_ref(line_b, &mut lines);
+            }
+        },
+        ConstraintKind::Angle { line_a, line_b, .. }
+        | ConstraintKind::Parallel { line_a, line_b }
+        | ConstraintKind::Perpendicular { line_a, line_b }
+        | ConstraintKind::Equal { line_a, line_b } => {
+            line_ref(line_a, &mut lines);
+            line_ref(line_b, &mut lines);
+        }
+        ConstraintKind::Coincident { a, b } => {
+            entity(a, &mut lines, &mut circles);
+            entity(b, &mut lines, &mut circles);
+        }
+        ConstraintKind::Midpoint { point: p, line } => {
+            point(p, &mut lines, &mut circles);
+            line_ref(line, &mut lines);
+        }
+        ConstraintKind::Tangent { a, b } => {
+            point(a, &mut lines, &mut circles);
+            point(b, &mut lines, &mut circles);
+        }
+    }
+    (lines, circles)
+}
+
+/// True when some operation takes `body` as an input. Consumption shadows a body, so this
+/// is what separates "the user made it a shadow body" from "an op used it up" (#1517).
+/// The annotation `CreateDrawing` seeded as this drawing's title, when it is still exactly
+/// what that action produces (#1516). Anything the user has since changed about it is a real
+/// annotation and exports like one.
+fn seeded_drawing_title(
+    d: &crate::model::Drawing,
+    ordinal: usize,
+) -> Option<crate::model::AnnotationKey> {
+    let (key, first) = d.annotations.iter().next()?;
+    let fresh = crate::model::Drawing::default();
+    let text = d
+        .name
+        .clone()
+        .unwrap_or_else(|| format!("Drawing {ordinal}"));
+    let pos_x = (fresh.margin_mm / fresh.page_width_mm).clamp(0.0, 0.4);
+    let same = first.text == text
+        && (first.pos_x - pos_x).abs() < 1e-5
+        && (first.pos_y - 0.02).abs() < 1e-5
+        && (first.size_frac - 0.028).abs() < 1e-5
+        && first.wrap_frac.is_none();
+    same.then_some(key)
+}
+
+fn body_is_op_input(doc: &Document, body: crate::model::BodyKey) -> bool {
+    let listed = |v: &[crate::model::BodyKey]| v.contains(&body);
+    if doc
+        .boolean_ops
+        .values()
+        .any(|op| listed(&op.a) || listed(&op.b))
+    {
+        return true;
+    }
+    if doc.move_ops.values().any(|op| listed(&op.targets))
+        || doc.mirror_ops.values().any(|op| listed(&op.targets))
+        || doc.repeat_ops.values().any(|op| listed(&op.targets))
+        || doc.slice_ops.values().any(|op| listed(&op.targets))
+        || doc.shell_ops.values().any(|op| listed(&op.targets))
+    {
+        return true;
+    }
+    let loft_bodies = doc.lofts.values().any(|op| match &op.mode {
+        crate::model::LoftMode::NewBody => false,
+        crate::model::LoftMode::AddTo(b) | crate::model::LoftMode::Cut(b) => listed(b),
+    });
+    let revolve_bodies = doc.revolutions.values().any(|op| match &op.mode {
+        crate::model::RevolveMode::NewBody => false,
+        crate::model::RevolveMode::AddTo(b) | crate::model::RevolveMode::Cut(b) => listed(b),
+    });
+    let sweep_bodies = doc.sweeps.values().any(|op| match &op.mode {
+        crate::model::SweepMode::NewBody => false,
+        crate::model::SweepMode::AddTo(b) | crate::model::SweepMode::Cut(b) => listed(b),
+    });
+    loft_bodies || revolve_bodies || sweep_bodies
+}
 
 fn planes_same_datum(a: &crate::model::ConstructionPlane, b: &crate::model::ConstructionPlane) -> bool {
     (a.normal - b.normal).length() < 1e-5
@@ -1217,9 +1578,13 @@ struct RectGroup {
 }
 
 /// If `start` is the bottom edge of an axis-aligned rectangle of four free lines, return it.
-fn find_rect_from_line(doc: &Document, start: crate::model::LineKey) -> Option<RectGroup> {
+fn find_rect_from_line(
+    doc: &Document,
+    start: crate::model::LineKey,
+    generated: &HashSet<crate::model::LineKey>,
+) -> Option<RectGroup> {
     let l0 = doc.lines.get(start)?;
-    if l0.bezier.is_some() || l0.projection.is_some() || l0.shadow {
+    if l0.bezier.is_some() || l0.projection.is_some() || generated.contains(&start) {
         return None;
     }
     // Bottom edge: horizontal, left→right.
@@ -1236,7 +1601,15 @@ fn find_rect_from_line(doc: &Document, start: crate::model::LineKey) -> Option<R
     let mut top = None;
     let mut left = None;
     for (k, l) in doc.lines.iter() {
-        if l.sketch != sketch || k == start || l.bezier.is_some() || l.projection.is_some() {
+        // Skip op-generated lines: a sketch fillet leaves trimmed copies of the rect's own
+        // edges in the sketch, and grouping those would emit a `bearcad.rect` for geometry
+        // the op re-creates (#1511).
+        if l.sketch != sketch
+            || k == start
+            || l.bezier.is_some()
+            || l.projection.is_some()
+            || generated.contains(&k)
+        {
             continue;
         }
         // right: (x+w,y) → (x+w,y+h)
@@ -1299,6 +1672,20 @@ fn find_rect_from_line(doc: &Document, start: crate::model::LineKey) -> Option<R
             _ => {}
         }
     }
+    // A `bearcad.rect` plants four coincidences and four axis-parallels. Four lines
+    // that merely look rectangular (an extrude_face wall, a hand-drawn box) must
+    // stay as four `bearcad.line` calls — folding them would invent length dims
+    // the original document never had.
+    let coincidences = constraints.iter().filter(|ck| {
+        matches!(
+            doc.constraints.get(**ck).map(|c| &c.kind),
+            Some(ConstraintKind::Coincident { .. })
+        )
+    }).count();
+    let axis_parallels = constraints.len() - coincidences;
+    if coincidences < 4 || axis_parallels < 4 {
+        return None;
+    }
     Some(RectGroup {
         x,
         y,
@@ -1307,6 +1694,32 @@ fn find_rect_from_line(doc: &Document, start: crate::model::LineKey) -> Option<R
         lines,
         constraints,
     })
+}
+
+/// Keep parameter/unit expressions (`"w"`, `"2in"`); drop a bare number so the
+/// seed millimetres are what `bearcad.rect` plants. A document in inches that
+/// was authored as `width = 2` stores the expression `"2"` (2 inches) on a
+/// 2 mm seed, and re-evaluating that string as the create size would skip the
+/// original solve.
+fn symbolic_expr(expr: Option<String>) -> Option<String> {
+    expr.filter(|e| e.trim().parse::<f64>().is_err())
+}
+
+fn rect_export_xywh(doc: &Document, rect: &RectGroup) -> (f32, f32, f32, f32) {
+    let Some(bottom) = doc.lines.get(rect.lines[0]) else {
+        return (rect.x, rect.y, rect.w, rect.h);
+    };
+    let Some(right) = doc.lines.get(rect.lines[1]) else {
+        return (rect.x, rect.y, rect.w, rect.h);
+    };
+    let (x0, y0, x1, _) = bottom.export_endpoints();
+    let (_, y0r, _, y1r) = right.export_endpoints();
+    let w = x1 - x0;
+    let h = y1r - y0r;
+    if w < 0.5 || h < 0.5 {
+        return (rect.x, rect.y, rect.w, rect.h);
+    }
+    (x0, y0, w, h)
 }
 
 fn emit_constraint(doc: &Document, c: &crate::model::Constraint, out: &mut String) {
@@ -1599,6 +2012,71 @@ fn instruction_for_sweep(doc: &Document, key: crate::model::SweepKey) -> Option<
     })
 }
 
+/// Components and which top-level elements live in them (#1517). Both have scripting verbs
+/// (`bearcad.component`, `bearcad.move_to_component`); neither used to be exported, so a
+/// component tree vanished on the round trip.
+fn emit_components(doc: &Document, out: &mut String) {
+    for (key, component) in doc.components.iter() {
+        let mut parts = Vec::new();
+        if let Some(name) = &component.name {
+            parts.push(format!("name = {name:?}"));
+        }
+        if let Some(parent) = component.parent {
+            if let Some(ord) = doc.components.keys().position(|k| k == parent) {
+                parts.push(format!("parent = {ord}"));
+            }
+        }
+        out.push_str(&format!("bearcad.component{{ {} }}\n", parts.join(", ")));
+        let _ = key;
+    }
+    for (member, component) in &doc.component_members {
+        let Some(cord) = doc.components.keys().position(|k| k == *component) else {
+            continue;
+        };
+        let Some((kind, index)) = component_member_ref(doc, member) else {
+            // Lofts and drawings are component members the Elements pane can file but
+            // `bearcad.move_to_component` has no `kind` for yet.
+            out.push_str(&format!(
+                "-- skipped: {member:?} is in a component, but move_to_component can't name it\n"
+            ));
+            continue;
+        };
+        out.push_str(&format!(
+            "bearcad.move_to_component{{ kind = {kind:?}, index = {index}, component = {cord} }}\n"
+        ));
+    }
+}
+
+/// The `kind`/`index` pair `bearcad.move_to_component` names a component member by.
+fn component_member_ref(
+    doc: &Document,
+    member: &crate::model::ComponentMember,
+) -> Option<(&'static str, usize)> {
+    use crate::model::ComponentMember as M;
+    macro_rules! ord {
+        ($coll:ident, $key:expr, $name:expr) => {
+            doc.$coll.keys().position(|k| k == *$key).map(|i| ($name, i))
+        };
+    }
+    match member {
+        M::ConstructionPlane(k) => ord!(construction_planes, k, "construction_plane"),
+        M::Extrusion(k) => ord!(extrusions, k, "extrusion"),
+        M::Body(k) => ord!(bodies, k, "body"),
+        // `move_to_component` has no `kind` for these two.
+        M::Loft(_) => None,
+        M::Drawing(_) => None,
+        M::BooleanOp(k) => ord!(boolean_ops, k, "boolean_op"),
+        M::MoveOp(k) => ord!(move_ops, k, "move_op"),
+        M::MirrorOp(k) => ord!(mirror_ops, k, "mirror_op"),
+        M::RepeatOp(k) => ord!(repeat_ops, k, "repeat_op"),
+        M::SliceOp(k) => ord!(slice_ops, k, "slice_op"),
+        M::ShellOp(k) => ord!(shell_ops, k, "shell_op"),
+        M::EdgeTreatmentOp(k) => ord!(edge_treatment_ops, k, "edge_treatment_op"),
+        M::Revolution(k) => ord!(revolutions, k, "revolution"),
+        M::Sweep(k) => ord!(sweeps, k, "sweep"),
+    }
+}
+
 fn emit_materials(doc: &Document, out: &mut String) {
     let defaults: HashSet<_> = crate::model::Material::DEFAULTS
         .iter()
@@ -1663,6 +2141,428 @@ mod tests {
         }
         assert!(runner.error.is_none(), "script error: {:?}", runner.error);
         state
+    }
+
+    /// Like `run_lua`, but hands back the script error instead of panicking (#1520).
+    fn try_run_lua(source: &str) -> Result<AppState, String> {
+        let mut runner = ScriptRunner::from_lua_source(source).map_err(|e| e.to_string())?;
+        runner.verbose = false;
+        let mut state = AppState::default();
+        let mut synthetic = SyntheticInput::default();
+        let ctx = egui::Context::default();
+        let vp = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0));
+        while !runner.done {
+            runner.tick(&mut state, &mut synthetic, Some(vp), &ctx);
+        }
+        match runner.error {
+            Some(e) => Err(e),
+            None => Ok(state),
+        }
+    }
+
+    /// Build a document from `source`, export it, replay the export, and report every
+    /// difference. Empty result means the export is a faithful recipe for the document.
+    fn round_trip(source: &str) -> Result<Vec<String>, String> {
+        let state = try_run_lua(source).map_err(|e| format!("source script failed: {e}"))?;
+        let script = document_to_lua(&state.doc);
+        if script.contains("bearcad.ui.") {
+            return Err(format!("export used the ui module:\n{script}"));
+        }
+        let rebuilt = try_run_lua(&script)
+            .map_err(|e| format!("replay of export failed: {e}\n--- script ---\n{script}"))?;
+        let diffs = document_diff(&state.doc, &rebuilt.doc);
+        if diffs.is_empty() {
+            Ok(diffs)
+        } else {
+            Err(format!(
+                "round-trip diffs: {}\n--- script ---\n{script}",
+                diffs.join("\n  ")
+            ))
+        }
+    }
+
+    /// #1520: one case per declarative verb. Adding a verb means adding a case here, the
+    /// same way the pointer path requires a `tests/interaction/*.lua` script.
+    const ROUND_TRIP_CASES: &[(&str, &str)] = &[
+        (
+            "cuboid",
+            r#"bearcad.new()
+               bearcad.cuboid{ width = 20, depth = 15, height = 10 }"#,
+        ),
+        (
+            "cylinder",
+            r#"bearcad.new()
+               bearcad.cylinder{ radius = 6, height = 25 }"#,
+        ),
+        (
+            "sphere",
+            r#"bearcad.new()
+               bearcad.sphere{ radius = 9 }"#,
+        ),
+        (
+            "boolean",
+            r#"bearcad.new()
+               bearcad.cuboid{ width = 20, depth = 20, height = 20 }
+               bearcad.cuboid{ width = 10, depth = 10, height = 40 }
+               bearcad.combine{ op = "cut", a = {0}, b = {1} }"#,
+        ),
+        (
+            "move",
+            r#"bearcad.new()
+               bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+               bearcad.move_bodies{ bodies = {0}, x = 5, y = 3, z = 1 }"#,
+        ),
+        (
+            "mirror",
+            r#"bearcad.new()
+               bearcad.cuboid{ width = 10, depth = 10, height = 10, at = {20, 0, 0} }
+               bearcad.mirror_bodies{ bodies = {0}, plane = 0 }"#,
+        ),
+        (
+            "repeat",
+            r#"bearcad.new()
+               bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+               bearcad.repeat_bodies{ bodies = {0}, axis = "x", mode = "count_gap", count = 3, spacing = 8 }"#,
+        ),
+        (
+            "shell",
+            r#"bearcad.new()
+               bearcad.circle{ x = 0, y = 0, r = 10 }
+               bearcad.extrude{ circle = 0, distance = 20 }
+               bearcad.shell{ bodies = {0}, faces = {{ kind = "extrude_cap", extrusion = 0, profile = "circle", profile_index = 0, top = true }}, thickness = "1" }"#,
+        ),
+        (
+            "edge fillet",
+            r#"bearcad.new()
+               bearcad.cuboid{ width = 20, depth = 20, height = 20 }
+               bearcad.fillet_edge{ primitive = 0, edge = { kind = "vertical", face = 0, edge = 0 }, radius = 2 }"#,
+        ),
+        (
+            "sketch fillet",
+            r#"bearcad.new()
+               bearcad.rect{ width = 40, height = 30 }
+               bearcad.fillet_vertex{ point = { kind = "line", index = 0, ["end"] = "end" }, radius = 3 }"#,
+        ),
+        (
+            "sketch offset",
+            r#"bearcad.new()
+               bearcad.rect{ width = 40, height = 30 }
+               bearcad.offset_sketch{ lines = {0,1,2,3}, distance = 3 }"#,
+        ),
+        (
+            "sketch mirror",
+            r#"bearcad.new()
+               bearcad.line{ x = 5, y = 0, x1 = 20, y1 = 10 }
+               bearcad.line{ x = 0, y = -20, x1 = 0, y1 = 20 }
+               bearcad.mirror_sketch{ lines = {0}, line = 1 }"#,
+        ),
+        (
+            "sketch repeat",
+            r#"bearcad.new()
+               bearcad.circle{ x = 0, y = 0, r = 3 }
+               bearcad.repeat_sketch{ circles = {0}, count = 4, angle = 0, spacing = "10" }"#,
+        ),
+        (
+            "sketch slice",
+            r#"bearcad.new()
+               bearcad.line{ x = -20, y = 0, x1 = 20, y1 = 0 }
+               bearcad.line{ x = 0, y = -20, x1 = 0, y1 = 20 }
+               bearcad.slice_sketch{ lines = {0}, cutters = {1} }"#,
+        ),
+        (
+            "revolve",
+            r#"bearcad.new()
+               bearcad.rect{ x = 5, y = 0, width = 10, height = 20 }
+               bearcad.revolve{ polygon = {0,1,2,3}, axis = "y", angle = 360 }"#,
+        ),
+        (
+            "text",
+            r#"bearcad.new()
+               bearcad.text{ text = "Hi", size = 10, x = 0, y = 0 }"#,
+        ),
+        (
+            "bezier",
+            r#"bearcad.new()
+               bearcad.line{ x = 0, y = 0, x1 = 30, y1 = 0, bezier = { {10, 12}, {20, -12} } }"#,
+        ),
+        (
+            "construction geometry",
+            r#"bearcad.new()
+               bearcad.line{ x = 0, y = 0, x1 = 30, y1 = 0 }
+               bearcad.set_construction({ kind = "line", index = 0 }, true)
+               bearcad.circle{ x = 0, y = 10, r = 4 }
+               bearcad.set_construction({ kind = "circle", index = 0 }, true)"#,
+        ),
+        (
+            "named elements",
+            r#"bearcad.new()
+               bearcad.rect{ width = 40, height = 20 }
+               bearcad.set_name(bearcad.element("line", 2), "Back edge")"#,
+        ),
+        (
+            "shadow body",
+            r#"bearcad.new()
+               bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+               bearcad.set_body_shadow{ body = 0, shadow = true }"#,
+        ),
+        (
+            "non-default units",
+            r#"bearcad.new()
+               bearcad.set_units{ length = "in", angle = "rad" }
+               bearcad.rect{ width = 2, height = 1 }"#,
+        ),
+        (
+            "parameter bounds",
+            r#"bearcad.new()
+               bearcad.parameter("add", "w", "24")
+               bearcad.parameter("min", 0, "5")
+               bearcad.parameter("max", 0, "50")
+               bearcad.rect{ width = "w", height = 12 }"#,
+        ),
+        (
+            "construction plane offset",
+            r#"bearcad.new()
+               bearcad.plane{ offset = 12 }"#,
+        ),
+        (
+            "chained construction planes",
+            r#"bearcad.new()
+               bearcad.plane{ offset = 10 }
+               bearcad.plane{ offset = 5, from = 3 }"#,
+        ),
+        (
+            "projection",
+            r#"bearcad.new()
+               bearcad.cuboid{ width = 20, depth = 20, height = 20 }
+               bearcad.plane{ offset = 40 }
+               bearcad.begin_sketch("construction_plane", 3)
+               bearcad.project{ body = 0 }"#,
+        ),
+        (
+            "components",
+            r#"bearcad.new()
+               bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+               bearcad.component{ name = "Sub" }
+               bearcad.move_to_component{ kind = "body", index = 0, component = 0 }"#,
+        ),
+        (
+            "drawing",
+            r#"bearcad.new()
+               bearcad.cuboid{ width = 20, depth = 20, height = 20 }
+               bearcad.drawing{}
+               bearcad.drawing_view{ drawing = 0, body = 0, orientation = "front" }"#,
+        ),
+        (
+            "sketch on a body face",
+            r#"bearcad.new()
+               bearcad.rect{ width = 40, height = 40 }
+               bearcad.extrude{ polygon = {0,1,2,3}, distance = 20 }
+               bearcad.exit_sketch()
+               bearcad.begin_sketch{ kind = "extrude_cap", extrusion = 0, profile = "polygon", profile_lines = {0,1,2,3}, top = true }
+               bearcad.rect{ width = 10, height = 10 }"#,
+        ),
+        (
+            "cut extrude",
+            r#"bearcad.new()
+               bearcad.rect{ width = 40, height = 40 }
+               bearcad.extrude{ polygon = {0,1,2,3}, distance = 20 }
+               bearcad.exit_sketch()
+               bearcad.begin_sketch{ kind = "extrude_cap", extrusion = 0, profile = "polygon", profile_lines = {0,1,2,3}, top = true }
+               bearcad.circle{ x = 0, y = 0, r = 5 }
+               bearcad.extrude{ circle = 0, distance = -10, body = "cut" }"#,
+        ),
+        (
+            "constraint parallel",
+            r#"bearcad.new()
+               bearcad.line{ x = 0, y = 0, x1 = 20, y1 = 1 }
+               bearcad.line{ x = 0, y = 10, x1 = 20, y1 = 12 }
+               bearcad.select{ kind = "line", index = 0 }
+               bearcad.select({ kind = "line", index = 1 }, true)
+               bearcad.add_geometric_constraint("parallel")"#,
+        ),
+        (
+            "constraint perpendicular",
+            r#"bearcad.new()
+               bearcad.line{ x = 0, y = 0, x1 = 20, y1 = 1 }
+               bearcad.line{ x = 0, y = 10, x1 = 1, y1 = 30 }
+               bearcad.select{ kind = "line", index = 0 }
+               bearcad.select({ kind = "line", index = 1 }, true)
+               bearcad.add_geometric_constraint("perpendicular")"#,
+        ),
+        (
+            "constraint line length",
+            r#"bearcad.new()
+               bearcad.line{ x = 0, y = 0, x1 = 50, y1 = 0 }
+               bearcad.add_constraint({ kind = "line", index = 0 }, "leg = 40mm")"#,
+        ),
+        (
+            "constraint point_point",
+            r#"bearcad.new()
+               bearcad.circle{ x = 0, y = 0, r = 3 }
+               bearcad.circle{ x = 20, y = 1, r = 3 }
+               bearcad.add_constraint({ kind = "point_point",
+                   anchor = { kind = "circle", index = 0, point = true },
+                   mover = { kind = "circle", index = 1, point = true } }, "25")"#,
+        ),
+        (
+            "constraint angle",
+            r#"bearcad.new()
+               bearcad.line{ x = 0, y = 0, x1 = 20, y1 = 0 }
+               bearcad.line{ x = 0, y = 0, x1 = 18, y1 = 8 }
+               bearcad.add_angle_constraint{ a = 0, b = 1, value = "30deg" }"#,
+        ),
+        (
+            "constraint coincident",
+            r#"bearcad.new()
+               bearcad.line{ x = 0, y = 0, x1 = 20, y1 = 0 }
+               bearcad.line{ x = 21, y = 1, x1 = 30, y1 = 15 }
+               bearcad.select({ kind = "line", index = 0, ["end"] = "end" })
+               bearcad.select({ kind = "line", index = 1, ["end"] = "start" }, true)
+               bearcad.add_geometric_constraint("coincident")"#,
+        ),
+        (
+            "constraint equal",
+            r#"bearcad.new()
+               bearcad.line{ x = 0, y = 0, x1 = 20, y1 = 0 }
+               bearcad.line{ x = 0, y = 10, x1 = 12, y1 = 10 }
+               bearcad.select{ kind = "line", index = 0 }
+               bearcad.select({ kind = "line", index = 1 }, true)
+               bearcad.add_geometric_constraint("equal")"#,
+        ),
+        (
+            "constraint horizontal",
+            r#"bearcad.new()
+               bearcad.line{ x = 0, y = 0, x1 = 20, y1 = 2 }
+               bearcad.select{ kind = "line", index = 0 }
+               bearcad.add_geometric_constraint("horizontal")"#,
+        ),
+        (
+            "constraint circle diameter",
+            r#"bearcad.new()
+               bearcad.circle{ x = 0, y = 0, r = 8 }"#,
+        ),
+        (
+            "slice",
+            r#"bearcad.new()
+               bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+               bearcad.plane{ offset = 5 }
+               bearcad.slice{ bodies = {0}, cutters = {{ kind = "construction_plane", index = 3 }} }"#,
+        ),
+        (
+            "edge chamfer",
+            r#"bearcad.new()
+               bearcad.rect{ x = 0, y = 0, width = 10, height = 10 }
+               bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+               bearcad.chamfer_edge{
+                   extrusion = 0,
+                   edge = { kind = "vertical", face = 0, edge = 0 },
+                   distance = 2
+               }"#,
+        ),
+        (
+            "loft",
+            r#"bearcad.new()
+               bearcad.circle{ r = 5 }
+               bearcad.plane{ offset = 10 }
+               bearcad.begin_sketch{ kind = "plane", index = 3 }
+               bearcad.circle{ r = 2 }
+               bearcad.exit_sketch()
+               bearcad.loft{ circles = {0, 1} }"#,
+        ),
+        (
+            "sweep",
+            r#"bearcad.new()
+               bearcad.circle{ x = 0, y = 0, r = 3 }
+               bearcad.exit_sketch()
+               bearcad.plane{ origin = {0, 0, 0}, normal = {0, 1, 0} }
+               bearcad.begin_sketch{ kind = "plane", index = 3 }
+               bearcad.line{ x = 0, y = 0, x1 = 0, y1 = 20 }
+               bearcad.exit_sketch()
+               bearcad.sweep{ circle = 0, path = {0} }"#,
+        ),
+        (
+            "materials",
+            r#"bearcad.new()
+               bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+               bearcad.set_material{ body = 0, material = 1 }"#,
+        ),
+        (
+            "derived parameter",
+            r#"bearcad.new()
+               bearcad.line{ x = 0, y = 0, x1 = 30, y1 = 0 }
+               bearcad.derive_parameter{ kind = "line_length", a = 0, name = "L" }"#,
+        ),
+        (
+            "anchored construction plane",
+            r#"bearcad.new()
+               bearcad.plane{ origin = {0, 0, 0}, normal = {1, 0, 0} }"#,
+        ),
+        (
+            "extrude_face",
+            r#"bearcad.new()
+               bearcad.rect{ x = 0, y = 0, width = 20, height = 20 }
+               bearcad.exit_sketch()
+               bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20 }
+               bearcad.extrude_face{
+                   face = { kind = "extrude_side", extrusion = 0, profile = "polygon", profile_lines = {0, 1, 2, 3}, edge = 0 },
+                   distance = 10
+               }"#,
+        ),
+        (
+            "polygon-profile shell",
+            r#"bearcad.new()
+               bearcad.rect{ width = 40, height = 40 }
+               bearcad.extrude{ polygon = {0,1,2,3}, distance = 20 }
+               bearcad.shell{ bodies = {0}, faces = {{ kind = "extrude_cap", extrusion = 0, profile = "polygon", profile_lines = {0,1,2,3}, top = true }}, thickness = "1" }"#,
+        ),
+        (
+            "joint",
+            r#"bearcad.new()
+               bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+               bearcad.cuboid{ width = 10, depth = 10, height = 10, at = {20, 0, 0} }
+               bearcad.joint{ a = 0, b = 1, kind = "rigid" }"#,
+        ),
+    ];
+
+    /// #1518: export the coordinates the user placed, not the post-solve ones.
+    #[test]
+    fn export_uses_pre_solve_seed_coordinates() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.line{ x = 0, y = 0, x1 = 50, y1 = 0 }
+            bearcad.add_constraint({ kind = "line", index = 0 }, "leg = 40mm")
+            "#,
+        );
+        let line = state.doc.lines.values().next().expect("one line");
+        assert!(
+            (line.x1 - 50.0).abs() > 0.1,
+            "solver should have moved the endpoint, got x1={}",
+            line.x1
+        );
+        let script = document_to_lua(&state.doc);
+        assert!(
+            script.contains("x1 = 50"),
+            "export must emit the pre-solve seed, got:\n{script}"
+        );
+    }
+
+    /// #1520: every case exports to a script that replays into the same document.
+    #[test]
+    fn declarative_verbs_round_trip() {
+        let mut failures = Vec::new();
+        for (label, source) in ROUND_TRIP_CASES {
+            if let Err(e) = round_trip(source) {
+                failures.push(format!("\n=== {label} ===\n{e}"));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} of {} round-trip cases failed:{}",
+            failures.len(),
+            ROUND_TRIP_CASES.len(),
+            failures.join("")
+        );
     }
 
     #[test]

@@ -96,7 +96,8 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             diameter_expr TEXT,
             diameter_dim_offset REAL,
             diameter_dim_angle REAL NOT NULL DEFAULT 0,
-            name TEXT
+            name TEXT,
+            payload_json TEXT
         );
         CREATE TABLE IF NOT EXISTS constraints (
             id INTEGER PRIMARY KEY,
@@ -786,6 +787,8 @@ struct LinePayload {
     chamfer_fillet_parent: Option<crate::model::LineKey>,
     #[serde(default)]
     projection: Option<crate::model::ProjectionSource>,
+    #[serde(default)]
+    seed: Option<crate::model::LineSeed>,
 }
 
 fn save_lines(tx: &Connection, arena: &Arena<Line>) -> Result<()> {
@@ -794,6 +797,7 @@ fn save_lines(tx: &Connection, arena: &Arena<Line>) -> Result<()> {
             bezier: l.bezier,
             chamfer_fillet_parent: l.chamfer_fillet_parent,
             projection: l.projection.clone(),
+            seed: l.seed,
         };
         tx.execute(
             "INSERT INTO lines (id, sketch_id, x0, y0, x1, y1, construction, shadow,
@@ -820,12 +824,20 @@ fn save_lines(tx: &Connection, arena: &Arena<Line>) -> Result<()> {
     Ok(())
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct CirclePayload {
+    #[serde(default)]
+    seed: Option<crate::model::CircleSeed>,
+}
+
 fn save_circles(tx: &Connection, arena: &Arena<Circle>) -> Result<()> {
     for (key, c) in arena.iter() {
+        let payload = CirclePayload { seed: c.seed };
         tx.execute(
             "INSERT INTO circles (id, sketch_id, cx, cy, r, construction, shadow,
-             diameter_locked, diameter_expr, diameter_dim_offset, diameter_dim_angle, name)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             diameter_locked, diameter_expr, diameter_dim_offset, diameter_dim_angle, name,
+             payload_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 key_bits(key),
                 key_bits(c.sketch),
@@ -839,6 +851,7 @@ fn save_circles(tx: &Connection, arena: &Arena<Circle>) -> Result<()> {
                 c.diameter_dim_offset,
                 c.diameter_dim_angle,
                 c.name,
+                to_json(&payload)?,
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -1967,6 +1980,7 @@ fn load_lines(conn: &Connection) -> Result<Arena<Line>> {
                 y0: y0 as f32,
                 x1: x1 as f32,
                 y1: y1 as f32,
+                seed: payload.seed,
                 length_locked: length_locked != 0,
                 length_dim_offset: length_dim_offset.map(|v| v as f32),
                 length_expr,
@@ -1986,7 +2000,8 @@ fn load_circles(conn: &Connection) -> Result<Arena<Circle>> {
     let mut stmt = conn
         .prepare(
             "SELECT id, sketch_id, cx, cy, r, construction, shadow, diameter_locked,
-                    diameter_expr, diameter_dim_offset, diameter_dim_angle, name FROM circles",
+                    diameter_expr, diameter_dim_offset, diameter_dim_angle, name, payload_json
+                    FROM circles",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -2004,6 +2019,7 @@ fn load_circles(conn: &Connection) -> Result<Arena<Circle>> {
                 row.get::<_, Option<f64>>(9)?,
                 row.get::<_, f64>(10)?,
                 row.get::<_, Option<String>>(11)?,
+                row.get::<_, Option<String>>(12)?,
             ))
         })
         .map_err(|e| e.to_string())?;
@@ -2022,7 +2038,9 @@ fn load_circles(conn: &Connection) -> Result<Arena<Circle>> {
             diameter_dim_offset,
             diameter_dim_angle,
             name,
+            payload_json,
         ) = row.map_err(|e| e.to_string())?;
+        let payload: CirclePayload = from_json_or_default(payload_json.as_deref())?;
         entries.push((
             id,
             Circle {
@@ -2030,6 +2048,7 @@ fn load_circles(conn: &Connection) -> Result<Arena<Circle>> {
                 cx: cx as f32,
                 cy: cy as f32,
                 r: r as f32,
+                seed: payload.seed,
                 diameter_locked: diameter_locked != 0,
                 diameter_dim_offset: diameter_dim_offset.map(|v| v as f32),
                 diameter_expr,

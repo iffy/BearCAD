@@ -982,6 +982,7 @@ fn apply_length_constraints_for_drag(
             entity.x1 = nu;
             entity.y1 = nv;
         }
+        entity.capture_seed();
     }
     Ok(())
 }

@@ -4696,11 +4696,19 @@ fn extrude_face_profile_lua_fields(profile: &ExtrudeFace, doc: Option<&crate::mo
                 ordinal_or_slot(doc.map(|d| d.circles.keys().position(|k| k == *i)), i.index());
             format!("profile = \"circle\", profile_index = {ordinal}")
         }
-        // Not round-trippable: `parse_face_id_table` only accepts `rect`/`circle` profiles
-        // (same limitation as `face_lua_parts`'s polygon case, #66).
+        // #1512: `parse_face_id_table` reads a polygon's loop from `profile_lines`, as
+        // ordinals — a single raw arena index named no profile the reader could resolve.
         ExtrudeFace::Polygon(lines) => format!(
-            "profile = \"polygon\", profile_index = {}",
-            lines.first().map(|l| l.index() as usize).unwrap_or(0)
+            "profile = \"polygon\", profile_lines = {{{}}}",
+            lines
+                .iter()
+                .map(|l| ordinal_or_slot(
+                    doc.map(|d| d.lines.keys().position(|k| k == *l)),
+                    l.index()
+                )
+                .to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
         // Round-trippable since #406: `parse_face_id_table` accepts
         // `profile = "boolean", boolean = {...}`.
@@ -4708,18 +4716,24 @@ fn extrude_face_profile_lua_fields(profile: &ExtrudeFace, doc: Option<&crate::mo
             "profile = \"boolean\", boolean = {}",
             boolean_face_lua_table(*op, a, b, doc)
         ),
-        ExtrudeFace::SketchRegion { sketch, seed_u, seed_v } => format!(
-            "profile = \"region\", profile_index = {}, seed = {{{}, {}}}",
-            sketch.index(),
-            *seed_u as f32 / crate::model::SKETCH_REGION_SEED_SCALE,
-            *seed_v as f32 / crate::model::SKETCH_REGION_SEED_SCALE
-        ),
-        ExtrudeFace::TextGlyph { text, glyph } => {
+        // #1512: both name their host by *ordinal* so the reader can resolve them.
+        ExtrudeFace::SketchRegion { sketch, seed_u, seed_v } => {
+            let (u, v) = crate::model::sketch_region_seed_point(*seed_u, *seed_v);
             format!(
-                "profile = \"text_glyph\", profile_index = {}, glyph = {glyph}",
-                text.index()
+                "profile = \"region\", sketch = {}, seed = {{{u}, {v}}}",
+                ordinal_or_slot(
+                    doc.map(|d| d.sketches.keys().position(|k| k == *sketch)),
+                    sketch.index()
+                )
             )
         }
+        ExtrudeFace::TextGlyph { text, glyph } => format!(
+            "profile = \"text_glyph\", text = {}, glyph = {glyph}",
+            ordinal_or_slot(
+                doc.map(|d| d.sketch_texts.keys().position(|k| k == *text)),
+                text.index()
+            )
+        ),
     }
 }
 
