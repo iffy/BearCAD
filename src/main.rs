@@ -36550,9 +36550,7 @@ mod tests {
     /// planes — only the rotation/translation handles are live.
     #[test]
     fn free_move_gizmos_do_not_hover_scene_objects() {
-        use super::gpu_viewport;
         use super::resolve_viewport_hover_highlight;
-        use crate::hierarchy::SceneElement;
 
         let mut doc = crate::model::Document::default();
         let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
@@ -36576,10 +36574,7 @@ mod tests {
         let vp = cam.view_proj(viewport);
         let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
         let pickers = test_pickers(
-            crate::element_picker::ElementFilter::kinds(&[
-                crate::element_picker::ElementKind::Body,
-                crate::element_picker::ElementKind::Plane,
-            ]),
+            crate::element_picker::ElementFilter::kind(crate::element_picker::ElementKind::Body),
             context::PickerTarget::MoveTargets,
             crate::element_picker::PickLimit::Infinite,
         );
@@ -36615,7 +36610,8 @@ mod tests {
             on_plane.is_none(),
             "Free Move gizmos must not hover a construction plane, got {on_plane:?}"
         );
-        // The same cursor still hovers a plane when the Bodies picker is armed.
+        // #1459: the Bodies picker no longer takes construction planes, so the same
+        // cursor must not light the XY datum.
         let plane_as_body = resolve_viewport_hover_highlight(
             false,
             crate::actions::Tool::Move,
@@ -36635,13 +36631,8 @@ mod tests {
             &pickers,
         );
         assert!(
-            matches!(
-                plane_as_body,
-                Some(gpu_viewport::ViewportHoverHighlight::Element(
-                    SceneElement::ConstructionPlane(_)
-                ))
-            ),
-            "Bodies-picker hover still lights a plane, got {plane_as_body:?}"
+            plane_as_body.is_none(),
+            "Bodies-picker hover must not light a construction plane, got {plane_as_body:?}"
         );
     }
 
