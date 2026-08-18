@@ -1965,10 +1965,8 @@ fn axis_constraint_button(
 /// geometry and nothing else. One rule rather than the same `element_in_sketch` check written
 /// out again in each of the hover and click paths (#958).
 /// The face-then-point picker both the Joint tool's placement and the Move tool's Face
-/// Snap use (#1089). One helper, so the two tools can never disagree about what a face
-/// picker accepts — a body face or a datum plane, narrowed to the moving/fixed side by
-/// `rule` — or about how the two-stage pick (face, then a point on it) works. The first
-/// pick (a face) is `kinds(Face, Plane)`; the second (a point on that face) is a vertex.
+/// Snap use (#1089). Same two-stage pick (face, then a point on it) and the same
+/// moving/fixed `rule`. Joint still takes a datum plane as a face; Move does not (#1459).
 fn face_snap_picker_view(
     heading: &'static str,
     target: PickerTarget,
@@ -1977,10 +1975,15 @@ fn face_snap_picker_view(
     rule: PickRule,
     focused: bool,
     color: egui::Color32,
+    accept_planes: bool,
 ) -> ToolPickerView {
-    const FACE_KINDS: [ElementKind; 2] = [ElementKind::Face, ElementKind::Plane];
+    let face_kinds: &[ElementKind] = if accept_planes {
+        &[ElementKind::Face, ElementKind::Plane]
+    } else {
+        &[ElementKind::Face]
+    };
     let mut picker = ElementPicker::face_then_point(
-        ElementFilter::kinds(&FACE_KINDS).rule(rule.clone()),
+        ElementFilter::kinds(face_kinds).rule(rule.clone()),
         ElementFilter::kind(ElementKind::Vertex).rule(rule),
     )
     .with_selected_color(color);
@@ -2185,6 +2188,7 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
                 rule,
                 focused,
                 crate::theme::FOCUS_ACCENT,
+                true,
             ));
         }
         // The joint's frame (#1079). An axis input takes anything with a **direction** — a
@@ -2413,16 +2417,10 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         // Exactly one Move picker reads as focused (#658): the Bodies picker only while the
         // step-through hasn't moved on to a point/axis/alignment picker.
         //
-        // It takes planes and tracing images alongside bodies (#217/#963) — a Move moves "the
-        // things that move", and they were previously routed by a per-kind arm in the pane
-        // click cascade with no picker showing them at all.
+        // Bodies and tracing images (#217/#963), not construction planes (#1459).
         let mut moving = ElementPicker::new(
-            ElementFilter::kinds(&[
-                ElementKind::Body,
-                ElementKind::Plane,
-                ElementKind::Image,
-            ])
-            .rule(PickRule::LiveBody),
+            ElementFilter::kinds(&[ElementKind::Body, ElementKind::Image])
+                .rule(PickRule::LiveBody),
             PickLimit::Infinite,
         );
         moving.set_focused(m.bodies_focused);
@@ -2489,6 +2487,7 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
                     } else {
                         crate::theme::MOVE_FIXED_FACE
                     },
+                    false,
                 ));
             }
         }
@@ -10596,6 +10595,88 @@ mod tests {
         assert_eq!(pickers.len(), 3);
         assert_eq!(pickers[0].target, PickerTarget::RepeatTargets);
         assert_eq!(pickers[0].picker.picked(), &[SceneElement::Body(bkey(7))]);
+    }
+
+    /// #1459: Move cannot move a construction plane, so none of its pickers accept one —
+    /// hover, the exploder and a pane pick all read the same filter.
+    #[test]
+    fn move_pickers_do_not_accept_construction_planes() {
+        use crate::hierarchy::SceneElement;
+        let doc = doc_with_bodies(2);
+        let selection = SceneSelection::default();
+        let plane = SceneElement::ConstructionPlane(pkey(0));
+        let body = SceneElement::Body(bkey(0));
+        let control = |mode, bodies_focused, start_a_focused| MoveControl {
+            plane_targets: Vec::new(),
+            image_targets: Vec::new(),
+            angle_snap_deg: crate::actions::MAX_ANGLE_SNAP_DEG,
+            translate_mode: mode,
+            allow_in_place: false,
+            bodies_focused,
+            start_a: None,
+            start_a_focused,
+            end_a: None,
+            end_a_focused: false,
+            start_b: None,
+            start_b_focused: false,
+            end_b: None,
+            end_b_focused: false,
+            start_c: None,
+            start_c_focused: false,
+            end_c: None,
+            end_c_focused: false,
+            targets: if bodies_focused {
+                Vec::new()
+            } else {
+                vec![bkey(0)]
+            },
+            instance_targets: Vec::new(),
+            tx: String::new(),
+            ty: String::new(),
+            tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
+            roll_angle: String::new(),
+            face_flip: false,
+            face_spin: String::new(),
+            face_a: None,
+            face_b: None,
+            editing: false,
+            can_commit: false,
+        };
+        let pickers = |mode, bodies_focused, start_a_focused| {
+            context_pane_content(&ContextInput {
+                tool: Tool::Move,
+                move_op: Some(control(mode, bodies_focused, start_a_focused)),
+                ..input(&doc, &selection)
+            })
+            .tool_pickers
+        };
+
+        let bodies = pickers(crate::model::MoveTranslateMode::PointSnap, true, false);
+        let bodies_picker = bodies
+            .iter()
+            .find(|v| v.target == PickerTarget::MoveTargets)
+            .expect("Bodies");
+        assert!(
+            bodies_picker.picker.accepts(&doc, &body),
+            "Bodies still takes a live body"
+        );
+        assert!(
+            !bodies_picker.picker.accepts(&doc, &plane),
+            "Bodies must not take a construction plane"
+        );
+
+        let face = pickers(crate::model::MoveTranslateMode::FaceSnap, false, true);
+        let moving_face = face
+            .iter()
+            .find(|v| v.target == PickerTarget::MoveFaceMoving)
+            .expect("Moving face");
+        assert!(
+            !moving_face.picker.accepts(&doc, &plane),
+            "Face Snap must not take a construction plane"
+        );
     }
 
     /// #646: typing in the Repeat section's Count/Offset/Distance fields blurs the Bodies

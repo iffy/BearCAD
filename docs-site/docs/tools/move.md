@@ -202,16 +202,11 @@ or an arrow to move along one axis only.
 Constraints keep holding as you drag; a move that would force an edge to stretch is
 refused (lengths never change).
 
-## Moving construction planes and tracing images
+## Moving tracing images
 
-Pick a construction plane or tracing image from the Elements pane with the Move tool
-active, then set the translation like a body.
-
-- A **construction plane** moves in place, carrying everything anchored to it — sketches,
-  images, extrusions grown from them.
-- A **tracing image** slides on its host plane (and follows the plane if the plane moves).
-
-Editing the move back to zero returns it home.
+Pick a tracing image from the Elements pane with the Move tool active, then set the
+translation like a body. It slides on its host plane (and follows the plane if the plane
+moves). Editing the move back to zero returns it home.
 
 ## Rotating sketch text
 
