@@ -1805,17 +1805,106 @@ fn parse_slice_cutter_table(lua: &Lua, table: Table) -> mlua::Result<crate::mode
 }
 
 /// Parse a `bearcad.mirror_sketch`/`edit_sketch_mirror` table into
-/// `(sketch, mirror_line, lines, circles)` (#523/#528).
+/// `(sketch, mirror_line, lines, circles)` (#523/#528/#1538).
 fn parse_sketch_mirror_op_args(
+    lua: &Lua,
     opts: &Table,
-) -> mlua::Result<(usize, usize, Vec<usize>, Vec<usize>)> {
+) -> mlua::Result<(
+    usize,
+    crate::model::SketchMirrorAxis,
+    Vec<usize>,
+    Vec<usize>,
+)> {
     let sketch: usize = opts.get::<Option<usize>>("sketch")?.unwrap_or(0);
-    let line: usize = opts
-        .get::<Option<usize>>("line")?
-        .ok_or_else(|| mlua::Error::external("mirror_sketch requires a `line` (the mirror axis)"))?;
+    let line = parse_sketch_mirror_axis(lua, opts.get::<Value>("line")?)?;
     let lines: Vec<usize> = opts.get::<Option<Vec<usize>>>("lines")?.unwrap_or_default();
     let circles: Vec<usize> = opts.get::<Option<Vec<usize>>>("circles")?.unwrap_or_default();
     Ok((sketch, line, lines, circles))
+}
+
+/// A 2D mirror axis: a sketch-line ordinal, `"x"`/`"y"` for the sketch origin axes, or
+/// `{ kind = "axis", axis = "x" }` / `{ kind = "global_axis", axis = "x" }`.
+fn parse_sketch_mirror_axis(
+    lua: &Lua,
+    value: Value,
+) -> mlua::Result<crate::model::SketchMirrorAxis> {
+    use crate::model::{SketchAxis, SketchMirrorAxis};
+    match value {
+        Value::Integer(i) if i >= 0 => Ok(SketchMirrorAxis::Line(line_key_from_ordinal(
+            lua,
+            i as usize,
+        )?)),
+        Value::Number(n) if n >= 0.0 => Ok(SketchMirrorAxis::Line(line_key_from_ordinal(
+            lua,
+            n.round() as usize,
+        )?)),
+        Value::String(s) => match s.to_str()?.to_ascii_lowercase().as_str() {
+            "x" | "lx" => Ok(SketchMirrorAxis::OriginAxis(SketchAxis::X)),
+            "y" | "ly" => Ok(SketchMirrorAxis::OriginAxis(SketchAxis::Y)),
+            "gx" | "global_x" => Ok(SketchMirrorAxis::X),
+            "gy" | "global_y" => Ok(SketchMirrorAxis::Y),
+            "gz" | "global_z" => Ok(SketchMirrorAxis::Z),
+            other => Err(mlua::Error::external(format!(
+                "unknown mirror axis '{other}' (x|y, or gx|gy|gz)"
+            ))),
+        },
+        Value::Table(t) => {
+            let kind: String = t
+                .get::<Option<String>>("kind")?
+                .or(t.get::<Option<String>>("type")?)
+                .unwrap_or_default();
+            if kind.eq_ignore_ascii_case("global_axis")
+                || (kind.eq_ignore_ascii_case("axis") && t.contains_key("index")?)
+            {
+                let axis = if let Ok(name) = t.get::<String>("axis") {
+                    match name.to_ascii_lowercase().as_str() {
+                        "x" => SketchMirrorAxis::X,
+                        "y" => SketchMirrorAxis::Y,
+                        "z" => SketchMirrorAxis::Z,
+                        other => {
+                            return Err(mlua::Error::external(format!(
+                                "unknown global axis '{other}' (x|y|z)"
+                            )))
+                        }
+                    }
+                } else {
+                    match t.get::<usize>("index")? {
+                        0 => SketchMirrorAxis::X,
+                        1 => SketchMirrorAxis::Y,
+                        2 => SketchMirrorAxis::Z,
+                        n => {
+                            return Err(mlua::Error::external(format!(
+                                "global axis index {n} is out of range (0=X, 1=Y, 2=Z)"
+                            )))
+                        }
+                    }
+                };
+                return Ok(axis);
+            }
+            if kind.eq_ignore_ascii_case("axis") || kind.is_empty() {
+                if let Ok(name) = t.get::<String>("axis") {
+                    return match name.to_ascii_lowercase().as_str() {
+                        "x" => Ok(SketchMirrorAxis::OriginAxis(SketchAxis::X)),
+                        "y" => Ok(SketchMirrorAxis::OriginAxis(SketchAxis::Y)),
+                        other => Err(mlua::Error::external(format!(
+                            "unknown origin axis '{other}' (x|y)"
+                        ))),
+                    };
+                }
+            }
+            if kind.eq_ignore_ascii_case("line") || kind.is_empty() {
+                if let Ok(index) = t.get::<usize>("index") {
+                    return Ok(SketchMirrorAxis::Line(line_key_from_ordinal(lua, index)?));
+                }
+            }
+            Err(mlua::Error::external(
+                "`line` must be a sketch-line ordinal, \"x\"/\"y\", or an axis table",
+            ))
+        }
+        _ => Err(mlua::Error::external(
+            "mirror_sketch requires a `line` (sketch line, origin axis, or world axis)",
+        )),
+    }
 }
 
 /// A construction-plane ordinal (`plane = 0`) or a face-spec table (#1354).
@@ -5869,7 +5958,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             check_keys(&opts, "mirror_sketch", &["sketch", "line", "lines", "circles"])?;
-            let (sketch, line, lines, circles) = parse_sketch_mirror_op_args(&opts)?;
+            let (sketch, line, lines, circles) = parse_sketch_mirror_op_args(lua, &opts)?;
             let sketch = sketch_key_from_ordinal(lua, sketch)?;
             let lines = line_keys_from_ordinals(lua, lines)?;
             let circles = circles
@@ -5879,7 +5968,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::CreateSketchMirrorOperation {
                     sketch,
-                    line: line_key_from_ordinal(lua, line)?,
+                    line,
                     line_targets: lines,
                     circle_targets: circles,
                 })
@@ -5901,7 +5990,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 &["index", "sketch", "line", "lines", "circles"],
             )?;
             let op: usize = opts.get("index")?;
-            let (_sketch, line, lines, circles) = parse_sketch_mirror_op_args(&opts)?;
+            let (_sketch, line, lines, circles) = parse_sketch_mirror_op_args(lua, &opts)?;
             let circles = circles
                 .into_iter()
                 .map(|o| circle_key_from_ordinal(lua, o))
@@ -5917,7 +6006,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         .keys()
                         .nth(op)
                         .ok_or_else(|| mlua::Error::external(format!("no operation {op}")))?,
-                    line: line_key_from_ordinal(lua, line)?,
+                    line,
                     line_targets: lines,
                     circle_targets: circles,
                 })

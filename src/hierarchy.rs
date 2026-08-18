@@ -452,6 +452,35 @@ impl SceneElement {
         }
     }
 
+    pub fn from_sketch_mirror_axis(axis: crate::model::SketchMirrorAxis) -> SceneElement {
+        use crate::construction::GlobalAxis;
+        use crate::model::SketchMirrorAxis;
+        match axis {
+            SketchMirrorAxis::Line(index) => SceneElement::Line(index),
+            SketchMirrorAxis::OriginAxis(axis) => {
+                SceneElement::FaceEdge(crate::model::ConstraintLine::OriginAxis(axis))
+            }
+            SketchMirrorAxis::X => SceneElement::GlobalAxis(GlobalAxis::X),
+            SketchMirrorAxis::Y => SceneElement::GlobalAxis(GlobalAxis::Y),
+            SketchMirrorAxis::Z => SceneElement::GlobalAxis(GlobalAxis::Z),
+        }
+    }
+
+    pub fn as_sketch_mirror_axis(&self) -> Option<crate::model::SketchMirrorAxis> {
+        use crate::construction::GlobalAxis;
+        use crate::model::SketchMirrorAxis;
+        Some(match self {
+            SceneElement::Line(index) => SketchMirrorAxis::Line(*index),
+            SceneElement::FaceEdge(crate::model::ConstraintLine::OriginAxis(axis)) => {
+                SketchMirrorAxis::OriginAxis(*axis)
+            }
+            SceneElement::GlobalAxis(GlobalAxis::X) => SketchMirrorAxis::X,
+            SceneElement::GlobalAxis(GlobalAxis::Y) => SketchMirrorAxis::Y,
+            SceneElement::GlobalAxis(GlobalAxis::Z) => SketchMirrorAxis::Z,
+            _ => return None,
+        })
+    }
+
     /// The straight reference this element names, if any — the inverse of
     /// [`from_revolve_axis`](SceneElement::from_revolve_axis). A Revolve's axis and a Repeat's
     /// path are both this, so a pick into either picker converts here rather than in a
@@ -1169,7 +1198,9 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
     }
     // An in-sketch mirror consumes its mirror line and every source line/circle (#523).
     for (oi, op) in doc.sketch_mirror_ops.iter() {
-        edges.push((HierarchyNode::Line(op.line), HierarchyNode::SketchMirrorOp(oi)));
+        if let crate::model::SketchMirrorAxis::Line(li) = op.line {
+            edges.push((HierarchyNode::Line(li), HierarchyNode::SketchMirrorOp(oi)));
+        }
         for &li in &op.line_targets {
             edges.push((HierarchyNode::Line(li), HierarchyNode::SketchMirrorOp(oi)));
         }

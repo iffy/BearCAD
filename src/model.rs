@@ -4117,6 +4117,65 @@ pub struct SketchOffsetOperation {
 /// How anything names a SketchOffsetOperation (#1055).
 pub type SketchOffsetOpKey = crate::arena::Key<SketchOffsetOperation>;
 
+/// What a 2D in-sketch mirror reflects across (#523/#1538): a straight sketch line, a
+/// sketch origin axis (LX/LY), or a world axis that lies in the sketch plane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SketchMirrorAxis {
+    Line(LineKey),
+    OriginAxis(SketchAxis),
+    X,
+    Y,
+    Z,
+}
+
+impl From<LineKey> for SketchMirrorAxis {
+    fn from(line: LineKey) -> Self {
+        Self::Line(line)
+    }
+}
+
+impl SketchMirrorAxis {
+    /// Sketch-local origin and unit direction of the infinite mirror line.
+    pub fn local_uv(self, doc: &Document, sketch: SketchId) -> Option<(glam::Vec2, glam::Vec2)> {
+        match self {
+            Self::Line(li) => {
+                let ml = doc.lines.get(li).filter(|l| l.sketch == sketch)?;
+                let a = glam::Vec2::new(ml.x0, ml.y0);
+                let dir = (glam::Vec2::new(ml.x1, ml.y1) - a).normalize_or_zero();
+                (dir.length_squared() > 1e-9).then_some((a, dir))
+            }
+            Self::OriginAxis(SketchAxis::X) => Some((glam::Vec2::ZERO, glam::Vec2::X)),
+            Self::OriginAxis(SketchAxis::Y) => Some((glam::Vec2::ZERO, glam::Vec2::Y)),
+            Self::X | Self::Y | Self::Z => {
+                let frame = crate::face::sketch_geometry_frame(doc, sketch)?;
+                let dir_w = match self {
+                    Self::X => glam::Vec3::X,
+                    Self::Y => glam::Vec3::Y,
+                    Self::Z => glam::Vec3::Z,
+                    _ => unreachable!(),
+                };
+                if !crate::face::world_dir_in_sketch_plane(doc, sketch, dir_w) {
+                    return None;
+                }
+                let origin = crate::face::world_to_local(&frame, glam::Vec3::ZERO);
+                let tip = crate::face::world_to_local(&frame, dir_w);
+                let dir = (glam::Vec2::new(tip.0, tip.1) - glam::Vec2::new(origin.0, origin.1))
+                    .normalize_or_zero();
+                (dir.length_squared() > 1e-9)
+                    .then_some((glam::Vec2::new(origin.0, origin.1), dir))
+            }
+        }
+    }
+
+    pub fn as_line_key(self) -> Option<LineKey> {
+        match self {
+            Self::Line(li) => Some(li),
+            _ => None,
+        }
+    }
+}
+
 /// A 2D in-sketch mirror (Mirror tool inside a sketch, #523): reflects the picked lines and
 /// circles across a mirror line, emitting the reflections as separate `Line`/`Circle` entries
 /// grouped under the op and regenerated whenever the sources or the mirror line change.
@@ -4124,8 +4183,8 @@ pub type SketchOffsetOpKey = crate::arena::Key<SketchOffsetOperation>;
 pub struct SketchMirrorOperation {
     /// The sketch the sources live in; outputs land in the same sketch.
     pub sketch: SketchId,
-    /// The mirror line: a straight sketch line whose infinite extension is the mirror axis.
-    pub line: LineKey,
+    /// The mirror line: a straight sketch line, origin axis, or in-plane world axis.
+    pub line: SketchMirrorAxis,
     /// Source line indices to reflect.
     #[serde(default)]
     pub line_targets: Vec<LineKey>,

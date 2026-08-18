@@ -1807,8 +1807,8 @@ impl CreatingJoint {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CreatingSketchMirror {
     pub sketch: crate::model::SketchId,
-    /// The mirror line (a straight sketch line); `None` until picked.
-    pub line: Option<crate::model::LineKey>,
+    /// The mirror line (a straight sketch line, origin axis, or in-plane world axis).
+    pub line: Option<crate::model::SketchMirrorAxis>,
     pub line_targets: Vec<crate::model::LineKey>,
     pub circle_targets: Vec<crate::model::CircleKey>,
     pub editing: Option<crate::model::SketchMirrorOpKey>,
@@ -3217,14 +3217,14 @@ pub enum Action {
     /// Scripted/replayed in-sketch mirror.
     CreateSketchMirrorOperation {
         sketch: crate::model::SketchId,
-        line: crate::model::LineKey,
+        line: crate::model::SketchMirrorAxis,
         line_targets: Vec<crate::model::LineKey>,
         circle_targets: Vec<crate::model::CircleKey>,
     },
     /// Re-target an existing in-sketch mirror.
     EditSketchMirrorOperation {
         op: crate::model::SketchMirrorOpKey,
-        line: crate::model::LineKey,
+        line: crate::model::SketchMirrorAxis,
         line_targets: Vec<crate::model::LineKey>,
         circle_targets: Vec<crate::model::CircleKey>,
     },
@@ -7734,15 +7734,12 @@ fn operation_preview_world_bounds(state: &AppState) -> Option<(Vec3, Vec3)> {
         }
     }
     if let Some(sm) = state.creating_sketch_mirror.as_ref() {
-        if let (Some(line_idx), Some(frame)) = (
+        if let (Some(axis), Some(frame)) = (
             sm.line,
             crate::face::sketch_geometry_frame(doc, sm.sketch),
         ) {
             if sm.has_targets() {
-                if let Some(ml) = doc.lines.get(line_idx) {
-                    let a = glam::Vec2::new(ml.x0, ml.y0);
-                    let dir = (glam::Vec2::new(ml.x1, ml.y1) - a).normalize_or_zero();
-                    if dir.length_squared() > 1e-9 {
+                if let Some((a, dir)) = axis.local_uv(doc, sm.sketch) {
                         let reflect = |p: glam::Vec2| {
                             let v = p - a;
                             a + 2.0 * v.dot(dir) * dir - v
@@ -7774,7 +7771,6 @@ fn operation_preview_world_bounds(state: &AppState) -> Option<(Vec3, Vec3)> {
                                 );
                             }
                         }
-                    }
                 }
             }
         }
@@ -8307,17 +8303,22 @@ fn validate_sketch_repeat_inputs(
 fn validate_sketch_mirror_inputs(
     doc: &Document,
     sketch: crate::model::SketchId,
-    line: crate::model::LineKey,
+    line: crate::model::SketchMirrorAxis,
     line_targets: &[crate::model::LineKey],
     circle_targets: &[crate::model::CircleKey],
 ) -> Result<(), String> {
-    let ml = doc
-        .lines
-        .get(line)
-        .filter(|l| l.sketch == sketch)
-        .ok_or_else(|| "Mirror line not found in this sketch".to_string())?;
-    if ml.bezier.is_some() {
-        return Err("The mirror line must be a straight line".to_string());
+    if line.local_uv(doc, sketch).is_none() {
+        return Err("Mirror line is not a straight reference in this sketch".to_string());
+    }
+    if let crate::model::SketchMirrorAxis::Line(li) = line {
+        let ml = doc
+            .lines
+            .get(li)
+            .filter(|l| l.sketch == sketch)
+            .ok_or_else(|| "Mirror line not found in this sketch".to_string())?;
+        if ml.bezier.is_some() {
+            return Err("The mirror line must be a straight line".to_string());
+        }
     }
     validate_sketch_repeat_inputs(doc, sketch, line_targets, circle_targets)
 }
@@ -18559,21 +18560,17 @@ pub(crate) fn rebuild_sketch_mirror(doc: &mut crate::model::Document, op_index: 
     let Some(op) = doc.sketch_mirror_ops.get(op_index).cloned() else {
         return false;
     };
-    let Some(ml) = doc.lines.get(op.line) else {
+    let Some((a, dir)) = op.line.local_uv(doc, op.sketch) else {
         return false;
     };
-    let a = glam::Vec2::new(ml.x0, ml.y0);
-    let dir = (glam::Vec2::new(ml.x1, ml.y1) - a).normalize_or_zero();
-    if dir.length_squared() < 1e-9 {
-        return false;
-    }
 
     // Lines: never reflect the mirror line itself.
+    let skip = op.line.as_line_key();
     let want_lines: Vec<crate::model::LineKey> = op
         .line_targets
         .iter()
         .copied()
-        .filter(|&li| li != op.line && doc.lines.contains(li))
+        .filter(|&li| skip != Some(li) && doc.lines.contains(li))
         .collect();
     let mut line_outputs = op.line_outputs.clone();
     while line_outputs.len() < want_lines.len() {
@@ -19475,16 +19472,19 @@ pub fn apply_pick(
             crate::element_picker::toggle_picked(&mut sm.circle_targets, *ci);
             true
         }
-        (P::SketchMirrorLine, SceneElement::Line(li)) => {
+        (P::SketchMirrorLine, element) => {
             let sketch = state.sketch_session.map(|s| s.sketch);
             let Some(sketch) = sketch else { return false };
-            if !state.doc.lines.get(*li).is_some_and(|l| l.sketch == sketch) {
+            let Some(axis) = element.as_sketch_mirror_axis() else {
+                return false;
+            };
+            if axis.local_uv(&state.doc, sketch).is_none() {
                 return false;
             }
             let sm = state
                 .creating_sketch_mirror
                 .get_or_insert_with(|| CreatingSketchMirror::new(sketch));
-            sm.line = (sm.line != Some(*li)).then_some(*li);
+            sm.line = (sm.line != Some(axis)).then_some(axis);
             true
         }
         (P::SketchSliceTargets, SceneElement::Line(li)) => {
@@ -21829,7 +21829,7 @@ mod tests {
 
         let r = state.apply(Action::CreateSketchMirrorOperation {
             sketch,
-            line: lkey(0),
+            line: lkey(0).into(),
             line_targets: vec![lkey(1)],
             circle_targets: vec![],
         });
@@ -21916,7 +21916,7 @@ mod tests {
 
         state.apply(Action::CreateSketchMirrorOperation {
             sketch,
-            line: lkey(0),
+            line: lkey(0).into(),
             line_targets: vec![lkey(1), lkey(2), lkey(3), lkey(4)],
             circle_targets: vec![],
         });
@@ -21951,7 +21951,7 @@ mod tests {
         state.doc.lines.insert(Line::from_local_endpoints(sketch, 5.0, 0.0, 8.0, 0.0)); // 1
         state.apply(Action::CreateSketchMirrorOperation {
             sketch,
-            line: lkey(0),
+            line: lkey(0).into(),
             line_targets: vec![lkey(1)],
             circle_targets: vec![],
         });
@@ -21976,6 +21976,49 @@ mod tests {
             (o.x0 + 1.0).abs() < 1e-2,
             "reflection should track the moved line, got x0={}",
             o.x0
+        );
+    }
+
+    /// #1538: a sketch origin axis or an in-plane world axis is a valid 2D mirror line.
+    #[test]
+    fn sketch_mirror_reflects_across_origin_and_world_axes() {
+        use crate::model::{Line, SketchAxis, SketchMirrorAxis};
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state
+            .doc
+            .lines
+            .insert(Line::from_local_endpoints(sketch, 5.0, 1.0, 8.0, 4.0));
+
+        let r = state.apply(Action::CreateSketchMirrorOperation {
+            sketch,
+            line: SketchMirrorAxis::OriginAxis(SketchAxis::Y),
+            line_targets: vec![lkey(0)],
+            circle_targets: vec![],
+        });
+        assert!(matches!(r, ActionResult::Ok), "origin Y axis: {r:?}");
+        let out = state.doc.sketch_mirror_ops.values().nth(0).unwrap().line_outputs[0];
+        let o = &state.doc.lines[out];
+        assert!(
+            (o.x0 + 5.0).abs() < 1e-3 && (o.y0 - 1.0).abs() < 1e-3,
+            "across local Y (x=0): {:?}",
+            (o.x0, o.y0)
+        );
+
+        state.apply(Action::UndoLast);
+        let r = state.apply(Action::CreateSketchMirrorOperation {
+            sketch,
+            line: SketchMirrorAxis::X,
+            line_targets: vec![lkey(0)],
+            circle_targets: vec![],
+        });
+        assert!(matches!(r, ActionResult::Ok), "world X axis: {r:?}");
+        let out = state.doc.sketch_mirror_ops.values().nth(0).unwrap().line_outputs[0];
+        let o = &state.doc.lines[out];
+        assert!(
+            (o.x0 - 5.0).abs() < 1e-3 && (o.y0 + 1.0).abs() < 1e-3,
+            "across world X (y=0): {:?}",
+            (o.x0, o.y0)
         );
     }
 
@@ -33319,7 +33362,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             .lines
             .insert(Line::from_local_endpoints(sketch, 5.0, 0.0, 8.0, 3.0));
         state.creating_sketch_mirror = Some(CreatingSketchMirror {
-            line: Some(lkey(0)),
+            line: Some(lkey(0).into()),
             line_targets: vec![lkey(1)],
             ..CreatingSketchMirror::new(sketch)
         });
@@ -35267,7 +35310,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 .creating_sketch_mirror
                 .as_ref()
                 .and_then(|c| c.line)
-                .map(|li| vec![SceneElement::Line(li)])
+                .map(|axis| vec![SceneElement::from_sketch_mirror_axis(axis)])
                 .unwrap_or_default(),
             P::SketchSliceTargets => state
                 .creating_sketch_slice

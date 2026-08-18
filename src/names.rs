@@ -782,6 +782,12 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         }
         SceneElement::Extrusion(i) => format!("Extrusion {}", i.index()),
         SceneElement::Body(i) => format!("Body {}", i.index()),
+        SceneElement::FaceEdge(crate::model::ConstraintLine::OriginAxis(
+            crate::model::SketchAxis::X,
+        )) => "X axis".to_string(),
+        SceneElement::FaceEdge(crate::model::ConstraintLine::OriginAxis(
+            crate::model::SketchAxis::Y,
+        )) => "Y axis".to_string(),
         SceneElement::FaceEdge(_) => "Edge".to_string(),
         SceneElement::BodyEdge { body, .. } => format!("Edge of {}", body_label(doc, *body)),
         SceneElement::BodyVertex { body, .. } => {

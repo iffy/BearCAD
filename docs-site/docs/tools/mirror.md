@@ -41,7 +41,8 @@ Because the reflection goes through the geometry kernel, mirrored bodies combine
 
 With a sketch open, Mirror reflects **sketch geometry** instead of bodies:
 
-1. Click a **straight line** to use as the mirror axis.
+1. Click a **straight line**, a **sketch axis** (LX/LY), or an in-plane **world axis**
+   to use as the mirror axis.
 2. Click the **shapes** (lines and circles) to reflect. A live preview shows the result.
 3. Press **Enter**.
 
@@ -65,7 +66,9 @@ bearcad.edit_mirror{ index = 0, plane = { kind = "construction_plane", index = 0
 bearcad.mirror_bodies{ plane = { kind = "construction_plane", index = 0 },
                        bodies = { 0 }, output = "join" }
 
--- In a sketch: reflect lines/circles across a straight line
+-- In a sketch: reflect lines/circles across a straight line, or `"x"`/`"y"` for
+-- the sketch origin axes (`"gx"`/`"gy"`/`"gz"` for an in-plane world axis)
 bearcad.mirror_sketch{ sketch = 0, line = 0, lines = { 1, 2 }, circles = { 0 } }
+bearcad.mirror_sketch{ sketch = 0, line = "x", lines = { 1 } }
 bearcad.edit_sketch_mirror{ index = 0, sketch = 0, line = 0, lines = { 1 } }
 ```

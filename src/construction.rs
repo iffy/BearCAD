@@ -113,6 +113,7 @@ pub fn plane_anchor_source_from_pick(kind: &PickTargetKind) -> PlaneAnchorSource
         PickTargetKind::Line(_)
         | PickTargetKind::BodyEdge { .. }
         | PickTargetKind::GlobalAxis(_)
+        | PickTargetKind::OriginAxis(_)
         | PickTargetKind::Circle(_) => PlaneAnchorSource::Axis,
         // A cylinder's centre line is a straight reference like any other (#1013).
         PickTargetKind::BodyAxis { .. } => PlaneAnchorSource::Axis,
@@ -290,6 +291,7 @@ pub fn complement_plane_anchor(
         PickTargetKind::Line(_)
             | PickTargetKind::BodyEdge { .. }
             | PickTargetKind::GlobalAxis(_)
+            | PickTargetKind::OriginAxis(_)
             | PickTargetKind::Circle(_)
     );
 
@@ -794,6 +796,7 @@ pub fn sketch_from_pick_target(doc: &Document, kind: PickTargetKind) -> Option<S
         | PickTargetKind::BodyVertex { .. }
         | PickTargetKind::Body(_)
         | PickTargetKind::GlobalAxis(_)
+        | PickTargetKind::OriginAxis(_)
         | PickTargetKind::Ground(_) => None,
     }
 }
@@ -1458,6 +1461,10 @@ pub enum PickTargetKind {
     /// Carries only the body key: everything else resolves from the document.
     Body(crate::model::BodyKey),
     GlobalAxis(GlobalAxis),
+    /// One of a sketch's own origin axes (#189 / #1538): local X (u) or Y (v). Distinct
+    /// from [`Self::GlobalAxis`] so a 2D tool can take LX/LY even when they don't coincide
+    /// with the world triad.
+    OriginAxis(crate::model::SketchAxis),
     ConstructionPlane(crate::model::ConstructionPlaneKey),
     Ground(Vec3),
     /// A sketch constraint's annotation icon (#568), by its index into `Document::constraints`.
@@ -1602,7 +1609,9 @@ impl PickOcclusion {
             PickTargetKind::SketchFace(face) => {
                 vis.effective_visible(doc, crate::hierarchy::face_element(face.clone()))
             }
-            PickTargetKind::GlobalAxis(_) | PickTargetKind::Ground(_) => true,
+            PickTargetKind::GlobalAxis(_)
+            | PickTargetKind::OriginAxis(_)
+            | PickTargetKind::Ground(_) => true,
         }
     }
 
@@ -2068,6 +2077,9 @@ pub fn scene_element_from_pick(kind: &PickTargetKind) -> Option<SceneElement> {
         // A world axis (#952): fixed geometry with no owning entity, like the origin, but
         // pickable — so it needs an identity an element picker can hold.
         PickTargetKind::GlobalAxis(axis) => Some(SceneElement::GlobalAxis(*axis)),
+        PickTargetKind::OriginAxis(axis) => Some(SceneElement::FaceEdge(
+            crate::model::ConstraintLine::OriginAxis(*axis),
+        )),
         // An analytic face (#952) — a sketch profile, a body cap/side wall, a revolve's flat
         // face, or a construction plane. `from_face_id` normalizes the plane case so a plane
         // keeps a single identity.
@@ -2190,6 +2202,27 @@ pub fn draw_pick_highlight(
             let (a, b) = global_axis_segment(axis);
             let axis_color = axis.color().gamma_multiply(1.25);
             draw_segment_highlight(painter, project, a, b, axis_color);
+        }
+        PickTargetKind::OriginAxis(axis) => {
+            // Highlight every sketch's matching origin axis — the pick identity is just
+            // X or Y, and the open sketch's copy is what the GPU hover already draws.
+            for (sketch, _) in doc.sketches.iter() {
+                let Some(frame) = crate::face::sketch_geometry_frame(doc, sketch) else {
+                    continue;
+                };
+                let dir = match axis {
+                    crate::model::SketchAxis::X => frame.u_axis,
+                    crate::model::SketchAxis::Y => frame.v_axis,
+                };
+                let half = GLOBAL_AXIS_EXTENT_MM;
+                draw_segment_highlight(
+                    painter,
+                    project,
+                    frame.origin - dir * half,
+                    frame.origin + dir * half,
+                    color,
+                );
+            }
         }
         PickTargetKind::ConstructionPlane(index) => {
             if let Some(plane) = doc.construction_planes.get(index) {
@@ -3232,6 +3265,38 @@ pub fn collect_pick_candidates(
         }
     }
 
+    // Sketch origin axes (#189 / #1538): local LX/LY through each sketch origin. Same
+    // infinite-line screen measure as `nearest_sketch_line_in_sketch` — a finite segment
+    // usually fails to project. Identity is just X or Y; crowd_key collapses copies.
+    for (sketch, _) in doc.sketches.iter() {
+        let Some(frame) = crate::face::sketch_geometry_frame(doc, sketch) else {
+            continue;
+        };
+        for (axis, dir) in [
+            (crate::model::SketchAxis::X, frame.u_axis),
+            (crate::model::SketchAxis::Y, frame.v_axis),
+        ] {
+            let (Some(p0), Some(p1)) = (
+                project(frame.origin),
+                project(frame.origin + dir * 10.0),
+            ) else {
+                continue;
+            };
+            let d = p1 - p0;
+            if d.length_sq() < 1e-6 {
+                continue;
+            }
+            let dn = d / d.length();
+            let dist = ((screen - p0).x * dn.y - (screen - p0).y * dn.x).abs();
+            let kind = PickTargetKind::OriginAxis(axis);
+            if dist <= crate::touch::hit(LINE_PICK_RADIUS_PX) && pickable(&kind) {
+                let t_mm = (screen - p0).dot(dn) * (10.0 / d.length());
+                let anchor = frame.origin + dir * t_mm;
+                raw.push((kind, anchor, dist));
+            }
+        }
+    }
+
     // The world axes (#975). They are pickable — a Revolve axis, a Repeat path, a plane anchor
     // all take one — so they belong in the crowd like everything else pickable: an axis running
     // under a body or through a busy corner is exactly what the fan is for. All three, not the
@@ -4081,6 +4146,15 @@ mod tests {
                 .iter()
                 .any(|k| matches!(k, PickTargetKind::ConstructionPlane(_))),
             "the datum plane under the cursor: {kinds:?}"
+        );
+
+        // #1538: the sketch's own LX/LY belong in the crowd too — 2D Mirror takes them as a
+        // mirror line, and the Exploder can only offer what collect_pick_candidates lists.
+        assert!(
+            kinds
+                .iter()
+                .any(|k| matches!(k, PickTargetKind::OriginAxis(crate::model::SketchAxis::X))),
+            "the sketch X axis runs under the cursor: {kinds:?}"
         );
     }
 

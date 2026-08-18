@@ -4284,6 +4284,27 @@ impl<'a> SceneMesh<'a> {
                     view_proj,
                 );
             }
+            PickTargetKind::OriginAxis(axis) => {
+                for (sketch, _) in doc.sketches.iter() {
+                    let Some(frame) = sketch_geometry_frame(doc, sketch) else {
+                        continue;
+                    };
+                    let dir = match axis {
+                        crate::model::SketchAxis::X => frame.u_axis,
+                        crate::model::SketchAxis::Y => frame.v_axis,
+                    };
+                    let half = crate::construction::GLOBAL_AXIS_EXTENT_MM;
+                    self.push_line_segment(
+                        frame.origin - dir * half,
+                        frame.origin + dir * half,
+                        color,
+                        ORIGIN_AXIS_HOVER_WIDTH_PX,
+                        cam,
+                        viewport,
+                        view_proj,
+                    );
+                }
+            }
             // A plane reaches the crowd both as itself and as an analytic face over the same
             // surface, and the dedupe keeps whichever is nearer — so the two must draw the
             // same thing, through the same helpers (#974).
