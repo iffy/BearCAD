@@ -1590,7 +1590,7 @@ pub fn prune_selection_for_tool(
     }
 }
 
-fn selection_picker_for(
+pub fn selection_picker_for(
     doc: &Document,
     tool: Tool,
     open_sketch: Option<crate::model::SketchId>,
@@ -2012,6 +2012,104 @@ fn in_sketch(filter: ElementFilter, sketch: Option<crate::model::SketchId>) -> E
         Some(sketch) => filter.rule(PickRule::InSketch(sketch)),
         None => filter,
     }
+}
+
+/// The kinds (and static rules) a picker target accepts (#1490).
+///
+/// Runtime-only rules — `InSketch`, `OnBodies` — stay on the live picker. This is the
+/// filter a tool switch uses to decide which handed-off elements the incoming primary
+/// picker can take.
+pub fn picker_filter(target: PickerTarget) -> ElementFilter {
+    use ElementKind as K;
+    match target {
+        PickerTarget::ExtrudeProfile
+        | PickerTarget::RevolveProfile
+        | PickerTarget::SweepProfile
+        | PickerTarget::LoftSections => ElementFilter::kind(K::Profile),
+        PickerTarget::TreatmentEdges => ElementFilter::kind(K::Edge),
+        PickerTarget::CombineA
+        | PickerTarget::CombineB
+        | PickerTarget::SliceTargets
+        | PickerTarget::ShellTargets
+        | PickerTarget::RevolveCut
+        | PickerTarget::SweepCut
+        | PickerTarget::LoftCut
+        | PickerTarget::MirrorTargets => {
+            ElementFilter::kind(K::Body).rule(PickRule::LiveBody)
+        }
+        PickerTarget::MoveTargets => {
+            ElementFilter::kinds(&[K::Body, K::Image]).rule(PickRule::LiveBody)
+        }
+        PickerTarget::JointMembers | PickerTarget::JointMobile | PickerTarget::JointFixed => {
+            ElementFilter::kinds(&[K::Body, K::Component, K::Joint]).rule(PickRule::LiveBody)
+        }
+        PickerTarget::MirrorPlane => ElementFilter::kinds(&[K::Plane, K::Profile]),
+        PickerTarget::RepeatTargets => ElementFilter::kinds(&[K::Body, K::Plane, K::Sketch])
+            .operations(&[crate::element_picker::OperationKind::Extrude])
+            .rule(PickRule::LiveBody),
+        PickerTarget::SketchOffsetEntities
+        | PickerTarget::SketchRepeatEntities
+        | PickerTarget::SketchMirrorShapes => ElementFilter::kinds(&[K::Line, K::Circle]),
+        PickerTarget::SketchMirrorLine | PickerTarget::SketchRepeatDirection => {
+            ElementFilter::kind(K::Line)
+        }
+        PickerTarget::SketchSliceTargets => {
+            ElementFilter::kinds(&[K::Line, K::Circle, K::Profile])
+        }
+        PickerTarget::SketchSliceCutters | PickerTarget::SweepPath => ElementFilter::kind(K::Line),
+        PickerTarget::SliceCutters => ElementFilter::kinds(&[K::Plane, K::Profile, K::Line]),
+        PickerTarget::ShellOpenFaces => ElementFilter::kinds(&[K::Face, K::Profile]),
+        PickerTarget::RevolveAxis => {
+            ElementFilter::kinds(&[K::Line, K::Edge, K::Axis]).rule(PickRule::Straight)
+        }
+        PickerTarget::RepeatPath => ElementFilter::kinds(&[K::Line, K::Edge, K::Axis, K::Circle]),
+        PickerTarget::ExtrudeUpTo | PickerTarget::RepeatDistanceTo => {
+            ElementFilter::kinds(&[K::Plane, K::Profile, K::Vertex])
+        }
+        PickerTarget::PlaneAnchor => ElementFilter::kinds(&[
+            K::Face,
+            K::Profile,
+            K::Plane,
+            K::Line,
+            K::Edge,
+            K::Axis,
+            K::Circle,
+            K::Vertex,
+        ]),
+        PickerTarget::DrawingAlignBase => ElementFilter::kind(K::Projection),
+        PickerTarget::DrawingSelection => {
+            ElementFilter::kinds(&[K::Projection, K::Annotation, K::Dimension])
+        }
+        PickerTarget::Selection => ElementFilter::everything(),
+        PickerTarget::MoveFaceMoving
+        | PickerTarget::MoveFaceFixed
+        | PickerTarget::JointMovingFace
+        | PickerTarget::JointFixedFace => ElementFilter::kinds(&[K::Face, K::Profile]),
+        PickerTarget::MoveStartA
+        | PickerTarget::MoveEndA
+        | PickerTarget::MoveStartB
+        | PickerTarget::MoveEndB
+        | PickerTarget::MoveStartC
+        | PickerTarget::MoveEndC
+        | PickerTarget::JointMinStop
+        | PickerTarget::JointMaxStop
+        | PickerTarget::JointFrameOrigin => ElementFilter::kind(K::Vertex),
+        PickerTarget::JointFramePrimary | PickerTarget::JointFrameSecondary => {
+            ElementFilter::kinds(&[K::Line, K::Edge, K::Axis]).rule(PickRule::Straight)
+        }
+    }
+}
+
+/// Whether this picker's accepted set is scoped to the open sketch (#1490).
+pub fn picker_is_sketch_scoped(target: PickerTarget) -> bool {
+    matches!(
+        target,
+        PickerTarget::SketchOffsetEntities
+            | PickerTarget::SketchRepeatEntities
+            | PickerTarget::SketchRepeatDirection
+            | PickerTarget::SketchMirrorLine
+            | PickerTarget::SketchMirrorShapes
+    )
 }
 
 pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {

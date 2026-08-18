@@ -371,12 +371,12 @@ const MOVE_PICKERS: &[ToolPicker] = &[
     ToolPicker { target: P::MoveEndC, heading: "End point C" },
 ];
 const MIRROR_SOLID_PICKERS: &[ToolPicker] = &[
-    ToolPicker { target: P::MirrorPlane, heading: "Mirror plane" },
     ToolPicker { target: P::MirrorTargets, heading: "Bodies" },
+    ToolPicker { target: P::MirrorPlane, heading: "Mirror plane" },
 ];
 const MIRROR_SKETCH_PICKERS: &[ToolPicker] = &[
-    ToolPicker { target: P::SketchMirrorLine, heading: "Mirror line" },
     ToolPicker { target: P::SketchMirrorShapes, heading: "Shapes" },
+    ToolPicker { target: P::SketchMirrorLine, heading: "Mirror line" },
 ];
 const REPEAT_SOLID_PICKERS: &[ToolPicker] = &[
     ToolPicker { target: P::RepeatTargets, heading: "Bodies" },
@@ -400,8 +400,8 @@ const SHELL_PICKERS: &[ToolPicker] = &[
     ToolPicker { target: P::ShellOpenFaces, heading: "Open faces" },
 ];
 const OFFSET_PICKERS: &[ToolPicker] = &[
-    ToolPicker { target: P::Selection, heading: "Selection" },
     ToolPicker { target: P::SketchOffsetEntities, heading: "Entities" },
+    ToolPicker { target: P::Selection, heading: "Selection" },
 ];
 const JOINT_PICKERS: &[ToolPicker] = &[
     ToolPicker { target: P::JointMembers, heading: "Parts" },
@@ -675,6 +675,12 @@ impl ToolRow {
             .iter()
             .find(|p| p.heading.eq_ignore_ascii_case(name))
             .map(|p| p.target)
+    }
+
+    /// The main set this tool works on (#496/#1490). Listed first so a tool switch can
+    /// hand the outgoing picks to the incoming filter without a per-tool block.
+    pub fn primary_picker(self) -> Option<ToolPicker> {
+        self.pickers.first().copied()
     }
 }
 
@@ -978,6 +984,30 @@ mod tests {
                 "{tool:?} disagrees with its row"
             );
         }
+    }
+
+    /// #1490: the first listed picker is the main set a tool switch seeds.
+    #[test]
+    fn primary_picker_is_the_first_listed() {
+        for r in all_rows() {
+            assert_eq!(r.primary_picker(), r.pickers.first().copied());
+        }
+        assert_eq!(
+            row(Tool::Extrude, ToolSpace::Solid).primary_picker().map(|p| p.target),
+            Some(P::ExtrudeProfile)
+        );
+        assert_eq!(
+            row(Tool::Revolve, ToolSpace::Solid).primary_picker().map(|p| p.target),
+            Some(P::RevolveProfile)
+        );
+        assert_eq!(
+            row(Tool::Sweep, ToolSpace::Solid).primary_picker().map(|p| p.target),
+            Some(P::SweepProfile)
+        );
+        assert_eq!(
+            row(Tool::Repeat, ToolSpace::Solid).primary_picker().map(|p| p.target),
+            Some(P::RepeatTargets)
+        );
     }
 
     /// #1485/#1508: a heading listed on the row resolves, and a name that isn't there does not.
