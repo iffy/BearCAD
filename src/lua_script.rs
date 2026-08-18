@@ -4594,6 +4594,48 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1477: open the DEV Report issue window so ⌘` cycle tests can include it.
+    api.set(
+        "report_issue",
+        lua.create_function(|lua, verb: Option<String>| {
+            let open = match verb.as_deref() {
+                Some("show") | Some("open") => Some(true),
+                Some("hide") | Some("close") => Some(false),
+                None | Some("toggle") => None,
+                Some(other) => {
+                    return Err(mlua::Error::external(format!(
+                        "report_issue expects \"show\"/\"hide\"/\"toggle\", got {other:?}"
+                    )))
+                }
+            };
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::SetReportIssueWindow { open }) }
+        })?,
+    )?;
+
+    // #1477: every OS window ⌘` can land on, in cycle order.
+    api.set(
+        "windows",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe {
+                let names = tick.state().script_cycle_windows();
+                let table = lua.create_table()?;
+                for (i, name) in names.iter().enumerate() {
+                    table.set(i + 1, name.as_str())?;
+                }
+                Ok(table)
+            }
+        })?,
+    )?;
+    api.set(
+        "focused_window",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { Ok(tick.state().script_focused_window.clone()) }
+        })?,
+    )?;
+
     api.set(
         "palette",
         lua.create_function(|lua, args: MultiValue| {
@@ -7083,6 +7125,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "tool", "tool_mode", "help", "toolbar_shortcuts", "focus_name", "focus_dim", "pane", "palette", "settings",
             "changelog",
             "mcmaster",
+            "report_issue", "windows", "focused_window",
             "new_tab", "close_tab", "tab", "tab_count", "window_count", "tabs", "reorder_tab", "detach_tab",
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading", "ground",
             "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance", "fps_scale",
@@ -7841,6 +7884,27 @@ mod tests {
         assert!(runner.error.is_some(), "unknown shading mode should error");
     }
 
+    /// #1477: Report issue and the window-cycle list are scriptable.
+    #[test]
+    fn lua_report_issue_and_windows_are_scriptable() {
+        let state = run_lua(
+            r#"
+            assert(bearcad.ui.focused_window() == "main")
+            local w = bearcad.ui.windows()
+            assert(#w == 1 and w[1] == "main")
+            bearcad.ui.report_issue("show")
+            bearcad.ui.mcmaster("show")
+            local w2 = bearcad.ui.windows()
+            local listed = {}
+            for i = 1, #w2 do listed[w2[i]] = true end
+            assert(listed["report_issue"], "report_issue should be listed")
+            assert(listed["mcmaster"], "mcmaster should be listed")
+            "#,
+        );
+        assert!(state.report_issue_open);
+        assert!(state.mcmaster_open);
+    }
+
     /// Tab script API queues workspace ops on the runner (App applies them each frame).
     #[test]
     fn lua_tab_ops_queue_on_runner() {
@@ -8079,6 +8143,7 @@ mod tests {
             for _, name in ipairs({ "move", "click", "tool", "view", "orbit", "pan",
                                     "key", "type", "pane", "palette", "wait", "help",
                                     "toolbar_shortcuts", "changelog",
+                                    "mcmaster", "report_issue", "windows", "focused_window",
                                     "new_tab", "close_tab", "tab", "tabs", "tab_count",
                                     "window_count", "reorder_tab", "detach_tab" }) do
                 assert(type(bearcad.ui[name]) == "function", "bearcad.ui." .. name .. " missing")

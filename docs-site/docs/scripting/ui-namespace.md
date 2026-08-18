@@ -76,6 +76,10 @@ bearcad.ui.detach_tab()                 -- move tab to its own full application 
 local n = bearcad.ui.tab_count()
 local w = bearcad.ui.window_count()     -- OS windows (main + detached)
 local tabs = bearcad.ui.tabs()          -- { { title=, dirty=, active= }, ... } (1-based)
+local wins = bearcad.ui.windows()       -- cycle order: main, detached, report_issue, mcmaster
+local focus = bearcad.ui.focused_window()
+bearcad.ui.report_issue("show")         -- DEV Report issue window
+bearcad.ui.key("`", { cmd = true })     -- next window (⌘` / Ctrl+`)
 ```
 
 ## Dragging constrained geometry

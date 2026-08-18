@@ -896,6 +896,8 @@ pub enum Instruction {
     SkipAllTutorials { skip: bool },
     /// Open/close the McMaster-Carr catalog window (#1022).
     SetMcMasterWindow { open: Option<bool>, part: Option<String> },
+    /// Open/close the DEV Report issue window (#627 / #1477).
+    SetReportIssueWindow { open: Option<bool> },
     /// Open a new blank document tab (`bearcad.ui.new_tab()`).
     NewTab,
     /// Open a new tab on the same document as the current one (`bearcad.ui.new_tab{ same = true }`).
@@ -2100,6 +2102,14 @@ impl Instruction {
                     None => format!("bearcad.ui.mcmaster({verb:?})"),
                 }
             }
+            Instruction::SetReportIssueWindow { open } => {
+                let verb = match open {
+                    Some(true) => "show",
+                    Some(false) => "hide",
+                    None => "toggle",
+                };
+                format!("bearcad.ui.report_issue({verb:?})")
+            }
             Instruction::NewTab => "bearcad.ui.new_tab()".to_string(),
             Instruction::NewTabSameDocument => "bearcad.ui.new_tab{ same = true }".to_string(),
             Instruction::CloseTab { index: None } => "bearcad.ui.close_tab()".to_string(),
@@ -2226,6 +2236,7 @@ pub fn parse_key(name: &str) -> Result<Key, String> {
         "7" => Ok(Key::Num7),
         "8" => Ok(Key::Num8),
         "9" => Ok(Key::Num9),
+        "`" | "backtick" | "grave" => Ok(Key::Backtick),
         _ => Err(format!("unknown key '{name}'")),
     }
 }
@@ -3281,6 +3292,9 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             open: *open,
             part: part.clone(),
         }),
+        Action::SetReportIssueWindow { open } => {
+            Some(Instruction::SetReportIssueWindow { open: *open })
+        },
         Action::CommitParameterName { index, name } => Some(Instruction::SetParameterName {
             index: parameter_ordinal(doc, *index)?,
             name: name.clone(),
@@ -4291,6 +4305,7 @@ fn key_name(key: Key) -> &'static str {
         Key::Num7 => "7",
         Key::Num8 => "8",
         Key::Num9 => "9",
+        Key::Backtick => "`",
         _ => "?",
     }
 }
@@ -7599,6 +7614,10 @@ impl ScriptRunner {
                 state.apply(Action::SetMcMasterWindow { open, part });
                 StepResult::Continue
             }
+            Instruction::SetReportIssueWindow { open } => {
+                state.apply(Action::SetReportIssueWindow { open });
+                StepResult::Continue
+            }
             Instruction::SetSettingsWindow { open } => {
                 state.apply(Action::SetSettingsWindow { open });
                 StepResult::Continue
@@ -8432,6 +8451,8 @@ mod tests {
     fn parse_key_names() {
         assert_eq!(parse_key("enter").unwrap(), Key::Enter);
         assert_eq!(parse_key("ESC").unwrap(), Key::Escape);
+        assert_eq!(parse_key("`").unwrap(), Key::Backtick);
+        assert_eq!(parse_key("backtick").unwrap(), Key::Backtick);
         assert!(parse_key("notakey").is_err());
     }
 

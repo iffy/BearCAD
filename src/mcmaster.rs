@@ -514,11 +514,19 @@ fn install_cmd_backtick_focus_parent() -> Option<objc2::rc::Retained<objc2::runt
             || e.charactersIgnoringModifiers()
                 .is_some_and(|s| s.to_string() == "`");
         if cmd && backtick {
+            let dir = if mods.contains(NSEventModifierFlags::Shift) {
+                "prev"
+            } else {
+                "next"
+            };
             crate::diag::log(format!(
-                "catalog: ⌘` — focusing parent pid {parent_pid}"
+                "catalog: ⌘` — asking parent pid {parent_pid} to cycle {dir}"
             ));
+            // Tell the parent which way to walk, then hand it focus. The parent
+            // treats the catalog as the current window (#1477).
+            println!("{FOCUS_PREFIX}\t{dir}");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
             let _ = activate_pid(parent_pid);
-            // Swallow so the web view does not also handle it.
             return std::ptr::null_mut();
         }
         // Pass through unchanged (return the same pointer AppKit handed us).
@@ -556,6 +564,107 @@ pub struct CatalogSession {
     caught: std::sync::Arc<std::sync::Mutex<Vec<CaughtDownload>>>,
     /// Set by the reader thread when the process's stdout ends — i.e. the window closed.
     finished: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// ⌘` / ⌘⇧` from the helper: +1 next, −1 previous, 0 none (#1477).
+    cycle: std::sync::Arc<std::sync::atomic::AtomicI8>,
+}
+
+/// A window ⌘` / ⌘⇧` can land on. Order is main, detached tabs, Report issue, then
+/// the McMaster catalog — every OS window the app owns, including the helper process.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CycleWindow {
+    Main,
+    Detached(u64),
+    ReportIssue,
+    McMaster,
+}
+
+impl CycleWindow {
+    pub fn script_name(&self) -> String {
+        match self {
+            Self::Main => "main".into(),
+            Self::Detached(key) => format!("detached:{key}"),
+            Self::ReportIssue => "report_issue".into(),
+            Self::McMaster => "mcmaster".into(),
+        }
+    }
+}
+
+/// The next (dir > 0) or previous (dir < 0) window in `open`. Unknown `current` starts at
+/// the first entry. A single-window list is a no-op.
+pub fn next_cycle_window(open: &[CycleWindow], current: &CycleWindow, dir: i8) -> CycleWindow {
+    if open.is_empty() {
+        return CycleWindow::Main;
+    }
+    let idx = open.iter().position(|w| w == current).unwrap_or(0);
+    let n = open.len() as i32;
+    let step = if dir < 0 { -1 } else { 1 };
+    let next = (idx as i32 + step).rem_euclid(n) as usize;
+    open[next].clone()
+}
+
+/// Stdout line the catalog process writes when ⌘` should cycle the parent's windows
+/// (`focus<TAB>next` or `focus<TAB>prev`). Separate from [`CAUGHT_PREFIX`] so a focus
+/// request is never mistaken for a download.
+pub const FOCUS_PREFIX: &str = "focus";
+
+/// Parse a catalog-process stdout line that asks the parent to cycle windows (#1477).
+pub fn parse_focus_line(line: &str) -> Option<i8> {
+    let mut parts = line.trim_end().split('\t');
+    if parts.next()? != FOCUS_PREFIX {
+        return None;
+    }
+    match parts.next()? {
+        "next" => Some(1),
+        "prev" => Some(-1),
+        _ => None,
+    }
+}
+
+/// ⌘` / ⌘⇧` requested by a local NSEvent monitor in this process (main app).
+#[cfg(target_os = "macos")]
+static PENDING_CYCLE: std::sync::atomic::AtomicI8 = std::sync::atomic::AtomicI8::new(0);
+
+#[cfg(target_os = "macos")]
+pub fn take_pending_cycle() -> i8 {
+    PENDING_CYCLE.swap(0, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Local key monitor: ⌘` / ⌘⇧` queues a window cycle and swallows the event so the
+/// system `selectNextKeyWindow:` does not steal it. Keep the returned handle alive.
+#[cfg(target_os = "macos")]
+pub fn install_cmd_backtick_cycle_monitor() -> Option<objc2::rc::Retained<objc2::runtime::AnyObject>> {
+    use block2::RcBlock;
+    use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags};
+    use std::ptr::NonNull;
+
+    const KEYCODE_BACKQUOTE: u16 = 50;
+
+    let block = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+        let e = unsafe { event.as_ref() };
+        let mods = e.modifierFlags();
+        let cmd = mods.contains(NSEventModifierFlags::Command);
+        let backtick = e.keyCode() == KEYCODE_BACKQUOTE
+            || e.charactersIgnoringModifiers()
+                .is_some_and(|s| s.to_string() == "`");
+        if cmd && backtick {
+            let dir = if mods.contains(NSEventModifierFlags::Shift) {
+                -1
+            } else {
+                1
+            };
+            PENDING_CYCLE.store(dir, std::sync::atomic::Ordering::Relaxed);
+            return std::ptr::null_mut();
+        }
+        event.as_ptr()
+    });
+
+    let monitor = unsafe {
+        NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &block)
+    };
+    if monitor.is_none() {
+        crate::diag::warn("window cycle: could not install ⌘` monitor");
+    }
+    monitor
 }
 
 /// Bring the process with this PID to the front (#1023).
@@ -609,10 +718,16 @@ impl CatalogSession {
         let stdout = child.stdout.take().ok_or("the catalog window has no stdout")?;
         let caught: std::sync::Arc<std::sync::Mutex<Vec<CaughtDownload>>> = Default::default();
         let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cycle = std::sync::Arc::new(std::sync::atomic::AtomicI8::new(0));
         {
-            let (caught, finished) = (caught.clone(), finished.clone());
+            let (caught, finished, cycle) = (caught.clone(), finished.clone(), cycle.clone());
             std::thread::spawn(move || {
                 for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                    if let Some(dir) = parse_focus_line(&line) {
+                        cycle.store(dir, std::sync::atomic::Ordering::Relaxed);
+                        repaint.request_repaint();
+                        continue;
+                    }
                     if let Some(download) = CaughtDownload::from_line(&line) {
                         if let Ok(mut caught) = caught.lock() {
                             caught.push(download);
@@ -626,7 +741,7 @@ impl CatalogSession {
                 repaint.request_repaint();
             });
         }
-        Ok(Self { child, caught, finished })
+        Ok(Self { child, caught, finished, cycle })
     }
 
     /// Everything caught since the last call.
@@ -647,6 +762,11 @@ impl CatalogSession {
     #[cfg(target_os = "macos")]
     pub fn pid(&self) -> u32 {
         self.child.id()
+    }
+
+    /// Consume a ⌘` cycle request the helper wrote on stdout (#1477).
+    pub fn take_cycle(&self) -> i8 {
+        self.cycle.swap(0, std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Close the window, if it is still open.
@@ -897,5 +1017,90 @@ mod tests {
         // scratch directory.
         let escaped = download_file_name("https://x/../../etc/passwd");
         assert!(!escaped.contains('/') && !escaped.contains('\\'), "got {escaped}");
+    }
+
+    /// #1477: ⌘` walks every open app window, including Report issue and the catalog.
+    /// Jumping straight to McMaster (the old #1023 toggle) skips Report issue.
+    #[test]
+    fn cmd_backtick_cycles_through_report_issue_and_mcmaster() {
+        let open = [
+            CycleWindow::Main,
+            CycleWindow::ReportIssue,
+            CycleWindow::McMaster,
+        ];
+        assert_eq!(
+            next_cycle_window(&open, &CycleWindow::Main, 1),
+            CycleWindow::ReportIssue,
+            "from main, next is Report issue — not a jump to the catalog"
+        );
+        assert_eq!(
+            next_cycle_window(&open, &CycleWindow::ReportIssue, 1),
+            CycleWindow::McMaster
+        );
+        assert_eq!(
+            next_cycle_window(&open, &CycleWindow::McMaster, 1),
+            CycleWindow::Main
+        );
+        assert_eq!(
+            next_cycle_window(&open, &CycleWindow::Main, -1),
+            CycleWindow::McMaster,
+            "⌘⇧` wraps back to the catalog"
+        );
+        assert_eq!(
+            next_cycle_window(&open, &CycleWindow::McMaster, -1),
+            CycleWindow::ReportIssue
+        );
+    }
+
+    /// #1477: detached tab windows sit in the same cycle, between main and Report issue.
+    #[test]
+    fn cmd_backtick_cycle_includes_detached_tabs() {
+        let open = [
+            CycleWindow::Main,
+            CycleWindow::Detached(3),
+            CycleWindow::ReportIssue,
+            CycleWindow::McMaster,
+        ];
+        assert_eq!(
+            next_cycle_window(&open, &CycleWindow::Main, 1),
+            CycleWindow::Detached(3)
+        );
+        assert_eq!(
+            next_cycle_window(&open, &CycleWindow::Detached(3), 1),
+            CycleWindow::ReportIssue
+        );
+        assert_eq!(CycleWindow::Main.script_name(), "main");
+        assert_eq!(CycleWindow::ReportIssue.script_name(), "report_issue");
+        assert_eq!(CycleWindow::McMaster.script_name(), "mcmaster");
+        assert_eq!(CycleWindow::Detached(3).script_name(), "detached:3");
+    }
+
+    /// #1477: scripts list every cycleable window from the AppState flags.
+    #[test]
+    fn script_cycle_windows_lists_report_issue_and_mcmaster() {
+        let mut state = crate::actions::AppState::default();
+        assert_eq!(state.script_cycle_windows(), vec!["main".to_string()]);
+        state.report_issue_open = true;
+        state.mcmaster_open = true;
+        state.script_detached_windows = vec!["detached:3".into()];
+        assert_eq!(
+            state.script_cycle_windows(),
+            vec![
+                "main".to_string(),
+                "detached:3".into(),
+                "report_issue".into(),
+                "mcmaster".into(),
+            ]
+        );
+    }
+
+    /// #1477: the helper asks the parent to cycle via a prefixed stdout line.
+    #[test]
+    fn catalog_focus_line_names_the_cycle_direction() {
+        assert_eq!(parse_focus_line("focus\tnext"), Some(1));
+        assert_eq!(parse_focus_line("focus\tprev\n"), Some(-1));
+        assert_eq!(parse_focus_line("focus\tother"), None);
+        assert_eq!(parse_focus_line("part\t/tmp/x.step"), None);
+        assert_eq!(parse_focus_line("focus"), None);
     }
 }
