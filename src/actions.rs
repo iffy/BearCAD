@@ -1901,6 +1901,8 @@ pub struct CreatingLoft {
     pub body_choice: RevolveBodyChoice,
     /// Bodies picked for Cut mode.
     pub cut_bodies: Vec<crate::model::BodyKey>,
+    /// `Some(op)` while re-editing a committed loft, else a fresh loft.
+    pub editing: Option<crate::model::LoftKey>,
 }
 
 #[derive(Clone, Debug)]
@@ -2577,6 +2579,9 @@ pub enum Action {
     /// `face_id` (primitive faces, extrude caps/sides, revolve flats, repeated faces,
     /// remaining mesh flats) and adds that profile to the in-progress sweep.
     SweepBodyFace { face_id: FaceId },
+    /// Loft a bare 3D body face as a section (#1503): builds an implicit sketch on `face_id`
+    /// and adds that profile to the in-progress loft — same path as extrude/revolve/sweep.
+    LoftBodyFace { face_id: FaceId },
     /// Scripted push/pull of a bare body face committed in one step (#130): builds the
     /// implicit sketch mirroring `face_id`, then creates the extrusion with `distance`,
     /// optional snap `target`, and body attachment — the declarative equivalent of clicking
@@ -6657,6 +6662,18 @@ fn create_implicit_extrude_sketch(
     add_face_boundary_to_sketch(doc, sketch, &boundary_face, false)
 }
 
+/// Implicit sketch on a bare 3D body face, shared by Extrude/Revolve/Sweep/Loft (#1503).
+fn begin_profile_from_body_face(
+    doc: &mut Document,
+    face_id: FaceId,
+) -> Result<(SketchId, ExtrudeFace), String> {
+    let face = create_implicit_extrude_sketch(doc, face_id)?;
+    let Some(sketch) = extrude_face_sketch(doc, &face) else {
+        return Err("Face not found".to_string());
+    };
+    Ok((sketch, face))
+}
+
 /// Add a body face's own boundary into `sketch` as sketch geometry — a real circle for a circular
 /// cap (its exact radius, not a polygon approximation) or a closed line loop otherwise. When
 /// `construction` is set the geometry is emitted as reference/construction geometry (#595): begun
@@ -7890,6 +7907,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::Revolution(i) => format!("Revolve operation {}", i.index()),
         SceneElement::Shape(i) => format!("Shape {}", i.index()),
         SceneElement::SweepOp(i) => format!("Sweep operation {}", i.index()),
+        SceneElement::Loft(i) => format!("Loft operation {}", i.index()),
         SceneElement::Joint(i) => format!("Joint {}", i.index()),
         SceneElement::Origin => "Origin".to_string(),
         SceneElement::GlobalAxis(axis) => axis.label().to_string(),
@@ -9468,6 +9486,7 @@ impl AppState {
                         sections,
                         body_choice: RevolveBodyChoice::default(),
                         cut_bodies: Vec::new(),
+                        editing: None,
                     });
                 }
                 // The floating dimension editor only makes sense under the tools that
@@ -12056,15 +12075,12 @@ impl AppState {
             Action::RevolveBodyFace { face_id } => {
                 // Implicit sketch on the body face (including a repeated copy, #1116), then
                 // feed that profile into the in-progress revolve — same path Extrude uses.
-                let face = match create_implicit_extrude_sketch(&mut self.doc, face_id) {
-                    Ok(face) => face,
+                let (sketch, face) = match begin_profile_from_body_face(&mut self.doc, face_id) {
+                    Ok(pair) => pair,
                     Err(e) => {
                         self.status = e.clone();
                         return ActionResult::Err(e);
                     }
-                };
-                let Some(sketch) = extrude_face_sketch(&self.doc, &face) else {
-                    return ActionResult::Err("Face not found".to_string());
                 };
                 let cr = self
                     .creating_revolve
@@ -12093,15 +12109,12 @@ impl AppState {
             Action::SweepBodyFace { face_id } => {
                 // Implicit sketch on the body face (#1237), then feed that profile into the
                 // in-progress sweep — same path as revolve/extrude body-face picking.
-                let face = match create_implicit_extrude_sketch(&mut self.doc, face_id) {
-                    Ok(face) => face,
+                let (sketch, face) = match begin_profile_from_body_face(&mut self.doc, face_id) {
+                    Ok(pair) => pair,
                     Err(e) => {
                         self.status = e.clone();
                         return ActionResult::Err(e);
                     }
-                };
-                let Some(sketch) = extrude_face_sketch(&self.doc, &face) else {
-                    return ActionResult::Err("Face not found".to_string());
                 };
                 let cf = self
                     .creating_sweep
@@ -12127,21 +12140,39 @@ impl AppState {
                 );
                 ActionResult::Ok
             }
+            Action::LoftBodyFace { face_id } => {
+                let (sketch, face) = match begin_profile_from_body_face(&mut self.doc, face_id) {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                };
+                let section = crate::model::LoftSection { sketch, face };
+                if crate::extrude::face_profile_world(&self.doc, &section.face).is_none() {
+                    return ActionResult::Err("Loft section is not a closed profile".to_string());
+                }
+                let cl = self.creating_loft.get_or_insert_with(CreatingLoft::default);
+                if let Some(pos) = cl.sections.iter().position(|sec| *sec == section) {
+                    cl.sections.remove(pos);
+                } else {
+                    cl.sections.push(section);
+                }
+                self.status = format!("Loft: {} section(s)", cl.sections.len());
+                ActionResult::Ok
+            }
             Action::ExtrudeBodyFace { face_id } => {
                 // Drop a previous unfinished body-face extrude so its projected boundary
                 // sketch doesn't stack (100+ segment caps thrash picks/solves, #509).
                 if let Some(prev) = self.creating_extrusion.take() {
                     self.discard_orphan_body_face_extrude_sketch(prev.sketch);
                 }
-                let face = match create_implicit_extrude_sketch(&mut self.doc, face_id) {
-                    Ok(face) => face,
+                let (sketch, face) = match begin_profile_from_body_face(&mut self.doc, face_id) {
+                    Ok(pair) => pair,
                     Err(e) => {
                         self.status = e.clone();
                         return ActionResult::Err(e);
                     }
-                };
-                let Some(sketch) = extrude_face_sketch(&self.doc, &face) else {
-                    return ActionResult::Err("Face not found".to_string());
                 };
                 // A body face always starts a fresh single-face extrusion, never grouped
                 // with whatever else was in progress (#122).
@@ -12177,15 +12208,12 @@ impl AppState {
             Action::CreateBodyFaceExtrusion { face_id, distance, target, body } => {
                 // Build the implicit sketch on the body face, then create the extrusion in
                 // one gesture — the scripted equivalent of clicking the face and pulling it.
-                let face = match create_implicit_extrude_sketch(&mut self.doc, face_id) {
-                    Ok(face) => face,
+                let (sketch, face) = match begin_profile_from_body_face(&mut self.doc, face_id) {
+                    Ok(pair) => pair,
                     Err(e) => {
                         self.status = e.clone();
                         return ActionResult::Err(e);
                     }
-                };
-                let Some(sketch) = extrude_face_sketch(&self.doc, &face) else {
-                    return ActionResult::Err("Body face sketch not found".to_string());
                 };
                 self.apply(Action::CreateExtrusion {
                     sketch,
@@ -12544,17 +12572,60 @@ impl AppState {
                 };
                 let count = loft.sections.len();
                 let mode = loft.mode.clone();
-                let loft_key = self.doc.lofts.insert(loft);
-                if matches!(mode, crate::model::LoftMode::NewBody) {
-                    self.doc.bodies.insert(crate::model::Body {
-                        source: crate::model::BodySource::Loft(loft_key),
-                        material: None,
-                        name: None,
-                        shadow: false,
-                    });
-                }
-                // One shape-order marker for the pair; undo pops the body with the loft.
-                self.doc.shape_order.push(ShapeKind::Loft);
+                let loft_key = match cl.editing {
+                    Some(op) => {
+                        let Some(existing) = self.doc.lofts.get(op) else {
+                            self.creating_loft = Some(cl);
+                            return ActionResult::Err(format!("no loft {op:?}"));
+                        };
+                        loft.name = existing.name.clone();
+                        self.doc.lofts[op] = loft;
+                        let has_body = self
+                            .doc
+                            .bodies
+                            .values()
+                            .any(|b| b.source == crate::model::BodySource::Loft(op));
+                        match (matches!(mode, crate::model::LoftMode::NewBody), has_body) {
+                            (true, false) => {
+                                self.doc.bodies.insert(crate::model::Body {
+                                    source: crate::model::BodySource::Loft(op),
+                                    material: None,
+                                    name: None,
+                                    shadow: false,
+                                });
+                            }
+                            (false, true) => {
+                                let produced: Vec<crate::model::BodyKey> = self
+                                    .doc
+                                    .bodies
+                                    .iter()
+                                    .filter(|(_, b)| b.source == crate::model::BodySource::Loft(op))
+                                    .map(|(k, _)| k)
+                                    .collect();
+                                for key in produced {
+                                    self.doc.bodies.remove(key);
+                                }
+                            }
+                            _ => {}
+                        }
+                        op
+                    }
+                    None => {
+                        let key = self.doc.lofts.insert(loft);
+                        if matches!(mode, crate::model::LoftMode::NewBody) {
+                            self.doc.bodies.insert(crate::model::Body {
+                                source: crate::model::BodySource::Loft(key),
+                                material: None,
+                                name: None,
+                                shadow: false,
+                            });
+                        }
+                        // One shape-order marker for the pair; undo pops the body with the loft.
+                        self.doc.shape_order.push(ShapeKind::Loft);
+                        key
+                    }
+                };
+                let _ = loft_key;
                 self.tool = Tool::Select;
                 self.status = match &mode {
                     crate::model::LoftMode::NewBody => format!("Added loft ({count} sections)"),
@@ -30094,6 +30165,47 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             .expect("revolve should be in progress");
         assert_eq!(cr.faces.len(), 1);
         assert!(matches!(cr.faces[0], ExtrudeFace::Polygon(_)));
+    }
+
+    /// #1503: a Shape-tool cuboid face is a valid Loft section — `LoftBodyFace` builds
+    /// an implicit sketch on `PrimitiveFace` (same path as extrude/revolve/sweep).
+    #[test]
+    fn loft_body_face_accepts_a_primitive_cuboid_face() {
+        use crate::model::{Body, BodySource, Primitive, PrimitiveFace, PrimitiveKind};
+        let mut state = AppState::default();
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.width = "20".to_string();
+        shape.depth = "20".to_string();
+        shape.height = "10".to_string();
+        let pi = state.doc.primitives.insert(shape);
+        state.doc.bodies.insert(Body {
+            source: BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let face_id = FaceId::PrimitiveFace {
+            primitive: pi,
+            face: PrimitiveFace::CuboidTop,
+        };
+        let sketches_before = state.doc.sketches.len();
+        let result = state.apply(Action::LoftBodyFace { face_id });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert_eq!(
+            state.doc.sketches.len(),
+            sketches_before + 1,
+            "implicit sketch on the primitive face"
+        );
+        let cl = state
+            .creating_loft
+            .as_ref()
+            .expect("loft should be in progress");
+        assert_eq!(cl.sections.len(), 1);
+        assert!(matches!(cl.sections[0].face, ExtrudeFace::Polygon(_)));
+        assert!(
+            crate::extrude::face_profile_world(&state.doc, &cl.sections[0].face).is_some(),
+            "implicit body-face loft section must resolve"
+        );
     }
 
     /// #1237: a Shape-tool cuboid face is a valid Sweep profile — `SweepBodyFace` builds

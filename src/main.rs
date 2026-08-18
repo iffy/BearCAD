@@ -10160,6 +10160,26 @@ impl App {
                     self.state.apply(Action::SetTool(Tool::Sweep));
                 }
             }
+            SE::Loft(op) => {
+                if let Some(existing) = self.state.doc.lofts.get(op).cloned() {
+                    let (body_choice, cut_bodies) = match &existing.mode {
+                        model::LoftMode::NewBody => {
+                            (actions::RevolveBodyChoice::NewBody, Vec::new())
+                        }
+                        model::LoftMode::AddTo(_) => {
+                            (actions::RevolveBodyChoice::AddTouching, Vec::new())
+                        }
+                        model::LoftMode::Cut(b) => (actions::RevolveBodyChoice::Cut, b.clone()),
+                    };
+                    self.state.creating_loft = Some(actions::CreatingLoft {
+                        sections: existing.sections,
+                        body_choice,
+                        cut_bodies,
+                        editing: Some(op),
+                    });
+                    self.state.apply(Action::SetTool(Tool::Loft));
+                }
+            }
             SE::SketchMirrorOp(op) => {
                 if let Some(existing) = self.state.doc.sketch_mirror_ops.get(op).cloned() {
                     self.state.creating_sketch_mirror = Some(actions::CreatingSketchMirror {
@@ -13150,6 +13170,13 @@ impl App {
             element.and_then(|el| extrude::loft_section_from_element(&self.state.doc, el))
         {
             self.state.apply(Action::ToggleLoftSection { section });
+            return;
+        }
+        // A bare body face (#1503): same as extrude/revolve/sweep — implicit sketch, then section.
+        if let Some(face_id) =
+            pick_extrude_body_face(pp, project, &self.state.doc, self.state.cam.eye())
+        {
+            self.state.apply(Action::LoftBodyFace { face_id });
             return;
         }
         // Otherwise it's for the armed picker — in Cut mode, the bodies (#479/#970).

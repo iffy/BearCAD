@@ -173,7 +173,8 @@ impl ElementKind {
             | SceneElement::EdgeTreatmentOp(_)
             | SceneElement::Revolution(_)
             | SceneElement::Shape(_)
-            | SceneElement::SweepOp(_) => ElementKind::Operation,
+            | SceneElement::SweepOp(_)
+            | SceneElement::Loft(_) => ElementKind::Operation,
         }
     }
 
@@ -284,6 +285,15 @@ pub enum OperationKind {
     Shell,
     EdgeTreatment,
     Revolution,
+    Sweep,
+    Loft,
+    Shape,
+    SketchText,
+    SketchRepeat,
+    SketchOffset,
+    SketchMirror,
+    SketchVertexTreatment,
+    SketchSlice,
 }
 
 impl OperationKind {
@@ -299,6 +309,15 @@ impl OperationKind {
             SceneElement::ShellOp(_) => OperationKind::Shell,
             SceneElement::EdgeTreatmentOp(_) => OperationKind::EdgeTreatment,
             SceneElement::Revolution(_) => OperationKind::Revolution,
+            SceneElement::SweepOp(_) => OperationKind::Sweep,
+            SceneElement::Loft(_) => OperationKind::Loft,
+            SceneElement::Shape(_) => OperationKind::Shape,
+            SceneElement::SketchText(_) => OperationKind::SketchText,
+            SceneElement::SketchRepeatOp(_) => OperationKind::SketchRepeat,
+            SceneElement::SketchOffsetOp(_) => OperationKind::SketchOffset,
+            SceneElement::SketchMirrorOp(_) => OperationKind::SketchMirror,
+            SceneElement::SketchVertexTreatmentOp(_) => OperationKind::SketchVertexTreatment,
+            SceneElement::SketchSliceOp(_) => OperationKind::SketchSlice,
             _ => return None,
         })
     }
@@ -2179,6 +2198,48 @@ mod tests {
             assert!(
                 ElementFilter::kind(kind).accepts(&Document::default(), &element),
                 "a {kind:?}-only picker should accept {element:?}"
+            );
+        }
+    }
+
+    /// #1487: `OperationKind` must cover every scene element `ElementKind::of` calls
+    /// an Operation, so a picker restricted with `.operations([...])` can name any of
+    /// them (including "any operation except X").
+    #[test]
+    fn every_element_kind_operation_has_an_operation_kind() {
+        use crate::model::{
+            edge_treatment_op_key_for_slot as etkey, primitive_key_for_slot as primkey,
+            sketch_op_key_for_slot as skop, sketch_text_key_for_slot as tkey,
+        };
+        let ops = [
+            SceneElement::Extrusion(xkey(0)),
+            SceneElement::BooleanOp(bopkey(0)),
+            SceneElement::MoveOp(mopkey(0)),
+            SceneElement::MirrorOp(crate::model::mirror_op_key_for_slot(0)),
+            SceneElement::RepeatOp(crate::model::repeat_op_key_for_slot(0)),
+            SceneElement::SketchRepeatOp(skop(0)),
+            SceneElement::SketchOffsetOp(skop(0)),
+            SceneElement::SketchMirrorOp(skop(0)),
+            SceneElement::SketchVertexTreatmentOp(skop(0)),
+            SceneElement::SketchSliceOp(skop(0)),
+            SceneElement::SketchText(tkey(0)),
+            SceneElement::SliceOp(slckey(0)),
+            SceneElement::ShellOp(crate::model::shell_op_key_for_slot(0)),
+            SceneElement::EdgeTreatmentOp(etkey(0)),
+            SceneElement::Revolution(crate::arena::Key::from_bits(0)),
+            SceneElement::Shape(primkey(0)),
+            SceneElement::SweepOp(crate::arena::Key::from_bits(0)),
+            SceneElement::Loft(crate::arena::Key::from_bits(0)),
+        ];
+        for element in ops {
+            assert_eq!(
+                ElementKind::of(&element),
+                ElementKind::Operation,
+                "{element:?} must stay an Operation so this walk stays the full set"
+            );
+            assert!(
+                OperationKind::of(&element).is_some(),
+                "{element:?} is an Operation but OperationKind::of is None"
             );
         }
     }

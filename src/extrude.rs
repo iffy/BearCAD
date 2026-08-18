@@ -6117,6 +6117,17 @@ pub fn selection_world_bounds(
                     }
                 }
             }
+            SceneElement::Loft(op) => {
+                for bi in doc.bodies.keys().collect::<Vec<_>>() {
+                    if doc.bodies[bi].source == crate::model::BodySource::Loft(op) {
+                        if let Some((min, max)) = body_solid_mesh(doc, bi).and_then(|m| m.bounds())
+                        {
+                            extend(min);
+                            extend(max);
+                        }
+                    }
+                }
+            }
             SceneElement::Body(bi) => {
                 if let Some((min, max)) = body_solid_mesh(doc, bi).and_then(|m| m.bounds()) {
                     extend(min);

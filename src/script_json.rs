@@ -157,6 +157,7 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
         SceneElement::Revolution(_) => "revolution",
         SceneElement::Shape(_) => "shape",
         SceneElement::SweepOp(_) => "sweep",
+        SceneElement::Loft(_) => "loft",
         SceneElement::Component(_) => "component",
         SceneElement::UnitInstance(_) => "unit_instance",
         SceneElement::Joint(_) => "joint",
@@ -210,6 +211,7 @@ pub fn scene_element_selection_index(
         }
         SceneElement::Revolution(key) => doc.revolutions.keys().position(|k| k == *key),
         SceneElement::SweepOp(key) => doc.sweeps.keys().position(|k| k == *key),
+        SceneElement::Loft(key) => doc.lofts.keys().position(|k| k == *key),
         SceneElement::Shape(key) => doc.primitives.keys().position(|k| k == *key),
         // A body face (#555) names a sub-feature with no flat index, like Point/FaceEdge.
         SceneElement::Point(_)

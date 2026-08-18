@@ -34,6 +34,7 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::Revolution(_)
         | SceneElement::Shape(_)
         | SceneElement::SweepOp(_)
+        | SceneElement::Loft(_)
         | SceneElement::Component(_)
         | SceneElement::UnitInstance(_)
         | SceneElement::Joint(_) => Some(element),
@@ -169,6 +170,7 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         SceneElement::Revolution(index) => doc.revolutions.get(index)?.name.as_deref(),
         SceneElement::Shape(index) => doc.primitives.get(index)?.name.as_deref(),
         SceneElement::SweepOp(index) => doc.sweeps.get(index)?.name.as_deref(),
+        SceneElement::Loft(index) => doc.lofts.get(index)?.name.as_deref(),
         SceneElement::Component(index) => doc.components.get(index)?.name.as_deref(),
         SceneElement::UnitInstance(index) => doc.unit_instances.get(index)?.name.as_deref(),
         SceneElement::Joint(index) => doc.joints.get(index)?.name.as_deref(),
@@ -375,6 +377,13 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
                 .get_mut(index)
                 .ok_or_else(|| format!("sweep {index:?} not found"))?;
             fp.name = stored;
+        }
+        SceneElement::Loft(index) => {
+            let loft = doc
+                .lofts
+                .get_mut(index)
+                .ok_or_else(|| format!("loft {index:?} not found"))?;
+            loft.name = stored;
         }
         SceneElement::Image(index) => {
             let image = doc
@@ -835,6 +844,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::Revolution(i) => format!("Revolve {}", i.index()),
         SceneElement::Shape(i) => format!("Shape {}", i.index()),
         SceneElement::SweepOp(i) => format!("Sweep {}", i.index()),
+        SceneElement::Loft(i) => format!("Loft {}", i.index()),
         SceneElement::Joint(i) => format!("Joint {}", i.index()),
     }
 }
@@ -908,5 +918,33 @@ mod tests {
             node_label(&doc, HierarchyNode::Constraint(nkey(0))),
             "Length lock"
         );
+    }
+
+    /// #1487: a loft is nameable through the same SceneElement path as a sweep.
+    #[test]
+    fn loft_custom_name_shown_in_elements_pane() {
+        use crate::model::{ExtrudeFace, Loft, LoftSection};
+        let mut doc = Document::default();
+        let loft_key = doc.lofts.insert(Loft {
+            sections: vec![
+                LoftSection {
+                    sketch: crate::model::sketch_key_for_slot(0),
+                    face: ExtrudeFace::Circle(crate::model::circle_key_for_slot(0)),
+                },
+                LoftSection {
+                    sketch: crate::model::sketch_key_for_slot(1),
+                    face: ExtrudeFace::Circle(crate::model::circle_key_for_slot(1)),
+                },
+            ],
+            mode: crate::model::LoftMode::NewBody,
+            name: None,
+        });
+        assert_eq!(
+            node_label(&doc, HierarchyNode::Loft(loft_key)),
+            format!("Loft {}", loft_key.index())
+        );
+        set_element_name(&mut doc, SceneElement::Loft(loft_key), "Horn".to_string()).unwrap();
+        assert_eq!(node_label(&doc, HierarchyNode::Loft(loft_key)), "Horn");
+        assert_eq!(element_name(&doc, SceneElement::Loft(loft_key)), Some("Horn"));
     }
 }

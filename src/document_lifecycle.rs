@@ -96,6 +96,7 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
         SceneElement::Revolution(index) => doc.revolutions.contains(index),
         SceneElement::Shape(index) => doc.primitives.contains(index),
         SceneElement::SweepOp(index) => doc.sweeps.contains(index),
+        SceneElement::Loft(index) => doc.lofts.contains(index),
         SceneElement::Image(index) => doc.tracing_images.contains(index),
         SceneElement::SketchText(index) => doc.sketch_texts.contains(index),
         SceneElement::Joint(index) => doc.joints.contains(index),
@@ -524,6 +525,20 @@ pub fn delete_element(doc: &mut Document, element: SceneElement) -> bool {
                     .bodies
                     .iter()
                     .filter(|(_, b)| b.source == crate::model::BodySource::Sweep(index))
+                    .map(|(k, _)| k)
+                    .collect();
+                for key in produced {
+                    doc.bodies.remove(key);
+                }
+                changed = true;
+            }
+        }
+        SceneElement::Loft(index) => {
+            if doc.lofts.remove(index).is_some() {
+                let produced: Vec<crate::model::BodyKey> = doc
+                    .bodies
+                    .iter()
+                    .filter(|(_, b)| b.source == crate::model::BodySource::Loft(index))
                     .map(|(k, _)| k)
                     .collect();
                 for key in produced {
@@ -1138,5 +1153,37 @@ mod tests {
         assert_eq!(count, 2);
         assert!(!doc.lines.contains(line_a));
         assert!(!doc.lines.contains(line_b));
+    }
+
+    /// #1487: deleting a loft via its scene element removes the op and its NewBody output.
+    #[test]
+    fn delete_loft_removes_op_and_body() {
+        use crate::model::{Body, BodySource, ExtrudeFace, Loft, LoftSection};
+        let mut doc = Document::default();
+        let loft_key = doc.lofts.insert(Loft {
+            sections: vec![
+                LoftSection {
+                    sketch: crate::model::sketch_key_for_slot(0),
+                    face: ExtrudeFace::Circle(crate::model::circle_key_for_slot(0)),
+                },
+                LoftSection {
+                    sketch: crate::model::sketch_key_for_slot(1),
+                    face: ExtrudeFace::Circle(crate::model::circle_key_for_slot(1)),
+                },
+            ],
+            mode: crate::model::LoftMode::NewBody,
+            name: None,
+        });
+        let body = doc.bodies.insert(Body {
+            source: BodySource::Loft(loft_key),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        assert!(element_alive(&doc, SceneElement::Loft(loft_key)));
+        assert!(delete_element(&mut doc, SceneElement::Loft(loft_key)));
+        assert!(!element_alive(&doc, SceneElement::Loft(loft_key)));
+        assert!(!doc.lofts.contains(loft_key));
+        assert!(!doc.bodies.contains(body));
     }
 }
