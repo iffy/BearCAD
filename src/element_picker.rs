@@ -363,6 +363,9 @@ pub enum PickRule {
     /// The face is whatever the picker's first stage took, so this rule is injected by the
     /// picker rather than configured by the caller.
     OnFace(Box<SceneElement>),
+    /// A 2D mirror line (#1538): a straight sketch line, a sketch origin axis, or a world
+    /// axis. Body edges and other edges stay out — those are 3D references.
+    MirrorLine,
 }
 
 /// Whether `element` is a point lying on `face` (#1075) — the filter Face Snap's second pick
@@ -433,6 +436,9 @@ impl PickRule {
                     doc.lines.get(*index).is_some_and(|l| l.bezier.is_none())
                 }
                 SceneElement::Circle(_) => false,
+                // Sketch-local origin axes have no `RevolveAxis` mapping — a 3D axis picker
+                // must not hover them as if a click would take them.
+                SceneElement::FaceEdge(crate::model::ConstraintLine::OriginAxis(_)) => false,
                 _ => true,
             },
             PickRule::Construction(want) => match element {
@@ -446,6 +452,14 @@ impl PickRule {
                 _ => true,
             },
             PickRule::NotIn(excluded) => !excluded.contains(element),
+            PickRule::MirrorLine => match element {
+                SceneElement::Line(index) => {
+                    doc.lines.get(*index).is_some_and(|l| l.bezier.is_none())
+                }
+                SceneElement::FaceEdge(crate::model::ConstraintLine::OriginAxis(_)) => true,
+                SceneElement::GlobalAxis(_) => true,
+                _ => false,
+            },
         }
     }
 }
@@ -522,6 +536,9 @@ pub fn element_in_sketch(
         | SceneElement::BodyFace { body, .. }
         | SceneElement::BodyVertex { body, .. } => body_in_sketch(body),
         SceneElement::Origin => true,
+        SceneElement::GlobalAxis(axis) => {
+            crate::face::world_dir_in_sketch_plane(doc, sketch, axis.direction())
+        }
         SceneElement::Constraint(ci) => doc.constraints.get(*ci).is_some_and(|c| c.sketch == sketch),
         _ => false,
     }
@@ -2309,6 +2326,29 @@ mod tests {
         assert_eq!(summary.len(), 2);
         assert_eq!(summary[0].1, 2, "two lines first");
         assert_eq!(summary[1].1, 1, "one body second");
+    }
+
+    #[test]
+    fn sketch_mirror_line_filter_takes_axes() {
+        use crate::construction::GlobalAxis;
+        use crate::model::{ConstraintLine, FaceId, Line, SketchAxis};
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+        doc.lines
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        let filter = crate::context::picker_filter(crate::context::PickerTarget::SketchMirrorLine)
+            .rule(PickRule::InSketch(sketch));
+        assert!(filter.accepts(&doc, &SceneElement::Line(lkey(0))));
+        assert!(filter.accepts(
+            &doc,
+            &SceneElement::FaceEdge(ConstraintLine::OriginAxis(SketchAxis::X))
+        ));
+        assert!(filter.accepts(&doc, &SceneElement::GlobalAxis(GlobalAxis::X)));
+        assert!(
+            !filter.accepts(&doc, &SceneElement::GlobalAxis(GlobalAxis::Z)),
+            "world Z is the ground-sketch normal, not a 2D mirror line"
+        );
+        assert!(!filter.accepts(&doc, &SceneElement::Circle(rkey(0))));
     }
 
     #[test]

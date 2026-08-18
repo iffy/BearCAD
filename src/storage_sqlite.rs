@@ -1431,8 +1431,9 @@ fn save_sketch_mirror_ops(tx: &Connection, arena: &Arena<SketchMirrorOperation>)
                 key_bits(key),
                 key_bits(op.sketch),
                 op.name,
-                key_bits(op.line),
+                op.line.as_line_key().map(key_bits).unwrap_or(0),
                 to_json(&serde_json::json!({
+                    "axis": op.line,
                     "line_targets": op.line_targets,
                     "circle_targets": op.circle_targets,
                     "line_outputs": op.line_outputs,
@@ -3009,6 +3010,8 @@ fn load_edge_treatment_ops(conn: &Connection) -> Result<Arena<EdgeTreatmentOpera
 #[derive(serde::Deserialize, Default)]
 struct SketchGeomPayload {
     #[serde(default)]
+    axis: Option<crate::model::SketchMirrorAxis>,
+    #[serde(default)]
     line_targets: Vec<crate::model::LineKey>,
     #[serde(default)]
     circle_targets: Vec<crate::model::CircleKey>,
@@ -3132,7 +3135,9 @@ fn load_sketch_mirror_ops(conn: &Connection) -> Result<Arena<SketchMirrorOperati
             id,
             SketchMirrorOperation {
                 sketch: key_from(sketch_id),
-                line: key_from(line_id),
+                line: payload
+                    .axis
+                    .unwrap_or(crate::model::SketchMirrorAxis::Line(key_from(line_id))),
                 line_targets: payload.line_targets,
                 circle_targets: payload.circle_targets,
                 line_outputs: payload.line_outputs,

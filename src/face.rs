@@ -351,6 +351,21 @@ pub fn world_to_local(frame: &SketchFrame, p: Vec3) -> (f32, f32) {
     (rel.dot(frame.u_axis), rel.dot(frame.v_axis))
 }
 
+/// Whether the infinite world line through the origin along `dir` lies in `sketch`'s plane
+/// (#1538). Used so a 2D picker can take world X/Y on the ground sketch and refuse world Z.
+pub fn world_dir_in_sketch_plane(
+    doc: &Document,
+    sketch: crate::model::SketchId,
+    dir: Vec3,
+) -> bool {
+    let Some(frame) = sketch_geometry_frame(doc, sketch) else {
+        return false;
+    };
+    let origin_on_plane = frame.origin.dot(frame.normal).abs() < 1e-3;
+    let dir_in_plane = dir.dot(frame.normal).abs() < 1e-3;
+    origin_on_plane && dir_in_plane
+}
+
 pub fn local_to_world(frame: &SketchFrame, u: f32, v: f32) -> Vec3 {
     frame.origin + frame.u_axis * u + frame.v_axis * v
 }

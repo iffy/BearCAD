@@ -820,12 +820,7 @@ impl<'a> EmitCtx<'a> {
                         .keys()
                         .position(|k| k == op.sketch)
                         .unwrap_or(0);
-                    let mirror = self
-                        .doc
-                        .lines
-                        .keys()
-                        .position(|k| k == op.line)
-                        .unwrap_or(0);
+                    let mirror = sketch_mirror_axis_lua(self.doc, op.line);
                     let lines = keys_ords(self.doc.lines.keys(), &op.line_targets);
                     let circles = keys_ords(self.doc.circles.keys(), &op.circle_targets);
                     out.push_str(&format!(
@@ -1527,6 +1522,23 @@ fn body_ords(doc: &Document, keys: &[crate::model::BodyKey]) -> Vec<usize> {
     keys.iter()
         .filter_map(|k| doc.bodies.keys().position(|x| x == *k))
         .collect()
+}
+
+fn sketch_mirror_axis_lua(doc: &Document, axis: crate::model::SketchMirrorAxis) -> String {
+    use crate::model::{SketchAxis, SketchMirrorAxis};
+    match axis {
+        SketchMirrorAxis::Line(li) => doc
+            .lines
+            .keys()
+            .position(|k| k == li)
+            .unwrap_or(0)
+            .to_string(),
+        SketchMirrorAxis::OriginAxis(SketchAxis::X) => "\"x\"".to_string(),
+        SketchMirrorAxis::OriginAxis(SketchAxis::Y) => "\"y\"".to_string(),
+        SketchMirrorAxis::X => "\"gx\"".to_string(),
+        SketchMirrorAxis::Y => "\"gy\"".to_string(),
+        SketchMirrorAxis::Z => "\"gz\"".to_string(),
+    }
 }
 
 fn keys_ords<T>(

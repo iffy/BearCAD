@@ -1807,7 +1807,7 @@ fn crowd_type_rank(kind: &construction::PickTargetKind) -> u8 {
         K::Circle(_) => 3,
         K::Point(_) | K::BodyVertex { .. } => 4, // vertices (sketch points + body corners)
         K::ConstructionPlane(_) => 5,
-        K::GlobalAxis(_) | K::BodyAxis { .. } => 6,
+        K::GlobalAxis(_) | K::OriginAxis(_) | K::BodyAxis { .. } => 6,
         K::Ground(_) => 7,
         K::Constraint(_) => 8, // annotation badges, grouped after the geometry they govern
     }
@@ -2299,6 +2299,22 @@ fn pick_target_loupe_wireframe(
             vec![construction::global_axis_segment(*axis)],
             Vec::new(),
         ),
+        PK::OriginAxis(axis) => {
+            let half = construction::GLOBAL_AXIS_EXTENT_MM;
+            let segs = doc
+                .sketches
+                .keys()
+                .filter_map(|sketch| crate::face::sketch_geometry_frame(doc, sketch))
+                .map(|frame| {
+                    let dir = match axis {
+                        crate::model::SketchAxis::X => frame.u_axis,
+                        crate::model::SketchAxis::Y => frame.v_axis,
+                    };
+                    (frame.origin - dir * half, frame.origin + dir * half)
+                })
+                .collect();
+            (segs, Vec::new())
+        }
         PK::Body(bi) => (construction::body_feature_edges(doc, *bi), Vec::new()),
         PK::SketchFace(face) => (
             construction::sketch_face_boundary_world(doc, face)
@@ -2569,6 +2585,19 @@ fn draw_pick_target_loupe(
                 if let Some((ca, cb)) = clip_segment_to_disc(pa, pb, center, radius) {
                     painter.line_segment([ca, cb], egui::Stroke::new(width, axis_color));
                 }
+            }
+        }
+        PK::OriginAxis(axis) => {
+            for (sketch, _) in doc.sketches.iter() {
+                let Some(frame) = crate::face::sketch_geometry_frame(doc, sketch) else {
+                    continue;
+                };
+                let dir = match axis {
+                    crate::model::SketchAxis::X => frame.u_axis,
+                    crate::model::SketchAxis::Y => frame.v_axis,
+                };
+                let half = construction::GLOBAL_AXIS_EXTENT_MM;
+                seg(frame.origin - dir * half, frame.origin + dir * half);
             }
         }
         // A datum plane is a **shaded quad** (#979), the way it draws in the 3D view — it used
@@ -10408,7 +10437,14 @@ impl App {
     ) {
         // Inside a sketch, Mirror reflects sketch geometry across a line (#523/#528).
         if let Some(session) = self.state.sketch_session {
-            self.handle_sketch_mirror_tool(ui, painter, project, pointer_screen, session);
+            self.handle_sketch_mirror_tool(
+                ui,
+                project,
+                pointer_screen,
+                pick_occlusion,
+                tool_pickers,
+                session,
+            );
             return;
         }
         let enter = self.tool_enter_commits(ui.ctx());
@@ -10451,15 +10487,16 @@ impl App {
         };
     }
 
-    /// In-sketch Mirror (#523/#528): the first click picks a straight sketch line as the
-    /// mirror axis; further clicks toggle lines/circles into the reflected set; Enter commits.
-    /// Draws a translucent preview of the reflected geometry.
+    /// In-sketch Mirror (#523/#528/#1538): the focused picker takes the click — first the
+    /// mirror line (a straight sketch line, origin axis, or in-plane world axis), then
+    /// shapes to reflect. Enter commits. Hover and the Exploder share this picker path.
     fn handle_sketch_mirror_tool(
         &mut self,
         ui: &egui::Ui,
-        painter: &egui::Painter,
-        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        _project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         pointer_screen: Option<egui::Pos2>,
+        pick_occlusion: Option<&construction::PickOcclusion>,
+        tool_pickers: &[context::ToolPickerView],
         session: SketchSession,
     ) {
         let enter = self.tool_enter_commits(ui.ctx());
@@ -10473,22 +10510,6 @@ impl App {
             return;
         }
 
-        // Hover highlight (#541): show the line/circle under the cursor as pickable — whether
-        // picking the mirror axis or the shapes to reflect, both are line/circle picks.
-        if !self.gpu_viewport {
-            if let Some(pp) = pointer_screen {
-                if let Some(target) = resolve_pick_target(pp, project, None, &self.state.doc, None) {
-                    if matches!(
-                        target.kind,
-                        construction::PickTargetKind::Line(_)
-                            | construction::PickTargetKind::Circle(_)
-                    ) {
-                        target.draw_highlight(painter, project, &self.state.doc);
-                    }
-                }
-            }
-        }
-
         // The reflected preview is rendered through the GPU scene's ghost path (see
         // `sketch_mirror_ghost_segments`), so nothing to draw here.
         if !ui.input(|i| i.pointer.primary_pressed()) {
@@ -10497,59 +10518,20 @@ impl App {
         let Some(pp) = pointer_screen else {
             return;
         };
-        let Some(target) = resolve_pick_target(pp, project, None, &self.state.doc, None) else {
+        if !self.click_into_focused_picker(tool_pickers, pp, _project, pick_occlusion) {
             return;
-        };
+        }
         let sm = self
             .state
             .creating_sketch_mirror
             .get_or_insert_with(|| actions::CreatingSketchMirror::new(session.sketch));
-        match target.kind {
-            construction::PickTargetKind::Line(li) => {
-                // First straight-line pick becomes the mirror axis; later line picks toggle
-                // into the reflected set (the mirror line itself never reflects).
-                if sm.line.is_none() {
-                    let straight = self
-                        .state
-                        .doc
-                        .lines
-                        .get(li)
-                        .is_some_and(|l| l.bezier.is_none());
-                    if straight {
-                        if let Some(sm) = self.state.creating_sketch_mirror.as_mut() {
-                            sm.line = Some(li);
-                        }
-                        self.state.status =
-                            "Mirror: axis set — now click shapes to mirror".to_string();
-                        return;
-                    }
-                }
-                if sm.line == Some(li) {
-                    return;
-                }
-                if let Some(pos) = sm.line_targets.iter().position(|x| *x == li) {
-                    sm.line_targets.remove(pos);
-                } else {
-                    sm.line_targets.push(li);
-                }
-                self.state.status = format!(
-                    "Mirror: {} shape(s) picked",
-                    sm.line_targets.len() + sm.circle_targets.len()
-                );
-            }
-            construction::PickTargetKind::Circle(ci) => {
-                if let Some(pos) = sm.circle_targets.iter().position(|x| *x == ci) {
-                    sm.circle_targets.remove(pos);
-                } else {
-                    sm.circle_targets.push(ci);
-                }
-                self.state.status = format!(
-                    "Mirror: {} shape(s) picked",
-                    sm.line_targets.len() + sm.circle_targets.len()
-                );
-            }
-            _ => {}
-        }
+        self.state.status = match sm.line {
+            None => "Mirror: click a line or axis to mirror across".to_string(),
+            Some(_) => format!(
+                "Mirror: {} shape(s) picked",
+                sm.line_targets.len() + sm.circle_targets.len()
+            ),
+        };
     }
 
     /// Draw the translucent preview of an in-progress in-sketch mirror (#528): each target
@@ -10563,7 +10545,7 @@ impl App {
         let Some(sm) = self.state.creating_sketch_mirror.as_ref() else {
             return Vec::new();
         };
-        let Some(line_idx) = sm.line else {
+        let Some(axis) = sm.line else {
             return Vec::new();
         };
         if !sm.has_targets() {
@@ -10573,14 +10555,9 @@ impl App {
         let Some(frame) = sketch_geometry_frame(doc, sm.sketch) else {
             return Vec::new();
         };
-        let Some(ml) = doc.lines.get(line_idx) else {
+        let Some((a, dir)) = axis.local_uv(doc, sm.sketch) else {
             return Vec::new();
         };
-        let a = glam::Vec2::new(ml.x0, ml.y0);
-        let dir = (glam::Vec2::new(ml.x1, ml.y1) - a).normalize_or_zero();
-        if dir.length_squared() < 1e-9 {
-            return Vec::new();
-        }
         let reflect = |p: glam::Vec2| {
             let v = p - a;
             a + 2.0 * v.dot(dir) * dir - v
@@ -10588,7 +10565,7 @@ impl App {
         let mut segs = Vec::new();
         for &li in &sm.line_targets {
             let Some(l) = doc.lines.get(li) else { continue };
-            if li == line_idx {
+            if axis.as_line_key() == Some(li) {
                 continue;
             }
             let dashed = l.construction;
@@ -15454,7 +15431,7 @@ impl App {
                     }
                 }
                 context::SketchMirrorControl {
-                    line: c.and_then(|c| c.line),
+                    line: c.and_then(|c| c.line).map(SceneElement::from_sketch_mirror_axis),
                     picked,
                     editing: c.map(|c| c.editing.is_some()).unwrap_or(false),
                     can_commit: c.map(|c| c.can_commit()).unwrap_or(false),
@@ -30118,7 +30095,7 @@ impl App {
             if let Some(sm) = self.state.creating_sketch_mirror.as_ref() {
                 folded.extend(sm.line_targets.iter().map(|&li| SceneElement::Line(li)));
                 folded.extend(sm.circle_targets.iter().map(|&ci| SceneElement::Circle(ci)));
-                folded.extend(sm.line.map(SceneElement::Line));
+                folded.extend(sm.line.map(SceneElement::from_sketch_mirror_axis));
             }
         }
         if self.state.tool == Tool::Repeat {
@@ -37022,6 +36999,69 @@ mod tests {
         );
     }
 
+    /// #1538: 2D Mirror's mirror-line picker takes the sketch origin axes and any world
+    /// axis that lies in the sketch plane, so hovering one must light it up.
+    #[test]
+    fn mirror_tool_hovers_origin_and_world_axes_in_a_sketch() {
+        use super::gpu_viewport;
+        use super::resolve_viewport_hover_highlight;
+        use crate::actions::SketchSession;
+        use crate::construction::GlobalAxis;
+        use crate::element_picker::{ElementFilter, ElementKind, PickLimit, PickRule};
+        use crate::hierarchy::SceneElement;
+        use crate::model::{ConstraintLine, SketchAxis};
+
+        let mut doc = crate::model::Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
+        // Geometry well away from the axes so it never wins the pick.
+        doc.lines
+            .insert(crate::model::Line::from_local_endpoints(sketch, 40.0, 40.0, 60.0, 40.0));
+
+        let cam = crate::camera::Camera::default();
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let vp = cam.view_proj(viewport);
+        let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
+        let over_x = project(glam::Vec3::new(15.0, 0.0, 0.0)).expect("axis projects");
+
+        let filter = ElementFilter::kinds(&[ElementKind::Line, ElementKind::Axis, ElementKind::Edge])
+            .rule(PickRule::MirrorLine)
+            .rule(PickRule::InSketch(sketch));
+        let pickers = test_pickers(
+            filter,
+            context::PickerTarget::SketchMirrorLine,
+            PickLimit::Finite(1),
+        );
+        let hover = resolve_viewport_hover_highlight(
+            false,
+            crate::actions::Tool::Mirror,
+            Some(SketchSession { sketch }),
+            MovePickHover::Bodies,
+            false,
+            false,
+            false,
+            false,
+            Some(over_x),
+            &cam,
+            viewport,
+            &vp,
+            &doc,
+            &project,
+            None,
+            &pickers,
+        );
+        assert!(
+            matches!(
+                &hover,
+                Some(gpu_viewport::ViewportHoverHighlight::Element(
+                    SceneElement::FaceEdge(ConstraintLine::OriginAxis(SketchAxis::X))
+                )) | Some(gpu_viewport::ViewportHoverHighlight::Element(
+                    SceneElement::GlobalAxis(GlobalAxis::X)
+                ))
+            ),
+            "hovering the X axis with 2D Mirror should highlight it, got {hover:?}"
+        );
+    }
+
     #[test]
     fn dim_input_text_width_grows_with_expression_up_to_max_chars() {
         assert!((super::dim_input_text_width("10") - 48.0).abs() < 1e-4);
@@ -37455,7 +37495,11 @@ mod tests {
         let mut candidates = crowd(&all);
         exploder_keep_for_picker(&doc, &select, &mut candidates);
         let kept: Vec<K> = candidates.into_iter().map(|c| c.kind).collect();
-        assert_eq!(kept, vec![line, endpoint]);
+        // In-plane world axes belong to the sketch the same way the origin does (#1538).
+        assert_eq!(
+            kept,
+            vec![line, endpoint, K::GlobalAxis(construction::GlobalAxis::X)]
+        );
     }
 
     /// #983: the Projection tool's fan is pruned by the same rule its click obeys — outside

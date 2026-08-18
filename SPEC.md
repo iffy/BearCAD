@@ -1291,7 +1291,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   output? }`; `plane = 0` is construction-plane ordinal 0. The default output stays implicit so existing scripts round-trip unchanged. In the elements graph the plane's body and
   every input body feed the Mirror node, and each reflected body nests beneath it.
   - **In a sketch (#528):** the Mirror tool reflects **sketch geometry** instead. The first
-    click picks a **straight sketch line** as the mirror axis; further clicks toggle lines and
+    click picks a **straight sketch line**, a **sketch origin axis** (LX/LY), or an
+    in-plane **world axis** as the mirror axis; further clicks toggle lines and
     circles into the reflected set; a translucent preview shows the reflections; **Enter**
     commits. Committing creates a **`SketchMirrorOperation`** (`ShapeKind::SketchMirrorOperation`,
     `Document::sketch_mirror_ops`) whose reflected lines/circles are separate entries nested
@@ -1301,7 +1302,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     radius unchanged; the mirror line itself is never reflected. The context pane shows the
     mirror-line label (with a ✕ to re-pick) and a Shapes element picker. Editable via
     double-click / "Edit mirror". Scripting: `bearcad.mirror_sketch{ sketch, line, lines,
-    circles }` / `bearcad.edit_sketch_mirror{ index, … }`.
+    circles }` / `bearcad.edit_sketch_mirror{ index, … }` (`line` is a sketch-line
+    ordinal, `"x"`/`"y"` for the sketch origin axes, or `"gx"`/`"gy"`/`"gz"` for a
+    world axis that lies in the sketch plane).
 
 - **Linear repeat tool (#182/#257):** copies of whole bodies spaced along an axis, chosen with
   a single-pick **element picker** (#955) taking one straight reference — a world X/Y/Z axis, a

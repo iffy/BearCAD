@@ -694,8 +694,8 @@ pub enum SketchOffsetEdit {
 /// The in-sketch Mirror tool's context section (#523/#528).
 #[derive(Clone, Debug, PartialEq)]
 pub struct SketchMirrorControl {
-    /// The picked mirror line's index, or `None` until one is chosen.
-    pub line: Option<crate::model::LineKey>,
+    /// The picked mirror line, or `None` until one is chosen.
+    pub line: Option<SceneElement>,
     /// Lines/circles currently in the reflected set, for the element picker.
     pub picked: Vec<SceneElement>,
     pub editing: bool,
@@ -2054,8 +2054,9 @@ pub fn picker_filter(target: PickerTarget) -> ElementFilter {
         PickerTarget::SketchOffsetEntities
         | PickerTarget::SketchRepeatEntities
         | PickerTarget::SketchMirrorShapes => ElementFilter::kinds(&[K::Line, K::Circle]),
-        PickerTarget::SketchMirrorLine | PickerTarget::SketchRepeatDirection => {
-            ElementFilter::kind(K::Line)
+        PickerTarget::SketchRepeatDirection => ElementFilter::kind(K::Line),
+        PickerTarget::SketchMirrorLine => {
+            ElementFilter::kinds(&[K::Line, K::Axis, K::Edge]).rule(PickRule::MirrorLine)
         }
         PickerTarget::SketchSliceTargets => {
             ElementFilter::kinds(&[K::Line, K::Circle, K::Profile])
@@ -2916,11 +2917,15 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         // The in-sketch Mirror tool (#534): the mirror line comes first, then the shapes — so
         // exactly one of the two is armed, whichever the next click should feed.
         let mut line = ElementPicker::new(
-            in_sketch(ElementFilter::kinds(&[ElementKind::Line]), input.open_sketch),
+            in_sketch(
+                ElementFilter::kinds(&[ElementKind::Line, ElementKind::Axis, ElementKind::Edge])
+                    .rule(PickRule::MirrorLine),
+                input.open_sketch,
+            ),
             PickLimit::Finite(1),
         );
         line.set_focused(m.line.is_none());
-        line.set_picked(input.doc, m.line.map(SceneElement::Line));
+        line.set_picked(input.doc, m.line.clone());
         tool_pickers.push(ToolPickerView {
             heading: "Mirror line",
             picker: line,
