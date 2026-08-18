@@ -1601,6 +1601,17 @@ pub enum BodySource {
     /// document's own result. The unit's materialized body shadows while consumed, the
     /// way a boolean input does — but is never mutated.
     UnitCut { instance: UnitInstanceKey, cut: Vec<ExtrusionKey> },
+    /// A Revolve/Sweep/Loft (or other tuple) source with extrusions fused onto / cut
+    /// from it after the host was produced (#1527). `append_extrusion` on those sources
+    /// wraps them here so `fuse_merge_onto_body` / `fuse_cut_onto_body` can record the
+    /// new extrusion instead of orphaning it.
+    Fused {
+        inner: Box<BodySource>,
+        #[serde(default)]
+        add: Vec<ExtrusionKey>,
+        #[serde(default)]
+        cut: Vec<ExtrusionKey>,
+    },
 }
 
 impl BodySource {
@@ -1629,6 +1640,7 @@ impl BodySource {
             Self::EdgeTreated { op, target, .. } => {
                 doc.edge_treatment_ops.get(*op)?.targets.get(*target).copied()
             }
+            Self::Fused { inner, .. } => inner.input_body(doc),
             _ => None,
         }
     }
@@ -1646,6 +1658,7 @@ impl BodySource {
             | Self::Repeated { add, .. }
             | Self::Sliced { add, .. }
             | Self::EdgeTreated { add, .. } => add.as_slice(),
+            Self::Fused { add, .. } => add.as_slice(),
             Self::Loft(_)
             | Self::Revolve(_)
             | Self::Primitive(_)
@@ -1671,6 +1684,7 @@ impl BodySource {
             | Self::Sliced { cut, .. }
             | Self::EdgeTreated { cut, .. } => cut.as_slice(),
             Self::UnitCut { cut, .. } => cut.as_slice(),
+            Self::Fused { cut, .. } => cut.as_slice(),
             Self::Extrusion(_)
             | Self::Extrusions(_)
             | Self::Imported(_)
@@ -1701,6 +1715,7 @@ impl BodySource {
             | Self::EdgeTreated { .. }
             | Self::UnitInstance(_)
             | Self::UnitCut { .. } => None,
+            Self::Fused { inner, .. } => inner.imported_mesh_key(),
         }
     }
 
@@ -1733,14 +1748,20 @@ impl BodySource {
                     cut: Vec::new(),
                 };
             }
+            Self::Fused { add, .. } => add.push(extrusion),
+            // Revolve/Sweep/Loft cannot carry add lists themselves (#1527): wrap so a
+            // later Extrude Add records the boss instead of orphaning it.
+            Self::Loft(_) | Self::Revolve(_) | Self::Sweep(_) => {
+                let inner = std::mem::replace(self, Self::Extrusion(extrusion));
+                *self = Self::Fused {
+                    inner: Box::new(inner),
+                    add: vec![extrusion],
+                    cut: Vec::new(),
+                };
+            }
             // An imported mesh body has no extrusion to merge into; unreachable in practice
             // since merge candidates only ever come from extrusion-backed bodies.
-            Self::Imported(_)
-            | Self::Loft(_)
-            | Self::Revolve(_)
-            | Self::Sweep(_)
-            | Self::UnitInstance(_)
-            | Self::UnitCut { .. } => {}
+            Self::Imported(_) | Self::UnitInstance(_) | Self::UnitCut { .. } => {}
         }
     }
 
@@ -1781,9 +1802,18 @@ impl BodySource {
             }
             // A unit-cut body takes further cuts (#726).
             Self::UnitCut { cut, .. } => cut.push(extrusion),
-            // An imported mesh body has no solid feature to cut; unreachable in practice.
-            Self::Imported(_) | Self::Loft(_) | Self::Revolve(_) | Self::Sweep(_) | Self::UnitInstance(_) => {
+            Self::Fused { cut, .. } => cut.push(extrusion),
+            // Revolve/Sweep/Loft wrap so a later Extrude Cut records the tool (#1527).
+            Self::Loft(_) | Self::Revolve(_) | Self::Sweep(_) => {
+                let inner = std::mem::replace(self, Self::Extrusion(extrusion));
+                *self = Self::Fused {
+                    inner: Box::new(inner),
+                    add: Vec::new(),
+                    cut: vec![extrusion],
+                };
             }
+            // An imported mesh body has no solid feature to cut; unreachable in practice.
+            Self::Imported(_) | Self::UnitInstance(_) => {}
         }
     }
 
@@ -1843,6 +1873,13 @@ impl BodySource {
             Self::UnitCut { cut, .. } => {
                 cut.retain(|&ei| ei != extrusion);
             }
+            Self::Fused { inner, add, cut } => {
+                add.retain(|&ei| ei != extrusion);
+                cut.retain(|&ei| ei != extrusion);
+                if add.is_empty() && cut.is_empty() {
+                    *self = *inner.clone();
+                }
+            }
             Self::Extrusion(_)
             | Self::Imported(_)
             | Self::Loft(_)
@@ -1859,6 +1896,7 @@ impl BodySource {
         match self {
             Self::Primitive(p) => Some(*p),
             Self::Solid { base: Some(p), .. } => Some(*p),
+            Self::Fused { inner, .. } => inner.primitive_base(),
             _ => None,
         }
     }
@@ -1877,7 +1915,8 @@ impl BodySource {
             | Self::Mirrored { add, cut, .. }
             | Self::Repeated { add, cut, .. }
             | Self::Sliced { add, cut, .. }
-            | Self::EdgeTreated { add, cut, .. } => {
+            | Self::EdgeTreated { add, cut, .. }
+            | Self::Fused { add, cut, .. } => {
                 cut.last().copied().or_else(|| add.last().copied())
             }
             _ => None,
@@ -2012,6 +2051,44 @@ impl BodySource {
                     cut,
                 })
             }
+            Self::Fused { inner, add, cut } => peel_add_or_cut(add, cut, extrusion).map(|(add, cut)| {
+                if add.is_empty() && cut.is_empty() {
+                    *inner.clone()
+                } else {
+                    Self::Fused {
+                        inner: inner.clone(),
+                        add,
+                        cut,
+                    }
+                }
+            }),
+            _ => None,
+        }
+    }
+
+    /// The revolution this source is (or is fused onto). Walks through [`Self::Fused`] (#1527).
+    pub fn revolution_key(&self) -> Option<RevolutionKey> {
+        match self {
+            Self::Revolve(k) => Some(*k),
+            Self::Fused { inner, .. } => inner.revolution_key(),
+            _ => None,
+        }
+    }
+
+    /// The sweep this source is (or is fused onto). Walks through [`Self::Fused`] (#1527).
+    pub fn sweep_key(&self) -> Option<SweepKey> {
+        match self {
+            Self::Sweep(k) => Some(*k),
+            Self::Fused { inner, .. } => inner.sweep_key(),
+            _ => None,
+        }
+    }
+
+    /// The loft this source is (or is fused onto). Walks through [`Self::Fused`] (#1527).
+    pub fn loft_key(&self) -> Option<LoftKey> {
+        match self {
+            Self::Loft(k) => Some(*k),
+            Self::Fused { inner, .. } => inner.loft_key(),
             _ => None,
         }
     }
@@ -2236,7 +2313,7 @@ pub fn face_belongs_to_body(doc: &Document, face: &FaceId, body: BodyKey) -> boo
                     .is_some_and(|input| face_belongs_to_body(doc, face, input))
         }
         FaceId::RevolveCap { revolution, .. } | FaceId::RevolveSide { revolution, .. } => {
-            matches!(b.source, BodySource::Revolve(r) if r == *revolution)
+            b.source.revolution_key() == Some(*revolution)
         }
         FaceId::PrimitiveFace { primitive, .. } => match &b.source {
             // Pure primitive or solid-with-that-base: the face lives here.
@@ -2326,9 +2403,17 @@ pub fn body_index_for_primitive(doc: &Document, primitive: PrimitiveKey) -> Opti
 /// Body index whose source is `revolution` (#621) — the revolve analogue of
 /// [`body_index_for_extrusion`].
 pub fn body_index_for_revolution(doc: &Document, revolution: RevolutionKey) -> Option<BodyKey> {
-    doc.bodies.iter().find_map(|(key, body)| {
-        matches!(body.source, BodySource::Revolve(r) if r == revolution).then_some(key)
-    })
+    let matches: Vec<(BodyKey, bool)> = doc
+        .bodies
+        .iter()
+        .filter(|(_, b)| b.source.revolution_key() == Some(revolution))
+        .map(|(k, b)| (k, b.shadow))
+        .collect();
+    matches
+        .iter()
+        .find(|(_, shadow)| !shadow)
+        .or_else(|| matches.first())
+        .map(|(k, _)| *k)
 }
 
 /// A solid body produced by a feature; it depends on its source feature.
@@ -6213,6 +6298,53 @@ mod tests {
             );
             assert!(
                 src.extrusion_indices().is_empty(),
+                "cut into {label} must not land as an add"
+            );
+        }
+    }
+
+    /// #1527: a merge/cut onto a Revolve/Sweep/Loft result must record the extrusion
+    /// (Add/Cut after #1501 keep those sources; append used to no-op and orphan the boss).
+    #[test]
+    fn revolve_sweep_loft_sources_record_fused_extrusions() {
+        let ei = extrusion_key_for_slot(1);
+        let cases = [
+            BodySource::Revolve(crate::arena::Key::from_bits(1)),
+            BodySource::Sweep(crate::arena::Key::from_bits(1)),
+            BodySource::Loft(crate::arena::Key::from_bits(1)),
+        ];
+        for src0 in cases {
+            let label = format!("{src0:?}");
+            let mut add_src = src0.clone();
+            add_src.append_extrusion(ei);
+            assert_eq!(
+                add_src.extrusion_indices(),
+                [ei],
+                "merge onto {label} must record the extrusion"
+            );
+            assert!(
+                add_src.cut_extrusion_indices().is_empty(),
+                "merge onto {label} must not land as a cut"
+            );
+            assert_eq!(
+                add_src.producing_extrusion(),
+                Some(ei),
+                "merge onto {label} must name the extrusion as producer"
+            );
+            assert!(
+                add_src.predecessor_source(ei).is_some(),
+                "peeling the merge off {label} must restore the op source"
+            );
+
+            let mut cut_src = src0;
+            cut_src.append_cut_extrusion(ei);
+            assert_eq!(
+                cut_src.cut_extrusion_indices(),
+                [ei],
+                "cut into {label} must stick to that body"
+            );
+            assert!(
+                cut_src.extrusion_indices().is_empty(),
                 "cut into {label} must not land as an add"
             );
         }

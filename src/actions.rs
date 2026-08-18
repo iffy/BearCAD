@@ -7107,6 +7107,10 @@ fn extrude_merge_candidate(doc: &Document, sketch: SketchId) -> Option<crate::mo
         }
         // A sketch on a repeated copy's face (#1116) merges into that copy.
         FaceId::RepeatedFace { .. } => crate::model::body_index_for_face(doc, &face),
+        // A sketch on a revolve's flat cap/washer (#1527): the live revolve (or fused) body.
+        FaceId::RevolveCap { revolution, .. } | FaceId::RevolveSide { revolution, .. } => {
+            crate::model::body_index_for_revolution(doc, revolution)
+        }
         // A remaining flat on a treated/boolean/imported body (#1325).
         FaceId::BodyMeshFace { body, .. } => Some(live_fuse_tip(doc, body)),
         _ => return None,
@@ -7300,10 +7304,10 @@ pub(crate) fn auto_zoom_world_bounds(state: &AppState) -> Option<(Vec3, Vec3)> {
     )
 }
 
-/// World bounds of every live tool preview (#1114): mirror/repeat/move ghosts, extrude/
-/// revolve/loft/sweep/boolean previews — the same solids the viewport draws translucent
-/// before commit. Used by Zoom-to-fit so Z frames the whole preview, not only committed
-/// geometry.
+/// World bounds of every live tool preview (#1114/#1507): the same ghosts the viewport
+/// draws — mirror/repeat/move/joint, extrude/revolve/loft/sweep/boolean, slice/shell/shape,
+/// 3D chamfer/fillet, and sketch offset/mirror/repeat/slice. Used by Zoom-to-fit so Z
+/// frames the whole preview, not only committed geometry.
 fn operation_preview_world_bounds(state: &AppState) -> Option<(Vec3, Vec3)> {
     let doc = &state.doc;
     let mut bounds: Option<(Vec3, Vec3)> = None;
@@ -7536,6 +7540,305 @@ fn operation_preview_world_bounds(state: &AppState) -> Option<(Vec3, Vec3)> {
         {
             for mesh in &solids {
                 extend_mesh(&mut bounds, mesh);
+            }
+        }
+    }
+
+    // Slice: replacement of the target bodies plus laser cut-surface ghosts (#1507).
+    if let Some(cs) = state.creating_slice.as_ref() {
+        for &bi in &cs.targets {
+            if let Some((min, max)) =
+                crate::extrude::body_solid_mesh(doc, bi).and_then(|m| m.bounds())
+            {
+                extend(&mut bounds, min, max);
+            }
+        }
+        if !cs.targets.is_empty() && !cs.cutters.is_empty() {
+            for mesh in crate::extrude::slice_laser_preview_meshes(
+                doc,
+                &cs.cutters,
+                cs.extend_infinite,
+                &cs.targets,
+            ) {
+                extend_mesh(&mut bounds, &mesh);
+            }
+        }
+    }
+
+    // Shell hollow preview.
+    if let Some(cs) = state.creating_shell.as_ref() {
+        if !cs.targets.is_empty() {
+            if let Some(solids) = crate::extrude::preview_shell_meshes(
+                doc,
+                &cs.targets,
+                &cs.open_faces,
+                cs.thickness_live,
+            ) {
+                for mesh in &solids {
+                    extend_mesh(&mut bounds, mesh);
+                }
+            }
+        }
+    }
+
+    // Shape-tool in-progress primitive.
+    if let Some(c) = state.creating_shape.as_ref() {
+        if let Some(mesh) = crate::primitives::mesh(doc, &c.shape) {
+            extend_mesh(&mut bounds, &mesh);
+        }
+    }
+
+    // Joint posed ghost.
+    if let Some(cj) = state.creating_joint.as_ref() {
+        if cj.members.len() >= 2 {
+            let probe = crate::model::Joint {
+                members: cj.members.clone(),
+                base: cj.base,
+                kind: cj.kind.clone(),
+                placement: cj.placement.as_op(),
+                position: cj.position.clone(),
+                position2: cj.position2.clone(),
+                position3: cj.position3.clone(),
+                rest: String::new(),
+                rest2: String::new(),
+                rest3: String::new(),
+                limits: Default::default(),
+                name: None,
+                frame: Default::default(),
+            };
+            if let Some(m) = crate::joints::preview_pose(doc, &probe) {
+                let base = if cj.base < cj.members.len() { cj.base } else { 0 };
+                for (i, member) in cj.members.iter().enumerate() {
+                    if i == base {
+                        continue;
+                    }
+                    for bi in crate::joints::member_bodies(doc, *member) {
+                        extend_transformed_body(&mut bounds, bi, m);
+                    }
+                }
+            }
+        }
+    }
+
+    // 3D chamfer/fillet ghost.
+    if let Some(cet) = state.creating_edge_treatment.as_ref() {
+        let amount = cet.evaluated_amount(doc);
+        if amount > 0.0 {
+            if let Some((primary, _)) = cet.primary() {
+                match primary {
+                    crate::model::TreatableSolid::Primitive(pi) => {
+                        if let Some(mesh) = crate::extrude::primitive_treatment_preview_mesh(
+                            doc, pi, &cet.edges, cet.kind, amount,
+                        ) {
+                            extend_mesh(&mut bounds, &mesh);
+                        }
+                    }
+                    crate::model::TreatableSolid::Extrusion(ei) => {
+                        let treatments: Vec<crate::model::EdgeTreatment> = cet
+                            .edges
+                            .iter()
+                            .filter(|(s, _)| *s == primary)
+                            .map(|(_, edge)| crate::model::EdgeTreatment {
+                                edge: *edge,
+                                kind: cet.kind,
+                                amount,
+                            })
+                            .collect();
+                        if let Some(probe) =
+                            crate::extrude::extrusion_with_edge_treatments(doc, ei, treatments)
+                        {
+                            if let Some(mesh) = crate::extrude::preview_extrusion_mesh(doc, &probe)
+                            {
+                                extend_mesh(&mut bounds, &mesh);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Sketch-tool ghosts: offset / mirror / repeat / slice (#1507).
+    let extend_world = |bounds: &mut Option<(Vec3, Vec3)>, p: Vec3| {
+        extend(bounds, p, p);
+    };
+    let line_world = |li: crate::model::LineKey, frame: &crate::face::SketchFrame| {
+        doc.lines.get(li).map(|l| {
+            (
+                crate::face::local_to_world(frame, l.x0, l.y0),
+                crate::face::local_to_world(frame, l.x1, l.y1),
+            )
+        })
+    };
+    if let Some(co) = state.creating_sketch_offset.as_ref() {
+        if co.has_targets() {
+            if let (Some(distance), Some(frame)) = (
+                co.distance_mm(doc),
+                crate::face::sketch_geometry_frame(doc, co.sketch),
+            ) {
+                let sources: Vec<crate::offset::OffsetSource> = co
+                    .line_targets
+                    .iter()
+                    .filter_map(|&i| {
+                        let l = doc.lines.get(i)?;
+                        Some(crate::offset::OffsetSource {
+                            id: i,
+                            a: glam::Vec2::new(l.x0, l.y0),
+                            b: glam::Vec2::new(l.x1, l.y1),
+                            bezier: l.bezier.map(|[c0, c1]| {
+                                [glam::Vec2::new(c0.0, c0.1), glam::Vec2::new(c1.0, c1.1)]
+                            }),
+                        })
+                    })
+                    .collect();
+                for seg in crate::offset::offset_segments(&sources, distance) {
+                    extend_world(&mut bounds, crate::face::local_to_world(&frame, seg.a.x, seg.a.y));
+                    extend_world(&mut bounds, crate::face::local_to_world(&frame, seg.b.x, seg.b.y));
+                }
+                for &ci in &co.circle_targets {
+                    if let Some(c) = doc.circles.get(ci) {
+                        let r = crate::offset::offset_circle_radius(c.r, distance);
+                        extend_world(
+                            &mut bounds,
+                            crate::face::local_to_world(&frame, c.cx + r, c.cy),
+                        );
+                        extend_world(
+                            &mut bounds,
+                            crate::face::local_to_world(&frame, c.cx - r, c.cy),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    if let Some(sm) = state.creating_sketch_mirror.as_ref() {
+        if let (Some(line_idx), Some(frame)) = (
+            sm.line,
+            crate::face::sketch_geometry_frame(doc, sm.sketch),
+        ) {
+            if sm.has_targets() {
+                if let Some(ml) = doc.lines.get(line_idx) {
+                    let a = glam::Vec2::new(ml.x0, ml.y0);
+                    let dir = (glam::Vec2::new(ml.x1, ml.y1) - a).normalize_or_zero();
+                    if dir.length_squared() > 1e-9 {
+                        let reflect = |p: glam::Vec2| {
+                            let v = p - a;
+                            a + 2.0 * v.dot(dir) * dir - v
+                        };
+                        for &li in &sm.line_targets {
+                            if let Some(l) = doc.lines.get(li) {
+                                let r0 = reflect(glam::Vec2::new(l.x0, l.y0));
+                                let r1 = reflect(glam::Vec2::new(l.x1, l.y1));
+                                extend_world(
+                                    &mut bounds,
+                                    crate::face::local_to_world(&frame, r0.x, r0.y),
+                                );
+                                extend_world(
+                                    &mut bounds,
+                                    crate::face::local_to_world(&frame, r1.x, r1.y),
+                                );
+                            }
+                        }
+                        for &ci in &sm.circle_targets {
+                            if let Some(c) = doc.circles.get(ci) {
+                                let center = reflect(glam::Vec2::new(c.cx, c.cy));
+                                extend_world(
+                                    &mut bounds,
+                                    crate::face::local_to_world(&frame, center.x + c.r, center.y),
+                                );
+                                extend_world(
+                                    &mut bounds,
+                                    crate::face::local_to_world(&frame, center.x - c.r, center.y),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Some(cr) = state.creating_sketch_repeat.as_ref() {
+        if cr.has_targets() {
+            if let Some(frame) = crate::face::sketch_geometry_frame(doc, cr.sketch) {
+                let (du, dv) = cr.direction(doc);
+                let probe = crate::model::SketchRepeatOperation {
+                    sketch: cr.sketch,
+                    line_targets: cr.line_targets.clone(),
+                    circle_targets: cr.circle_targets.clone(),
+                    dir_u: du,
+                    dir_v: dv,
+                    mode: cr.mode,
+                    count: cr.count.clone(),
+                    spacing: cr.spacing.clone(),
+                    length: cr.length.clone(),
+                    line_outputs: Vec::new(),
+                    circle_outputs: Vec::new(),
+                    name: None,
+                };
+                if let Some(offsets) = crate::extrude::sketch_repeat_offsets(doc, &probe) {
+                    for &off in &offsets {
+                        if off.abs() <= 1e-6 {
+                            continue;
+                        }
+                        let (ou, ov) = (off * du, off * dv);
+                        for &li in &cr.line_targets {
+                            if let Some(l) = doc.lines.get(li) {
+                                extend_world(
+                                    &mut bounds,
+                                    crate::face::local_to_world(&frame, l.x0 + ou, l.y0 + ov),
+                                );
+                                extend_world(
+                                    &mut bounds,
+                                    crate::face::local_to_world(&frame, l.x1 + ou, l.y1 + ov),
+                                );
+                            }
+                        }
+                        for &ci in &cr.circle_targets {
+                            if let Some(c) = doc.circles.get(ci) {
+                                extend_world(
+                                    &mut bounds,
+                                    crate::face::local_to_world(
+                                        &frame,
+                                        c.cx + ou + c.r,
+                                        c.cy + ov,
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Some(cs) = state.creating_sketch_slice.as_ref() {
+        if cs.has_targets() || cs.has_cutters() {
+            if let Some(frame) = crate::face::sketch_geometry_frame(doc, cs.sketch) {
+                for &li in cs.line_targets.iter().chain(cs.cutter_lines.iter()) {
+                    if let Some((a, b)) = line_world(li, &frame) {
+                        extend_world(&mut bounds, a);
+                        extend_world(&mut bounds, b);
+                    }
+                }
+                for &ci in &cs.circle_targets {
+                    if let Some(c) = doc.circles.get(ci) {
+                        extend_world(
+                            &mut bounds,
+                            crate::face::local_to_world(&frame, c.cx + c.r, c.cy),
+                        );
+                        extend_world(
+                            &mut bounds,
+                            crate::face::local_to_world(&frame, c.cx - c.r, c.cy),
+                        );
+                    }
+                }
+                for loop_lines in &cs.face_targets {
+                    for &li in loop_lines {
+                        if let Some((a, b)) = line_world(li, &frame) {
+                            extend_world(&mut bounds, a);
+                            extend_world(&mut bounds, b);
+                        }
+                    }
+                }
             }
         }
     }
@@ -25275,6 +25578,112 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert!(matches!(live.1.source, crate::model::BodySource::Revolve(_)));
     }
 
+    /// #1527: Extrude Cut onto a live Revolve result records the cut and removes material.
+    #[test]
+    fn extrude_cut_onto_revolve_records_the_cut() {
+        let mut state = AppState::default();
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+        let lines = crate::construction::add_line_rectangle(
+            &mut state.doc, sketch, 10.0, 0.0, 10.0, 10.0, [false; 4],
+        );
+        state.creating_revolve = Some(CreatingRevolve {
+            sketch: Some(sketch),
+            faces: vec![crate::model::ExtrudeFace::Polygon(lines.to_vec())],
+            axis: Some(crate::model::RevolveAxis::Y),
+            angle_live: 180.0,
+            text: "180".into(),
+            user_edited: true,
+            ..CreatingRevolve::default()
+        });
+        assert!(matches!(state.apply(Action::CommitRevolve), ActionResult::Ok));
+        let rev = state.doc.revolutions.keys().next().expect("the revolve");
+        let host = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| !b.shadow)
+            .map(|(k, _)| k)
+            .expect("revolve body");
+        let v0 = crate::extrude::body_solid_mesh(&state.doc, host)
+            .and_then(|m| Some(crate::extrude::mesh_signed_volume(&m).abs()))
+            .expect("revolve volume");
+        let cap = FaceId::RevolveCap {
+            revolution: rev,
+            profile: crate::model::ExtrudeFace::Polygon(lines.to_vec()),
+            end: true,
+        };
+        assert!(
+            matches!(
+                state.apply(Action::BeginSketch {
+                    face: cap.clone(),
+                    viewport: None,
+                }),
+                ActionResult::Ok
+            ),
+            "{}",
+            state.status
+        );
+        let hole_sketch = state.sketch_session.unwrap().sketch;
+        let (poly, _) = crate::extrude::revolve_cap_polygon_world(
+            &state.doc,
+            rev,
+            &crate::model::ExtrudeFace::Polygon(lines.to_vec()),
+            true,
+        )
+        .expect("cap polygon");
+        let frame = crate::face::sketch_frame(&state.doc, cap).expect("cap frame");
+        let centroid = poly.iter().copied().sum::<glam::Vec3>() / poly.len() as f32;
+        let (cu, cv) = crate::face::world_to_local(&frame, centroid);
+        state.doc.circles.insert(crate::model::Circle::from_local_center_radius(
+            hole_sketch, cu, cv, 3.0, 0.0,
+        ));
+        let hole = state.doc.circles.keys().last().unwrap();
+        assert!(matches!(
+            state.apply(Action::CreateExtrusion {
+                sketch: hole_sketch,
+                faces: vec![crate::model::ExtrudeFace::Circle(hole)],
+                distance: -8.0,
+                body: ExtrudeBodyChoice::Cut,
+                target: None,
+                expression: None,
+                symmetric: false,
+                taper: 0.0,
+                taper_mode: crate::model::ExtrudeTaperMode::Distance,
+                taper_expression: None,
+            }),
+            ActionResult::Ok
+        ), "{}", state.status);
+        let live = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| !b.shadow)
+            .map(|(_, b)| b)
+            .expect("cut result");
+        assert_eq!(
+            live.source.cut_extrusion_indices().len(),
+            1,
+            "cut must stay on the revolve result, source={:?}",
+            live.source
+        );
+        let v1 = crate::extrude::body_solid_mesh(
+            &state.doc,
+            state
+                .doc
+                .bodies
+                .iter()
+                .find(|(_, b)| !b.shadow)
+                .map(|(k, _)| k)
+                .unwrap(),
+        )
+        .and_then(|m| Some(crate::extrude::mesh_signed_volume(&m).abs()))
+        .expect("cut volume");
+        assert!(
+            v1 < v0 - 10.0,
+            "cut must remove material: {v1} vs {v0}"
+        );
+    }
+
     /// Cut mode without picked bodies is rejected and the in-progress state survives.
     #[test]
     fn commit_revolve_cut_requires_bodies() {
@@ -32543,6 +32952,299 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             auto.0.x < -4.0 && auto.1.x > 104.0,
             "auto-zoom must cover original and dest, got {auto:?}"
         );
+    }
+
+    /// #1507: every live tool ghost the viewport draws must contribute zoom-to-fit bounds.
+    /// Arm each tool with a preview and assert `operation_preview_world_bounds` is `Some`.
+    #[test]
+    fn operation_preview_world_bounds_covers_every_live_tool_ghost() {
+        use crate::model::{
+            BooleanOpKind, ExtrudeFace, ExtrusionEdgeRef, JointRef, Line, MirrorMode,
+            PrimitiveKind, RevolveAxis, SliceCutter, TreatableSolid, VertexTreatmentKind,
+        };
+
+        fn assert_preview(label: &str, state: &AppState) {
+            assert!(
+                super::operation_preview_world_bounds(state).is_some(),
+                "{label}: armed preview must have world bounds"
+            );
+        }
+
+        // Mirror
+        let mut state = box_extrusion_state();
+        state.apply(Action::ExitSketch);
+        state.creating_mirror = Some(CreatingMirror {
+            plane: Some(FaceId::ConstructionPlane(pkey(0))),
+            targets: vec![bkey(0)],
+            mode: MirrorMode::NewBody,
+            editing: None,
+        });
+        assert_preview("mirror", &state);
+
+        // Repeat
+        let mut state = box_extrusion_state();
+        state.apply(Action::ExitSketch);
+        state.creating_repeat = Some(CreatingRepeat {
+            targets: vec![bkey(0)],
+            axis: Some(RevolveAxis::X),
+            count: "3".into(),
+            spacing: "20".into(),
+            ..CreatingRepeat::default()
+        });
+        assert_preview("repeat", &state);
+
+        // Move
+        let mut state = box_extrusion_state();
+        state.apply(Action::ExitSketch);
+        state.creating_move = Some(CreatingMove {
+            targets: vec![bkey(0)],
+            tx: "40".into(),
+            ..CreatingMove::default()
+        });
+        assert_preview("move", &state);
+
+        // Extrude
+        let mut state = box_extrusion_state();
+        let sketch = state.sketch_session.unwrap().sketch;
+        let faces = vec![ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)])];
+        state.creating_extrusion = Some(CreatingExtrusion {
+            sketch: Some(sketch),
+            faces,
+            distance: 15.0,
+            text: "15".into(),
+            ..CreatingExtrusion::pending(ToolOutputMode::NewBody, false)
+        });
+        assert_preview("extrude", &state);
+
+        // Revolve
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        let lines = crate::construction::add_line_rectangle(
+            &mut state.doc, sketch, 10.0, 0.0, 10.0, 10.0, [false; 4],
+        );
+        state.creating_revolve = Some(CreatingRevolve {
+            sketch: Some(sketch),
+            faces: vec![ExtrudeFace::Polygon(lines.to_vec())],
+            axis: Some(RevolveAxis::Y),
+            ..CreatingRevolve::default()
+        });
+        assert_preview("revolve", &state);
+
+        // Loft
+        let mut state = AppState::default();
+        let sketch_a = begin_default_sketch(&mut state);
+        state
+            .doc
+            .circles
+            .insert(crate::model::Circle::from_local_center_radius(sketch_a, 0.0, 0.0, 8.0, 0.0));
+        let c0 = state.doc.circles.keys().last().unwrap();
+        state.doc.construction_planes.insert(crate::model::ConstructionPlane {
+            origin: glam::Vec3::new(0.0, 0.0, 20.0),
+            normal: glam::Vec3::Z,
+            u_axis: glam::Vec3::X,
+            v_axis: glam::Vec3::Y,
+            parent: crate::model::ConstructionPlaneParent::Root,
+            definition: crate::face::default_xy_plane_definition(),
+            repeat_instance: None,
+            name: None,
+            extent: crate::model::PlaneExtent::default(),
+        });
+        let plane = state.doc.construction_planes.keys().last().unwrap();
+        let sketch_b = state.doc.add_sketch(FaceId::ConstructionPlane(plane));
+        state
+            .doc
+            .circles
+            .insert(crate::model::Circle::from_local_center_radius(sketch_b, 0.0, 0.0, 4.0, 0.0));
+        let c1 = state.doc.circles.keys().last().unwrap();
+        state.creating_loft = Some(CreatingLoft {
+            sections: vec![
+                crate::model::LoftSection {
+                    sketch: sketch_a,
+                    face: ExtrudeFace::Circle(c0),
+                },
+                crate::model::LoftSection {
+                    sketch: sketch_b,
+                    face: ExtrudeFace::Circle(c1),
+                },
+            ],
+            ..CreatingLoft::default()
+        });
+        assert_preview("loft", &state);
+
+        // Sweep
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        let lines = crate::construction::add_line_rectangle(
+            &mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4],
+        );
+        state.doc.construction_planes.insert(crate::model::ConstructionPlane {
+            origin: glam::Vec3::ZERO,
+            normal: glam::Vec3::Y,
+            u_axis: glam::Vec3::X,
+            v_axis: glam::Vec3::Z,
+            parent: crate::model::ConstructionPlaneParent::Root,
+            definition: crate::face::default_xy_plane_definition(),
+            repeat_instance: None,
+            name: None,
+            extent: crate::model::PlaneExtent::default(),
+        });
+        let path_plane = state.doc.construction_planes.keys().last().unwrap();
+        let path_sketch = state
+            .doc
+            .add_sketch(FaceId::ConstructionPlane(path_plane));
+        state
+            .doc
+            .lines
+            .insert(Line::from_local_endpoints(path_sketch, 5.0, 0.0, 5.0, 25.0));
+        let path = state.doc.lines.keys().last().unwrap();
+        state.creating_sweep = Some(CreatingSweep {
+            sketch: Some(sketch),
+            faces: vec![ExtrudeFace::Polygon(lines.to_vec())],
+            path: vec![path],
+            ..CreatingSweep::default()
+        });
+        assert_preview("sweep", &state);
+
+        // Combine
+        let mut state = two_box_state(true);
+        state.apply(Action::ExitSketch);
+        state.creating_boolean = Some(CreatingBoolean {
+            kind: BooleanOpKind::Combine,
+            a: vec![bkey(0), bkey(1)],
+            b: Vec::new(),
+            picking_b: false,
+            keep_b: false,
+            editing: None,
+        });
+        assert_preview("combine", &state);
+
+        // Slice
+        let mut state = box_extrusion_state();
+        state.apply(Action::ExitSketch);
+        state.creating_slice = Some(CreatingSlice {
+            targets: vec![bkey(0)],
+            cutters: vec![SliceCutter::Face(FaceId::ConstructionPlane(pkey(0)))],
+            picking_cutter: false,
+            extend_infinite: true,
+            editing: None,
+        });
+        assert_preview("slice", &state);
+
+        // Shell
+        let mut state = box_extrusion_state();
+        state.apply(Action::ExitSketch);
+        state.creating_shell = Some(CreatingShell {
+            targets: vec![bkey(0)],
+            open_faces: Vec::new(),
+            picking_faces: false,
+            thickness_text: "1".into(),
+            thickness_live: 1.0,
+            user_edited: false,
+            pending_focus: false,
+            editing: None,
+        });
+        assert_preview("shell", &state);
+
+        // Shape
+        let mut state = AppState::default();
+        let mut shape = crate::model::Primitive::new(PrimitiveKind::Cuboid);
+        shape.width = "20".into();
+        shape.depth = "20".into();
+        shape.height = "10".into();
+        state.creating_shape = Some(CreatingShape {
+            shape,
+            ..CreatingShape::new(PrimitiveKind::Cuboid)
+        });
+        assert_preview("shape", &state);
+
+        // Joint
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        let mut placement = CreatingMove::default();
+        placement.tx = "30".into();
+        state.creating_joint = Some(CreatingJoint {
+            members: vec![JointRef::Body(bkey(0)), JointRef::Body(bkey(1))],
+            base: 0,
+            placement,
+            ..CreatingJoint::default()
+        });
+        assert_preview("joint", &state);
+
+        // 3D Chamfer
+        let mut state = box_extrusion_state();
+        state.apply(Action::ExitSketch);
+        state.creating_edge_treatment = Some(CreatingEdgeTreatment::new(
+            vec![(
+                TreatableSolid::Extrusion(xkey(0)),
+                ExtrusionEdgeRef::Vertical { face: 0, edge: 0 },
+            )],
+            VertexTreatmentKind::Chamfer,
+        ));
+        assert_preview("chamfer", &state);
+
+        // Sketch Offset
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state
+            .doc
+            .lines
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.creating_sketch_offset = Some(CreatingSketchOffset {
+            line_targets: vec![lkey(0)],
+            ..CreatingSketchOffset::new(sketch)
+        });
+        assert_preview("sketch offset", &state);
+
+        // Sketch Mirror
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state
+            .doc
+            .lines
+            .insert(Line::from_local_endpoints(sketch, 0.0, -10.0, 0.0, 10.0));
+        state
+            .doc
+            .lines
+            .insert(Line::from_local_endpoints(sketch, 5.0, 0.0, 8.0, 3.0));
+        state.creating_sketch_mirror = Some(CreatingSketchMirror {
+            line: Some(lkey(0)),
+            line_targets: vec![lkey(1)],
+            ..CreatingSketchMirror::new(sketch)
+        });
+        assert_preview("sketch mirror", &state);
+
+        // Sketch Repeat
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state
+            .doc
+            .lines
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.creating_sketch_repeat = Some(CreatingSketchRepeat {
+            line_targets: vec![lkey(0)],
+            count: "3".into(),
+            spacing: "8".into(),
+            ..CreatingSketchRepeat::new(sketch)
+        });
+        assert_preview("sketch repeat", &state);
+
+        // Sketch Slice
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state
+            .doc
+            .lines
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state
+            .doc
+            .lines
+            .insert(Line::from_local_endpoints(sketch, 5.0, -5.0, 5.0, 5.0));
+        state.creating_sketch_slice = Some(CreatingSketchSlice {
+            line_targets: vec![lkey(0)],
+            cutter_lines: vec![lkey(1)],
+            ..CreatingSketchSlice::new(sketch)
+        });
+        assert_preview("sketch slice", &state);
     }
 
     /// #166/#531: one plural commit builds a single edge-treatment operation carrying every

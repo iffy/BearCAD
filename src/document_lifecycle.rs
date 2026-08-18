@@ -492,7 +492,7 @@ pub fn delete_element(doc: &mut Document, element: SceneElement) -> bool {
                 let produced: Vec<crate::model::BodyKey> = doc
                     .bodies
                     .iter()
-                    .filter(|(_, b)| b.source == crate::model::BodySource::Revolve(index))
+                    .filter(|(_, b)| b.source.revolution_key() == Some(index))
                     .map(|(k, _)| k)
                     .collect();
                 for key in produced {
@@ -523,7 +523,7 @@ pub fn delete_element(doc: &mut Document, element: SceneElement) -> bool {
                 let produced: Vec<crate::model::BodyKey> = doc
                     .bodies
                     .iter()
-                    .filter(|(_, b)| b.source == crate::model::BodySource::Sweep(index))
+                    .filter(|(_, b)| b.source.sweep_key() == Some(index))
                     .map(|(k, _)| k)
                     .collect();
                 for key in produced {
@@ -538,7 +538,7 @@ pub fn delete_element(doc: &mut Document, element: SceneElement) -> bool {
                 let produced: Vec<crate::model::BodyKey> = doc
                     .bodies
                     .iter()
-                    .filter(|(_, b)| b.source == crate::model::BodySource::Loft(index))
+                    .filter(|(_, b)| b.source.loft_key() == Some(index))
                     .map(|(k, _)| k)
                     .collect();
                 for key in produced {

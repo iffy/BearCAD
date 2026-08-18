@@ -997,6 +997,7 @@ fn body_source_kind(src: &BodySource) -> &'static str {
         BodySource::Solid { .. } => "solid",
         BodySource::UnitInstance(_) => "unit_instance",
         BodySource::UnitCut { .. } => "unit_cut",
+        BodySource::Fused { .. } => "fused",
     }
 }
 
@@ -1017,7 +1018,7 @@ fn body_source_id(src: &BodySource) -> Option<i64> {
         BodySource::EdgeTreated { op, .. } => Some(key_bits(*op)),
         BodySource::UnitInstance(k) => Some(key_bits(*k)),
         BodySource::UnitCut { instance, .. } => Some(key_bits(*instance)),
-        BodySource::Extrusions(_) | BodySource::Solid { .. } => None,
+        BodySource::Extrusions(_) | BodySource::Solid { .. } | BodySource::Fused { .. } => None,
     }
 }
 
