@@ -92,9 +92,11 @@ bearcad.exit_sketch()
 bearcad.set_visible({ kind = "sketch", index = 0 }, "hide")
 
 -- Green (right-front-bottom): subtract a sphere from the right (+X) side.
--- The sphere rests on that face so its centre sits on the wall (a hemispherical bite).
+-- Centre on the wall (a hemispherical bite). Radius is a little larger than
+-- half the face so the cut overshoots the four edges instead of sitting
+-- as a circle inside the wall.
 local green = at[2]
-local bite_r = 8
+local bite_r = size / 2 + 1
 bearcad.sphere{
   at = { green[1] + size / 2, green[2], green[3] + size / 2 - bite_r },
   radius = bite_r,
