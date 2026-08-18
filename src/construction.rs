@@ -4601,6 +4601,93 @@ mod tests {
         );
     }
 
+    /// #1543: after a slice, hovering the original cuboid edge that now runs
+    /// through the cut must not pick that uncut analytic segment.
+    #[test]
+    fn treatable_pick_does_not_take_a_sliced_away_original_edge() {
+        use crate::actions::{Action, ActionResult, AppState};
+        use crate::model::{FaceId, Primitive, PrimitiveKind, SliceCutter};
+        use crate::model::body_key_for_slot as bkey;
+        use crate::model::plane_key_for_slot as pkey;
+
+        let mut state = AppState::default();
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.width = "40".into();
+        shape.depth = "50".into();
+        shape.height = "22".into();
+        assert!(matches!(
+            state.apply(Action::CreateShape { shape }),
+            ActionResult::Ok
+        ));
+        assert!(matches!(
+            state.apply(Action::CreateSliceOperation {
+                targets: vec![bkey(0)],
+                cutters: vec![SliceCutter::Face(FaceId::ConstructionPlane(pkey(2)))],
+                extend_infinite: true,
+            }),
+            ActionResult::Ok
+        ));
+        // Hide the x < 0 fragment so the original top +Y edge's left half is gone.
+        let left = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(bi, b)| {
+                !b.shadow
+                    && crate::extrude::body_solid_mesh(&state.doc, *bi)
+                        .and_then(|m| m.bounds())
+                        .is_some_and(|(min, max)| max.x < 1.0 && min.x < -1.0)
+            })
+            .map(|(bi, _)| bi);
+        if let Some(left) = left {
+            state.doc.bodies[left].shadow = true;
+        }
+
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let eye = Vec3::new(0.0, 0.0, 200.0);
+        let visibility = crate::hierarchy::ElementVisibility::default();
+        let occ = PickOcclusion::new(&state.doc, &visibility, eye);
+
+        // The original top +Y edge ran through (−10, 25, 22) — now empty space.
+        let cut_away = project(Vec3::new(-10.0, 25.0, 22.0)).unwrap();
+        let hit = nearest_treatable_edge(cut_away, &project, &state.doc, Some(&occ));
+        if let Some((_, _, a, b, _)) = hit {
+            assert!(
+                a.x * b.x > -1.0,
+                "must not pick the original uncut cuboid edge through the slice, got {a:?}–{b:?}"
+            );
+            assert!(
+                a.x.min(b.x) > -1.0,
+                "a pick over the cut-away half must not reach x < 0, got {a:?}–{b:?}"
+            );
+        }
+        let picked = pick_treatable_edges(cut_away, &project, &state.doc, eye, Some(&occ));
+        for (solid, edge) in &picked {
+            let segs: Vec<_> = crate::extrude::treatable_edges(&state.doc)
+                .into_iter()
+                .filter(|(s, r, _, _)| s == solid && r == edge)
+                .map(|(_, _, a, b)| (a, b))
+                .collect();
+            for (a, b) in segs {
+                assert!(
+                    a.x.min(b.x) > -1.0,
+                    "highlighting {solid:?} {edge:?} would still draw the cut-away original edge {a:?}–{b:?}"
+                );
+            }
+        }
+
+        // The remaining visible half of that edge is still pickable.
+        let remain = project(Vec3::new(10.0, 25.0, 22.0)).unwrap();
+        let hit = nearest_treatable_edge(remain, &project, &state.doc, Some(&occ))
+            .expect("the remaining visible edge must still be pickable");
+        let (_, _, a, b, _) = hit;
+        let mid = (a + b) * 0.5;
+        assert!(
+            mid.x > 0.0 && a.x.min(b.x) > -1.0,
+            "remaining pick must stay on the live fragment, got {a:?}–{b:?}"
+        );
+    }
+
     #[test]
     fn nearest_treatable_edge_finds_circle_cap_rims() {
         use crate::actions::{Action, AppState, Tool};

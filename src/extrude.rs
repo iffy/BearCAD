@@ -2575,14 +2575,28 @@ fn occt_edge_treated_output_shape(
         let Some(endpoints) = primitive_edge_kernel_endpoints(doc, pi, te.edge) else {
             return None;
         };
+        // Clip to remnants on the *input* body so a sliced edge still matches,
+        // without meshing the EdgeTreated output being built (#1543).
+        let segs = {
+            let remnants = feature_overlaps_on_body(&clone, input, endpoints.0, endpoints.1);
+            if remnants.is_empty() {
+                vec![endpoints]
+            } else {
+                remnants
+            }
+        };
         match op.kind {
             VertexTreatmentKind::Fillet => {
-                fillet_edges.push(endpoints);
-                fillet_radii.push(op.amount);
+                for endpoints in segs {
+                    fillet_edges.push(endpoints);
+                    fillet_radii.push(op.amount);
+                }
             }
             VertexTreatmentKind::Chamfer => {
-                chamfer_edges.push(endpoints);
-                chamfer_dists.push(op.amount);
+                for endpoints in segs {
+                    chamfer_edges.push(endpoints);
+                    chamfer_dists.push(op.amount);
+                }
             }
         }
     }
@@ -9736,12 +9750,20 @@ pub fn treatable_edge_for_selection(
 ) -> Option<(TreatableSolid, ExtrusionEdgeRef)> {
     let q = crate::hierarchy::quantize_body_point;
     for (solid, edge, ea, eb) in treatable_edges(doc) {
-        if live_body_for_treatable_solid(doc, solid) != Some(body) {
-            continue;
-        }
         let (qa, qb) = (q(ea), q(eb));
         if (qa == a && qb == b) || (qa == b && qb == a) {
-            return Some((solid, edge));
+            if live_body_for_treatable_solid(doc, solid) == Some(body) {
+                return Some((solid, edge));
+            }
+            // A slice/boolean fragment that still carries this remnant (#1543).
+            if doc.bodies.get(body).is_some_and(|bod| !bod.shadow)
+                && feature_overlaps_on_body(doc, body, ea, eb).iter().any(|&(oa, ob)| {
+                    let (qo, qp) = (q(oa), q(ob));
+                    (qo == qa && qp == qb) || (qo == qb && qp == qa)
+                })
+            {
+                return Some((solid, edge));
+            }
         }
     }
     None
@@ -9765,6 +9787,118 @@ pub fn treatable_edges_in_selection(
         }
     }
     out
+}
+
+/// Whether `body`'s source chain is only rigid copies of its analytic solid (primitive /
+/// extrusion / move / mirror / repeat). Slice, boolean, shell, fillet and fused cuts
+/// change which edges still exist (#1543).
+fn body_preserves_analytic_edges(doc: &Document, body: crate::model::BodyKey) -> bool {
+    let mut current = body;
+    let mut seen = std::collections::HashSet::new();
+    while seen.insert(current) {
+        let Some(b) = doc.bodies.get(current) else {
+            return false;
+        };
+        match &b.source {
+            crate::model::BodySource::Primitive(_)
+            | crate::model::BodySource::Extrusion(_)
+            | crate::model::BodySource::Extrusions(_)
+            | crate::model::BodySource::Revolve(_)
+            | crate::model::BodySource::Sweep(_)
+            | crate::model::BodySource::Loft(_) => return true,
+            crate::model::BodySource::Solid { add, cut, .. }
+                if add.is_empty() && cut.is_empty() =>
+            {
+                return true;
+            }
+            crate::model::BodySource::Moved { add, cut, .. }
+            | crate::model::BodySource::Mirrored { add, cut, .. }
+            | crate::model::BodySource::Repeated { add, cut, .. }
+                if add.is_empty() && cut.is_empty() =>
+            {
+                match b.source.input_body(doc) {
+                    Some(input) if input != current => current = input,
+                    _ => return true,
+                }
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+fn point_on_segment(p: Vec3, a: Vec3, b: Vec3, tol: f32) -> bool {
+    let ab = b - a;
+    let len2 = ab.length_squared();
+    if len2 < 1e-12 {
+        return (p - a).length() <= tol;
+    }
+    let t = (p - a).dot(ab) / len2;
+    if !(-0.02..=1.02).contains(&t) {
+        return false;
+    }
+    let proj = a + ab * t.clamp(0.0, 1.0);
+    (p - proj).length() <= tol
+}
+
+/// Live-body feature-edge pieces that lie on analytic segment `a`–`b` (#1543).
+fn feature_overlaps_on_body(
+    doc: &Document,
+    body: crate::model::BodyKey,
+    a: Vec3,
+    b: Vec3,
+) -> Vec<(Vec3, Vec3)> {
+    let tol = ((b - a).length() * 1e-3).max(0.15);
+    body_feature_edges(doc, body)
+        .iter()
+        .copied()
+        .filter(|&(ea, eb)| {
+            (ea - eb).length() > 1e-4
+                && point_on_segment(ea, a, b, tol)
+                && point_on_segment(eb, a, b, tol)
+        })
+        .collect()
+}
+
+/// After a topology-changing op, only remnants that still exist on a visible body
+/// are pickable. Unchanged solids keep the analytic segment (#1543).
+fn clip_treatable_segment(
+    doc: &Document,
+    solid: TreatableSolid,
+    a: Vec3,
+    b: Vec3,
+) -> Vec<(Vec3, Vec3)> {
+    let Some(body) = live_body_for_treatable_solid(doc, solid) else {
+        // No body yet (in-progress extrusion, unit tests): keep the analytic segment.
+        return vec![(a, b)];
+    };
+    if doc.bodies.get(body).is_some_and(|b| !b.shadow)
+        && body_preserves_analytic_edges(doc, body)
+    {
+        return vec![(a, b)];
+    }
+    let mut remnants = Vec::new();
+    for (bi, body) in doc.bodies.iter() {
+        if body.shadow {
+            continue;
+        }
+        remnants.extend(feature_overlaps_on_body(doc, bi, a, b));
+    }
+    remnants
+}
+
+/// World segments the chamfer/fillet kernel should try for one analytic edge:
+/// the remaining visible remnants after a slice/boolean, else the original pair.
+fn treatable_edge_kernel_segments(
+    doc: &Document,
+    solid: TreatableSolid,
+    edge: ExtrusionEdgeRef,
+) -> Vec<(Vec3, Vec3)> {
+    treatable_edges(doc)
+        .into_iter()
+        .filter(|(s, e, _, _)| *s == solid && *e == edge)
+        .map(|(_, _, a, b)| (a, b))
+        .collect()
 }
 
 /// side/cap edge (see [`ExtrusionEdgeRef`]). The chamfer/fillet tool picks from this list
@@ -9846,7 +9980,15 @@ pub fn treatable_edges(
     for (pi, shape) in doc.primitives.iter() {
         push_primitive_treatable_edges(doc, pi, shape, &mut out);
     }
-    out
+    // #1543: a slice/boolean/fillet consumes the original solid. Highlight and pick
+    // only the remnants that still exist on a visible live body.
+    let mut clipped = Vec::with_capacity(out.len());
+    for (solid, edge, a, b) in out {
+        for (ca, cb) in clip_treatable_segment(doc, solid, a, b) {
+            clipped.push((solid, edge, ca, cb));
+        }
+    }
+    clipped
 }
 
 fn push_primitive_treatable_edges(
@@ -10082,14 +10224,26 @@ pub fn primitive_treatment_preview_mesh(
             continue;
         }
         let endpoints = primitive_edge_kernel_endpoints(doc, primitive, *edge)?;
+        let segs = {
+            let remnants = feature_overlaps_on_body(doc, body, endpoints.0, endpoints.1);
+            if remnants.is_empty() {
+                vec![endpoints]
+            } else {
+                remnants
+            }
+        };
         match kind {
             VertexTreatmentKind::Fillet => {
-                fillet_edges.push(endpoints);
-                fillet_radii.push(amount);
+                for endpoints in segs {
+                    fillet_edges.push(endpoints);
+                    fillet_radii.push(amount);
+                }
             }
             VertexTreatmentKind::Chamfer => {
-                chamfer_edges.push(endpoints);
-                chamfer_dists.push(amount);
+                for endpoints in segs {
+                    chamfer_edges.push(endpoints);
+                    chamfer_dists.push(amount);
+                }
             }
         }
     }
@@ -10139,8 +10293,16 @@ pub fn treatable_edge_anchor(
         TreatableSolid::Primitive(pi) => primitive_edge_anchor(doc, pi, edge)?,
     };
     let m = treatable_solid_pose(doc, solid);
+    let posed_origin = m.transform_point3(origin);
+    // Sit the gizmo on a remaining visible remnant, not the original midpoint
+    // which may now be in the cut-away region (#1543).
+    let origin = treatable_edge_kernel_segments(doc, solid, edge)
+        .into_iter()
+        .next()
+        .map(|(a, b)| (a + b) * 0.5)
+        .unwrap_or(posed_origin);
     Some((
-        m.transform_point3(origin),
+        origin,
         m.transform_vector3(normal).normalize_or_zero(),
     ))
 }
@@ -15760,6 +15922,89 @@ mod tests {
         assert!(v1 < v0 - 1.0, "fillet must cut the moved cuboid: {v1} vs {v0}");
         let (min, _) = after.bounds().expect("filleted bounds");
         assert!(min.x > 40.0, "the filleted output must stay at the moved pose, got {min:?}");
+    }
+
+    /// #1543: a cuboid sliced at x = 0. The original top +Y edge ran from x = −20 to
+    /// +20; after the cut that full segment is gone and each fragment owns only the
+    /// remnant on its side.
+    fn sliced_cuboid_doc() -> Document {
+        use crate::actions::{Action, ActionResult, AppState};
+        use crate::model::{FaceId, Primitive, PrimitiveKind, SliceCutter};
+        use crate::model::body_key_for_slot as bkey;
+        use crate::model::plane_key_for_slot as pkey;
+        let mut state = AppState::default();
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.width = "40".into();
+        shape.depth = "50".into();
+        shape.height = "22".into();
+        assert!(matches!(
+            state.apply(Action::CreateShape { shape }),
+            ActionResult::Ok
+        ));
+        // Datum YZ (pkey 2) is the plane x = 0.
+        assert!(matches!(
+            state.apply(Action::CreateSliceOperation {
+                targets: vec![bkey(0)],
+                cutters: vec![SliceCutter::Face(FaceId::ConstructionPlane(pkey(2)))],
+                extend_infinite: true,
+            }),
+            ActionResult::Ok
+        ));
+        state.doc
+    }
+
+    /// #1543: chamfer/fillet must offer the remaining visible edges of a sliced
+    /// body, not the original cuboid's uncut edge that now runs through the cut.
+    #[test]
+    fn treatable_edges_of_a_sliced_cuboid_do_not_cross_the_cut() {
+        let doc = sliced_cuboid_doc();
+        let live: Vec<_> = doc
+            .bodies
+            .iter()
+            .filter(|(_, b)| !b.shadow)
+            .map(|(k, _)| k)
+            .collect();
+        assert!(
+            live.len() >= 2,
+            "slice should leave two live fragments, got {}",
+            live.len()
+        );
+        let edges = treatable_edges(&doc);
+        assert!(
+            !edges.is_empty(),
+            "a sliced cuboid still has treatable remnants"
+        );
+        for (solid, edge, a, b) in &edges {
+            assert!(
+                a.x * b.x > -1.0,
+                "treatable edge {edge:?} of {solid:?} still spans the original uncut cuboid: {a:?}–{b:?}"
+            );
+        }
+        let q = crate::hierarchy::quantize_body_point;
+        let mut remnant_ok = false;
+        for (solid, _edge, a, b) in &edges {
+            let mid = (*a + *b) * 0.5;
+            if (mid.y - 25.0).abs() < 0.5 && (mid.z - 22.0).abs() < 0.5 && mid.x > 1.0 {
+                remnant_ok = true;
+                let body = live_body_for_treatable_solid(&doc, *solid)
+                    .or_else(|| {
+                        live.iter().copied().find(|&bi| {
+                            treatable_edge_for_selection(&doc, bi, q(*a), q(*b)).is_some()
+                        })
+                    });
+                let Some(body) = body else {
+                    panic!("the remaining +Y top remnant {a:?}–{b:?} must resolve on a live body");
+                };
+                assert!(
+                    treatable_edge_for_selection(&doc, body, q(*a), q(*b)).is_some(),
+                    "a pick on the remaining visible edge {a:?}–{b:?} must resolve"
+                );
+            }
+        }
+        assert!(
+            remnant_ok,
+            "the remaining +Y top edge (x > 0) must still be treatable, got {edges:?}"
+        );
     }
 
     /// #1329: the reported document is a lone cuboid; every one of its 12 box edges is
