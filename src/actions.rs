@@ -3411,7 +3411,8 @@ pub enum Action {
     SetExtrudeBodyMode { mode: ExtrudeBodyMode },
     /// Toggle symmetric extrude (half distance each way from the sketch plane, #504).
     SetExtrudeSymmetric { symmetric: bool },
-    /// Cycle the active tool's Output mode: new body → add to body → cut → … (#1397/#1499).
+    /// Cycle the active tool's Output mode: new body → add to body → cut → … (#1397/#1499),
+    /// or Combine's Mode: combine → cut → intersect → difference (#1534).
     CycleToolOutputMode,
     /// Enable or disable snapping while drawing/dragging.
     SetSnapping(bool),
@@ -20278,6 +20279,10 @@ pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
 pub fn set_tool_mode(state: &mut AppState, name: &str) -> Result<(), String> {
     match state.tool {
         Tool::Combine => {
+            if name == "next" || name == "cycle" {
+                state.cycle_tool_output_mode();
+                return Ok(());
+            }
             let kind = crate::model::BooleanOpKind::from_name(name)
                 .ok_or_else(|| format!("unknown Combine mode '{name}'"))?;
             let picking_b = {
@@ -20633,9 +20638,20 @@ impl AppState {
         crate::tooltable::row(self.tool, self.tool_space())
     }
 
-    /// Cycle the active tool's Output mode (#1397/#1499). No-op unless the row has
-    /// `output_modes` and a creating-state to mutate.
+    /// Cycle the active tool's Output mode (#1397/#1499), or Combine's Mode (#1534).
+    /// No-op unless the row has `output_modes` (or is Combine) and a creating-state
+    /// to mutate.
     pub fn cycle_tool_output_mode(&mut self) -> ActionResult {
+        if self.tool == Tool::Combine {
+            let Some(cb) = self.creating_boolean.as_mut() else {
+                return ActionResult::Ok;
+            };
+            let next = cb.kind.next();
+            cb.set_kind(next);
+            self.tool_prefs.entry(Tool::Combine).boolean_kind = Some(next);
+            self.status = format!("Combine mode: {}", next.label());
+            return ActionResult::Ok;
+        }
         if !self.tool_row().output_modes {
             return ActionResult::Ok;
         }
@@ -35450,6 +35466,47 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             };
             assert_eq!(after, before.next(), "{tool:?} Y must change the Output mode before a pick (#1499)");
         }
+    }
+
+    /// #1534: the same Y action that cycles Extrude Output also walks Combine's Mode
+    /// (combine → cut → intersect → difference) as soon as SetTool arms the draft.
+    #[test]
+    fn set_tool_arms_combine_so_y_cycles_mode() {
+        use crate::model::BooleanOpKind;
+        let mut state = AppState::default();
+        state.apply(Action::SetTool(Tool::Combine));
+        assert_eq!(
+            state.creating_boolean.as_ref().expect("Combine armed on SetTool").kind,
+            BooleanOpKind::Combine
+        );
+        for expected in [
+            BooleanOpKind::Cut,
+            BooleanOpKind::Intersect,
+            BooleanOpKind::Difference,
+            BooleanOpKind::Combine,
+        ] {
+            state.apply(Action::CycleToolOutputMode);
+            assert_eq!(
+                state.creating_boolean.as_ref().unwrap().kind,
+                expected,
+                "Y must cycle Combine mode before a pick (#1534)"
+            );
+            assert_eq!(
+                current_tool_mode(&state).as_deref(),
+                Some(expected.script_name())
+            );
+        }
+        // `tool_mode("next")` is the scripted Y.
+        set_tool_mode(&mut state, "next").unwrap();
+        assert_eq!(
+            state.creating_boolean.as_ref().unwrap().kind,
+            BooleanOpKind::Cut
+        );
+        set_tool_mode(&mut state, "cycle").unwrap();
+        assert_eq!(
+            state.creating_boolean.as_ref().unwrap().kind,
+            BooleanOpKind::Intersect
+        );
     }
 
     /// #1500: last-used output mode, combine kind, joint kind, and revolve symmetric

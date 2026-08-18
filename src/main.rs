@@ -6669,8 +6669,8 @@ impl App {
             }
 
             // Y cycles the active tool's Output mode — new body → add to body → cut → …
-            // (#1397). No-op except on the tools with an Output row (Extrude/Revolve/Sweep/
-            // Loft/Mirror); `consume_key(NONE, …)` never catches a plain typing key.
+            // (#1397) — or Combine's Mode (#1534). No-op except on those tools;
+            // `consume_key(NONE, …)` never catches a plain typing key.
             if !self.state.draft_blocks_tool_switch()
                 && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Y))
             {
@@ -6828,8 +6828,8 @@ impl App {
         }
     }
 
-    /// The `Y` shortcut (#1397): cycle the active tool's Output mode — new body → add to
-    /// body → cut → new body. Only the tools that offer an Output row do anything; the
+    /// The `Y` shortcut (#1397/#1534): cycle the active tool's Output mode — new body →
+    /// add to body → cut — or Combine's Mode. Only those tools do anything; the
     /// normalized cycle is applied back onto each tool's own mode enum.
     /// Enter was pressed and it belongs to the active tool (#1483).
     ///

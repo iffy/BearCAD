@@ -425,10 +425,11 @@ pub fn all_shortcuts() -> Vec<ShortcutSection> {
                 })
                 .collect();
             // #1397: Y cycles the active tool's Output choice (new body / add to body / cut)
-            // on the tools that have one — Extrude, Revolve, Sweep, Loft, Mirror.
+            // on Extrude, Revolve, Sweep, Loft, Mirror. #1534: the same key walks Combine's
+            // Mode (combine / cut / intersect / difference).
             entries.push((
                 "Y".to_string(),
-                "Cycle the Output choice of the active tool (new body / add to body / cut)"
+                "Cycle the Output choice (new body / add to body / cut), or Combine's mode"
                     .to_string(),
             ));
             entries
@@ -589,6 +590,24 @@ mod shortcut_list_tests {
         assert!(
             labels.iter().any(|d| d.contains("Previous window")),
             "previous-window binding missing: {labels:?}"
+        );
+    }
+
+    /// #1397 / #1534: Y is listed as cycling Output and Combine mode.
+    #[test]
+    fn shortcut_list_covers_y_output_and_combine_mode() {
+        let sections = all_shortcuts();
+        let tools = sections.iter().find(|s| s.title == "Tools").expect("Tools section");
+        let y = tools
+            .entries
+            .iter()
+            .find(|(k, _)| k == "Y")
+            .map(|(_, d)| d.as_str())
+            .expect("Y binding missing");
+        let lower = y.to_lowercase();
+        assert!(
+            lower.contains("output") && lower.contains("combine"),
+            "Y must mention Output and Combine: {y}"
         );
     }
 
