@@ -666,6 +666,22 @@ mod tests {
         }
     }
 
+    /// #1522: the Pay Whatever pill is an external Stripe URL, but the navbar
+    /// should not show Docusaurus's "opens in new tab" icon on that button.
+    #[test]
+    fn navbar_pay_hides_external_link_icon() {
+        let config = include_str!("../docs-site/docusaurus.config.js");
+        assert!(
+            config.contains("className: 'navbar-pay'") && config.contains("Pay Whatever"),
+            "navbar Pay Whatever item should keep the navbar-pay class"
+        );
+        let css = include_str!("../docs-site/src/css/custom.css");
+        assert!(
+            css.contains(".navbar-pay") && css.contains("svg") && css.contains("display: none"),
+            "custom.css should hide the external-link SVG on the Pay Whatever navbar pill"
+        );
+    }
+
     /// #1244: wasm-bindgen imports every `fn kernel_*` from web/kernel-bridge.js as a
     /// named ES export. A missing export is a hard module load SyntaxError (app won't
     /// start). Keep the Rust extern block and the JS bridge in lockstep; also require

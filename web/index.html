@@ -38,18 +38,44 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 12px;
+      gap: 16px;
       color: #cfcfd4;
       font: 15px/1.4 system-ui, sans-serif;
       text-align: center;
       padding: 0 24px;
     }
+    #loading .spinner {
+      width: 28px;
+      height: 28px;
+      border: 2.5px solid rgba(207, 207, 212, 0.18);
+      border-top-color: #cfcfd4;
+      border-radius: 50%;
+      animation: spin 0.75s linear infinite;
+    }
+    #loading .bar {
+      display: none;
+      width: min(220px, 60vw);
+      height: 3px;
+      background: rgba(207, 207, 212, 0.15);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    #loading .bar-fill {
+      height: 100%;
+      width: 0;
+      background: #cfcfd4;
+      border-radius: inherit;
+    }
+    #loading.determinate .spinner { display: none; }
+    #loading.determinate .bar { display: block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
   <div id="loading">
     <div><strong>BearCAD</strong> is loading…</div>
-    <div>First load downloads the whole app (~15&nbsp;MB); it's cached afterwards.</div>
+    <div class="spinner" aria-hidden="true"></div>
+    <div class="bar" aria-hidden="true"><div class="bar-fill" id="bar-fill"></div></div>
   </div>
   <canvas id="bearcad_canvas"></canvas>
   <script>
@@ -81,16 +107,85 @@
     // (#1049). scripts/build-web.sh substitutes the stamp; unsubstituted it is harmless.
     const BUILD = "__BEARCAD_BUILD__";
     const v = (path) => BUILD.startsWith("__") ? path : path + "?v=" + BUILD;
-    // The Emscripten modules fetch their own .wasm relative to themselves, so they need the
-    // stamp passed in rather than only on the import.
-    const emscriptenOpts = { locateFile: (p) => v(p) };
+
+    // Byte progress is only shown when XHR reports lengthComputable (Content-Length).
+    // Otherwise the CSS spinner stays up. Wasm is fetched up front so the three
+    // modules can share one bar, then handed to Emscripten / wasm-bindgen.
+    const loading = document.getElementById("loading");
+    const barFill = document.getElementById("bar-fill");
+    const progress = { need: 0, known: 0, loaded: 0, total: 0 };
+    function paintProgress() {
+      if (!loading || !barFill || progress.known < progress.need || progress.total <= 0) return;
+      loading.classList.add("determinate");
+      barFill.style.width = Math.min(100, (100 * progress.loaded) / progress.total) + "%";
+    }
+    function getBuffer(url) {
+      progress.need += 1;
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        let tracked = false;
+        let got = 0;
+        xhr.open("GET", url);
+        xhr.responseType = "arraybuffer";
+        xhr.onprogress = (e) => {
+          if (!e.lengthComputable) return;
+          if (!tracked) {
+            tracked = true;
+            progress.known += 1;
+            progress.total += e.total;
+          }
+          progress.loaded += e.loaded - got;
+          got = e.loaded;
+          paintProgress();
+        };
+        xhr.onload = () => {
+          if (xhr.status < 200 || xhr.status >= 300) {
+            reject(new Error(url + ": " + xhr.status));
+            return;
+          }
+          const buf = xhr.response;
+          if (!tracked) {
+            progress.known += 1;
+            progress.total += buf.byteLength;
+            progress.loaded += buf.byteLength;
+            paintProgress();
+          }
+          resolve(buf);
+        };
+        xhr.onerror = () => reject(new Error("failed to load " + url));
+        xhr.send();
+      });
+    }
+    function emscriptenFrom(buffer) {
+      let rejectInst;
+      const instFailed = new Promise((_, reject) => { rejectInst = reject; });
+      const opts = {
+        locateFile: (p) => v(p),
+        instantiateWasm(info, receive) {
+          WebAssembly.instantiate(buffer, info).then(
+            (out) => receive(out.instance, out.module),
+            rejectInst,
+          );
+          return {};
+        },
+      };
+      return { opts, instFailed };
+    }
+
+    const kernelWasm = getBuffer(v("./kernel.wasm"));
+    const luaWasm = getBuffer(v("./lua.wasm"));
+    const appWasm = getBuffer(v("./bearcad_bg.wasm"));
 
     // The OCCT geometry kernel is a second wasm module (Emscripten); load it first so
     // the app's kernel bridge finds it. If it fails, the app still runs — with the
     // lean-build fallbacks (no solid cuts) and a status note in Help > About.
     try {
-      const { default: BearcadKernel } = await import(v("./kernel.js"));
-      globalThis.bearcadKernel = await BearcadKernel(emscriptenOpts);
+      const [{ default: BearcadKernel }, wasm] = await Promise.all([
+        import(v("./kernel.js")),
+        kernelWasm,
+      ]);
+      const { opts, instFailed } = emscriptenFrom(wasm);
+      globalThis.bearcadKernel = await Promise.race([BearcadKernel(opts), instFailed]);
     } catch (err) {
       console.warn("BearCAD: geometry kernel failed to load; running lean:", err);
     }
@@ -98,15 +193,33 @@
     // Script can run .lua files. If it fails, the app still runs — scripting is just
     // unavailable, reported when you try to load a script.
     try {
-      const { default: BearcadLua } = await import(v("./lua.js"));
-      globalThis.bearcadLua = await BearcadLua(emscriptenOpts);
+      const [{ default: BearcadLua }, wasm] = await Promise.all([
+        import(v("./lua.js")),
+        luaWasm,
+      ]);
+      const { opts, instFailed } = emscriptenFrom(wasm);
+      globalThis.bearcadLua = await Promise.race([BearcadLua(opts), instFailed]);
     } catch (err) {
       console.warn("BearCAD: Lua interpreter failed to load; scripting disabled:", err);
     }
-    const { default: init } = await import(v("./bearcad.js"));
-    // The glue defaults to fetching bearcad_bg.wasm unversioned; hand it the stamped URL so
-    // the pair can only ever come from one build.
-    init({ module_or_path: new URL(v("./bearcad_bg.wasm"), import.meta.url) })
+    let init;
+    let wasm;
+    try {
+      [{ default: init }, wasm] = await Promise.all([
+        import(v("./bearcad.js")),
+        appWasm,
+      ]);
+    } catch (err) {
+      const el = document.getElementById("loading");
+      if (el) {
+        el.innerHTML =
+          "<div><strong>BearCAD couldn't start.</strong></div>" +
+          "<div>" + String(err) + "</div>";
+      }
+      throw err;
+    }
+    // Prefetched bytes stay paired with this build's stamped JS (#1049).
+    init({ module_or_path: wasm })
       .then(() => document.getElementById("loading")?.remove())
       .catch((err) => {
         const el = document.getElementById("loading");

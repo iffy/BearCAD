@@ -750,6 +750,28 @@ mod cli_tests {
         assert_eq!(super::open_url_from_query(""), None);
     }
 
+    /// #1521: first paint is a spinner, or a bar when download length is known.
+    #[test]
+    fn web_index_loading_screen_has_spinner_or_progress() {
+        let html = include_str!("../web/index.html");
+        assert!(
+            html.contains("is loading"),
+            "loading screen should keep the short BearCAD-is-loading line"
+        );
+        assert!(
+            !html.contains("First load downloads"),
+            "loading screen should not explain the first-load download"
+        );
+        assert!(
+            html.contains("spinner") && html.contains("@keyframes"),
+            "loading screen needs a CSS spinner when byte progress is unknown"
+        );
+        assert!(
+            html.contains("lengthComputable") && html.contains("bar-fill"),
+            "loading screen should drive a progress bar when XHR reports length"
+        );
+    }
+
     #[test]
     fn web_index_prevents_browser_context_menu() {
         let html = include_str!("../web/index.html");
