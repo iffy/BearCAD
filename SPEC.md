@@ -40,7 +40,9 @@ out (QuickLook `.appex` first, then the app, then the `.dmg`) after the executab
 `Info.plist`, and PlugIns are in place, and verify with `codesign --verify --deep --strict`.
 The `.dmg` volume must also contain an `Applications` symlink (→ `/Applications`)
 alongside the app so the user can drag `BearCAD.app` straight into Applications from the
-mounted volume. The `Info.plist`
+mounted volume. The Finder window uses a honey-toned drag-to-Applications background
+(`macos/dmg-background.png`: app icon left, Applications right, arrow and hint in the
+backdrop) rather than a blank folder (#1451). The `Info.plist`
 must declare `.bearcad` as a document type (`CFBundleDocumentTypes` +
 `UTExportedTypeDeclarations` for UTI `com.bearcad.document`) so double-click *launches*
 BearCAD. The path is not argv: AppKit delivers `application:openURLs:` after

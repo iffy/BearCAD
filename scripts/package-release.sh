@@ -146,9 +146,120 @@ EOF
   ln -s /Applications "$stage/Applications"
 
   rm -f "$dmg"
-  hdiutil create -volname "$app_name" -srcfolder "$stage" -ov -format UDZO "$dmg"
+  make_styled_macos_dmg "$stage" "$app_name" "$dmg"
   bash scripts/sign-macos.sh sign-dmg "$dmg"
   echo "Created $dmg"
+}
+
+# Build a compressed .dmg whose Finder window is the classic drag-to-Applications
+# layout (#1451): honey background, BearCAD.app on the left, Applications on the right.
+# Uses hdiutil + Finder AppleScript (no extra tools). Window is 660×400; the
+# committed PNG is 1320×800 and becomes a HiDPI TIFF via tiffutil.
+make_styled_macos_dmg() {
+  local stage="$1"
+  local volname="$2"
+  local dmg="$3"
+  local bg_src="macos/dmg-background.png"
+  local rw_dmg="dist/bearcad-rw.dmg"
+  local volume="/Volumes/${volname}"
+
+  if [[ ! -f "$bg_src" ]]; then
+    echo "missing $bg_src" >&2
+    exit 1
+  fi
+
+  # Read-write HFS+ image so Finder can write .DS_Store / background after mount.
+  rm -f "$rw_dmg"
+  hdiutil create -volname "$volname" -srcfolder "$stage" -ov -format UDRW -fs HFS+ "$rw_dmg"
+
+  # Slack for .DS_Store + the background TIFF Finder will write onto the volume.
+  local sectors
+  sectors="$(hdiutil resize -limits "$rw_dmg" | awk 'NR==2 {print $2}')"
+  hdiutil resize -sectors "$((sectors + 20000))" "$rw_dmg"
+
+  # Detach any leftover mount from a previous failed run.
+  if [[ -d "$volume" ]]; then
+    hdiutil detach "$volume" -quiet || true
+    sleep 1
+  fi
+
+  local attach_out device
+  attach_out="$(hdiutil attach -readwrite -noverify -noautoopen "$rw_dmg")"
+  device="$(awk '/Apple_HFS|Apple_HFSX|Macintosh HD/ {print $1; exit} /\/Volumes\// {print $1; exit}' <<<"$attach_out")"
+  if [[ -z "$device" ]]; then
+    echo "failed to attach $rw_dmg" >&2
+    echo "$attach_out" >&2
+    exit 1
+  fi
+
+  local i
+  for i in $(seq 1 30); do
+    [[ -d "$volume" ]] && break
+    sleep 0.2
+  done
+  if [[ ! -d "$volume" ]]; then
+    echo "volume $volume did not appear" >&2
+    hdiutil detach "$device" -quiet || true
+    exit 1
+  fi
+
+  mkdir -p "$volume/.background"
+  # 1× + 2× PNG → multi-resolution TIFF so the backdrop is sharp on Retina.
+  sips -z 400 660 "$bg_src" --out "$volume/.background/background.png" >/dev/null
+  sips -z 800 1320 "$bg_src" --out "$volume/.background/background@2x.png" >/dev/null
+  tiffutil -cathidpicheck \
+    "$volume/.background/background.png" \
+    "$volume/.background/background@2x.png" \
+    -out "$volume/.background/background.tiff"
+  rm -f "$volume/.background/background.png" "$volume/.background/background@2x.png"
+
+  # Finder writes the window bounds, icon-view options, and background picture
+  # into .DS_Store. Icon positions: app left (160, 185), Applications right (500, 185).
+  osascript <<EOF
+tell application "Finder"
+  tell disk "$volname"
+    open
+    set current view of container window to icon view
+    set toolbar visible of container window to false
+    set statusbar visible of container window to false
+    set the bounds of container window to {200, 120, 860, 520}
+    set theViewOptions to the icon view options of container window
+    set arrangement of theViewOptions to not arranged
+    set icon size of theViewOptions to 128
+    set background picture of theViewOptions to file ".background:background.tiff"
+    set position of item "BearCAD.app" of container window to {160, 185}
+    set position of item "Applications" of container window to {500, 185}
+    close
+    open
+    update without registering applications
+    delay 2
+    close
+  end tell
+end tell
+EOF
+
+  # Hide the backdrop folder after Finder has a handle on the TIFF.
+  chflags hidden "$volume/.background" || true
+  # --openfolder is Intel-only; Apple Silicon prints an error and the volume
+  # still auto-opens from the .DS_Store window state.
+  bless --folder "$volume" --openfolder "$volume" >/dev/null 2>&1 || true
+
+  sync
+  sleep 1
+  for i in $(seq 1 10); do
+    if hdiutil detach "$device"; then
+      break
+    fi
+    sleep 2
+    if [[ "$i" -eq 10 ]]; then
+      echo "failed to detach $device" >&2
+      exit 1
+    fi
+  done
+
+  rm -f "$dmg"
+  hdiutil convert "$rw_dmg" -format UDZO -imagekey zlib-level=9 -o "$dmg"
+  rm -f "$rw_dmg"
 }
 
 package_windows() {
@@ -160,6 +271,12 @@ case "$target" in
   linux) package_linux ;;
   macos) package_macos ;;
   windows) package_windows ;;
+  # Style an already-staged folder (BearCAD.app + Applications) into a .dmg.
+  # Used to test the drag-to-Applications backdrop without a full release build.
+  macos-dmg)
+    mkdir -p dist
+    make_styled_macos_dmg "${2:?stage dir}" "BearCAD" "${3:-bearcad.dmg}"
+    ;;
   *)
     echo "usage: $0 <linux|macos|windows>" >&2
     exit 1
