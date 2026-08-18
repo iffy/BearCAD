@@ -23058,7 +23058,20 @@ fn extrude_target_from_face(
         {
             Some(ExtrudeTarget::BodyFace(face_id))
         }
-        _ => None,
+        // Every other **3D body** face is just as good a plane to stop at (#1492). Only
+        // extrusion caps/walls used to qualify, so "up to the bottom of this body" was
+        // unanswerable on a Shape primitive, a revolve, a repeat instance, a unit, or any
+        // body whose surface has no analytic identity at all (moved, shelled, combined —
+        // a `BodyMeshFace`). All of them resolve through `extrude::body_face_plane`, the
+        // same frame a sketch hosted on that face would use.
+        face_id @ (FaceId::PrimitiveFace { .. }
+        | FaceId::RevolveCap { .. }
+        | FaceId::RevolveSide { .. }
+        | FaceId::RepeatedFace { .. }
+        | FaceId::UnitFace { .. }
+        | FaceId::BodyMeshFace { .. }) => Some(ExtrudeTarget::BodyFace(face_id)),
+        FaceId::Circle(_) | FaceId::Polygon(_) | FaceId::ExtrudeCap { .. }
+        | FaceId::ExtrudeSide { .. } => None,
     }
 }
 
