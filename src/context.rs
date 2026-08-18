@@ -3387,19 +3387,77 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
 /// hidden (`None`) for any other selection (#52).
 /// The material picker for the selected bodies (#834): `None` unless every selected element
 /// is a live body.
+/// Bodies a material edit should hit for this selection (#834/#1474): whole bodies,
+/// a face/edge of one, a Repeat op's instances, or the body family of an extrusion.
+pub(crate) fn bodies_for_material_selection(
+    doc: &Document,
+    selection: &SceneSelection,
+) -> Vec<crate::model::BodyKey> {
+    let mut bodies = Vec::new();
+    for element in selection.iter() {
+        let Some(more) = material_bodies_for_element(doc, &element) else {
+            return Vec::new();
+        };
+        for bi in more {
+            if doc.bodies.get(bi).is_some_and(|b| !b.shadow) && !bodies.contains(&bi) {
+                bodies.push(bi);
+            }
+        }
+    }
+    bodies
+}
+
+fn material_bodies_for_element(
+    doc: &Document,
+    element: &SceneElement,
+) -> Option<Vec<crate::model::BodyKey>> {
+    use crate::model::body_index_for_extrusion;
+    match element {
+        SceneElement::Body(bi) => Some(vec![*bi]),
+        SceneElement::BodyFace { body, .. }
+        | SceneElement::BodyCylinder { body, .. }
+        | SceneElement::BodyEdge { body, .. }
+        | SceneElement::BodyVertex { body, .. }
+        | SceneElement::BodyAxis { body, .. } => Some(vec![*body]),
+        SceneElement::RepeatedFace { op, instance, .. } => {
+            let rep = doc.repeat_ops.get(*op)?;
+            if *instance == 0 {
+                rep.targets.first().copied().map(|b| vec![b])
+            } else {
+                rep.outputs.get(*instance - 1).copied().map(|b| vec![b])
+            }
+        }
+        SceneElement::Extrusion(ei) => {
+            let source = body_index_for_extrusion(doc, *ei)?;
+            let mut out = vec![source];
+            for op in doc.repeat_ops.values() {
+                let Some(ti) = op.targets.iter().position(|&t| t == source) else {
+                    continue;
+                };
+                let n = op.targets.len().max(1);
+                for (slot, &bi) in op.outputs.iter().enumerate() {
+                    if slot % n == ti {
+                        out.push(bi);
+                    }
+                }
+            }
+            Some(out)
+        }
+        SceneElement::RepeatOp(op) => {
+            let rep = doc.repeat_ops.get(*op)?;
+            let mut out = rep.targets.clone();
+            out.extend(rep.outputs.iter().copied());
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
 fn material_control_from_selection(
     doc: &Document,
     selection: &SceneSelection,
 ) -> Option<MaterialControl> {
-    let mut bodies = Vec::new();
-    for element in selection.iter() {
-        match element {
-            SceneElement::Body(bi) if doc.bodies.contains(bi) => {
-                bodies.push(bi)
-            }
-            _ => return None,
-        }
-    }
+    let bodies = bodies_for_material_selection(doc, selection);
     if bodies.is_empty() {
         return None;
     }
@@ -10364,6 +10422,86 @@ mod tests {
             swatch_clicked,
             "clicking the colour swatch should select the material, same as the name (row {swatch_row:?})"
         );
+    }
+
+    /// #1474: a repeated instance — the Repeat op, its source extrusion, or a face of
+    /// one copy — offers the material picker for the bodies that instance is.
+    #[test]
+    fn material_picker_follows_a_repeated_element() {
+        use crate::hierarchy::SceneElement;
+        use crate::model::{
+            BodySource, RepeatMode, RepeatOperation, RevolveAxis,
+        };
+        let mut doc = Document::default();
+        let ei = doc.extrusions.insert(crate::model::Extrusion {
+            sketch: crate::model::sketch_key_for_slot(0),
+            faces: Vec::new(),
+            distance: 10.0,
+            target: None,
+            expression: String::new(),
+            symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
+            name: None,
+            edge_treatments: Vec::new(),
+        });
+        let source = doc.bodies.insert(crate::model::Body {
+            source: BodySource::Extrusion(ei),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let op = doc.repeat_ops.insert(RepeatOperation {
+            targets: vec![source],
+            plane_targets: Vec::new(),
+            extrusion_targets: Vec::new(),
+            sketch_targets: Vec::new(),
+            axis: RevolveAxis::Z,
+            path_circle: None,
+            around_axis: true,
+            flip: false,
+            mode: RepeatMode::CountGap,
+            count: "3".to_string(),
+            spacing: "120".to_string(),
+            length: String::new(),
+            length_target: None,
+            outputs: Vec::new(),
+            plane_outputs: Vec::new(),
+            sketch_plane_outputs: Vec::new(),
+            sketch_outputs: Vec::new(),
+            name: None,
+        });
+        let copy = doc.bodies.insert(crate::model::Body {
+            source: BodySource::Repeated {
+                op,
+                target: 0,
+                instance: 1,
+                add: Vec::new(),
+                cut: Vec::new(),
+            },
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        doc.repeat_ops[op].outputs = vec![copy];
+
+        let mut sel = SceneSelection::default();
+        sel.insert(SceneElement::RepeatOp(op));
+        let control = context_pane_content(&input(&doc, &sel)).material.expect("repeat op");
+        assert!(control.bodies.contains(&source));
+        assert!(control.bodies.contains(&copy));
+
+        let mut sel = SceneSelection::default();
+        sel.insert(SceneElement::Extrusion(ei));
+        let control = context_pane_content(&input(&doc, &sel)).material.expect("extrusion");
+        assert!(control.bodies.contains(&source));
+        assert!(control.bodies.contains(&copy));
+
+        let mut sel = SceneSelection::default();
+        sel.insert(SceneElement::Body(copy));
+        let control = context_pane_content(&input(&doc, &sel)).material.expect("copy body");
+        assert_eq!(control.bodies, vec![copy]);
     }
 
     /// #1081: a mode only registers the pickers it actually offers. Registering all six point

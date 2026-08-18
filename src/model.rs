@@ -2024,6 +2024,36 @@ fn source_derives_from_extrusion(
             .is_some_and(|b| source_derives_from_extrusion(doc, &b.source, extrusion))
 }
 
+/// A live body that *is* this add extrusion alone — not a cut, not an add fused onto
+/// other geometry. Repeating that extrusion copies the body (#1475) instead of fusing
+/// disjoint instances into one compound.
+pub fn standalone_body_for_add_extrusion(doc: &Document, extrusion: ExtrusionKey) -> Option<BodyKey> {
+    if doc
+        .bodies
+        .values()
+        .any(|b| b.source.cut_extrusion_indices().contains(&extrusion))
+    {
+        return None;
+    }
+    let mut found = None;
+    for (bi, body) in doc.bodies.iter() {
+        if body.shadow {
+            continue;
+        }
+        if body.source.extrusion_indices() != [extrusion] {
+            continue;
+        }
+        if body.source.primitive_base().is_some() {
+            return None;
+        }
+        if found.is_some() {
+            return None;
+        }
+        found = Some(bi);
+    }
+    found
+}
+
 pub fn body_index_for_extrusion(doc: &Document, extrusion: ExtrusionKey) -> Option<BodyKey> {
     let matches: Vec<(BodyKey, bool)> = doc
         .bodies
@@ -3588,10 +3618,10 @@ pub struct RepeatOperation {
     /// a [`RepeatPlaneInstance`], not a [`BodySource::Repeated`] body.
     #[serde(default)]
     pub plane_targets: Vec<ConstructionPlaneKey>,
-    /// Cut **extrusion** indices whose *effect* is replayed at each offset (#220): the cutting
-    /// tool is subtracted from its body again at every instance position (punching N holes),
-    /// rather than copying a solid. No output bodies — the extra cuts fold into the target body's
-    /// shape at build time (`occt_body_shape_from_indices`).
+    /// Cut / add-to-body **extrusion** indices whose *effect* is replayed at each offset
+    /// (#220): a cut punches N holes; an add fused onto another body grows N bumps. A
+    /// standalone add extrusion (one that *is* a body) is promoted to [`targets`] instead
+    /// (#1475), so disjoint copies are separate bodies.
     #[serde(default)]
     pub extrusion_targets: Vec<ExtrusionKey>,
     /// Source sketch indices to repeat as offset copies (#226). Each copy rides a generated

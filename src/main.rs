@@ -17259,15 +17259,10 @@ impl App {
             }
             // Material picker (#834): assign, create, rename, recolour.
             if let Some(edit) = material_edit {
-                let bodies: Vec<crate::model::BodyKey> = self
-                    .state
-                    .scene_selection
-                    .iter()
-                    .filter_map(|e| match e {
-                        hierarchy::SceneElement::Body(bi) => Some(bi),
-                        _ => None,
-                    })
-                    .collect();
+                let bodies = context::bodies_for_material_selection(
+                    &self.state.doc,
+                    &self.state.scene_selection,
+                );
                 match edit {
                     context::MaterialEdit::Assign(material) => {
                         for body in bodies {

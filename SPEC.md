@@ -1413,16 +1413,17 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     Instances are grouped under the repeat op in the Elements pane, and go away with it. Count
     and spacing are the same expressions/modes as body repeats; a repeat may target bodies and
     planes at once.
-  - **Repeating an operation (#220):** a repeat can target an **extrusion**
-    (`RepeatOperation::extrusion_targets`) and replay its *effect* at each offset rather than
-    copying a solid — a **cut** extrusion's tool is subtracted again (`occt_body_shape_from_indices`)
-    to punch N holes, and an **add** extrusion's solid is fused again (`occt_fused_extrusions`) to
-    grow N bumps. No output bodies; the extra ops fold into the target body's shape at build time
-    (spacing is center-to-center, extent 0). Scripting: `bearcad.repeat_cut{ cuts = {ei}, axis,
-    mode, count?, spacing?, length? }` (works for add or cut targets). The Repeat tool picks an
-    extrusion operand by clicking it (Elements pane / selection → `extrusion_targets`, shown as an
-    operation count in the context pane, #235); the op is a selectable/deletable `RepeatOp` whose
-    deletion drops the replay.
+  - **Repeating an operation (#220/#1475):** a repeat can target an **extrusion**
+    (`RepeatOperation::extrusion_targets`). A **cut** extrusion's tool is subtracted again
+    (`occt_body_shape_from_indices`) to punch N holes. An **add** extrusion fused onto another
+    body is fused again (`occt_fused_extrusions`) to grow N bumps on that body. A **standalone**
+    add extrusion (the one that *is* a body) is promoted to a body target: each instance is its
+    own `BodySource::Repeated` body, so disjoint copies are separate solids and each can take a
+    material (#1474). Scripting: `bearcad.repeat_cut{ cuts = {ei}, axis, mode, count?, spacing?,
+    length? }` (works for add or cut targets). The Repeat tool picks an extrusion operand by
+    clicking it (Elements pane / selection → `extrusion_targets`, shown as an operation count in
+    the context pane, #235); the op is a selectable/deletable `RepeatOp` whose deletion drops the
+    replay (or the copy bodies, for a standalone add).
   - **Repeating whole sketches (#226):** `RepeatOperation::sketch_targets` copies a
     construction-plane-hosted sketch at each offset. Each copy rides a fresh construction plane
     parallel to the source's, translated along the axis (`rebuild_repeated_sketches`), and carries
