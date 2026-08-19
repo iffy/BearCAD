@@ -4606,6 +4606,10 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "One of the imported part's values. Click the number to type a new one for \
              this instance.",
         ),
+        "Parameter slider" => Some(
+            "Drag to set this parameter between its min and max. The value snaps to \
+             step when one is set.",
+        ),
         "Override" => Some(
             "This value is overridden for this instance (it reads gold). The button \
              beside it goes back to the part's own value.",

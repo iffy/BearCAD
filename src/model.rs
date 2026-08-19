@@ -229,7 +229,7 @@ pub struct Parameter {
     pub minimum: Option<String>,
     /// Optional maximum bound as an expression (#1176). Same unit kind as the default
     /// value. Empty / missing means unbounded above. With both min and max set, the
-    /// import UI offers a slider.
+    /// Parameters pane offers a slider (this document and imported instances).
     #[serde(default)]
     pub maximum: Option<String>,
     /// Optional step as an expression (#1176): override values snap to the closest

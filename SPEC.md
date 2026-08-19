@@ -2781,7 +2781,10 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   row's options panel (multiple open at once). **Imported unit instances** cannot edit
   these options; overrides (`SetUnitParameterOverride` / `unit_override`) are
   clamp-and-snapped to min/max/step (`clamp_and_snap_override_expression`). With both min
-  and max resolved, the unit-parameters section shows a **slider** that snaps to step.
+  and max resolved, a **slider** sits on the row below the parameter, spanning the name
+  and value columns, and snaps to step — the same layout for this document's own
+  parameters and for imported unit instances (#1559;
+  `bearcad.parameter("slider", i[, value])`).
 - When a parameter's name or value field is focused in the Parameters pane, the Elements
   pane highlights every element that uses that parameter (the dimensions referencing it and
   the geometry they drive), dimming the rest.
@@ -3718,10 +3721,11 @@ default, ephemeral), the document's own parameters unmistakably below a separato
 edit writes that instance's `parameter_overrides` (`Action::SetUnitParameterOverride`,
 `bearcad.unit_override{ instance =, name =, value = }`; omitting `value` clears) — never
 the source file, never other instances. Overrides are clamp-and-snapped to the unit
-parameter's min/max/step; with both min and max set the row shows a **slider**. The
+parameter's min/max/step; with both min and max set a **slider** sits on the row below,
+spanning the name and value columns (same as this document's own parameters). The
 importer cannot edit the unit's options (min/max/step/private). Overridden values render
 gold with a ✕ back to the unit's own value; help-mode text is keyed on "Unit
-parameters"/"Unit parameter"/"Override"/"Internals". Instances are also
+parameters"/"Unit parameter"/"Override"/"Internals"/"Parameter slider". Instances are also
 findable/selectable by name.
 
 **Cut and combine (#726):** a unit builds a real kernel solid

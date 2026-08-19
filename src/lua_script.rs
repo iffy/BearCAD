@@ -4527,6 +4527,72 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     }
                     Ok(Value::Nil)
                 }
+                // #1559: local min+max slider — get `{min, max, value, step?}` or set a
+                // canonical-unit number (clamp-and-snapped like a drag).
+                "slider" => {
+                    let index = match args.get(1) {
+                        Some(Value::Integer(i)) => *i as usize,
+                        Some(Value::Number(n)) => n.round() as usize,
+                        _ => {
+                            return Err(mlua::Error::external(
+                                "parameter slider requires index",
+                            ))
+                        }
+                    };
+                    let spec = {
+                        let doc = unsafe { &tick.state().doc };
+                        doc.parameters
+                            .keys()
+                            .nth(index)
+                            .and_then(|key| {
+                                crate::parameters::parameter_slider_spec(doc, &doc.parameters[key])
+                            })
+                    };
+                    let Some(spec) = spec else {
+                        return Ok(Value::Nil);
+                    };
+                    match args.get(2) {
+                        None | Some(Value::Nil) => {
+                            let t = lua.create_table()?;
+                            t.set("min", spec.min as f64)?;
+                            t.set("max", spec.max as f64)?;
+                            t.set("value", spec.current as f64)?;
+                            if let Some(step) = spec.limits.step {
+                                t.set("step", step as f64)?;
+                            }
+                            Ok(Value::Table(t))
+                        }
+                        Some(Value::Integer(_) | Value::Number(_)) => {
+                            let v = match args.get(2) {
+                                Some(Value::Integer(i)) => *i as f32,
+                                Some(Value::Number(n)) => *n as f32,
+                                _ => unreachable!(),
+                            };
+                            let expression = {
+                                let doc = unsafe { &tick.state().doc };
+                                let key = doc.parameters.keys().nth(index).unwrap();
+                                crate::parameters::parameter_slider_expression(
+                                    doc,
+                                    &doc.parameters[key],
+                                    v,
+                                )
+                            }
+                            .ok_or_else(|| {
+                                mlua::Error::external("parameter has no slider")
+                            })?;
+                            unsafe {
+                                tick.exec(Instruction::SetParameterExpression {
+                                    index,
+                                    expression,
+                                })?;
+                            }
+                            Ok(Value::Nil)
+                        }
+                        _ => Err(mlua::Error::external(
+                            "parameter slider value must be a number (mm / rad)",
+                        )),
+                    }
+                }
                 other => Err(mlua::Error::external(format!(
                     "unknown parameter action '{other}'"
                 ))),
@@ -13481,6 +13547,35 @@ mod tests {
             "#,
         );
         assert!(state.doc.parameters.values().next().unwrap().minimum.is_none());
+    }
+
+    /// #1559: a local min+max parameter exposes a slider; setting it snaps like a drag.
+    #[test]
+    fn lua_parameter_slider_reads_and_sets() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.parameter("add", "width", "10mm")
+            bearcad.parameter("min", 0, "0mm")
+            bearcad.parameter("max", 0, "20mm")
+            bearcad.parameter("step", 0, "5mm")
+            local s = bearcad.parameter("slider", 0)
+            assert(s ~= nil, "min+max should offer a slider")
+            assert(math.abs(s.min - 0) < 1e-4, "min")
+            assert(math.abs(s.max - 20) < 1e-4, "max")
+            assert(math.abs(s.value - 10) < 1e-4, "value")
+            assert(math.abs(s.step - 5) < 1e-4, "step")
+            bearcad.parameter("slider", 0, 12)
+            assert(math.abs(bearcad.parameter("get", "width") - 10) < 1e-3,
+                   "12 snaps to 10")
+            bearcad.parameter("slider", 0, 99)
+            assert(math.abs(bearcad.parameter("get", "width") - 20) < 1e-3,
+                   "99 clamps to max")
+            assert(bearcad.parameter("slider", 1) == nil, "no such parameter")
+            bearcad.parameter("add", "plain", "3mm")
+            assert(bearcad.parameter("slider", 1) == nil, "no min/max ⇒ no slider")
+            "#,
+        );
     }
 
     /// #107: `bearcad.parameter("get"/"get_expression", name)` reads a parameter back.

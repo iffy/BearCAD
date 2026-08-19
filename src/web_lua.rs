@@ -441,6 +441,57 @@ fn run_parameter(
             )?;
             Ok(Value::Null)
         }
+        "slider" => {
+            let index = a
+                .get(1)
+                .and_then(Value::as_u64)
+                .ok_or("parameter slider requires index")? as usize;
+            let spec = state
+                .doc
+                .parameters
+                .keys()
+                .nth(index)
+                .and_then(|key| {
+                    crate::parameters::parameter_slider_spec(&state.doc, &state.doc.parameters[key])
+                });
+            let Some(spec) = spec else {
+                return Ok(Value::Null);
+            };
+            match a.get(2) {
+                None | Some(Value::Null) => {
+                    let mut t = serde_json::Map::new();
+                    t.insert("min".into(), json!(spec.min));
+                    t.insert("max".into(), json!(spec.max));
+                    t.insert("value".into(), json!(spec.current));
+                    if let Some(step) = spec.limits.step {
+                        t.insert("step".into(), json!(step));
+                    }
+                    Ok(Value::Object(t))
+                }
+                Some(v) => {
+                    let slider_v = v
+                        .as_f64()
+                        .ok_or("parameter slider value must be a number (mm / rad)")?
+                        as f32;
+                    let key = state.doc.parameters.keys().nth(index).unwrap();
+                    let expression = crate::parameters::parameter_slider_expression(
+                        &state.doc,
+                        &state.doc.parameters[key],
+                        slider_v,
+                    )
+                    .ok_or("parameter has no slider")?;
+                    exec(
+                        runner,
+                        Instruction::SetParameterExpression { index, expression },
+                        state,
+                        synthetic,
+                        viewport,
+                        ctx,
+                    )?;
+                    Ok(Value::Null)
+                }
+            }
+        }
         other => Err(format!("unknown parameter action '{other}'")),
     }
 }
