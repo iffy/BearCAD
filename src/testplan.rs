@@ -139,7 +139,7 @@ const FEATURE_SECTIONS: &[Section] = &[
             "Combine: cut (A − B)",
             "Combine: intersect",
             "Combine: difference (symmetric)",
-            "Combine: Keep B",
+            "Combine: Keep leftovers",
             "Move: Point Snap, A pair only (translate)",
             "Move: Point Snap A+B (translate and rotate)",
             "Move: Point Snap A+B+C (fully decided pose)",

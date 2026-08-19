@@ -7597,7 +7597,7 @@ fn operation_preview_world_bounds(state: &AppState) -> Option<(Vec3, Vec3)> {
     // Combine (boolean) live result preview.
     if let Some(cb) = state.creating_boolean.as_ref() {
         if let Some(solids) =
-            crate::extrude::preview_boolean_meshes(doc, cb.kind, &cb.a, &cb.b)
+            crate::extrude::preview_boolean_meshes(doc, cb.kind, &cb.a, &cb.b, cb.keep_b)
         {
             for mesh in &solids {
                 extend_mesh(&mut bounds, mesh);
@@ -15307,7 +15307,7 @@ op,
                         body.shadow = true;
                     }
                 }
-                if !keep_b {
+                if !kind.keep_leaves_b_live(keep_b) {
                     for &input in b.iter() {
                         if let Some(body) = self.doc.bodies.get_mut(input) {
                             body.shadow = true;
@@ -15356,7 +15356,7 @@ op,
                         body.shadow = true;
                     }
                 }
-                if !keep_b {
+                if !kind.keep_leaves_b_live(keep_b) {
                     for &input in b.iter() {
                         if let Some(body) = self.doc.bodies.get_mut(input) {
                             body.shadow = true;
@@ -15370,7 +15370,7 @@ op,
                     if oi == op {
                         continue;
                     }
-                    for &input in o.a.iter().chain((!o.keep_b).then_some(&o.b).into_iter().flatten()) {
+                    for &input in o.a.iter().chain(o.consumes_b().then_some(&o.b).into_iter().flatten()) {
                         if let Some(body) = self.doc.bodies.get_mut(input) {
                             body.shadow = true;
                         }
@@ -23210,11 +23210,18 @@ translate_mode: crate::model::MoveTranslateMode::Free,
 
         // A half-picked cut has no result to show yet.
         assert!(
-            crate::extrude::preview_boolean_meshes(&state.doc, kind, &[bkey(0)], &[]).is_none(),
+            crate::extrude::preview_boolean_meshes(&state.doc, kind, &[bkey(0)], &[], false)
+                .is_none(),
             "a cut with no B side previews nothing"
         );
 
-        let preview = crate::extrude::preview_boolean_meshes(&state.doc, kind, &[bkey(0)], &[bkey(1)])
+        let preview = crate::extrude::preview_boolean_meshes(
+            &state.doc,
+            kind,
+            &[bkey(0)],
+            &[bkey(1)],
+            false,
+        )
             .expect("a fully picked cut previews");
         let committed =
             crate::extrude::precompute_boolean(&state.doc, kind, &[bkey(0)], &[bkey(1)], false)
@@ -23242,8 +23249,20 @@ translate_mode: crate::model::MoveTranslateMode::Free,
     fn a_half_picked_combine_previews_nothing() {
         let state = two_box_state(true);
         let kind = crate::model::BooleanOpKind::Combine;
-        assert!(crate::extrude::preview_boolean_meshes(&state.doc, kind, &[bkey(0)], &[]).is_none());
-        assert!(crate::extrude::preview_boolean_meshes(&state.doc, kind, &[bkey(0), bkey(1)], &[]).is_some());
+        assert!(
+            crate::extrude::preview_boolean_meshes(&state.doc, kind, &[bkey(0)], &[], false)
+                .is_none()
+        );
+        assert!(
+            crate::extrude::preview_boolean_meshes(
+                &state.doc,
+                kind,
+                &[bkey(0), bkey(1)],
+                &[],
+                false
+            )
+            .is_some()
+        );
     }
 
     /// #214: the revolve angle (rotate, radians) and construction-plane offset (mm) gizmos are
@@ -28147,7 +28166,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert!(!state.doc.bodies.values().nth(1).unwrap().shadow);
     }
 
-    /// Cut with keep-B leaves the B-side inputs as real bodies.
+    /// Cut with keep leftovers leaves the B-side inputs as real bodies (the cutting shape).
     #[test]
     fn boolean_cut_keep_b_leaves_b_real() {
         let mut state = two_box_state(true);
@@ -28161,6 +28180,63 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert!(matches!(result, ActionResult::Ok));
         assert!(state.doc.bodies.values().nth(0).unwrap().shadow);
         assert!(!state.doc.bodies.values().nth(1).unwrap().shadow, "keep_b must leave B real");
+        assert_eq!(
+            state.doc.boolean_ops.values().nth(0).unwrap().outputs.len(),
+            1,
+            "cut leftovers are the original cutter, not extra result solids"
+        );
+    }
+
+    fn live_boolean_volumes(state: &AppState) -> Vec<f32> {
+        let mut vols: Vec<f32> = state
+            .doc
+            .bodies
+            .iter()
+            .filter(|(_, b)| !b.shadow)
+            .filter_map(|(k, _)| {
+                crate::extrude::body_solid_mesh(&state.doc, k)
+                    .map(|m| crate::extrude::mesh_signed_volume(&m).abs())
+            })
+            .collect();
+        vols.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        vols
+    }
+
+    /// #1581: with leftovers kept, Intersect and Difference both split A and B into the
+    /// three parts A−B, A∩B, and B−A — so they produce the same live solids.
+    #[test]
+    fn boolean_keep_leftovers_makes_intersect_and_difference_identical() {
+        let volumes = |kind| {
+            let mut state = two_box_state(true);
+            let result = state.apply(Action::CreateBooleanOperation {
+                kind,
+                a: vec![bkey(0)],
+                b: vec![bkey(1)],
+                keep_b: true,
+                solid_count: None,
+            });
+            assert!(matches!(result, ActionResult::Ok), "{kind:?}: {result:?}");
+            assert!(
+                state.doc.bodies.values().nth(0).unwrap().shadow,
+                "{kind:?}: A is consumed"
+            );
+            assert!(
+                state.doc.bodies.values().nth(1).unwrap().shadow,
+                "{kind:?}: leftover pieces are new bodies, so B is consumed"
+            );
+            live_boolean_volumes(&state)
+        };
+        let intersect = volumes(crate::model::BooleanOpKind::Intersect);
+        let difference = volumes(crate::model::BooleanOpKind::Difference);
+        assert_eq!(intersect.len(), 3, "three-part split, got {intersect:?}");
+        assert_eq!(
+            intersect, difference,
+            "intersect+keep and difference+keep are the same split"
+        );
+        assert!(
+            intersect.iter().all(|v| *v > 1.0),
+            "each leftover part has volume, got {intersect:?}"
+        );
     }
 
     /// Validation: combine needs two inputs; consumed (shadow) inputs are rejected; the

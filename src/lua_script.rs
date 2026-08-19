@@ -1143,7 +1143,7 @@ fn parse_treatable_solid_ref(opts: &Table) -> mlua::Result<Option<TreatableSolid
 }
 
 /// Parses `bearcad.combine{}`/`bearcad.edit_boolean{}` arguments: the op kind, the A and
-/// B input body lists, and the keep-B flag.
+/// B input body lists, and the leftovers flag (`keep_b` or `keep_leftovers`).
 fn parse_boolean_op_args(
     opts: &Table,
 ) -> mlua::Result<(crate::model::BooleanOpKind, Vec<usize>, Vec<usize>, bool)> {
@@ -1157,8 +1157,9 @@ fn parse_boolean_op_args(
     })?;
     let a: Vec<usize> = opts.get::<Option<Vec<usize>>>("a")?.unwrap_or_default();
     let b: Vec<usize> = opts.get::<Option<Vec<usize>>>("b")?.unwrap_or_default();
-    let keep_b: bool = opts.get::<Option<bool>>("keep_b")?.unwrap_or(false);
-    Ok((kind, a, b, keep_b))
+    let keep_leftovers: Option<bool> = opts.get("keep_leftovers")?;
+    let keep_b: Option<bool> = opts.get("keep_b")?;
+    Ok((kind, a, b, keep_leftovers.or(keep_b).unwrap_or(false)))
 }
 
 /// Parses an `axis = …` argument into a [`crate::model::RevolveAxis`]: `"x"`/`"y"`/`"z"` for
@@ -6703,7 +6704,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "combine",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            check_keys(&opts, "combine", &["op", "a", "b", "keep_b", "name"])?;
+            check_keys(
+                &opts,
+                "combine",
+                &["op", "a", "b", "keep_b", "keep_leftovers", "name"],
+            )?;
             let (kind, a, b, keep_b) = parse_boolean_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::CreateBooleanOp { kind, a, b, keep_b })?;
@@ -6722,7 +6727,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "begin_combine",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            check_keys(&opts, "begin_combine", &["op", "a", "b", "keep_b"])?;
+            check_keys(
+                &opts,
+                "begin_combine",
+                &["op", "a", "b", "keep_b", "keep_leftovers"],
+            )?;
             let (kind, a, b, keep_b) = parse_boolean_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::BeginBooleanOp { kind, a, b, keep_b })?;
@@ -6735,7 +6744,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "edit_boolean",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            check_keys(&opts, "edit_boolean", &["index", "op", "a", "b", "keep_b"])?;
+            check_keys(
+                &opts,
+                "edit_boolean",
+                &["index", "op", "a", "b", "keep_b", "keep_leftovers"],
+            )?;
             let op: usize = opts.get("index")?;
             let (kind, a, b, keep_b) = parse_boolean_op_args(&opts)?;
             unsafe {
@@ -13099,6 +13112,50 @@ mod tests {
         assert!(
             carved < 64000.0 * 0.98,
             "and a bite out of it: {carved} vs the cuboid's 64000"
+        );
+    }
+
+    /// #1581: Keep leftovers on intersect/difference splits A and B into three live parts.
+    #[test]
+    fn lua_combine_keep_leftovers_splits_into_three_parts() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 10, depth = 10, height = 5 }
+            bearcad.cuboid{ width = 10, depth = 10, height = 5, at = {5, 0, 0} }
+            bearcad.combine{ op = "intersect", a = {0}, b = {1}, keep_b = true }
+            local vols = {}
+            for i = 0, 20 do
+                local b = bearcad.get{ kind = "body", index = i }
+                if b == nil then break end
+                if not b.shadow then
+                    local s = bearcad.body_stats(i)
+                    assert(s ~= nil, "live leftover body must mesh")
+                    table.insert(vols, s.volume)
+                end
+            end
+            assert(#vols == 3, "intersect+keep should keep three parts, got " .. #vols)
+            table.sort(vols)
+            for i = 1, 3 do
+                assert(math.abs(vols[i] - 250) < 15,
+                       "each part should be ~250, got " .. tostring(vols[i]))
+            end
+            "#,
+        );
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 10, depth = 10, height = 5 }
+            bearcad.cuboid{ width = 10, depth = 10, height = 5, at = {5, 0, 0} }
+            bearcad.combine{ op = "difference", a = {0}, b = {1}, keep_leftovers = true }
+            local n = 0
+            for i = 0, 20 do
+                local b = bearcad.get{ kind = "body", index = i }
+                if b == nil then break end
+                if not b.shadow then n = n + 1 end
+            end
+            assert(n == 3, "difference+keep should keep three parts, got " .. n)
+            "#,
         );
     }
 

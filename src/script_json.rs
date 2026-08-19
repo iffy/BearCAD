@@ -1571,7 +1571,10 @@ fn boolean_op_args(o: &Map<String, Value>) -> Result<(BooleanOpKind, Vec<usize>,
     let op_name = opt_str(o, "op")?.unwrap_or_else(|| "combine".to_string());
     let kind = BooleanOpKind::from_name(&op_name)
         .ok_or_else(|| format!("unknown boolean op '{op_name}' (combine|cut|intersect|difference)"))?;
-    Ok((kind, usize_list(o, "a")?, usize_list(o, "b")?, opt_bool(o, "keep_b")?.unwrap_or(false)))
+    let keep = opt_bool(o, "keep_leftovers")?
+        .or(opt_bool(o, "keep_b")?)
+        .unwrap_or(false);
+    Ok((kind, usize_list(o, "a")?, usize_list(o, "b")?, keep))
 }
 
 /// `move_bodies`/`edit_move` shared arguments: target bodies, X/Y/Z/angle expression fields,

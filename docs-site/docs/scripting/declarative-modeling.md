@@ -84,7 +84,7 @@ accepted keys listed:
 
 ```lua
 bearcad.combine{ kind = "cut", a = {0}, b = {1} }
--- error: combine: unknown key `kind` (accepted keys: op, a, b, keep_b, name)
+-- error: combine: unknown key `kind` (accepted keys: op, a, b, keep_b, keep_leftovers, name)
 ```
 
 To sketch on a specific plane:

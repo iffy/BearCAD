@@ -4492,13 +4492,14 @@ pub fn preview_shell_meshes(
 }
 
 
-/// The whole (possibly multi-solid) OCCT result of one boolean operation: A-side bodies
-/// fused, then combined with the fused B side per the operation's algebra. Difference
-/// (symmetric) is (A∪B) − (A∩B). `None` when any input body isn't kernel-representable.
-fn occt_boolean_result_shape(
+/// Individual solids of one boolean operation, in a stable leftover-aware order.
+/// With leftovers on, Intersect and Difference both emit the xor pieces plus the
+/// overlap (the same three-part split, #1581). Pieces are not fused — touching
+/// leftovers would glue back together. `None` when any input isn't kernel-representable.
+fn occt_boolean_result_solids(
     doc: &Document,
     op_index: crate::model::BooleanOpKey,
-) -> Option<crate::kernel::Shape> {
+) -> Option<Vec<crate::kernel::Shape>> {
     use crate::kernel::BoolOp;
     let op = doc.boolean_ops.get(op_index)?;
     let fuse_all = |list: &[crate::model::BodyKey]| -> Option<crate::kernel::Shape> {
@@ -4518,21 +4519,39 @@ fn occt_boolean_result_shape(
         acc
     };
     let a = fuse_all(&op.a)?;
+    let nonempty = |shape: crate::kernel::Shape| -> Vec<crate::kernel::Shape> {
+        shape
+            .solids()
+            .into_iter()
+            .filter(|s| s.volume().is_some_and(|v| v.abs() > 1e-6))
+            .collect()
+    };
     match op.kind {
-        crate::model::BooleanOpKind::Combine => Some(a),
+        crate::model::BooleanOpKind::Combine => Some(nonempty(a)),
         crate::model::BooleanOpKind::Cut => {
             let b = fuse_all(&op.b)?;
-            a.boolean(&b, BoolOp::Cut)
+            Some(nonempty(a.boolean(&b, BoolOp::Cut)?))
+        }
+        crate::model::BooleanOpKind::Intersect | crate::model::BooleanOpKind::Difference
+            if op.keep_b =>
+        {
+            let b = fuse_all(&op.b)?;
+            let union = a.boolean(&b, BoolOp::Fuse)?;
+            let common = a.boolean(&b, BoolOp::Common)?;
+            let xor = union.boolean(&common, BoolOp::Cut)?;
+            let mut solids = nonempty(xor);
+            solids.extend(nonempty(common));
+            Some(solids)
         }
         crate::model::BooleanOpKind::Intersect => {
             let b = fuse_all(&op.b)?;
-            a.boolean(&b, BoolOp::Common)
+            Some(nonempty(a.boolean(&b, BoolOp::Common)?))
         }
         crate::model::BooleanOpKind::Difference => {
             let b = fuse_all(&op.b)?;
             let union = a.boolean(&b, BoolOp::Fuse)?;
             let common = a.boolean(&b, BoolOp::Common)?;
-            union.boolean(&common, BoolOp::Cut)
+            Some(nonempty(union.boolean(&common, BoolOp::Cut)?))
         }
     }
 }
@@ -4547,8 +4566,7 @@ fn occt_boolean_output_shape(
 ) -> Option<crate::kernel::Shape> {
     use crate::kernel::BoolOp;
     let op = doc.boolean_ops.get(op_index)?;
-    let result = occt_boolean_result_shape(doc, op_index)?;
-    let mut solids = result.solids();
+    let mut solids = occt_boolean_result_solids(doc, op_index)?;
     if solids.is_empty() {
         return None;
     }
@@ -4579,8 +4597,7 @@ pub fn boolean_result_meshes(
     doc: &Document,
     op_index: crate::model::BooleanOpKey,
 ) -> Option<Vec<SolidMesh>> {
-    let result = occt_boolean_result_shape(doc, op_index)?;
-    let solids = result.solids();
+    let solids = occt_boolean_result_solids(doc, op_index)?;
     let meshes: Vec<SolidMesh> = solids
         .into_iter()
         .map(|s| SolidMesh {
@@ -4633,12 +4650,13 @@ thread_local! {
 /// Live preview of what the Combine tool would produce from the bodies picked so far
 /// (#1033) — the same solids a commit builds, so the hole a cut takes out is visible
 /// before committing it. `None` until each side the operation needs is populated, or when
-/// the kernel can't build the result. Cached per (document, kind, sides).
+/// the kernel can't build the result. Cached per (document, kind, leftovers, sides).
 pub fn preview_boolean_meshes(
     doc: &Document,
     kind: crate::model::BooleanOpKind,
     a: &[crate::model::BodyKey],
     b: &[crate::model::BodyKey],
+    keep_b: bool,
 ) -> Option<Vec<SolidMesh>> {
     use std::hash::{Hash, Hasher};
     // Combine unions one picked set; the two-sided operations need both sides.
@@ -4651,6 +4669,7 @@ pub fn preview_boolean_meshes(
     }
     let mut h = std::collections::hash_map::DefaultHasher::new();
     (kind as u8).hash(&mut h);
+    keep_b.hash(&mut h);
     a.hash(&mut h);
     b.hash(&mut h);
     let key = (document_mesh_fingerprint(doc), h.finish());
@@ -4660,9 +4679,9 @@ pub fn preview_boolean_meshes(
                 return meshes.clone();
             }
         }
-        // `keep_b` only decides whether the B inputs survive as their own bodies; it
-        // doesn't change the result solids, so the preview doesn't need it.
-        let meshes = precompute_boolean(doc, kind, a, b, false)
+        // Leftovers change the Intersect/Difference solids (#1581), so the preview
+        // includes `keep_b`.
+        let meshes = precompute_boolean(doc, kind, a, b, keep_b)
             .ok()
             .filter(|ms| ms.iter().any(|m| !m.triangles.is_empty()));
         *cache.borrow_mut() = Some((key, meshes.clone()));

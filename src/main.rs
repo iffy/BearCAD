@@ -30804,10 +30804,16 @@ impl App {
         if self.state.tool == Tool::Combine && self.state.boolean_job.is_none() {
             if let Some(cb) = self.state.creating_boolean.as_ref() {
                 if let Some(solids) =
-                    extrude::preview_boolean_meshes(doc, cb.kind, &cb.a, &cb.b)
+                    extrude::preview_boolean_meshes(doc, cb.kind, &cb.a, &cb.b, cb.keep_b)
                 {
+                    // Intersect/Difference leftovers replace B as well as A (#1581);
+                    // a cut still shows the cutting shape.
+                    let mut bodies = cb.a.clone();
+                    if cb.keep_b && !cb.kind.keep_leaves_b_live(cb.keep_b) {
+                        bodies.extend(cb.b.iter().copied());
+                    }
                     scene_input.preview_replacement = gpu_viewport::PreviewReplacement {
-                        bodies: cb.a.clone(),
+                        bodies,
                         solids,
                     };
                 }
