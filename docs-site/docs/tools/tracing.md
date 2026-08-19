@@ -57,8 +57,15 @@ bearcad.add_geometric_constraint("coincident")
 
 ## Tracing
 
-Sketch on the image's plane as usual and trace what you need. Because the image is
-calibrated, the traced geometry is in real units — dimension it, extrude it, print it.
+Click the image with Sketch, Line, Rectangle, or Circle to start a sketch on its plane
+and trace what you need. Because the image is calibrated, the traced geometry is in
+real units — dimension it, extrude it, print it.
+
+```lua
+bearcad.import_image("plate.png")
+bearcad.begin_sketch{ kind = "image", index = 0 }
+bearcad.line{ x1 = -10, y1 = 0, x2 = 10, y2 = 0 }
+```
 
 ## Help
 

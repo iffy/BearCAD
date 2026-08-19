@@ -125,6 +125,12 @@ impl FaceId {
             "plane" | "construction_plane" | "constructionplane" => {
                 Some(FaceId::ConstructionPlane(doc.construction_planes.keys().nth(index)?))
             }
+            // An image is not itself a host face; the sketch sits on the plane the image
+            // is imported onto (#1588).
+            "image" | "tracing_image" | "tracingimage" => {
+                let image = doc.tracing_images.keys().nth(index)?;
+                Some(FaceId::ConstructionPlane(doc.tracing_images.get(image)?.plane))
+            }
             _ => None,
         }
     }
@@ -6167,6 +6173,30 @@ mod tests {
         }
         let third = doc.circles.keys().nth(2).unwrap();
         assert_eq!(FaceId::from_script(&doc, "circle", 2), Some(FaceId::Circle(third)));
+    }
+
+    /// #1588: `begin_sketch{ kind = "image" }` hosts the sketch on the image's plane.
+    #[test]
+    fn face_id_from_script_parses_image_as_its_host_plane() {
+        let mut doc = Document::default();
+        let image = doc.tracing_images.insert(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "trace".to_string(),
+            plane: pkey(1),
+            origin: (0.0, 0.0),
+            base_origin: None,
+            width_mm: 10.0,
+            height_mm: 10.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
+            name: None,
+            calibration: None,
+        });
+        assert!(doc.tracing_images.contains(image));
+        assert_eq!(
+            FaceId::from_script(&doc, "image", 0),
+            Some(FaceId::ConstructionPlane(pkey(1)))
+        );
+        assert_eq!(FaceId::from_script(&doc, "image", 1), None);
     }
 
     #[test]

@@ -1677,7 +1677,9 @@ pub fn selection_picker_for(
         }
         // Face-click tools (#1494): pick a single face plane to open. A body's own cap
         // or side wall is sketchable too (#465), and that is the *analytic* face — the
-        // plane the sketch sits on, not the triangles it renders as (#957).
+        // plane the sketch sits on, not the triangles it renders as (#957). An imported
+        // image is the same kind of surface (#1588): a click on its quad starts a sketch
+        // on the image's host plane.
         //
         // The set is the table's `opens_sketch_on_face_click` (sketch-only plus Sketch),
         // so Constraint/Project get the same hover and Exploder fan as Offset/Text.
@@ -1692,9 +1694,16 @@ pub fn selection_picker_for(
             if !in_sketch =>
         {
             let mut p = ElementPicker::new(
-                ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Profile]),
+                ElementFilter::kinds(&[
+                    ElementKind::Plane,
+                    ElementKind::Profile,
+                    ElementKind::Image,
+                ]),
                 PickLimit::Finite(1),
-            );
+            )
+            // A body face still outranks the photo; the image outranks its host
+            // plane, so hovering the quad lights the image, not the datum rectangle.
+            .with_priority(&[ElementKind::Profile, ElementKind::Image]);
             p.set_focused(true);
             p
         }

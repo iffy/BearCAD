@@ -1666,6 +1666,29 @@ pub fn pick_sketch_face(
         }
     }
 
+    // Tracing images (#1588): their displayed quad is a sketchable surface. A click
+    // starts a sketch on the image's host plane — the same face clicking the plane
+    // would open — so you can sketch on the photo, not just the small datum rectangle.
+    for (ii, img) in doc.tracing_images.iter().collect::<Vec<_>>().into_iter().rev() {
+        let Some(corners) = crate::construction::tracing_image_corners(doc, ii) else {
+            continue;
+        };
+        if let Some((dist, c)) = quad_face_pick_distance(screen, project, corners) {
+            let candidate = FaceId::ConstructionPlane(img.plane);
+            if !sketch_shadows(&shadowed_hosts, &candidate, dist) {
+                consider_face_pick_sized(
+                    &mut best,
+                    FacePick {
+                        face: candidate,
+                        dist,
+                        depth: depth(c),
+                        area: f32::INFINITY,
+                    },
+                );
+            }
+        }
+    }
+
     // Live mesh faces of every body (#1173): a shell's inner wall, a boolean face, an
     // imported flat — anything that has no (or a different) analytic identity. Ranked by
     // the same screen-distance + eye-depth rules as the analytics above, so the surface
@@ -1834,6 +1857,16 @@ pub fn sketch_faces_near(
         let corners = crate::construction::plane_corners(plane);
         if let Some((dist, c)) = quad_face_pick_distance(screen, project, corners) {
             push(FaceId::ConstructionPlane(i), c, dist);
+        }
+    }
+    // Tracing images (#1588): the image quad is the same sketchable surface as its host
+    // plane, so the crowd offers that plane even when the cursor is off the datum rectangle.
+    for (ii, img) in doc.tracing_images.iter() {
+        let Some(corners) = crate::construction::tracing_image_corners(doc, ii) else {
+            continue;
+        };
+        if let Some((dist, c)) = quad_face_pick_distance(screen, project, corners) {
+            push(FaceId::ConstructionPlane(img.plane), c, dist);
         }
     }
     // Primitive shape faces (#1103), mirroring `pick_sketch_face`.
@@ -2348,6 +2381,44 @@ mod tests {
                 .any(|(face, ..)| *face == FaceId::ConstructionPlane(pkey(0))),
             "nor does it reach the crowd"
         );
+    }
+
+    /// #1588: a tracing image's displayed quad is sketchable, including the part that
+    /// sits off the host plane's 5..105 display rectangle. The sketch hosts on that plane.
+    #[test]
+    fn pick_sketch_face_finds_a_tracing_image() {
+        let mut doc = Document::default();
+        retain_ground_plane_only(&mut doc);
+        doc.tracing_images.insert(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "trace".to_string(),
+            plane: pkey(0),
+            origin: (-200.0, -200.0),
+            base_origin: None,
+            width_mm: 150.0,
+            height_mm: 150.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
+            name: None,
+            calibration: None,
+        });
+        let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.y));
+        let eye = Vec3::new(0.0, 0.0, 100.0);
+        let at = eframe::egui::pos2(-120.0, -120.0);
+
+        assert_eq!(
+            pick_sketch_face(at, &project, &doc, eye),
+            Some(FaceId::ConstructionPlane(pkey(0))),
+            "clicking the image should start a sketch on its host plane"
+        );
+        assert!(
+            sketch_faces_near(at, &project, &doc, 40.0)
+                .iter()
+                .any(|(face, ..)| *face == FaceId::ConstructionPlane(pkey(0))),
+            "and the image's plane reaches the crowd"
+        );
+
+        let miss = pick_sketch_face(eframe::egui::pos2(-400.0, -400.0), &project, &doc, eye);
+        assert_eq!(miss, None, "off the image (and the plane) is not a sketch face");
     }
 
     #[test]

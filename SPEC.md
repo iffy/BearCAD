@@ -263,7 +263,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   **ordinal** among the live ones, resolved to a key at the script boundary.
 - **Draw tools begin sketches:** with no sketch open, the Rectangle, Line, Circle, and Text
   (#383) tools hover-highlight sketchable faces and a click begins a sketch on the clicked
-  face — the tool then draws there immediately, no separate Sketch-tool step needed.
+  face — the tool then draws there immediately, no separate Sketch-tool step needed. An
+  imported tracing image is the same kind of surface (#1588): a click on its quad starts a
+  sketch on the image's host plane, including the part of the image that sits off the
+  plane's display rectangle. Scriptable: `bearcad.begin_sketch{ kind = "image", index = 0 }`.
 - **Rectangle anchor mode (#532):** the Rectangle tool's context pane has a two-icon radio
   — **corner-anchored** (`RectAnchor::Corner`, the classic behavior: the first click is one
   corner, drag to the opposite) or **centre-anchored** (`RectAnchor::Center`: the first click
@@ -1949,7 +1952,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   the saved JSON, so files stay self-contained like imported meshes) and places it on a
   construction plane (default: plane 0), centered on the plane origin at an initial scale
   of **1 px = 1 mm**. The image is an Elements-pane row nested under its host plane —
-  renamable, hideable, deletable, undoable. `Document::tracing_images` is an
+  renamable, hideable, deletable, undoable. Clicking the image with a face-click tool
+  (Sketch, Line, Rectangle, Circle, Text, …) begins a sketch on that host plane (#1588),
+  just like clicking the plane or a body face. `Document::tracing_images` is an
   `arena::Arena` (#1055): an image is named by a `TracingImageKey` — by the move ops that
   target it and the calibration constraints on it — and deleting one **removes** it, so a
   key to it stops resolving instead of naming whichever image slid into its place. A
