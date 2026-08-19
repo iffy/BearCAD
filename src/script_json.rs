@@ -309,6 +309,8 @@ pub fn positional_to_named(name: &str, args: &[Value]) -> Result<Value, String> 
         "body_stats" => &["index"],
         "shading" | "ground" | "elements_view" => &["mode"],
         "pane" => &["pane", "visible"],
+        "scroll_pane" => &["pane", "dy"],
+        "ai_sections" => &["how"],
         "orbit" | "pan" | "fps_look" => &["dx", "dy"],
         "wheel" => &["scroll"],
         "fps" | "fps_fly" => &["on"],
@@ -876,6 +878,22 @@ pub fn instruction_from_json(
             let pane = req_str(o, "pane", "pane")?;
             let pane = Pane::from_name(&pane).ok_or_else(|| format!("unknown pane '{pane}'"))?;
             Ok(Instruction::SetPane { pane, visible: visibility(o.get("visible"))? })
+        }
+        // #1619: wheel over a pane, and the AI pane's all-sections toggle.
+        "scroll_pane" => {
+            let pane = req_str(o, "pane", "scroll_pane")?;
+            let pane = Pane::from_name(&pane).ok_or_else(|| format!("unknown pane '{pane}'"))?;
+            Ok(Instruction::ScrollPane { pane, dy: req_f32(o, "dy", "scroll_pane")? })
+        }
+        "ai_sections" => {
+            let how = req_str(o, "how", "ai_sections")?;
+            match how.to_ascii_lowercase().as_str() {
+                "open" => Ok(Instruction::SetAiSectionsOpen { open: true }),
+                "close" | "collapse" => Ok(Instruction::SetAiSectionsOpen { open: false }),
+                other => Err(format!(
+                    "ai_sections expects 'open' or 'close', got '{other}'"
+                )),
+            }
         }
         "palette" => match opt_str(o, "action")?.as_deref() {
             None | Some("toggle") => Ok(Instruction::SetCommandPalette { open: None }),

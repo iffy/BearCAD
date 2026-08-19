@@ -3813,7 +3813,8 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   (`bearcad.ui.move`, `bearcad.ui.click` (with an optional `{ shift = true }` for a
   Shift+click, #835), `bearcad.ui.key`, `bearcad.ui.type`,
   `bearcad.ui.orbit`, `bearcad.ui.pan`, `bearcad.ui.wheel`, `bearcad.ui.view`,
-  `bearcad.ui.tool`, `bearcad.ui.pane`, `bearcad.ui.pane_rect`, `bearcad.ui.palette`,
+  `bearcad.ui.tool`, `bearcad.ui.pane`, `bearcad.ui.pane_rect`,
+  `bearcad.ui.pane_scroll` / `bearcad.ui.scroll_pane` (#1619), `bearcad.ui.palette`,
   `bearcad.ui.wait`, `bearcad.ui.screenshot`, …). Examples and documentation should model
   with the top-level API and avoid `bearcad.ui.*` except where a UI interaction is the point.
 - **Semantic gizmo manipulation (#114).** `bearcad.drag_vertex` and `bearcad.drag_line` take

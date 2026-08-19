@@ -19617,6 +19617,7 @@ fn show_pane_shell(
                 .show(ui, |_| {});
         }
         remember_pane_rect(ctx, id, None);
+        script::remember_pane_scroll(ctx, id, None);
         return true;
     }
     if touch::compact(ctx) {

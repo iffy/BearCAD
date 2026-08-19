@@ -16,42 +16,70 @@ pub const PANE_TITLE: &str = "AI";
 /// `bearcad.ui.screenshot("ai")` crops to.
 pub const SHELL_ID: &str = "ai";
 
-/// One line under the heading. Says what the pane is for, and that it does nothing on its
-/// own — the pane is the only place the opt-in nature of these features is visible.
-const SUBTITLE: &str = "Chat, agent skills and MCP — all opt-in. Nothing leaves this \
-                        machine until you set up a backend.";
+/// The pane's sections, in the order they are drawn. Also the ids their collapsing
+/// headers remember their open/closed state under, and what
+/// `bearcad.ui.ai_sections(...)` drives (#1619).
+const SECTIONS: [&str; 3] = ["Chat", "Agents & Skill", "MCP Server"];
 
 /// Draw the pane body. `state` is the live app state; the pane reads the open documents
 /// and writes back through actions like any other pane.
 pub fn contents(ui: &mut egui::Ui, state: &mut AppState) {
     ui.heading(PANE_TITLE);
-    ui.label(egui::RichText::new(SUBTITLE).size(12.0).weak());
     ui.add_space(8.0);
 
+    // On phones the pane is a window that scrolls itself; nesting a second scroll area
+    // inside it would only fight it.
+    if crate::touch::compact(ui.ctx()) {
+        sections(ui, state);
+        return;
+    }
+
+    // #1619: the three sections together outgrow the pane once they are all open, so the
+    // pane scrolls rather than clipping whatever does not fit.
+    let out = egui::ScrollArea::vertical()
+        .id_salt("ai_pane_scroll")
+        .auto_shrink([false, true])
+        .show(ui, |ui| sections(ui, state));
+    crate::script::remember_pane_scroll(
+        ui.ctx(),
+        SHELL_ID,
+        Some(crate::script::PaneScroll {
+            offset: out.state.offset.y,
+            content: out.content_size.y,
+            viewport: out.inner_rect.height(),
+        }),
+    );
+}
+
+/// The pane's three sections, in a fixed order.
+fn sections(ui: &mut egui::Ui, state: &mut AppState) {
     // Help ▸ Install AI Agent Skill… opens the pane at that section, so it wins over the
     // usual default of Chat for one frame.
-    let open_skill = std::mem::take(&mut state.ai.borrow_mut().open_skill_section);
+    // `bearcad.ui.ai_sections(...)` opens or collapses all three at once (#1619); like the
+    // skill request it applies for one frame, and the headers remember it from there.
+    let (open_skill, open_all) = {
+        let mut ai = state.ai.borrow_mut();
+        (
+            std::mem::take(&mut ai.open_skill_section),
+            std::mem::take(&mut ai.sections_open),
+        )
+    };
 
-    section(ui, "Chat", true, |ui| chat_section(ui, state));
-    section_open(ui, "Agents & Skill", false, open_skill.then_some(true), |ui| {
-        skill_section(ui, state)
-    });
-    section(ui, "MCP Server", false, |ui| mcp_section(ui, state));
+    section_open(ui, SECTIONS[0], true, open_all, |ui| chat_section(ui, state));
+    section_open(
+        ui,
+        SECTIONS[1],
+        false,
+        open_all.or(open_skill.then_some(true)),
+        |ui| skill_section(ui, state),
+    );
+    section_open(ui, SECTIONS[2], false, open_all, |ui| mcp_section(ui, state));
 }
 
 /// A collapsible pane section. `default_open` decides the state before the user touches it;
-/// egui remembers each section's state per id afterwards.
-fn section(
-    ui: &mut egui::Ui,
-    title: &str,
-    default_open: bool,
-    add_contents: impl FnOnce(&mut egui::Ui),
-) {
-    section_open(ui, title, default_open, None, add_contents);
-}
-
-/// As [`section`], but `force` overrides the remembered state for this frame — how a menu
-/// item can open the pane *at* a particular section.
+/// egui remembers each section's state per id afterwards. `force` overrides the remembered
+/// state for this frame — how a menu item opens the pane *at* a particular section, and how
+/// `bearcad.ui.ai_sections(...)` opens or collapses all of them.
 fn section_open(
     ui: &mut egui::Ui,
     title: &str,
@@ -975,5 +1003,84 @@ fn mcp_section(ui: &mut egui::Ui, state: &mut AppState) {
 
     if let Some(action) = action {
         state.apply(action);
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod scroll_tests {
+    //! #1619: the pane scrolls rather than clipping whatever does not fit.
+
+    use super::*;
+    use crate::actions::{AppState, Pane};
+
+    /// Draw one frame of the pane into a fixed-size window, with `events` delivered to it.
+    fn frame(ctx: &egui::Context, state: &mut AppState, events: Vec<egui::Event>) {
+        // Wide enough to stay out of the compact (phone) layout, short enough that the
+        // pane's own content cannot fit.
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 220.0));
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(input, |ui| {
+            egui::Panel::right("ai")
+                .resizable(false)
+                .exact_size(340.0)
+                .show(ui, |ui| contents(ui, state));
+        });
+    }
+
+    /// Where the pane thinks it is scrolled to, as scripts read it.
+    fn scroll(ctx: &egui::Context) -> crate::script::PaneScroll {
+        crate::script::pane_scroll(ctx, Pane::Ai).expect("the drawn pane reports its scroll")
+    }
+
+    #[test]
+    fn a_wheel_scrolls_a_pane_taller_than_its_window() {
+        let ctx = egui::Context::default();
+        let mut state = AppState::default();
+        // Every section open — the state the pane is in when it outgrows the window.
+        state.ai.borrow_mut().sections_open = Some(true);
+        let centre = egui::pos2(900.0 - 170.0, 110.0);
+        for _ in 0..3 {
+            frame(&ctx, &mut state, vec![egui::Event::PointerMoved(centre)]);
+        }
+
+        let start = scroll(&ctx);
+        assert!(
+            start.content > start.viewport,
+            "the fixture has to overflow to test scrolling: {} in {}",
+            start.content,
+            start.viewport
+        );
+        assert_eq!(start.offset, 0.0, "a pane starts at the top");
+
+        // A wheel over the pane moves it down, and stops at the bottom rather than past it.
+        let wheel = |dy: f32| egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -dy),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&ctx, &mut state, vec![wheel(10_000.0)]);
+        for _ in 0..12 {
+            frame(&ctx, &mut state, vec![]);
+        }
+        let bottom = scroll(&ctx);
+        let max = start.content - start.viewport;
+        assert!(bottom.offset > 0.0, "the wheel should scroll the pane down");
+        assert!(
+            (bottom.offset - max).abs() < 1.0,
+            "the wheel should reach the bottom ({max}), got {}",
+            bottom.offset
+        );
+
+        // And back up: the top is as far as it goes.
+        frame(&ctx, &mut state, vec![wheel(-10_000.0)]);
+        for _ in 0..12 {
+            frame(&ctx, &mut state, vec![]);
+        }
+        assert_eq!(scroll(&ctx).offset, 0.0, "scrolling up stops at the top");
     }
 }

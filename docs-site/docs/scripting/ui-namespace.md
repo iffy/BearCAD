@@ -58,8 +58,11 @@ view bear's gear/shading-modes popup.
 
 ```lua
 bearcad.ui.pane("hierarchy", "hide")    -- show / hide / toggle a pane
-bearcad.ui.pane("view_bear", "show")    -- panes: hierarchy, context, parameters, view_bear
+bearcad.ui.pane("view_bear", "show")    -- panes: hierarchy, context, parameters, view_bear, ai
 local r = bearcad.ui.pane_rect("elements")  -- {x, y, w, h} last frame, or nil if hidden
+local v = bearcad.ui.pane_scroll("ai")      -- {offset, content, viewport}, or nil if hidden
+bearcad.ui.scroll_pane("ai", 200)           -- wheel over a pane; positive scrolls down
+bearcad.ui.ai_sections("open")              -- AI pane sections: "open" | "close"
 bearcad.ui.palette("run", "view top")   -- run a command palette entry by name
 -- With a construction plane selected, the third value is the image path:
 bearcad.ui.palette("run", "import image on this plane", "drawing.png")

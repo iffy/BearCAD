@@ -5119,6 +5119,56 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1619: how far a pane is scrolled, and whether it has anything to scroll. `nil` when
+    // the pane is hidden or scrolls nothing of its own.
+    api.set(
+        "pane_scroll",
+        lua.create_function(|lua, pane: String| {
+            let pane = Pane::from_name(&pane)
+                .ok_or_else(|| mlua::Error::external(format!("unknown pane '{pane}'")))?;
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let Some(scroll) = crate::script::pane_scroll(unsafe { tick.egui_ctx() }, pane) else {
+                return Ok(Value::Nil);
+            };
+            let t = lua.create_table()?;
+            t.set("offset", scroll.offset)?;
+            t.set("content", scroll.content)?;
+            t.set("viewport", scroll.viewport)?;
+            Ok(Value::Table(t))
+        })?,
+    )?;
+
+    // Wheel over a pane to scroll it (#1619): positive `dy` scrolls the content down.
+    api.set(
+        "scroll_pane",
+        lua.create_function(|lua, (pane, dy): (String, f32)| {
+            let pane = Pane::from_name(&pane)
+                .ok_or_else(|| mlua::Error::external(format!("unknown pane '{pane}'")))?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::ScrollPane { pane, dy }) }
+        })?,
+    )?;
+
+    // Open or collapse every AI pane section at once (#1619).
+    api.set(
+        "ai_sections",
+        lua.create_function(|lua, how: String| {
+            let open = match how.to_ascii_lowercase().as_str() {
+                "open" => true,
+                "close" | "collapse" => false,
+                other => {
+                    return Err(mlua::Error::external(format!(
+                        "ai_sections expects 'open' or 'close', got '{other}'"
+                    )))
+                }
+            };
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::SetAiSectionsOpen { open }) }
+        })?,
+    )?;
+
     // egui multipass id-instability count (#1614). Zero on a healthy layout.
     api.set(
         "widget_id_warnings",
@@ -8433,7 +8483,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         -- `bearcad.ui.*` sub-namespace so scripts can focus on modeling (#46).
         bearcad.ui = {}
         local ui_funcs = {
-            "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_dim", "pane", "pane_rect", "widget_id_warnings", "palette", "settings",
+            "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_dim", "pane", "pane_rect", "pane_scroll", "scroll_pane", "ai_sections", "widget_id_warnings", "palette", "settings",
             "changelog",
             "mcmaster",
             "report_issue", "windows", "focused_window",
@@ -10267,7 +10317,8 @@ mod tests {
             r#"
             assert(bearcad.ui ~= nil, "bearcad.ui table missing")
             for _, name in ipairs({ "move", "click", "tool", "view", "orbit", "pan",
-                                    "key", "type", "pane", "pane_rect", "palette", "wait", "help",
+                                    "key", "type", "pane", "pane_rect", "pane_scroll",
+                                    "scroll_pane", "ai_sections", "palette", "wait", "help",
                                     "toolbar_shortcuts", "toolbar_tools", "changelog",
                                     "mcmaster", "report_issue", "windows", "focused_window",
                                     "new_tab", "close_tab", "tab", "tabs", "tab_count",
