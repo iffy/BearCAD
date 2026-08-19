@@ -125,8 +125,9 @@ bearcad.drag_gizmo{ name = "extrude", by = 5 }      -- nudge it (mirrors a drag 
 
 Lengths are in millimetres, angles in radians. Gizmos today: `"extrude"`,
 `"chamfer"`/`"fillet"`, `"revolve"`, `"offset"` (construction plane), Free Move's
-`"move_x"`/`"move_y"`/`"move_z"` and `"move_rx"`/`"move_ry"`/`"move_rz"`, and
-`"text_width"` (a selected wrapped text's box width).
+`"move_x"`/`"move_y"`/`"move_z"` and `"move_rx"`/`"move_ry"`/`"move_rz"`,
+`"text_width"` (a selected wrapped text's box width), and `"text_rotation"`
+(a selected text's turn about its origin, radians).
 
 `bearcad.move_preview()` is the Move tool's intended pose (the hover candidate, or
 the in-progress move): `{ translation, rotation, bbox }`, or `nil` when there is

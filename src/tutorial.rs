@@ -2623,6 +2623,7 @@ fn assist_place_bear_text(app: &mut AppState) {
             size_expr: existing.size_expr,
             rotation: existing.rotation,
             wrap_width: existing.wrap_width,
+            flip: existing.flip,
         });
         return;
     }
@@ -2644,6 +2645,7 @@ fn assist_place_bear_text(app: &mut AppState) {
         origin: (-8.0, 3.0),
         rotation: 0.0,
         wrap_width: None,
+        flip: false,
     });
 }
 

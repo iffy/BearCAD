@@ -127,6 +127,60 @@ pub fn wrap_box_baseline(text: &crate::model::SketchText) -> Option<(f32, f32, f
     Some((0.0, min_y, wrap, max_y))
 }
 
+/// Vertical centre the flip mirror reflects about (#1571): wrap-box mid, else the
+/// glyph-bbox mid. Empty text mirrors about the origin.
+fn flip_axis_x(text: &crate::model::SketchText) -> f32 {
+    if let Some(w) = text.wrap_width {
+        return w * 0.5;
+    }
+    let (mut min_x, mut max_x) = (f32::MAX, f32::MIN);
+    for c in &text.contours {
+        for &(x, _) in c {
+            min_x = min_x.min(x);
+            max_x = max_x.max(x);
+        }
+    }
+    if min_x > max_x {
+        0.0
+    } else {
+        (min_x + max_x) * 0.5
+    }
+}
+
+/// Apply a horizontal mirror about [`flip_axis_x`] when `text.flip` is set.
+fn apply_flip_x(text: &crate::model::SketchText, x: f32) -> f32 {
+    if text.flip {
+        2.0 * flip_axis_x(text) - x
+    } else {
+        x
+    }
+}
+
+/// Map a **glyph** baseline-space point through flip, rotation, and origin into sketch-local
+/// uv (#1571). Flip mirrors about the box's vertical centre so the letters stay put.
+pub fn glyph_to_local(text: &crate::model::SketchText, x: f32, y: f32) -> (f32, f32) {
+    baseline_to_local(text, apply_flip_x(text, x), y)
+}
+
+/// Inverse of [`glyph_to_local`]: sketch-local uv → glyph baseline space.
+pub fn local_to_glyph(text: &crate::model::SketchText, u: f32, v: f32) -> (f32, f32) {
+    let (x, y) = local_to_baseline(text, u, v);
+    (apply_flip_x(text, x), y)
+}
+
+/// Radius of the text rotation gizmo ring (#1570): just outside the farthest
+/// flipped+rotated outline point from the origin.
+pub fn text_rotation_radius(text: &crate::model::SketchText) -> f32 {
+    let mut reach: f32 = 0.0;
+    for contour in &text.contours {
+        for &(x, y) in contour {
+            let fx = apply_flip_x(text, x);
+            reach = reach.max(fx.hypot(y));
+        }
+    }
+    reach.max(1.0) * 1.15
+}
+
 /// Map a baseline-space point through a text's rotation and origin into sketch-local uv.
 pub fn baseline_to_local(text: &crate::model::SketchText, x: f32, y: f32) -> (f32, f32) {
     let (sin, cos) = text.rotation.sin_cos();
@@ -481,6 +535,7 @@ mod tests {
             size_expr: "10".into(),
             origin: (0.0, 0.0),
             rotation: 0.0,
+            flip: false,
             wrap_width: None,
             baseline_line: None,
             contours: vec![vec![(2.0, 0.0), (20.0, 0.0), (20.0, 10.0), (2.0, 10.0)]],
@@ -497,6 +552,46 @@ mod tests {
         // Empty text → nine origins.
         text.contours.clear();
         assert_eq!(sketch_text_anchor_points(&text), [(0.0, 0.0); 9]);
+    }
+
+    /// #1571: flipping a text mirrors glyph points about the box centre; anchors stay put.
+    #[test]
+    fn flipped_glyphs_mirror_about_the_box_centre() {
+        use crate::model::TextAnchor as A;
+        let mut text = crate::model::SketchText {
+            sketch: skey(0),
+            text: "x".into(),
+            font_family: String::new(),
+            bold: false,
+            italic: false,
+            underline: false,
+            size: 10.0,
+            size_expr: "10".into(),
+            origin: (5.0, 1.0),
+            rotation: 0.0,
+            flip: false,
+            wrap_width: None,
+            baseline_line: None,
+            contours: vec![vec![(2.0, 0.0), (20.0, 0.0), (20.0, 10.0), (2.0, 10.0)]],
+            font_bytes: Vec::new(),
+            pin: None,
+            name: None,
+        };
+        let unflipped = glyph_to_local(&text, 2.0, 0.0);
+        assert!(
+            (unflipped.0 - 7.0).abs() < 1e-4 && (unflipped.1 - 1.0).abs() < 1e-4,
+            "unflipped (2,0) + origin (5,1) → (7,1), got {unflipped:?}"
+        );
+        text.flip = true;
+        // Box spans x=2..20, centre at 11. The left corner 2 mirrors to 20.
+        let flipped = glyph_to_local(&text, 2.0, 0.0);
+        assert!(
+            (flipped.0 - 25.0).abs() < 1e-4 && (flipped.1 - 1.0).abs() < 1e-4,
+            "flipped left corner should land at origin+(20,0)=(25,1); got {flipped:?}"
+        );
+        // Anchors are not flipped — the box stays put.
+        let left = sketch_text_anchor_uv(&text, A::BottomLeft);
+        assert!((left.0 - 7.0).abs() < 1e-4 && (left.1 - 1.0).abs() < 1e-4);
     }
 
     /// A plain text font's bytes, or skip (CI without fonts). Prefers common sans/serif families so

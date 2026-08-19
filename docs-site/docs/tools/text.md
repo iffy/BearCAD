@@ -33,7 +33,9 @@ face or plane to start a sketch there.
   accepts the completion popup.
 - **Font** — any installed font family. **B / I / U** toggle bold, italic, underline.
 - **Size** — font size in mm; an expression field, so lettering scales with the model.
-- **Rotation°** — turns the text about its start point.
+- **Rotation°** — turns the text about its start point. While creating or editing, drag
+  the rotation handle around the origin to turn it live.
+- **Flip** — mirrors the letters about the box centre (stamp / mould reading).
 - **Wrap width** — empty grows to fit; a width in mm word-wraps. A selected wrapped text
   shows its box dashed with a **drag handle** on each vertical edge — drag to resize the
   width (the opposite edge stays put).
@@ -46,9 +48,11 @@ an anchor and another point and press **4** (Coincident) to hold the text there 
 model changes. The text translates to follow; other geometry stays put. Dragged points
 also snap onto anchors.
 
-## Rotating with the Move tool
+## Rotating
 
-With the **Move** tool, drag the rotation ring around a selected text to turn it in place.
+The Text tool shows a rotation handle around the origin while a text is selected
+(just placed, or being edited). Drag it to turn the text; the **Rotation°** field
+follows. The **Move** tool shows the same handle.
 
 ## Fonts travel with the file
 
@@ -70,8 +74,10 @@ stay holes.
 ```lua
 bearcad.text{ text = "Hello", x = 10, y = 10, size = 12 }
 bearcad.text{ text = "Label", size = "w / 2", font = "Helvetica",
-              bold = true, rotation = 30, name = "Lid label" }
+              bold = true, rotation = 30, flip = true, name = "Lid label" }
 bearcad.select{ kind = "sketch_text", index = 0 }
+bearcad.set_gizmo{ name = "text_rotation", value = math.rad(45) }
+bearcad.get{ kind = "sketch_text", index = 0 }  -- text, x, y, rotation, flip, …
 bearcad.count("sketch_text")
 
 -- Engrave a text: extrude/cut the whole word (all its glyphs) in one call.
@@ -84,5 +90,5 @@ bearcad.add_geometric_constraint("coincident")
 ```
 
 Like `rect` and `circle`, `text` begins a ground sketch when none is open. `size` accepts
-an expression; `rotation` is degrees about `(x, y)`; optional `wrap` sets a wrap width in
-mm; `font` defaults to a standard system font.
+an expression; `rotation` is degrees about `(x, y)`; `flip` mirrors the letters; optional
+`wrap` sets a wrap width in mm; `font` defaults to a standard system font.

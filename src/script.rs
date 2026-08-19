@@ -244,6 +244,8 @@ pub enum Instruction {
         y: f32,
         rotation_deg: f32,
         wrap: Option<f32>,
+        /// Mirror the glyphs about the box's vertical centre (#1571).
+        flip: bool,
     },
     /// Project outside geometry into the active sketch (`bearcad.project{ ... }`, #1351).
     /// Empty `elements` means the current scene selection (including un-project).
@@ -1141,13 +1143,19 @@ impl Instruction {
                 y,
                 rotation_deg,
                 wrap,
+                flip,
             } => {
                 let mut args = format!("text = {:?}, x = {x}, y = {y}, size = {:?}", text, size);
                 if let Some(font) = font {
                     args.push_str(&format!(", font = {font:?}"));
                 }
-                for (flag, name) in [(bold, "bold"), (italic, "italic"), (underline, "underline")] {
-                    if *flag {
+                for (flag, name) in [
+                    (*bold, "bold"),
+                    (*italic, "italic"),
+                    (*underline, "underline"),
+                    (*flip, "flip"),
+                ] {
+                    if flag {
                         args.push_str(&format!(", {name} = true"));
                     }
                 }
@@ -6193,6 +6201,7 @@ impl ScriptRunner {
                 y,
                 rotation_deg,
                 wrap,
+                flip,
             } => {
                 let Some(session) = state.sketch_session else {
                     self.last_action_error = Some("text needs an open sketch".to_string());
@@ -6222,6 +6231,7 @@ impl ScriptRunner {
                     origin: (x, y),
                     rotation: rotation_deg.to_radians(),
                     wrap_width: wrap,
+                    flip,
                 });
                 self.record_action_error(result);
                 StepResult::Continue

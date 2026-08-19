@@ -2005,9 +2005,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   in JSON) so the text renders identically on a machine that lacks the font — like a PDF; if the
   font is missing on load, the stored outlines still render.
 - **Model/rendering:** `SketchText` stores the string, font family, bold/italic/underline, size
-  (+ expression), baseline origin, rotation, optional wrap width, the baked `contours`, and the
+  (+ expression), baseline origin, rotation, flip, optional wrap width, the baked `contours`, and the
   embedded `font_bytes`. The baked contours (outer loops + counters/holes, separated by winding)
-  render as closed polylines on the sketch plane, transformed by the element's origin/rotation. A
+  render as closed polylines on the sketch plane, transformed by the element's origin/rotation/flip. A
   `SketchText` is a first-class element — one node nested under its sketch in the Elements pane and
   graph, selectable/renamable/deletable/undoable; selecting it selects the whole text. Persisted in
   the `.bearcad` file (`sketch_text` nodes). Editing (`EditSketchText`) re-bakes from the font,
@@ -2019,14 +2019,17 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   **B**/**I**/**U** style toggles, a **Size** field accepting length expressions (parameters
   work: `w / 2`) with **± stepper buttons** that bump the evaluated size by 1 mm (#385,
   replacing any expression with the stepped literal, floored at 1 mm), a **Rotation°** field
-  in degrees, and a **Wrap width** field (mm; empty
+  in degrees, a **Flip** checkbox that mirrors the glyphs about the box's vertical
+  centre (#1571), and a **Wrap width** field (mm; empty
   grows the box to fit, a value word-wraps to that width, #282). Every change re-bakes the
   glyphs immediately. A size expression is stored as typed; the evaluated size only moves once
   the expression is valid, so mid-edit states don't clobber the text.
-- **Move-tool rotation (#286):** with the **Move** tool active and one text selected, the
-  rotation-ring gizmo (#216's ring) appears in the sketch plane around the text's baseline
-  origin, sized to the glyph outlines; dragging the ring turns the text about its origin, live.
-  The ring and the context **Rotation°** field read the same model value, so they stay in sync.
+- **Rotation gizmo (#286/#1570):** with the **Text** tool (create/edit) or the **Move**
+  tool and one text selected, the handle-disc rotation gizmo appears in the sketch plane
+  around the text's baseline origin, sized to the glyph outlines; dragging the handle
+  turns the text about its origin, live. The handle and the context **Rotation°** field
+  read the same model value, so they stay in sync. Scriptable as the `"text_rotation"`
+  gizmo (radians).
 - **Constrainable anchors (#408, replacing #356/#359's bespoke pin):** each of a text's nine
   bounding-box anchors (`model::TextAnchor` — four corners, four edge midpoints, centre) is a
   first-class sketch point: `ConstraintPoint::TextAnchor { text, anchor }`. Anchors are
