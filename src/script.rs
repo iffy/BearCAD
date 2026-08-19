@@ -8128,13 +8128,18 @@ pub enum CliOutcome {
     /// Print every tool operation's input/output/shadow element types (`bearcad opsigs`).
     /// `html` is true when `--html` was passed (HTML document instead of markdown).
     OpSigs { html: bool },
+    /// Print an exhaustive `[ ]` test checklist (`bearcad testplan`).
+    Testplan,
     Run(ScriptOptions),
 }
 
 /// Print usage information to stdout.
 pub fn print_usage() {
-    println!(
-        "\
+    print!("{}", usage_text());
+}
+
+fn usage_text() -> &'static str {
+    "\
 BearCAD — parametric CAD prototype
 
 Usage:
@@ -8150,6 +8155,9 @@ Commands:
                         file it downloads. The app runs this itself when you import a part
   opsigs [--html]       Print every tool operation's inputs, outputs, and shadows
                         (markdown; pass --html for HTML). Also: `cargo opsigs`
+  testplan              Print a [ ] checklist of tools, variants, and features
+                        for exhaustive manual or AI testing. Extra items live in
+                        src/testplan.rs (`CUSTOM_ITEMS`)
 
 Options:
   --script <path>       Run a Lua script
@@ -8174,6 +8182,7 @@ Examples:
   bearcad --tutorial cube
   bearcad --exit --timeout 30
   bearcad install-cli
+  bearcad testplan
 
 Diagnostics:
   Every run writes a log; the path is printed on startup. Warnings and notable
@@ -8181,7 +8190,6 @@ Diagnostics:
   BEARCAD_LOG=1          Put the full trace on stderr too, not just in the log
   BEARCAD_LOG_FILE=path  Write the log here instead of the default
 "
-    );
 }
 
 /// Parse command-line arguments.
@@ -8207,6 +8215,7 @@ pub fn parse_cli(args: impl IntoIterator<Item = impl AsRef<str>>) -> CliOutcome 
             let html = args.iter().skip(2).any(|a| a == "--html");
             return CliOutcome::OpSigs { html };
         }
+        Some("testplan") => return CliOutcome::Testplan,
         _ => {}
     }
     CliOutcome::Run(parse_args_from_vec(&args))
@@ -8690,6 +8699,24 @@ mod tests {
     fn parse_cli_help_flags() {
         assert_eq!(parse_cli(["bearcad", "--help"]), CliOutcome::Help);
         assert_eq!(parse_cli(["bearcad", "-h"]), CliOutcome::Help);
+    }
+
+    #[test]
+    fn parse_cli_testplan_subcommand() {
+        assert_eq!(parse_cli(["bearcad", "testplan"]), CliOutcome::Testplan);
+    }
+
+    #[test]
+    fn usage_lists_testplan() {
+        let usage = usage_text();
+        assert!(
+            usage.contains("testplan"),
+            "help should list the testplan command"
+        );
+        assert!(
+            usage.contains("CUSTOM_ITEMS"),
+            "help should point at the custom-items hook"
+        );
     }
 
     #[test]

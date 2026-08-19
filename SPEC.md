@@ -3930,6 +3930,9 @@ and automation (including screenshot capture of the live UI).
   CAD file it downloads (#1022). The app runs itself under this to host the web view in a
   second process; it is a real subcommand rather than a private flag so the window can also
   be opened, and its behaviour checked, straight from a terminal.
+- `testplan` — print a `[ ]` checklist of tools, tool variants, features, and other
+  actions for exhaustive manual or AI testing. Extra one-off items are added in
+  `src/testplan.rs` (`CUSTOM_ITEMS`).
 - `install-cli` / `uninstall-cli` — symlink the running executable onto PATH as `bearcad`
   (default `/usr/local/bin/bearcad`), and remove it; also register / unregister the
   `.bearcad` file association so double-click opens BearCAD (#1285). Because macOS
