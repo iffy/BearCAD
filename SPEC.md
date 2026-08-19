@@ -1965,9 +1965,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   (`opacity` is a number or expression) and `bearcad.get{ kind = "image", index }.opacity`.
 - **Scale calibration (#163/#171/#1547/#1586):** selecting only a tracing image with the Select
   tool immediately enters calibration mode. A line with a point at each end always sits
-  on the image's plane — on a fresh import, top-middle to bottom-middle — and always
-  carries a dimension that cannot be removed. That overlay is shown only while the image
-  is selected; with the image unselected (and no sketch on its plane) the endpoints neither
+  on the image's plane — on a fresh import, top-middle to bottom-middle — drawn like a
+  selected line (bright, bold, on top of the picture) while the image is selected, and
+  always carries a dimension that cannot be removed. That overlay is shown only while the
+  image is selected; with the image unselected (and no sketch on its plane) the endpoints neither
   hover nor take a click — the image quad does. Drag either endpoint on or off the image
   (still in-plane); that updates stored UV and never rescales. Double-click the dimension
   (a ValueInput: any length expression) to rescale the image uniformly about the span
