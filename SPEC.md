@@ -5194,6 +5194,9 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   then change `height` in the pane. Title: **Parameters**.
 - **Chamfer** (`chamfer`, #1555): rectangle on the ground, chamfer one corner, extrude, then
   click the top of the box so Chamfer takes every edge of that side. Title: **Chamfer**.
+- **Constraints** (`constraints`, #1591): draw a four-sided polygon with the Line tool, then
+  pin a side horizontal (parallel to X), a neighbour vertical (parallel to Y), and two sides
+  Equal. Title: **Constraints**. Sits after Chamfer and before Combine.
 - **Combine** (`combine`, #1556): place a cuboid and an overlapping sphere, switch Combine to
   Cut, pick the cube then the sphere, Enter. Title: **Combine**.
 - **Raised text** (`raised_text`, #1557): place a cuboid, sketch on its top, drop text, type

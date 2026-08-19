@@ -29,7 +29,6 @@ pub enum UiAnchor {
     ParametersExistingValue,
     /// A constraint button in the Context pane's Constraints list (#770) — where a
     /// squaring-up step points once both of its picks are made.
-    #[allow(dead_code)]
     ConstraintButton(crate::geometric_constraints::GeometricConstraintType),
     /// The extrude Output row's **Cut** button (#804).
     #[allow(dead_code)]
@@ -322,6 +321,12 @@ pub static TUTORIALS: &[Tutorial] = &[
         title: "Chamfer",
         steps: CHAMFER_STEPS,
     },
+    // #1591: draw a polygon with the Line tool, then pin it with constraints.
+    Tutorial {
+        name: "constraints",
+        title: "Constraints",
+        steps: CONSTRAINTS_STEPS,
+    },
     // #1556: cut a sphere out of a cube with the Combine tool.
     Tutorial {
         name: "combine",
@@ -428,6 +433,28 @@ const fn keyed_assist_step(
         needs_shift: None,
         drag_hint: None,
         key_hint: Some((key, key_why)),
+        marks: None,
+        type_hint: None,
+        phone_narration: None,
+        only_on_phone: false,
+    }
+}
+
+const fn shift_click_step(
+    narration: &'static str,
+    anchor: StepAnchor,
+    done: Option<fn(&AppState) -> bool>,
+    needs_shift: fn(&AppState) -> bool,
+) -> Step {
+    Step {
+        narration,
+        anchor,
+        done,
+        on_enter: None,
+        assist: None,
+        needs_shift: Some(needs_shift),
+        drag_hint: None,
+        key_hint: None,
         marks: None,
         type_hint: None,
         phone_narration: None,
@@ -2236,6 +2263,391 @@ static PARAMETERS_STEPS: &[Step] = &[
     ),
 ];
 
+fn line_is_parallel_to_axis(
+    app: &AppState,
+    line: crate::model::LineKey,
+    axis: crate::model::SketchAxis,
+) -> bool {
+    use crate::model::ConstraintLine;
+    live_constraints(app).any(|c| match &c.kind {
+        ConstraintKind::Parallel { line_a, line_b } => {
+            let this = ConstraintLine::Line(line);
+            let ax = ConstraintLine::OriginAxis(axis);
+            (*line_a == this && *line_b == ax) || (*line_b == this && *line_a == ax)
+        }
+        _ => false,
+    })
+}
+
+fn has_axis_parallel(app: &AppState, axis: crate::model::SketchAxis) -> bool {
+    app.doc
+        .lines
+        .keys()
+        .any(|line| line_is_parallel_to_axis(app, line, axis))
+}
+
+fn has_equal_constraint(app: &AppState) -> bool {
+    live_constraints(app).any(|c| matches!(c.kind, ConstraintKind::Equal { .. }))
+}
+
+fn has_horizontal_constraint(app: &AppState) -> bool {
+    has_axis_parallel(app, crate::model::SketchAxis::X)
+}
+
+fn has_vertical_constraint(app: &AppState) -> bool {
+    has_axis_parallel(app, crate::model::SketchAxis::Y)
+}
+
+/// Slightly irregular quad — a freehand polygon, not a rectangle.
+const POLY_UV: [(f32, f32); 4] = [
+    (20.0, 20.0),
+    (55.0, 18.0),
+    (58.0, 52.0),
+    (18.0, 50.0),
+];
+
+fn sketch_drawn_line_count(app: &AppState) -> usize {
+    app.doc.lines.values().filter(|l| !l.construction).count()
+}
+
+fn has_closed_polygon(app: &AppState) -> bool {
+    app.doc.sketches.keys().any(|sk| {
+        crate::polygon::closed_line_loops(&app.doc, sk)
+            .iter()
+            .any(|loop_| loop_.len() >= 4)
+    })
+}
+
+fn line_tool_active(app: &AppState) -> bool {
+    app.tool == Tool::Line
+        || app.creating_line.is_some()
+        || sketch_drawn_line_count(app) > 0
+        || has_closed_polygon(app)
+}
+
+fn constraint_tool_active(app: &AppState) -> bool {
+    app.tool == Tool::Constraint
+        || has_axis_parallel(app, crate::model::SketchAxis::X)
+        || has_equal_constraint(app)
+}
+
+fn first_poly_vertex_placed(app: &AppState) -> bool {
+    app.creating_line.is_some() || sketch_drawn_line_count(app) >= 1 || has_closed_polygon(app)
+}
+
+fn poly_has_one_side(app: &AppState) -> bool {
+    sketch_drawn_line_count(app) >= 1 || has_closed_polygon(app)
+}
+
+fn poly_has_two_sides(app: &AppState) -> bool {
+    sketch_drawn_line_count(app) >= 2 || has_closed_polygon(app)
+}
+
+fn poly_has_three_sides(app: &AppState) -> bool {
+    sketch_drawn_line_count(app) >= 3 || has_closed_polygon(app)
+}
+
+fn selected_line_keys(app: &AppState) -> Vec<crate::model::LineKey> {
+    app.scene_selection
+        .iter()
+        .filter_map(|e| match e {
+            crate::hierarchy::SceneElement::Line(k) => Some(k),
+            _ => None,
+        })
+        .collect()
+}
+
+fn horizontal_side_picked(app: &AppState) -> bool {
+    has_axis_parallel(app, crate::model::SketchAxis::X) || !selected_line_keys(app).is_empty()
+}
+
+fn vertical_side_picked(app: &AppState) -> bool {
+    has_axis_parallel(app, crate::model::SketchAxis::Y)
+        || selected_line_keys(app)
+            .iter()
+            .any(|&k| !line_is_parallel_to_axis(app, k, crate::model::SketchAxis::X))
+}
+
+fn equal_first_side_picked(app: &AppState) -> bool {
+    has_equal_constraint(app)
+        || selected_line_keys(app).len() >= 2
+        || selected_line_keys(app).iter().any(|&k| {
+            !line_is_parallel_to_axis(app, k, crate::model::SketchAxis::X)
+                && !line_is_parallel_to_axis(app, k, crate::model::SketchAxis::Y)
+        })
+}
+
+fn equal_second_side_picked(app: &AppState) -> bool {
+    has_equal_constraint(app) || selected_line_keys(app).len() >= 2
+}
+
+fn equal_needs_shift(app: &AppState) -> bool {
+    !equal_second_side_picked(app)
+}
+
+fn poly_vertex_guide(app: &AppState, nth: usize) -> Option<glam::Vec3> {
+    let (u, v) = POLY_UV[nth % POLY_UV.len()];
+    ground_local(app, u, v)
+}
+
+fn poly_vertex_0(app: &AppState) -> Option<glam::Vec3> {
+    poly_vertex_guide(app, 0)
+}
+
+fn poly_vertex_1(app: &AppState) -> Option<glam::Vec3> {
+    poly_vertex_guide(app, 1)
+}
+
+fn poly_vertex_2(app: &AppState) -> Option<glam::Vec3> {
+    poly_vertex_guide(app, 2)
+}
+
+fn poly_vertex_3(app: &AppState) -> Option<glam::Vec3> {
+    poly_vertex_guide(app, 3)
+}
+
+fn poly_side_mid(app: &AppState, nth: usize) -> Option<glam::Vec3> {
+    let lines = first_sketch_rect_lines(app);
+    if let Some(&key) = lines.get(nth) {
+        if let Some(l) = app.doc.lines.get(key) {
+            if let Some(frame) = crate::face::sketch_geometry_frame(&app.doc, l.sketch) {
+                return Some(crate::face::local_to_world(
+                    &frame,
+                    (l.x0 + l.x1) * 0.5,
+                    (l.y0 + l.y1) * 0.5,
+                ));
+            }
+        }
+    }
+    let (u0, v0) = POLY_UV[nth % POLY_UV.len()];
+    let (u1, v1) = POLY_UV[(nth + 1) % POLY_UV.len()];
+    ground_local(app, (u0 + u1) * 0.5, (v0 + v1) * 0.5)
+}
+
+fn poly_bottom_mid(app: &AppState) -> Option<glam::Vec3> {
+    poly_side_mid(app, 0)
+}
+
+fn poly_right_mid(app: &AppState) -> Option<glam::Vec3> {
+    poly_side_mid(app, 1)
+}
+
+fn poly_top_mid(app: &AppState) -> Option<glam::Vec3> {
+    poly_side_mid(app, 2)
+}
+
+fn ensure_line_sketch_for_tutorial(app: &mut AppState) {
+    if app.tool != Tool::Line {
+        app.apply(Action::SetTool(Tool::Line));
+    }
+    ensure_ground_sketch(app);
+}
+
+fn ensure_constraint_step(app: &mut AppState) {
+    if !has_closed_polygon(app) {
+        assist_draw_polygon(app);
+    }
+    if app.tool != Tool::Constraint {
+        app.apply(Action::SetTool(Tool::Constraint));
+    }
+}
+
+fn select_poly_line(app: &mut AppState, nth: usize) {
+    app.scene_selection.clear();
+    if let Some(&key) = first_sketch_rect_lines(app).get(nth) {
+        app.scene_selection
+            .insert(crate::hierarchy::SceneElement::Line(key));
+    }
+}
+
+fn select_poly_lines(app: &mut AppState, a: usize, b: usize) {
+    app.scene_selection.clear();
+    let lines = first_sketch_rect_lines(app);
+    for nth in [a, b] {
+        if let Some(&key) = lines.get(nth) {
+            app.scene_selection
+                .insert(crate::hierarchy::SceneElement::Line(key));
+        }
+    }
+}
+
+fn ensure_poly_sketch_open(app: &mut AppState) {
+    if app.sketch_session.is_some() {
+        return;
+    }
+    let existing = app.doc.sketches.keys().next();
+    if let Some(sketch) = existing {
+        app.apply(Action::OpenSketch {
+            sketch,
+            viewport: None,
+        });
+        return;
+    }
+    ensure_ground_sketch(app);
+}
+
+fn assist_draw_polygon(app: &mut AppState) {
+    if has_closed_polygon(app) {
+        ensure_poly_sketch_open(app);
+        return;
+    }
+    ensure_poly_sketch_open(app);
+    let Some(session) = app.sketch_session else {
+        return;
+    };
+    crate::construction::add_line_polygon(&mut app.doc, session.sketch, &POLY_UV);
+    app.creating_line = None;
+    app.refresh_document_health();
+}
+
+fn assist_horizontal(app: &mut AppState) {
+    if has_axis_parallel(app, crate::model::SketchAxis::X) {
+        return;
+    }
+    assist_draw_polygon(app);
+    select_poly_line(app, 0);
+    let _ = app.apply(Action::AddGeometricConstraint(
+        crate::geometric_constraints::GeometricConstraintType::AlongXAxis,
+    ));
+}
+
+fn assist_vertical(app: &mut AppState) {
+    if has_axis_parallel(app, crate::model::SketchAxis::Y) {
+        return;
+    }
+    assist_horizontal(app);
+    select_poly_line(app, 1);
+    let _ = app.apply(Action::AddGeometricConstraint(
+        crate::geometric_constraints::GeometricConstraintType::AlongYAxis,
+    ));
+}
+
+fn assist_equal(app: &mut AppState) {
+    if has_equal_constraint(app) {
+        return;
+    }
+    assist_vertical(app);
+    select_poly_lines(app, 0, 2);
+    let _ = app.apply(Action::AddGeometricConstraint(
+        crate::geometric_constraints::GeometricConstraintType::Equal,
+    ));
+}
+
+/// #1591: draw a four-sided polygon with the Line tool, then pin it with
+/// horizontal, vertical, and equal constraints.
+static CONSTRAINTS_STEPS: &[Step] = &[
+    plain_step(
+        "Let's draw a polygon and pin it with constraints.",
+        StepAnchor::None,
+        None,
+    ),
+    plain_step(
+        "Click the Line tool \u{2014} glowing button, or `L`.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Line)),
+        Some(line_tool_active),
+    ),
+    plain_step_enter(
+        "Click a first corner on the ground.",
+        StepAnchor::World(poly_vertex_0),
+        Some(first_poly_vertex_placed),
+        ensure_line_sketch_for_tutorial,
+    ),
+    plain_step(
+        "Click the next corner.",
+        StepAnchor::World(poly_vertex_1),
+        Some(poly_has_one_side),
+    ),
+    plain_step(
+        "Click the next.",
+        StepAnchor::World(poly_vertex_2),
+        Some(poly_has_two_sides),
+    ),
+    plain_step(
+        "Click the next.",
+        StepAnchor::World(poly_vertex_3),
+        Some(poly_has_three_sides),
+    ),
+    assisted_step(
+        "Click the first corner again to close the polygon.",
+        StepAnchor::World(poly_vertex_0),
+        Some(has_closed_polygon),
+        StepAssist {
+            label: "Draw it for me",
+            run: assist_draw_polygon,
+        },
+        None,
+    ),
+    plain_step(
+        "Click the Constraint tool \u{2014} glowing button, or `C`.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Constraint)),
+        Some(constraint_tool_active),
+    ),
+    plain_step_enter(
+        "Click the bottom side.",
+        StepAnchor::World(poly_bottom_mid),
+        Some(horizontal_side_picked),
+        ensure_constraint_step,
+    ),
+    assisted_step(
+        "Click Parallel to X axis (or press `6`) \u{2014} that makes it horizontal.",
+        StepAnchor::Ui(UiAnchor::ConstraintButton(
+            crate::geometric_constraints::GeometricConstraintType::AlongXAxis,
+        )),
+        Some(has_horizontal_constraint),
+        StepAssist {
+            label: "Do it for me",
+            run: assist_horizontal,
+        },
+        None,
+    ),
+    plain_step(
+        "Click a neighbouring side.",
+        StepAnchor::World(poly_right_mid),
+        Some(vertical_side_picked),
+    ),
+    assisted_step(
+        "Click Parallel to Y axis (or press `7`) \u{2014} now it's vertical.",
+        StepAnchor::Ui(UiAnchor::ConstraintButton(
+            crate::geometric_constraints::GeometricConstraintType::AlongYAxis,
+        )),
+        Some(has_vertical_constraint),
+        StepAssist {
+            label: "Do it for me",
+            run: assist_vertical,
+        },
+        None,
+    ),
+    plain_step(
+        "Click one more side.",
+        StepAnchor::World(poly_top_mid),
+        Some(equal_first_side_picked),
+    ),
+    shift_click_step(
+        "Shift-click another side.",
+        StepAnchor::World(poly_bottom_mid),
+        Some(equal_second_side_picked),
+        equal_needs_shift,
+    ),
+    assisted_step(
+        "Click Equal (or press `3`) \u{2014} those two stay the same length.",
+        StepAnchor::Ui(UiAnchor::ConstraintButton(
+            crate::geometric_constraints::GeometricConstraintType::Equal,
+        )),
+        Some(has_equal_constraint),
+        StepAssist {
+            label: "Do it for me",
+            run: assist_equal,
+        },
+        None,
+    ),
+    plain_step(
+        "That's constraints: facts the solver keeps true. Drag a corner \u{2014} those \
+         sides stay put. Nice!",
+        StepAnchor::None,
+        None,
+    ),
+];
+
 fn chamfer_tool_active(app: &AppState) -> bool {
     app.tool == Tool::Chamfer
 }
@@ -3108,12 +3520,13 @@ mod tests {
         assert_eq!(tutorial_index("dimensioned_box"), Some(3));
         assert_eq!(tutorial_index("parameters"), Some(4), "#1347: parameters is fifth");
         assert_eq!(tutorial_index("chamfer"), Some(5), "#1555: chamfer is sixth");
-        assert_eq!(tutorial_index("combine"), Some(6), "#1556: combine is seventh");
-        assert_eq!(tutorial_index("raised_text"), Some(7), "#1557: raised text is eighth");
+        assert_eq!(tutorial_index("constraints"), Some(6), "#1591: constraints is seventh");
+        assert_eq!(tutorial_index("combine"), Some(7), "#1556: combine is eighth");
+        assert_eq!(tutorial_index("raised_text"), Some(8), "#1557: raised text is ninth");
         assert_eq!(tutorial_index("bracket"), None, "#1334: build-a-bracket tutorial is gone");
         assert_eq!(tutorial_index("nope"), None);
         assert_eq!(TUTORIALS.last().unwrap().name, "raised_text");
-        assert_eq!(TUTORIALS.len(), 8, "pane lists every remaining walkthrough");
+        assert_eq!(TUTORIALS.len(), 9, "pane lists every remaining walkthrough");
         for tut in TUTORIALS {
             assert_ne!(tut.name, "bracket");
             assert_ne!(tut.title, "Build an angle bracket");
@@ -4001,6 +4414,10 @@ mod tests {
             "Chamfer"
         );
         assert_eq!(
+            TUTORIALS[tutorial_index("constraints").unwrap()].title,
+            "Constraints"
+        );
+        assert_eq!(
             TUTORIALS[tutorial_index("combine").unwrap()].title,
             "Combine"
         );
@@ -4732,7 +5149,7 @@ mod tests {
     #[test]
     fn tutorials_are_numbered_in_catalog_order() {
         assert_eq!(numbered_title(0, "Sketch & Extrude"), "1. Sketch & Extrude");
-        assert_eq!(numbered_title(7, "Raised text"), "8. Raised text");
+        assert_eq!(numbered_title(8, "Raised text"), "9. Raised text");
         for (i, tut) in TUTORIALS.iter().enumerate() {
             let shown = numbered_title(i, tut.title);
             assert!(
@@ -4744,7 +5161,7 @@ mod tests {
                 "numbering must keep the skill title: {shown}"
             );
         }
-        assert_eq!(TUTORIALS.len(), 8);
+        assert_eq!(TUTORIALS.len(), 9);
     }
 
     fn chamfer_tut() -> &'static Tutorial {
@@ -5067,5 +5484,106 @@ mod tests {
                 step.narration
             );
         }
+    }
+
+    fn constraints_tut() -> &'static Tutorial {
+        &TUTORIALS[tutorial_index("constraints").expect("constraints tutorial is registered")]
+    }
+
+    /// #1591: draw a polygon with the Line tool, then pin it with a few constraints.
+    #[test]
+    fn constraints_tutorial_is_registered_and_covers_a_drawn_polygon() {
+        let tut = constraints_tut();
+        assert_eq!(tut.name, "constraints");
+        assert_eq!(tut.title, "Constraints");
+        assert_eq!(
+            tutorial_index("constraints"),
+            tutorial_index("chamfer").map(|i| i + 1),
+            "after the chamfer tutorial"
+        );
+        assert_eq!(
+            tutorial_index("combine"),
+            tutorial_index("constraints").map(|i| i + 1),
+            "before the combine tutorial"
+        );
+        let joined: String = tut
+            .steps
+            .iter()
+            .map(|s| s.narration.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            joined.contains("polygon"),
+            "should ask them to draw a polygon: {joined}"
+        );
+        assert!(
+            joined.contains("constraint"),
+            "should teach constraints: {joined}"
+        );
+        assert!(
+            joined.contains("equal"),
+            "should apply an equal constraint: {joined}"
+        );
+        assert!(
+            joined.contains("parallel to x") || joined.contains("horizontal"),
+            "should square a side to the X axis: {joined}"
+        );
+        assert!(
+            joined.contains("parallel to y") || joined.contains("vertical"),
+            "should square a side to the Y axis: {joined}"
+        );
+        assert!(
+            tut.steps
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::Tool(Tool::Line)))),
+            "should pick the Line tool so they draw the polygon"
+        );
+        assert!(
+            tut.steps
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::Tool(Tool::Constraint)))),
+            "should pick the Constraint tool"
+        );
+        assert!(
+            tut.steps.iter().any(|s| matches!(
+                s.anchor,
+                StepAnchor::Ui(UiAnchor::ConstraintButton(_))
+            )),
+            "should point at a constraint button in the Context pane"
+        );
+    }
+
+    /// #1591: assists draw a closed polygon and apply horizontal, vertical, and equal.
+    #[test]
+    fn constraints_tutorial_assists_draw_and_constrain_a_polygon() {
+        let mut app = AppState::default();
+        finish_tutorial_via_next(&mut app, "constraints");
+        let sketch = app
+            .doc
+            .sketches
+            .keys()
+            .next()
+            .expect("polygon sketch");
+        let loops = crate::polygon::closed_line_loops(&app.doc, sketch);
+        assert!(
+            loops.iter().any(|l| l.len() >= 4),
+            "should leave a closed four-sided polygon, loops={loops:?}, status={}",
+            app.status
+        );
+        assert!(
+            has_axis_parallel(&app, crate::model::SketchAxis::X),
+            "a side should be parallel to X, status={}",
+            app.status
+        );
+        assert!(
+            has_axis_parallel(&app, crate::model::SketchAxis::Y),
+            "a side should be parallel to Y, status={}",
+            app.status
+        );
+        assert!(
+            has_equal_constraint(&app),
+            "two sides should be equal, status={}",
+            app.status
+        );
     }
 }
