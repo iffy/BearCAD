@@ -716,6 +716,8 @@ pub enum Instruction {
         name: String,
     },
     FocusElementName,
+    /// Focus the Context pane's Real length field (#1612).
+    FocusCalibrateLength,
     /// Set the document-wide default length/angle units (#52).
     SetDocumentUnits { length: LengthUnit, angle: AngleUnit },
     /// Set (or clear, via `None`) a per-sketch length/angle unit override (#52).
@@ -1749,6 +1751,7 @@ impl Instruction {
                 )
             }
             Instruction::FocusElementName => "bearcad.ui.focus_name()".to_string(),
+            Instruction::FocusCalibrateLength => "bearcad.ui.focus_calibrate()".to_string(),
             Instruction::SetDocumentUnits { length, angle } => {
                 format!(
                     "bearcad.set_units{{ length = {:?}, angle = {:?} }}",
@@ -3566,6 +3569,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             name: name.clone(),
         }),
         Action::FocusElementName => Some(Instruction::FocusElementName),
+        Action::FocusCalibrateLength => Some(Instruction::FocusCalibrateLength),
         Action::SetDocumentUnits { length, angle } => {
             Some(Instruction::SetDocumentUnits { length: *length, angle: *angle })
         }
@@ -7367,6 +7371,11 @@ impl ScriptRunner {
             }
             Instruction::FocusElementName => {
                 state.apply(Action::FocusElementName);
+                StepResult::Continue
+            }
+            Instruction::FocusCalibrateLength => {
+                let result = state.apply(Action::FocusCalibrateLength);
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::SetDocumentUnits { length, angle } => {
