@@ -12,6 +12,9 @@ pub const ICON_DISPLAY_SIZE: f32 = 18.0;
 /// Combine Mode-row boolean icons (#1568): a step up from pane icons so the two-square
 /// glyphs stay readable, without matching the workbench toolbar.
 pub const COMBINE_MODE_ICON_SIZE: f32 = 24.0;
+/// Output-row New/Join/Cut icons (#1592): the same size as Combine Mode so the
+/// body-operation glyphs stay readable.
+pub const OUTPUT_MODE_ICON_SIZE: f32 = COMBINE_MODE_ICON_SIZE;
 const ICON_RASTER_SIZE: u32 = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
