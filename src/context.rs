@@ -5163,6 +5163,46 @@ pub fn combine_kind_rect(
     ctx.data(|d| d.get_temp::<egui::Rect>(combine_kind_rect_id(kind)))
 }
 
+/// Combine Mode row: four boolean-op icons (#1568). Returns the kind that was clicked, if any.
+fn show_combine_mode_icons(
+    ui: &mut egui::Ui,
+    kind: crate::model::BooleanOpKind,
+) -> Option<crate::model::BooleanOpKind> {
+    let mut clicked = None;
+    for (value, icon) in [
+        (
+            crate::model::BooleanOpKind::Combine,
+            crate::icons::IconId::BooleanUnion,
+        ),
+        (
+            crate::model::BooleanOpKind::Cut,
+            crate::icons::IconId::BooleanCut,
+        ),
+        (
+            crate::model::BooleanOpKind::Intersect,
+            crate::icons::IconId::BooleanIntersect,
+        ),
+        (
+            crate::model::BooleanOpKind::Difference,
+            crate::icons::IconId::BooleanDifference,
+        ),
+    ] {
+        let resp = crate::icons::selectable_icon_button_at(
+            ui,
+            icon,
+            kind == value,
+            value.label(),
+            crate::icons::COMBINE_MODE_ICON_SIZE,
+        );
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(combine_kind_rect_id(value), resp.rect));
+        if resp.clicked() && kind != value {
+            clicked = Some(value);
+        }
+    }
+    clicked
+}
+
 fn text_content_rect_id() -> egui::Id {
     egui::Id::new("text_content_rect")
 }
@@ -6107,25 +6147,8 @@ pub fn show_pane(
         // removed regions faint red — in the right column under a "Mode" label (#606).
         let kind = control.kind;
         labeled_row(ui, "Mode", |ui| {
-            for (value, icon) in [
-                (crate::model::BooleanOpKind::Combine, crate::icons::IconId::BooleanUnion),
-                (crate::model::BooleanOpKind::Cut, crate::icons::IconId::BooleanCut),
-                (
-                    crate::model::BooleanOpKind::Intersect,
-                    crate::icons::IconId::BooleanIntersect,
-                ),
-                (
-                    crate::model::BooleanOpKind::Difference,
-                    crate::icons::IconId::BooleanDifference,
-                ),
-            ] {
-                let resp =
-                    crate::icons::selectable_icon_button(ui, icon, kind == value, value.label());
-                ui.ctx()
-                    .data_mut(|d| d.insert_temp(combine_kind_rect_id(value), resp.rect));
-                if resp.clicked() && kind != value {
-                    on_boolean_edit(BooleanEdit::Kind(value));
-                }
+            if let Some(next) = show_combine_mode_icons(ui, kind) {
+                on_boolean_edit(BooleanEdit::Kind(next));
             }
         });
         let two_sided = control.kind != crate::model::BooleanOpKind::Combine;
@@ -11628,6 +11651,38 @@ mod tests {
         assert_eq!(
             cut[1].picker.selected_color(crate::theme::FOCUS_ACCENT),
             crate::theme::CUT_ACCENT
+        );
+    }
+
+    /// #1568: Combine Mode icons are a step up from ordinary pane icons so the two-circle
+    /// boolean glyphs stay readable.
+    #[test]
+    fn combine_mode_icons_are_slightly_bigger_than_pane_icons() {
+        let ctx = egui::Context::default();
+        let mut pane_h = 0.0f32;
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            pane_h = crate::icons::selectable_icon_button(
+                ui,
+                crate::icons::IconId::BooleanUnion,
+                false,
+                "Combine",
+            )
+            .rect
+            .height();
+            labeled_row(ui, "Mode", |ui| {
+                let _ = show_combine_mode_icons(ui, crate::model::BooleanOpKind::Cut);
+            });
+        });
+        let mode_rect = combine_kind_rect(&ctx, crate::model::BooleanOpKind::Combine)
+            .expect("Mode icon rect is recorded");
+        let mode_h = mode_rect.height();
+        assert!(
+            crate::icons::COMBINE_MODE_ICON_SIZE > crate::icons::ICON_DISPLAY_SIZE,
+            "Combine Mode icons should be slightly larger than pane icons"
+        );
+        assert!(
+            mode_h > pane_h,
+            "Combine Mode buttons should render taller than pane icon buttons ({mode_h} vs {pane_h})"
         );
     }
 
