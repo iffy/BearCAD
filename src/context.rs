@@ -4012,6 +4012,9 @@ const MOVE_MODE_ROW_LABEL: &str = "Move mode";
 /// Combine Mode row (#606 / #1579): the Y shortcut sits next to the field name,
 /// the same parenthetical form as Name (N).
 const COMBINE_MODE_ROW_LABEL: &str = "Mode (Y)";
+/// Output row (#639 / #1592): New body / Join / Cut for Extrude, Revolve, Sweep,
+/// Loft, and Mirror. The Y shortcut sits next to the field name.
+const OUTPUT_ROW_LABEL: &str = "Output (Y)";
 
 // --- Help mode (#672) --------------------------------------------------------------------
 //
@@ -4297,9 +4300,10 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         (Some(Tool::Extrude), "Taper Angle") => Some(
             "Draft angle of the side walls. Click the icon (or label) to switch to Taper Width.",
         ),
-        (Some(Tool::Extrude), "Output") => Some(
+        (Some(Tool::Extrude), OUTPUT_ROW_LABEL) => Some(
             "Whether this becomes a new body, fuses into the body it grows from, or cuts into \
-             it. Profiles that don't touch make a body each; Join puts them in one.",
+             it. Y cycles them. Profiles that don't touch make a body each; Join puts them \
+             in one.",
         ),
         (Some(Tool::Extrude), "Symmetric") => {
             Some("Grows the same depth either side of the sketch plane instead of one way.")
@@ -4332,8 +4336,9 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         (Some(Tool::Revolve), "Symmetric") => {
             Some("Sweeps the same angle either side of the profile instead of one way.")
         }
-        (Some(Tool::Revolve), "Output") => Some(
-            "Whether this becomes a new body, joins the body it touches, or cuts into it.",
+        (Some(Tool::Revolve), OUTPUT_ROW_LABEL) => Some(
+            "Whether this becomes a new body, joins the body it touches, or cuts into it. \
+             Y cycles them.",
         ),
 
         (_, "Calibrate scale") => Some(
@@ -4538,9 +4543,9 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         (Some(Tool::Mirror), "Bodies") => Some(
             "The bodies to reflect. Click one to add it, click it again to drop it.",
         ),
-        (Some(Tool::Mirror), "Output") => Some(
+        (Some(Tool::Mirror), OUTPUT_ROW_LABEL) => Some(
             "Whether each reflection is its own body, fuses with its source, or cuts \
-             into it.",
+             into it. Y cycles them.",
         ),
         (Some(Tool::Mirror), "Mirror line") => Some(
             "The straight sketch line the copies flip across.",
@@ -4553,8 +4558,9 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "The closed profiles the loft blends through, in order — one per level. \
              Click a circle or closed loop to add it, click it again to drop it.",
         ),
-        (Some(Tool::Loft), "Output") => Some(
-            "Whether this becomes a new body, joins the body it touches, or cuts into it.",
+        (Some(Tool::Loft), OUTPUT_ROW_LABEL) => Some(
+            "Whether this becomes a new body, joins the body it touches, or cuts into it. \
+             Y cycles them.",
         ),
         (Some(Tool::Sweep), "Profile") => Some(
             "The closed sketch faces to push along the path. Click a face to add it, \
@@ -4564,8 +4570,9 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "The line(s) the profile travels along, chained end to end — straight or \
              curved. Click lines in the viewport in order.",
         ),
-        (Some(Tool::Sweep), "Output") => Some(
-            "Whether this becomes a new body, joins the body it touches, or cuts into it.",
+        (Some(Tool::Sweep), OUTPUT_ROW_LABEL) => Some(
+            "Whether this becomes a new body, joins the body it touches, or cuts into it. \
+             Y cycles them.",
         ),
         (Some(Tool::Chamfer), "Selection") => Some(
             "The sketch corners to cut flat. Click a corner where two lines meet; click \
@@ -4880,22 +4887,21 @@ fn constraint_button_rect_id(
 
 /// Egui-memory key for the extrude Output buttons (New body / Join / Cut). Keyed by the
 /// mode's *kind*, since Join/Cut carry a body index the caller may not know.
-fn extrude_output_button_rect_id(mode: &ExtrudeBodyMode) -> egui::Id {
-    let kind = match mode {
+fn extrude_output_kind(mode: &ExtrudeBodyMode) -> &'static str {
+    match mode {
         ExtrudeBodyMode::NewBody => "new",
         ExtrudeBodyMode::JoinNew | ExtrudeBodyMode::MergeInto(_) => "join",
         ExtrudeBodyMode::Cut(_) => "cut",
-    };
-    egui::Id::new(("extrude_output_button_rect", kind))
+    }
 }
 
 /// Where the pane drew an extrude **Output** button this frame (#804) — the tutorial's orb
-/// points at "pick Cut" there.
+/// points at "pick Cut" there. Same rects the Output-row helper records (#1592).
 pub fn extrude_output_button_rect(
     ctx: &egui::Context,
     mode: &ExtrudeBodyMode,
 ) -> Option<egui::Rect> {
-    ctx.data(|d| d.get_temp::<egui::Rect>(extrude_output_button_rect_id(mode)))
+    output_mode_icon_rect(ctx, extrude_output_kind(mode))
 }
 
 /// Where the Context pane's constraint button for `kind` sits on screen, if it drew one
@@ -5303,6 +5309,48 @@ pub fn combine_kind_rect(
     kind: crate::model::BooleanOpKind,
 ) -> Option<egui::Rect> {
     ctx.data(|d| d.get_temp::<egui::Rect>(combine_kind_rect_id(kind)))
+}
+
+fn output_mode_icon_rect_id(kind: &str) -> egui::Id {
+    egui::Id::new(("output_mode_icon_rect", kind))
+}
+
+/// Where the pane drew an Output-row New/Join/Cut button this frame (#1592).
+pub fn output_mode_icon_rect(ctx: &egui::Context, kind: &str) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<egui::Rect>(output_mode_icon_rect_id(kind)))
+}
+
+/// One Output-row icon (#1592): Combine Mode size, rect recorded for tests and the
+/// extrude tutorial orb.
+fn show_output_mode_icon(
+    ui: &mut egui::Ui,
+    icon: crate::icons::IconId,
+    selected: bool,
+    tooltip: impl Into<egui::WidgetText>,
+    kind: &'static str,
+) -> egui::Response {
+    let resp = crate::icons::selectable_icon_button_at(
+        ui,
+        icon,
+        selected,
+        tooltip,
+        crate::icons::OUTPUT_MODE_ICON_SIZE,
+    );
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(output_mode_icon_rect_id(kind), resp.rect));
+    resp
+}
+
+/// Paint the three Output-row icons (New / Join / Cut) for tests.
+#[cfg(test)]
+fn paint_output_mode_icons(ui: &mut egui::Ui, selected: &'static str) {
+    for (kind, icon, tooltip) in [
+        ("new", crate::icons::IconId::NewBody, "New body"),
+        ("join", crate::icons::IconId::AddToBody, "Join body"),
+        ("cut", crate::icons::IconId::CutBody, "Cut"),
+    ] {
+        let _ = show_output_mode_icon(ui, icon, kind == selected, tooltip, kind);
+    }
 }
 
 /// Combine Mode row: four boolean-op icons (#1568). Returns the kind that was clicked, if any.
@@ -6044,26 +6092,28 @@ pub fn show_pane(
         // the same icons the Extrude "into" picker uses. A cut needs the kernel, so it's only
         // offered on an `occt` build (mirrors the Extrude cut option).
         let choice = control.body_choice;
-        labeled_row(ui, "Output", |ui| {
-            for (value, icon, tooltip) in [
+        labeled_row(ui, OUTPUT_ROW_LABEL, |ui| {
+            for (value, icon, tooltip, kind) in [
                 (
                     crate::actions::RevolveBodyChoice::NewBody,
                     crate::icons::IconId::NewBody,
                     "New body",
+                    "new",
                 ),
                 (
                     crate::actions::RevolveBodyChoice::AddTouching,
                     crate::icons::IconId::AddToBody,
                     "Join body",
+                    "join",
                 ),
                 (
                     crate::actions::RevolveBodyChoice::Cut,
                     crate::icons::IconId::CutBody,
                     "Cut",
+                    "cut",
                 ),
             ] {
-                if crate::icons::selectable_icon_button(ui, icon, choice == value, tooltip)
-                    .clicked()
+                if show_output_mode_icon(ui, icon, choice == value, tooltip, kind).clicked()
                     && choice != value
                 {
                     on_revolve_edit(RevolveEdit::BodyChoice(value));
@@ -6084,26 +6134,28 @@ pub fn show_pane(
         // New body / Add to touching / Cut — the same segmented icon group as Revolve.
         // A cut needs the kernel, so it's only offered on an `occt` build.
         let choice = control.body_choice;
-        labeled_row(ui, "Output", |ui| {
-            for (value, icon, tooltip) in [
+        labeled_row(ui, OUTPUT_ROW_LABEL, |ui| {
+            for (value, icon, tooltip, kind) in [
                 (
                     crate::actions::RevolveBodyChoice::NewBody,
                     crate::icons::IconId::NewBody,
                     "New body",
+                    "new",
                 ),
                 (
                     crate::actions::RevolveBodyChoice::AddTouching,
                     crate::icons::IconId::AddToBody,
                     "Join body",
+                    "join",
                 ),
                 (
                     crate::actions::RevolveBodyChoice::Cut,
                     crate::icons::IconId::CutBody,
                     "Cut",
+                    "cut",
                 ),
             ] {
-                if crate::icons::selectable_icon_button(ui, icon, choice == value, tooltip)
-                    .clicked()
+                if show_output_mode_icon(ui, icon, choice == value, tooltip, kind).clicked()
                     && choice != value
                 {
                     on_sweep_edit(SweepEdit::BodyChoice(value));
@@ -6120,28 +6172,30 @@ pub fn show_pane(
     if let Some(control) = &content.loft_body {
         any_control = true;
         ui.separator();
-        // The same segmented icon group as Revolve/Sweep (#479), under a shared "Output" label.
+        // The same segmented icon group as Revolve/Sweep (#479), under a shared Output (Y) label.
         let choice = control.body_choice;
-        labeled_row(ui, "Output", |ui| {
-            for (value, icon, tooltip) in [
+        labeled_row(ui, OUTPUT_ROW_LABEL, |ui| {
+            for (value, icon, tooltip, kind) in [
                 (
                     crate::actions::RevolveBodyChoice::NewBody,
                     crate::icons::IconId::NewBody,
                     "New body",
+                    "new",
                 ),
                 (
                     crate::actions::RevolveBodyChoice::AddTouching,
                     crate::icons::IconId::AddToBody,
                     "Join body",
+                    "join",
                 ),
                 (
                     crate::actions::RevolveBodyChoice::Cut,
                     crate::icons::IconId::CutBody,
                     "Cut",
+                    "cut",
                 ),
             ] {
-                if crate::icons::selectable_icon_button(ui, icon, choice == value, tooltip)
-                    .clicked()
+                if show_output_mode_icon(ui, icon, choice == value, tooltip, kind).clicked()
                     && choice != value
                 {
                     on_loft_body_choice(value);
@@ -7264,29 +7318,31 @@ pub fn show_pane(
         // the Bodies picker, and the button read as one contiguous block (#602).
         // The mirror plane and the bodies to mirror both render above through the unified
         // element pickers (see `tool_pickers`: `MirrorPlane` then `MirrorTargets`, #566).
-        // Output row (#639): the same segmented icon group, labels, and placement the Revolve
-        // tool uses — New body / Join body / Cut — so the two panes read alike.
+        // Output row (#639/#1592): the same segmented icon group, labels, and placement the
+        // Revolve tool uses — New body / Join body / Cut — so the two panes read alike.
         let mode = control.mode;
-        labeled_row(ui, "Output", |ui| {
-            for (value, icon, tooltip) in [
+        labeled_row(ui, OUTPUT_ROW_LABEL, |ui| {
+            for (value, icon, tooltip, kind) in [
                 (
                     crate::model::MirrorMode::NewBody,
                     crate::icons::IconId::NewBody,
                     "New body",
+                    "new",
                 ),
                 (
                     crate::model::MirrorMode::Join,
                     crate::icons::IconId::AddToBody,
                     "Join body",
+                    "join",
                 ),
                 (
                     crate::model::MirrorMode::Cut,
                     crate::icons::IconId::CutBody,
                     "Cut",
+                    "cut",
                 ),
             ] {
-                if crate::icons::selectable_icon_button(ui, icon, mode == value, tooltip)
-                    .clicked()
+                if show_output_mode_icon(ui, icon, mode == value, tooltip, kind).clicked()
                     && mode != value
                 {
                     on_mirror_edit(MirrorEdit::Mode(value));
@@ -8651,8 +8707,8 @@ pub fn show_pane(
         any_control = true;
         let mut mode = control.mode;
         // The same segmented icon group the Revolve/Sweep/Loft tools use (#479/#505), under a
-        // shared "Output" label (#600).
-        labeled_row(ui, "Output", |ui| {
+        // shared Output (Y) label (#600 / #1592).
+        labeled_row(ui, OUTPUT_ROW_LABEL, |ui| {
             ui.add_enabled_ui(controls_enabled, |ui| {
                 ui.horizontal(|ui| {
                     let add_cut_enabled = control.merge_body.is_some();
@@ -8710,19 +8766,14 @@ pub fn show_pane(
                         ),
                     ] {
                         ui.add_enabled_ui(enabled, |ui| {
-                            let response = crate::icons::selectable_icon_button(
+                            // Records the rect the tutorial's orb points at for "pick Cut" (#804).
+                            let response = show_output_mode_icon(
                                 ui,
                                 icon,
                                 mode == value,
                                 tooltip,
+                                extrude_output_kind(&value),
                             );
-                            // Where the tutorial's orb points at "pick Cut" (#804).
-                            ctx.data_mut(|d| {
-                                d.insert_temp(
-                                    extrude_output_button_rect_id(&value),
-                                    response.rect,
-                                )
-                            });
                             if response.clicked() && mode != value && enabled {
                                 mode = value;
                             }
@@ -12205,6 +12256,82 @@ mod tests {
             "help mentions the Y shortcut: {help}"
         );
         assert_eq!(row_help(Some(Tool::Combine), "Mode"), None);
+    }
+
+    /// #1592: Extrude/Revolve/Sweep/Loft/Mirror Output rows show the Y shortcut next to
+    /// the field name — the same parenthetical form as Combine's Mode (Y).
+    #[test]
+    fn output_row_shows_y_shortcut() {
+        assert_eq!(
+            OUTPUT_ROW_LABEL,
+            shortcuts::compact_label("Output", Some(shortcuts::CYCLE_TOOL_OUTPUT_MODE)).as_str()
+        );
+        for tool in [
+            Tool::Extrude,
+            Tool::Revolve,
+            Tool::Sweep,
+            Tool::Loft,
+            Tool::Mirror,
+        ] {
+            let help = row_help(Some(tool), OUTPUT_ROW_LABEL).unwrap_or_else(|| {
+                panic!("{tool:?} Output help is keyed by the painted row label")
+            });
+            assert!(
+                help.contains('Y'),
+                "{tool:?} help mentions the Y shortcut: {help}"
+            );
+            assert_eq!(
+                row_help(Some(tool), "Output"),
+                None,
+                "{tool:?} help is no longer keyed by the bare 'Output' label"
+            );
+        }
+    }
+
+    /// #1592: Output-row New/Join/Cut icons match Combine Mode icons, not ordinary pane icons.
+    #[test]
+    fn output_mode_icons_are_as_big_as_combine_mode_icons() {
+        let ctx = egui::Context::default();
+        let mut pane_h = 0.0f32;
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            pane_h = crate::icons::selectable_icon_button(
+                ui,
+                crate::icons::IconId::NewBody,
+                false,
+                "New body",
+            )
+            .rect
+            .height();
+            labeled_row(ui, OUTPUT_ROW_LABEL, |ui| {
+                paint_output_mode_icons(ui, "new");
+            });
+            labeled_row(ui, COMBINE_MODE_ROW_LABEL, |ui| {
+                let _ = show_combine_mode_icons(ui, crate::model::BooleanOpKind::Cut);
+            });
+        });
+        let output_rect =
+            output_mode_icon_rect(&ctx, "new").expect("Output icon rect is recorded");
+        let combine_rect = combine_kind_rect(&ctx, crate::model::BooleanOpKind::Combine)
+            .expect("Mode icon rect is recorded");
+        assert_eq!(
+            crate::icons::OUTPUT_MODE_ICON_SIZE,
+            crate::icons::COMBINE_MODE_ICON_SIZE,
+            "Output icons should match Combine Mode size"
+        );
+        assert!(
+            crate::icons::OUTPUT_MODE_ICON_SIZE > crate::icons::ICON_DISPLAY_SIZE,
+            "Output icons should be larger than ordinary pane icons"
+        );
+        assert_eq!(
+            output_rect.height(),
+            combine_rect.height(),
+            "Output buttons should render the same height as Combine Mode buttons"
+        );
+        assert!(
+            output_rect.height() > pane_h,
+            "Output buttons should render taller than pane icon buttons ({} vs {pane_h})",
+            output_rect.height()
+        );
     }
 
     #[test]

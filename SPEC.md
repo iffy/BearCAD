@@ -912,7 +912,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   requires the OCCT kernel**: the hand-rolled non-kernel mesher can't subtract solids, so in a
   non-`occt` build a body with cut extrusions renders its additive geometry only (the cut is
   ignored) and the GUI doesn't offer the Cut option — a known limitation resolved once the kernel
-  is the default (#89). The cut list round-trips through save/load regardless of build.
+  is the default (#89). The cut list round-trips through save/load regardless of build. The
+  context pane's **Output** row (Extrude, Revolve, Sweep, Loft, Mirror) shows **Y** next to
+  the field name (#1397 / #1592), the same parenthetical form as Combine's Mode (Y); the
+  New/Join/Cut icons match Combine Mode size.
 
 - **Combine tool (whole-body booleans):** operates on committed bodies rather than
   extrusions. Four operations: **Combine** (union of the picked set), **Cut** (A − B),
@@ -1278,9 +1281,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   same GPU preview-solid path as the extrude/repeat ghosts (`build_viewport_scene_input`, #603).
   **Enter** commits, creating an editable
   **mirror operation element** (`Document::mirror_ops`, `ShapeKind::MirrorOperation`) with one
-  output body per input (`BodySource::Mirrored { op, target }`). An **Output** row (#639) —
-  the same segmented New body / Join body / Cut icon group, label, and placement the Revolve
-  tool uses — chooses how each reflection lands (`model::MirrorMode`):
+  output body per input (`BodySource::Mirrored { op, target }`). An **Output** row (#639 / #1592) —
+  the same segmented New body / Join body / Cut icon group (Combine Mode size), **Output (Y)**
+  label, and placement the Revolve tool uses — chooses how each reflection lands (`model::MirrorMode`):
   - **New body** (default): the reflection is its own body and, unlike Move, the
     **originals are kept** — a mirror *adds* alongside the source, so inputs are never
     shadowed; deleting the op removes only the reflections.

@@ -128,7 +128,7 @@ pub const TOGGLE_CURVE_MODE: ShortcutHint = ShortcutHint::primary("B");
 /// Tangent-constraint toggle for the line tool (#73): keep curve handles mirrored/smooth.
 pub const TOGGLE_TANGENT_CONSTRAINT: ShortcutHint = ShortcutHint::plain("T");
 pub const FOCUS_ELEMENT_NAME: ShortcutHint = ShortcutHint::plain("N");
-/// Cycle the active tool's Output choice, or Combine's Mode (#1397 / #1534 / #1579).
+/// Cycle the active tool's Output choice, or Combine's Mode (#1397 / #1534 / #1579 / #1592).
 pub const CYCLE_TOOL_OUTPUT_MODE: ShortcutHint = ShortcutHint::plain("Y");
 pub const CANCEL_OPERATION: ShortcutHint = ShortcutHint::plain("Esc");
 pub const UNDO: ShortcutHint = ShortcutHint::primary("Z");
@@ -737,6 +737,11 @@ mod tests {
         assert_eq!(
             compact_label("Mode", Some(CYCLE_TOOL_OUTPUT_MODE)),
             "Mode (Y)"
+        );
+        // #1592: Output rows (Extrude/Revolve/Sweep/Loft/Mirror) use the same form.
+        assert_eq!(
+            compact_label("Output", Some(CYCLE_TOOL_OUTPUT_MODE)),
+            "Output (Y)"
         );
     }
 
