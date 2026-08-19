@@ -3570,7 +3570,9 @@ pub fn instructions_for_snap_constraint(kind: &crate::model::ConstraintKind) -> 
             ConstraintEntity::Point(point) => Some(SceneElement::Point(point.clone())),
             ConstraintEntity::Line(ConstraintLine::Line(index)) => Some(SceneElement::Line(*index)),
             ConstraintEntity::Line(
-                line @ (ConstraintLine::FaceEdge { .. } | ConstraintLine::OriginAxis(_)),
+                line @ (ConstraintLine::FaceEdge { .. }
+                | ConstraintLine::OriginAxis(_)
+                | ConstraintLine::ImageEdge { .. }),
             ) => Some(SceneElement::FaceEdge(line.clone())),
             ConstraintEntity::Circle(index) => Some(SceneElement::Circle(*index)),
             ConstraintEntity::Origin => None,
@@ -4546,6 +4548,15 @@ fn element_lua_ref(element: &SceneElement, doc: Option<&crate::model::Document>)
             ConstraintLine::OriginAxis(axis) => {
                 return format!("{{ kind = \"axis\", axis = \"{}\" }}", sketch_axis_lua_name(*axis));
             }
+            ConstraintLine::ImageEdge { image, edge } => {
+                let ordinal = doc
+                    .and_then(|d| d.tracing_images.keys().position(|k| k == *image))
+                    .unwrap_or(image.index() as usize);
+                return format!(
+                    "{{ kind = \"image\", index = {ordinal}, edge = \"{}\" }}",
+                    edge.lua_name()
+                );
+            }
             ConstraintLine::Line(index) => {
                 let ordinal = doc
                     .and_then(|d| d.lines.keys().position(|k| k == *index))
@@ -4603,6 +4614,14 @@ fn point_lua_fields(point: &ConstraintPoint, doc: Option<&crate::model::Document
             );
             format!("kind = \"image\", index = {ordinal}, point = {index}")
         }
+        ConstraintPoint::ImageAnchor { image, anchor } => {
+            let ordinal = ordinal_or_slot(
+                doc.map(|d| d.tracing_images.keys().position(|k| k == *image)),
+                image.index(),
+            );
+            let anchor = anchor.lua_name();
+            format!("kind = \"image\", index = {ordinal}, anchor = \"{anchor}\"")
+        }
     }
 }
 
@@ -4618,6 +4637,16 @@ fn constraint_line_lua_ref(line: &ConstraintLine, doc: Option<&crate::model::Doc
         ),
         ConstraintLine::OriginAxis(axis) => {
             format!("{{ kind = \"axis\", axis = \"{}\" }}", sketch_axis_lua_name(*axis))
+        }
+        ConstraintLine::ImageEdge { image, edge } => {
+            let ordinal = ordinal_or_slot(
+                doc.map(|d| d.tracing_images.keys().position(|k| k == *image)),
+                image.index(),
+            );
+            format!(
+                "{{ kind = \"image\", index = {ordinal}, edge = \"{}\" }}",
+                edge.lua_name()
+            )
         }
     }
 }

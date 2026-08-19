@@ -164,6 +164,7 @@ fn pane_element_for_constraint_line(line: crate::model::ConstraintLine) -> crate
         }
         // A sketch axis belongs to no plane of its own; the origin stands in (#1055).
         ConstraintLine::OriginAxis(_) => SceneElement::Origin,
+        ConstraintLine::ImageEdge { image, .. } => SceneElement::Image(image),
     }
 }
 
@@ -176,7 +177,8 @@ fn pane_element_for_constraint_point(
         ConstraintPoint::LineEndpoint { line, .. } => SceneElement::Line(line),
         ConstraintPoint::CircleCenter(circle) => SceneElement::Circle(circle),
         ConstraintPoint::TextAnchor { text, .. } => SceneElement::SketchText(text),
-        ConstraintPoint::ImageCalibrationPoint { image, .. } => SceneElement::Image(image),
+        ConstraintPoint::ImageCalibrationPoint { image, .. }
+        | ConstraintPoint::ImageAnchor { image, .. } => SceneElement::Image(image),
         ConstraintPoint::Origin => SceneElement::Origin,
         ConstraintPoint::FaceVertex { face, .. } => {
             crate::hierarchy::face_owner_element(&face).unwrap_or(SceneElement::Origin)

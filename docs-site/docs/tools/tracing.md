@@ -45,15 +45,19 @@ line measures that length.
 The [Move](/docs/tools/move) tool moves an image: click its quad in the viewport (or its
 Elements pane row) to pick it, then set the translation.
 
-A calibrated image's two reference points are regular sketch points: with the
-[Constraint](/docs/tools/constraint) tool in a sketch on the image's plane, hold one
-coincident to a vertex, a line, or the origin/axes — the whole image translates to
-follow (scale never changes). From scripts:
+The image's corners, edge midpoints, centre, calibration points, and edges are regular
+sketch geometry: with the [Constraint](/docs/tools/constraint) tool in a sketch on the
+image's plane, hold a point coincident to a vertex, a line, or the origin/axes — the
+whole image translates to follow (scale never changes). Pin sketch geometry to an image
+edge to hold it on the picture. From scripts:
 
 ```lua
-bearcad.select{ kind = "image", index = 0, point = 0 }   -- calibration point 0 or 1
-bearcad.select({ kind = "line", index = 2, ["end"] = "start" }, true)
+bearcad.select{ kind = "image", index = 0, anchor = "center" }      -- or "top_left", …
+bearcad.select({ kind = "origin" }, true)
 bearcad.add_geometric_constraint("coincident")
+
+bearcad.select{ kind = "image", index = 0, point = 0 }              -- calibration 0 or 1
+bearcad.select{ kind = "image", index = 0, edge = "left" }          -- or "right"/"top"/"bottom"
 ```
 
 ## Tracing

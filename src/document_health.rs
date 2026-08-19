@@ -175,6 +175,7 @@ fn scene_element_for_line(line: &ConstraintLine) -> SceneElement {
         ConstraintLine::FaceEdge { face, .. } => scene_element_for_face(face),
         // A sketch axis belongs to no plane of its own; the origin stands in (#1055).
         ConstraintLine::OriginAxis(_) => SceneElement::Origin,
+        ConstraintLine::ImageEdge { image, .. } => SceneElement::Image(*image),
     }
 }
 
@@ -184,7 +185,8 @@ fn scene_element_for_point(point: &ConstraintPoint) -> SceneElement {
         ConstraintPoint::CircleCenter(circle) => SceneElement::Circle(*circle),
         ConstraintPoint::FaceVertex { face, .. } => scene_element_for_face(face),
         ConstraintPoint::TextAnchor { text, .. } => SceneElement::SketchText(*text),
-        ConstraintPoint::ImageCalibrationPoint { image, .. } => SceneElement::Image(*image),
+        ConstraintPoint::ImageCalibrationPoint { image, .. }
+        | ConstraintPoint::ImageAnchor { image, .. } => SceneElement::Image(*image),
         ConstraintPoint::Origin => SceneElement::Origin,
     }
 }
@@ -433,6 +435,7 @@ fn geometry_elements_for_line(line: &ConstraintLine) -> Vec<SceneElement> {
         // can't move); surface it via the extrusion instead, same as `scene_element_for_line`.
         ConstraintLine::FaceEdge { face, .. } => vec![scene_element_for_face(face)],
         ConstraintLine::OriginAxis(_) => vec![SceneElement::Origin],
+        ConstraintLine::ImageEdge { image, .. } => vec![SceneElement::Image(*image)],
     }
 }
 
@@ -613,7 +616,8 @@ fn point_owner_element(point: &ConstraintPoint) -> SceneElement {
         ConstraintPoint::CircleCenter(circle) => SceneElement::Circle(*circle),
         ConstraintPoint::FaceVertex { face, .. } => scene_element_for_face(face),
         ConstraintPoint::TextAnchor { text, .. } => SceneElement::SketchText(*text),
-        ConstraintPoint::ImageCalibrationPoint { image, .. } => SceneElement::Image(*image),
+        ConstraintPoint::ImageCalibrationPoint { image, .. }
+        | ConstraintPoint::ImageAnchor { image, .. } => SceneElement::Image(*image),
         ConstraintPoint::Origin => SceneElement::Origin,
     }
 }

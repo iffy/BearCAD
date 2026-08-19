@@ -1714,6 +1714,45 @@ impl ViewportScene {
                         &vp,
                     );
                 }
+
+                // Tracing-image box anchors (#1589): the displayed-quad corners, edge
+                // midpoints, and centre — pickable with the Constraint tool while a sketch
+                // sits on the image's plane.
+                for (ii, img) in input.doc.tracing_images.iter() {
+                    if input.doc.sketch_face(session.sketch)
+                        != Some(crate::model::FaceId::ConstructionPlane(img.plane))
+                    {
+                        continue;
+                    }
+                    for anchor in crate::model::TextAnchor::ALL {
+                        let (u, v) = crate::model::image_anchor_uv(img, anchor);
+                        let world = crate::face::local_to_world(&frame, u, v);
+                        let el = SceneElement::Point(crate::model::ConstraintPoint::ImageAnchor {
+                            image: ii,
+                            anchor,
+                        });
+                        let selected = input.selection.is_selected(el.clone());
+                        let hovered = matches!(
+                            &input.hover_highlight,
+                            Some(ViewportHoverHighlight::Element(e)) if *e == el
+                        );
+                        let (color, size) = if selected {
+                            (input.palette.dim_edge_highlight, 6.0)
+                        } else if hovered {
+                            (input.hover_color, 5.5)
+                        } else {
+                            (input.palette.preview, 4.5)
+                        };
+                        mesh.push_point_marker(
+                            world,
+                            color,
+                            size,
+                            input.cam,
+                            input.viewport,
+                            &vp,
+                        );
+                    }
+                }
             }
         }
 

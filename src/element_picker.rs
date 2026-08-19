@@ -517,6 +517,7 @@ pub fn element_in_sketch(
         crate::model::ConstraintLine::Line(li) => line_in(*li),
         crate::model::ConstraintLine::FaceEdge { face, .. } => Some(face) == host_face.as_ref(),
         crate::model::ConstraintLine::OriginAxis(_) => true,
+        crate::model::ConstraintLine::ImageEdge { .. } => true,
     };
     match element {
         SceneElement::Line(li) => line_in(*li),
@@ -528,7 +529,8 @@ pub fn element_in_sketch(
             crate::model::ConstraintPoint::FaceVertex { face, .. } => Some(face) == host_face.as_ref(),
             crate::model::ConstraintPoint::TextAnchor { text, .. } => text_in(*text),
             // Gated to the host plane at creation; nothing sketch-foreign resolves here.
-            crate::model::ConstraintPoint::ImageCalibrationPoint { .. } => true,
+            crate::model::ConstraintPoint::ImageCalibrationPoint { .. }
+            | crate::model::ConstraintPoint::ImageAnchor { .. } => true,
             crate::model::ConstraintPoint::Origin => true,
         },
         SceneElement::FaceEdge(cl) => constraint_line_in(cl),

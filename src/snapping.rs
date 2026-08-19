@@ -222,6 +222,7 @@ fn owning_lines(point: &ConstraintPoint) -> Vec<ConstraintLine> {
         | ConstraintPoint::FaceVertex { .. }
         | ConstraintPoint::TextAnchor { .. }
         | ConstraintPoint::ImageCalibrationPoint { .. }
+        | ConstraintPoint::ImageAnchor { .. }
         | ConstraintPoint::Origin => Vec::new(),
     }
 }
@@ -282,7 +283,9 @@ pub fn sketch_vertices(doc: &Document, sketch: SketchId) -> Vec<ConstraintPoint>
             points.push(ConstraintPoint::TextAnchor { text: index, anchor });
         }
     }
-    // A calibrated image's reference points (#425), for images on this sketch's plane.
+    // A calibrated image's reference points (#425) and box anchors (#1589), for images
+    // on this sketch's plane. Calibration first so they win a tie with a coincident
+    // top/bottom-middle box point.
     for (index, img) in doc.tracing_images.iter() {
         if doc.sketch_face(sketch) != Some(crate::model::FaceId::ConstructionPlane(img.plane)) {
             continue;
@@ -291,6 +294,9 @@ pub fn sketch_vertices(doc: &Document, sketch: SketchId) -> Vec<ConstraintPoint>
             if crate::model::image_calibration_point_uv(img, i).is_some() {
                 points.push(ConstraintPoint::ImageCalibrationPoint { image: index, index: i });
             }
+        }
+        for anchor in crate::model::TextAnchor::ALL {
+            points.push(ConstraintPoint::ImageAnchor { image: index, anchor });
         }
     }
     // The body face the sketch sits on (#26/#27, #139) is *not* exposed as FaceVertex
@@ -321,6 +327,14 @@ pub fn sketch_lines(doc: &Document, sketch: SketchId) -> Vec<ConstraintLine> {
                 face: face.clone(),
                 index,
             });
+        }
+    }
+    for (index, img) in doc.tracing_images.iter() {
+        if doc.sketch_face(sketch) != Some(crate::model::FaceId::ConstructionPlane(img.plane)) {
+            continue;
+        }
+        for edge in crate::model::ImageEdge::ALL {
+            lines.push(ConstraintLine::ImageEdge { image: index, edge });
         }
     }
     lines

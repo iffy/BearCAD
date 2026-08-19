@@ -1986,15 +1986,20 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   length/expression) is stored on the image. Scriptable: `bearcad.calibrate_image{ image,
   from, to, length }` (`from`/`to` optional; `length` is an expression),
   `bearcad.calibration_point{ image, index, x, y }`, `bearcad.get{ kind = "image", index }`.
-- **Image constraints & viewport pick (#425/#1561):** a calibrated image's two reference
-  points are first-class constraint points (`ConstraintPoint::ImageCalibrationPoint`),
-  pickable/snappable in sketches hosted on the image's plane and usable in
-  coincident/midpoint/distance constraints against vertices, lines, and the
-  origin/axes. Solving **translates** the whole image (`set_point_uv` shifts `origin`
-  and `base_origin`; scale never changes), and the solver holds the non-image side of a
-  point-point coincidence so the image follows its target. The Select and Move tools pick
-  an image by clicking its quad in the viewport, not only from the Elements pane.
-  Scriptable: `bearcad.select{ kind = "image", index, point = 0|1 }`.
+- **Image constraints & viewport pick (#425/#1561/#1589):** a calibrated image's two
+  reference points (`ConstraintPoint::ImageCalibrationPoint`), its nine displayed-quad
+  box points (`ConstraintPoint::ImageAnchor` — four corners, four edge midpoints, centre),
+  and its four edges (`ConstraintLine::ImageEdge`) are first-class constraint
+  geometry: pickable/snappable in sketches hosted on the image's plane and usable in
+  coincident/midpoint/distance/parallel constraints against vertices, lines, and the
+  origin/axes. Solving **translates** the whole image from a box or calibration point
+  (`set_point_uv` shifts `origin` and `base_origin`; scale never changes); the edges are
+  **fixed** by the image's current pose, so sketch geometry constrains *onto* them. The
+  solver holds the non-image side of a point-point coincidence so the image follows its
+  target. The Select and Move tools pick an image by clicking its quad in the viewport,
+  not only from the Elements pane.
+  Scriptable: `bearcad.select{ kind = "image", index, point = 0|1 }` (calibration),
+  `anchor = "center"|"top_left"|…` (box point), `edge = "left"|"right"|"top"|"bottom"`.
   *Known limitation:* calibration mutates the image in place and is not yet individually
   undoable (3D edge treatments had the same gap and now undo via a transient snapshot
   marker, #168 — calibration can adopt the same mechanism).

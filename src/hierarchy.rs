@@ -156,10 +156,10 @@ pub enum SceneElement {
     Constraint(crate::model::ConstraintKey),
     Extrusion(crate::model::ExtrusionKey),
     Body(crate::model::BodyKey),
-    /// An edge of an extrusion-backed body face's own boundary loop (#26/#27), for
-    /// constraint-authoring selection — mirrors `Point` wrapping the whole `ConstraintPoint`
-    /// enum; only ever constructed with `ConstraintLine::FaceEdge` (the `Line`
-    /// variant already has its own dedicated `SceneElement::Line`).
+    /// A constraint-authoring line that isn't a sketch `Line`: a face's own edge
+    /// (#26/#27), a sketch origin axis (#189), or a tracing-image displayed-quad
+    /// edge (#1589). Mirrors `Point` wrapping the whole `ConstraintPoint` enum
+    /// (the `Line` variant already has its own dedicated `SceneElement::Line`).
     FaceEdge(ConstraintLine),
     /// One feature edge of a body's solid mesh, selectable in 3D select mode (#156).
     /// Identified by its quantized world endpoints (see [`quantize_body_point`]) — a
@@ -784,6 +784,7 @@ impl ElementVisibility {
                 let owner = match &line {
                     ConstraintLine::FaceEdge { face, .. } => face_owner_element(face),
                     ConstraintLine::Line(_) | ConstraintLine::OriginAxis(_) => None,
+                    ConstraintLine::ImageEdge { image, .. } => Some(SceneElement::Image(*image)),
                 };
                 // With no owning feature there is nothing to inherit from: a face edge
                 // whose face names no extrusion is visible on its own (#1055 — there is no
@@ -873,7 +874,8 @@ fn point_effective_visible(
                 visibility.effective_visible(doc, SceneElement::Sketch(entity.sketch))
             })
         }
-        ConstraintPoint::ImageCalibrationPoint { image, .. } => {
+        ConstraintPoint::ImageCalibrationPoint { image, .. }
+        | ConstraintPoint::ImageAnchor { image, .. } => {
             visibility.effective_visible(doc, SceneElement::Image(image))
         }
     }
@@ -1963,6 +1965,7 @@ pub fn visibility_target_for_element(element: &SceneElement) -> Option<SceneElem
             ConstraintLine::FaceEdge { face, .. } => face_owner_element(face),
             ConstraintLine::Line(i) => Some(SceneElement::Line(*i)),
             ConstraintLine::OriginAxis(_) => None,
+            ConstraintLine::ImageEdge { image, .. } => Some(SceneElement::Image(*image)),
         },
         SceneElement::Point(_)
         | SceneElement::Origin
@@ -3115,7 +3118,8 @@ fn point_parent_element(doc: &Document, point: ConstraintPoint) -> Option<SceneE
             .map(|_| SceneElement::Line(line)),
         ConstraintPoint::CircleCenter(circle) => Some(SceneElement::Circle(circle)),
         ConstraintPoint::TextAnchor { text, .. } => Some(SceneElement::SketchText(text)),
-        ConstraintPoint::ImageCalibrationPoint { image, .. } => Some(SceneElement::Image(image)),
+        ConstraintPoint::ImageCalibrationPoint { image, .. }
+        | ConstraintPoint::ImageAnchor { image, .. } => Some(SceneElement::Image(image)),
         ConstraintPoint::Origin => Some(SceneElement::Origin),
         // A face's own vertex nests under the feature that produced its face.
         ConstraintPoint::FaceVertex { face, .. } => face_owner_element(&face),
@@ -3471,6 +3475,16 @@ fn constraint_line_touches_element(line: &ConstraintLine, element: &SceneElement
             index: i,
         })) => face == f && (*index == *i || (*index + 1) == *i),
         (ConstraintLine::FaceEdge { .. }, _) => false,
+        (ConstraintLine::ImageEdge { image, .. }, SceneElement::Image(i)) => image == i,
+        (ConstraintLine::ImageEdge { image, .. }, SceneElement::Point(ConstraintPoint::ImageAnchor { image: i, .. })) => {
+            image == i
+        }
+        (ConstraintLine::ImageEdge { image, .. }, SceneElement::Point(ConstraintPoint::ImageCalibrationPoint { image: i, .. })) => {
+            image == i
+        }
+        (ConstraintLine::ImageEdge { image: a, .. }, SceneElement::FaceEdge(ConstraintLine::ImageEdge { image: b, .. })) => {
+            a == b
+        }
         _ => false,
     }
 }
@@ -3481,6 +3495,11 @@ fn constraint_point_touches_element(point: &ConstraintPoint, element: &SceneElem
         (ConstraintPoint::LineEndpoint { line, .. }, SceneElement::Line(i)) => line == i,
         (ConstraintPoint::CircleCenter(c), SceneElement::Circle(i)) => c == i,
         (ConstraintPoint::Origin, SceneElement::Origin) => true,
+        (
+            ConstraintPoint::ImageCalibrationPoint { image, .. }
+            | ConstraintPoint::ImageAnchor { image, .. },
+            SceneElement::Image(i),
+        ) => image == i,
         _ => false,
     }
 }
