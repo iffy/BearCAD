@@ -13554,6 +13554,92 @@ mod tests {
         );
     }
 
+    /// #1567: the first Side A pick in Cut/Intersect/Difference arms Side B; a further
+    /// Side A pick (after re-arming A) stays on A. Union has no Side B to jump to.
+    #[test]
+    fn lua_combine_first_side_a_pick_focuses_side_b() {
+        for mode in ["cut", "intersect", "difference"] {
+            let state = run_lua(&format!(
+                r#"
+                bearcad.rect{{ width = 20, height = 20 }}
+                bearcad.extrude{{ polygon = {{0, 1, 2, 3}}, distance = 10 }}
+                bearcad.exit_sketch()
+                bearcad.begin_sketch{{ kind = "plane", index = 0 }}
+                bearcad.rect{{ x = 30, y = 0, width = 20, height = 20 }}
+                bearcad.extrude{{ polygon = {{4, 5, 6, 7}}, distance = 10 }}
+                bearcad.exit_sketch()
+                bearcad.ui.tool("combine")
+                bearcad.ui.tool_mode("{mode}")
+                bearcad.select{{ kind = "body", index = 0 }}
+                "#
+            ));
+            let cb = state
+                .creating_boolean
+                .as_ref()
+                .expect("Combine should be armed");
+            assert!(!cb.a.is_empty(), "{mode}: Side A should hold the first body");
+            assert!(
+                cb.picking_b,
+                "{mode}: first Side A pick should arm Side B (#1567)"
+            );
+            assert_eq!(
+                state.picker_focus,
+                Some(crate::context::PickerTarget::CombineB),
+                "{mode}: the Side B picker should take focus"
+            );
+
+            let second = run_lua(&format!(
+                r#"
+                bearcad.rect{{ width = 20, height = 20 }}
+                bearcad.extrude{{ polygon = {{0, 1, 2, 3}}, distance = 10 }}
+                bearcad.exit_sketch()
+                bearcad.begin_sketch{{ kind = "plane", index = 0 }}
+                bearcad.rect{{ x = 30, y = 0, width = 20, height = 20 }}
+                bearcad.extrude{{ polygon = {{4, 5, 6, 7}}, distance = 10 }}
+                bearcad.exit_sketch()
+                bearcad.ui.tool("combine")
+                bearcad.ui.tool_mode("{mode}")
+                bearcad.select{{ kind = "body", index = 0 }}
+                bearcad.ui.picker_focus("Side A")
+                bearcad.select{{ kind = "body", index = 1 }}
+                "#
+            ));
+            let cb = second
+                .creating_boolean
+                .as_ref()
+                .expect("Combine should be armed");
+            assert_eq!(cb.a.len(), 2, "{mode}: both bodies on Side A");
+            assert!(
+                !cb.picking_b,
+                "{mode}: a second Side A pick must leave focus on Side A"
+            );
+            assert_eq!(
+                second.picker_focus,
+                Some(crate::context::PickerTarget::CombineA),
+                "{mode}: Side A stays armed after a further pick"
+            );
+        }
+
+        let union = run_lua(
+            r#"
+            bearcad.rect{ width = 20, height = 20 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            bearcad.exit_sketch()
+            bearcad.ui.tool("combine")
+            bearcad.select{ kind = "body", index = 0 }
+            "#,
+        );
+        let cb = union
+            .creating_boolean
+            .as_ref()
+            .expect("Combine should be armed");
+        assert!(!cb.a.is_empty());
+        assert!(
+            !cb.picking_b,
+            "union mode has no Side B to arm after the first pick"
+        );
+    }
+
     /// #1534: Y / `tool_mode("next")` walks Combine's Mode the same way it walks
     /// Extrude Output.
     #[test]

@@ -19780,15 +19780,33 @@ pub fn apply_pick(
                 return false;
             }
             let to_b = target == P::CombineB;
-            let cb = state.creating_boolean.get_or_insert_with(CreatingBoolean::default);
-            if let Some(pos) = cb.a.iter().position(|b| b == bi) {
-                cb.a.remove(pos);
-            } else if let Some(pos) = cb.b.iter().position(|b| b == bi) {
-                cb.b.remove(pos);
-            } else if to_b && cb.kind != crate::model::BooleanOpKind::Combine {
-                cb.b.push(*bi);
-            } else {
-                cb.a.push(*bi);
+            let first_a = {
+                let cb = state
+                    .creating_boolean
+                    .get_or_insert_with(CreatingBoolean::default);
+                let a_was_empty = cb.a.is_empty();
+                let added_to_a = if let Some(pos) = cb.a.iter().position(|b| b == bi) {
+                    cb.a.remove(pos);
+                    false
+                } else if let Some(pos) = cb.b.iter().position(|b| b == bi) {
+                    cb.b.remove(pos);
+                    false
+                } else if to_b && cb.kind != crate::model::BooleanOpKind::Combine {
+                    cb.b.push(*bi);
+                    false
+                } else {
+                    cb.a.push(*bi);
+                    true
+                };
+                // #1567: first Side A pick in Cut/Intersect/Difference arms Side B. A later
+                // A pick (the user re-armed Side A) stays on A, like Slice's first target.
+                added_to_a
+                    && a_was_empty
+                    && cb.a.len() == 1
+                    && cb.kind != crate::model::BooleanOpKind::Combine
+            };
+            if first_a {
+                focus_tool_picker(state, P::CombineB);
             }
             true
         }
@@ -20045,13 +20063,16 @@ pub fn toggle_body_in_active_tool(state: &mut AppState, bi: crate::model::BodyKe
             true
         }
         Tool::Combine => {
-            let cb = state.creating_boolean.get_or_insert_with(CreatingBoolean::default);
-            if cb.picking_b {
-                crate::element_picker::toggle_picked(&mut cb.b, bi);
+            let target = if state
+                .creating_boolean
+                .as_ref()
+                .is_some_and(|cb| cb.picking_b)
+            {
+                crate::context::PickerTarget::CombineB
             } else {
-                crate::element_picker::toggle_picked(&mut cb.a, bi);
-            }
-            true
+                crate::context::PickerTarget::CombineA
+            };
+            apply_pick(state, target, &crate::hierarchy::SceneElement::Body(bi))
         }
         Tool::Revolve => {
             let cr = state.creating_revolve.get_or_insert_with(CreatingRevolve::default);
@@ -30188,6 +30209,101 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert!(
             state.creating_slice.as_ref().unwrap().picking_cutter,
             "an empty Targets set + one pick is again the first target"
+        );
+    }
+
+    /// #1567: Cut/Intersect/Difference auto-arm Side B after the first Side A pick; further
+    /// Side A picks (user re-armed Side A) keep Side A so multi-body operands don't bounce.
+    #[test]
+    fn combine_first_side_a_pick_arms_side_b_further_picks_keep_side_a() {
+        use crate::hierarchy::SceneElement;
+        for mode in ["cut", "intersect", "difference"] {
+            let mut state = two_box_state(false);
+            state.apply(Action::SetTool(Tool::Combine));
+            set_tool_mode(&mut state, mode).unwrap();
+            assert!(
+                !state.creating_boolean.as_ref().unwrap().picking_b,
+                "{mode}: Side A is armed first"
+            );
+
+            assert!(apply_pick(
+                &mut state,
+                crate::context::PickerTarget::CombineA,
+                &SceneElement::Body(bkey(0)),
+            ));
+            let cb = state.creating_boolean.as_ref().unwrap();
+            assert_eq!(cb.a, vec![bkey(0)]);
+            assert!(
+                cb.picking_b,
+                "{mode}: first Side A pick should arm Side B"
+            );
+            assert_eq!(
+                state.picker_focus,
+                Some(crate::context::PickerTarget::CombineB),
+                "{mode}: Side B picker should take focus"
+            );
+
+            focus_tool_picker(&mut state, crate::context::PickerTarget::CombineA);
+            assert!(!state.creating_boolean.as_ref().unwrap().picking_b);
+            assert!(apply_pick(
+                &mut state,
+                crate::context::PickerTarget::CombineA,
+                &SceneElement::Body(bkey(1)),
+            ));
+            let cb = state.creating_boolean.as_ref().unwrap();
+            assert_eq!(cb.a, vec![bkey(0), bkey(1)]);
+            assert!(
+                !cb.picking_b,
+                "{mode}: a second Side A pick must leave focus on Side A"
+            );
+            assert_eq!(
+                state.picker_focus,
+                Some(crate::context::PickerTarget::CombineA),
+                "{mode}: Side A stays armed after a further pick"
+            );
+
+            // Toggle the first body off then back on while Side A already holds another:
+            // still not "the first" pick, so stay on Side A.
+            assert!(apply_pick(
+                &mut state,
+                crate::context::PickerTarget::CombineA,
+                &SceneElement::Body(bkey(0)),
+            ));
+            assert_eq!(state.creating_boolean.as_ref().unwrap().a, vec![bkey(1)]);
+            assert!(!state.creating_boolean.as_ref().unwrap().picking_b);
+            assert!(apply_pick(
+                &mut state,
+                crate::context::PickerTarget::CombineA,
+                &SceneElement::Body(bkey(0)),
+            ));
+            assert_eq!(
+                state.creating_boolean.as_ref().unwrap().a,
+                vec![bkey(1), bkey(0)]
+            );
+            assert!(
+                !state.creating_boolean.as_ref().unwrap().picking_b,
+                "{mode}: re-adding while another A body remains is not the first pick"
+            );
+        }
+
+        // Combine (union) has no Side B — the first pick stays on Bodies/Side A.
+        let mut state = two_box_state(false);
+        state.apply(Action::SetTool(Tool::Combine));
+        assert!(apply_pick(
+            &mut state,
+            crate::context::PickerTarget::CombineA,
+            &SceneElement::Body(bkey(0)),
+        ));
+        let cb = state.creating_boolean.as_ref().unwrap();
+        assert_eq!(cb.a, vec![bkey(0)]);
+        assert!(
+            !cb.picking_b,
+            "union mode has no Side B to arm"
+        );
+        assert_ne!(
+            state.picker_focus,
+            Some(crate::context::PickerTarget::CombineB),
+            "union mode must not jump to a Side B picker that is not shown"
         );
     }
 
