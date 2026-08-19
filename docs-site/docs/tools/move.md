@@ -138,6 +138,7 @@ it, with the angle reading out as you move.
 -- Free: explicit components, and turns about the part's own centre.
 bearcad.move_bodies{ bodies = {0}, x = 40, z = "plate_thickness" }
 bearcad.move_bodies{ bodies = {0}, rz = 90 }
+bearcad.move_bodies{ images = {0}, x = 25 }
 
 -- Face Snap: put a face on a face. `flip` picks the side; `spin` turns it.
 bearcad.move_bodies{ bodies = {0},
@@ -204,9 +205,9 @@ refused (lengths never change).
 
 ## Moving tracing images
 
-Pick a tracing image from the Elements pane with the Move tool active, then set the
-translation like a body. It slides on its host plane (and follows the plane if the plane
-moves). Editing the move back to zero returns it home.
+Click a tracing image (or pick it in the Elements pane) with the Move tool. The tool
+switches to Free so you can type or drag X/Y/Z. It slides on its host plane (and follows
+the plane if the plane moves). Editing the move back to zero returns it home.
 
 ## Rotating sketch text
 
@@ -218,5 +219,6 @@ about its start point.
 ```lua
 bearcad.move_bodies{ bodies = {0}, x = "25", name = "Shifted" }
 bearcad.move_bodies{ bodies = {0, 1}, x = "gap * 2", z = "10mm" }
+bearcad.move_bodies{ images = {0}, x = 25 }
 bearcad.edit_move{ index = 0, bodies = {0}, x = "30" }
 ```

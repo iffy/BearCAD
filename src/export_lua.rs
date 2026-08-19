@@ -592,6 +592,13 @@ impl<'a> EmitCtx<'a> {
                     out.push_str(
                         &Instruction::CreateMoveOp {
                             targets: body_ords(self.doc, &op.targets),
+                            images: op
+                                .image_targets
+                                .iter()
+                                .filter_map(|k| {
+                                    self.doc.tracing_images.keys().position(|i| i == *k)
+                                })
+                                .collect(),
                             tx: op.tx.clone(),
                             ty: op.ty.clone(),
                             tz: op.tz.clone(),

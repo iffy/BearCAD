@@ -1216,6 +1216,7 @@ fn parse_move_op_args(
     opts: &Table,
 ) -> mlua::Result<(
     Vec<usize>,
+    Vec<usize>,
     String,
     String,
     String,
@@ -1234,6 +1235,7 @@ fn parse_move_op_args(
     Option<crate::model::MovePointRef>,
 )> {
     let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
+    let images: Vec<usize> = opts.get::<Option<Vec<usize>>>("images")?.unwrap_or_default();
     let expr = |key: &str| -> mlua::Result<String> {
         Ok(match opts.get::<Value>(key)? {
             Value::Nil => String::new(),
@@ -1268,6 +1270,7 @@ fn parse_move_op_args(
     let end_point_c = parse_move_point(lua, opts.get::<Value>("to_c")?, "to_c")?;
     Ok((
         targets,
+        images,
         tx,
         ty,
         tz,
@@ -6534,13 +6537,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "move_bodies",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let (targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
+            let (targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
                  face_offset, start_point_a, end_point_a, start_point_b, end_point_b,
                  start_point_c, end_point_c) =
                 parse_move_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::CreateMoveOp {
-                    targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
+                    targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
                     face_offset, start_point_a, end_point_a, start_point_b, end_point_b,
                     start_point_c, end_point_c,
                 })?;
@@ -6564,13 +6567,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "begin_move",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let (targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
+            let (targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
                  face_offset, start_point_a, end_point_a, start_point_b, end_point_b,
                  start_point_c, end_point_c) =
                 parse_move_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::BeginMoveOp {
-                    targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
+                    targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
                     face_offset, start_point_a, end_point_a, start_point_b, end_point_b,
                     start_point_c, end_point_c,
                 })?;
@@ -6584,13 +6587,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let op: usize = opts.get("index")?;
-            let (targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
+            let (targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
                  face_offset, start_point_a, end_point_a, start_point_b, end_point_b,
                  start_point_c, end_point_c) =
                 parse_move_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::EditMoveOp {
-                    op, targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
+                    op, targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
                     face_offset, start_point_a, end_point_a, start_point_b, end_point_b,
                     start_point_c, end_point_c,
                 })?;
@@ -7951,6 +7954,37 @@ mod tests {
         ));
         let img = state.doc.tracing_images.values().next().unwrap();
         assert!((img.opacity - 0.5).abs() < 1e-6);
+    }
+
+    /// #1587: `move_bodies{ images = {0}, x = … }` slides a tracing image on its host plane.
+    #[test]
+    fn lua_move_bodies_moves_a_tracing_image() {
+        let path = write_test_png("move.png", 20, 10);
+        let state = run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.import_image({path:?})
+            local before = bearcad.get{{ kind = "image", index = 0 }}
+            bearcad.move_bodies{{ images = {{0}}, x = 25 }}
+            local after = bearcad.get{{ kind = "image", index = 0 }}
+            assert(math.abs((after.origin_x - before.origin_x) - 25) < 1e-3,
+              string.format("x {{%.3f}} → {{%.3f}}", before.origin_x, after.origin_x))
+            assert(math.abs(after.origin_y - before.origin_y) < 1e-3,
+              "y should stay put")
+            "#
+        ));
+        let img = state.doc.tracing_images.values().next().unwrap();
+        assert!(
+            (img.origin.0 - (-10.0 + 25.0)).abs() < 1e-3,
+            "20 px image centered at origin, then +25 mm, got {:?}",
+            img.origin
+        );
+        assert_eq!(state.doc.move_ops.len(), 1, "one move op");
+        assert_eq!(
+            state.doc.move_ops.values().next().unwrap().image_targets.len(),
+            1,
+            "the op targets the image"
+        );
     }
 
     /// #1564: selecting a construction plane offers "Import image on this plane" in
