@@ -19,7 +19,8 @@ Each row's **gear** opens that parameter's options under its name (multiple can 
 at once):
 
 - **Min**, **Max**, **Step** — optional expressions. Unit kind (length vs angle) comes
-  from the default value. Importers must stay within these.
+  from the default value. Importers must stay within these. With both min and max set, a
+  **slider** sits on the row below, spanning the name and value columns.
 - **Private** — checked = internal (hidden from
   [import](/docs/files#importing-bearcad-files) by default); unchecked = a knob importers
   are meant to change. Advisory only. A new parameter starts unchecked when its value is
@@ -31,8 +32,8 @@ Select a [unit instance](/docs/files#importing-bearcad-files) and its parameters
 pane under the instance's name — public knobs first, with an **Internals** eye that
 reveals the private ones. You can't edit the unit's min/max/step/private; you only
 **override** the value on that instance (snapped to step, clamped to min/max). With both
-min and max set, a **slider** sits above the value. Overridden values read gold; **✕**
-restores the part's own value.
+min and max set, a **slider** sits on the row below (same as this document's parameters).
+Overridden values read gold; **✕** restores the part's own value.
 
 ```lua
 bearcad.unit_override{ instance = 0, name = "width", value = "20" }
@@ -117,9 +118,11 @@ bearcad.parameter("add", "A", "5mm")
 bearcad.parameter("value", 0, "A + 5in")     -- edit parameter 0's expression
 bearcad.parameter("name", 0, "Len")
 bearcad.parameter("private", 0, true)        -- hide from import (internal)
-bearcad.parameter("min", 0, "1mm")           -- optional bounds for importers
+bearcad.parameter("min", 0, "1mm")           -- optional bounds; min+max ⇒ slider
 bearcad.parameter("max", 0, "100mm")
 bearcad.parameter("step", 0, "0.5mm")
+bearcad.parameter("slider", 0)               -- {min=, max=, value=, step?} or nil
+bearcad.parameter("slider", 0, 15)           -- set via the slider (mm / rad, snapped)
 bearcad.parameter("min", 0)                  -- clear a bound
 bearcad.parameter("delete", 0)
 assert(bearcad.parameter("get", "A") == 5)   -- evaluated (mm / radians)

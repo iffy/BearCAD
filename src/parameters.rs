@@ -284,6 +284,21 @@ pub struct ParametersPaneState {
     pub options_editing: Option<(ParameterKey, ParameterBound)>,
     pub options_draft: String,
     pub options_editing_focus: bool,
+    /// Slider widgets painted this frame (#1559): one per local or imported parameter
+    /// that has both min and max. Used by tests and by `bearcad.parameter("slider", …)`.
+    pub sliders: Vec<PaintedParameterSlider>,
+}
+
+/// Geometry of one parameter slider in the Parameters pane (#1559).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PaintedParameterSlider {
+    pub name: String,
+    /// The parameter's name cell on the row above the slider.
+    pub name_rect: egui::Rect,
+    /// The parameter's value cell on the row above the slider.
+    pub value_rect: egui::Rect,
+    /// The slider itself, on the row below, spanning the name and value columns.
+    pub slider_rect: egui::Rect,
 }
 
 /// Whether the new-parameter row has enough input to attempt a commit.
@@ -1832,6 +1847,57 @@ pub fn parameter_limits(doc: &Document, param: &Parameter) -> Option<ParameterLi
     })
 }
 
+/// A parameter's min–max slider, when both bounds resolve and the value is editable (#1559).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParameterSliderSpec {
+    pub limits: ParameterLimits,
+    pub min: f32,
+    pub max: f32,
+    /// Current value in canonical units (mm / rad), clamped into `[min, max]` for the rail.
+    pub current: f32,
+}
+
+/// When both min and max resolve and `max > min`, the slider range.
+pub fn slider_range_from_limits(
+    limits: Option<ParameterLimits>,
+) -> Option<(ParameterLimits, f32, f32)> {
+    let lim = limits?;
+    let min = lim.min?;
+    let max = lim.max?;
+    (max > min).then_some((lim, min, max))
+}
+
+/// Slider for a document (or unit-document) parameter: both min and max, not derived.
+pub fn parameter_slider_spec(doc: &Document, param: &Parameter) -> Option<ParameterSliderSpec> {
+    if parameter_value_is_readonly(param) {
+        return None;
+    }
+    let (limits, min, max) = slider_range_from_limits(parameter_limits(doc, param))?;
+    let current = match limits.kind {
+        ParameterValueKind::Length => crate::value::eval_length_mm_in_doc(&param.expression, doc),
+        ParameterValueKind::Angle => crate::value::eval_angle_rad_in_doc(&param.expression, doc),
+    }
+    .unwrap_or(min)
+    .clamp(min, max);
+    Some(ParameterSliderSpec {
+        limits,
+        min,
+        max,
+        current,
+    })
+}
+
+/// Expression a slider drag at `slider_v` (canonical units) would commit.
+pub fn parameter_slider_expression(
+    doc: &Document,
+    param: &Parameter,
+    slider_v: f32,
+) -> Option<String> {
+    let spec = parameter_slider_spec(doc, param)?;
+    let snapped = clamp_and_snap_value(&spec.limits, slider_v);
+    Some(format_canonical_as_expression(spec.limits.kind, snapped, doc))
+}
+
 /// Snap `value` (canonical units) onto the parameter's step grid and clamp to min/max.
 ///
 /// Step grid is `min + n·step` when min is defined, else `n·step` from zero. When both
@@ -2057,10 +2123,74 @@ pub fn unit_parameter_rows(
     rows
 }
 
+/// Paint a slider on a new grid row spanning the name and value columns (#1559).
+///
+/// `leading` empty cells first (the gear column on the document table), then name
+/// and value spacers so the row has height, then `trailing` empty cells (extras).
+/// The rail is overlaid with [`egui::Ui::new_child`] so a wide slider does not grow
+/// the name column.
+fn show_parameter_slider_row(
+    ui: &mut egui::Ui,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    leading: usize,
+    trailing: usize,
+    name_rect: egui::Rect,
+    extras_rect: egui::Rect,
+    spec: ParameterSliderSpec,
+    col_spacing: f32,
+) -> (egui::Response, Option<f32>) {
+    for _ in 0..leading {
+        ui.label("");
+    }
+    let slider_h = ui.spacing().interact_size.y.max(14.0);
+    let top = ui.cursor().top();
+    let span_right = if extras_rect.left() > name_rect.left() + col_spacing {
+        extras_rect.left() - col_spacing
+    } else {
+        name_rect.right() + col_spacing + 80.0
+    };
+    let span = egui::Rect::from_min_max(
+        egui::pos2(name_rect.left(), top),
+        egui::pos2(span_right.max(name_rect.left() + 32.0), top + slider_h),
+    );
+    ui.allocate_exact_size(egui::vec2(1.0, slider_h), egui::Sense::hover());
+    ui.allocate_exact_size(egui::vec2(1.0, slider_h), egui::Sense::hover());
+    for _ in 0..trailing {
+        ui.label("");
+    }
+    ui.end_row();
+
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(span)
+            .layout(egui::Layout::left_to_right(egui::Align::Center))
+            .id_salt(id_salt),
+    );
+    child.spacing_mut().slider_width = span.width().max(16.0);
+    let mut slider_v = spec.current;
+    let resp = child.add(
+        egui::Slider::new(&mut slider_v, spec.min..=spec.max).show_value(false),
+    );
+    let changed = resp
+        .changed()
+        .then_some(clamp_and_snap_value(&spec.limits, slider_v));
+    (resp, changed)
+}
+
+fn unit_row_slider_spec(row: &UnitParamRow) -> Option<ParameterSliderSpec> {
+    let (limits, min, max) = slider_range_from_limits(row.limits)?;
+    Some(ParameterSliderSpec {
+        limits,
+        min,
+        max,
+        current: row.current_value.unwrap_or(min).clamp(min, max),
+    })
+}
+
 /// The selected unit's parameters at the top of the Parameters pane (#728): edits write
 /// that one instance's overrides — never the source file, never other instances.
 /// Min/max/step come from the unit and are not editable here; with both min and max the
-/// row offers a slider (#1176).
+/// row below offers a slider spanning name+value (#1176/#1559).
 fn show_unit_parameters_section(ui: &mut egui::Ui, app: &mut AppState) {
     use egui::TextEdit;
     let Some(crate::hierarchy::SceneElement::UnitInstance(instance)) =
@@ -2099,96 +2229,59 @@ fn show_unit_parameters_section(ui: &mut egui::Ui, app: &mut AppState) {
                 let name_cell = ui.label(&row.name);
                 crate::context::note_help_rect(ui, "Unit parameter", name_cell.rect);
 
-                // Slider when both min and max resolve (#1176).
-                let slider_range = row.limits.and_then(|lim| {
-                    let min = lim.min?;
-                    let max = lim.max?;
-                    (max > min).then_some((lim, min, max))
-                });
-
-                ui.vertical(|ui| {
-                    if let Some((lim, min, max)) = slider_range {
-                        let current = row
-                            .current_value
-                            .unwrap_or(min)
-                            .clamp(min, max);
-                        let mut slider_v = current;
-                        ui.spacing_mut().slider_width = 100.0;
-                        let slider = ui.add(
-                            egui::Slider::new(&mut slider_v, min..=max).show_value(false),
-                        );
-                        if slider.changed() {
-                            let snapped = clamp_and_snap_value(&lim, slider_v);
-                            let (len_u, ang_u) = unit_doc_defaults.unwrap_or((
-                                app.doc.default_length_unit,
-                                app.doc.default_angle_unit,
-                            ));
-                            let expr = match lim.kind {
-                                ParameterValueKind::Length => {
-                                    format_length_display_in(snapped, len_u)
-                                }
-                                ParameterValueKind::Angle => {
-                                    format_angle_display_in(snapped, ang_u)
-                                }
-                            };
-                            set_override = Some((row.name.clone(), Some(expr)));
-                        }
+                let editing =
+                    app.parameters_pane.unit_editing.as_deref() == Some(row.name.as_str());
+                let value_resp = if editing {
+                    let resp = ui.add(
+                        TextEdit::singleline(&mut app.parameters_pane.unit_draft)
+                            .desired_width(f32::INFINITY),
+                    );
+                    if app.parameters_pane.unit_editing_focus {
+                        resp.request_focus();
+                        app.parameters_pane.unit_editing_focus = false;
                     }
-
-                    let editing =
-                        app.parameters_pane.unit_editing.as_deref() == Some(row.name.as_str());
-                    if editing {
-                        let resp = ui.add(
-                            TextEdit::singleline(&mut app.parameters_pane.unit_draft)
-                                .desired_width(f32::INFINITY),
-                        );
-                        if app.parameters_pane.unit_editing_focus {
-                            resp.request_focus();
-                            app.parameters_pane.unit_editing_focus = false;
+                    let commit = unit_parameter_edit_should_commit(
+                        enter,
+                        tab_pressed,
+                        resp.has_focus(),
+                        resp.lost_focus(),
+                    );
+                    if commit {
+                        let draft = app.parameters_pane.unit_draft.trim().to_string();
+                        if !draft.is_empty() {
+                            set_override = Some((row.name.clone(), Some(draft)));
                         }
-                        let commit = unit_parameter_edit_should_commit(
-                            enter,
-                            tab_pressed,
-                            resp.has_focus(),
-                            resp.lost_focus(),
-                        );
-                        if commit
-                        {
-                            let draft = app.parameters_pane.unit_draft.trim().to_string();
-                            if !draft.is_empty() {
-                                set_override = Some((row.name.clone(), Some(draft)));
-                            }
-                            app.parameters_pane.unit_editing = None;
-                        } else if resp.lost_focus() {
-                            app.parameters_pane.unit_editing = None;
-                        }
+                        app.parameters_pane.unit_editing = None;
+                    } else if resp.lost_focus() {
+                        app.parameters_pane.unit_editing = None;
+                    }
+                    resp
+                } else {
+                    // An overridden value reads gold — this instance's own number, not
+                    // the unit's.
+                    let text = if row.overridden {
+                        RichText::new(format_parameter_value_display(
+                            &app.doc,
+                            &row.expression,
+                        ))
+                        .color(egui::Color32::from_rgb(255, 210, 90))
                     } else {
-                        // An overridden value reads gold — this instance's own number, not
-                        // the unit's.
-                        let text = if row.overridden {
-                            RichText::new(format_parameter_value_display(
-                                &app.doc,
-                                &row.expression,
-                            ))
-                            .color(egui::Color32::from_rgb(255, 210, 90))
-                        } else {
-                            RichText::new(format_parameter_value_display(
-                                &app.doc,
-                                &row.expression,
-                            ))
-                        };
-                        let resp = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
-                        if resp
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .clicked()
-                        {
-                            app.parameters_pane.unit_editing = Some(row.name.clone());
-                            app.parameters_pane.unit_draft = row.expression.clone();
-                            app.parameters_pane.unit_editing_focus = true;
-                        }
+                        RichText::new(format_parameter_value_display(
+                            &app.doc,
+                            &row.expression,
+                        ))
+                    };
+                    let resp = ui
+                        .add(egui::Label::new(text).sense(egui::Sense::click()))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if resp.clicked() {
+                        app.parameters_pane.unit_editing = Some(row.name.clone());
+                        app.parameters_pane.unit_draft = row.expression.clone();
+                        app.parameters_pane.unit_editing_focus = true;
                     }
-                });
-                ui.horizontal(|ui| {
+                    resp
+                };
+                let extras = ui.horizontal(|ui| {
                     if row.overridden {
                         let revert = icon_button(
                             ui,
@@ -2202,6 +2295,41 @@ fn show_unit_parameters_section(ui: &mut egui::Ui, app: &mut AppState) {
                     }
                 });
                 ui.end_row();
+
+                if let Some(spec) = unit_row_slider_spec(row) {
+                    let (slider, changed) = show_parameter_slider_row(
+                        ui,
+                        ("unit_param_slider", row.name.as_str()),
+                        0,
+                        1,
+                        name_cell.rect,
+                        extras.response.rect,
+                        spec,
+                        8.0,
+                    );
+                    crate::context::note_help_rect(ui, "Parameter slider", slider.rect);
+                    if let Some(snapped) = changed {
+                        let (len_u, ang_u) = unit_doc_defaults.unwrap_or((
+                            app.doc.default_length_unit,
+                            app.doc.default_angle_unit,
+                        ));
+                        let expr = match spec.limits.kind {
+                            ParameterValueKind::Length => {
+                                format_length_display_in(snapped, len_u)
+                            }
+                            ParameterValueKind::Angle => {
+                                format_angle_display_in(snapped, ang_u)
+                            }
+                        };
+                        set_override = Some((row.name.clone(), Some(expr)));
+                    }
+                    app.parameters_pane.sliders.push(PaintedParameterSlider {
+                        name: row.name.clone(),
+                        name_rect: name_cell.rect,
+                        value_rect: value_resp.rect,
+                        slider_rect: slider.rect,
+                    });
+                }
             }
         });
     let toggle = ui.horizontal(|ui| {
@@ -2382,6 +2510,8 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
     ui.heading(PANE_TITLE);
     ui.add_space(4.0);
 
+    app.parameters_pane.sliders.clear();
+
     // A row's ✕ delete button queues here and is applied after the grid, so the loop keeps its
     // borrow of `app` (#270).
     let mut delete_index: Option<ParameterKey> = None;
@@ -2392,6 +2522,8 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
     let mut set_primary: Option<(ParameterKey, bool)> = None;
     let mut set_bound: Option<(ParameterKey, ParameterBound, Option<String>)> = None;
     let mut toggle_options: Option<ParameterKey> = None;
+    // Slider drag (#1559): commit after the grid so the loop keeps its borrow of `app`.
+    let mut set_slider: Option<(ParameterKey, String)> = None;
 
     ScrollArea::vertical().id_salt("parameters_list").show(ui, |ui| {
         // Selected unit instance (#728): its parameters lead the pane, unmistakably its
@@ -2646,6 +2778,48 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                     }
                     ui.end_row();
 
+                    // Min+max slider on the row below, spanning name+value (#1559).
+                    let slider_spec = if param_frozen {
+                        None
+                    } else {
+                        app.doc
+                            .parameters
+                            .get(index)
+                            .and_then(|p| parameter_slider_spec(&app.doc, p))
+                    };
+                    if let Some(spec) = slider_spec {
+                        let (slider, changed) = show_parameter_slider_row(
+                            ui,
+                            ("doc_param_slider", index.index(), index.generation()),
+                            1,
+                            1,
+                            name_cell.response.rect,
+                            extras_cell.response.rect,
+                            spec,
+                            8.0,
+                        );
+                        crate::context::note_help_rect(ui, "Parameter slider", slider.rect);
+                        if slider.contains_pointer() {
+                            hovered_name = Some(param_name.clone());
+                        }
+                        if let Some(snapped) = changed {
+                            set_slider = Some((
+                                index,
+                                format_canonical_as_expression(
+                                    spec.limits.kind,
+                                    snapped,
+                                    &app.doc,
+                                ),
+                            ));
+                        }
+                        app.parameters_pane.sliders.push(PaintedParameterSlider {
+                            name: param_name.clone(),
+                            name_rect: name_cell.response.rect,
+                            value_rect: value_cell.rect,
+                            slider_rect: slider.rect,
+                        });
+                    }
+
                     // Expanded options under the name with a tree gutter (#1176/#1178) —
                     // not in the gear column (that shoved Name right, #1537) or the value column.
                     if options_open {
@@ -2801,6 +2975,9 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
     }
     if let Some((index, which, expression)) = set_bound {
         apply_parameter_action(app, Action::SetParameterBound { index, which, expression });
+    }
+    if let Some((index, expression)) = set_slider {
+        apply_parameter_action(app, Action::CommitParameterExpression { index, expression });
     }
     app.parameters_pane.hovered_name = hovered_name;
 
@@ -3019,6 +3196,158 @@ mod tests {
         };
         assert!((clamp_and_snap_value(&no_min, 4.0) - 3.0).abs() < 1e-4);
         assert!((clamp_and_snap_value(&no_min, 11.0) - 9.0).abs() < 1e-4); // max 10, nearest step ≤10 is 9
+    }
+
+    fn doc_with_bounded_width() -> (Document, ParameterKey) {
+        let mut doc = Document::default();
+        let width = add_parameter(&mut doc, "width".to_string(), "10mm".to_string()).unwrap();
+        set_parameter_bound(&mut doc, width, ParameterBound::Minimum, Some("0mm".into())).unwrap();
+        set_parameter_bound(&mut doc, width, ParameterBound::Maximum, Some("20mm".into())).unwrap();
+        set_parameter_bound(&mut doc, width, ParameterBound::Step, Some("5mm".into())).unwrap();
+        (doc, width)
+    }
+
+    /// #1559: a local parameter with both min and max earns a slider; missing either,
+    /// or a derived (read-only) value, does not.
+    #[test]
+    fn local_parameter_slider_spec_requires_min_and_max() {
+        let (doc, width) = doc_with_bounded_width();
+        let spec = parameter_slider_spec(&doc, &doc.parameters[width]).expect("min+max ⇒ slider");
+        assert!((spec.min - 0.0).abs() < 1e-4);
+        assert!((spec.max - 20.0).abs() < 1e-4);
+        assert!((spec.current - 10.0).abs() < 1e-4);
+        assert!((spec.limits.step.unwrap() - 5.0).abs() < 1e-4);
+
+        let mut only_min = doc.clone();
+        set_parameter_bound(&mut only_min, width, ParameterBound::Maximum, None).unwrap();
+        assert!(
+            parameter_slider_spec(&only_min, &only_min.parameters[width]).is_none(),
+            "min alone is not a slider"
+        );
+
+        let mut only_max = doc.clone();
+        set_parameter_bound(&mut only_max, width, ParameterBound::Minimum, None).unwrap();
+        assert!(parameter_slider_spec(&only_max, &only_max.parameters[width]).is_none());
+
+        let mut inverted = doc.clone();
+        set_parameter_bound(&mut inverted, width, ParameterBound::Minimum, Some("30mm".into()))
+            .unwrap();
+        assert!(
+            parameter_slider_spec(&inverted, &inverted.parameters[width]).is_none(),
+            "max <= min is not a slider"
+        );
+    }
+
+    /// #1559: dragging the slider writes a clamp-and-snapped expression, same as an import.
+    #[test]
+    fn local_parameter_slider_expression_snaps_to_step() {
+        let (doc, width) = doc_with_bounded_width();
+        let param = &doc.parameters[width];
+        let mid = parameter_slider_expression(&doc, param, 12.0).expect("slider");
+        let v = crate::value::eval_length_mm_in_doc(&mid, &doc).unwrap();
+        assert!((v - 10.0).abs() < 1e-3, "12 snaps to 10; got {mid} ({v})");
+        let hi = parameter_slider_expression(&doc, param, 99.0).expect("slider");
+        let v = crate::value::eval_length_mm_in_doc(&hi, &doc).unwrap();
+        assert!((v - 20.0).abs() < 1e-3, "99 clamps to 20; got {hi} ({v})");
+    }
+
+    /// #1559: a derived parameter never gets a slider — its value is not user-editable.
+    #[test]
+    fn derived_parameter_has_no_slider() {
+        let mut doc = Document::default();
+        let width = add_parameter(&mut doc, "width".to_string(), "10mm".to_string()).unwrap();
+        doc.parameters[width].source = Some(ParameterSource::LineLength(lkey(0)));
+        set_parameter_bound(&mut doc, width, ParameterBound::Minimum, Some("0mm".into())).unwrap();
+        set_parameter_bound(&mut doc, width, ParameterBound::Maximum, Some("20mm".into())).unwrap();
+        assert!(parameter_slider_spec(&doc, &doc.parameters[width]).is_none());
+        assert!(parameter_slider_expression(&doc, &doc.parameters[width], 5.0).is_none());
+    }
+
+    fn paint_sliders(app: &mut AppState) -> Vec<PaintedParameterSlider> {
+        let _ = paint_parameters_pane(app);
+        app.parameters_pane.sliders.clone()
+    }
+
+    fn assert_slider_spans_name_and_value(s: &PaintedParameterSlider) {
+        assert!(
+            s.slider_rect.top() >= s.name_rect.bottom() - 2.0,
+            "slider belongs on the row below the parameter, slider.top={} name.bottom={}",
+            s.slider_rect.top(),
+            s.name_rect.bottom()
+        );
+        assert!(
+            (s.slider_rect.left() - s.name_rect.left()).abs() < 6.0,
+            "slider should start at the name column, slider.left={} name.left={}",
+            s.slider_rect.left(),
+            s.name_rect.left()
+        );
+        assert!(
+            s.slider_rect.right() + 2.0 >= s.value_rect.right(),
+            "slider should reach the end of the value column, slider.right={} value.right={}",
+            s.slider_rect.right(),
+            s.value_rect.right()
+        );
+        assert!(
+            s.slider_rect.width() + 1.0 >= (s.value_rect.right() - s.name_rect.left()) * 0.85,
+            "slider should span name+value, not sit in the value column alone; \
+             slider.w={} name..value={}",
+            s.slider_rect.width(),
+            s.value_rect.right() - s.name_rect.left()
+        );
+    }
+
+    /// #1559: a local min+max parameter paints a slider on the row below, spanning name+value.
+    #[test]
+    fn local_parameter_with_min_max_paints_a_slider_below_the_row() {
+        let mut app = AppState::default();
+        let (doc, _) = doc_with_bounded_width();
+        app.doc = doc;
+        let sliders = paint_sliders(&mut app);
+        assert_eq!(sliders.len(), 1, "one local parameter with min+max ⇒ one slider");
+        assert_eq!(sliders[0].name, "width");
+        assert_slider_spans_name_and_value(&sliders[0]);
+    }
+
+    /// #1559: no slider when the local parameter has no max (or no min).
+    #[test]
+    fn local_parameter_without_both_bounds_paints_no_slider() {
+        let mut app = AppState::default();
+        app.doc = doc_with_param_a();
+        assert!(paint_sliders(&mut app).is_empty());
+    }
+
+    fn app_with_imported_bounded_param() -> AppState {
+        let (unit_doc, width) = doc_with_bounded_width();
+        let mut unit_doc = unit_doc;
+        unit_doc.parameters[width].primary = true;
+
+        let mut app = AppState::default();
+        let unit = app.doc.units.insert(crate::model::ImportedUnit {
+            source: crate::model::UnitSource::RelativePath("part.bearcad".into()),
+            link: crate::model::LinkMode::Static,
+            document: unit_doc,
+            source_mtime: None,
+            source_hash: None,
+        });
+        let instance = app.doc.unit_instances.insert(crate::model::UnitInstance {
+            unit,
+            name: Some("part".into()),
+            parameter_overrides: Vec::new(),
+            placement: crate::model::UnitPlacement::default(),
+        });
+        app.scene_selection
+            .insert(crate::hierarchy::SceneElement::UnitInstance(instance));
+        app
+    }
+
+    /// #1559: imported parameters with min+max use the same below-the-row, name+value span.
+    #[test]
+    fn imported_parameter_slider_matches_local_layout() {
+        let mut app = app_with_imported_bounded_param();
+        let sliders = paint_sliders(&mut app);
+        assert_eq!(sliders.len(), 1, "imported width has min+max ⇒ one slider");
+        assert_eq!(sliders[0].name, "width");
+        assert_slider_spans_name_and_value(&sliders[0]);
     }
 
     /// #727/#1180: the flag round-trips through save/load; a document saved without the
