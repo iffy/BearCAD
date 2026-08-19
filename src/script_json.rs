@@ -498,12 +498,17 @@ pub fn instruction_from_json(
             path: req_str(o, "path", "import_image")?,
             plane: opt_usize(o, "plane")?,
         }),
-        "calibrate_image" => Ok(Instruction::CalibrateImage {
-            image: req_usize(o, "image", "calibrate_image")?,
-            a: xy_pair(o, "from")?,
-            b: xy_pair(o, "to")?,
-            length: req_f32(o, "length", "calibrate_image")?,
-        }),
+        "calibrate_image" => {
+            let expression = req_expr(o, "length", "calibrate_image")?;
+            let length = expression.parse::<f32>().unwrap_or(0.0);
+            Ok(Instruction::CalibrateImage {
+                image: req_usize(o, "image", "calibrate_image")?,
+                a: opt_xy_pair(o, "from")?,
+                b: opt_xy_pair(o, "to")?,
+                length,
+                expression,
+            })
+        }
 
         // ----- Declarative 3D modeling ops. -----
         "revolve" => {
@@ -2727,19 +2732,24 @@ fn usize_array_list(o: &Map<String, Value>, key: &str) -> Result<Vec<Vec<usize>>
 }
 
 /// A plane-local `[x, y]` point pair (`calibrate_image`'s `from`/`to`).
-fn xy_pair(o: &Map<String, Value>, key: &str) -> Result<(f32, f32), String> {
-    let arr = o
-        .get(key)
-        .and_then(Value::as_array)
-        .filter(|a| a.len() == 2)
-        .ok_or_else(|| format!("`{key}` must be a two-element [x, y] point"))?;
-    let coord = |i: usize| {
-        arr[i]
-            .as_f64()
-            .map(|n| n as f32)
-            .ok_or_else(|| format!("`{key}` point needs numeric x and y"))
-    };
-    Ok((coord(0)?, coord(1)?))
+fn opt_xy_pair(o: &Map<String, Value>, key: &str) -> Result<Option<(f32, f32)>, String> {
+    match o.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => {
+            let arr = o
+                .get(key)
+                .and_then(Value::as_array)
+                .filter(|a| a.len() == 2)
+                .ok_or_else(|| format!("`{key}` must be a two-element [x, y] point"))?;
+            let coord = |i: usize| {
+                arr[i]
+                    .as_f64()
+                    .map(|n| n as f32)
+                    .ok_or_else(|| format!("`{key}` point needs numeric x and y"))
+            };
+            Ok(Some((coord(0)?, coord(1)?)))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2949,9 +2959,10 @@ mod tests {
             ),
             Ok(Instruction::CalibrateImage {
                 image: 0,
-                a: (0.0, 0.0),
-                b: (10.0, 0.0),
+                a: Some((0.0, 0.0)),
+                b: Some((10.0, 0.0)),
                 length: 25.0,
+                expression: "25".into(),
             })
         );
     }

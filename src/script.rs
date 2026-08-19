@@ -168,9 +168,10 @@ pub enum Instruction {
     RemoveCalibrationPoint { image: usize, index: usize },
     CalibrateImage {
         image: usize,
-        a: (f32, f32),
-        b: (f32, f32),
+        a: Option<(f32, f32)>,
+        b: Option<(f32, f32)>,
         length: f32,
+        expression: String,
     },
     /// Import a STEP file at `path` as a new body (#71).
     ImportStep { path: String },
@@ -1037,10 +1038,22 @@ impl Instruction {
             Instruction::RemoveCalibrationPoint { image, index } => format!(
                 "bearcad.remove_calibration_point{{ image = {image}, index = {index} }}"
             ),
-            Instruction::CalibrateImage { image, a, b, length } => format!(
-                "bearcad.calibrate_image{{ image = {image}, from = {{ {}, {} }}, to = {{ {}, {} }}, length = {length} }}",
-                a.0, a.1, b.0, b.1
-            ),
+            Instruction::CalibrateImage { image, a, b, length, expression } => {
+                let length_arg = if expression.is_empty() {
+                    length.to_string()
+                } else {
+                    format!("{expression:?}")
+                };
+                match (a, b) {
+                    (Some(a), Some(b)) => format!(
+                        "bearcad.calibrate_image{{ image = {image}, from = {{ {}, {} }}, to = {{ {}, {} }}, length = {length_arg} }}",
+                        a.0, a.1, b.0, b.1
+                    ),
+                    _ => format!(
+                        "bearcad.calibrate_image{{ image = {image}, length = {length_arg} }}"
+                    ),
+                }
+            }
             Instruction::ImportStep { path } => format!("bearcad.import_step({path:?})"),
             Instruction::ImportLua { path, force } => {
                 if *force {
@@ -3120,12 +3133,15 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 index: *index,
             })
         }
-        Action::CalibrateImage { image, a, b, length } => Some(Instruction::CalibrateImage {
-            image: image_ordinal(doc, *image)?,
-            a: *a,
-            b: *b,
-            length: *length,
-        }),
+        Action::CalibrateImage { image, a, b, length, expression } => {
+            Some(Instruction::CalibrateImage {
+                image: image_ordinal(doc, *image)?,
+                a: Some(*a),
+                b: Some(*b),
+                length: *length,
+                expression: expression.clone(),
+            })
+        }
         Action::ImportStep { path } => Some(Instruction::ImportStep { path: path.clone() }),
         Action::UpdateExtrusion { extrusion, distance, target, expression } => {
             Some(Instruction::UpdateExtrusion {
@@ -5902,12 +5918,60 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::CalibrateImage { image, a, b, length } => {
+            Instruction::CalibrateImage { image, a, b, length, expression } => {
                 let Some(image) = image_key(&state.doc, image) else {
                     self.last_action_error = Some(format!("Image {image} not found"));
                     return StepResult::Continue;
                 };
-                let r = state.apply(Action::CalibrateImage { image, a, b, length });
+                let mut expression = expression;
+                if let Err(e) = crate::actions::commit_inline_parameter_defs(
+                    &mut state.doc,
+                    [&mut expression],
+                ) {
+                    self.record_action_error(crate::actions::ActionResult::Err(e));
+                    return StepResult::Continue;
+                }
+                let length = if !expression.trim().is_empty() {
+                    match crate::value::eval_parameter_in_doc(&expression, &state.doc) {
+                        Some(crate::value::EvaluatedParameter::LengthMm(v)) if v > 0.0 => v,
+                        _ => {
+                            self.last_action_error =
+                                Some(format!("Not a usable length: {expression}"));
+                            return StepResult::Continue;
+                        }
+                    }
+                } else {
+                    length
+                };
+                let (a, b) = match (a, b) {
+                    (Some(a), Some(b)) => (a, b),
+                    _ => {
+                        let Some(img) = state.doc.tracing_images.get_mut(image) else {
+                            self.last_action_error = Some(format!("Image {image:?} not found"));
+                            return StepResult::Continue;
+                        };
+                        crate::model::ensure_image_calibration(img);
+                        let img = &state.doc.tracing_images[image];
+                        let Some(a) = crate::model::image_calibration_point_uv(img, 0) else {
+                            self.last_action_error =
+                                Some("Image has no calibration points".to_string());
+                            return StepResult::Continue;
+                        };
+                        let Some(b) = crate::model::image_calibration_point_uv(img, 1) else {
+                            self.last_action_error =
+                                Some("Image has no calibration points".to_string());
+                            return StepResult::Continue;
+                        };
+                        (a, b)
+                    }
+                };
+                let r = state.apply(Action::CalibrateImage {
+                    image,
+                    a,
+                    b,
+                    length,
+                    expression,
+                });
                 self.record_action_error(r);
                 StepResult::Continue
             }
@@ -7201,6 +7265,25 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::BeginEditCommittedDim { axis } => {
+                if axis == DimLabelAxis::Length {
+                    let mut only_image = None;
+                    let mut extras = false;
+                    for element in state.scene_selection.iter() {
+                        match (element, only_image) {
+                            (SceneElement::Image(i), None) => only_image = Some(i),
+                            _ => extras = true,
+                        }
+                    }
+                    if extras {
+                        only_image = None;
+                    }
+                    if let Some(image) = only_image.filter(|&i| state.doc.tracing_images.contains(i))
+                    {
+                        let r = state.apply(Action::BeginEditImageCalibration { image });
+                        self.record_action_error(r);
+                        return StepResult::Continue;
+                    }
+                }
                 let Some(session) = state.sketch_session else {
                     self.last_action_error = Some("Not in sketch mode".to_string());
                     return StepResult::Continue;

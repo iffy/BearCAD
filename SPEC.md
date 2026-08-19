@@ -1951,24 +1951,17 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   opacity — depth-tested (bodies in front occlude it) but never writing depth, so sketch
   geometry and fills always read on top. Decoded pixels and GPU textures are cached by
   content, so the per-frame cost is one quad.
-- **Scale calibration (#163/#171):** the guided flow starts from the image itself: select
-  the tracing image and the context pane shows a **Calibrate scale** button. Clicking it
-  enters a point-placing mode — click **two points** on the image over a feature of known
-  size (the placed points, the span between them, and a live rubber band to the cursor are
-  previewed; Esc cancels; picking another tool cancels) — then the context pane shows the
-  length field: typing the feature's real length rescales the image uniformly about the
-  span's midpoint so the marked span measures that length. The calibration (reference
-  segment in image-UV + assigned length) is stored on the image for re-editing, and
-  re-running calibration replaces it. **Marker editing (#424):** a dot under the cursor
-  previews each placement click; the length field **pre-fills** with the span's current
-  measured length (`context::sync_calibrate_draft`, re-syncing whenever the span
-  changes); with a calibrated image selected the marker line and points stay visible,
-  the context pane re-opens the editable length (Apply re-calibrates the stored span),
-  and either point can be **dragged** (`Action::SetCalibrationPoint` — updates the
-  stored uv, never rescales) or **clicked + Deleted**
-  (`Action::RemoveCalibrationPoint` — the guided flow re-opens holding the other point,
-  so the next click re-places it). Scriptable: `bearcad.calibration_point{ image, index,
-  x, y }` / `bearcad.remove_calibration_point{ image, index }`.
+- **Scale calibration (#163/#171/#1547):** selecting only a tracing image with the Select
+  tool immediately enters calibration mode. A line with a point at each end always sits
+  on the image's plane — on a fresh import, top-middle to bottom-middle — and always
+  carries a dimension that cannot be removed. Drag either endpoint on or off the image
+  (still in-plane); that updates stored UV and never rescales. Double-click the dimension
+  (a ValueInput: any length expression) to rescale the image uniformly about the span
+  midpoint so the two points stay at the same locations on the image and the world-space
+  span matches the typed length. The calibration (reference segment in image-UV + assigned
+  length/expression) is stored on the image. Scriptable: `bearcad.calibrate_image{ image,
+  from, to, length }` (`from`/`to` optional; `length` is an expression),
+  `bearcad.calibration_point{ image, index, x, y }`, `bearcad.get{ kind = "image", index }`.
 - **Image constraints & viewport move-pick (#425):** a calibrated image's two reference
   points are first-class constraint points (`ConstraintPoint::ImageCalibrationPoint`),
   pickable/snappable in sketches hosted on the image's plane and usable in
@@ -1977,12 +1970,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   and `base_origin`; scale never changes), and the solver holds the non-image side of a
   point-point coincidence so the image follows its target. The Move tool also picks an
   image by clicking its quad in the viewport (`App::pick_tracing_image`), not only from
-  the Elements pane. Scriptable: `bearcad.select{ kind = "image", index, point = 0|1 }`. Alternative segment source: a **line** drawn on the
-  image's plane, selected together with the image, feeds the same length field. Scriptable
-  via `bearcad.calibrate_image{ image =, from = {x, y}, to = {x, y}, length = }`
-  (plane-local coordinates). *Known limitation:* calibration mutates the image in place and
-  is not yet individually undoable (3D edge treatments had the same gap and now undo via a
-  transient snapshot marker, #168 — calibration can adopt the same mechanism).
+  the Elements pane. Scriptable: `bearcad.select{ kind = "image", index, point = 0|1 }`.
+  *Known limitation:* calibration mutates the image in place and is not yet individually
+  undoable (3D edge treatments had the same gap and now undo via a transient snapshot
+  marker, #168 — calibration can adopt the same mechanism).
 
 ### 3.4.3 Sketch text (#282)
 - **Text identity (#1055):** `Document::sketch_texts` is an `arena::Arena`, and a text is
