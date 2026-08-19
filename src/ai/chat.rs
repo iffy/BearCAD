@@ -304,26 +304,6 @@ impl Conversation {
             .collect()
     }
 
-    /// Add a finished question-and-answer pair without contacting anything (#1600).
-    ///
-    /// The canned-conversation path: documentation screenshots and tests need a thread with
-    /// content, and neither should need an API key to get one. Usage stays zero — nothing
-    /// was spent, so nothing is billed.
-    pub fn seed(&mut self, question: String, reply: String, backend: String) {
-        self.entries.push(Entry {
-            role: Role::User,
-            text: question,
-            backend: backend.clone(),
-            ..Entry::default()
-        });
-        self.entries.push(Entry {
-            role: Role::Assistant,
-            text: reply,
-            backend,
-            ..Entry::default()
-        });
-    }
-
     /// The runnable blocks in the most recent finished reply (#1600).
     pub fn blocks(&self) -> Vec<CodeBlock> {
         let Some((entry_index, entry)) = self

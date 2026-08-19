@@ -875,40 +875,6 @@ pub enum Instruction {
     SetElementsView { mode: crate::hierarchy::HierarchyViewMode },
     /// Show/hide a UI pane. `None` toggles.
     SetPane { pane: Pane, visible: Option<bool> },
-    /// Add an AI backend (#1595).
-    AddAiBackend { backend: crate::ai::backends::Backend },
-    /// Replace a configured AI backend's settings, keeping its id.
-    UpdateAiBackend { id: String, backend: crate::ai::backends::Backend },
-    /// Remove a configured AI backend.
-    RemoveAiBackend { id: String },
-    /// Choose the AI backend the conversation uses.
-    SelectAiBackend { id: String },
-    /// Send a chat message to the selected backend (#1598).
-    SendAiMessage { text: String },
-    /// Stop a reply in progress.
-    CancelAiMessage,
-    /// Empty the conversation.
-    ClearAiConversation,
-    /// Choose how much of the workspace a message carries (#1597).
-    SetAiContextScope { scope: crate::ai::context::ContextScope },
-    /// Answer the first-send confirmation (#1609).
-    ResolveAiConsent { agreed: bool },
-    /// Start a backend's running cost total from zero (#1599).
-    ResetAiBackendSpend { id: String },
-    /// Run one Lua block from the latest reply (#1600).
-    RunAiBlock { index: usize },
-    /// Put a canned reply in the conversation, for screenshots and tests (#1600).
-    SeedAiReply { question: String, reply: String },
-    /// Install the AI agent skill for one target (#1604).
-    InstallAiSkill { target: String, dir: Option<String> },
-    /// Remove the AI agent skill from one target.
-    UninstallAiSkill { target: String, dir: Option<String> },
-    /// Start the local MCP server (#1605).
-    StartMcpServer { port: Option<u16> },
-    /// Stop it.
-    StopMcpServer,
-    /// Issue a fresh MCP bearer token.
-    RegenerateMcpToken,
     AddParameter { name: String, expression: String },
     CreateParameterFromLineLength { line_index: usize, name: Option<String> },
     /// Create a derived (measured) parameter from a geometry source (#432).
@@ -2060,68 +2026,6 @@ impl Instruction {
                     None => "toggle",
                 };
                 format!("bearcad.ui.pane({:?}, {verb:?})", pane.script_name())
-            }
-            Instruction::AddAiBackend { backend } => {
-                // `key_description` rather than the key: --show-commands output is pasted
-                // into bug reports (#1595).
-                format!(
-                    "bearcad.ai.add_backend{{ name = {:?}, provider = {:?}, model = {:?}, key = {:?} }}",
-                    backend.name,
-                    backend.provider.as_str(),
-                    backend.model,
-                    backend.key_description()
-                )
-            }
-            Instruction::UpdateAiBackend { id, backend } => {
-                format!(
-                    "bearcad.ai.update_backend({id:?}, {{ model = {:?}, key = {:?} }})",
-                    backend.model,
-                    backend.key_description()
-                )
-            }
-            Instruction::RemoveAiBackend { id } => {
-                format!("bearcad.ai.remove_backend({id:?})")
-            }
-            Instruction::SendAiMessage { text } => {
-                format!("bearcad.ai.ask({text:?})")
-            }
-            Instruction::CancelAiMessage => "bearcad.ai.stop()".to_string(),
-            Instruction::ClearAiConversation => "bearcad.ai.clear()".to_string(),
-            Instruction::SetAiContextScope { scope } => {
-                format!("bearcad.ai.context_scope({:?})", scope.as_str())
-            }
-            Instruction::ResolveAiConsent { agreed } => {
-                format!("bearcad.ai.consent({agreed})")
-            }
-            Instruction::ResetAiBackendSpend { id } => {
-                format!("bearcad.ai.reset_usage({id:?})")
-            }
-            Instruction::RunAiBlock { index } => {
-                format!("bearcad.ai.run_block({index})")
-            }
-            Instruction::SeedAiReply { question, reply } => {
-                format!("bearcad.ai.seed_reply({question:?}, {reply:?})")
-            }
-            Instruction::StartMcpServer { port } => match port {
-                Some(port) => format!("bearcad.ai.mcp_start{{ port = {port} }}"),
-                None => "bearcad.ai.mcp_start{}".to_string(),
-            },
-            Instruction::StopMcpServer => "bearcad.ai.mcp_stop()".to_string(),
-            Instruction::RegenerateMcpToken => "bearcad.ai.mcp_new_token()".to_string(),
-            Instruction::InstallAiSkill { target, dir } => match dir {
-                Some(dir) => {
-                    format!("bearcad.ai.install_skill{{ target = {target:?}, dir = {dir:?} }}")
-                }
-                None => format!("bearcad.ai.install_skill{{ target = {target:?} }}"),
-            },
-            Instruction::UninstallAiSkill { target, dir } => match dir {
-                Some(dir) => {
-                    format!("bearcad.ai.uninstall_skill{{ target = {target:?}, dir = {dir:?} }}")
-                }
-                None => format!("bearcad.ai.uninstall_skill{{ target = {target:?} }}"),
-            },
-            Instruction::SelectAiBackend { id } => {
-                format!("bearcad.ai.set_backend({id:?})")
             }
             Instruction::AddParameter { name, expression } => {
                 format!("bearcad.parameter(\"add\", {name:?}, {expression:?})")
@@ -7902,95 +7806,6 @@ impl ScriptRunner {
                     Some(v) => state.apply(Action::SetPaneVisible { pane, visible: v }),
                     None => state.apply(Action::TogglePane(pane)),
                 };
-                StepResult::Continue
-            }
-            // Every one of these records its action error: a script that names a backend
-            // that does not exist must fail loudly, not select nothing quietly (#1599).
-            Instruction::AddAiBackend { backend } => {
-                let result = state.apply(Action::AddAiBackend { backend });
-                self.record_action_error(result);
-                StepResult::Continue
-            }
-            Instruction::UpdateAiBackend { id, backend } => {
-                let result = state.apply(Action::UpdateAiBackend { id, backend });
-                self.record_action_error(result);
-                StepResult::Continue
-            }
-            Instruction::RemoveAiBackend { id } => {
-                let result = state.apply(Action::RemoveAiBackend { id });
-                self.record_action_error(result);
-                StepResult::Continue
-            }
-            Instruction::SelectAiBackend { id } => {
-                let result = state.apply(Action::SelectAiBackend { id });
-                self.record_action_error(result);
-                StepResult::Continue
-            }
-            Instruction::SendAiMessage { text } => {
-                let result = state.apply(Action::SendAiMessage { text });
-                self.record_action_error(result);
-                StepResult::Continue
-            }
-            Instruction::CancelAiMessage => {
-                let result = state.apply(Action::CancelAiMessage);
-                self.record_action_error(result);
-                StepResult::Continue
-            }
-            Instruction::ClearAiConversation => {
-                state.apply(Action::ClearAiConversation);
-                StepResult::Continue
-            }
-            Instruction::SetAiContextScope { scope } => {
-                state.apply(Action::SetAiContextScope { scope });
-                StepResult::Continue
-            }
-            Instruction::ResolveAiConsent { agreed } => {
-                let result = state.apply(Action::ResolveAiConsent { agreed });
-                self.record_action_error(result);
-                StepResult::Continue
-            }
-            Instruction::ResetAiBackendSpend { id } => {
-                let result = state.apply(Action::ResetAiBackendSpend { id });
-                self.record_action_error(result);
-                StepResult::Continue
-            }
-            Instruction::RunAiBlock { index } => {
-                let result = state.apply(Action::RunAiBlock { index });
-                self.record_action_error(result);
-                StepResult::Continue
-            }
-            Instruction::SeedAiReply { question, reply } => {
-                let result = state.apply(Action::SeedAiReply { question, reply });
-                self.record_action_error(result);
-                StepResult::Continue
-            }
-            Instruction::StartMcpServer { port } => {
-                let result = state.apply(Action::StartMcpServer { port });
-                self.record_action_error(result);
-                StepResult::Continue
-            }
-            Instruction::StopMcpServer => {
-                state.apply(Action::StopMcpServer);
-                StepResult::Continue
-            }
-            Instruction::RegenerateMcpToken => {
-                state.apply(Action::RegenerateMcpToken);
-                StepResult::Continue
-            }
-            Instruction::InstallAiSkill { target, dir } => {
-                let result = state.apply(Action::InstallAiSkill {
-                    target,
-                    dir: dir.map(std::path::PathBuf::from),
-                });
-                self.record_action_error(result);
-                StepResult::Continue
-            }
-            Instruction::UninstallAiSkill { target, dir } => {
-                let result = state.apply(Action::UninstallAiSkill {
-                    target,
-                    dir: dir.map(std::path::PathBuf::from),
-                });
-                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::AddParameter { name, expression } => {

@@ -4178,7 +4178,7 @@ impl App {
         self.pump_mcp(ctx);
 
         // A block the user clicked **Run** on (#1600). Never automatic — the action is only
-        // ever raised by that click or by an explicit `bearcad.ai.run_block(i)`.
+        // ever raised by that click.
         let pending_run = self.state.ai.borrow_mut().chat.pending_run.take();
         if let Some((entry, index, source)) = pending_run {
             let outcome = self.run_lua_source(&source, ctx);
@@ -4187,16 +4187,6 @@ impl App {
                 .borrow_mut()
                 .chat
                 .record_block_outcome(entry, index, outcome);
-        }
-
-        // `bearcad.ai.context_preview()` (#1597): the script asks, the frame loop answers,
-        // because only here is every open document reachable.
-        if self.state.ai.borrow().preview_wanted {
-            let scope = self.state.ai.borrow().chat.scope;
-            let context = ai::context::build(scope, &self.open_documents());
-            let mut ai = self.state.ai.borrow_mut();
-            ai.preview = Some(context);
-            ai.preview_wanted = false;
         }
     }
 
