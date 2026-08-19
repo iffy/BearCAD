@@ -35,11 +35,16 @@ assert(bearcad.selection()[1] ~= nil, "find + select should select the named bod
 -- Cutting: sketch on a face, then extrude with body = "cut".
 bearcad.begin_sketch{ kind = "extrude_cap", extrusion = 0, profile = "polygon",
                       profile_lines = {0, 1, 2, 3}, top = true }
-bearcad.circle{ x = 0, y = 0, r = 5 }
+bearcad.circle{ x = 40, y = 25, r = 5 }
 bearcad.extrude{ circle = 0, distance = 20, body = "cut" }
-local cylinders = bearcad.body_cylinders(bearcad.count("body") - 1)
+local live = bearcad.count("body") - 1
+local cylinders = bearcad.body_cylinders(live)
 assert(#cylinders == 1, "the cut should leave one cylindrical hole, got " .. #cylinders)
 assert(math.abs(cylinders[1].radius - 5) < 0.01, "hole radius, got " .. cylinders[1].radius)
+assert(math.abs(cylinders[1].length - 20) < 0.1, "through-hole length, got " .. cylinders[1].length)
+local expected = 80 * 50 * 20 - math.pi * 25 * 20
+assert(math.abs(bearcad.body_stats(live).volume - expected) < 200,
+  "through-hole volume should be the block minus the cylinder, got " .. bearcad.body_stats(live).volume)
 
 -- Solids: the signatures the skill shows.
 bearcad.new()

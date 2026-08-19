@@ -13549,6 +13549,78 @@ mod tests {
         );
     }
 
+    /// #1615: cutting a through hole must subtract the cylinder, not a sliver of it.
+    /// Cap-sketch (x, y) is the same frame as the profile, so the hole is centred
+    /// in the 40×40 block — `x = 0, y = 0` would only notch a corner.
+    #[test]
+    fn lua_body_stats_volume_of_a_block_with_a_through_hole() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 40, height = 40 }
+            bearcad.extrude{ polygon = {0,1,2,3}, distance = 10 }
+            bearcad.begin_sketch{ kind = "extrude_cap", extrusion = 0, profile = "polygon",
+                                  profile_lines = {0,1,2,3}, top = true }
+            bearcad.circle{ x = 20, y = 20, r = 5 }
+            bearcad.extrude{ circle = 0, distance = 20, body = "cut" }
+            local live = bearcad.count("body") - 1
+            local cyls = bearcad.body_cylinders(live)
+            assert(#cyls == 1, "the cut should leave one cylindrical hole, got " .. #cyls)
+            assert(math.abs(cyls[1].radius - 5) < 0.01, "hole radius, got " .. cyls[1].radius)
+            assert(math.abs(cyls[1].length - 10) < 0.1, "through-hole length, got " .. cyls[1].length)
+            local expected = 40 * 40 * 10 - math.pi * 25 * 10
+            local v = bearcad.body_stats(live).volume
+            assert(math.abs(v - expected) < 20,
+              "through-hole volume " .. v .. " expected " .. expected)
+        "#,
+        );
+    }
+
+    /// #1615: a hole sketched with the block (boolean difference extrusion) is the
+    /// same solid: block minus cylinder.
+    #[test]
+    fn lua_body_stats_volume_of_a_boolean_extrude_through_hole() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 40, height = 40 }
+            bearcad.circle{ x = 20, y = 20, r = 5 }
+            bearcad.extrude{
+              boolean = { op = "difference", a = { polygon = {0,1,2,3} }, b = { circle = 0 } },
+              distance = 10,
+            }
+            local expected = 40 * 40 * 10 - math.pi * 25 * 10
+            local v = bearcad.body_stats(0).volume
+            assert(math.abs(v - expected) < 20,
+              "boolean-extrude through-hole volume " .. v .. " expected " .. expected)
+        "#,
+        );
+    }
+
+    /// #1615: `circle{ x = 0, y = 0 }` on an extrude cap uses the profile's origin, which
+    /// for `rect{ width = 40, height = 40 }` is a corner — a quarter-cylinder notch, not a
+    /// centred through hole. Volume must match that geometry (the 15804 figure from the
+    /// issue), not block minus a full cylinder.
+    #[test]
+    fn lua_body_stats_volume_of_a_corner_notch_cut() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 40, height = 40 }
+            bearcad.extrude{ polygon = {0,1,2,3}, distance = 10 }
+            bearcad.begin_sketch{ kind = "extrude_cap", extrusion = 0, profile = "polygon",
+                                  profile_lines = {0,1,2,3}, top = true }
+            bearcad.circle{ x = 0, y = 0, r = 5 }
+            bearcad.extrude{ circle = 0, distance = 20, body = "cut" }
+            local live = bearcad.count("body") - 1
+            local expected = 40 * 40 * 10 - 0.25 * math.pi * 25 * 10
+            local v = bearcad.body_stats(live).volume
+            assert(math.abs(v - expected) < 20,
+              "corner-notch volume " .. v .. " expected " .. expected)
+        "#,
+        );
+    }
+
     /// #1509: `bearcad.ui.tool_hints(...)` shows/hides/toggles the viewport hint line.
     #[test]
     fn lua_tool_hints_toggles() {
