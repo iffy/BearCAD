@@ -162,6 +162,11 @@ pub struct Backend {
     /// Persisted: the answer to "what has this cost me?" outlives the conversation.
     #[serde(default)]
     pub spend: super::pricing::Spend,
+    /// Whether the user has agreed, once, to send document content to this backend (#1609).
+    /// A new backend starts at `false`, so the first message asks before anything leaves
+    /// the machine.
+    #[serde(default)]
+    pub consented: bool,
 }
 
 impl Backend {
@@ -179,7 +184,27 @@ impl Backend {
             },
             price: None,
             spend: super::pricing::Spend::default(),
+            consented: false,
         }
+    }
+
+    /// The host a message to this backend would reach — what the confirmation names, since
+    /// "where does this go?" is the question worth answering (#1609).
+    pub fn host(&self) -> String {
+        self.effective_base_url()
+            .split("://")
+            .nth(1)
+            .and_then(|rest| rest.split('/').next())
+            .unwrap_or_else(|| self.effective_base_url())
+            .to_string()
+    }
+
+    /// Whether this backend runs on this machine. A local model server is worth saying so
+    /// about: nothing leaves the machine at all.
+    pub fn is_local(&self) -> bool {
+        let host = self.host();
+        let host = host.split(':').next().unwrap_or_default();
+        matches!(host, "localhost" | "127.0.0.1" | "::1" | "[::1]")
     }
 
     /// The API root to call: the configured one, or the provider default when blank.
@@ -540,6 +565,32 @@ mod tests {
         assert_eq!(backend.resolve_key().as_deref(), Some("key-from-the-environment"));
         assert!(backend.is_usable());
         std::env::remove_var(var);
+    }
+
+    #[test]
+    fn a_new_backend_has_not_been_consented_to_yet() {
+        // #1609: nothing goes to a backend until the user has agreed once.
+        for &provider in Provider::ALL {
+            assert!(
+                !Backend::preset(provider).consented,
+                "{provider:?} must start unconsented"
+            );
+        }
+    }
+
+    #[test]
+    fn a_backend_names_the_host_it_would_reach_and_knows_if_it_is_local() {
+        assert_eq!(Backend::preset(Provider::Anthropic).host(), "api.anthropic.com");
+        assert!(!Backend::preset(Provider::Anthropic).is_local());
+        // The local-server preset is Ollama on this machine.
+        let local = Backend::preset(Provider::OpenAiCompatible);
+        assert_eq!(local.host(), "localhost:11434");
+        assert!(local.is_local(), "nothing leaves the machine for a local model");
+        let loopback = Backend {
+            base_url: "http://127.0.0.1:1234/v1".into(),
+            ..Backend::preset(Provider::OpenAiCompatible)
+        };
+        assert!(loopback.is_local());
     }
 
     #[test]

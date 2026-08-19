@@ -2584,6 +2584,9 @@ pub enum Action {
     ClearAiConversation,
     /// Choose how much of the workspace a message carries (#1597).
     SetAiContextScope { scope: crate::ai::context::ContextScope },
+    /// Answer the first-send confirmation (#1609): agree and send, or decline and keep the
+    /// message in the box.
+    ResolveAiConsent { agreed: bool },
     /// Start a backend's running cost total from zero (#1599).
     ResetAiBackendSpend { id: String },
     /// Run one Lua block from the latest reply (#1600). Never automatic: this is only ever
@@ -3588,6 +3591,7 @@ impl Action {
                     | Action::CancelAiMessage
                     | Action::ClearAiConversation
                     | Action::SetAiContextScope { .. }
+                    | Action::ResolveAiConsent { .. }
                     | Action::ResetAiBackendSpend { .. }
                     | Action::InstallAiSkill { .. }
                     | Action::UninstallAiSkill { .. }
@@ -11977,10 +11981,46 @@ impl AppState {
                 if let Some(reason) = backend.unusable_reason() {
                     return ActionResult::Err(format!("AI backend {}: {reason}", backend.name));
                 }
+                // #1609: the first message to a backend asks first, in the pane, naming
+                // what is about to go and where. A script that calls `ask` has already said
+                // so explicitly, so it consents on the user's behalf.
+                if !backend.consented {
+                    ai.chat.pending_consent = Some(text);
+                    ai.chat.input.clear();
+                    drop(ai);
+                    self.status = format!("Send to {}? Confirm in the AI pane", backend.name);
+                    return ActionResult::Ok;
+                }
                 ai.chat.begin(text, backend.id.clone());
                 ai.chat.input.clear();
                 drop(ai);
                 self.status = format!("Asking {}…", backend.name);
+                ActionResult::Ok
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::ResolveAiConsent { agreed } => {
+                let mut ai = self.ai.borrow_mut();
+                let Some(text) = ai.chat.pending_consent.take() else {
+                    return ActionResult::Err("Nothing is waiting to be sent".to_string());
+                };
+                if !agreed {
+                    // Put the message back in the box: refusing should not lose what was
+                    // typed.
+                    ai.chat.input = text;
+                    drop(ai);
+                    self.status = "Not sent".to_string();
+                    return ActionResult::Ok;
+                }
+                let Some(id) = ai.config.selected().map(|b| b.id.clone()) else {
+                    return ActionResult::Err("No AI backend configured".to_string());
+                };
+                if let Some(backend) = ai.config.get_mut(&id) {
+                    backend.consented = true;
+                }
+                ai.config_dirty = true;
+                ai.chat.begin(text, id);
+                drop(ai);
+                self.status = "Sending…".to_string();
                 ActionResult::Ok
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -12155,6 +12195,7 @@ impl AppState {
             // The browser build has no transport, so chat actions are inert there.
             #[cfg(target_arch = "wasm32")]
             Action::SendAiMessage { .. }
+            | Action::ResolveAiConsent { .. }
             | Action::CancelAiMessage
             | Action::ClearAiConversation
             | Action::SetAiContextScope { .. } => {

@@ -422,6 +422,9 @@ fn backend_from_table(
         },
         // Editing a backend never resets what it has already cost.
         spend: defaults.spend,
+        // Nor does it re-ask for consent already given (#1609) — but changing the provider
+        // rebases on a preset, which has not been consented to.
+        consented: defaults.consented,
     })
 }
 
@@ -4692,7 +4695,29 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "ai_send",
         lua.create_function(|lua, text: String| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            unsafe { tick.exec(Instruction::SendAiMessage { text }) }
+            unsafe { tick.exec(Instruction::SendAiMessage { text }) }?;
+            // A script that calls `send` has already said, explicitly, to send this to the
+            // selected backend — so it answers the first-send confirmation (#1609) rather
+            // than hanging on a pane the script may never show.
+            let waiting = unsafe { tick.state() }.ai.borrow().chat.pending_consent.is_some();
+            if waiting {
+                unsafe { tick.exec(Instruction::ResolveAiConsent { agreed: true }) }?;
+            }
+            Ok(())
+        })?,
+    )?;
+
+    // Whether the user has agreed to send documents to a backend (#1609).
+    api.set(
+        "ai_consented",
+        lua.create_function(|lua, id: Option<String>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let ai = unsafe { tick.state() }.ai.borrow();
+            let backend = match id {
+                Some(id) => ai.config.get(&id),
+                None => ai.config.selected(),
+            };
+            Ok(backend.map(|b| b.consented).unwrap_or(false))
         })?,
     )?;
 
@@ -8434,6 +8459,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             add_backend = "ai_add_backend", update_backend = "ai_update_backend",
             remove_backend = "ai_remove_backend", set_backend = "ai_set_backend",
             send = "ai_send", stop = "ai_stop", clear = "ai_clear",
+            consented = "ai_consented",
             streaming = "ai_streaming", messages = "ai_messages",
             context_scope = "ai_context_scope",
             usage = "ai_usage", reset_usage = "ai_reset_usage",

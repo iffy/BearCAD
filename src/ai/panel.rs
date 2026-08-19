@@ -147,6 +147,50 @@ fn chat_section(ui: &mut egui::Ui, state: &mut AppState) {
             });
     }
 
+    // The first message to a backend asks first (#1609), naming exactly what would go and
+    // where it would go. Until this is answered, nothing has left the machine.
+    let pending_consent = state.ai.borrow().chat.pending_consent.clone();
+    if let Some(text) = pending_consent {
+        let (name, host, local) = {
+            let ai = state.ai.borrow();
+            match ai.config.selected() {
+                Some(b) => (b.name.clone(), b.host(), b.is_local()),
+                None => (String::new(), String::new(), false),
+            }
+        };
+        let context = crate::ai::context::estimate_tokens(&text);
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(if local {
+                    format!("First message to {name}. It runs on this machine ({host}), so \
+                             nothing leaves it.")
+                } else {
+                    format!("First message to {name}. This sends your question and the \
+                             document context to {host}.")
+                })
+                .size(11.0),
+            );
+            ui.label(
+                egui::RichText::new(format!(
+                    "Scope: {}. Expand “Sends …” after the first message to see the exact text.",
+                    scope.label()
+                ))
+                .size(10.0)
+                .weak(),
+            );
+            let _ = context;
+            ui.horizontal(|ui| {
+                if ui.button("Send it").clicked() {
+                    action = Some(Action::ResolveAiConsent { agreed: true });
+                }
+                if ui.button("Not now").clicked() {
+                    action = Some(Action::ResolveAiConsent { agreed: false });
+                }
+            });
+        });
+        ui.add_space(4.0);
+    }
+
     // The input box. Enter sends, Shift+Enter starts a new line.
     let mut send_clicked = false;
     {
@@ -533,6 +577,8 @@ fn add_backend_form(ui: &mut egui::Ui) -> Option<Backend> {
             // Rates come from the shipped table until the user overrides them (#1599).
             price: None,
             spend: crate::ai::pricing::Spend::default(),
+            // The first message to it asks before sending anything (#1609).
+            consented: false,
         });
         draft = Draft::for_provider(draft.provider);
     }

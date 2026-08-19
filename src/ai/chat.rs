@@ -118,6 +118,9 @@ pub struct Conversation {
     /// A block the user clicked **Run** on, waiting for the frame loop to execute it. Only
     /// the frame loop can run Lua against the live app.
     pub pending_run: Option<(usize, usize, String)>,
+    /// A message waiting on the first-send confirmation for this backend (#1609). Nothing
+    /// has been sent, and nothing will be until the user agrees.
+    pub pending_consent: Option<String>,
 }
 
 impl std::fmt::Debug for Conversation {
@@ -230,6 +233,7 @@ impl Conversation {
         self.cancel();
         self.pending = None;
         self.awaiting_context = false;
+        self.pending_consent = None;
         self.entries.clear();
         self.last_context = None;
     }

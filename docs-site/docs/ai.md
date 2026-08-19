@@ -18,6 +18,9 @@ A key is either read from an environment variable at send time — nothing is st
 pasted and kept in `ai.json` next to your settings, written owner-only. Neither the pane,
 nor a script, nor `--show-commands`, nor a Lua export will hand a key back out.
 
+The first message to a backend asks first, naming where it would go. Answer once per
+backend.
+
 **Sees** chooses what each message carries: this document, or every document open in the
 app. Each document goes as the Lua script that recreates it, so the model reads it in the
 same language it answers in. After a message, the line under the thread expands to show

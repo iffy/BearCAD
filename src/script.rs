@@ -891,6 +891,8 @@ pub enum Instruction {
     ClearAiConversation,
     /// Choose how much of the workspace a message carries (#1597).
     SetAiContextScope { scope: crate::ai::context::ContextScope },
+    /// Answer the first-send confirmation (#1609).
+    ResolveAiConsent { agreed: bool },
     /// Start a backend's running cost total from zero (#1599).
     ResetAiBackendSpend { id: String },
     /// Run one Lua block from the latest reply (#1600).
@@ -2087,6 +2089,9 @@ impl Instruction {
             Instruction::ClearAiConversation => "bearcad.ai.clear()".to_string(),
             Instruction::SetAiContextScope { scope } => {
                 format!("bearcad.ai.context_scope({:?})", scope.as_str())
+            }
+            Instruction::ResolveAiConsent { agreed } => {
+                format!("bearcad.ai.consent({agreed})")
             }
             Instruction::ResetAiBackendSpend { id } => {
                 format!("bearcad.ai.reset_usage({id:?})")
@@ -7937,6 +7942,11 @@ impl ScriptRunner {
             }
             Instruction::SetAiContextScope { scope } => {
                 state.apply(Action::SetAiContextScope { scope });
+                StepResult::Continue
+            }
+            Instruction::ResolveAiConsent { agreed } => {
+                let result = state.apply(Action::ResolveAiConsent { agreed });
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::ResetAiBackendSpend { id } => {
