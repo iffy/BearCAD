@@ -32,6 +32,8 @@ use std::sync::{Mutex, OnceLock};
 /// got as far as drawing — a different fault from drawing something that looks empty.
 static FRAMES: AtomicU64 = AtomicU64::new(0);
 static WATCHDOG_FIRED: AtomicBool = AtomicBool::new(false);
+/// egui multipass id-instability warnings this process has logged (#1614 / #1211).
+static WIDGET_ID_CHANGE_WARNINGS: AtomicU64 = AtomicU64::new(0);
 
 /// How long to wait for the first frame before saying so. Generous: a cold start compiles
 /// shaders and probes the GPU.
@@ -137,8 +139,20 @@ pub fn info(message: impl std::fmt::Display) {
 /// Report something wrong. Always printed — a user seeing a broken window shouldn't have to
 /// know about an environment variable to find out why.
 pub fn warn(message: impl std::fmt::Display) {
+    let message = message.to_string();
+    if message.contains("changed id between passes") {
+        WIDGET_ID_CHANGE_WARNINGS.fetch_add(1, Ordering::Relaxed);
+    }
     eprintln!("bearcad: warning: {message}");
-    write_line("WARN", message);
+    write_line("WARN", &message);
+}
+
+/// How many egui "Widget rect … changed id between passes" warnings this process has logged.
+///
+/// Scripts read this via `bearcad.ui.widget_id_warnings()` so a layout that flashes red
+/// fails the interaction test that produced it (#1614).
+pub fn widget_id_change_warnings() -> u64 {
+    WIDGET_ID_CHANGE_WARNINGS.load(Ordering::Relaxed)
 }
 
 /// A short name for an action, for the log (#1023): its variant, without the payload.
@@ -476,6 +490,20 @@ mod tests {
         unsafe { std::env::set_var("BEARCAD_LOG_FILE", "") };
         assert_eq!(default_log_path().file_name().unwrap(), "bearcad.log");
         unsafe { std::env::remove_var("BEARCAD_LOG_FILE") };
+    }
+
+    /// #1614: the egui multipass id-clash line is counted so a script can fail on it.
+    #[test]
+    fn widget_id_change_warnings_count_the_egui_multipass_line() {
+        let before = widget_id_change_warnings();
+        warn("something else");
+        assert_eq!(widget_id_change_warnings(), before, "unrelated warnings stay out");
+        warn("egui::context: Widget rect [[0.0 73.0] - [220.0 768.0]] changed id between passes: prev ids: [\"0A96\"], new ids: [\"81FE\"]");
+        assert_eq!(
+            widget_id_change_warnings(),
+            before + 1,
+            "the egui line should increment the counter"
+        );
     }
 
     #[test]
