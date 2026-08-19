@@ -207,8 +207,8 @@ bearcad.ui.palette("Export STEP")  -- the command palette
 ## Connecting over MCP instead
 
 If BearCAD is already open, it can host a local MCP server — the **MCP Server** section of
-its AI pane, or `bearcad.ai.mcp_start{}` from a script — so you act on the document the user
-is looking at rather than one of your own. `bearcad mcp-install` prints the client
+its AI pane — so you act on the document the user is looking at rather than one of your
+own. `bearcad mcp-install` prints the client
 configuration; `bearcad mcp` bridges stdio to the running app. Its tools are
 `document_summary`, `document_lua`, `run_lua`, `undo` and `screenshot`.
 

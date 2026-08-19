@@ -23,9 +23,9 @@ backend.
 
 **Sees** chooses what each message carries: this document, or every document open in the
 app. Each document goes as the Lua script that recreates it, so the model reads it in the
-same language it answers in. The Lua API goes with it — the same catalog
-`bearcad.ai.api()` returns — so the model writes calls the app can run. After a message,
-the line under the thread expands to show exactly what was sent.
+same language it answers in. The Lua API catalog goes with it, so the model writes calls
+the app can run. After a message, the line under the thread expands to show exactly what
+was sent.
 
 Costs sit under each reply — tokens, and money when the model's rate is known. An unknown
 model shows tokens only; it never invents a price. **Manage backends** keeps a running
@@ -59,17 +59,8 @@ agent has done.
 The five tools an agent gets: `document_summary`, `document_lua`, `run_lua`, `undo`,
 `screenshot`. `run_lua` reaches the whole [scripting API](/docs/scripting).
 
-## Scripting
+## Not scriptable
 
-```lua
-bearcad.ai.add_backend{ provider = "anthropic", name = "Claude", key_env = "ANTHROPIC_API_KEY" }
-bearcad.ai.context_scope("all")            -- or "document"
-bearcad.ai.api()                           -- the Lua API catalog each message sends
-local reply = bearcad.ai.ask("What is this part for?")
-bearcad.ai.run_block(1)                    -- run the first Lua block of that reply
-bearcad.ai.usage()                         -- tokens and cost, per conversation and backend
-
-bearcad.ai.mcp_start{ port = 8721 }
-bearcad.ai.mcp_status()                    -- running, port, url, activity log (never the token)
-bearcad.ai.install_skill{ target = "claude" }
-```
+Nothing here has a scripting API. A script cannot add a backend, send a message, start
+the MCP server or install the skill — so a `.lua` file off the internet cannot spend your
+key or open your document to anything.

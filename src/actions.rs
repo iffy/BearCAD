@@ -2569,8 +2569,6 @@ pub enum Action {
     /// Add an AI backend (#1595). The id is derived from the name and returned in the
     /// status line; a colliding name gets a suffix rather than overwriting.
     AddAiBackend { backend: crate::ai::backends::Backend },
-    /// Replace an existing backend's settings, keeping its id and the selection.
-    UpdateAiBackend { id: String, backend: crate::ai::backends::Backend },
     /// Remove an AI backend. Removing the selected one moves the selection.
     RemoveAiBackend { id: String },
     /// Point the conversation at a configured backend.
@@ -2606,11 +2604,6 @@ pub enum Action {
     /// Issue a fresh bearer token. Any client configured with the old one stops working —
     /// which is the point.
     RegenerateMcpToken,
-    /// Put a reply into the conversation without asking a backend for it (#1600).
-    ///
-    /// For canned conversations: documentation screenshots and tests need a thread with
-    /// something in it, and neither should need a network or an API key to get one.
-    SeedAiReply { question: String, reply: String },
     /// Turn help mode on, off, or (with `None`) the other way (#672): the Context pane's
     /// controls each grow a floating note explaining what they want.
     SetHelpMode(Option<bool>),
@@ -3586,7 +3579,6 @@ impl Action {
                     | Action::SetPaneVisible { .. }
                     // App configuration, not document content — never undoable.
                     | Action::AddAiBackend { .. }
-                    | Action::UpdateAiBackend { .. }
                     | Action::RemoveAiBackend { .. }
                     | Action::SelectAiBackend { .. }
                     | Action::SendAiMessage { .. }
@@ -11934,19 +11926,6 @@ impl AppState {
                 self.status = format!("Added AI backend {name} ({id})");
                 ActionResult::Ok
             }
-            Action::UpdateAiBackend { id, backend } => {
-                let mut ai = self.ai.borrow_mut();
-                let Some(existing) = ai.config.get_mut(&id) else {
-                    return ActionResult::Err(format!("no AI backend '{id}'"));
-                };
-                // The id is the handle scripts and the selection hold; editing the settings
-                // behind it must not invalidate them.
-                *existing = crate::ai::backends::Backend { id: id.clone(), ..backend };
-                ai.config_dirty = true;
-                drop(ai);
-                self.status = format!("Updated AI backend {id}");
-                ActionResult::Ok
-            }
             Action::RemoveAiBackend { id } => {
                 let mut ai = self.ai.borrow_mut();
                 if !ai.config.remove(&id) {
@@ -12043,23 +12022,6 @@ impl AppState {
                 self.ai.borrow_mut().chat.clear();
                 self.status = "Conversation cleared".to_string();
                 ActionResult::Ok
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Action::SeedAiReply { question, reply } => {
-                let mut ai = self.ai.borrow_mut();
-                let backend = ai
-                    .config
-                    .selected()
-                    .map(|b| b.id.clone())
-                    .unwrap_or_default();
-                ai.chat.seed(question, reply, backend);
-                drop(ai);
-                self.status = "Seeded an AI reply".to_string();
-                ActionResult::Ok
-            }
-            #[cfg(target_arch = "wasm32")]
-            Action::SeedAiReply { .. } => {
-                ActionResult::Err("AI chat is only available in the desktop app".to_string())
             }
             #[cfg(not(target_arch = "wasm32"))]
             Action::RunAiBlock { index } => {

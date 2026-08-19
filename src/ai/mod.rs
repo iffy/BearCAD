@@ -52,11 +52,6 @@ pub struct AiState {
     /// transport to answer with.
     #[cfg(not(target_arch = "wasm32"))]
     pub chat: chat::Conversation,
-    /// A script asked what the next message would send (`bearcad.ai.context_preview`).
-    /// Answered by the frame loop, which is the only place every open document is reachable.
-    pub preview_wanted: bool,
-    /// The answer to the last preview request, or `None` while one is outstanding.
-    pub preview: Option<context::Context>,
     /// Set when something asks for the Agents & Skill section specifically (Help ▸ Install
     /// AI Agent Skill…), so the pane opens showing it rather than the chat (#1604).
     pub open_skill_section: bool,
@@ -174,24 +169,19 @@ mod privacy_tests {
         assert!(!state.ai.borrow().config.get(&second).unwrap().consented);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn a_key_never_appears_in_a_recorded_script_line() {
-        // --show-commands output is pasted into bug reports.
-        let backend = Backend {
-            key: KeySource::Stored(SECRET.into()),
-            ..Backend::preset(Provider::Anthropic)
-        };
-        let line = crate::script::Instruction::AddAiBackend { backend: backend.clone() }
-            .as_lua_in(None);
-        assert!(!line.contains(SECRET), "recorded line leaked the key: {line}");
-        assert!(line.contains("stored"), "it says where the key came from: {line}");
-
-        let line = crate::script::Instruction::UpdateAiBackend {
-            id: "anthropic".into(),
-            backend,
-        }
-        .as_lua_in(None);
-        assert!(!line.contains(SECRET), "recorded line leaked the key: {line}");
+    fn nothing_about_the_ai_is_reachable_from_a_script() {
+        // #1616: a script off the internet must not be able to talk to a backend, spend a
+        // key, start an MCP server or install an agent skill. `registered_names` walks the
+        // live Lua API, so nothing under an AI name may show up in it.
+        let names = crate::ai::api::registered_names();
+        assert!(names.len() > 50, "the API walker found nothing: {names:?}");
+        let reachable: Vec<_> = names
+            .iter()
+            .filter(|n| n.starts_with("bearcad.ai.") || n.starts_with("bearcad.ai_"))
+            .collect();
+        assert!(reachable.is_empty(), "scripts can still reach {reachable:?}");
     }
 
     #[test]

@@ -7,7 +7,7 @@
 
 use std::sync::OnceLock;
 
-/// The catalog sent with each chat message, and returned by `bearcad.ai.api()`.
+/// The catalog sent with each chat message.
 pub fn document() -> &'static str {
     DOCUMENT.get_or_init(build).as_str()
 }
@@ -179,7 +179,7 @@ fn build() -> String {
     out
 }
 
-/// Every public `bearcad.*` / `bearcad.ui.*` / `bearcad.ai.*` function, by walking the
+/// Every public `bearcad.*` / `bearcad.ui.*` function, by walking the
 /// live Lua table after [`crate::lua_script::register_api`]. Underscore-prefixed names
 /// are internals (the yielding wrappers sit next to them without the prefix).
 #[cfg(not(target_arch = "wasm32"))]
