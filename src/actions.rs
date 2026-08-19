@@ -4258,6 +4258,8 @@ pub struct AppState {
     pub tutorial_anchor_rects: std::collections::HashMap<crate::tutorial::UiAnchor, egui::Rect>,
     /// Last drawn tutorial orb screen position (`bearcad.ui.tutorial_orb`, #1346).
     pub tutorial_orb_screen: Option<egui::Pos2>,
+    /// Last drawn tutorial speech-bubble screen rect (`bearcad.ui.tutorial_bubble`, #1577).
+    pub tutorial_bubble_screen: Option<egui::Rect>,
     /// In-progress slice operation (Slice tool).
     pub creating_slice: Option<CreatingSlice>,
     /// In-progress shell operation (Shell tool, #1156).
@@ -4515,6 +4517,7 @@ impl Default for AppState {
             tutorial: None,
             tutorial_anchor_rects: std::collections::HashMap::new(),
             tutorial_orb_screen: None,
+            tutorial_bubble_screen: None,
             creating_slice: None,
             creating_shell: None,
             creating_sketch_slice: None,

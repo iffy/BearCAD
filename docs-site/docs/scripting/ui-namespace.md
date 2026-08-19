@@ -154,6 +154,7 @@ bearcad.ui.tutorial_end()
 local step = bearcad.ui.tutorial_step()  -- nil when none running
 local text = bearcad.ui.tutorial_narration()  -- current step text, or nil
 local orb = bearcad.ui.tutorial_orb()    -- {x=, y=} screen px, or nil
+local bubble = bearcad.ui.tutorial_bubble() -- {x=, y=, w=, h=} screen px, or nil
 bearcad.ui.complete_all_tutorials()     -- mark every walkthrough finished
 bearcad.ui.unstart_all_tutorials()      -- clear every completion check
 bearcad.ui.install_age(5)               -- pretend this fresh install is 5 days old

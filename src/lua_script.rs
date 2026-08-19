@@ -5372,6 +5372,23 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             Ok(Value::Table(t))
         })?,
     )?;
+    // Speech-bubble screen rect (#1577). Nil when no tutorial overlay is drawn.
+    api.set(
+        "tutorial_bubble",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            let Some(r) = state.tutorial_bubble_screen else {
+                return Ok(Value::Nil);
+            };
+            let t = lua.create_table()?;
+            t.set("x", r.min.x)?;
+            t.set("y", r.min.y)?;
+            t.set("w", r.width())?;
+            t.set("h", r.height())?;
+            Ok(Value::Table(t))
+        })?,
+    )?;
 
     api.set(
         "move",
@@ -7760,6 +7777,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "tutorial", "tutorial_next", "tutorial_assist", "tutorial_end", "tutorial_step",
             "tutorial_narration",
             "tutorial_orb",
+            "tutorial_bubble",
             "tutorial_pane", "tutorials",
             "complete_all_tutorials", "unstart_all_tutorials",
             "install_age", "tutorial_highlight", "tutorial_prompt",
@@ -8097,6 +8115,20 @@ mod tests {
             bearcad.ui.tutorial("cube")
             assert(bearcad.ui.tutorial_step() == 0)
             assert(bearcad.ui.tutorial_orb() == nil,
+                   "headless apply does not draw the overlay")
+            "#,
+        );
+    }
+
+    /// #1577: scripts can read the speech-bubble rect (nil until the overlay draws it).
+    #[test]
+    fn tutorial_bubble_lua_is_nil_without_a_drawn_overlay() {
+        run_lua_expect_ok(
+            r#"
+            assert(bearcad.ui.tutorial_bubble() == nil, "no tutorial, no bubble")
+            bearcad.ui.tutorial("combine")
+            assert(bearcad.ui.tutorial_step() == 0)
+            assert(bearcad.ui.tutorial_bubble() == nil,
                    "headless apply does not draw the overlay")
             "#,
         );
