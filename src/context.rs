@@ -5145,6 +5145,27 @@ pub fn shape_kind_rect(
     ctx.data(|d| d.get_temp::<egui::Rect>(shape_kind_rect_id(kind)))
 }
 
+fn combine_kind_rect_id(kind: crate::model::BooleanOpKind) -> egui::Id {
+    egui::Id::new(("combine_kind_rect", kind.script_name()))
+}
+
+/// Where the Context pane drew a Combine Mode button this frame (#1556).
+pub fn combine_kind_rect(
+    ctx: &egui::Context,
+    kind: crate::model::BooleanOpKind,
+) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<egui::Rect>(combine_kind_rect_id(kind)))
+}
+
+fn text_content_rect_id() -> egui::Id {
+    egui::Id::new("text_content_rect")
+}
+
+/// Where the Context pane drew the sketch-text string field this frame (#1557).
+pub fn text_content_rect(ctx: &egui::Context) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<egui::Rect>(text_content_rect_id()))
+}
+
 pub fn show_pane(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
@@ -6091,10 +6112,11 @@ pub fn show_pane(
                     crate::icons::IconId::BooleanDifference,
                 ),
             ] {
-                if crate::icons::selectable_icon_button(ui, icon, kind == value, value.label())
-                    .clicked()
-                    && kind != value
-                {
+                let resp =
+                    crate::icons::selectable_icon_button(ui, icon, kind == value, value.label());
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(combine_kind_rect_id(value), resp.rect));
+                if resp.clicked() && kind != value {
                     on_boolean_edit(BooleanEdit::Kind(value));
                 }
             }
@@ -7879,6 +7901,8 @@ pub fn show_pane(
                     .desired_width(f32::INFINITY),
             )
         });
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(text_content_rect_id(), text_resp.rect));
         if text_resp.changed() {
             on_sketch_text_edit(SketchTextEdit::Text(edit_text.clone()));
         }

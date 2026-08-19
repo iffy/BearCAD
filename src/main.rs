@@ -3782,8 +3782,11 @@ impl App {
                     ))
                     .tint(egui::Color32::from_rgb(46, 160, 67));
                     ui.add(
-                        egui::Button::image_and_text(image, tut.title)
-                            .min_size(egui::vec2(ui.available_width(), 28.0)),
+                        egui::Button::image_and_text(
+                            image,
+                            tutorial::numbered_title(index, tut.title),
+                        )
+                        .min_size(egui::vec2(ui.available_width(), 28.0)),
                     )
                 } else {
                     let mut job = egui::text::LayoutJob::default();
@@ -3798,7 +3801,7 @@ impl App {
                         ..Default::default()
                     };
                     job.append("○  ", 0.0, check_fmt);
-                    job.append(tut.title, 0.0, title_fmt);
+                    job.append(&tutorial::numbered_title(index, tut.title), 0.0, title_fmt);
                     ui.add(
                         egui::Button::new(job)
                             .min_size(egui::vec2(ui.available_width(), 28.0)),
@@ -4168,6 +4171,10 @@ impl App {
                 }
                 // Shape kind buttons (Cuboid / Cylinder / Sphere) in the Context pane (#1272).
                 tutorial::UiAnchor::ShapeKind(kind) => context::shape_kind_rect(ctx, kind),
+                // Combine Mode buttons (Combine / Cut / Intersect / Difference) (#1556).
+                tutorial::UiAnchor::CombineKind(kind) => context::combine_kind_rect(ctx, kind),
+                // Text tool string field in the Context pane (#1557).
+                tutorial::UiAnchor::TextContent => context::text_content_rect(ctx),
                 // Elements-pane sketch row (#1279).
                 tutorial::UiAnchor::ElementsSketch => hierarchy::elements_sketch_row_rect(ctx),
                 // View-cube bear + home button live in the viewport's top-right (#1269).
