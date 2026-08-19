@@ -6358,6 +6358,7 @@ mod tests {
             base_origin: None,
             width_mm: 100.0,
             height_mm: 60.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: None,
         });

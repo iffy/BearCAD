@@ -373,6 +373,7 @@ mod tests {
             origin: (0.0, 0.0),
             width_mm: 10.0,
             height_mm: 10.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             base_origin: None,
             calibration: None,
@@ -1382,6 +1383,7 @@ mod tests {
             base_origin: None,
             width_mm: 10.0,
             height_mm: 10.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: None,
         };
@@ -1406,6 +1408,37 @@ mod tests {
             assert!(
                 loaded.tracing_images.get(doomed).is_none(),
                 "{suffix}: a key to a removed image does not come back to life"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// #1548: a non-default image opacity is stored and comes back on reload.
+    #[test]
+    fn tracing_image_opacity_survives_save_and_reload() {
+        let mut doc = Document::default();
+        let image = doc.tracing_images.insert(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "trace".to_string(),
+            plane: pkey(0),
+            origin: (0.0, 0.0),
+            base_origin: None,
+            width_mm: 10.0,
+            height_mm: 10.0,
+            opacity: 0.35,
+            name: None,
+            calibration: None,
+        });
+        for suffix in [".bearcad", ".bearcad.json"] {
+            let path = std::env::temp_dir().join(format!("bearcad_image_opacity_test{suffix}"));
+            let path = path.to_string_lossy().to_string();
+            let _ = std::fs::remove_file(&path);
+            save(&path, &doc).unwrap();
+            let loaded = open(&path).unwrap();
+            assert_eq!(
+                loaded.tracing_images.get(image).map(|i| i.opacity),
+                Some(0.35),
+                "{suffix}"
             );
             let _ = std::fs::remove_file(&path);
         }

@@ -2403,6 +2403,11 @@ pub enum Action {
     BeginImageCalibration { image: crate::model::TracingImageKey },
     /// Open the calibration dimension ValueInput for an image (#1547).
     BeginEditImageCalibration { image: crate::model::TracingImageKey },
+    /// Set a tracing image's draw opacity (#1548), clamped to 0..1.
+    SetImageOpacity {
+        image: crate::model::TracingImageKey,
+        opacity: f32,
+    },
     /// Import a STEP file's `FACETED_BREP` geometry (#71) as a new body.
     ImportStep { path: String },
     /// Import another BearCAD document as a unit (#721): embed one copy of it (reused if
@@ -5978,6 +5983,7 @@ impl AppState {
             origin: (-dims.0 / 2.0, -dims.1 / 2.0),
             width_mm: dims.0,
             height_mm: dims.1,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: Some(crate::model::default_image_calibration(dims.1)),
             base_origin: None,
@@ -9768,6 +9774,13 @@ impl AppState {
                 self.status = "Edit calibration length • Enter to commit • Esc to cancel".to_string();
                 ActionResult::Ok
             }
+            Action::SetImageOpacity { image, opacity } => {
+                let Some(img) = self.doc.tracing_images.get_mut(image) else {
+                    return ActionResult::Err(format!("Image {image:?} not found"));
+                };
+                img.opacity = opacity.clamp(0.0, 1.0);
+                ActionResult::Ok
+            }
             Action::ImportImage { path, plane } => {
                 let bytes = match std::fs::read(&path) {
                     Ok(b) => b,
@@ -9805,6 +9818,7 @@ impl AppState {
                     origin: (-dims.0 / 2.0, -dims.1 / 2.0),
                     width_mm: dims.0,
                     height_mm: dims.1,
+                    opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
                     name: None,
                     calibration: Some(crate::model::default_image_calibration(dims.1)),
                     base_origin: None,
@@ -22654,6 +22668,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             origin: (0.0, 0.0),
             width_mm: 100.0,
             height_mm: 60.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: None,
             base_origin: None,
@@ -22762,6 +22777,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             origin: (0.0, 0.0),
             width_mm: 100.0,
             height_mm: 60.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: None,
             base_origin: None,
@@ -32680,6 +32696,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             origin: (-50.0, -30.0),
             width_mm: 100.0,
             height_mm: 60.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: None,
             base_origin: None,
@@ -32746,6 +32763,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             origin: (-50.0, -30.0),
             width_mm: 100.0,
             height_mm: 60.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: None,
             base_origin: None,
@@ -32804,6 +32822,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             origin: (-50.0, -30.0),
             width_mm: 100.0,
             height_mm: 60.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: Some(crate::model::ImageCalibration {
                 u0: 0.25,
@@ -32870,6 +32889,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             origin: (-50.0, -30.0),
             width_mm: 100.0,
             height_mm: 60.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: None,
             base_origin: None,
@@ -32936,6 +32956,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             origin: (-50.0, -30.0),
             width_mm: 100.0,
             height_mm: 60.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: Some(crate::model::default_image_calibration(60.0)),
             base_origin: None,
@@ -32995,6 +33016,11 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert_eq!(img.plane, state.doc.ground_plane().unwrap());
         assert_eq!((img.width_mm, img.height_mm), (4.0, 2.0));
         assert_eq!(img.origin, (-2.0, -1.0), "centered on the plane origin");
+        assert!(
+            (img.opacity - crate::model::DEFAULT_TRACING_IMAGE_OPACITY).abs() < 1e-6,
+            "fresh import is 0.9 opaque, got {}",
+            img.opacity
+        );
         let cal = img.calibration.as_ref().expect("fresh import seeds the default line");
         assert!((cal.u0 - 0.5).abs() < 1e-6 && (cal.v0 - 1.0).abs() < 1e-6);
         assert!((cal.u1 - 0.5).abs() < 1e-6 && (cal.v1 - 0.0).abs() < 1e-6);
@@ -33017,6 +33043,51 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             plane: None,
         });
         assert!(matches!(result, ActionResult::Err(_)));
+    }
+
+    /// #1548: SetImageOpacity clamps to 0..1 and errors on a missing image.
+    #[test]
+    fn set_image_opacity_clamps_and_rejects_a_missing_image() {
+        let mut state = AppState::default();
+        let image = state.doc.tracing_images.insert(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "grid".to_string(),
+            plane: pkey(0),
+            origin: (0.0, 0.0),
+            width_mm: 10.0,
+            height_mm: 10.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
+            name: None,
+            calibration: None,
+            base_origin: None,
+        });
+        assert!(matches!(
+            state.apply(Action::SetImageOpacity { image, opacity: 0.35 }),
+            ActionResult::Ok
+        ));
+        assert!((state.doc.tracing_images[image].opacity - 0.35).abs() < 1e-6);
+        assert!(matches!(
+            state.apply(Action::SetImageOpacity { image, opacity: 2.0 }),
+            ActionResult::Ok
+        ));
+        assert!((state.doc.tracing_images[image].opacity - 1.0).abs() < 1e-6);
+        assert!(matches!(
+            state.apply(Action::SetImageOpacity { image, opacity: -1.0 }),
+            ActionResult::Ok
+        ));
+        assert!((state.doc.tracing_images[image].opacity - 0.0).abs() < 1e-6);
+        let gone = {
+            let key = state.doc.tracing_images.insert(state.doc.tracing_images[image].clone());
+            state.doc.tracing_images.remove(key);
+            key
+        };
+        assert!(matches!(
+            state.apply(Action::SetImageOpacity {
+                image: gone,
+                opacity: 0.5
+            }),
+            ActionResult::Err(_)
+        ));
     }
 
     /// #1115: switching to a tool that doesn't take the current selection's kinds drops

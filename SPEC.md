@@ -1947,10 +1947,13 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   key to it stops resolving instead of naming whichever image slid into its place. A
   script still names an image by its **ordinal** among the live ones, resolved to a key at
   the script boundary (`lua_script::scene_element_from_kind`/`element_index`).
-- **Rendering (#170):** each image draws as a **textured quad** on its host plane at 85%
-  opacity — depth-tested (bodies in front occlude it) but never writing depth, so sketch
-  geometry and fills always read on top. Decoded pixels and GPU textures are cached by
-  content, so the per-frame cost is one quad.
+- **Rendering (#170/#1548):** each image draws as a **textured quad** on its host plane.
+  Fresh imports default to **0.9** opacity; selecting the image shows a slider and
+  ValueInput (0–1). Depth-tested (bodies in front occlude it) but never writing depth, so
+  sketch geometry and fills always read on top. Decoded pixels and GPU textures are cached
+  by content, so the per-frame cost is one quad. Scriptable: `bearcad.image_opacity{
+  image, opacity }` (`opacity` is a number or expression) and `bearcad.get{ kind =
+  "image", index }.opacity`.
 - **Scale calibration (#163/#171/#1547):** selecting only a tracing image with the Select
   tool immediately enters calibration mode. A line with a point at each end always sits
   on the image's plane — on a fresh import, top-middle to bottom-middle — and always

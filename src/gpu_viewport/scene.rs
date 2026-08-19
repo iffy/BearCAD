@@ -863,7 +863,7 @@ impl ViewportScene {
                 width_px: w,
                 height_px: h,
                 rgba,
-                opacity: 0.85,
+                opacity: img.opacity,
             });
         }
 
@@ -7214,6 +7214,7 @@ mod tests {
             base_origin: None,
             width_mm: 40.0,
             height_mm: 30.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: None,
         });

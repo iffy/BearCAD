@@ -988,11 +988,13 @@ pub enum SweepEdit {
 
 /// The "Calibrate scale" control's inputs (#171): the target image and the reference
 /// segment's plane-local endpoints (a line the user drew over a known image feature).
+/// `opacity` is the selected image's draw opacity (#1548).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CalibrateImageControl {
     pub image: crate::model::TracingImageKey,
     pub a: (f32, f32),
     pub b: (f32, f32),
+    pub opacity: f32,
 }
 
 /// Tools that snap while drawing or moving sketch geometry.
@@ -4311,6 +4313,10 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "Selecting the image shows a line with a dimension. Drag the endpoints onto a \
              known feature, then type its real length.",
         ),
+        (_, "Opacity") => Some(
+            "How opaque the image is, from 0 (invisible) to 1 (solid). Fresh imports start \
+             at 0.9 so sketch lines still read on top.",
+        ),
         (_, "Real length") => Some(
             "How long the marked span really is. Apply (or edit the dimension on the line) \
              rescales the image so that span measures this.",
@@ -5225,6 +5231,7 @@ pub fn show_pane(
     on_sweep_edit_start: &mut impl FnMut(crate::model::SweepKey),
     _on_calibrate_start: &mut impl FnMut(crate::model::TracingImageKey),
     on_calibrate_image: &mut impl FnMut(CalibrateImageControl, String),
+    on_image_opacity: &mut impl FnMut(crate::model::TracingImageKey, f32),
     on_dimension_derive_edit: &mut impl FnMut(DimensionDeriveEdit),
     on_dimension_edit: &mut impl FnMut(DimensionEditEdit),
     on_treatment_edit: &mut impl FnMut(TreatmentEdit),
@@ -8302,6 +8309,26 @@ pub fn show_pane(
     if let Some(control) = content.calibrate_image {
         any_control = true;
         ui.separator();
+        labeled_row(ui, "Opacity", |ui| {
+            let mut opacity = control.opacity;
+            ui.spacing_mut().slider_width = 70.0;
+            let slider = ui.add(egui::Slider::new(&mut opacity, 0.0..=1.0).show_value(false));
+            let mut text = format!("{}", (opacity * 1000.0).round() / 1000.0);
+            let typed = crate::expression_input::ValueInput::new(
+                "image_opacity",
+                crate::expression_input::ValueKind::Count,
+            )
+            .width(54.0)
+            .show(ui, &mut text, doc);
+            if typed.changed() {
+                if let Some(v) = crate::value::eval_count_in_doc(&text, doc) {
+                    opacity = v;
+                }
+            }
+            if slider.changed() || typed.changed() {
+                on_image_opacity(control.image, opacity.clamp(0.0, 1.0));
+            }
+        });
         section_label(ui, "Calibrate scale");
         labeled_row(ui, "Real length", |ui| {
             let mut draft = pane_state.calibrate_length_draft.clone();
@@ -11621,6 +11648,50 @@ mod tests {
             assert!(row_help(tool, "Length").is_some());
             assert!(row_help(tool, "Angle").is_some());
         }
+    }
+
+    /// #1548: a selected image's Opacity row (slider + valueinput) has help in any tool.
+    #[test]
+    fn image_opacity_row_has_help() {
+        for tool in [None, Some(Tool::Select), Some(Tool::Move)] {
+            let text = row_help(tool, "Opacity").expect("Opacity help");
+            assert!(text.to_ascii_lowercase().contains("opaque"), "{text}");
+        }
+    }
+
+    /// #1548: selecting an image puts its opacity on the calibrate control the pane paints.
+    #[test]
+    fn selected_image_control_carries_opacity() {
+        let mut doc = Document::default();
+        let image = doc.tracing_images.insert(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "trace".to_string(),
+            plane: doc.construction_planes.keys().next().expect("ground"),
+            origin: (0.0, 0.0),
+            base_origin: None,
+            width_mm: 10.0,
+            height_mm: 10.0,
+            opacity: 0.4,
+            name: None,
+            calibration: None,
+        });
+        let img = doc.tracing_images.get(image).unwrap();
+        let (a, b) = crate::model::image_calibration_endpoints(img).unwrap();
+        let control = CalibrateImageControl {
+            image,
+            a,
+            b,
+            opacity: img.opacity,
+        };
+        assert!((control.opacity - 0.4).abs() < 1e-6);
+        let selection = SceneSelection::default();
+        let mut inp = input(&doc, &selection);
+        inp.calibrate_image = Some(control);
+        let content = context_pane_content(&inp);
+        assert_eq!(
+            content.calibrate_image.map(|c| (c.image, c.opacity)),
+            Some((image, 0.4))
+        );
     }
 
     #[test]
