@@ -760,6 +760,7 @@ pub fn instruction_from_json(
         }),
         "commit_plane" => Ok(Instruction::CommitConstructionPlane),
         "focus_name" => Ok(Instruction::FocusElementName),
+        "focus_calibrate" => Ok(Instruction::FocusCalibrateLength),
         "apply_construction" => Ok(Instruction::ApplyConstruction {
             construction: req_bool_flag(o, "construction", "apply_construction")?,
         }),
@@ -3525,6 +3526,10 @@ mod tests {
         assert_eq!(
             instruction_from_json(&Document::default(), "focus_name", &json!({})),
             Ok(Instruction::FocusElementName)
+        );
+        assert_eq!(
+            instruction_from_json(&Document::default(), "focus_calibrate", &json!({})),
+            Ok(Instruction::FocusCalibrateLength)
         );
         assert_eq!(
             instruction_from_json(&Document::default(), "apply_construction", &json!({ "construction": true })),

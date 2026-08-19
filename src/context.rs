@@ -1333,6 +1333,9 @@ pub struct ContextPaneState {
     pub synced_element: Option<SceneElement>,
     /// Length draft for the image scale calibration control (#171).
     pub calibrate_length_draft: String,
+    /// Focus the Real length field with the draft selected (#1612) — set by
+    /// `bearcad.ui.focus_calibrate()` so typing immediately replaces the measured span.
+    pub focus_calibrate_length: bool,
     /// Which calibration span the draft was last pre-filled for (#424): the control's
     /// image + quantized endpoints. When the span changes (a point placed or dragged) the
     /// draft re-syncs to the span's current measured length.
@@ -3971,6 +3974,75 @@ fn primary_button(ui: &mut egui::Ui, enabled: bool, tooltip: &str) -> bool {
     clicked || enter
 }
 
+/// egui id of the Context pane's Real length ValueInput (#1612).
+pub fn calibrate_length_field_id() -> egui::Id {
+    egui::Id::new("calibrate_length")
+}
+
+/// Enter in a focused ValueInput should fire the primary action (#1612).
+///
+/// Singleline [`egui::TextEdit`] surrenders focus on Enter, so `lost_focus` is the
+/// same-frame signal — matching [`crate::parameters::parameter_edit_enter_pressed`].
+pub fn value_field_enter_commit(enter_pressed: bool, has_focus: bool, lost_focus: bool) -> bool {
+    enter_pressed && (has_focus || lost_focus)
+}
+
+/// Whether the Calibrate scale action should fire this frame (#1612).
+///
+/// Enter in the Real length field or the blue checkmark both apply, as long as the
+/// draft is non-empty.
+pub fn calibrate_should_apply(draft: &str, field_enter: bool, primary: bool) -> bool {
+    (field_enter || primary) && !draft.trim().is_empty()
+}
+
+/// Real length field + the blue checkmark that applies it (#1612).
+fn show_calibrate_length(
+    ui: &mut egui::Ui,
+    pane_state: &mut ContextPaneState,
+    doc: &Document,
+    control: CalibrateImageControl,
+    on_calibrate_image: &mut impl FnMut(CalibrateImageControl, String),
+) {
+    section_label(ui, "Calibrate scale");
+    let mut field_enter = false;
+    labeled_row(ui, "Real length", |ui| {
+        let mut draft = pane_state.calibrate_length_draft.clone();
+        let resp = crate::expression_input::ValueInput::from_id(
+            calibrate_length_field_id(),
+            crate::expression_input::ValueKind::Length,
+        )
+        .hint("50mm")
+        .width(90.0)
+        .show(ui, &mut draft, doc);
+        pane_state.calibrate_length_draft = draft;
+        if pane_state.focus_calibrate_length {
+            resp.request_focus();
+            if resp.has_focus() {
+                let id = calibrate_length_field_id();
+                let len = pane_state.calibrate_length_draft.chars().count();
+                let mut state =
+                    egui::text_edit::TextEditState::load(ui.ctx(), id).unwrap_or_default();
+                state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                    egui::text::CCursor::default(),
+                    egui::text::CCursor::new(len),
+                )));
+                state.store(ui.ctx(), id);
+                pane_state.focus_calibrate_length = false;
+            }
+        }
+        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+        field_enter = value_field_enter_commit(enter, resp.has_focus(), resp.lost_focus());
+        if field_enter {
+            ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+        }
+    });
+    let can_apply = !pane_state.calibrate_length_draft.trim().is_empty();
+    let primary = primary_button(ui, can_apply, "Calibrate");
+    if calibrate_should_apply(&pane_state.calibrate_length_draft, field_enter, primary) {
+        on_calibrate_image(control, pane_state.calibrate_length_draft.clone());
+    }
+}
+
 /// A primary action button with a **visible text label** (#629) — the same blue fill and
 /// Enter-fires-it behavior as [`primary_button`], for actions whose name should read
 /// without hovering (e.g. "Derive parameter").
@@ -4350,8 +4422,8 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
              at 0.9 so sketch lines still read on top.",
         ),
         (_, "Real length") => Some(
-            "How long the marked span really is. Apply (or edit the dimension on the line) \
-             rescales the image so that span measures this.",
+            "How long the marked span really is. Enter or the checkmark (or the dimension \
+             on the line) rescales the image so that span measures this.",
         ),
         (Some(Tool::Text), "Text") => Some(
             "What the text says. {curly braces} interpolate an expression — {w * 2} — \
@@ -8573,23 +8645,7 @@ pub fn show_pane(
                 on_image_opacity(control.image, opacity.clamp(0.0, 1.0));
             }
         });
-        section_label(ui, "Calibrate scale");
-        labeled_row(ui, "Real length", |ui| {
-            let mut draft = pane_state.calibrate_length_draft.clone();
-            crate::expression_input::ValueInput::new(
-                "calibrate_length",
-                crate::expression_input::ValueKind::Length,
-            )
-            .hint("50mm")
-            .width(80.0)
-            .show(ui, &mut draft, doc);
-            pane_state.calibrate_length_draft = draft;
-            if ui.button("Apply").clicked()
-                && !pane_state.calibrate_length_draft.trim().is_empty()
-            {
-                on_calibrate_image(control, pane_state.calibrate_length_draft.clone());
-            }
-        });
+        show_calibrate_length(ui, pane_state, doc, control, on_calibrate_image);
     }
 
     if let Some(control) = &content.extrude {
@@ -12188,6 +12244,183 @@ mod tests {
             let text = row_help(tool, "Opacity").expect("Opacity help");
             assert!(text.to_ascii_lowercase().contains("opaque"), "{text}");
         }
+    }
+
+    /// #1612: Real length help names Enter / the checkmark, not a text Apply button.
+    #[test]
+    fn real_length_help_mentions_enter_or_checkmark() {
+        let text = row_help(None, "Real length").expect("Real length help");
+        let lower = text.to_ascii_lowercase();
+        assert!(
+            lower.contains("enter") || lower.contains("checkmark"),
+            "help should mention Enter or the checkmark: {text}"
+        );
+        assert!(
+            !lower.contains("apply"),
+            "help should not still name a text Apply button: {text}"
+        );
+    }
+
+    /// #1612: Enter in Real length, or the blue checkmark, applies a non-empty draft.
+    #[test]
+    fn calibrate_applies_on_enter_or_primary_when_draft_is_set() {
+        assert!(calibrate_should_apply("50mm", true, false));
+        assert!(calibrate_should_apply("50mm", false, true));
+        assert!(calibrate_should_apply(" 50mm ", true, false));
+        assert!(!calibrate_should_apply("", true, false));
+        assert!(!calibrate_should_apply("  ", false, true));
+        assert!(!calibrate_should_apply("50mm", false, false));
+        assert!(value_field_enter_commit(true, false, true));
+        assert!(value_field_enter_commit(true, true, false));
+        assert!(!value_field_enter_commit(true, false, false));
+        assert!(!value_field_enter_commit(false, false, true));
+    }
+
+    fn calibrate_key_press(key: egui::Key) -> egui::RawInput {
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        input
+    }
+
+    fn paint_calibrate_length(
+        ctx: &egui::Context,
+        input: egui::RawInput,
+        pane_state: &mut ContextPaneState,
+        doc: &Document,
+        control: CalibrateImageControl,
+        applied: &mut Option<String>,
+    ) {
+        let _ = ctx.run_ui(input, |ui| {
+            show_calibrate_length(ui, pane_state, doc, control, &mut |_, text| {
+                *applied = Some(text);
+            });
+        });
+    }
+
+    fn sample_calibrate_control(doc: &mut Document) -> CalibrateImageControl {
+        let image = doc.tracing_images.insert(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "trace".to_string(),
+            plane: doc.construction_planes.keys().next().expect("ground"),
+            origin: (0.0, 0.0),
+            base_origin: None,
+            width_mm: 10.0,
+            height_mm: 10.0,
+            opacity: 0.9,
+            name: None,
+            calibration: None,
+        });
+        let img = doc.tracing_images.get(image).unwrap();
+        let (a, b) = crate::model::image_calibration_endpoints(img).unwrap();
+        CalibrateImageControl {
+            image,
+            a,
+            b,
+            opacity: img.opacity,
+        }
+    }
+
+    /// #1612: Enter while Real length holds the keyboard applies the draft.
+    #[test]
+    fn calibrate_enter_in_real_length_applies() {
+        let mut doc = Document::default();
+        let control = sample_calibrate_control(&mut doc);
+        let mut pane_state = ContextPaneState {
+            calibrate_length_draft: "50mm".into(),
+            focus_calibrate_length: true,
+            ..ContextPaneState::default()
+        };
+        let ctx = egui::Context::default();
+        ctx.options_mut(|o| {
+            o.max_passes = std::num::NonZeroUsize::new(3).unwrap();
+        });
+        let mut applied = None;
+        for _ in 0..3 {
+            paint_calibrate_length(
+                &ctx,
+                Default::default(),
+                &mut pane_state,
+                &doc,
+                control,
+                &mut applied,
+            );
+        }
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(calibrate_length_field_id()),
+            "focus_calibrate_length should put the keyboard in Real length"
+        );
+        assert!(applied.is_none(), "settling frames must not apply");
+        paint_calibrate_length(
+            &ctx,
+            calibrate_key_press(egui::Key::Enter),
+            &mut pane_state,
+            &doc,
+            control,
+            &mut applied,
+        );
+        assert_eq!(applied.as_deref(), Some("50mm"));
+    }
+
+    /// #1612: Enter with no field focused fires the blue checkmark, like other tools.
+    #[test]
+    fn calibrate_unfocused_enter_fires_the_primary_button() {
+        let mut doc = Document::default();
+        let control = sample_calibrate_control(&mut doc);
+        let mut pane_state = ContextPaneState {
+            calibrate_length_draft: "80mm".into(),
+            ..ContextPaneState::default()
+        };
+        let ctx = egui::Context::default();
+        let mut applied = None;
+        for _ in 0..2 {
+            paint_calibrate_length(
+                &ctx,
+                Default::default(),
+                &mut pane_state,
+                &doc,
+                control,
+                &mut applied,
+            );
+        }
+        assert!(
+            ctx.memory(|m| m.focused()).is_none(),
+            "no widget should hold the keyboard"
+        );
+        paint_calibrate_length(
+            &ctx,
+            calibrate_key_press(egui::Key::Enter),
+            &mut pane_state,
+            &doc,
+            control,
+            &mut applied,
+        );
+        assert_eq!(applied.as_deref(), Some("80mm"));
+    }
+
+    /// #1612: an empty Real length draft does not apply on Enter.
+    #[test]
+    fn calibrate_empty_draft_does_not_apply() {
+        let mut doc = Document::default();
+        let control = sample_calibrate_control(&mut doc);
+        let mut pane_state = ContextPaneState::default();
+        let ctx = egui::Context::default();
+        let mut applied = None;
+        paint_calibrate_length(
+            &ctx,
+            calibrate_key_press(egui::Key::Enter),
+            &mut pane_state,
+            &doc,
+            control,
+            &mut applied,
+        );
+        assert!(applied.is_none());
     }
 
     /// #1548: selecting an image puts its opacity on the calibrate control the pane paints.

@@ -2718,6 +2718,8 @@ pub enum Action {
         name: String,
     },
     FocusElementName,
+    /// Focus the Context pane's Real length field for the selected tracing image (#1612).
+    FocusCalibrateLength,
     /// Set the document-wide default length/angle units (context pane, nothing selected; #52).
     /// Storage/display only for now — see [`crate::model::Document::default_length_unit`].
     SetDocumentUnits {
@@ -17277,6 +17279,27 @@ op,
                 self.context_pane.name_draft =
                     element_name(&self.doc, element).unwrap_or_default().to_string();
                 self.status = "Rename element".to_string();
+                ActionResult::Ok
+            }
+            Action::FocusCalibrateLength => {
+                let mut only = None;
+                for element in self.scene_selection.iter() {
+                    match element {
+                        SceneElement::Image(i) if only.is_none() => only = Some(i),
+                        _ => {
+                            only = None;
+                            break;
+                        }
+                    }
+                }
+                if only.filter(|&i| self.doc.tracing_images.contains(i)).is_none() {
+                    return ActionResult::Err(
+                        "Select a tracing image to calibrate".to_string(),
+                    );
+                }
+                self.panes.set(Pane::Context, true);
+                self.context_pane.focus_calibrate_length = true;
+                self.status = "Calibrate image scale".to_string();
                 ActionResult::Ok
             }
             Action::SetDocumentUnits { length, angle } => {
@@ -38302,6 +38325,32 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         });
         assert_eq!(state.apply(Action::FocusElementName), ActionResult::Ok);
         assert!(state.context_pane.focus_name_field);
+    }
+
+    /// #1612: focusing Real length needs exactly one selected tracing image.
+    #[test]
+    fn focus_calibrate_length_requires_a_selected_image() {
+        let mut state = AppState::default();
+        assert_eq!(
+            state.apply(Action::FocusCalibrateLength),
+            ActionResult::Err("Select a tracing image to calibrate".to_string())
+        );
+        let image = state.doc.tracing_images.insert(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "grid".to_string(),
+            plane: pkey(0),
+            origin: (0.0, 0.0),
+            width_mm: 10.0,
+            height_mm: 10.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
+            name: None,
+            calibration: None,
+            base_origin: None,
+        });
+        state.scene_selection.insert(SceneElement::Image(image));
+        assert_eq!(state.apply(Action::FocusCalibrateLength), ActionResult::Ok);
+        assert!(state.context_pane.focus_calibrate_length);
+        assert!(state.panes.is_visible(Pane::Context));
     }
 
     /// #1397: the `Y` shortcut cycles a tool's Output mode new body → add to body → cut →

@@ -2987,6 +2987,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    api.set(
+        "focus_calibrate",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::FocusCalibrateLength) }
+        })?,
+    )?;
+
     // #52: `bearcad.set_units{ length = "mm", angle = "deg" }` sets the document default
     // (unset fields keep their current document value). `bearcad.set_units{ sketch = N,
     // length = "in" }` sets a per-sketch override; a field left unset for a sketch call
@@ -7856,7 +7864,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         -- `bearcad.ui.*` sub-namespace so scripts can focus on modeling (#46).
         bearcad.ui = {}
         local ui_funcs = {
-            "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_dim", "pane", "pane_rect", "widget_id_warnings", "palette", "settings",
+            "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_calibrate", "focus_dim", "pane", "pane_rect", "widget_id_warnings", "palette", "settings",
             "changelog",
             "mcmaster",
             "report_issue", "windows", "focused_window",
@@ -8304,6 +8312,23 @@ mod tests {
             pkey(1),
             "Rust-side host plane should be XZ"
         );
+    }
+
+    /// #1612: `bearcad.ui.focus_calibrate()` needs a selected tracing image.
+    #[test]
+    fn lua_focus_calibrate_requires_a_selected_image() {
+        let path = write_test_png("focus_calibrate.png", 8, 8);
+        run_lua_expect_ok(&format!(
+            r#"
+            bearcad.new()
+            local ok, err = pcall(bearcad.ui.focus_calibrate)
+            assert(not ok, "focus_calibrate without an image should error")
+            assert(tostring(err):find("image") or tostring(err):find("Image"), tostring(err))
+
+            bearcad.import_image({path:?})
+            bearcad.ui.focus_calibrate()
+            "#
+        ));
     }
 
     /// #1582: after importing an image — onto a plane or not — it is the only selection,
