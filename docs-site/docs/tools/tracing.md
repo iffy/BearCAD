@@ -26,10 +26,10 @@ lines stay visible on top. Select an image to change its opacity with the slider
 While the image is selected, a line appears from the top-middle of the image
 to the bottom-middle, with a dimension that cannot be removed.
 
-Drag the endpoints onto a feature whose real size you know. Double-click the dimension
-(or type the length in the context pane) and enter the real length — any expression.
-The image rescales so those two points stay on the same spots of the image and the
-line measures that length.
+Drag the endpoints onto a feature whose real size you know. Type the real length in
+the context pane and press Enter (or the checkmark), or double-click the dimension —
+any expression. The image rescales so those two points stay on the same spots of the
+image and the line measures that length.
 
 <a
   href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/tracing.bearcad.json"))}
