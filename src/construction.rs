@@ -2796,6 +2796,15 @@ pub fn nearest_sketch_line_in_sketch(
     best
 }
 
+/// Whether any sketch is hosted on this image's plane — the gate for treating
+/// calibration endpoints as first-class constraint points (#425). Without a
+/// hosted sketch they belong only to the Select-tool overlay (#1547/#1586).
+fn image_hosts_a_sketch(doc: &Document, img: &crate::model::TracingImage) -> bool {
+    doc.sketches.keys().any(|sketch| {
+        doc.sketch_face(sketch) == Some(FaceId::ConstructionPlane(img.plane))
+    })
+}
+
 fn nearest_sketch_point(
     screen: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
@@ -2855,8 +2864,13 @@ fn nearest_sketch_point(
             );
         }
     }
-    // A calibrated image's two reference points (#425).
+    // A calibrated image's two reference points (#425): only when a sketch is
+    // hosted on the image's plane. Otherwise they are the Select-tool overlay
+    // and must not steal the image pick (#1586).
     for (ii, img) in doc.tracing_images.iter() {
+        if !image_hosts_a_sketch(doc, img) {
+            continue;
+        }
         let Some(frame) =
             crate::face::sketch_frame(doc, FaceId::ConstructionPlane(img.plane))
         else {
@@ -3255,6 +3269,9 @@ pub fn collect_pick_candidates(
         }
     }
     for (ii, img) in doc.tracing_images.iter() {
+        if !image_hosts_a_sketch(doc, img) {
+            continue;
+        }
         if let Some(frame) = crate::face::sketch_frame(doc, FaceId::ConstructionPlane(img.plane)) {
             for index in 0..2 {
                 if let Some((u, v)) = crate::model::image_calibration_point_uv(img, index) {
@@ -6315,6 +6332,75 @@ mod tests {
                 )
             }),
             "the exploder crowd should include the tracing image"
+        );
+    }
+
+    /// #1586: a calibrated image's endpoints are the Select-tool overlay, not
+    /// independent 3D pick targets. Hovering / clicking one must take the image.
+    #[test]
+    fn calibration_endpoints_are_not_pickable_without_a_sketch() {
+        use crate::model::{default_image_calibration, ConstraintPoint};
+        let mut doc = Document::default();
+        let mut img = tracing_image_on_xy((-200.0, -200.0), 150.0, 150.0);
+        img.calibration = Some(default_image_calibration(150.0));
+        let image = doc.tracing_images.insert(img);
+        // Default top-middle: origin + (0.5·w, h) = (−125, −50).
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let cursor = Pos2::new(-125.0, -50.0);
+        let target = resolve_pick_target(
+            cursor,
+            &project,
+            Some(Vec3::new(-125.0, -50.0, 0.0)),
+            &doc,
+            None,
+        )
+        .expect("something under the cursor");
+        assert_eq!(
+            scene_element_from_pick(&target.kind),
+            Some(SceneElement::Image(image)),
+            "an unselected image's calibration endpoint should pick the image, got {:?}",
+            target.kind
+        );
+        let cands = collect_pick_candidates(cursor, &project, &doc, Vec3::new(0.0, 0.0, 200.0), None);
+        assert!(
+            cands.iter().all(|c| {
+                !matches!(
+                    c.kind,
+                    PickTargetKind::Point(ConstraintPoint::ImageCalibrationPoint { .. })
+                )
+            }),
+            "the exploder crowd should not include calibration endpoints when no sketch is hosted, got {:?}",
+            cands.iter().map(|c| &c.kind).collect::<Vec<_>>()
+        );
+    }
+
+    /// #425: once a sketch sits on the image's plane the two reference points stay
+    /// first-class constraint vertices.
+    #[test]
+    fn calibration_endpoints_are_pickable_in_a_hosted_sketch() {
+        use crate::model::{default_image_calibration, ConstraintPoint};
+        let (mut doc, _sketch) = doc_with_plane_sketch();
+        let mut img = tracing_image_on_xy((-200.0, -200.0), 150.0, 150.0);
+        img.calibration = Some(default_image_calibration(150.0));
+        let image = doc.tracing_images.insert(img);
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let cursor = Pos2::new(-125.0, -50.0);
+        let target = resolve_pick_target(
+            cursor,
+            &project,
+            Some(Vec3::new(-125.0, -50.0, 0.0)),
+            &doc,
+            None,
+        )
+        .expect("something under the cursor");
+        assert!(
+            matches!(
+                &target.kind,
+                PickTargetKind::Point(ConstraintPoint::ImageCalibrationPoint { image: i, index: 0 })
+                    if *i == image
+            ),
+            "a hosted sketch should keep the calibration point pickable, got {:?}",
+            target.kind
         );
     }
 
