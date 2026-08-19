@@ -1843,7 +1843,7 @@ fn crowd_type_rank(kind: &construction::PickTargetKind) -> u8 {
         K::BodyEdge { .. } | K::Line(_) => 2,
         K::Circle(_) => 3,
         K::Point(_) | K::BodyVertex { .. } => 4, // vertices (sketch points + body corners)
-        K::ConstructionPlane(_) => 5,
+        K::ConstructionPlane(_) | K::TracingImage(_) => 5,
         K::GlobalAxis(_) | K::OriginAxis(_) | K::BodyAxis { .. } => 6,
         K::Ground(_) => 7,
         K::Constraint(_) => 8, // annotation badges, grouped after the geometry they govern
@@ -2377,6 +2377,16 @@ fn pick_target_loupe_wireframe(
                 .unwrap_or_default(),
             Vec::new(),
         ),
+        PK::TracingImage(index) => (
+            construction::tracing_image_corners(doc, *index)
+                .map(|corners| {
+                    (0..corners.len())
+                        .map(|i| (corners[i], corners[(i + 1) % corners.len()]))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            Vec::new(),
+        ),
         PK::Ground(_) | PK::Constraint(_) => (Vec::new(), vec![anchor]),
     }
 }
@@ -2661,6 +2671,14 @@ fn draw_pick_target_loupe(
                 for i in 0..corners.len() {
                     seg(corners[i], corners[(i + 1) % corners.len()]);
                 }
+            }
+        }
+        PK::TracingImage(index) => {
+            let Some(corners) = construction::tracing_image_corners(doc, *index) else {
+                return;
+            };
+            for i in 0..corners.len() {
+                seg(corners[i], corners[(i + 1) % corners.len()]);
             }
         }
         // The ground plane has no bounds to draw — the pick spot on it is the whole content.
@@ -27486,7 +27504,7 @@ impl App {
                 }
                 let img = &self.state.doc.tracing_images[image];
                 let label = image_calibration_label_text(&self.state.doc, img);
-                if let Some((geom, world_geom, label_view, label_rect)) = image_calibration_dim_geom(
+                if let Some((_, _, _, label_rect)) = image_calibration_dim_geom(
                     &painter,
                     &project,
                     &frame,
@@ -27504,14 +27522,6 @@ impl App {
                         self.state
                             .apply(Action::BeginEditImageCalibration { image });
                     }
-                    let dim_label = if editing_calibration { "" } else { label.as_str() };
-                    draw_linear_dimension(
-                        &painter,
-                        &geom,
-                        dim_label,
-                        col::DIM_ANNOTATION,
-                        Some((&world_geom, &label_view, &project)),
-                    );
                 }
                 if let Some((di, idx)) = self.calibration_point_drag {
                     if di == image && primary_down && !editing_calibration {
@@ -27540,14 +27550,6 @@ impl App {
                     }
                 }
 
-                for (i, &pt) in points.iter().enumerate() {
-                    if let Some(sp) = project(world(pt)) {
-                        let selected = self.selected_calibration_point == Some((image, i));
-                        let color = if selected { egui::Color32::WHITE } else { col::PREVIEW };
-                        painter.circle_filled(sp, 4.0, color);
-                        painter.circle_stroke(sp, 6.0, egui::Stroke::new(1.5, color));
-                    }
-                }
             }
         } else {
             self.selected_calibration_point = None;
@@ -30789,6 +30791,50 @@ impl App {
             self.draw_shape_step_highlights(&painter, &project, pointer_screen, &cam, viewport, &vp);
             self.draw_shape_dimension_mirrors(&painter, &project, pointer_screen);
             self.draw_shape_snap_indicator(&painter, &project, pointer_screen);
+        }
+
+        // Image calibration (#1547/#1563): same reason as the shape-tool overlay — the GPU
+        // tracing-image quad used to paint over the line, endpoints, and dimension.
+        if let Some((image, points)) = calibration_target {
+            if let Some(frame) = self
+                .state
+                .doc
+                .tracing_images
+                .get(image)
+                .map(|img| img.plane)
+                .and_then(|pi| face::sketch_frame(&self.state.doc, model::FaceId::ConstructionPlane(pi)))
+            {
+                let world =
+                    |p: (f32, f32)| frame.origin + frame.u_axis * p.0 + frame.v_axis * p.1;
+                let img = &self.state.doc.tracing_images[image];
+                let label = image_calibration_label_text(&self.state.doc, img);
+                if let Some((geom, world_geom, label_view, _)) = image_calibration_dim_geom(
+                    &painter,
+                    &project,
+                    &frame,
+                    &cam,
+                    points[0],
+                    points[1],
+                    &label,
+                ) {
+                    let dim_label = if editing_calibration { "" } else { label.as_str() };
+                    draw_linear_dimension(
+                        &painter,
+                        &geom,
+                        dim_label,
+                        col::DIM_ANNOTATION,
+                        Some((&world_geom, &label_view, &project)),
+                    );
+                }
+                for (i, &pt) in points.iter().enumerate() {
+                    if let Some(sp) = project(world(pt)) {
+                        let selected = self.selected_calibration_point == Some((image, i));
+                        let color = if selected { egui::Color32::WHITE } else { col::PREVIEW };
+                        painter.circle_filled(sp, 4.0, color);
+                        painter.circle_stroke(sp, 6.0, egui::Stroke::new(1.5, color));
+                    }
+                }
+            }
         }
 
         // The hovered sweep's angle (#919/#947), on top of the scene so the number is readable
@@ -36555,6 +36601,18 @@ mod tests {
             name: None,
             shadow: false,
         });
+        let image = doc.tracing_images.insert(model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "trace".to_string(),
+            plane: pkey(0),
+            origin: (0.0, 0.0),
+            base_origin: None,
+            width_mm: 40.0,
+            height_mm: 30.0,
+            opacity: model::DEFAULT_TRACING_IMAGE_OPACITY,
+            name: None,
+            calibration: None,
+        });
         let solid = extrude::body_solid_mesh(&doc, bkey(0)).expect("body mesh");
         let tri = solid.triangles[0];
 
@@ -36575,6 +36633,7 @@ mod tests {
             PK::Body(bkey(0)),
             PK::GlobalAxis(construction::GlobalAxis::X),
             PK::ConstructionPlane(model::plane_key_for_slot(0)),
+            PK::TracingImage(image),
             PK::SketchFace(model::FaceId::Polygon(lines.to_vec())),
             // The two whose content is a single spot by nature: a point on the ground, and a
             // constraint, whose visual is its badge glyph drawn at the loupe's centre.

@@ -9,10 +9,10 @@ use crate::document_health::{health_tint_color, DocumentHealth};
 use crate::document_lifecycle::{circle_alive, constraint_alive, line_alive};
 use crate::construction::{
     axis_angle_handle, axis_normal, axis_reference_perp, gizmo_display_offset, global_axis_segment,
-    plane_corners, AxisGizmoHit, AXIS_ANGLE_GIZMO_RADIUS_MM, CONSTRUCTION_DASH_GAP_PX,
-    CONSTRUCTION_DASH_LENGTH_PX, CONSTRUCTION_RGBA, FACE_HOVER_FILL_MULTIPLIER, PLANE_FILL_RGBA,
-    GIZMO_HANDLE_HOVER_RGBA, PickTargetKind, PlaneEditDependentPreview,
-    PlaneReference,
+    plane_corners, tracing_image_corners, AxisGizmoHit, AXIS_ANGLE_GIZMO_RADIUS_MM,
+    CONSTRUCTION_DASH_GAP_PX, CONSTRUCTION_DASH_LENGTH_PX, CONSTRUCTION_RGBA,
+    FACE_HOVER_FILL_MULTIPLIER, PLANE_FILL_RGBA, GIZMO_HANDLE_HOVER_RGBA, PickTargetKind,
+    PlaneEditDependentPreview, PlaneReference,
 };
 use crate::context::selection_highlight_dashed;
 use crate::face::{
@@ -349,8 +349,9 @@ pub struct ViewportScene {
     pub mask_indices: Vec<u32>,
     pub text_vertices: Vec<GpuTextVertex>,
     pub text_indices: Vec<u32>,
-    /// Tracing images (#170): textured world-space quads, drawn after the opaque scene
-    /// (depth-tested, no depth write) so bodies in front occlude them.
+    /// Tracing images (#170/#1562): textured world-space quads, drawn after the opaque
+    /// scene and before construction planes (depth-tested, no depth write) so bodies in
+    /// front occlude them and planes in front of the image still read on top.
     pub images: Vec<ViewportImageQuad>,
     /// The world origin axes (#1072): screen-space-widened quads. `position` is the corner's
     /// own world endpoint, `normal.xyz` the segment's other endpoint, and `normal.w` the
@@ -438,21 +439,6 @@ pub struct ViewportImageQuad {
     pub height_px: u32,
     pub rgba: std::sync::Arc<Vec<u8>>,
     pub opacity: f32,
-}
-
-/// A tracing image's four world corners, in UV order: (0,0), (1,0), (1,1), (0,1) — v flipped,
-/// since image v grows downward and plane-local v grows up. One definition (#977), shared by the
-/// textured quad and by the hover outline its Elements-pane row draws.
-fn tracing_image_corners(
-    doc: &Document,
-    image: crate::model::TracingImageKey,
-) -> Option<[Vec3; 4]> {
-    let img = doc.tracing_images.get(image)?;
-    let frame = crate::face::sketch_frame(doc, FaceId::ConstructionPlane(img.plane))?;
-    let at = |x: f32, y: f32| frame.origin + frame.u_axis * x + frame.v_axis * y;
-    let (x0, y0) = img.origin;
-    let (x1, y1) = (x0 + img.width_mm, y0 + img.height_mm);
-    Some([at(x0, y1), at(x1, y1), at(x1, y0), at(x0, y0)])
 }
 
 /// Decode memo for tracing images (#170): decoding a PNG/JPEG every frame would dwarf the
@@ -4353,6 +4339,21 @@ impl<'a> SceneMesh<'a> {
                     view_proj,
                 );
             }
+            PickTargetKind::TracingImage(index) => {
+                if let Some(corners) = tracing_image_corners(doc, *index) {
+                    for i in 0..corners.len() {
+                        self.push_line_segment(
+                            corners[i],
+                            corners[(i + 1) % corners.len()],
+                            color,
+                            3.0,
+                            cam,
+                            viewport,
+                            view_proj,
+                        );
+                    }
+                }
+            }
             PickTargetKind::Ground(p) => {
                 push_ground_hover_marker(self, *p, color, cam, viewport, view_proj, project);
             }
@@ -7462,11 +7463,23 @@ mod tests {
     #[test]
     fn every_crowd_kind_lights_up_when_hovered() {
         use crate::construction::GlobalAxis;
-        let state = state_with_one_body();
+        let mut state = state_with_one_body();
         let solid = crate::extrude::body_solid_mesh(&state.doc, bkey(0)).expect("body mesh");
         let tri = solid.triangles.first().copied().expect("a triangle");
         let normal = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
         let line = state.doc.lines.keys().next().expect("a line");
+        let image = state.doc.tracing_images.insert(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "trace".to_string(),
+            plane: pkey(0),
+            origin: (0.0, 0.0),
+            base_origin: None,
+            width_mm: 40.0,
+            height_mm: 30.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
+            name: None,
+            calibration: None,
+        });
 
         let drawn = |kind: PickTargetKind| {
             hover_overlay_indices(&state, ViewportHoverHighlight::PickTarget(kind))
@@ -7495,6 +7508,7 @@ mod tests {
             PickTargetKind::ConstructionPlane(pkey(0)),
             PickTargetKind::SketchFace(FaceId::ConstructionPlane(pkey(0))),
             PickTargetKind::Ground(Vec3::ZERO),
+            PickTargetKind::TracingImage(image),
         ] {
             assert!(
                 drawn(kind.clone()) > 0,
