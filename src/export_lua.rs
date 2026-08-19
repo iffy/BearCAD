@@ -1959,6 +1959,13 @@ fn constraint_line_table(doc: &Document, l: &ConstraintLine) -> String {
                 face_table(face, doc)
             )
         }
+        ConstraintLine::ImageEdge { image, edge } => {
+            let ord = doc.tracing_images.keys().position(|k| k == *image).unwrap_or(0);
+            format!(
+                "{{ kind = \"image\", index = {ord}, edge = \"{}\" }}",
+                edge.lua_name()
+            )
+        }
     }
 }
 

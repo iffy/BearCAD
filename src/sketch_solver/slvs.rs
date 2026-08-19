@@ -508,9 +508,22 @@ impl<'a> Builder<'a> {
                 let (dir, _, _) = self.point2d(GROUP_FIXED, dx, dy);
                 (origin, dir)
             }
+            ConstraintLine::ImageEdge { image, edge } => {
+                let img = self
+                    .doc
+                    .tracing_images
+                    .get(*image)
+                    .ok_or_else(|| format!("Image {image:?} not found"))?;
+                let ((x0, y0), (x1, y1)) = crate::model::image_edge_uv(img, *edge);
+                let (a, _, _) = self.point2d(GROUP_FIXED, x0 as f64, y0 as f64);
+                let (b, _, _) = self.point2d(GROUP_FIXED, x1 as f64, y1 as f64);
+                (a, b)
+            }
         };
         let group = match line {
-            ConstraintLine::FaceEdge { .. } | ConstraintLine::OriginAxis(_) => GROUP_FIXED,
+            ConstraintLine::FaceEdge { .. }
+            | ConstraintLine::OriginAxis(_)
+            | ConstraintLine::ImageEdge { .. } => GROUP_FIXED,
             // Projected sketch lines are fixed references (#140/#1185), same as face edges.
             ConstraintLine::Line(index)
                 if self
@@ -933,7 +946,9 @@ fn line_endpoints(line: &ConstraintLine) -> (Option<ConstraintPoint>, Option<Con
                 end: LineEnd::End,
             }),
         ),
-        ConstraintLine::FaceEdge { .. } | ConstraintLine::OriginAxis(_) => (None, None),
+        ConstraintLine::FaceEdge { .. }
+        | ConstraintLine::OriginAxis(_)
+        | ConstraintLine::ImageEdge { .. } => (None, None),
     }
 }
 
@@ -976,6 +991,10 @@ fn line_endpoints_uv(
             crate::model::SketchAxis::X => ((0.0, 0.0), (1.0, 0.0)),
             crate::model::SketchAxis::Y => ((0.0, 0.0), (0.0, 1.0)),
         }),
+        ConstraintLine::ImageEdge { image, edge } => {
+            let img = doc.tracing_images.get(*image)?;
+            Some(crate::model::image_edge_uv(img, *edge))
+        }
     }
 }
 
@@ -986,7 +1005,9 @@ fn line_endpoints_uv(
 fn follower_point(p: &ConstraintPoint) -> bool {
     matches!(
         p,
-        ConstraintPoint::TextAnchor { .. } | ConstraintPoint::ImageCalibrationPoint { .. }
+        ConstraintPoint::TextAnchor { .. }
+            | ConstraintPoint::ImageCalibrationPoint { .. }
+            | ConstraintPoint::ImageAnchor { .. }
     )
 }
 

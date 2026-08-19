@@ -8890,6 +8890,15 @@ pub fn constraint_point_world(doc: &Document, point: crate::model::ConstraintPoi
             )?;
             return Some(frame.origin + frame.u_axis * u + frame.v_axis * v);
         }
+        crate::model::ConstraintPoint::ImageAnchor { image, anchor } => {
+            let img = doc.tracing_images.get(*image)?;
+            let (u, v) = crate::model::image_anchor_uv(img, *anchor);
+            let frame = crate::face::sketch_frame(
+                doc,
+                crate::model::FaceId::ConstructionPlane(img.plane),
+            )?;
+            return Some(frame.origin + frame.u_axis * u + frame.v_axis * v);
+        }
         crate::model::ConstraintPoint::Origin => return None,
         crate::model::ConstraintPoint::FaceVertex { .. } => unreachable!("handled above"),
     };

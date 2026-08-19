@@ -133,6 +133,7 @@ fn point_owner_alive(
             .tracing_images
             .get(*image)
             .is_some_and(|i| crate::model::image_calibration_point_uv(i, *index).is_some()),
+        ConstraintPoint::ImageAnchor { image, .. } => doc.tracing_images.contains(*image),
     }
 }
 
@@ -155,7 +156,8 @@ fn point_owner_element(point: &crate::model::ConstraintPoint) -> Option<SceneEle
         ConstraintPoint::LineEndpoint { line, .. } => SceneElement::Line(*line),
         ConstraintPoint::CircleCenter(circle) => SceneElement::Circle(*circle),
         ConstraintPoint::TextAnchor { text, .. } => SceneElement::SketchText(*text),
-        ConstraintPoint::ImageCalibrationPoint { image, .. } => SceneElement::Image(*image),
+        ConstraintPoint::ImageCalibrationPoint { image, .. }
+        | ConstraintPoint::ImageAnchor { image, .. } => SceneElement::Image(*image),
         ConstraintPoint::Origin => SceneElement::Origin,
         ConstraintPoint::FaceVertex { .. } => return None,
     })
@@ -930,6 +932,7 @@ pub fn constraint_line_alive(doc: &Document, line: &ConstraintLine) -> bool {
         }
         // The origin axes always exist (#189).
         ConstraintLine::OriginAxis(_) => true,
+        ConstraintLine::ImageEdge { image, .. } => doc.tracing_images.contains(*image),
     }
 }
 
@@ -957,6 +960,7 @@ pub fn constraint_point_alive(doc: &Document, point: &ConstraintPoint) -> bool {
             .tracing_images
             .get(*image)
             .is_some_and(|i| crate::model::image_calibration_point_uv(i, *index).is_some()),
+        ConstraintPoint::ImageAnchor { image, .. } => doc.tracing_images.contains(*image),
     }
 }
 

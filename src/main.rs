@@ -20440,6 +20440,7 @@ fn resolve_viewport_hover_highlight(
                         target,
                         model::ConstraintLine::OriginAxis(_)
                             | model::ConstraintLine::FaceEdge { .. }
+                            | model::ConstraintLine::ImageEdge { .. }
                     ) {
                         return Some(gpu_viewport::ViewportHoverHighlight::Element(
                             vertex_drag::scene_element_for_line(target),

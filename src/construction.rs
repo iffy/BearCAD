@@ -812,7 +812,7 @@ pub fn point_sketch(doc: &Document, point: ConstraintPoint) -> Option<SketchId> 
         }
         // A calibration point belongs to whichever sketch references it (the image sits on
         // a plane, not in a sketch) — no owning sketch, like a face vertex.
-        ConstraintPoint::ImageCalibrationPoint { .. } => None,
+        ConstraintPoint::ImageCalibrationPoint { .. } | ConstraintPoint::ImageAnchor { .. } => None,
         // A face's own vertex has no owning sketch of its own — it's referenced *from*
         // whichever sketch a constraint projects it into, not owned by one.
         ConstraintPoint::FaceVertex { .. } => None,
@@ -1596,6 +1596,7 @@ impl PickOcclusion {
                     ConstraintPoint::FaceVertex { .. }
                     | ConstraintPoint::TextAnchor { .. }
                     | ConstraintPoint::ImageCalibrationPoint { .. }
+                    | ConstraintPoint::ImageAnchor { .. }
                     | ConstraintPoint::Origin => false,
                 };
                 !shadow && vis.effective_visible(doc, SceneElement::Point(point.clone()))
@@ -2585,6 +2586,13 @@ pub fn point_world_position(doc: &Document, point: ConstraintPoint) -> Option<Ve
                 crate::face::sketch_frame(doc, crate::model::FaceId::ConstructionPlane(img.plane))?;
             Some(frame.origin + frame.u_axis * u + frame.v_axis * v)
         }
+        ConstraintPoint::ImageAnchor { image, anchor } => {
+            let img = doc.tracing_images.get(image)?;
+            let (u, v) = crate::model::image_anchor_uv(img, anchor);
+            let frame =
+                crate::face::sketch_frame(doc, crate::model::FaceId::ConstructionPlane(img.plane))?;
+            Some(frame.origin + frame.u_axis * u + frame.v_axis * v)
+        }
     }
 }
 
@@ -2657,18 +2665,49 @@ pub fn nearest_sketch_point_in_sketch(
             }
         }
     }
-    // A calibrated image's two reference points (#425), for images on this sketch's plane.
-    for (ii, img) in doc.tracing_images.iter() {
-        if doc.sketch_face(sketch) != Some(FaceId::ConstructionPlane(img.plane)) {
-            continue;
-        }
-        if let Some(frame) = crate::face::sketch_geometry_frame(doc, sketch) {
-            for index in 0..2 {
-                if let Some((u, v)) = crate::model::image_calibration_point_uv(img, index) {
-                    consider(
-                        ConstraintPoint::ImageCalibrationPoint { image: ii, index },
-                        crate::face::local_to_world(&frame, u, v),
-                    );
+    // A calibrated image's two reference points (#425) and nine box anchors (#1589),
+    // for images on this sketch's plane. `point_sketch` is `None` for these (the image
+    // sits on a plane, not in a sketch), so they go through the FaceVertex-style
+    // direct check rather than the `consider` sketch filter. Calibration first so they
+    // win a tie with a coincident top/bottom-middle box point.
+    if let Some(face) = doc.sketch_face(sketch) {
+        if let FaceId::ConstructionPlane(plane) = face {
+            if let Some(frame) = crate::face::sketch_geometry_frame(doc, sketch) {
+                for (ii, img) in doc.tracing_images.iter() {
+                    if img.plane != plane {
+                        continue;
+                    }
+                    let consider_img = |point: ConstraintPoint, u: f32, v: f32, best: &mut Option<(ConstraintPoint, f32)>| {
+                        let world = crate::face::local_to_world(&frame, u, v);
+                        let Some(sp) = project(world) else {
+                            return;
+                        };
+                        let dist = (screen - sp).length();
+                        if dist <= crate::touch::hit(POINT_PICK_RADIUS_PX)
+                            && best.as_ref().is_none_or(|(_, d)| dist < *d)
+                        {
+                            *best = Some((point, dist));
+                        }
+                    };
+                    for index in 0..2 {
+                        if let Some((u, v)) = crate::model::image_calibration_point_uv(img, index) {
+                            consider_img(
+                                ConstraintPoint::ImageCalibrationPoint { image: ii, index },
+                                u,
+                                v,
+                                &mut best,
+                            );
+                        }
+                    }
+                    for anchor in crate::model::TextAnchor::ALL {
+                        let (u, v) = crate::model::image_anchor_uv(img, anchor);
+                        consider_img(
+                            ConstraintPoint::ImageAnchor { image: ii, anchor },
+                            u,
+                            v,
+                            &mut best,
+                        );
+                    }
                 }
             }
         }
@@ -2754,6 +2793,24 @@ pub fn nearest_sketch_line_in_sketch(
                     );
                 }
             }
+        }
+    }
+
+    // Tracing-image displayed-quad edges (#1589), for images on this sketch's plane.
+    for (ii, img) in doc.tracing_images.iter() {
+        if doc.sketch_face(sketch) != Some(FaceId::ConstructionPlane(img.plane)) {
+            continue;
+        }
+        let Some(frame) = crate::face::sketch_geometry_frame(doc, sketch) else {
+            continue;
+        };
+        for edge in crate::model::ImageEdge::ALL {
+            let ((u0, v0), (u1, v1)) = crate::model::image_edge_uv(img, edge);
+            consider(
+                ConstraintLine::ImageEdge { image: ii, edge },
+                crate::face::local_to_world(&frame, u0, v0),
+                crate::face::local_to_world(&frame, u1, v1),
+            );
         }
     }
 
@@ -2884,6 +2941,13 @@ fn nearest_sketch_point(
                     frame.origin + frame.u_axis * u + frame.v_axis * v,
                 );
             }
+        }
+        for anchor in crate::model::TextAnchor::ALL {
+            let (u, v) = crate::model::image_anchor_uv(img, anchor);
+            consider(
+                ConstraintPoint::ImageAnchor { image: ii, anchor },
+                frame.origin + frame.u_axis * u + frame.v_axis * v,
+            );
         }
     }
 
@@ -3282,6 +3346,14 @@ pub fn collect_pick_candidates(
                         frame.origin + frame.u_axis * u + frame.v_axis * v,
                     );
                 }
+            }
+            for anchor in crate::model::TextAnchor::ALL {
+                let (u, v) = crate::model::image_anchor_uv(img, anchor);
+                push_point(
+                    &mut raw,
+                    ConstraintPoint::ImageAnchor { image: ii, anchor },
+                    frame.origin + frame.u_axis * u + frame.v_axis * v,
+                );
             }
         }
     }
@@ -6372,6 +6444,65 @@ mod tests {
             }),
             "the exploder crowd should not include calibration endpoints when no sketch is hosted, got {:?}",
             cands.iter().map(|c| &c.kind).collect::<Vec<_>>()
+        );
+    }
+
+    /// #1589: a hosted sketch can pick an image's box corner (distinct from the
+    /// default top-middle calibration point).
+    #[test]
+    fn image_box_corners_are_pickable_in_a_hosted_sketch() {
+        use crate::model::{default_image_calibration, ConstraintPoint, TextAnchor};
+        let (mut doc, _sketch) = doc_with_plane_sketch();
+        let mut img = tracing_image_on_xy((-200.0, -200.0), 150.0, 150.0);
+        img.calibration = Some(default_image_calibration(150.0));
+        let image = doc.tracing_images.insert(img);
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        // Bottom-left of the 150×150 image at origin (−200, −200).
+        let cursor = Pos2::new(-200.0, -200.0);
+        let target = resolve_pick_target(
+            cursor,
+            &project,
+            Some(Vec3::new(-200.0, -200.0, 0.0)),
+            &doc,
+            None,
+        )
+        .expect("something under the cursor");
+        assert!(
+            matches!(
+                &target.kind,
+                PickTargetKind::Point(ConstraintPoint::ImageAnchor {
+                    image: i,
+                    anchor: TextAnchor::BottomLeft
+                }) if *i == image
+            ),
+            "a hosted sketch should pick the image's bottom-left, got {:?}",
+            target.kind
+        );
+        let picked = nearest_sketch_point_in_sketch(
+            cursor,
+            &project,
+            &doc,
+            doc.sketches.keys().next().unwrap(),
+        );
+        assert!(
+            matches!(
+                picked,
+                Some((ConstraintPoint::ImageAnchor { image: i, anchor: TextAnchor::BottomLeft }, _))
+                    if i == image
+            ),
+            "constraint-tool point pick should take the box corner, got {:?}",
+            picked
+        );
+        let sketch = doc.sketches.keys().next().unwrap();
+        let edge = nearest_sketch_line_in_sketch(Pos2::new(-200.0, -125.0), &project, &doc, sketch);
+        assert!(
+            matches!(
+                edge,
+                Some((crate::model::ConstraintLine::ImageEdge { image: i, edge: crate::model::ImageEdge::Left }, _))
+                    if i == image
+            ),
+            "constraint-tool line pick should take the left image edge, got {:?}",
+            edge
         );
     }
 

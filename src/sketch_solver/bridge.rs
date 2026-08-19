@@ -599,7 +599,9 @@ impl SketchBridge {
         // An image calibration point (#425) behaves identically.
         if matches!(
             &point,
-            ConstraintPoint::TextAnchor { .. } | ConstraintPoint::ImageCalibrationPoint { .. }
+            ConstraintPoint::TextAnchor { .. }
+                | ConstraintPoint::ImageCalibrationPoint { .. }
+                | ConstraintPoint::ImageAnchor { .. }
         ) {
             let (u, v) = point_uv(doc, self.sketch, point.clone())?;
             let vars = self.system.add_point(u as f64, v as f64, false);
@@ -666,6 +668,19 @@ impl SketchBridge {
                 };
                 let start = self.system.add_point(0.0, 0.0, true);
                 let end = self.system.add_point(dx, dy, true);
+                Ok((start, end))
+            }
+            // An image edge is a snapshot of the image's current pose (#1589): two fixed
+            // helper points, so sketch geometry constrains onto the image rather than
+            // dragging it.
+            ConstraintLine::ImageEdge { image, edge } => {
+                let img = doc
+                    .tracing_images
+                    .get(image)
+                    .ok_or_else(|| format!("Image {image:?} not found"))?;
+                let ((x0, y0), (x1, y1)) = crate::model::image_edge_uv(img, edge);
+                let start = self.system.add_point(x0 as f64, y0 as f64, true);
+                let end = self.system.add_point(x1 as f64, y1 as f64, true);
                 Ok((start, end))
             }
         }
@@ -900,6 +915,7 @@ fn line_endpoint_points(doc: &Document, line: ConstraintLine) -> Vec<ConstraintP
         }
         // The origin axes have no draggable endpoint geometry (#189).
         ConstraintLine::OriginAxis(_) => Vec::new(),
+        ConstraintLine::ImageEdge { .. } => Vec::new(),
     }
 }
 
@@ -910,7 +926,7 @@ fn point_sketch(doc: &Document, point: ConstraintPoint) -> Option<SketchId> {
         ConstraintPoint::TextAnchor { text, .. } => doc.sketch_texts.get(text).map(|t| t.sketch),
         // A calibration point has no owning sketch (the image sits on a plane) — mirrors
         // `construction::point_sketch` (#425).
-        ConstraintPoint::ImageCalibrationPoint { .. } => None,
+        ConstraintPoint::ImageCalibrationPoint { .. } | ConstraintPoint::ImageAnchor { .. } => None,
         // A face's own vertex has no owning sketch — it's referenced *from* whichever sketch a
         // constraint projects it into, not owned by one (mirrors `construction::point_sketch`).
         ConstraintPoint::FaceVertex { .. } => None,

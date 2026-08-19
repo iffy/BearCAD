@@ -468,6 +468,7 @@ fn line_sort_key(line: &ConstraintLine) -> (u8, usize, u8, usize) {
         ConstraintLine::Line(i) => (0, i.index() as usize, 0, 0),
         ConstraintLine::FaceEdge { index, .. } => (2, *index, 0, 0),
         ConstraintLine::OriginAxis(axis) => (3, *axis as usize, 0, 0),
+        ConstraintLine::ImageEdge { image, edge } => (4, image.index() as usize, *edge as u8, 0),
     }
 }
 
@@ -659,6 +660,16 @@ fn validate_line_in_sketch(
         }
         // The origin axes always exist for any sketch (#189).
         ConstraintLine::OriginAxis(_) => {}
+        ConstraintLine::ImageEdge { image, .. } => {
+            let img = doc
+                .tracing_images
+                .get(image)
+                .ok_or_else(|| format!("Image {image:?} not found"))?;
+            if doc.sketch_face(sketch) != Some(crate::model::FaceId::ConstructionPlane(img.plane))
+            {
+                return Err(format!("Image {image:?} is not on sketch {}'s plane", sketch.index()));
+            }
+        }
     }
     Ok(())
 }
@@ -713,6 +724,17 @@ fn validate_point_in_sketch(
             if crate::model::image_calibration_point_uv(img, index).is_none() {
                 return Err(format!("Image {image:?} has no calibration point {index}"));
             }
+            if doc.sketch_face(sketch) != Some(crate::model::FaceId::ConstructionPlane(img.plane))
+            {
+                return Err(format!("Image {image:?} is not on sketch {}'s plane", sketch.index()));
+            }
+            Ok(())
+        }
+        ConstraintPoint::ImageAnchor { image, .. } => {
+            let img = doc
+                .tracing_images
+                .get(image)
+                .ok_or_else(|| format!("Image {image:?} not found"))?;
             if doc.sketch_face(sketch) != Some(crate::model::FaceId::ConstructionPlane(img.plane))
             {
                 return Err(format!("Image {image:?} is not on sketch {}'s plane", sketch.index()));
@@ -1205,7 +1227,9 @@ fn line_sketch(doc: &Document, line: ConstraintLine) -> Option<SketchId> {
         // not owned by one) — angle constraints/display against a `FaceEdge` reference aren't
         // supported (out of scope for #26/#27, which only asks for coincident-to-vertex and
         // point-line-distance-to-edge), so this degrades to "no display" rather than a panic.
-        ConstraintLine::FaceEdge { .. } | ConstraintLine::OriginAxis(_) => None,
+        ConstraintLine::FaceEdge { .. }
+        | ConstraintLine::OriginAxis(_)
+        | ConstraintLine::ImageEdge { .. } => None,
     }
 }
 

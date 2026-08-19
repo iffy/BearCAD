@@ -1048,6 +1048,10 @@ pub enum ConstraintPoint {
     /// image's `origin` (the whole image translates rigidly); its scale never changes from
     /// constraints. Only valid in sketches hosted on the image's plane.
     ImageCalibrationPoint { image: TracingImageKey, index: usize },
+    /// One of a tracing image's nine box points (#1589): the displayed-quad corners, edge
+    /// midpoints, or centre. Same rigid-translate / no-rescale treatment as
+    /// [`Self::ImageCalibrationPoint`]. `anchor` reuses [`TextAnchor`]'s nine-point names.
+    ImageAnchor { image: TracingImageKey, anchor: TextAnchor },
 }
 
 /// A calibration reference point's host-plane-local position (#425).
@@ -1101,6 +1105,62 @@ pub fn image_calibration_endpoints(img: &TracingImage) -> Option<((f32, f32), (f
     }
 }
 
+/// One of a tracing image's four displayed-quad edges (#1589). Counter-clockwise from the
+/// lower-left origin: bottom, right, top, left. Fixed geometry (like a face edge): sketch
+/// points/lines constrain *onto* it; moving the image uses the box/calibration points.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageEdge {
+    Bottom,
+    Right,
+    Top,
+    Left,
+}
+
+impl ImageEdge {
+    pub const ALL: [ImageEdge; 4] = [
+        ImageEdge::Bottom,
+        ImageEdge::Right,
+        ImageEdge::Top,
+        ImageEdge::Left,
+    ];
+
+    /// Scripting name (`bearcad.select{ edge = ... }`).
+    pub fn lua_name(self) -> &'static str {
+        match self {
+            ImageEdge::Bottom => "bottom",
+            ImageEdge::Right => "right",
+            ImageEdge::Top => "top",
+            ImageEdge::Left => "left",
+        }
+    }
+
+    /// The two box-anchor corners that bound this edge.
+    pub fn endpoints(self) -> (TextAnchor, TextAnchor) {
+        match self {
+            ImageEdge::Bottom => (TextAnchor::BottomLeft, TextAnchor::BottomRight),
+            ImageEdge::Right => (TextAnchor::BottomRight, TextAnchor::TopRight),
+            ImageEdge::Top => (TextAnchor::TopRight, TextAnchor::TopLeft),
+            ImageEdge::Left => (TextAnchor::TopLeft, TextAnchor::BottomLeft),
+        }
+    }
+}
+
+/// A tracing image box-anchor's host-plane-local position (#1589).
+pub fn image_anchor_uv(img: &TracingImage, anchor: TextAnchor) -> (f32, f32) {
+    let (fx, fy) = anchor.fractions();
+    (
+        img.origin.0 + fx * img.width_mm,
+        img.origin.1 + fy * img.height_mm,
+    )
+}
+
+/// A tracing image edge's host-plane-local endpoints (#1589).
+pub fn image_edge_uv(img: &TracingImage, edge: ImageEdge) -> ((f32, f32), (f32, f32)) {
+    let (a, b) = edge.endpoints();
+    (image_anchor_uv(img, a), image_anchor_uv(img, b))
+}
+
 /// A line-like sketch entity for parallel, perpendicular, and orientation constraints.
 ///
 /// Not `Copy` — see [`ConstraintPoint`]'s doc comment.
@@ -1117,6 +1177,10 @@ pub enum ConstraintLine {
     /// constrains *onto* it (point-on-line coincidence), pinning that coordinate to 0. Same
     /// "no owning sketch, fixed geometry" treatment as [`ConstraintLine::FaceEdge`].
     OriginAxis(SketchAxis),
+    /// One of a tracing image's four displayed-quad edges (#1589). Fixed by the image's
+    /// current pose (scale never changes from constraints); only valid in sketches hosted
+    /// on the image's plane.
+    ImageEdge { image: TracingImageKey, edge: ImageEdge },
 }
 
 /// One of a sketch's in-plane origin axes (#189): X is the local U direction, Y the local V.

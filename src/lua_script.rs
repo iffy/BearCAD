@@ -564,6 +564,10 @@ fn parse_element_table(lua: &Lua, table: Table) -> mlua::Result<SceneElement> {
     if kind.eq_ignore_ascii_case("origin") {
         return Ok(SceneElement::Origin);
     }
+    // An image's displayed-quad edge (#1589): `{ kind = "image", index = i, edge = "left" }`.
+    if kind.eq_ignore_ascii_case("image") && table.contains_key("edge")? {
+        return Ok(SceneElement::FaceEdge(parse_constraint_line_table(lua, table)?));
+    }
     let index: usize = table.get("index")?;
     // Point-level selector (#68): a line endpoint (`end = "start"|"end"`), or an explicit
     // `point = true` (e.g. a circle's center) — otherwise
@@ -851,6 +855,50 @@ fn parse_extrude_face_table(
     ))
 }
 
+/// Parse an image-edge name like `"left"` / `"top"` (#1589).
+fn parse_image_edge(table: &Table) -> mlua::Result<crate::model::ImageEdge> {
+    use crate::model::ImageEdge as E;
+    match table.get::<mlua::Value>("edge")? {
+        mlua::Value::Integer(n) => match n {
+            0 => Ok(E::Bottom),
+            1 => Ok(E::Right),
+            2 => Ok(E::Top),
+            3 => Ok(E::Left),
+            other => Err(mlua::Error::external(format!(
+                "unknown image edge index {other} (0..3)"
+            ))),
+        },
+        mlua::Value::Number(n) => {
+            let n = n as i64;
+            match n {
+                0 => Ok(E::Bottom),
+                1 => Ok(E::Right),
+                2 => Ok(E::Top),
+                3 => Ok(E::Left),
+                other => Err(mlua::Error::external(format!(
+                    "unknown image edge index {other} (0..3)"
+                ))),
+            }
+        }
+        mlua::Value::String(s) => Ok(
+            match s.to_str()?.to_ascii_lowercase().replace(['-', ' '], "_").as_str() {
+                "bottom" => E::Bottom,
+                "right" => E::Right,
+                "top" => E::Top,
+                "left" => E::Left,
+                other => {
+                    return Err(mlua::Error::external(format!(
+                        "unknown image edge '{other}' (bottom|right|top|left)"
+                    )));
+                }
+            },
+        ),
+        other => Err(mlua::Error::external(format!(
+            "image edge must be a name or 0..3, got {other:?}"
+        ))),
+    }
+}
+
 /// Parse a text-anchor name like `"center"` / `"top_left"` (#356).
 fn parse_text_anchor(name: &str) -> mlua::Result<crate::model::TextAnchor> {
     use crate::model::TextAnchor as A;
@@ -963,6 +1011,21 @@ fn parse_constraint_line_table(lua: &Lua, table: Table) -> mlua::Result<Constrai
             other => Err(mlua::Error::external(format!("unknown axis '{other}' (x|y)"))),
         };
     }
+    if kind.eq_ignore_ascii_case("image") {
+        // { kind = "image", index = i, edge = "left" } — a tracing image's displayed-quad
+        // edge (#1589).
+        let index: usize = table.get("index")?;
+        let edge = parse_image_edge(&table)?;
+        let tick = lua
+            .app_data_ref::<ScriptTickData>()
+            .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+        let image = unsafe { &tick.state().doc }
+            .tracing_images
+            .keys()
+            .nth(index)
+            .ok_or_else(|| mlua::Error::external(format!("no image {index}")))?;
+        return Ok(ConstraintLine::ImageEdge { image, edge });
+    }
     let index: usize = table.get("index")?;
     match kind.to_ascii_lowercase().as_str() {
         "line" => Ok(ConstraintLine::Line(line_key_from_ordinal(lua, index)?)),
@@ -1019,9 +1082,9 @@ fn parse_constraint_point_table(lua: &Lua, table: Table) -> mlua::Result<Constra
         }
         "circle" => Ok(ConstraintPoint::CircleCenter(circle_key_from_ordinal(lua, index)?)),
         // A calibrated image's reference point (#425): `{ kind = "image", index = i,
-        // point = 0|1 }`.
+        // point = 0|1 }`. A box anchor (#1589): `{ kind = "image", index = i,
+        // anchor = "center" }`.
         "image" => {
-            let point: usize = table.get("point")?;
             // The script's `index` is the image's ordinal among the live ones (#1055).
             let tick = lua
                 .app_data_ref::<ScriptTickData>()
@@ -1031,6 +1094,13 @@ fn parse_constraint_point_table(lua: &Lua, table: Table) -> mlua::Result<Constra
                 .keys()
                 .nth(index)
                 .ok_or_else(|| mlua::Error::external(format!("no image {index}")))?;
+            if let Some(anchor_name) = table.get::<Option<String>>("anchor")? {
+                if !anchor_name.is_empty() {
+                    let anchor = parse_text_anchor(&anchor_name)?;
+                    return Ok(ConstraintPoint::ImageAnchor { image, anchor });
+                }
+            }
+            let point: usize = table.get("point")?;
             Ok(ConstraintPoint::ImageCalibrationPoint { image, index: point })
         }
         // One of a sketch text's nine anchor points (#408): `{ kind = "sketch_text",
@@ -7998,6 +8068,139 @@ mod tests {
             1,
             "the op targets the image"
         );
+    }
+
+    /// #1589: an image's box anchors (corners, edge midpoints, centre) and edges are
+    /// constrainable — pinning one translates the whole image; pinning geometry to an
+    /// edge holds the geometry on the image.
+    #[test]
+    fn lua_image_box_points_and_edges_constrain() {
+        let path = write_test_png("anchors.png", 40, 80);
+        let state = run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.import_image({path:?})
+            -- 40×80 px centred on the origin: origin = (−20, −40), centre = (0, 0).
+            bearcad.line{{ x = 30, y = 40, x1 = 60, y1 = 40 }}
+            bearcad.select{{ kind = "image", index = 0, anchor = "center" }}
+            bearcad.select({{ kind = "line", index = 0, ["end"] = "start" }}, true)
+            bearcad.add_geometric_constraint("coincident")
+            local img = bearcad.get{{ kind = "image", index = 0 }}
+            assert(math.abs(img.origin_x - 10) < 1e-2
+                and math.abs(img.origin_y) < 1e-2,
+              string.format("centre on (30,40) → origin (10,0), got (%.3f, %.3f)",
+                img.origin_x, img.origin_y))
+            assert(math.abs(img.width - 40) < 1e-3 and math.abs(img.height - 80) < 1e-3,
+              "scale must not change")
+            assert(math.abs(bearcad.get{{ kind = "line", index = 0 }}.x0 - 30) < 1e-3,
+              "the line stays put; the image is the mover")
+            "#
+        ));
+        let img = state.doc.tracing_images.values().next().unwrap();
+        assert!(
+            (img.origin.0 - 10.0).abs() < 1e-2 && img.origin.1.abs() < 1e-2,
+            "image origin {:?}",
+            img.origin
+        );
+
+        let state = run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.import_image({path:?})
+            bearcad.begin_sketch{{ kind = "construction_plane", index = 0 }}
+            -- Bottom-left coincident with the origin: origin should land on (0, 0).
+            bearcad.select{{ kind = "image", index = 0, anchor = "bottom_left" }}
+            bearcad.select({{ kind = "origin" }}, true)
+            bearcad.add_geometric_constraint("coincident")
+            local img = bearcad.get{{ kind = "image", index = 0 }}
+            assert(math.abs(img.origin_x) < 1e-2 and math.abs(img.origin_y) < 1e-2,
+              string.format("bottom-left on origin, got (%.3f, %.3f)",
+                img.origin_x, img.origin_y))
+            "#
+        ));
+        let img = state.doc.tracing_images.values().next().unwrap();
+        assert!(
+            img.origin.0.abs() < 1e-2 && img.origin.1.abs() < 1e-2,
+            "bottom-left pin {:?}",
+            img.origin
+        );
+
+        let state = run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.import_image({path:?})
+            bearcad.begin_sketch{{ kind = "construction_plane", index = 0 }}
+            -- Left-edge midpoint coincident with the origin.
+            bearcad.select{{ kind = "image", index = 0, anchor = "middle_left" }}
+            bearcad.select({{ kind = "origin" }}, true)
+            bearcad.add_geometric_constraint("coincident")
+            local img = bearcad.get{{ kind = "image", index = 0 }}
+            assert(math.abs(img.origin_x) < 1e-2 and math.abs(img.origin_y + 40) < 1e-2,
+              string.format("middle-left on origin → origin (0, −40), got (%.3f, %.3f)",
+                img.origin_x, img.origin_y))
+            "#
+        ));
+        let img = state.doc.tracing_images.values().next().unwrap();
+        assert!(
+            img.origin.0.abs() < 1e-2 && (img.origin.1 + 40.0).abs() < 1e-2,
+            "middle-left pin {:?}",
+            img.origin
+        );
+
+        let state = run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.import_image({path:?})
+            -- A free point coincident with the image's left edge sits on that edge
+            -- (the edge is a fixed reference; the point is the mover).
+            bearcad.line{{ x = 15, y = 10, x1 = 25, y1 = 10 }}
+            bearcad.select{{ kind = "line", index = 0, ["end"] = "start" }}
+            bearcad.select({{ kind = "image", index = 0, edge = "left" }}, true)
+            bearcad.add_geometric_constraint("coincident")
+            local l = bearcad.get{{ kind = "line", index = 0 }}
+            assert(math.abs(l.x0 + 20) < 1e-2, "start x on left edge, got " .. l.x0)
+            local img = bearcad.get{{ kind = "image", index = 0 }}
+            assert(math.abs(img.origin_x + 20) < 1e-2 and math.abs(img.origin_y + 40) < 1e-2,
+              "image stays put when geometry is anchored to it")
+            "#
+        ));
+        let line = state.doc.lines.values().next().unwrap();
+        assert!(
+            (line.x0 + 20.0).abs() < 1e-2,
+            "point on left edge, start x {}",
+            line.x0
+        );
+        let img = state.doc.tracing_images.values().next().unwrap();
+        assert!(
+            (img.origin.0 + 20.0).abs() < 1e-2 && (img.origin.1 + 40.0).abs() < 1e-2,
+            "image stayed at {:?}",
+            img.origin
+        );
+
+        let state = run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.import_image({path:?})
+            bearcad.begin_sketch{{ kind = "construction_plane", index = 0 }}
+            -- Calibration points still constrain as before (#425).
+            bearcad.select{{ kind = "image", index = 0, point = 0 }}
+            bearcad.select({{ kind = "origin" }}, true)
+            bearcad.add_geometric_constraint("coincident")
+            local img = bearcad.get{{ kind = "image", index = 0 }}
+            -- Default point 0 is top-middle: origin + (20, 80) = (0, 40). Pinning
+            -- it to the origin translates by (0, −40) → origin (−20, −80).
+            assert(math.abs(img.origin_x + 20) < 1e-2 and math.abs(img.origin_y + 80) < 1e-2,
+              string.format("calibration point 0 on origin, got (%.3f, %.3f)",
+                img.origin_x, img.origin_y))
+            "#
+        ));
+        let img = state.doc.tracing_images.values().next().unwrap();
+        assert!(
+            (img.origin.0 + 20.0).abs() < 1e-2 && (img.origin.1 + 80.0).abs() < 1e-2,
+            "calibration pin {:?}",
+            img.origin
+        );
+        let _ = state;
     }
 
     /// #1564: selecting a construction plane offers "Import image on this plane" in

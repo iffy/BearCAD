@@ -45,6 +45,19 @@ bearcad.select{ kind = "sketch_text", index = 0, anchor = "center" }  -- or "top
 Constraining an anchor translates the whole text to satisfy it; rotation and size never
 change.
 
+## Selecting an image's box point, edge, or calibration point
+
+A tracing image on the sketch's plane has nine box points (corners, edge midpoints,
+centre), four edges, and two calibration points. Constraining a box or calibration
+point translates the whole image (scale never changes); an edge is a fixed reference
+that sketch geometry constrains onto:
+
+```lua
+bearcad.select{ kind = "image", index = 0, anchor = "center" }   -- or "bottom_left", …
+bearcad.select{ kind = "image", index = 0, edge = "left" }       -- or "right"/"top"/"bottom"
+bearcad.select{ kind = "image", index = 0, point = 0 }           -- calibration 0 or 1
+```
+
 ## Selecting a face's own vertex or edge
 
 While a sketch is open directly on a body's face (an extrusion cap or side wall), that

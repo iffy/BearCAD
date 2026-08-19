@@ -164,7 +164,8 @@ pub fn scene_element_for_point(point: ConstraintPoint) -> SceneElement {
         ConstraintPoint::LineEndpoint { line, .. } => SceneElement::Line(line),
         ConstraintPoint::CircleCenter(circle) => SceneElement::Circle(circle),
         ConstraintPoint::TextAnchor { text, .. } => SceneElement::SketchText(text),
-        ConstraintPoint::ImageCalibrationPoint { image, .. } => SceneElement::Image(image),
+        ConstraintPoint::ImageCalibrationPoint { image, .. }
+        | ConstraintPoint::ImageAnchor { image, .. } => SceneElement::Image(image),
         ConstraintPoint::Origin => SceneElement::Origin,
         // A face's own vertex tracks the feature that produced its face, same convention
         // as `document_health`/`hierarchy`'s owner mappings for `FaceVertex`/`FaceEdge`.
@@ -181,9 +182,9 @@ pub fn scene_element_for_line(line: ConstraintLine) -> SceneElement {
         // A face's own edge (#26/#27) is itself a first-class selectable/constraint-authoring
         // target, so it wraps whole like `ConstraintPoint`/`SceneElement::Point` do — not the
         // extrusion-owner mapping other (dependency-tracking) call sites use.
-        edge @ (ConstraintLine::FaceEdge { .. } | ConstraintLine::OriginAxis(_)) => {
-            SceneElement::FaceEdge(edge)
-        }
+        edge @ (ConstraintLine::FaceEdge { .. }
+        | ConstraintLine::OriginAxis(_)
+        | ConstraintLine::ImageEdge { .. }) => SceneElement::FaceEdge(edge),
     }
 }
 
@@ -200,7 +201,9 @@ pub fn line_drag_seed_points(line: ConstraintLine) -> Vec<ConstraintPoint> {
             },
         ],
         // A face's own edge is fixed (not draggable), so it has no seed points to drag.
-        ConstraintLine::FaceEdge { .. } | ConstraintLine::OriginAxis(_) => Vec::new(),
+        ConstraintLine::FaceEdge { .. }
+        | ConstraintLine::OriginAxis(_)
+        | ConstraintLine::ImageEdge { .. } => Vec::new(),
     }
 }
 
@@ -237,7 +240,9 @@ pub fn can_drag_line(doc: &Document, sketch: SketchId, target: ConstraintLine) -
                     .unwrap_or(false)
         }
         // Fixed by the body's own geometry, never draggable.
-        ConstraintLine::FaceEdge { .. } | ConstraintLine::OriginAxis(_) => false,
+        ConstraintLine::FaceEdge { .. }
+        | ConstraintLine::OriginAxis(_)
+        | ConstraintLine::ImageEdge { .. } => false,
     }
 }
 
@@ -336,6 +341,9 @@ fn validate_line_drag_target(
         ConstraintLine::OriginAxis(_) => {
             return Err("Origin axes are fixed and cannot be dragged".to_string());
         }
+        ConstraintLine::ImageEdge { .. } => {
+            return Err("Image edges are fixed and cannot be dragged".to_string());
+        }
     }
     Ok(())
 }
@@ -369,6 +377,9 @@ fn constraint_point_sort_key(point: ConstraintPoint) -> (u8, usize, u8, u8) {
         ConstraintPoint::TextAnchor { text, anchor } => (4, text.index() as usize, anchor as u8, 0),
         ConstraintPoint::ImageCalibrationPoint { image, index } => {
             (5, image.index() as usize, index as u8, 0)
+        }
+        ConstraintPoint::ImageAnchor { image, anchor } => {
+            (6, image.index() as usize, anchor as u8, 0)
         }
     }
 }

@@ -45,7 +45,9 @@ Many constraints also happen automatically while drawing — snapping a line's e
 point keeps them attached.
 
 When a sketch is drawn on a body's face, the face's own corners and edges can be
-constrained against too.
+constrained against too. A [tracing image](./tracing.md) on the sketch's plane
+offers its corners, edge midpoints, centre, calibration points, and edges the
+same way.
 
 ## The origin and its axes
 
