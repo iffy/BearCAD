@@ -889,6 +889,21 @@ pub fn tracing_image_corners(
     Some([at(x0, y1), at(x1, y1), at(x1, y0), at(x0, y0)])
 }
 
+/// The tracing image whose displayed quad contains `screen` (#1588). When several
+/// overlap, the one nearer the eye wins; a coplanar image beats its host plane
+/// because it is the thing you're pointing at.
+pub fn tracing_image_under_cursor(
+    screen: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &Document,
+    eye: Vec3,
+) -> Option<crate::model::TracingImageKey> {
+    match nearest_plane_or_image(screen, project, doc, Some(eye)) {
+        Some((PickTargetKind::TracingImage(index), _, _)) => Some(index),
+        _ => None,
+    }
+}
+
 /// Corners of the visible plane quad in world space.
 pub fn plane_corners(plane: &ConstructionPlane) -> [Vec3; 4] {
     plane_corners_of(plane, plane.extent)

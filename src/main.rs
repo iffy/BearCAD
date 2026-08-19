@@ -27832,11 +27832,25 @@ impl App {
                 // Face-click tools open the sketch on exactly the face the handle stands
                 // for (#860/#1494) — re-picking at the redirected anchor would land back
                 // on whatever is in front of it, which is the crowd the exploder was
-                // opened to get past.
+                // opened to get past. A tracing image handle is the same surface as its
+                // host plane (#1588).
                 if self.state.tool.opens_sketch_on_face_click() {
-                    if let construction::PickTargetKind::SketchFace(face) = &target {
+                    let face = match &target {
+                        construction::PickTargetKind::SketchFace(face) => Some(face.clone()),
+                        construction::PickTargetKind::ConstructionPlane(i) => {
+                            Some(FaceId::ConstructionPlane(*i))
+                        }
+                        construction::PickTargetKind::TracingImage(i) => self
+                            .state
+                            .doc
+                            .tracing_images
+                            .get(*i)
+                            .map(|img| FaceId::ConstructionPlane(img.plane)),
+                        _ => None,
+                    };
+                    if let Some(face) = face {
                         self.state.apply(Action::BeginSketch {
-                            face: face.clone(),
+                            face,
                             viewport: Some(viewport),
                         });
                         exploder_owns_press = true;
@@ -28311,7 +28325,20 @@ impl App {
                         });
                     }
                 } else if !self.gpu_viewport && !suppress_hover_highlight {
-                    if let Some(face) =
+                    if let Some(image) = construction::tracing_image_under_cursor(
+                        pp,
+                        &project,
+                        &self.state.doc,
+                        self.state.cam.eye(),
+                    ) {
+                        construction::draw_pick_highlight(
+                            &painter,
+                            &project,
+                            &self.state.doc,
+                            construction::PickTargetKind::TracingImage(image),
+                            construction::PICK_HOVER_RGBA,
+                        );
+                    } else if let Some(face) =
                         pick_sketch_face(pp, &project, &self.state.doc, self.state.cam.eye())
                     {
                         draw_face_highlight(
@@ -37995,14 +38022,22 @@ mod tests {
             triangles: Vec::new(),
             normal: Vec3::Z,
         };
-        let all = [plane.clone(), cap.clone(), body_face];
-
-        // Sketch and Text pick one plane or analytic face to open a sketch on.
+        // Sketch and Text pick one plane, analytic face, or tracing image to open a sketch on.
+        let image = K::TracingImage(crate::arena::Key::from_bits(0));
+        let all = [plane.clone(), cap.clone(), body_face, image.clone()];
         let sketchable = picker_of(
-            ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Profile]),
+            ElementFilter::kinds(&[
+                ElementKind::Plane,
+                ElementKind::Profile,
+                ElementKind::Image,
+            ]),
             PickLimit::Finite(1),
+        )
+        .with_priority(&[ElementKind::Profile, ElementKind::Image]);
+        assert_eq!(
+            fanned(&sketchable, &all),
+            vec![plane.clone(), cap.clone(), image]
         );
-        assert_eq!(fanned(&sketchable, &all), vec![plane.clone(), cap.clone()]);
 
         // Extrude keeps its own rule: analytic faces, never a datum plane.
         let profiles = picker_of(ElementFilter::kind(ElementKind::Profile), PickLimit::Infinite);

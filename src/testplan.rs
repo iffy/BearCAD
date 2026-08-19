@@ -26,6 +26,7 @@ const FEATURE_SECTIONS: &[Section] = &[
         items: &[
             "Sketch: start a sketch on the ground plane",
             "Sketch: start a sketch on a construction plane",
+            "Sketch: start a sketch on an imported image",
             "Sketch: start a sketch on a body face (it moves with the body)",
             "Sketch: reopen a sketch by clicking its face with the Sketch tool",
             "Sketch: leave a sketch with Esc (orange viewport border gone)",

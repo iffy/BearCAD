@@ -16257,15 +16257,29 @@ op,
                     }
 
                     // Sketch / Text outside a sketch: selecting a construction plane
-                    // opens a sketch on that face (#497).
+                    // opens a sketch on that face (#497). Selecting a tracing image
+                    // does the same on the image's host plane (#1588).
                     if matches!(self.tool, Tool::Sketch | Tool::Text)
                         && self.sketch_session.is_none()
                     {
-                        if let SceneElement::ConstructionPlane(pi) = element {
-                            return self.apply(Action::BeginSketch {
-                                face: crate::model::FaceId::ConstructionPlane(pi),
-                                viewport: None,
-                            });
+                        match element {
+                            SceneElement::ConstructionPlane(pi) => {
+                                return self.apply(Action::BeginSketch {
+                                    face: crate::model::FaceId::ConstructionPlane(pi),
+                                    viewport: None,
+                                });
+                            }
+                            SceneElement::Image(ii) => {
+                                if let Some(plane) =
+                                    self.doc.tracing_images.get(ii).map(|img| img.plane)
+                                {
+                                    return self.apply(Action::BeginSketch {
+                                        face: crate::model::FaceId::ConstructionPlane(plane),
+                                        viewport: None,
+                                    });
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -22484,6 +22498,36 @@ mod tests {
         state.apply(Action::BeginSketch { face: FaceId::ConstructionPlane(pkey(0)), viewport: None });
         assert!(state.sketch_session.is_some());
         assert_eq!(state.tool, Tool::Text, "the Text tool survives into the sketch");
+    }
+
+    /// #1588: Sketch / Text on a tracing image opens a sketch on the image's host plane.
+    #[test]
+    fn clicking_an_image_with_the_sketch_tool_begins_a_sketch() {
+        let mut state = AppState::default();
+        let image = state.doc.tracing_images.insert(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "trace".to_string(),
+            plane: pkey(1),
+            origin: (0.0, 0.0),
+            width_mm: 40.0,
+            height_mm: 30.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
+            name: None,
+            calibration: None,
+            base_origin: None,
+        });
+        state.apply(Action::SetTool(Tool::Sketch));
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Image(image),
+            additive: false,
+        });
+        assert!(state.sketch_session.is_some(), "sketch should open");
+        let sketch = state.sketch_session.unwrap().sketch;
+        assert_eq!(
+            state.doc.sketches[sketch].face,
+            FaceId::ConstructionPlane(pkey(1)),
+            "hosted on the image's plane"
+        );
     }
 
     /// #404: an extrusion snapped to a target must report the depth the target

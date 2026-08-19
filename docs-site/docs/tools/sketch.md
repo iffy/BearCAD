@@ -10,9 +10,9 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 **Shortcut:** `S`
 
 Everything in BearCAD starts as a 2D **sketch** drawn on a flat surface. The Sketch tool
-picks that surface: click the ground plane, a construction plane, or any flat face of a
-solid body, and the camera turns to face it head-on. The Line, Rectangle, and Circle tools
-then draw onto it.
+picks that surface: click the ground plane, a construction plane, an imported image, or
+any flat face of a solid body, and the camera turns to face it head-on. The Line,
+Rectangle, and Circle tools then draw onto it.
 
 While a sketch is open, the viewport has a bright **orange border** so you always know
 you're in sketch mode. Press **Esc** (with nothing in progress) to leave the sketch.

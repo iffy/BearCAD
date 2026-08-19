@@ -8000,6 +8000,34 @@ mod tests {
         );
     }
 
+    /// #1588: `begin_sketch{ kind = "image" }` opens a sketch on the image's host plane.
+    #[test]
+    fn lua_begin_sketch_on_an_image_hosts_on_its_plane() {
+        let path = write_test_png("sketch_on_image.png", 8, 8);
+        let state = run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.import_image({path:?})
+            bearcad.begin_sketch{{ kind = "image", index = 0 }}
+            assert(bearcad.count("sketch") == 1)
+            local row = bearcad.tool_row()
+            assert(row.space == "sketch", "space=" .. tostring(row.space))
+            local ok, err = pcall(function()
+                bearcad.begin_sketch{{ kind = "image", index = 9 }}
+            end)
+            assert(not ok, "missing image should error")
+            assert(tostring(err):find("image") or tostring(err):find("sketch face"),
+              tostring(err))
+            "#
+        ));
+        assert_eq!(state.doc.sketches.len(), 1);
+        let sketch = state.doc.sketches.values().next().unwrap();
+        let img = state.doc.tracing_images.values().next().unwrap();
+        assert_eq!(sketch.face, FaceId::ConstructionPlane(img.plane));
+        assert!(state.sketch_session.is_some());
+    }
+
+
     /// #1564: selecting a construction plane offers "Import image on this plane" in
     /// the command palette; running it with a path (the scripted form) places the
     /// image on that plane. Without a plane selected the command is not offered.
