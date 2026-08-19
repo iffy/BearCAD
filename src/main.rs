@@ -3927,8 +3927,19 @@ impl App {
         }
         // A running reply repaints on every chunk, but ask anyway: the spinner should keep
         // spinning between chunks.
-        if self.state.ai.borrow_mut().chat.poll() {
+        let poll = self.state.ai.borrow_mut().chat.poll();
+        if poll.running {
             ctx.request_repaint();
+        }
+        // Bill a finished reply to the backend that answered (#1599), at the rate in force
+        // now — so a later price edit does not rewrite what was already spent.
+        if let Some((backend_id, usage)) = poll.completed {
+            let mut ai = self.state.ai.borrow_mut();
+            if let Some(backend) = ai.config.get_mut(&backend_id) {
+                let price = ai::pricing::price_for(backend);
+                backend.spend.add(usage, price);
+                ai.config_dirty = true;
+            }
         }
 
         // `bearcad.ai.context_preview()` (#1597): the script asks, the frame loop answers,

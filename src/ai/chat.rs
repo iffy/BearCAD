@@ -35,6 +35,16 @@ impl Default for Role {
     }
 }
 
+/// The outcome of one [`Conversation::poll`].
+#[derive(Debug, Default)]
+pub struct PollResult {
+    /// True while the reply is still arriving — the frame loop keeps repainting.
+    pub running: bool,
+    /// Set exactly once, on the poll where a reply finishes: which backend answered, and
+    /// what it used. The caller bills it to that backend's running total (#1599).
+    pub completed: Option<(String, Usage)>,
+}
+
 /// A request in flight.
 pub struct Pending {
     /// Where the worker thread writes the reply.
@@ -115,16 +125,18 @@ impl Conversation {
         }
     }
 
-    /// Copy whatever has arrived into the thread. Returns true while the request is still
-    /// running, so the frame loop knows to keep the UI awake.
-    pub fn poll(&mut self) -> bool {
+    /// What one [`Conversation::poll`] found.
+    ///
+    /// `completed` is set on the single poll where a reply finishes, so the caller can bill
+    /// it exactly once (#1599).
+    pub fn poll(&mut self) -> PollResult {
         let Some(pending) = &self.pending else {
-            return false;
+            return PollResult::default();
         };
         let entry_index = pending.entry;
         let (text, usage, finished, error) = {
             let Ok(exchange) = pending.exchange.lock() else {
-                return false;
+                return PollResult::default();
             };
             (
                 exchange.text.clone(),
@@ -133,9 +145,11 @@ impl Conversation {
                 exchange.error.clone(),
             )
         };
+        let mut backend = String::new();
         if let Some(entry) = self.entries.get_mut(entry_index) {
             entry.text = text;
             entry.usage = usage;
+            backend = entry.backend.clone();
             if finished {
                 entry.streaming = false;
                 entry.error = error;
@@ -143,9 +157,12 @@ impl Conversation {
         }
         if finished {
             self.pending = None;
-            return false;
+            return PollResult {
+                running: false,
+                completed: Some((backend, usage)),
+            };
         }
-        true
+        PollResult { running: true, completed: None }
     }
 
     /// Stop a reply in progress. What arrived stays in the thread.
@@ -222,7 +239,7 @@ mod tests {
         assert!(chat.is_streaming());
 
         shared.lock().unwrap().text.push_str("80 mm");
-        assert!(chat.poll(), "still running");
+        assert!(chat.poll().running, "still running");
         assert_eq!(chat.entries[1].text, "80 mm");
         assert!(chat.entries[1].streaming);
 
@@ -232,7 +249,12 @@ mod tests {
             exchange.usage = Usage { input_tokens: 100, output_tokens: 5, ..Usage::default() };
             exchange.finished = true;
         }
-        assert!(!chat.poll(), "finished");
+        let result = chat.poll();
+        assert!(!result.running, "finished");
+        let (backend, billed) = result.completed.expect("a finished reply is billed once");
+        assert_eq!(backend, "claude");
+        assert_eq!(billed.output_tokens, 5);
+        assert!(chat.poll().completed.is_none(), "and only once");
         assert_eq!(chat.entries[1].text, "80 mm wide.");
         assert!(!chat.entries[1].streaming);
         assert_eq!(chat.entries[1].usage.output_tokens, 5);

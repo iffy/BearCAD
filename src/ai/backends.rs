@@ -140,7 +140,7 @@ impl std::fmt::Debug for KeySource {
 }
 
 /// One configured service: an endpoint, a model, and a key source.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Backend {
     /// Stable slug, used by scripts and to remember the selection across restarts.
     pub id: String,
@@ -153,6 +153,15 @@ pub struct Backend {
     pub base_url: String,
     #[serde(default)]
     pub key: KeySource,
+    /// What this backend actually charges, per million tokens (#1599). `None` uses the
+    /// rates shipped with this build, which may be out of date — published prices change
+    /// faster than releases do.
+    #[serde(default)]
+    pub price: Option<super::pricing::Price>,
+    /// Everything this backend has cost since it was added, or since the user reset it.
+    /// Persisted: the answer to "what has this cost me?" outlives the conversation.
+    #[serde(default)]
+    pub spend: super::pricing::Spend,
 }
 
 impl Backend {
@@ -168,6 +177,8 @@ impl Backend {
                 Some(var) => KeySource::Env(var.to_string()),
                 None => KeySource::None,
             },
+            price: None,
+            spend: super::pricing::Spend::default(),
         }
     }
 
@@ -223,7 +234,7 @@ impl Backend {
 }
 
 /// Every configured backend, plus which one the next message goes to.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AiConfig {
     #[serde(default)]
     pub backends: Vec<Backend>,

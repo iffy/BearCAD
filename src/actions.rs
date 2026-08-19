@@ -2584,6 +2584,8 @@ pub enum Action {
     ClearAiConversation,
     /// Choose how much of the workspace a message carries (#1597).
     SetAiContextScope { scope: crate::ai::context::ContextScope },
+    /// Start a backend's running cost total from zero (#1599).
+    ResetAiBackendSpend { id: String },
     /// Turn help mode on, off, or (with `None`) the other way (#672): the Context pane's
     /// controls each grow a floating note explaining what they want.
     SetHelpMode(Option<bool>),
@@ -3564,6 +3566,7 @@ impl Action {
                     | Action::CancelAiMessage
                     | Action::ClearAiConversation
                     | Action::SetAiContextScope { .. }
+                    | Action::ResetAiBackendSpend { .. }
                     | Action::SetMcMasterWindow { .. }
                     | Action::SetReportIssueWindow { .. }
                     | Action::SetSettingsWindow { .. }
@@ -11959,6 +11962,17 @@ impl AppState {
             Action::ClearAiConversation => {
                 self.ai.borrow_mut().chat.clear();
                 self.status = "Conversation cleared".to_string();
+                ActionResult::Ok
+            }
+            Action::ResetAiBackendSpend { id } => {
+                let mut ai = self.ai.borrow_mut();
+                let Some(backend) = ai.config.get_mut(&id) else {
+                    return ActionResult::Err(format!("no AI backend '{id}'"));
+                };
+                backend.spend = crate::ai::pricing::Spend::default();
+                ai.config_dirty = true;
+                drop(ai);
+                self.status = format!("Reset the running total for {id}");
                 ActionResult::Ok
             }
             #[cfg(not(target_arch = "wasm32"))]

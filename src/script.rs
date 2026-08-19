@@ -891,6 +891,8 @@ pub enum Instruction {
     ClearAiConversation,
     /// Choose how much of the workspace a message carries (#1597).
     SetAiContextScope { scope: crate::ai::context::ContextScope },
+    /// Start a backend's running cost total from zero (#1599).
+    ResetAiBackendSpend { id: String },
     AddParameter { name: String, expression: String },
     CreateParameterFromLineLength { line_index: usize, name: Option<String> },
     /// Create a derived (measured) parameter from a geometry source (#432).
@@ -2071,6 +2073,9 @@ impl Instruction {
             Instruction::ClearAiConversation => "bearcad.ai.clear()".to_string(),
             Instruction::SetAiContextScope { scope } => {
                 format!("bearcad.ai.context_scope({:?})", scope.as_str())
+            }
+            Instruction::ResetAiBackendSpend { id } => {
+                format!("bearcad.ai.reset_usage({id:?})")
             }
             Instruction::SelectAiBackend { id } => {
                 format!("bearcad.ai.set_backend({id:?})")
@@ -7856,20 +7861,26 @@ impl ScriptRunner {
                 };
                 StepResult::Continue
             }
+            // Every one of these records its action error: a script that names a backend
+            // that does not exist must fail loudly, not select nothing quietly (#1599).
             Instruction::AddAiBackend { backend } => {
-                state.apply(Action::AddAiBackend { backend });
+                let result = state.apply(Action::AddAiBackend { backend });
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::UpdateAiBackend { id, backend } => {
-                state.apply(Action::UpdateAiBackend { id, backend });
+                let result = state.apply(Action::UpdateAiBackend { id, backend });
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::RemoveAiBackend { id } => {
-                state.apply(Action::RemoveAiBackend { id });
+                let result = state.apply(Action::RemoveAiBackend { id });
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::SelectAiBackend { id } => {
-                state.apply(Action::SelectAiBackend { id });
+                let result = state.apply(Action::SelectAiBackend { id });
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::SendAiMessage { text } => {
@@ -7878,7 +7889,8 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::CancelAiMessage => {
-                state.apply(Action::CancelAiMessage);
+                let result = state.apply(Action::CancelAiMessage);
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::ClearAiConversation => {
@@ -7887,6 +7899,11 @@ impl ScriptRunner {
             }
             Instruction::SetAiContextScope { scope } => {
                 state.apply(Action::SetAiContextScope { scope });
+                StepResult::Continue
+            }
+            Instruction::ResetAiBackendSpend { id } => {
+                let result = state.apply(Action::ResetAiBackendSpend { id });
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::AddParameter { name, expression } => {

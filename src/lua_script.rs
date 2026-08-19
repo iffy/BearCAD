@@ -391,15 +391,37 @@ fn backend_from_table(
         (None, None) => defaults.key.clone(),
     };
 
+    // A named backend gets its id from that name (`"My Claude"` -> `my-claude`), which is
+    // what a script that later says `set_backend("my-claude")` expects. An empty id tells
+    // `AiConfig::add` to derive one.
+    let name = spec.get::<Option<String>>("name")?;
+    let id = match spec.get::<Option<String>>("id")? {
+        Some(id) => id,
+        None if name.is_some() => String::new(),
+        None => defaults.id,
+    };
     Ok(Backend {
-        id: spec.get::<Option<String>>("id")?.unwrap_or(defaults.id),
-        name: spec.get::<Option<String>>("name")?.unwrap_or(defaults.name),
+        id,
+        name: name.unwrap_or(defaults.name),
         provider,
         model: spec.get::<Option<String>>("model")?.unwrap_or(defaults.model),
         base_url: spec
             .get::<Option<String>>("base_url")?
             .unwrap_or(defaults.base_url),
         key,
+        // Per-million-token rates, when a script wants to state them (#1599).
+        price: match (
+            spec.get::<Option<f64>>("input_price")?,
+            spec.get::<Option<f64>>("output_price")?,
+        ) {
+            (None, None) => defaults.price,
+            (input, output) => Some(crate::ai::pricing::Price::new(
+                input.unwrap_or_default(),
+                output.unwrap_or_default(),
+            )),
+        },
+        // Editing a backend never resets what it has already cost.
+        spend: defaults.spend,
     })
 }
 
@@ -4780,6 +4802,54 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // What the conversation and each backend have cost (#1599). Tokens always; `cost` is
+    // nil when this build has no rate for the model, never a guess.
+    api.set(
+        "ai_usage",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let ai = unsafe { tick.state() }.ai.borrow();
+            let out = lua.create_table()?;
+
+            let usage = ai.chat.total_usage();
+            let conversation = lua.create_table()?;
+            conversation.set("input_tokens", usage.input_tokens)?;
+            conversation.set("output_tokens", usage.output_tokens)?;
+            conversation.set("cache_read_tokens", usage.cache_read_tokens)?;
+            conversation.set("tokens", usage.total())?;
+            match ai.config.selected().and_then(crate::ai::pricing::price_for) {
+                Some(price) => conversation.set("cost", price.cost(usage))?,
+                None => conversation.set("cost", Value::Nil)?,
+            }
+            out.set("conversation", conversation)?;
+
+            let backends = lua.create_table()?;
+            for backend in &ai.config.backends {
+                let t = lua.create_table()?;
+                t.set("tokens", backend.spend.tokens())?;
+                t.set("input_tokens", backend.spend.input_tokens)?;
+                t.set("output_tokens", backend.spend.output_tokens)?;
+                t.set("exchanges", backend.spend.exchanges)?;
+                match crate::ai::pricing::price_for(backend) {
+                    Some(_) => t.set("cost", backend.spend.cost)?,
+                    None => t.set("cost", Value::Nil)?,
+                }
+                backends.set(backend.id.clone(), t)?;
+            }
+            out.set("backends", backends)?;
+            Ok(out)
+        })?,
+    )?;
+
+    // Start a backend's running total from zero.
+    api.set(
+        "ai_reset_usage",
+        lua.create_function(|lua, id: String| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::ResetAiBackendSpend { id }) }
+        })?,
+    )?;
+
     api.set(
         "pane_rect",
         lua.create_function(|lua, pane: String| {
@@ -8148,6 +8218,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             send = "ai_send", stop = "ai_stop", clear = "ai_clear",
             streaming = "ai_streaming", messages = "ai_messages",
             context_scope = "ai_context_scope",
+            usage = "ai_usage", reset_usage = "ai_reset_usage",
             _request_context = "ai_request_context", _context = "ai_context",
         }
         for name, source in pairs(ai_funcs) do

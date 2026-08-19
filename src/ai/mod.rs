@@ -17,6 +17,7 @@ pub mod backends;
 pub mod chat;
 pub mod context;
 pub mod panel;
+pub mod pricing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod providers;
 #[cfg(not(target_arch = "wasm32"))]

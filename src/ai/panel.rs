@@ -7,6 +7,7 @@ use eframe::egui;
 
 use crate::actions::{Action, AppState};
 use crate::ai::backends::{Backend, KeySource, Provider};
+use crate::ai::pricing;
 
 /// The pane's title, shown in its heading and (on phones) its window bar.
 pub const PANE_TITLE: &str = "AI";
@@ -92,6 +93,7 @@ fn chat_section(ui: &mut egui::Ui, state: &mut AppState) {
 
     ui.add_space(4.0);
     thread(ui, state);
+    conversation_total(ui, state);
     ui.add_space(4.0);
 
     // What was actually sent last time, exactly as sent (#1597).
@@ -216,9 +218,37 @@ fn thread(ui: &mut egui::Ui, state: &mut AppState) {
                             .color(ui.visuals().error_fg_color),
                     );
                 }
+                // What this exchange cost (#1599). Tokens always; money only when the rate
+                // for that backend's model is known.
+                if entry.role == crate::ai::providers::Role::Assistant && !entry.streaming {
+                    let price = ai.config.get(&entry.backend).and_then(pricing::price_for);
+                    let line = pricing::usage_line(entry.usage, price);
+                    if !line.is_empty() {
+                        ui.label(egui::RichText::new(line).size(10.0).weak());
+                    }
+                }
                 ui.add_space(6.0);
             }
         });
+}
+
+/// What this conversation has cost so far (#1599). Silent until a reply reports usage.
+#[cfg(not(target_arch = "wasm32"))]
+fn conversation_total(ui: &mut egui::Ui, state: &mut AppState) {
+    let ai = state.ai.borrow();
+    let usage = ai.chat.total_usage();
+    if usage.input_tokens == 0 && usage.output_tokens == 0 {
+        return;
+    }
+    // Price by the backend that is answering now: mixing backends mid-conversation is rare,
+    // and each message's own line is exact.
+    let price = ai.config.selected().and_then(pricing::price_for);
+    let line = pricing::usage_line(usage, price);
+    ui.label(
+        egui::RichText::new(format!("This conversation: {line}"))
+            .size(11.0)
+            .weak(),
+    );
 }
 
 /// The backend row: which service the conversation talks to, and the editor for adding and
@@ -306,6 +336,37 @@ fn backend_picker(ui: &mut egui::Ui, state: &mut AppState) {
                     .size(10.0)
                     .weak(),
                 );
+                // What this backend has cost since it was added, or since the last reset
+                // (#1599). Persisted, so it survives restarts.
+                if !backend.spend.is_empty() {
+                    ui.horizontal(|ui| {
+                        let price = pricing::price_for(backend);
+                        let total = if price.is_some() {
+                            pricing::format_cost(backend.spend.cost)
+                        } else {
+                            "price unknown".to_string()
+                        };
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "All time: {} · {} tokens · {} replies",
+                                total,
+                                pricing::format_tokens(backend.spend.tokens()),
+                                backend.spend.exchanges
+                            ))
+                            .size(10.0)
+                            .weak(),
+                        );
+                        if ui
+                            .small_button("Reset")
+                            .on_hover_text("Start this backend's running total from zero")
+                            .clicked()
+                        {
+                            action = Some(Action::ResetAiBackendSpend {
+                                id: backend.id.clone(),
+                            });
+                        }
+                    });
+                }
                 ui.add_space(4.0);
             }
             ui.separator();
@@ -391,6 +452,9 @@ fn add_backend_form(ui: &mut egui::Ui) -> Option<Backend> {
                 )),
                 KeyMode::Stored => KeySource::Stored(draft.key.clone()),
             },
+            // Rates come from the shipped table until the user overrides them (#1599).
+            price: None,
+            spend: crate::ai::pricing::Spend::default(),
         });
         draft = Draft::for_provider(draft.provider);
     }
