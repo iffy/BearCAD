@@ -12,6 +12,7 @@
 //! - **Secrets stay put.** API keys and the MCP token never appear in a scripting return
 //!   value, a Lua export, `--show-commands`, the diagnostics file, or a screenshot.
 
+pub mod api;
 pub mod backends;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod chat;

@@ -5079,6 +5079,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_lua, ()| Ok(crate::ai::skill::SKILL.to_string()))?,
     )?;
 
+    // The Lua API catalog sent with each chat message (#1623).
+    api.set(
+        "ai_api",
+        lua.create_function(|_lua, ()| Ok(crate::ai::api::document().to_string()))?,
+    )?;
+
     // Run one block by its 1-based position, matching `bearcad.ai.blocks()`.
     api.set(
         "ai_run_block",
@@ -8466,7 +8472,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             blocks = "ai_blocks", _run_block = "ai_run_block",
             seed_reply = "ai_seed_reply",
             skill_targets = "ai_skill_targets", install_skill = "ai_install_skill",
-            uninstall_skill = "ai_uninstall_skill", skill = "ai_skill",
+            uninstall_skill = "ai_uninstall_skill", skill = "ai_skill", api = "ai_api",
             mcp_start = "ai_mcp_start", mcp_stop = "ai_mcp_stop",
             mcp_status = "ai_mcp_status", mcp_token = "ai_mcp_token",
             mcp_new_token = "ai_mcp_new_token", mcp_configs = "ai_mcp_configs",
@@ -10278,6 +10284,10 @@ mod tests {
                                     "tool_table", "tool_row", "version" }) do
                 assert(type(bearcad[name]) == "function", "bearcad." .. name .. " should stay top-level")
             end
+            -- #1623: the catalog the chat sends is scriptable, and names cuboid.
+            local catalog = bearcad.ai.api()
+            assert(type(catalog) == "string" and #catalog > 500)
+            assert(catalog:find("bearcad.cuboid{"), "the catalog should teach cuboid")
         "#,
         );
     }
