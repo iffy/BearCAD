@@ -9810,6 +9810,8 @@ impl AppState {
                 img.width_mm *= factor;
                 img.height_mm *= factor;
                 img.calibration = Some(calibration);
+                // Rescale is about the span midpoint; re-solve so existing image constraints stay (#1613).
+                let _ = crate::constraints::solve_document_constraints(&mut self.doc);
                 self.status = format!(
                     "Calibrated image: {} (x{factor:.3})",
                     crate::value::format_length_display(length)

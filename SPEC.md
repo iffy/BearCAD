@@ -1972,7 +1972,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   the image always read on top. Decoded pixels and GPU textures are cached by content, so
   the per-frame cost is one quad. Scriptable: `bearcad.image_opacity{ image, opacity }`
   (`opacity` is a number or expression) and `bearcad.get{ kind = "image", index }.opacity`.
-- **Scale calibration (#163/#171/#1547/#1586):** selecting only a tracing image with the Select
+- **Scale calibration (#163/#171/#1547/#1586/#1613):** selecting only a tracing image with the Select
   tool immediately enters calibration mode. A line with a point at each end always sits
   on the image's plane — on a fresh import, top-middle to bottom-middle — drawn like a
   selected line (bright, bold, on top of the picture) while the image is selected, and
@@ -1982,8 +1982,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   (still in-plane); that updates stored UV and never rescales. Double-click the dimension
   (a ValueInput: any length expression) to rescale the image uniformly about the span
   midpoint so the two points stay at the same locations on the image and the world-space
-  span matches the typed length. The calibration (reference segment in image-UV + assigned
-  length/expression) is stored on the image. Scriptable: `bearcad.calibrate_image{ image,
+  span matches the typed length. Recalibrating then re-solves so existing image constraints
+  stay honored (a corner pinned to the origin stays there). The calibration (reference
+  segment in image-UV + assigned length/expression) is stored on the image. Scriptable: `bearcad.calibrate_image{ image,
   from, to, length }` (`from`/`to` optional; `length` is an expression),
   `bearcad.calibration_point{ image, index, x, y }`, `bearcad.get{ kind = "image", index }`.
 - **Image constraints & viewport pick (#425/#1561/#1589):** a calibrated image's two

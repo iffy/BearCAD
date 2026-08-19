@@ -8859,6 +8859,48 @@ mod tests {
         let _ = state;
     }
 
+    /// #1613: recalibrating an image re-solves so a corner pinned to the origin stays there.
+    #[test]
+    fn lua_recalibrate_image_honors_constraints() {
+        let path = write_test_png("recalibrate_constraint.png", 40, 80);
+        let state = run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.import_image({path:?})
+            bearcad.begin_sketch{{ kind = "construction_plane", index = 0 }}
+            bearcad.select{{ kind = "image", index = 0, anchor = "bottom_left" }}
+            bearcad.select({{ kind = "origin" }}, true)
+            bearcad.add_geometric_constraint("coincident")
+            local img = bearcad.get{{ kind = "image", index = 0 }}
+            assert(math.abs(img.origin_x) < 1e-2 and math.abs(img.origin_y) < 1e-2,
+              string.format("bottom-left on origin before calibrate, got (%.3f, %.3f)",
+                img.origin_x, img.origin_y))
+            -- Default span is the image height (80). Doubling it rescales about the
+            -- calibration midpoint, which would slide the pinned corner off the origin
+            -- unless constraints are re-solved.
+            bearcad.calibrate_image{{ image = 0, length = "160" }}
+            img = bearcad.get{{ kind = "image", index = 0 }}
+            assert(math.abs(img.width - 80) < 1e-2 and math.abs(img.height - 160) < 1e-2,
+              string.format("doubled size, got %.3f x %.3f", img.width, img.height))
+            assert(math.abs(img.origin_x) < 1e-2 and math.abs(img.origin_y) < 1e-2,
+              string.format("bottom-left still on origin after calibrate, got (%.3f, %.3f)",
+                img.origin_x, img.origin_y))
+            "#
+        ));
+        let img = state.doc.tracing_images.values().next().unwrap();
+        assert!(
+            img.origin.0.abs() < 1e-2 && img.origin.1.abs() < 1e-2,
+            "pinned corner after recalibrate {:?}",
+            img.origin
+        );
+        assert!(
+            (img.width_mm - 80.0).abs() < 1e-2 && (img.height_mm - 160.0).abs() < 1e-2,
+            "size after recalibrate {}x{}",
+            img.width_mm,
+            img.height_mm
+        );
+    }
+
     /// #1564: selecting a construction plane offers "Import image on this plane" in
     /// the command palette; running it with a path (the scripted form) places the
     /// image on that plane. Without a plane selected the command is not offered.
