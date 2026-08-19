@@ -466,6 +466,79 @@ pub fn client_configs(url: &str, token: &str) -> Vec<ClientConfig> {
     ]
 }
 
+/// Where a stdio bridge should connect: the URL and token the app last wrote (#1607).
+///
+/// Read from `ai.json`, not from the running process — the bridge is a separate
+/// invocation of the same binary and has no other way to learn them.
+pub fn saved_connection() -> Option<(String, String)> {
+    let config = super::backends::AiConfig::load();
+    if !config.mcp_enabled || config.mcp_token.is_empty() || config.mcp_port == 0 {
+        return None;
+    }
+    Some((
+        format!("http://127.0.0.1:{}/mcp", config.mcp_port),
+        config.mcp_token,
+    ))
+}
+
+/// Forward JSON-RPC messages from `input` to a running BearCAD, writing responses to
+/// `output` (#1607) — the stdio transport, for clients that speak only that.
+///
+/// Each line in, at most one line out: a notification has no response, and MCP's stdio
+/// framing is one JSON object per line.
+pub fn run_stdio_bridge(
+    url: &str,
+    token: &str,
+    input: impl BufRead,
+    mut output: impl Write,
+) -> Result<(), String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(5)))
+        .http_status_as_error(false)
+        .build()
+        .into();
+
+    for line in input.lines() {
+        let line = line.map_err(|e| format!("cannot read stdin: {e}"))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let response = agent
+            .post(url)
+            .header("content-type", "application/json")
+            .header("authorization", &format!("Bearer {token}"))
+            .send(line.as_bytes());
+        let mut response = match response {
+            Ok(response) => response,
+            Err(e) => {
+                // Report to the client in its own language rather than dying: an agent can
+                // then say something useful instead of hanging.
+                let id = serde_json::from_str::<Value>(&line)
+                    .ok()
+                    .and_then(|m| m.get("id").cloned())
+                    .unwrap_or(Value::Null);
+                if !id.is_null() {
+                    let error = json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": -32000, "message": format!("BearCAD is not reachable: {e}") }
+                    });
+                    writeln!(output, "{error}").map_err(|e| e.to_string())?;
+                    output.flush().map_err(|e| e.to_string())?;
+                }
+                continue;
+            }
+        };
+        let body = response.body_mut().read_to_string().unwrap_or_default();
+        if body.trim().is_empty() {
+            continue; // A notification: nothing to pass back.
+        }
+        writeln!(output, "{}", body.trim()).map_err(|e| e.to_string())?;
+        output.flush().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// The names of every tool, for tests and the pane.
 pub fn tool_names() -> Vec<&'static str> {
     TOOLS.iter().map(|t| t.name).collect()
@@ -860,6 +933,55 @@ mod tests {
         let codex = configs.iter().find(|c| c.id == "codex").unwrap();
         assert!(codex.text.contains(r#"bearer_token_env_var = "BEARCAD_MCP_TOKEN""#));
         assert!(codex.text.contains("export BEARCAD_MCP_TOKEN="));
+    }
+
+    #[test]
+    fn the_stdio_bridge_carries_messages_both_ways() {
+        let server = Server::start(0, generate_token()).expect("start");
+        let url = server.url();
+        let token = server.token();
+
+        // Two requests and one notification, exactly as a stdio client would send them.
+        let input = format!(
+            "{}\n{}\n{}\n",
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }),
+            json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }),
+        );
+        let mut output = Vec::new();
+        run_stdio_bridge(&url, &token, input.as_bytes(), &mut output).expect("bridge");
+
+        let lines: Vec<&str> = std::str::from_utf8(&output)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        assert_eq!(lines.len(), 2, "the notification gets no reply: {lines:?}");
+        let first: Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(first["id"], 1);
+        assert_eq!(first["result"]["serverInfo"]["name"], "bearcad");
+        let second: Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(second["id"], 2);
+        assert!(second["result"]["tools"].as_array().is_some_and(|t| !t.is_empty()));
+    }
+
+    #[test]
+    fn the_bridge_tells_the_client_when_bearcad_is_not_reachable() {
+        // Port 1 on loopback: nothing is listening.
+        let input = format!(
+            "{}\n",
+            json!({ "jsonrpc": "2.0", "id": 5, "method": "tools/list" })
+        );
+        let mut output = Vec::new();
+        run_stdio_bridge("http://127.0.0.1:1/mcp", "token", input.as_bytes(), &mut output)
+            .expect("the bridge keeps going");
+        let response: Value = serde_json::from_str(std::str::from_utf8(&output).unwrap().trim())
+            .expect("a JSON-RPC error");
+        assert_eq!(response["id"], 5);
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not reachable"));
     }
 
     #[test]

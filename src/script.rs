@@ -8448,6 +8448,10 @@ pub enum CliOutcome {
     Testplan,
     /// Install, remove, list or print the AI agent skill (`bearcad skill …`, #1603).
     Skill(SkillCommand),
+    /// Bridge stdio to a running BearCAD's MCP server (`bearcad mcp`, #1607).
+    McpBridge,
+    /// Print MCP client configuration (`bearcad mcp-install [--target id]`).
+    McpInstall { target: Option<String> },
     Run(ScriptOptions),
 }
 
@@ -8525,6 +8529,12 @@ Commands:
                         features for exhaustive manual or AI testing. Tutorials
                         come from TUTORIALS; extra items live in src/testplan.rs
                         (`CUSTOM_ITEMS`)
+  mcp                   Bridge stdin/stdout to the MCP server of a running BearCAD,
+                        for AI clients that speak only stdio. Switch the server on
+                        first (AI pane ▸ MCP Server)
+  mcp-install [--target <id>]
+                        Print the MCP client configuration for the running server
+                        (claude, json, vscode, codex, stdio)
   skill [targets|print|install|uninstall] [--target <id>] [--dir <path>]
                         The AI agent skill: `targets` lists where it can go and
                         what is installed, `print` writes it to stdout, `install`
@@ -8558,6 +8568,7 @@ Examples:
   bearcad testplan
   bearcad skill install
   bearcad skill install --target agents --dir .
+  bearcad mcp-install
 
 Diagnostics:
   Every run writes a log; the path is printed on startup. Warnings and notable
@@ -8592,6 +8603,17 @@ pub fn parse_cli(args: impl IntoIterator<Item = impl AsRef<str>>) -> CliOutcome 
         }
         Some("testplan") => return CliOutcome::Testplan,
         Some("skill") => return CliOutcome::Skill(parse_skill_args(&args[2..])),
+        Some("mcp") => return CliOutcome::McpBridge,
+        Some("mcp-install") => {
+            let mut target = None;
+            let rest = &args[2..];
+            for (index, arg) in rest.iter().enumerate() {
+                if matches!(arg.as_str(), "--target" | "-t") {
+                    target = rest.get(index + 1).cloned();
+                }
+            }
+            return CliOutcome::McpInstall { target };
+        }
         _ => {}
     }
     CliOutcome::Run(parse_args_from_vec(&args))

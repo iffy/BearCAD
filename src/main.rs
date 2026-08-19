@@ -435,6 +435,51 @@ fn main() -> eframe::Result<()> {
             run_skill_command(command);
             return Ok(());
         }
+        // Bridge stdio to a running BearCAD (#1607), for clients that speak only stdio.
+        script::CliOutcome::McpBridge => {
+            let Some((url, token)) = ai::mcp::saved_connection() else {
+                eprintln!(
+                    "bearcad mcp: no MCP server configured. Open BearCAD, then switch it on \
+                     in the AI pane ▸ MCP Server."
+                );
+                std::process::exit(1);
+            };
+            let stdin = std::io::stdin();
+            let stdout = std::io::stdout();
+            if let Err(err) = ai::mcp::run_stdio_bridge(&url, &token, stdin.lock(), stdout.lock()) {
+                eprintln!("bearcad mcp: {err}");
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
+        // Print what an MCP client needs to reach this machine's BearCAD (#1607).
+        script::CliOutcome::McpInstall { target } => {
+            let Some((url, token)) = ai::mcp::saved_connection() else {
+                eprintln!(
+                    "bearcad mcp-install: no MCP server configured. Open BearCAD, then switch \
+                     it on in the AI pane ▸ MCP Server."
+                );
+                std::process::exit(1);
+            };
+            let configs = ai::mcp::client_configs(&url, &token);
+            let wanted: Vec<_> = match &target {
+                Some(id) => configs.iter().filter(|c| c.id == *id).collect(),
+                None => configs.iter().collect(),
+            };
+            if wanted.is_empty() {
+                eprintln!(
+                    "bearcad mcp-install: unknown client '{}'. Known: {}",
+                    target.unwrap_or_default(),
+                    configs.iter().map(|c| c.id).collect::<Vec<_>>().join(", ")
+                );
+                std::process::exit(1);
+            }
+            for config in wanted {
+                println!("# {} — {}", config.label, config.note);
+                println!("{}\n", config.text);
+            }
+            return Ok(());
+        }
         // The catalog window (#1022) is this same binary under a subcommand: it owns its own
         // event loop, so it has to run instead of the app, not alongside it.
         script::CliOutcome::McMaster { part } => {
@@ -992,6 +1037,24 @@ mod cli_tests {
                 dir: Some("/tmp/p".into())
             })
         );
+    }
+
+    #[test]
+    fn mcp_subcommands_parse() {
+        assert_eq!(script::parse_cli(["bearcad", "mcp"]), script::CliOutcome::McpBridge);
+        assert_eq!(
+            script::parse_cli(["bearcad", "mcp-install"]),
+            script::CliOutcome::McpInstall { target: None }
+        );
+        assert_eq!(
+            script::parse_cli(["bearcad", "mcp-install", "--target", "codex"]),
+            script::CliOutcome::McpInstall { target: Some("codex".into()) }
+        );
+        // A document called mcp.bearcad still opens as a document.
+        assert!(matches!(
+            script::parse_cli(["bearcad", "mcp.bearcad"]),
+            script::CliOutcome::Run(_)
+        ));
     }
 
     #[test]
