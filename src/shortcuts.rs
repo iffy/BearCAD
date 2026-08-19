@@ -128,6 +128,8 @@ pub const TOGGLE_CURVE_MODE: ShortcutHint = ShortcutHint::primary("B");
 /// Tangent-constraint toggle for the line tool (#73): keep curve handles mirrored/smooth.
 pub const TOGGLE_TANGENT_CONSTRAINT: ShortcutHint = ShortcutHint::plain("T");
 pub const FOCUS_ELEMENT_NAME: ShortcutHint = ShortcutHint::plain("N");
+/// Cycle the active tool's Output choice, or Combine's Mode (#1397 / #1534 / #1579).
+pub const CYCLE_TOOL_OUTPUT_MODE: ShortcutHint = ShortcutHint::plain("Y");
 pub const CANCEL_OPERATION: ShortcutHint = ShortcutHint::plain("Esc");
 pub const UNDO: ShortcutHint = ShortcutHint::primary("Z");
 
@@ -431,7 +433,7 @@ pub fn all_shortcuts() -> Vec<ShortcutSection> {
             // on Extrude, Revolve, Sweep, Loft, Mirror. #1534: the same key walks Combine's
             // Mode (combine / cut / intersect / difference).
             entries.push((
-                "Y".to_string(),
+                format_shortcut(CYCLE_TOOL_OUTPUT_MODE),
                 "Cycle the Output choice (new body / add to body / cut), or Combine's mode"
                     .to_string(),
             ));
@@ -731,6 +733,11 @@ mod tests {
             "Sketch (S)"
         );
         assert_eq!(compact_label("Select", None), "Select");
+        // #1579: Combine's Mode row uses the same parenthetical form as Name (N).
+        assert_eq!(
+            compact_label("Mode", Some(CYCLE_TOOL_OUTPUT_MODE)),
+            "Mode (Y)"
+        );
     }
 
     /// #1319: help mode off → no toolbar shortcut badges.
