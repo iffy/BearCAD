@@ -3050,15 +3050,19 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         // Combine mode uses one picker (side A only); Cut/Intersect/Difference use two sides.
         // The focused side is the one the next viewport click lands on, toggled by clicking a
         // picker (its Focus event). Side B (the tool that gets consumed in Cut) is styled red.
+        // Inline so the pane can keep hidden Bodies / Side A / Side B slots mounted (#1580).
         let two_sided = b.kind != crate::model::BooleanOpKind::Combine;
-        tool_pickers.push(body_tool_picker(
+        let mut side_a = body_tool_picker(
             input.doc,
             if two_sided { "Side A" } else { "Bodies" },
             PickerTarget::CombineA,
             &b.a,
             None,
             !b.picking_b,
-        ));
+        );
+        side_a.render = PickerRender::Inline;
+        side_a.separator_above = false;
+        tool_pickers.push(side_a);
         if two_sided {
             // No divider between the two sides and the mode/Do controls below — the Combine
             // pickers and the section read as one contiguous block (#606).
@@ -3071,6 +3075,7 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
                 b.picking_b,
             );
             side_b.separator_above = false;
+            side_b.render = PickerRender::Inline;
             tool_pickers.push(side_b);
         }
     }
@@ -5037,6 +5042,77 @@ pub(crate) fn move_picker_slots() -> &'static [(&'static str, PickerTarget, &'st
     ]
 }
 
+/// Inline picker slots the Combine pane always mounts (#1580). Unused ones stay
+/// hidden in the layer and stay off the registered list (#1081).
+pub(crate) fn combine_picker_slots() -> &'static [(&'static str, PickerTarget, &'static str)] {
+    &[
+        ("combine_bodies", PickerTarget::CombineA, "Bodies"),
+        ("combine_side_a", PickerTarget::CombineA, "Side A"),
+        ("combine_side_b", PickerTarget::CombineB, "Side B"),
+    ]
+}
+
+/// Which Combine picker rows the given boolean kind shows.
+pub(crate) fn combine_picker_slot_visible(
+    kind: crate::model::BooleanOpKind,
+    id: &str,
+) -> bool {
+    let two_sided = kind != crate::model::BooleanOpKind::Combine;
+    match id {
+        "combine_bodies" => !two_sided,
+        "combine_side_a" | "combine_side_b" => two_sided,
+        _ => false,
+    }
+}
+
+/// Keep-B is only a two-sided Combine option (Cut / Intersect / Difference).
+pub(crate) fn combine_keep_b_visible(kind: crate::model::BooleanOpKind) -> bool {
+    kind != crate::model::BooleanOpKind::Combine
+}
+
+/// One Combine picker row. Hidden kinds still mount the widget off-layout (#1580).
+fn show_combine_picker_row(
+    ui: &mut egui::Ui,
+    doc: &Document,
+    tool_pickers: &[ToolPickerView],
+    dummy: &ElementPicker,
+    kind: crate::model::BooleanOpKind,
+    label: &'static str,
+    id: &'static str,
+    target: PickerTarget,
+    controls_enabled: bool,
+) -> Option<ToolPickerAction> {
+    let visible = combine_picker_slot_visible(kind, id);
+    let picker = if visible {
+        tool_pickers
+            .iter()
+            .find(|v| v.target == target)
+            .map(|v| &v.picker)
+            .unwrap_or(dummy)
+    } else {
+        dummy
+    };
+    let mut action = None;
+    with_optional_slot(ui, ("combine_slot", id), visible, Some(egui::Id::new(id)), |ui| {
+        labeled_row_top(ui, label, |ui| {
+            ui.add_enabled_ui(controls_enabled, |ui| {
+                if let Some(event) = crate::element_picker::show(ui, picker, doc, id) {
+                    if visible {
+                        action = Some(match event {
+                            crate::element_picker::PickerEvent::Focus => ToolPickerAction::Focus,
+                            crate::element_picker::PickerEvent::Remove(i) => {
+                                ToolPickerAction::Remove(i)
+                            }
+                            crate::element_picker::PickerEvent::Clear => ToolPickerAction::Clear,
+                        });
+                    }
+                }
+            });
+        });
+    });
+    action
+}
+
 /// Which Move picker rows the given translate mode shows.
 pub(crate) fn move_picker_slot_visible(
     mode: crate::model::MoveTranslateMode,
@@ -6150,21 +6226,38 @@ pub fn show_pane(
 
     if let Some(control) = &content.boolean_op {
         any_control = true;
-        // No divider between the Bodies picker above and this section — the pickers, the mode
-        // row, and the Do button read as one contiguous Combine block (#606). The tool title
-        // (#608) is drawn once at the top of the pane.
+        // Pickers, Mode, Keep B, and Do read as one contiguous Combine block (#606). Hidden
+        // Bodies / Side A / Side B / Keep B slots stay mounted so switching kinds does not
+        // remount a different widget on the same rect (#1580).
+        let kind = control.kind;
+        let dummy_combine = ElementPicker::new(
+            ElementFilter::kind(ElementKind::Body).rule(PickRule::LiveBody),
+            PickLimit::Infinite,
+        );
+        for (id, target, label) in combine_picker_slots() {
+            if let Some(action) = show_combine_picker_row(
+                ui,
+                doc,
+                &content.tool_pickers,
+                &dummy_combine,
+                kind,
+                label,
+                id,
+                *target,
+                controls_enabled,
+            ) {
+                on_tool_picker_edit(*target, action);
+            }
+        }
         // A segmented icon group (#267): two-circle boolean icons with kept regions solid and
         // removed regions faint red — in the right column under a "Mode" label (#606).
-        let kind = control.kind;
         labeled_row(ui, "Mode", |ui| {
             if let Some(next) = show_combine_mode_icons(ui, kind) {
                 on_boolean_edit(BooleanEdit::Kind(next));
             }
         });
-        let two_sided = control.kind != crate::model::BooleanOpKind::Combine;
-        // The side-A / side-B body sets render as element pickers above (see `tool_pickers`);
-        // clicking a picker makes it the active side. Only the "keep B" toggle stays here.
-        if two_sided {
+        let two_sided = combine_keep_b_visible(kind);
+        with_optional_slot(ui, ("combine_slot", "keep_b"), two_sided, None, |ui| {
             // Two-column like every other checkbox row (#933): the label in the left
             // column, the box itself in the right one.
             let mut keep_b = control.keep_b;
@@ -6173,10 +6266,10 @@ pub fn show_pane(
                     .on_hover_text("Leave the B-side inputs as real bodies instead of shadows")
                     .changed()
             });
-            if changed {
+            if two_sided && changed {
                 on_boolean_edit(BooleanEdit::KeepB(keep_b));
             }
-        }
+        });
         ui.add_space(2.0);
         if control.working {
             // Progress in place of the checkmark while the kernel works (#1031).
@@ -9491,6 +9584,11 @@ mod tests {
                     .iter()
                     .map(|s| format!("shape_dim:{s}")),
             )
+            .chain(
+                ["combine_bodies", "combine_side_a", "combine_side_b", "keep_b"]
+                    .iter()
+                    .map(|s| format!("combine_slot:{s}")),
+            )
             .collect();
         salts.sort();
         salts.dedup();
@@ -9501,6 +9599,8 @@ mod tests {
                     hidden_slot_rect(&("move_slot", rest))
                 } else if let Some(rest) = salt.strip_prefix("shape_dim:") {
                     hidden_slot_rect(&("shape_dim", rest))
+                } else if let Some(rest) = salt.strip_prefix("combine_slot:") {
+                    hidden_slot_rect(&("combine_slot", rest))
                 } else {
                     hidden_slot_rect(salt)
                 };
@@ -9832,6 +9932,196 @@ mod tests {
             flashes.is_empty(),
             "Move mode switch painted red id-change rects: {flashes:?}"
         );
+    }
+
+    fn combine_picker_painted_id(id: &str) -> egui::Id {
+        egui::Id::new(("combine_picker", id)).with("painted_this_pass")
+    }
+
+    /// Paint the Combine pane's always-mounted slots the way [`show_pane`] does.
+    fn paint_combine_slots_for_id_test(
+        ui: &mut egui::Ui,
+        doc: &Document,
+        kind: crate::model::BooleanOpKind,
+        dummy: &ElementPicker,
+    ) {
+        for (id, _, label) in combine_picker_slots() {
+            with_optional_slot(
+                ui,
+                ("combine_slot", *id),
+                combine_picker_slot_visible(kind, id),
+                Some(egui::Id::new(*id)),
+                |ui| {
+                    labeled_row_top(ui, *label, |ui| {
+                        let _ = crate::element_picker::show(ui, dummy, doc, *id);
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(combine_picker_painted_id(id), true);
+                        });
+                    });
+                },
+            );
+        }
+        labeled_row(ui, "Mode", |ui| {
+            let _ = show_combine_mode_icons(ui, kind);
+        });
+        with_optional_slot(
+            ui,
+            ("combine_slot", "keep_b"),
+            combine_keep_b_visible(kind),
+            None,
+            |ui| {
+                let mut keep_b = false;
+                let _ = labeled_row(ui, "Keep B bodies", |ui| ui.checkbox(&mut keep_b, ""));
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(combine_picker_painted_id("keep_b"), true);
+                });
+            },
+        );
+    }
+
+    /// #1580: switching Combine / Cut / Intersect / Difference must not paint egui's
+    /// red "Widget rect changed id between passes" overlay on the first Context field.
+    #[test]
+    fn combine_mode_switch_does_not_flash_red_id_change() {
+        use crate::model::BooleanOpKind as K;
+        let ctx = egui::Context::default();
+        ctx.options_mut(|o| {
+            o.max_passes = std::num::NonZeroUsize::new(2).unwrap();
+        });
+        let doc = Document::default();
+        let dummy = ElementPicker::new(
+            ElementFilter::kind(ElementKind::Body),
+            PickLimit::Infinite,
+        );
+        let mut flashes = Vec::new();
+        for (frame, kind) in [K::Combine, K::Combine, K::Cut, K::Intersect, K::Difference, K::Combine]
+            .into_iter()
+            .enumerate()
+        {
+            let output = ctx.run_ui(Default::default(), |ui| {
+                egui::Panel::right("context").default_size(200.0).show(ui, |ui| {
+                    ui.scope_builder(
+                        egui::UiBuilder::new().id(egui::Id::new(("pane_contents", "context"))),
+                        |ui| {
+                            paint_combine_slots_for_id_test(ui, &doc, kind, &dummy);
+                        },
+                    );
+                });
+            });
+            if frame > 0 {
+                let rects = red_id_change_rects(&output);
+                if !rects.is_empty() {
+                    flashes.push((frame, kind, rects));
+                }
+            }
+        }
+        assert!(
+            flashes.is_empty(),
+            "Combine mode switch painted red id-change rects: {flashes:?}"
+        );
+    }
+
+    /// #1580: switching kinds used to destroy Bodies and remount Side A on the same
+    /// rect (red flash). Every picker slot stays in the layer.
+    #[test]
+    fn combine_picker_ids_survive_mode_switch() {
+        use crate::model::BooleanOpKind as K;
+        let ctx = egui::Context::default();
+        ctx.options_mut(|o| {
+            o.max_passes = std::num::NonZeroUsize::new(2).unwrap();
+        });
+        let doc = Document::default();
+        let dummy = ElementPicker::new(
+            ElementFilter::kind(ElementKind::Body),
+            PickLimit::Infinite,
+        );
+        let slots: Vec<&str> = combine_picker_slots()
+            .iter()
+            .map(|(id, _, _)| *id)
+            .chain(std::iter::once("keep_b"))
+            .collect();
+        for kind in [K::Combine, K::Cut, K::Intersect, K::Difference, K::Combine] {
+            let mut painted = Vec::new();
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                egui::Panel::right("context").default_size(200.0).show(ui, |ui| {
+                    ui.scope_builder(
+                        egui::UiBuilder::new().id(egui::Id::new(("pane_contents", "context"))),
+                        |ui| {
+                            paint_combine_slots_for_id_test(ui, &doc, kind, &dummy);
+                        },
+                    );
+                });
+                painted = slots
+                    .iter()
+                    .copied()
+                    .filter(|id| {
+                        ui.ctx()
+                            .data(|d| d.get_temp::<bool>(combine_picker_painted_id(id)))
+                            .unwrap_or(false)
+                    })
+                    .collect();
+            });
+            assert_eq!(
+                painted, slots,
+                "every combine slot must be created for {kind:?}, got {painted:?}"
+            );
+        }
+    }
+
+    /// Without [`with_optional_slot`], unused pickers leave the layer and Side A
+    /// lands on Bodies' rect (#1580).
+    #[test]
+    fn combine_picker_ids_vanish_if_slots_are_dropped() {
+        use crate::model::BooleanOpKind as K;
+        let ctx = egui::Context::default();
+        let doc = Document::default();
+        let dummy = ElementPicker::new(
+            ElementFilter::kind(ElementKind::Body),
+            PickLimit::Infinite,
+        );
+        let mut painted = Vec::new();
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            for (id, _, label) in combine_picker_slots() {
+                if !combine_picker_slot_visible(K::Combine, id) {
+                    continue;
+                }
+                labeled_row_top(ui, *label, |ui| {
+                    let _ = crate::element_picker::show(ui, &dummy, &doc, *id);
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(combine_picker_painted_id(id), true);
+                    });
+                });
+            }
+            painted = combine_picker_slots()
+                .iter()
+                .filter(|(id, _, _)| {
+                    ui.ctx()
+                        .data(|d| d.get_temp::<bool>(combine_picker_painted_id(id)))
+                        .unwrap_or(false)
+                })
+                .map(|(id, _, _)| *id)
+                .collect();
+        });
+        assert_eq!(
+            painted.as_slice(),
+            ["combine_bodies"],
+            "dropping unused slots unmounts Side A / Side B — that is the flash"
+        );
+    }
+
+    #[test]
+    fn combine_slot_visible_matches_kind() {
+        use crate::model::BooleanOpKind as K;
+        assert!(combine_picker_slot_visible(K::Combine, "combine_bodies"));
+        assert!(!combine_picker_slot_visible(K::Combine, "combine_side_a"));
+        assert!(!combine_picker_slot_visible(K::Combine, "combine_side_b"));
+        assert!(!combine_keep_b_visible(K::Combine));
+        for kind in [K::Cut, K::Intersect, K::Difference] {
+            assert!(!combine_picker_slot_visible(kind, "combine_bodies"));
+            assert!(combine_picker_slot_visible(kind, "combine_side_a"));
+            assert!(combine_picker_slot_visible(kind, "combine_side_b"));
+            assert!(combine_keep_b_visible(kind));
+        }
     }
 
     /// #982: with a sketch open, the Select tool's picker view carries the sketch-only rule
