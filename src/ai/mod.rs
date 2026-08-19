@@ -19,6 +19,9 @@ pub mod context;
 pub mod panel;
 pub mod pricing;
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)] // Installed by the CLI (#1603) and the pane (#1604).
+pub mod skill;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod providers;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod transport;

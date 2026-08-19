@@ -1,0 +1,225 @@
+---
+name: bearcad
+description: Drive BearCAD, a parametric CAD app, from its Lua scripting API — build and edit 3D models, read geometry back, export STEP/STL/3MF, and take screenshots. Use when the user asks to model, measure, modify, or inspect a BearCAD document, or mentions .bearcad files.
+---
+
+# BearCAD
+
+BearCAD is a parametric CAD app with two equal front ends: the GUI, and a Lua API. Anything
+the GUI can do, a script can do. You drive the Lua API.
+
+Model in millimetres. Angles are degrees in the GUI's fields and **radians** in the API
+unless a call names a unit (`"45deg"`, `"5in"` work anywhere an expression is accepted).
+
+## Running a script
+
+```sh
+bearcad --script build.lua --exit      # run, then close
+bearcad drawing.bearcad --exit         # open a document
+bearcad --script edit.lua drawing.bearcad --exit
+```
+
+- `--exit` closes the app when the script finishes. **Always pass it** unless you want a
+  window left open; without it the process keeps running.
+- `--timeout <seconds>` force-exits non-zero if it hangs. Use it in unattended runs.
+- A failed `assert` or a Lua error exits non-zero and prints the traceback — that is how
+  you find out something did not work.
+- `bearcad --repl` reads Lua from stdin against a live window, so
+  `echo 'print(bearcad.count("body"))' | bearcad --repl --exit` answers one question.
+- If `bearcad` is not on PATH, run `bearcad install-cli` once (the app's Help menu has the
+  same item).
+
+A script runs in a coroutine. Calls that wait for a frame — `bearcad.ui.wait`,
+`bearcad.ui.screenshot`, `bearcad.ui.view` — yield rather than block.
+
+## The two namespaces
+
+- **`bearcad.*` — declarative modeling. Prefer this.** Describe geometry directly.
+- **`bearcad.ui.*` — simulated GUI use.** Mouse, keyboard, camera, panes, tools. Reach for
+  it only when the interaction itself is the point (testing a drag, taking a screenshot of
+  a tool in use).
+
+```lua
+bearcad.new()
+bearcad.rect{ width = 80, height = 50, name = "Base" }
+bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20, name = "Block" }
+bearcad.export_step("block.step")
+bearcad.quit()
+```
+
+## Sketching
+
+Drawing verbs open a ground-plane sketch automatically when none is active.
+
+```lua
+bearcad.rect{ x = 0, y = 0, width = 80, height = 50, name = "Box" }
+bearcad.circle{ x = 10, y = 5, r = 12, name = "Hole" }   -- radius / diameter also accepted
+bearcad.line{ x = 0, y = 0, x1 = 50, y1 = 0 }            -- explicit endpoints
+bearcad.line{ length = 80, angle = 45 }                  -- length + angle
+bearcad.text{ text = "Hello", x = 10, y = 10, size = 12 }
+
+bearcad.begin_sketch("construction_plane", 0)   -- sketch on a specific plane
+bearcad.open_sketch(0)                          -- re-enter sketch 0
+bearcad.exit_sketch()
+```
+
+A rectangle is **four lines**, indexed in creation order (bottom, right, top, left). A
+scripted line lands unconstrained; `dimension = 50` or `dimension = "leg"` locks its length.
+
+Construction planes:
+
+```lua
+bearcad.plane{ offset = 12 }                                          -- above Ground
+bearcad.plane{ offset = 5, origin = {0, 0, 20}, normal = {0, 0, 1} }  -- on a face
+```
+
+## Solids
+
+```lua
+bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20, name = "Block" }
+bearcad.revolve{ polygon = {0, 1, 2, 3}, axis = "y", angle = 180 }   -- axis is required
+bearcad.combine{ op = "difference", a = {0}, b = {1} }               -- union | difference | intersect
+bearcad.shell{ bodies = {0}, thickness = 2 }
+bearcad.move_bodies{ bodies = {0}, x = 40 }
+bearcad.mirror_bodies{ bodies = {0}, plane = 0 }
+```
+
+An operation **consumes** the body it acts on and produces a new one, so the index moves:
+after `shell{ bodies = {0} }`, the shelled result is the *last* body, and `{0}` is spent.
+Chain operations off `bearcad.count("body") - 1`, or give bodies names and use
+`bearcad.find`.
+
+To cut into a body, sketch **on one of its faces**, then extrude with `body = "cut"`. A cut
+pointing away from the body is flipped inward for you.
+
+```lua
+bearcad.begin_sketch{
+  kind = "extrude_cap", extrusion = 0,
+  profile = "polygon", profile_lines = {0, 1, 2, 3}, top = true,
+}
+bearcad.circle{ x = 0, y = 0, r = 5 }              -- r is a radius
+bearcad.extrude{ circle = 0, distance = 20, body = "cut" }
+```
+
+Rounding takes **one call per operation** — a set of edges in a single call, never one call
+per edge (four calls would make four bodies stacked on each other):
+
+```lua
+bearcad.fillet_edge{
+  extrusion = 0,
+  edges = {
+    { kind = "vertical", face = 0, edge = 0 },
+    { kind = "vertical", face = 0, edge = 1 },
+  },
+  radius = 8,
+}
+bearcad.chamfer_vertex{ point = { kind = "line", index = 0, ["end"] = "end" }, distance = 3 }
+```
+
+## Parameters and constraints
+
+Parameters make a model parametric; anywhere a size is accepted, an expression string is
+too, and the model rebuilds when the parameter changes.
+
+```lua
+bearcad.parameter("add", "w", "24")
+bearcad.rect{ width = "w", height = "w / 3" }
+bearcad.parameter("value", 0, "30")          -- everything sized by w re-sizes
+
+bearcad.select{ kind = "line", index = 0 }
+bearcad.select({ kind = "line", index = 1 }, true)   -- true = add to the selection
+bearcad.add_geometric_constraint("parallel")         -- horizontal, vertical, equal,
+                                                     -- perpendicular, coincident, tangent…
+bearcad.add_constraint({ kind = "line", index = 0 }, "25mm")
+bearcad.add_constraint({ kind = "line", index = 1 }, "leg = 40mm")  -- names a parameter
+```
+
+## Reading state back — verify your own work
+
+Never assume a call did what you meant. Read it back and assert.
+
+```lua
+assert(bearcad.count("body") == 1)          -- line, circle, sketch, constraint, body,
+                                            -- extrusion, parameter, drawing, image…
+local l = bearcad.get{ kind = "line", index = 0 }         -- x0,y0,x1,y1,length…
+local x0, y0, x1, y1 = bearcad.line_endpoints(0)
+local s = bearcad.body_stats(0)                           -- volume, triangles, bbox
+assert(math.abs(s.volume - 80 * 50 * 20) < 200)           -- tessellated, so allow a tolerance
+
+bearcad.body_faces(0)      -- { body, face = {x,y,z}, normal = {x,y,z} }
+bearcad.body_edges(0)
+bearcad.body_cylinders(0)  -- holes and bosses: radius, length, axis — the reliable way to
+                           -- check a hole is really there and really the right size
+bearcad.selection()        -- what is selected
+bearcad.sketch_dof()       -- remaining degrees of freedom
+bearcad.sketch_conflicts()
+print(bearcad.status())    -- the status bar: what the last action said
+```
+
+`bearcad.find("Main box")` looks an element up by name; `bearcad.set_name(el, "…")` renames
+one. Options tables reject unknown keys and list the accepted ones, so a typo fails
+immediately — wrap in `pcall` if you want to handle that yourself.
+
+## Files
+
+```lua
+bearcad.open("part.bearcad")
+bearcad.save()                  -- or save("other.bearcad")
+bearcad.import_step("part.step")
+bearcad.import_stl("part.stl")
+bearcad.import_unit("bracket.bearcad")     -- another document as a reusable unit
+bearcad.export_step("out.step")            -- real BREP
+bearcad.export_stl("out.stl")
+bearcad.export_3mf("out.3mf")              -- one coloured object per body
+bearcad.undo()
+```
+
+**File → Export → Lua Script…** (and `bearcad.import_lua(path)`) round-trips a whole
+document through this API — the fastest way to see how an existing document is built.
+
+## Looking at the model
+
+```lua
+bearcad.ui.view("front")                       -- top, bottom, left, right, back, iso
+bearcad.ui.camera{ yaw = 1.0, distance = 200 } -- instant, so screenshots are deterministic
+bearcad.ui.zoom_fit()
+bearcad.ui.screenshot("shot.png")              -- the 3D viewport
+bearcad.ui.screenshot("shot.png", "window")    -- the whole window
+bearcad.ui.screenshot("shot.png", "elements")  -- one pane
+```
+
+Screenshots need a real rendered frame: they work on a desktop session, and headless needs
+a virtual display (`xvfb-run`).
+
+## Driving the GUI directly
+
+```lua
+bearcad.ui.tool("rectangle")
+bearcad.ui.click_ground(0, 0)      -- sketch-plane millimetres
+bearcad.ui.move_ground(80, 50)
+bearcad.ui.key("enter")
+bearcad.ui.click(x, y)             -- viewport pixels
+bearcad.ui.click_ground(20, -10, { shift = true })
+bearcad.ui.pane("ai", "show")      -- hierarchy, context, parameters, tutorials, ai
+bearcad.ui.palette("Export STEP")  -- the command palette
+```
+
+## Connecting over MCP instead
+
+If BearCAD is already open, it can host a local MCP server — the **MCP Server** section of
+its AI pane — so you act on the document the user is looking at rather than one of your own.
+`bearcad mcp-install` prints the client configuration; `bearcad mcp` bridges stdio to the
+running app.
+
+## Rules of thumb
+
+1. **Start from the document, not from scratch.** If one is open, read it (`bearcad.count`,
+   `bearcad.get`, the Lua export) before changing anything.
+2. **One operation per call.** Especially fillets, chamfers and booleans — batching edges
+   into one call is the difference between one body and several.
+3. **Assert what you built.** Geometry that silently failed looks identical to geometry
+   that was never asked for.
+4. **Indices are ordinals in creation order** and shift when things are deleted. Prefer
+   names (`bearcad.find`) for anything you will refer to twice.
+5. **Prefer the declarative API.** Reach for `bearcad.ui.*` only to test an interaction or
+   to take a picture.

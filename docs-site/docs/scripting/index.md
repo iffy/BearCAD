@@ -163,3 +163,5 @@ bearcad.paste{ linked = true, z = 40 }  -- linked
   vertex, for scripted constraint authoring.
 - **[First-person mode (experimental)](/docs/scripting/first-person-mode)** — walking,
   flying, and scale, from a script.
+- **[AI agent skill](/docs/scripting/agent-skill)** — one page that teaches an AI agent this
+  API, installable into the AI tools on your machine.
