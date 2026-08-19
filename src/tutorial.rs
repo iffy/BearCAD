@@ -2496,51 +2496,29 @@ fn assist_chamfer_top_edges(app: &mut AppState) {
     let Some(extrusion) = app.doc.extrusions.keys().next() else {
         return;
     };
-    // Opposite cap edges in one op — adjacent edges on the same face share a corner.
-    let edges = vec![
-        (
-            crate::model::TreatableSolid::Extrusion(extrusion),
-            crate::model::ExtrusionEdgeRef::Cap {
-                face: 0,
-                edge: 0,
-                top: true,
-            },
-        ),
-        (
-            crate::model::TreatableSolid::Extrusion(extrusion),
-            crate::model::ExtrusionEdgeRef::Cap {
-                face: 0,
-                edge: 2,
-                top: true,
-            },
-        ),
-        (
-            crate::model::TreatableSolid::Extrusion(extrusion),
-            crate::model::ExtrusionEdgeRef::Cap {
-                face: 0,
-                edge: 1,
-                top: true,
-            },
-        ),
-        (
-            crate::model::TreatableSolid::Extrusion(extrusion),
-            crate::model::ExtrusionEdgeRef::Cap {
-                face: 0,
-                edge: 3,
-                top: true,
-            },
-        ),
-    ];
-    // Face-click fills every edge of the top; commit keeps the ones that don't share
-    // a corner. Then stack the remaining pair so all four edges of that side land.
+    let n = app
+        .doc
+        .extrusions
+        .get(extrusion)
+        .and_then(|ext| ext.faces.first())
+        .map(crate::extrude::side_face_count)
+        .unwrap_or(0);
+    // Every top-cap edge of the profile — the four remaining square sides plus the
+    // cutoff corner after the sketch chamfer.
+    let edges: Vec<_> = (0..n)
+        .map(|edge| {
+            (
+                crate::model::TreatableSolid::Extrusion(extrusion),
+                crate::model::ExtrusionEdgeRef::Cap {
+                    face: 0,
+                    edge,
+                    top: true,
+                },
+            )
+        })
+        .collect();
     let _ = app.apply(Action::CommitEdgeTreatments {
-        edges: vec![edges[0], edges[1]],
-        kind: crate::model::VertexTreatmentKind::Chamfer,
-        amount: 3.0,
-        expression: "3".into(),
-    });
-    let _ = app.apply(Action::CommitEdgeTreatments {
-        edges: vec![edges[2], edges[3]],
+        edges,
         kind: crate::model::VertexTreatmentKind::Chamfer,
         amount: 3.0,
         expression: "3".into(),
@@ -4777,8 +4755,8 @@ mod tests {
             .map(|op| op.edges.len())
             .sum();
         assert!(
-            treated >= 4,
-            "all four edges of one side should be chamfered, got {treated}, status={}",
+            treated >= 5,
+            "every edge of the top (four sides plus the cutoff) should be chamfered, got {treated}, status={}",
             app.status
         );
     }

@@ -9572,7 +9572,8 @@ fn extrude_profile(profile: &[Vec3], top: &[Vec3], triangles: &mut Vec<[Vec3; 3]
 // side-wall edge, and a side-wall-to-cap edge (see `ExtrusionEdgeRef`). There's no BREP kernel
 // here (SPEC §3.4/§10), so this doesn't attempt a true tangent-continuous curved surface, and
 // it doesn't attempt to blend a shared corner where 3+ treated edges would meet — see
-// `edge_treatment_conflicts`.
+// `edge_treatment_conflicts`. Two edges at a corner (every side of a clicked face) is
+// allowed.
 
 /// Number of segments used to facet a fillet edge-treatment bevel. Reuses
 /// [`crate::model::BEZIER_SEGMENTS`] directly: an edge-treatment fillet is the same
@@ -9679,23 +9680,24 @@ fn touched_vertex_rings(edge: ExtrusionEdgeRef, n: usize) -> [(usize, EdgeRing);
     }
 }
 
-/// Whether adding an edge treatment on `new` would make it share a `(vertex, ring)` with an
-/// *different* edge already treated on the same face in `existing` — a vertex miter, which
-/// this mesh-bevel approximation doesn't attempt to blend (SPEC §3.4: reject rather than try
-/// to combine three-or-more bevels at a shared corner). Re-treating the exact same edge (e.g.
-/// dragging its amount again) is not a conflict with itself.
+/// Whether adding `new` would put **three** treated edges at one `(vertex, ring)` — a
+/// vertex miter this mesh-bevel (and SPEC §3.4) does not blend. Two edges at a corner is
+/// a normal face chamfer (every adjacent side of a clicked face) and is allowed.
+/// Re-treating the exact same edge is not a conflict with itself.
 pub fn edge_treatment_conflicts(existing: &[EdgeTreatment], new: ExtrusionEdgeRef, n: usize) -> bool {
     if n == 0 {
         return false;
     }
-    let new_touch = touched_vertex_rings(new, n);
-    existing.iter().any(|t| {
-        t.edge.face() == new.face()
-            && t.edge != new
-            && touched_vertex_rings(t.edge, n)
-                .iter()
-                .any(|p| new_touch.contains(p))
-    })
+    let mut counts: std::collections::HashMap<(usize, EdgeRing), usize> =
+        std::collections::HashMap::new();
+    for t in existing.iter().filter(|t| t.edge.face() == new.face() && t.edge != new) {
+        for p in touched_vertex_rings(t.edge, n) {
+            *counts.entry(p).or_insert(0) += 1;
+        }
+    }
+    touched_vertex_rings(new, n)
+        .iter()
+        .any(|p| counts.get(p).copied().unwrap_or(0) + 1 >= 3)
 }
 
 /// Whether `edge` names a currently-treatable analytic edge of `solid` (#77/#1329).
@@ -10679,7 +10681,7 @@ fn apply_cap_edge_treatment(
 /// inset cap-ring point, the treated wall's own single raised point, and a *notch* (the bevel's
 /// full sample run, not just its endpoints) spliced into each untreated neighboring wall that
 /// used to share that corner; see [`apply_cap_edge_treatment`] for the full derivation. A given
-/// analytic edge conflicting with another at a shared vertex (a vertex miter) is rejected
+/// analytic edge that would make three treated edges meet at one vertex is rejected
 /// before it ever reaches here — see [`edge_treatment_conflicts`] — so this function doesn't
 /// attempt to resolve that itself; if the document somehow holds conflicting treatments anyway
 /// it applies them in order, later ones winning at a shared vertex, rather than panicking.
@@ -16345,22 +16347,35 @@ mod tests {
     }
 
     #[test]
-    fn edge_treatment_conflicts_detects_shared_vertex_not_the_same_edge() {
+    fn edge_treatment_conflicts_detects_a_three_edge_vertex_miter() {
         let n = 4;
         let existing = vec![EdgeTreatment {
             edge: ExtrusionEdgeRef::Vertical { face: 0, edge: 0 }, // touches vertex 1
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.0,
         }];
-        // Cap edge 0 touches vertices 0 and 1 (base ring) -> shares vertex 1 with the vertical.
-        assert!(edge_treatment_conflicts(
+        // One cap next to the vertical is two bevels at vertex 1 — a normal face-adjacent pair.
+        assert!(!edge_treatment_conflicts(
             &existing,
             ExtrusionEdgeRef::Cap { face: 0, edge: 0, top: false },
             n
         ));
-        // Cap edge 1 touches vertices 1 and 2 -> also shares vertex 1.
-        assert!(edge_treatment_conflicts(
+        assert!(!edge_treatment_conflicts(
             &existing,
+            ExtrusionEdgeRef::Cap { face: 0, edge: 1, top: false },
+            n
+        ));
+        // The *third* edge at the same base vertex is a vertex miter.
+        let two = vec![
+            existing[0].clone(),
+            EdgeTreatment {
+                edge: ExtrusionEdgeRef::Cap { face: 0, edge: 0, top: false },
+                kind: VertexTreatmentKind::Chamfer,
+                amount: 2.0,
+            },
+        ];
+        assert!(edge_treatment_conflicts(
+            &two,
             ExtrusionEdgeRef::Cap { face: 0, edge: 1, top: false },
             n
         ));
@@ -16370,10 +16385,8 @@ mod tests {
             ExtrusionEdgeRef::Vertical { face: 0, edge: 1 },
             n
         ));
-        // A top-cap edge sharing the same vertex on a *different* ring doesn't conflict, since
-        // the existing vertical treatment already reserves both rings at vertex 1 — wait, it
-        // does conflict (vertical reserves top too): edge 0's top-cap also touches vertex 1.
-        assert!(edge_treatment_conflicts(
+        // A top-cap next to the same vertical is still only two edges at that ring.
+        assert!(!edge_treatment_conflicts(
             &existing,
             ExtrusionEdgeRef::Cap { face: 0, edge: 0, top: true },
             n
@@ -16388,6 +16401,17 @@ mod tests {
         assert!(!edge_treatment_conflicts(
             &existing,
             ExtrusionEdgeRef::Cap { face: 1, edge: 0, top: false },
+            n
+        ));
+        // Adjacent cap edges of one face share a corner (two bevels) — not a miter.
+        let cap0 = vec![EdgeTreatment {
+            edge: ExtrusionEdgeRef::Cap { face: 0, edge: 0, top: true },
+            kind: VertexTreatmentKind::Chamfer,
+            amount: 2.0,
+        }];
+        assert!(!edge_treatment_conflicts(
+            &cap0,
+            ExtrusionEdgeRef::Cap { face: 0, edge: 1, top: true },
             n
         ));
     }

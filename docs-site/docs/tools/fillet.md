@@ -26,8 +26,9 @@ as you adjust it. This is how you round a profile *before* extruding.
 
 **On a solid:** with no sketch open, click an edge of a body — a vertical corner edge, an
 edge where a wall meets the top or bottom face, or the **round rim** of a cylinder or a
-drilled hole. Click more edges to round several with one radius (click again to drop
-one), then drag or type and press **Enter** — like the rounded bend in the
+drilled hole — or click a face to take every edge of that side. Click more edges to
+round several with one radius (click again to drop one), then drag or type and press
+**Enter** — like the rounded bend in the
 [Quickstart bracket](/docs/quickstart#5-round-the-bend).
 The Context pane lists the picked edges (each removable) and the **Radius**, with a ✓ to
 commit.

@@ -26,8 +26,9 @@ it off flat. Everything else works the same way —
   <img src={useBaseUrl("/img/screenshots/chamfer-sketch.png")} alt="A rectangle profile with its top-right corner chamfered flat" />
 </a>
 
-- **On a solid:** click an edge (click again to drop it), set the distance, **Enter**.
-  The Context pane mirrors the **Distance**, with a ✓ to commit.
+- **On a solid:** click an edge, or a face to take every edge of that side (click
+  again to drop it), set the distance, **Enter**. The Context pane mirrors the
+  **Distance**, with a ✓ to commit.
 
 <a
   href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/chamfer.bearcad.json"))}
@@ -35,7 +36,7 @@ it off flat. Everything else works the same way —
   rel="noopener noreferrer"
   title="Open this model in BearCAD"
 >
-  <img src={useBaseUrl("/img/screenshots/chamfer.png")} alt="A box with its two long top edges chamfered" />
+  <img src={useBaseUrl("/img/screenshots/chamfer.png")} alt="A box with every top edge chamfered" />
 </a>
 
 ## Help

@@ -1,6 +1,6 @@
 -- Documentation screenshot: the Chamfer tool on a solid (3D).
 --
--- An 80 x 50 x 20 mm box with its four top edges cut flat, from a fixed corner view
+-- An 80 x 50 x 20 mm box with every top edge cut flat, from a fixed corner view
 -- (the angular sibling of fillet.lua).
 --
 -- Output dir: $BEARCAD_SCREENSHOT_OUT (set by scripts/gen-doc-screenshots.sh),
@@ -19,14 +19,14 @@ bearcad.ui.pane("parameters", "hide")
 bearcad.rect{ x = 0, y = 0, width = 80, height = 50, name = "Base" }
 bearcad.extrude{ polygon = { 0, 1, 2, 3 }, distance = 20, name = "Block" }
 
--- Cut the two long top edges flat in one operation (opposite edges — bevels meeting at
--- a shared corner aren't supported). One call per edge would give two operations each
--- cutting the *same* sharp box, and the overlapping outputs would hide both (#672).
+-- Every top-cap edge in one operation (a face click does the same).
 bearcad.chamfer_edge{
   extrusion = 0,
   edges = {
     { kind = "cap", face = 0, edge = 0, top = true },
+    { kind = "cap", face = 0, edge = 1, top = true },
     { kind = "cap", face = 0, edge = 2, top = true },
+    { kind = "cap", face = 0, edge = 3, top = true },
   },
   distance = 6,
 }
