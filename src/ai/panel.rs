@@ -93,6 +93,9 @@ fn chat_section(ui: &mut egui::Ui, state: &mut AppState) {
 
     ui.add_space(4.0);
     thread(ui, state);
+    if let Some(run) = suggested_blocks(ui, state) {
+        action = Some(run);
+    }
     conversation_total(ui, state);
     ui.add_space(4.0);
 
@@ -230,6 +233,62 @@ fn thread(ui: &mut egui::Ui, state: &mut AppState) {
                 ui.add_space(6.0);
             }
         });
+}
+
+/// The Lua the last reply suggested (#1600), each block with a **Run** and a **Copy**.
+///
+/// Nothing here runs on its own. One click runs one block, through the ordinary script
+/// path, so Undo takes it back like any other edit.
+#[cfg(not(target_arch = "wasm32"))]
+fn suggested_blocks(ui: &mut egui::Ui, state: &mut AppState) -> Option<Action> {
+    let blocks = state.ai.borrow().chat.blocks();
+    if blocks.is_empty() {
+        return None;
+    }
+    let mut run = None;
+    ui.add_space(4.0);
+    for (index, block) in blocks.iter().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!("Suggested Lua {}", index + 1))
+                    .size(10.0)
+                    .weak(),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .small_button("Run")
+                    .on_hover_text("Run this block on the active document — undoable")
+                    .clicked()
+                {
+                    run = Some(Action::RunAiBlock { index });
+                }
+                if ui.small_button("Copy").clicked() {
+                    ui.ctx().copy_text(block.source.clone());
+                }
+            });
+        });
+        ui.add(
+            egui::TextEdit::multiline(&mut block.source.as_str())
+                .id_salt(("ai_block", block.entry, block.index))
+                .font(egui::TextStyle::Monospace)
+                .desired_width(f32::INFINITY),
+        );
+        match &block.outcome {
+            Some(Ok(status)) => {
+                ui.label(egui::RichText::new(format!("✓ {status}")).size(10.0).weak());
+            }
+            Some(Err(error)) => {
+                ui.label(
+                    egui::RichText::new(error)
+                        .size(10.0)
+                        .color(ui.visuals().error_fg_color),
+                );
+            }
+            None => {}
+        }
+        ui.add_space(4.0);
+    }
+    run
 }
 
 /// What this conversation has cost so far (#1599). Silent until a reply reports usage.

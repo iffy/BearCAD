@@ -2586,6 +2586,14 @@ pub enum Action {
     SetAiContextScope { scope: crate::ai::context::ContextScope },
     /// Start a backend's running cost total from zero (#1599).
     ResetAiBackendSpend { id: String },
+    /// Run one Lua block from the latest reply (#1600). Never automatic: this is only ever
+    /// the user clicking **Run** on that block, or a script asking for it by index.
+    RunAiBlock { index: usize },
+    /// Put a reply into the conversation without asking a backend for it (#1600).
+    ///
+    /// For canned conversations: documentation screenshots and tests need a thread with
+    /// something in it, and neither should need a network or an API key to get one.
+    SeedAiReply { question: String, reply: String },
     /// Turn help mode on, off, or (with `None`) the other way (#672): the Context pane's
     /// controls each grow a floating note explaining what they want.
     SetHelpMode(Option<bool>),
@@ -11963,6 +11971,39 @@ impl AppState {
                 self.ai.borrow_mut().chat.clear();
                 self.status = "Conversation cleared".to_string();
                 ActionResult::Ok
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::SeedAiReply { question, reply } => {
+                let mut ai = self.ai.borrow_mut();
+                let backend = ai
+                    .config
+                    .selected()
+                    .map(|b| b.id.clone())
+                    .unwrap_or_default();
+                ai.chat.seed(question, reply, backend);
+                drop(ai);
+                self.status = "Seeded an AI reply".to_string();
+                ActionResult::Ok
+            }
+            #[cfg(target_arch = "wasm32")]
+            Action::SeedAiReply { .. } => {
+                ActionResult::Err("AI chat is only available in the desktop app".to_string())
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::RunAiBlock { index } => {
+                let mut ai = self.ai.borrow_mut();
+                let Some(block) = ai.chat.blocks().into_iter().nth(index) else {
+                    return ActionResult::Err(format!("no code block {index} in the last reply"));
+                };
+                // The frame loop runs it: Lua needs the live app, not just the document.
+                ai.chat.pending_run = Some((block.entry, block.index, block.source));
+                drop(ai);
+                self.status = format!("Running block {}…", index + 1);
+                ActionResult::Ok
+            }
+            #[cfg(target_arch = "wasm32")]
+            Action::RunAiBlock { .. } => {
+                ActionResult::Err("AI chat is only available in the desktop app".to_string())
             }
             Action::ResetAiBackendSpend { id } => {
                 let mut ai = self.ai.borrow_mut();

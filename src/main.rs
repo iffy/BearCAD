@@ -3942,6 +3942,18 @@ impl App {
             }
         }
 
+        // A block the user clicked **Run** on (#1600). Never automatic — the action is only
+        // ever raised by that click or by an explicit `bearcad.ai.run_block(i)`.
+        let pending_run = self.state.ai.borrow_mut().chat.pending_run.take();
+        if let Some((entry, index, source)) = pending_run {
+            let outcome = self.run_lua_source(&source, ctx);
+            self.state
+                .ai
+                .borrow_mut()
+                .chat
+                .record_block_outcome(entry, index, outcome);
+        }
+
         // `bearcad.ai.context_preview()` (#1597): the script asks, the frame loop answers,
         // because only here is every open document reachable.
         if self.state.ai.borrow().preview_wanted {
@@ -3950,6 +3962,35 @@ impl App {
             let mut ai = self.state.ai.borrow_mut();
             ai.preview = Some(context);
             ai.preview_wanted = false;
+        }
+    }
+
+    /// Run a Lua snippet against the live app, to completion, and report what happened
+    /// (#1600).
+    ///
+    /// A nested runner, the same way `import_lua` replays an exported document — so the
+    /// snippet goes through the ordinary Instruction/Action path and Undo takes it back.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn run_lua_source(&mut self, source: &str, ctx: &egui::Context) -> Result<String, String> {
+        let mut runner = match ScriptRunner::from_lua_source(source) {
+            Ok(runner) => runner,
+            Err(e) => return Err(e.message),
+        };
+        runner.verbose = false;
+        // Bound the loop: a snippet that waits forever must not take the UI with it.
+        const MAX_TICKS: usize = 10_000;
+        let mut ticks = 0;
+        while !runner.done && ticks < MAX_TICKS {
+            runner.tick(&mut self.state, &mut self.synthetic, self.last_viewport, ctx);
+            ticks += 1;
+        }
+        self.rebind_active_document();
+        if !runner.done {
+            return Err("the block did not finish — it may be waiting on something".to_string());
+        }
+        match runner.error {
+            Some(error) => Err(error),
+            None => Ok(self.state.status.clone()),
         }
     }
 

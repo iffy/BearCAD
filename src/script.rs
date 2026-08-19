@@ -893,6 +893,10 @@ pub enum Instruction {
     SetAiContextScope { scope: crate::ai::context::ContextScope },
     /// Start a backend's running cost total from zero (#1599).
     ResetAiBackendSpend { id: String },
+    /// Run one Lua block from the latest reply (#1600).
+    RunAiBlock { index: usize },
+    /// Put a canned reply in the conversation, for screenshots and tests (#1600).
+    SeedAiReply { question: String, reply: String },
     AddParameter { name: String, expression: String },
     CreateParameterFromLineLength { line_index: usize, name: Option<String> },
     /// Create a derived (measured) parameter from a geometry source (#432).
@@ -2076,6 +2080,12 @@ impl Instruction {
             }
             Instruction::ResetAiBackendSpend { id } => {
                 format!("bearcad.ai.reset_usage({id:?})")
+            }
+            Instruction::RunAiBlock { index } => {
+                format!("bearcad.ai.run_block({index})")
+            }
+            Instruction::SeedAiReply { question, reply } => {
+                format!("bearcad.ai.seed_reply({question:?}, {reply:?})")
             }
             Instruction::SelectAiBackend { id } => {
                 format!("bearcad.ai.set_backend({id:?})")
@@ -7903,6 +7913,16 @@ impl ScriptRunner {
             }
             Instruction::ResetAiBackendSpend { id } => {
                 let result = state.apply(Action::ResetAiBackendSpend { id });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::RunAiBlock { index } => {
+                let result = state.apply(Action::RunAiBlock { index });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::SeedAiReply { question, reply } => {
+                let result = state.apply(Action::SeedAiReply { question, reply });
                 self.record_action_error(result);
                 StepResult::Continue
             }

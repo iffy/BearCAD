@@ -4850,6 +4850,58 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // The runnable Lua blocks in the latest reply (#1600), and running one. Running is
+    // always explicit — nothing here fires on its own.
+    api.set(
+        "ai_blocks",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let ai = unsafe { tick.state() }.ai.borrow();
+            let list = lua.create_table()?;
+            for (index, block) in ai.chat.blocks().iter().enumerate() {
+                let t = lua.create_table()?;
+                t.set("source", block.source.clone())?;
+                match &block.outcome {
+                    Some(Ok(status)) => {
+                        t.set("ran", true)?;
+                        t.set("status", status.clone())?;
+                    }
+                    Some(Err(error)) => {
+                        t.set("ran", true)?;
+                        t.set("error", error.clone())?;
+                    }
+                    None => t.set("ran", false)?,
+                }
+                list.set(index + 1, t)?;
+            }
+            Ok(list)
+        })?,
+    )?;
+
+    // A canned exchange, for documentation screenshots and tests: no backend, no network,
+    // no key, no cost.
+    api.set(
+        "ai_seed_reply",
+        lua.create_function(|lua, (question, reply): (String, String)| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::SeedAiReply { question, reply }) }
+        })?,
+    )?;
+
+    // Run one block by its 1-based position, matching `bearcad.ai.blocks()`.
+    api.set(
+        "ai_run_block",
+        lua.create_function(|lua, index: usize| {
+            if index == 0 {
+                return Err(mlua::Error::external(
+                    "block numbers start at 1".to_string(),
+                ));
+            }
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::RunAiBlock { index: index - 1 }) }
+        })?,
+    )?;
+
     api.set(
         "pane_rect",
         lua.create_function(|lua, pane: String| {
@@ -8219,6 +8271,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             streaming = "ai_streaming", messages = "ai_messages",
             context_scope = "ai_context_scope",
             usage = "ai_usage", reset_usage = "ai_reset_usage",
+            blocks = "ai_blocks", _run_block = "ai_run_block",
+            seed_reply = "ai_seed_reply",
             _request_context = "ai_request_context", _context = "ai_context",
         }
         for name, source in pairs(ai_funcs) do
@@ -8235,6 +8289,16 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
           local last = messages[#messages]
           if last and last.error then error(last.error, 2) end
           return last and last.text or ""
+        end
+
+        -- Run a suggested block and wait for it to finish, returning what it did. The
+        -- frame loop executes it, so this yields a frame like every other waiting call.
+        function bearcad.ai.run_block(index)
+          bearcad.ai._run_block(index)
+          coroutine.yield()
+          local block = bearcad.ai.blocks()[index]
+          if block and block.error then error(block.error, 2) end
+          return block and block.status or nil
         end
 
         -- What the next message would send, exactly (#1597). Assembled by the frame loop,

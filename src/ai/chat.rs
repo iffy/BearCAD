@@ -35,6 +35,52 @@ impl Default for Role {
     }
 }
 
+/// A runnable Lua block found in a reply (#1600).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodeBlock {
+    /// Which entry it came from.
+    pub entry: usize,
+    /// Its position within that entry, from zero.
+    pub index: usize,
+    /// The Lua itself, without the fences.
+    pub source: String,
+    /// Output or error from the last time the user ran it, shown under the block.
+    pub outcome: Option<Result<String, String>>,
+}
+
+/// Every ```lua block in `text`, in order. A block still being streamed — one whose closing
+/// fence has not arrived — is left out: half a script is not something to offer a Run button
+/// for.
+pub fn lua_blocks(text: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut current: Option<String> = None;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        match &mut current {
+            Some(block) => {
+                if trimmed == "```" {
+                    blocks.push(std::mem::take(block));
+                    current = None;
+                } else {
+                    block.push_str(line);
+                    block.push('\n');
+                }
+            }
+            None => {
+                // ```lua, ```Lua, or a bare ``` — the model is not always consistent, and a
+                // fenced block in a BearCAD answer is Lua unless it says otherwise.
+                if let Some(tag) = trimmed.strip_prefix("```") {
+                    let tag = tag.trim().to_ascii_lowercase();
+                    if tag.is_empty() || tag == "lua" {
+                        current = Some(String::new());
+                    }
+                }
+            }
+        }
+    }
+    blocks
+}
+
 /// The outcome of one [`Conversation::poll`].
 #[derive(Debug, Default)]
 pub struct PollResult {
@@ -67,6 +113,11 @@ pub struct Conversation {
     pub last_context: Option<Context>,
     /// The pane's input box. Lives here so a script can type into it too.
     pub input: String,
+    /// What each run of a code block produced, keyed by (entry, block index) (#1600).
+    pub block_outcomes: std::collections::HashMap<(usize, usize), Result<String, String>>,
+    /// A block the user clicked **Run** on, waiting for the frame loop to execute it. Only
+    /// the frame loop can run Lua against the live app.
+    pub pending_run: Option<(usize, usize, String)>,
 }
 
 impl std::fmt::Debug for Conversation {
@@ -191,6 +242,57 @@ impl Conversation {
             .filter(|e| !e.streaming && !e.text.trim().is_empty())
             .map(|e| ChatMessage { role: e.role, text: e.text.clone() })
             .collect()
+    }
+
+    /// Add a finished question-and-answer pair without contacting anything (#1600).
+    ///
+    /// The canned-conversation path: documentation screenshots and tests need a thread with
+    /// content, and neither should need an API key to get one. Usage stays zero — nothing
+    /// was spent, so nothing is billed.
+    pub fn seed(&mut self, question: String, reply: String, backend: String) {
+        self.entries.push(Entry {
+            role: Role::User,
+            text: question,
+            backend: backend.clone(),
+            ..Entry::default()
+        });
+        self.entries.push(Entry {
+            role: Role::Assistant,
+            text: reply,
+            backend,
+            ..Entry::default()
+        });
+    }
+
+    /// The runnable blocks in the most recent finished reply (#1600).
+    pub fn blocks(&self) -> Vec<CodeBlock> {
+        let Some((entry_index, entry)) = self
+            .entries
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, e)| e.role == Role::Assistant && !e.streaming)
+        else {
+            return Vec::new();
+        };
+        lua_blocks(&entry.text)
+            .into_iter()
+            .enumerate()
+            .map(|(index, source)| CodeBlock {
+                entry: entry_index,
+                index,
+                source,
+                outcome: self
+                    .block_outcomes
+                    .get(&(entry_index, index))
+                    .cloned(),
+            })
+            .collect()
+    }
+
+    /// Record what running a block did, so the pane can show it under that block.
+    pub fn record_block_outcome(&mut self, entry: usize, index: usize, outcome: Result<String, String>) {
+        self.block_outcomes.insert((entry, index), outcome);
     }
 
     /// Totals across the conversation so far (#1599 builds the cost view on this).
@@ -320,6 +422,71 @@ mod tests {
         assert!(chat.entries.is_empty());
         assert!(!chat.is_streaming());
         assert!(chat.last_context.is_none());
+    }
+
+    #[test]
+    fn lua_blocks_are_found_in_a_reply_and_half_written_ones_are_not() {
+        let reply = "Sure — widen it:\n\n```lua\nbearcad.rect{ width = 100 }\n```\n\nThen:\n\n```lua\nbearcad.extrude{ distance = 10 }\n```\n";
+        let blocks = lua_blocks(reply);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0], "bearcad.rect{ width = 100 }\n");
+        assert_eq!(blocks[1], "bearcad.extrude{ distance = 10 }\n");
+
+        // A block whose closing fence has not streamed in yet is not offered.
+        assert!(lua_blocks("here you go:\n```lua\nbearcad.rect{ wid").is_empty());
+        // Fenced blocks of another language are left alone.
+        assert!(lua_blocks("```python\nprint(1)\n```").is_empty());
+        // An untagged fence in a BearCAD answer is Lua.
+        assert_eq!(lua_blocks("```\nbearcad.new()\n```").len(), 1);
+    }
+
+    #[test]
+    fn blocks_come_from_the_latest_finished_reply_only() {
+        let mut chat = Conversation::default();
+        chat.entries.push(Entry {
+            role: Role::Assistant,
+            text: "old\n```lua\nbearcad.new()\n```".into(),
+            ..Entry::default()
+        });
+        chat.entries.push(Entry {
+            role: Role::User,
+            text: "and now?".into(),
+            ..Entry::default()
+        });
+        chat.entries.push(Entry {
+            role: Role::Assistant,
+            text: "new\n```lua\nbearcad.rect{ width = 5 }\n```".into(),
+            ..Entry::default()
+        });
+
+        let blocks = chat.blocks();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].source.trim(), "bearcad.rect{ width = 5 }");
+        assert_eq!(blocks[0].entry, 2);
+        assert!(blocks[0].outcome.is_none(), "not run yet");
+
+        // While a new reply streams in, the buttons stay on the last *finished* reply
+        // rather than disappearing — a half-written block is never offered, but the
+        // previous suggestion is still the one on screen.
+        chat.entries.last_mut().unwrap().streaming = true;
+        let blocks = chat.blocks();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].entry, 0, "falls back to the earlier finished reply");
+    }
+
+    #[test]
+    fn running_a_block_records_its_outcome_against_that_block() {
+        let mut chat = Conversation::default();
+        chat.entries.push(Entry {
+            role: Role::Assistant,
+            text: "```lua\nbearcad.rect{ width = 5 }\n```\n```lua\nbroken(\n```".into(),
+            ..Entry::default()
+        });
+        chat.record_block_outcome(0, 1, Err("syntax error".into()));
+        let blocks = chat.blocks();
+        assert_eq!(blocks.len(), 2);
+        assert!(blocks[0].outcome.is_none(), "the first block was never run");
+        assert_eq!(blocks[1].outcome, Some(Err("syntax error".into())));
     }
 
     #[test]
