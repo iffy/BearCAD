@@ -4774,6 +4774,8 @@ impl App {
             state.installed_at_unix = settings.installed_at_unix;
             state.animate_zoom_to_fit = settings.animate_zoom_to_fit;
             state.update_channel = settings.update_channel;
+            // AI backends live in their own 0600 file, not settings.json (#1595).
+            state.ai = ai::AiState::load();
         }
         if let Some(path) = document_path {
             match state.apply(Action::Open { path }) {
@@ -14467,6 +14469,17 @@ impl App {
 
         // Persist newly completed tutorials (#1241) without waiting for another
         // settings change — the pane reads from AppState, the file is the long-term copy.
+        // Persist AI backends the moment they change (#1595), the same way finished
+        // tutorials are written back — `ai.json` is the long-term copy, `state.ai` the live
+        // one. Written 0600 by `AiConfig::save`.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.state.ai.config_dirty {
+            if let Err(err) = self.state.ai.config.save() {
+                self.state.status = format!("Could not save AI backends: {err}");
+            }
+            self.state.ai.config_dirty = false;
+        }
+
         #[cfg(not(target_arch = "wasm32"))]
         if self.state.completed_tutorials_dirty {
             self.settings.completed_tutorials = self.state.completed_tutorials.clone();

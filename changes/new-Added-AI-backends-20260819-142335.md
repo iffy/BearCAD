@@ -1,0 +1,1 @@
+Added AI backends (Anthropic, OpenAI, xAI Grok, or any OpenAI-compatible server) that you add, pick and remove in the AI pane, with keys kept in an owner-only ai.json or read from an environment variable.

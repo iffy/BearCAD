@@ -875,6 +875,14 @@ pub enum Instruction {
     SetElementsView { mode: crate::hierarchy::HierarchyViewMode },
     /// Show/hide a UI pane. `None` toggles.
     SetPane { pane: Pane, visible: Option<bool> },
+    /// Add an AI backend (#1595).
+    AddAiBackend { backend: crate::ai::backends::Backend },
+    /// Replace a configured AI backend's settings, keeping its id.
+    UpdateAiBackend { id: String, backend: crate::ai::backends::Backend },
+    /// Remove a configured AI backend.
+    RemoveAiBackend { id: String },
+    /// Choose the AI backend the conversation uses.
+    SelectAiBackend { id: String },
     AddParameter { name: String, expression: String },
     CreateParameterFromLineLength { line_index: usize, name: Option<String> },
     /// Create a derived (measured) parameter from a geometry source (#432).
@@ -2026,6 +2034,30 @@ impl Instruction {
                     None => "toggle",
                 };
                 format!("bearcad.ui.pane({:?}, {verb:?})", pane.script_name())
+            }
+            Instruction::AddAiBackend { backend } => {
+                // `key_description` rather than the key: --show-commands output is pasted
+                // into bug reports (#1595).
+                format!(
+                    "bearcad.ai.add_backend{{ name = {:?}, provider = {:?}, model = {:?}, key = {:?} }}",
+                    backend.name,
+                    backend.provider.as_str(),
+                    backend.model,
+                    backend.key_description()
+                )
+            }
+            Instruction::UpdateAiBackend { id, backend } => {
+                format!(
+                    "bearcad.ai.update_backend({id:?}, {{ model = {:?}, key = {:?} }})",
+                    backend.model,
+                    backend.key_description()
+                )
+            }
+            Instruction::RemoveAiBackend { id } => {
+                format!("bearcad.ai.remove_backend({id:?})")
+            }
+            Instruction::SelectAiBackend { id } => {
+                format!("bearcad.ai.set_backend({id:?})")
             }
             Instruction::AddParameter { name, expression } => {
                 format!("bearcad.parameter(\"add\", {name:?}, {expression:?})")
@@ -7806,6 +7838,22 @@ impl ScriptRunner {
                     Some(v) => state.apply(Action::SetPaneVisible { pane, visible: v }),
                     None => state.apply(Action::TogglePane(pane)),
                 };
+                StepResult::Continue
+            }
+            Instruction::AddAiBackend { backend } => {
+                state.apply(Action::AddAiBackend { backend });
+                StepResult::Continue
+            }
+            Instruction::UpdateAiBackend { id, backend } => {
+                state.apply(Action::UpdateAiBackend { id, backend });
+                StepResult::Continue
+            }
+            Instruction::RemoveAiBackend { id } => {
+                state.apply(Action::RemoveAiBackend { id });
+                StepResult::Continue
+            }
+            Instruction::SelectAiBackend { id } => {
+                state.apply(Action::SelectAiBackend { id });
                 StepResult::Continue
             }
             Instruction::AddParameter { name, expression } => {

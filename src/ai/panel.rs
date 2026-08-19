@@ -1,12 +1,12 @@
 //! The AI pane's contents (#1594).
 //!
-//! Layout only: the three sections, in a fixed order, each collapsible. The sections fill
-//! in as the rest of #1593 lands. The pane is hidden by default and is opened from
-//! View ▸ Panes or the command palette ("AI pane").
+//! Three sections, in a fixed order, each collapsible. The pane is hidden by default and is
+//! opened from View ▸ Panes or the command palette ("AI pane").
 
 use eframe::egui;
 
-use crate::actions::AppState;
+use crate::actions::{Action, AppState};
+use crate::ai::backends::{Backend, KeySource, Provider};
 
 /// The pane's title, shown in its heading and (on phones) its window bar.
 pub const PANE_TITLE: &str = "AI";
@@ -50,12 +50,243 @@ fn section(
         });
 }
 
-fn chat_section(ui: &mut egui::Ui, _state: &mut AppState) {
+fn chat_section(ui: &mut egui::Ui, state: &mut AppState) {
+    backend_picker(ui, state);
+    ui.add_space(6.0);
     ui.label(
         egui::RichText::new("Add a backend to start a conversation about your documents.")
             .size(12.0)
             .weak(),
     );
+}
+
+/// The backend row: which service the conversation talks to, and the editor for adding and
+/// removing them (#1595).
+fn backend_picker(ui: &mut egui::Ui, state: &mut AppState) {
+    let selected = state.ai.config.selected().cloned();
+    let mut action: Option<Action> = None;
+
+    ui.horizontal(|ui| {
+        ui.label("Backend");
+        let label = selected
+            .as_ref()
+            .map(|b| b.name.clone())
+            .unwrap_or_else(|| "None".to_string());
+        egui::ComboBox::from_id_salt("ai_backend_picker")
+            .selected_text(label)
+            .show_ui(ui, |ui| {
+                for backend in &state.ai.config.backends {
+                    let picked = selected.as_ref().is_some_and(|s| s.id == backend.id);
+                    if ui.selectable_label(picked, &backend.name).clicked() && !picked {
+                        action = Some(Action::SelectAiBackend {
+                            id: backend.id.clone(),
+                        });
+                    }
+                }
+                if state.ai.config.backends.is_empty() {
+                    ui.label(egui::RichText::new("No backends yet").weak());
+                }
+            });
+    });
+
+    // A backend whose key has gone missing is the single most likely reason a message
+    // fails, so say it here rather than at send time.
+    if let Some(reason) = selected.as_ref().and_then(|b| b.unusable_reason()) {
+        ui.label(
+            egui::RichText::new(format!("⚠ {reason}"))
+                .size(11.0)
+                .color(ui.visuals().warn_fg_color),
+        );
+    }
+    if let Some(backend) = &selected {
+        ui.label(
+            egui::RichText::new(format!("{} · key {}", backend.model, backend.key_description()))
+                .size(11.0)
+                .weak(),
+        );
+    }
+
+    egui::CollapsingHeader::new("Manage backends")
+        .id_salt("ai_manage_backends")
+        .default_open(state.ai.config.backends.is_empty())
+        .show(ui, |ui| {
+            for backend in &state.ai.config.backends {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{} · {}", backend.name, backend.model))
+                            .size(12.0),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .small_button("Remove")
+                            .on_hover_text("Forget this backend and any key stored for it")
+                            .clicked()
+                        {
+                            action = Some(Action::RemoveAiBackend {
+                                id: backend.id.clone(),
+                            });
+                        }
+                    });
+                });
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} · {} · key {}",
+                        backend.provider.label(),
+                        backend.effective_base_url(),
+                        backend.key_description()
+                    ))
+                    .size(10.0)
+                    .weak(),
+                );
+                ui.add_space(4.0);
+            }
+            ui.separator();
+            if let Some(added) = add_backend_form(ui) {
+                action = Some(Action::AddAiBackend { backend: added });
+            }
+        });
+
+    if let Some(action) = action {
+        state.apply(action);
+    }
+}
+
+/// The "add a backend" form. Keeps its draft in egui memory — it is UI-only state, and a
+/// half-typed key has no business living in `AppState` (or reaching a script).
+fn add_backend_form(ui: &mut egui::Ui) -> Option<Backend> {
+    let id = ui.make_persistent_id("ai_add_backend_draft");
+    let mut draft: Draft = ui.data_mut(|d| d.get_temp(id).unwrap_or_default());
+    let mut added = None;
+
+    ui.horizontal(|ui| {
+        ui.label("Add");
+        egui::ComboBox::from_id_salt("ai_add_provider")
+            .selected_text(draft.provider.label())
+            .show_ui(ui, |ui| {
+                for &provider in Provider::ALL {
+                    if ui
+                        .selectable_label(draft.provider == provider, provider.label())
+                        .clicked()
+                        && draft.provider != provider
+                    {
+                        // Switching provider re-bases every default the user has not typed
+                        // over, so the model and URL always match the service.
+                        draft = Draft::for_provider(provider);
+                    }
+                }
+            });
+    });
+
+    let preset = Backend::preset(draft.provider);
+    labelled(ui, "Name", &mut draft.name, &preset.name);
+    labelled(ui, "Model", &mut draft.model, &preset.model);
+    labelled(ui, "URL", &mut draft.base_url, preset.effective_base_url());
+
+    ui.horizontal(|ui| {
+        ui.label("Key");
+        ui.selectable_value(&mut draft.key_mode, KeyMode::Env, "Env var")
+            .on_hover_text("Read at send time from an environment variable — nothing is stored");
+        ui.selectable_value(&mut draft.key_mode, KeyMode::Stored, "Paste")
+            .on_hover_text("Stored in ai.json, readable only by you");
+        ui.selectable_value(&mut draft.key_mode, KeyMode::None, "None")
+            .on_hover_text("A local server that needs no key");
+    });
+    match draft.key_mode {
+        KeyMode::Env => {
+            let hint = preset.provider.default_env_var().unwrap_or("API_KEY");
+            labelled(ui, "Var", &mut draft.key_env, hint);
+        }
+        KeyMode::Stored => {
+            ui.add(
+                egui::TextEdit::singleline(&mut draft.key)
+                    .password(true)
+                    .hint_text("sk-…")
+                    .desired_width(f32::INFINITY),
+            );
+        }
+        KeyMode::None => {}
+    }
+
+    if ui.button("Add backend").clicked() {
+        let name = non_empty(&draft.name, &preset.name);
+        added = Some(Backend {
+            id: String::new(),
+            name,
+            provider: draft.provider,
+            model: non_empty(&draft.model, &preset.model),
+            base_url: non_empty(&draft.base_url, preset.effective_base_url()),
+            key: match draft.key_mode {
+                KeyMode::None => KeySource::None,
+                KeyMode::Env => KeySource::Env(non_empty(
+                    &draft.key_env,
+                    preset.provider.default_env_var().unwrap_or("API_KEY"),
+                )),
+                KeyMode::Stored => KeySource::Stored(draft.key.clone()),
+            },
+        });
+        draft = Draft::for_provider(draft.provider);
+    }
+
+    ui.data_mut(|d| d.insert_temp(id, draft));
+    added
+}
+
+/// A labelled single-line field that shows the preset value as its placeholder, so leaving
+/// it blank is the same as accepting the default.
+fn labelled(ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        ui.add(
+            egui::TextEdit::singleline(value)
+                .hint_text(hint)
+                .desired_width(f32::INFINITY),
+        );
+    });
+}
+
+fn non_empty(value: &str, fallback: &str) -> String {
+    if value.trim().is_empty() {
+        fallback.to_string()
+    } else {
+        value.trim().to_string()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum KeyMode {
+    /// Read from an environment variable at send time — the default, because it stores
+    /// nothing.
+    #[default]
+    Env,
+    Stored,
+    None,
+}
+
+/// The add-backend form's in-progress values. Lives in egui memory for the pane's lifetime.
+#[derive(Clone, Debug, Default)]
+struct Draft {
+    provider: Provider,
+    name: String,
+    model: String,
+    base_url: String,
+    key_mode: KeyMode,
+    key_env: String,
+    key: String,
+}
+
+impl Draft {
+    fn for_provider(provider: Provider) -> Self {
+        Self {
+            provider,
+            // A local server usually wants no key at all; everything else defaults to the
+            // environment variable it conventionally uses.
+            key_mode: match provider.default_env_var() {
+                Some(_) => KeyMode::Env,
+                None => KeyMode::None,
+            },
+            ..Default::default()
+        }
+    }
 }
 
 fn skill_section(ui: &mut egui::Ui, _state: &mut AppState) {

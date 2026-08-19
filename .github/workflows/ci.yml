@@ -124,6 +124,9 @@ jobs:
           # Fixed large window so ground-coordinate clicks land in the 3D viewport
           # under Xvfb (no window manager to honor maximize). See BEARCAD_WINDOW.
           BEARCAD_WINDOW: 1280x800
+          # AI backend tests (#1595) write real config; point them at a throwaway file so
+          # they never touch the ai.json of the machine running them.
+          BEARCAD_AI_CONFIG: ${{ runner.temp }}/bearcad-ai.json
         run: |
           shopt -s nullglob
           tests=(tests/interaction/*.lua)

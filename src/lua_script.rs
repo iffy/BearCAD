@@ -346,6 +346,63 @@ pub fn scene_element_from_kind(
     }
 }
 
+/// Build a backend from a script table (#1595).
+///
+/// ```lua
+/// bearcad.ai.add_backend{ provider = "anthropic", name = "Claude", model = "claude-opus-5" }
+/// bearcad.ai.add_backend{ provider = "openai", key = "sk-..." }        -- stored in ai.json
+/// bearcad.ai.add_backend{ provider = "xai", key_env = "XAI_API_KEY" }  -- read from the env
+/// ```
+///
+/// `base` is the backend being edited, whose values fill in every field the table omits;
+/// for a new backend the provider's preset does that instead. A table naming neither `key`
+/// nor `key_env` keeps whatever key the backend already had — so editing a model does not
+/// silently drop a stored key.
+fn backend_from_table(
+    spec: &Table,
+    base: Option<&crate::ai::backends::Backend>,
+) -> mlua::Result<crate::ai::backends::Backend> {
+    use crate::ai::backends::{Backend, KeySource, Provider};
+
+    let provider = match spec.get::<Option<String>>("provider")? {
+        Some(name) => Provider::parse(&name)
+            .ok_or_else(|| mlua::Error::external(format!("unknown AI provider '{name}'")))?,
+        None => base.map(|b| b.provider).unwrap_or_default(),
+    };
+    // An explicit provider on an edit re-bases the defaults on that provider.
+    let defaults = match base {
+        Some(b) if b.provider == provider => b.clone(),
+        _ => Backend::preset(provider),
+    };
+
+    let key = match (
+        spec.get::<Option<String>>("key")?,
+        spec.get::<Option<String>>("key_env")?,
+    ) {
+        (Some(_), Some(_)) => {
+            return Err(mlua::Error::external(
+                "give either key or key_env, not both".to_string(),
+            ))
+        }
+        (Some(key), None) if key.trim().is_empty() => KeySource::None,
+        (Some(key), None) => KeySource::Stored(key),
+        (None, Some(var)) if var.trim().is_empty() => KeySource::None,
+        (None, Some(var)) => KeySource::Env(var),
+        (None, None) => defaults.key.clone(),
+    };
+
+    Ok(Backend {
+        id: spec.get::<Option<String>>("id")?.unwrap_or(defaults.id),
+        name: spec.get::<Option<String>>("name")?.unwrap_or(defaults.name),
+        provider,
+        model: spec.get::<Option<String>>("model")?.unwrap_or(defaults.model),
+        base_url: spec
+            .get::<Option<String>>("base_url")?
+            .unwrap_or(defaults.base_url),
+        key,
+    })
+}
+
 fn parse_visibility(value: Value) -> mlua::Result<Option<bool>> {
     match value {
         Value::Nil => Ok(None),
@@ -4522,6 +4579,88 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     // Last-frame pane rect in logical points (#1575), or nil when the pane is hidden.
+    // ── bearcad.ai.* (#1595) ────────────────────────────────────────────────────
+    // Registered flat here and moved into the `bearcad.ai` namespace by the prelude
+    // below, the same way `bearcad.ui.*` is built.
+
+    // The configured backends. **Never** carries a key: `key` is the description
+    // ("stored", "env:NAME", "none"), so a script — or an AI reading a script's output —
+    // cannot read a secret out of the app.
+    api.set(
+        "ai_backends",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            let list = lua.create_table()?;
+            for (index, backend) in state.ai.config.backends.iter().enumerate() {
+                let t = lua.create_table()?;
+                t.set("id", backend.id.clone())?;
+                t.set("name", backend.name.clone())?;
+                t.set("provider", backend.provider.as_str())?;
+                t.set("model", backend.model.clone())?;
+                t.set("base_url", backend.effective_base_url().to_string())?;
+                t.set("key", backend.key_description())?;
+                t.set("usable", backend.is_usable())?;
+                t.set("selected", state.ai.config.selected.as_deref() == Some(&backend.id))?;
+                list.set(index + 1, t)?;
+            }
+            Ok(list)
+        })?,
+    )?;
+
+    // The selected backend's id, or nil when none is configured.
+    api.set(
+        "ai_backend",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            Ok(match state.ai.config.selected() {
+                Some(backend) => Value::String(lua.create_string(&backend.id)?),
+                None => Value::Nil,
+            })
+        })?,
+    )?;
+
+    api.set(
+        "ai_add_backend",
+        lua.create_function(|lua, spec: Table| {
+            let backend = backend_from_table(&spec, None)?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::AddAiBackend { backend }) }
+        })?,
+    )?;
+
+    api.set(
+        "ai_update_backend",
+        lua.create_function(|lua, (id, spec): (String, Table)| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let existing = unsafe { tick.state() }
+                .ai
+                .config
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| mlua::Error::external(format!("no AI backend '{id}'")))?;
+            let backend = backend_from_table(&spec, Some(&existing))?;
+            unsafe { tick.exec(Instruction::UpdateAiBackend { id, backend }) }
+        })?,
+    )?;
+
+    api.set(
+        "ai_remove_backend",
+        lua.create_function(|lua, id: String| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::RemoveAiBackend { id }) }
+        })?,
+    )?;
+
+    api.set(
+        "ai_set_backend",
+        lua.create_function(|lua, id: String| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::SelectAiBackend { id }) }
+        })?,
+    )?;
+
     api.set(
         "pane_rect",
         lua.create_function(|lua, pane: String| {
@@ -7881,6 +8020,18 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         end
         -- Sketch-local (not viewport) manipulation, so it stays in the modeling namespace
         -- (#114); the ui aliases keep older scripts working.
+        -- Everything AI-related lives under `bearcad.ai.*` (#1593), mirroring bearcad.ui.
+        bearcad.ai = {}
+        local ai_funcs = {
+            backends = "ai_backends", backend = "ai_backend",
+            add_backend = "ai_add_backend", update_backend = "ai_update_backend",
+            remove_backend = "ai_remove_backend", set_backend = "ai_set_backend",
+        }
+        for name, source in pairs(ai_funcs) do
+            bearcad.ai[name] = bearcad[source]
+            bearcad[source] = nil
+        end
+
         bearcad.ui.drag_vertex = bearcad.drag_vertex
         bearcad.ui.drag_line = bearcad.drag_line
 

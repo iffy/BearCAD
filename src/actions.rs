@@ -2566,6 +2566,15 @@ pub enum Action {
     SetElementsViewMode { mode: crate::hierarchy::HierarchyViewMode },
     SetPaneVisible { pane: Pane, visible: bool },
     TogglePane(Pane),
+    /// Add an AI backend (#1595). The id is derived from the name and returned in the
+    /// status line; a colliding name gets a suffix rather than overwriting.
+    AddAiBackend { backend: crate::ai::backends::Backend },
+    /// Replace an existing backend's settings, keeping its id and the selection.
+    UpdateAiBackend { id: String, backend: crate::ai::backends::Backend },
+    /// Remove an AI backend. Removing the selected one moves the selection.
+    RemoveAiBackend { id: String },
+    /// Point the conversation at a configured backend.
+    SelectAiBackend { id: String },
     /// Turn help mode on, off, or (with `None`) the other way (#672): the Context pane's
     /// controls each grow a floating note explaining what they want.
     SetHelpMode(Option<bool>),
@@ -3537,6 +3546,11 @@ impl Action {
                     | Action::OrbitCamera { .. }
                     | Action::SetCommandPaletteOpen { .. }
                     | Action::SetPaneVisible { .. }
+                    // App configuration, not document content — never undoable.
+                    | Action::AddAiBackend { .. }
+                    | Action::UpdateAiBackend { .. }
+                    | Action::RemoveAiBackend { .. }
+                    | Action::SelectAiBackend { .. }
                     | Action::SetMcMasterWindow { .. }
                     | Action::SetReportIssueWindow { .. }
                     | Action::SetSettingsWindow { .. }
@@ -4194,6 +4208,9 @@ pub struct AppState {
     pub completed_tutorials: Vec<String>,
     /// Set when [`Self::completed_tutorials`] changes so the host can persist it.
     pub completed_tutorials_dirty: bool,
+    /// AI backends and (later) the conversation (#1593). Mirrored from `ai.json`; the host
+    /// writes it back when [`crate::ai::AiState::config_dirty`] is set.
+    pub ai: crate::ai::AiState,
     /// Unix seconds of first launch on this machine, if this was a fresh install
     /// (#1434). `None` is an upgrade (or unknown) — no 30-day launch tooltip.
     pub installed_at_unix: Option<i64>,
@@ -4487,6 +4504,7 @@ impl Default for AppState {
             changelog_open: false,
             completed_tutorials: Vec::new(),
             completed_tutorials_dirty: false,
+            ai: crate::ai::AiState::default(),
             installed_at_unix: None,
             tutorial_prompt: None,
             mcmaster_open: false,
@@ -11844,6 +11862,40 @@ impl AppState {
             Action::TogglePane(pane) => {
                 self.panes.toggle(pane);
                 self.status = pane_status(pane, self.panes.is_visible(pane));
+                ActionResult::Ok
+            }
+            Action::AddAiBackend { backend } => {
+                let name = backend.name.clone();
+                let id = self.ai.config.add(backend);
+                self.ai.config_dirty = true;
+                self.status = format!("Added AI backend {name} ({id})");
+                ActionResult::Ok
+            }
+            Action::UpdateAiBackend { id, backend } => {
+                let Some(existing) = self.ai.config.get_mut(&id) else {
+                    return ActionResult::Err(format!("no AI backend '{id}'"));
+                };
+                // The id is the handle scripts and the selection hold; editing the settings
+                // behind it must not invalidate them.
+                *existing = crate::ai::backends::Backend { id: id.clone(), ..backend };
+                self.ai.config_dirty = true;
+                self.status = format!("Updated AI backend {id}");
+                ActionResult::Ok
+            }
+            Action::RemoveAiBackend { id } => {
+                if !self.ai.config.remove(&id) {
+                    return ActionResult::Err(format!("no AI backend '{id}'"));
+                }
+                self.ai.config_dirty = true;
+                self.status = format!("Removed AI backend {id}");
+                ActionResult::Ok
+            }
+            Action::SelectAiBackend { id } => {
+                if let Err(e) = self.ai.config.select(&id) {
+                    return ActionResult::Err(e);
+                }
+                self.ai.config_dirty = true;
+                self.status = format!("AI backend: {id}");
                 ActionResult::Ok
             }
             Action::DragVertex { point, u, v } => {

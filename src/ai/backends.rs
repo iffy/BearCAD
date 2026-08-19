@@ -1,0 +1,575 @@
+//! AI backends: which service a conversation talks to, and where its key lives (#1595).
+//!
+//! A **backend** is one endpoint plus one model — "Claude (Opus 5)", "Ollama on this
+//! laptop". The user adds them, removes them, and picks which one the current conversation
+//! uses.
+//!
+//! Keys are the sensitive part, so they live in their own file — `ai.json`, next to
+//! `settings.json` but written **0600** — rather than in the shareable settings file. A key
+//! can also be left out of the file entirely by naming an environment variable to read it
+//! from, which is the safer option and the one an existing `ANTHROPIC_API_KEY` already
+//! satisfies.
+//!
+//! Nothing in this module's public surface returns a key. [`Backend::key_description`] says
+//! *where* the key comes from; only [`Backend::resolve_key`] — used by the transport, at
+//! the moment of the request — produces the secret itself, and `Debug` redacts it so a
+//! stray `{:?}` in a log line cannot leak it.
+
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+/// Which wire protocol a backend speaks.
+///
+/// Only two shapes exist in practice: Anthropic's Messages API, and OpenAI's chat
+/// completions, which xAI and every local server (Ollama, LM Studio, vLLM) also implement.
+/// [`Provider::XAi`] and [`Provider::OpenAiCompatible`] are separate variants so the UI can
+/// present them by name and default their URLs, not because the wire format differs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Provider {
+    #[default]
+    Anthropic,
+    OpenAi,
+    XAi,
+    /// Any endpoint speaking OpenAI's chat-completions shape: a local model server, a
+    /// gateway, a provider not listed above.
+    OpenAiCompatible,
+}
+
+impl Provider {
+    /// Every provider, in the order the "add a backend" UI offers them.
+    pub const ALL: &'static [Provider] = &[
+        Provider::Anthropic,
+        Provider::OpenAi,
+        Provider::XAi,
+        Provider::OpenAiCompatible,
+    ];
+
+    /// Stable name used in `ai.json` and in scripts.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Anthropic => "anthropic",
+            Self::OpenAi => "openai",
+            Self::XAi => "xai",
+            Self::OpenAiCompatible => "openai_compatible",
+        }
+    }
+
+    /// Human-readable name for the picker.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Anthropic => "Anthropic",
+            Self::OpenAi => "OpenAI",
+            Self::XAi => "xAI (Grok)",
+            Self::OpenAiCompatible => "OpenAI-compatible",
+        }
+    }
+
+    /// Parse a script/UI string. Accepts the vendor's common names as well as the stable
+    /// one, so `bearcad.ai.add_backend{ provider = "claude" }` works.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "anthropic" | "claude" => Some(Self::Anthropic),
+            "openai" | "chatgpt" | "gpt" => Some(Self::OpenAi),
+            "xai" | "grok" => Some(Self::XAi),
+            "openai_compatible" | "compatible" | "custom" | "local" | "ollama" => {
+                Some(Self::OpenAiCompatible)
+            }
+            _ => None,
+        }
+    }
+
+    /// The API root a new backend of this provider starts with. Editable afterwards — a
+    /// gateway or a self-hosted server is the whole point of the compatible variant.
+    pub fn default_base_url(self) -> &'static str {
+        match self {
+            Self::Anthropic => "https://api.anthropic.com",
+            Self::OpenAi => "https://api.openai.com/v1",
+            Self::XAi => "https://api.x.ai/v1",
+            // Ollama's OpenAI-compatible endpoint, the most common local server.
+            Self::OpenAiCompatible => "http://localhost:11434/v1",
+        }
+    }
+
+    /// The model a new backend starts with. A starting point only: models change faster
+    /// than releases do, so the backend editor lets the user type any name.
+    pub fn default_model(self) -> &'static str {
+        match self {
+            Self::Anthropic => "claude-opus-5",
+            Self::OpenAi => "gpt-5",
+            Self::XAi => "grok-4",
+            Self::OpenAiCompatible => "llama3.2",
+        }
+    }
+
+    /// The environment variable this provider's key conventionally lives in, which a new
+    /// backend defaults to reading. `None` for local servers, which usually want no key.
+    pub fn default_env_var(self) -> Option<&'static str> {
+        match self {
+            Self::Anthropic => Some("ANTHROPIC_API_KEY"),
+            Self::OpenAi => Some("OPENAI_API_KEY"),
+            Self::XAi => Some("XAI_API_KEY"),
+            Self::OpenAiCompatible => None,
+        }
+    }
+}
+
+/// Where a backend's API key comes from.
+///
+/// `Debug` is implemented by hand: deriving it would print the key.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeySource {
+    /// No key at all — a local server that does not ask for one.
+    #[default]
+    None,
+    /// Read at request time from this environment variable. Nothing is stored on disk.
+    Env(String),
+    /// The key itself, kept in `ai.json` (0600).
+    Stored(String),
+}
+
+impl std::fmt::Debug for KeySource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => write!(f, "None"),
+            Self::Env(var) => write!(f, "Env({var})"),
+            Self::Stored(_) => write!(f, "Stored(<redacted>)"),
+        }
+    }
+}
+
+/// One configured service: an endpoint, a model, and a key source.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Backend {
+    /// Stable slug, used by scripts and to remember the selection across restarts.
+    pub id: String,
+    /// What the picker shows.
+    pub name: String,
+    pub provider: Provider,
+    pub model: String,
+    /// API root. Empty means the provider's default.
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub key: KeySource,
+}
+
+impl Backend {
+    /// A backend with this provider's defaults, named after the provider.
+    pub fn preset(provider: Provider) -> Self {
+        Self {
+            id: provider.as_str().to_string(),
+            name: provider.label().to_string(),
+            provider,
+            model: provider.default_model().to_string(),
+            base_url: provider.default_base_url().to_string(),
+            key: match provider.default_env_var() {
+                Some(var) => KeySource::Env(var.to_string()),
+                None => KeySource::None,
+            },
+        }
+    }
+
+    /// The API root to call: the configured one, or the provider default when blank.
+    pub fn effective_base_url(&self) -> &str {
+        if self.base_url.trim().is_empty() {
+            self.provider.default_base_url()
+        } else {
+            self.base_url.trim_end_matches('/')
+        }
+    }
+
+    /// Where this backend's key comes from, in words — `"stored"`, `"env:NAME"`, `"none"`.
+    /// This is what scripts and the UI show; the key itself is never part of it.
+    pub fn key_description(&self) -> String {
+        match &self.key {
+            KeySource::None => "none".to_string(),
+            KeySource::Env(var) => format!("env:{var}"),
+            KeySource::Stored(_) => "stored".to_string(),
+        }
+    }
+
+    /// The key to send with a request, or `None` when this backend has none. The only
+    /// function in the module that yields the secret — call it at request time, do not
+    /// hold the result.
+    pub fn resolve_key(&self) -> Option<String> {
+        match &self.key {
+            KeySource::None => None,
+            KeySource::Env(var) => match std::env::var(var) {
+                Ok(value) if !value.trim().is_empty() => Some(value),
+                _ => None,
+            },
+            KeySource::Stored(key) if !key.trim().is_empty() => Some(key.clone()),
+            KeySource::Stored(_) => None,
+        }
+    }
+
+    /// Whether this backend can actually be used: a key is present, or none is needed.
+    pub fn is_usable(&self) -> bool {
+        matches!(self.key, KeySource::None) || self.resolve_key().is_some()
+    }
+
+    /// Why this backend cannot be used, for the UI to show next to it.
+    pub fn unusable_reason(&self) -> Option<String> {
+        if self.is_usable() {
+            return None;
+        }
+        match &self.key {
+            KeySource::Env(var) => Some(format!("${var} is not set")),
+            _ => Some("no API key".to_string()),
+        }
+    }
+}
+
+/// Every configured backend, plus which one the next message goes to.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiConfig {
+    #[serde(default)]
+    pub backends: Vec<Backend>,
+    /// Id of the selected backend. `None` when nothing is configured.
+    #[serde(default)]
+    pub selected: Option<String>,
+}
+
+impl AiConfig {
+    /// The backend the next message would use.
+    pub fn selected(&self) -> Option<&Backend> {
+        let id = self.selected.as_deref()?;
+        self.backends.iter().find(|b| b.id == id)
+    }
+
+    pub fn get(&self, id: &str) -> Option<&Backend> {
+        self.backends.iter().find(|b| b.id == id)
+    }
+
+    pub fn get_mut(&mut self, id: &str) -> Option<&mut Backend> {
+        self.backends.iter_mut().find(|b| b.id == id)
+    }
+
+    /// Add a backend, giving it a unique id derived from its name. Returns the id it got.
+    /// The first backend added becomes the selected one — otherwise a user who adds one
+    /// backend and types a message would be told nothing is selected.
+    pub fn add(&mut self, mut backend: Backend) -> String {
+        backend.id = self.unique_id(if backend.id.trim().is_empty() {
+            &backend.name
+        } else {
+            &backend.id
+        });
+        let id = backend.id.clone();
+        self.backends.push(backend);
+        if self.selected.is_none() {
+            self.selected = Some(id.clone());
+        }
+        id
+    }
+
+    /// Remove a backend. Removing the selected one moves the selection to whatever remains
+    /// (or clears it), so the app is never pointed at a backend that is gone.
+    pub fn remove(&mut self, id: &str) -> bool {
+        let Some(index) = self.backends.iter().position(|b| b.id == id) else {
+            return false;
+        };
+        self.backends.remove(index);
+        if self.selected.as_deref() == Some(id) {
+            self.selected = self.backends.first().map(|b| b.id.clone());
+        }
+        true
+    }
+
+    /// Point the next message at `id`. Fails if there is no such backend.
+    pub fn select(&mut self, id: &str) -> Result<(), String> {
+        if self.get(id).is_none() {
+            return Err(format!("no AI backend '{id}'"));
+        }
+        self.selected = Some(id.to_string());
+        Ok(())
+    }
+
+    /// A slug not already taken: `claude`, then `claude-2`, `claude-3`, …
+    fn unique_id(&self, from: &str) -> String {
+        let base = slug(from);
+        let base = if base.is_empty() { "backend".to_string() } else { base };
+        if !self.backends.iter().any(|b| b.id == base) {
+            return base;
+        }
+        (2..)
+            .map(|n| format!("{base}-{n}"))
+            .find(|candidate| !self.backends.iter().any(|b| &b.id == candidate))
+            .expect("an unused suffix exists")
+    }
+
+    /// Load from the standard location; missing or malformed → no backends, no error.
+    /// (Same policy as settings: a config file is never worth an error dialog at boot.)
+    pub fn load() -> Self {
+        config_path().map(|p| Self::load_from(&p)).unwrap_or_default()
+    }
+
+    pub fn load_from(path: &Path) -> Self {
+        std::fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self) -> Result<(), String> {
+        let path = config_path().ok_or("no config directory on this platform")?;
+        self.save_to(&path)
+    }
+
+    /// Write the file, owner-read/write only. The permissions are set **before** the key
+    /// is written, so the secret is never briefly world-readable.
+    pub fn save_to(&self, path: &Path) -> Result<(), String> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        let json = serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?;
+        create_private(path)?;
+        std::fs::write(path, json).map_err(|e| e.to_string())
+    }
+}
+
+/// Create (or truncate) `path` with owner-only permissions, before anything is written to
+/// it. On platforms without unix permissions this just makes sure the file exists.
+fn create_private(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|e| e.to_string())?;
+        // An existing file created before this ran (or by an older build) keeps its old
+        // mode through `create`, so set it explicitly too.
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
+/// Where the AI config lives: the same directory as `settings.json`, in its own file so
+/// the settings file stays free of secrets.
+///
+/// `BEARCAD_AI_CONFIG` overrides the location. Interaction tests and CI set it so a test
+/// that adds a backend cannot touch the real one on the machine running it.
+pub fn config_path() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("BEARCAD_AI_CONFIG") {
+        if !path.is_empty() {
+            return Some(PathBuf::from(path));
+        }
+    }
+    Some(crate::settings::settings_path()?.with_file_name("ai.json"))
+}
+
+/// Lowercase, hyphen-separated, alphanumeric — a stable id from a display name.
+fn slug(name: &str) -> String {
+    let mut out = String::new();
+    let mut prev_dash = false;
+    for ch in name.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.extend(ch.to_lowercase());
+            prev_dash = false;
+        } else if !out.is_empty() && !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("bearcad-ai-test-{name}.json"))
+    }
+
+    #[test]
+    fn presets_cover_every_provider_with_usable_defaults() {
+        for &provider in Provider::ALL {
+            let backend = Backend::preset(provider);
+            assert_eq!(backend.provider, provider);
+            assert!(!backend.model.is_empty(), "{provider:?} needs a model");
+            assert!(
+                backend.effective_base_url().starts_with("http"),
+                "{provider:?} needs a base URL"
+            );
+            assert_eq!(Provider::parse(provider.as_str()), Some(provider));
+        }
+        // The vendors' own names work too, so a script reads naturally.
+        assert_eq!(Provider::parse("claude"), Some(Provider::Anthropic));
+        assert_eq!(Provider::parse("grok"), Some(Provider::XAi));
+        assert_eq!(Provider::parse("ollama"), Some(Provider::OpenAiCompatible));
+    }
+
+    #[test]
+    fn adding_selects_the_first_backend_and_makes_ids_unique() {
+        let mut config = AiConfig::default();
+        assert!(config.selected().is_none());
+
+        let first = config.add(Backend::preset(Provider::Anthropic));
+        assert_eq!(config.selected().map(|b| b.id.as_str()), Some(first.as_str()));
+
+        // A second backend with a colliding name gets its own id, and does not steal the
+        // selection.
+        let second = config.add(Backend {
+            id: String::new(),
+            name: "Anthropic".into(),
+            ..Backend::preset(Provider::Anthropic)
+        });
+        assert_ne!(first, second);
+        assert_eq!(config.selected().map(|b| b.id.as_str()), Some(first.as_str()));
+
+        config.select(&second).expect("select the second");
+        assert_eq!(config.selected().map(|b| b.id.as_str()), Some(second.as_str()));
+        assert!(config.select("nope").is_err());
+    }
+
+    #[test]
+    fn removing_the_selected_backend_moves_the_selection() {
+        let mut config = AiConfig::default();
+        let first = config.add(Backend::preset(Provider::Anthropic));
+        let second = config.add(Backend::preset(Provider::OpenAi));
+        config.select(&second).unwrap();
+
+        assert!(config.remove(&second));
+        assert_eq!(config.selected().map(|b| b.id.as_str()), Some(first.as_str()));
+
+        assert!(config.remove(&first));
+        assert!(config.selected().is_none(), "nothing left to select");
+        assert!(!config.remove("gone"));
+    }
+
+    #[test]
+    fn a_stored_key_never_shows_up_in_a_description_or_a_debug_line() {
+        const SECRET: &str = "sk-super-secret-value";
+        let backend = Backend {
+            key: KeySource::Stored(SECRET.into()),
+            ..Backend::preset(Provider::OpenAi)
+        };
+        assert_eq!(backend.key_description(), "stored");
+        assert!(!backend.key_description().contains(SECRET));
+
+        // `{:?}` reaches logs and panics; it must not carry the key.
+        let debugged = format!("{backend:?}");
+        assert!(!debugged.contains(SECRET), "Debug leaked the key: {debugged}");
+        assert!(debugged.contains("redacted"));
+
+        // The transport, and only the transport, can still get it.
+        assert_eq!(backend.resolve_key().as_deref(), Some(SECRET));
+    }
+
+    #[test]
+    fn an_env_key_is_read_at_request_time_and_named_in_the_description() {
+        let var = "BEARCAD_TEST_AI_KEY";
+        let backend = Backend {
+            key: KeySource::Env(var.into()),
+            ..Backend::preset(Provider::Anthropic)
+        };
+        assert_eq!(backend.key_description(), format!("env:{var}"));
+
+        std::env::remove_var(var);
+        assert!(backend.resolve_key().is_none());
+        assert!(!backend.is_usable());
+        assert_eq!(
+            backend.unusable_reason().as_deref(),
+            Some("$BEARCAD_TEST_AI_KEY is not set")
+        );
+
+        std::env::set_var(var, "key-from-the-environment");
+        assert_eq!(backend.resolve_key().as_deref(), Some("key-from-the-environment"));
+        assert!(backend.is_usable());
+        std::env::remove_var(var);
+    }
+
+    #[test]
+    fn a_local_backend_with_no_key_is_usable() {
+        let backend = Backend::preset(Provider::OpenAiCompatible);
+        assert_eq!(backend.key_description(), "none");
+        assert!(backend.is_usable());
+        assert!(backend.unusable_reason().is_none());
+    }
+
+    #[test]
+    fn config_round_trips_through_its_file() {
+        let path = temp_path("round-trip");
+        let _ = std::fs::remove_file(&path);
+        let mut config = AiConfig::default();
+        config.add(Backend {
+            key: KeySource::Stored("sk-persisted".into()),
+            ..Backend::preset(Provider::Anthropic)
+        });
+        config.add(Backend::preset(Provider::OpenAiCompatible));
+        config.save_to(&path).expect("save");
+
+        let loaded = AiConfig::load_from(&path);
+        assert_eq!(loaded, config);
+        assert_eq!(loaded.selected().map(|b| b.provider), Some(Provider::Anthropic));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_malformed_file_means_no_backends_rather_than_an_error() {
+        let path = temp_path("malformed");
+        std::fs::write(&path, b"{ not json").unwrap();
+        assert_eq!(AiConfig::load_from(&path), AiConfig::default());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_saved_file_is_readable_only_by_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = temp_path("permissions");
+        let _ = std::fs::remove_file(&path);
+        // A pre-existing world-readable file must be tightened, not left as it was.
+        std::fs::write(&path, b"{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let mut config = AiConfig::default();
+        config.add(Backend {
+            key: KeySource::Stored("sk-secret".into()),
+            ..Backend::preset(Provider::OpenAi)
+        });
+        config.save_to(&path).expect("save");
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "ai.json holds API keys; it must be owner-only");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_config_location_can_be_overridden_for_tests() {
+        let path = temp_path("override");
+        std::env::set_var("BEARCAD_AI_CONFIG", &path);
+        assert_eq!(config_path(), Some(path));
+        std::env::remove_var("BEARCAD_AI_CONFIG");
+    }
+
+    #[test]
+    fn the_config_file_sits_beside_settings_but_apart_from_it() {
+        // Not while the override is in play (the tests above set it).
+        std::env::remove_var("BEARCAD_AI_CONFIG");
+        let (Some(ai), Some(settings)) = (config_path(), crate::settings::settings_path()) else {
+            return; // No home directory on this platform; nothing to check.
+        };
+        assert_eq!(ai.parent(), settings.parent());
+        assert_ne!(ai, settings, "keys do not belong in the settings file");
+        assert_eq!(ai.file_name().unwrap(), "ai.json");
+    }
+}
