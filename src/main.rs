@@ -3814,18 +3814,23 @@ impl App {
                 }
             }
             ui.add_space(12.0);
-            if self.state.skip_all_tutorials {
-                ui.label(
-                    egui::RichText::new("Tutorial prompts are off.")
-                        .size(12.0)
-                        .weak(),
-                );
-            } else if ui
-                .button(tutorial::SKIP_ALL_LABEL)
-                .on_hover_text("Hide the blue highlight and stop asking about tutorials")
+            if ui
+                .add_enabled(
+                    self.state.has_unfinished_tutorials(),
+                    egui::Button::new(tutorial::COMPLETE_ALL_LABEL),
+                )
                 .clicked()
             {
-                self.state.apply(Action::SkipAllTutorials { skip: true });
+                self.state.apply(Action::CompleteAllTutorials);
+            }
+            if ui
+                .add_enabled(
+                    !self.state.completed_tutorials.is_empty(),
+                    egui::Button::new(tutorial::UNSTART_ALL_LABEL),
+                )
+                .clicked()
+            {
+                self.state.apply(Action::UnstartAllTutorials);
             }
         });
         if let Some(index) = start {
@@ -4685,7 +4690,6 @@ impl App {
         {
             state.library_directory = settings.library_directory.clone();
             state.completed_tutorials = settings.completed_tutorials.clone();
-            state.skip_all_tutorials = settings.skip_all_tutorials;
             state.installed_at_unix = settings.installed_at_unix;
             state.animate_zoom_to_fit = settings.animate_zoom_to_fit;
             state.update_channel = settings.update_channel;
@@ -14376,18 +14380,15 @@ impl App {
         }
         self.show_tutorial_prompt(ctx);
 
-        // Persist newly completed tutorials (#1241) and skip-all (#1434) without waiting
-        // for another settings change — the pane reads from AppState, the file is the
-        // long-term copy.
+        // Persist newly completed tutorials (#1241) without waiting for another
+        // settings change — the pane reads from AppState, the file is the long-term copy.
         #[cfg(not(target_arch = "wasm32"))]
-        if self.state.completed_tutorials_dirty || self.state.skip_all_tutorials_dirty {
+        if self.state.completed_tutorials_dirty {
             self.settings.completed_tutorials = self.state.completed_tutorials.clone();
-            self.settings.skip_all_tutorials = self.state.skip_all_tutorials;
             if let Err(err) = self.settings.save() {
                 self.state.status = format!("Could not save settings: {err}");
             }
             self.state.completed_tutorials_dirty = false;
-            self.state.skip_all_tutorials_dirty = false;
         }
 
         if self.state.panes.is_visible(Pane::Hierarchy) {

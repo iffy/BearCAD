@@ -4621,16 +4621,19 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             Ok(list)
         })?,
     )?;
-    // #1434: skip prompting, install age, button highlight, launch tooltip.
+    // #1434: complete/unstart all, install age, button highlight, launch tooltip.
     api.set(
-        "skip_all_tutorials",
-        lua.create_function(|lua, skip: Option<bool>| {
+        "complete_all_tutorials",
+        lua.create_function(|lua, ()| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            if let Some(skip) = skip {
-                unsafe { tick.exec(Instruction::SkipAllTutorials { skip })? };
-            }
-            let state = unsafe { tick.state() };
-            Ok(state.skip_all_tutorials)
+            unsafe { tick.exec(Instruction::CompleteAllTutorials) }
+        })?,
+    )?;
+    api.set(
+        "unstart_all_tutorials",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::UnstartAllTutorials) }
         })?,
     )?;
     api.set(
@@ -7439,7 +7442,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "tutorial", "tutorial_next", "tutorial_assist", "tutorial_end", "tutorial_step",
             "tutorial_orb",
             "tutorial_pane", "tutorials",
-            "skip_all_tutorials", "install_age", "tutorial_highlight", "tutorial_prompt",
+            "complete_all_tutorials", "unstart_all_tutorials",
+            "install_age", "tutorial_highlight", "tutorial_prompt",
             "complete_tutorial",
             "touch",
             "os_open",
@@ -7688,13 +7692,12 @@ mod tests {
         );
     }
 
-    /// #1434: skip-all, install age, highlight, and the launch tooltip are scriptable.
+    /// #1434: complete-all / unstart-all, install age, highlight, and the launch tooltip.
     #[test]
-    fn tutorial_prompt_lua_drives_skip_age_and_fade() {
+    fn tutorial_prompt_lua_drives_complete_unstart_age_and_fade() {
         run_lua_expect_ok(
             r#"
             assert(bearcad.ui.tutorial_highlight(), "unfinished tutorials highlight")
-            assert(bearcad.ui.skip_all_tutorials() == false)
             assert(bearcad.ui.install_age() == nil, "default is an upgrade, not a fresh install")
             assert(bearcad.ui.tutorial_prompt() == nil)
 
@@ -7720,22 +7723,26 @@ mod tests {
             assert(bearcad.ui.tutorial_prompt() == nil, "faded away")
 
             bearcad.ui.tutorial_prompt("launch")
-            bearcad.ui.skip_all_tutorials(true)
-            assert(bearcad.ui.skip_all_tutorials())
-            assert(not bearcad.ui.tutorial_highlight(), "skip-all kills the blue button")
-            assert(bearcad.ui.tutorial_prompt() == nil, "skip-all kills the prompt")
+            bearcad.ui.complete_all_tutorials()
+            for _, t in ipairs(bearcad.ui.tutorials()) do
+              assert(t.completed, t.name .. " should be complete")
+            end
+            assert(not bearcad.ui.tutorial_highlight(), "all complete kills the blue button")
+            assert(bearcad.ui.tutorial_prompt() == nil, "all complete kills the prompt")
 
-            bearcad.ui.skip_all_tutorials(false)
-            assert(bearcad.ui.tutorial_highlight(), "unskip restores the highlight")
+            bearcad.ui.unstart_all_tutorials()
+            for _, t in ipairs(bearcad.ui.tutorials()) do
+              assert(not t.completed, t.name .. " should be unstarted")
+            end
+            assert(bearcad.ui.tutorial_highlight(), "unstart restores the highlight")
 
             bearcad.ui.install_age(40)
             assert(bearcad.ui.tutorial_prompt("launch") == nil, "past 30 days, no prompt")
             bearcad.ui.install_age(false)
             assert(bearcad.ui.install_age() == nil)
 
-            for _, t in ipairs(bearcad.ui.tutorials()) do
-              bearcad.ui.complete_tutorial(t.name)
-            end
+            bearcad.ui.complete_tutorial(bearcad.ui.tutorials()[1].name)
+            bearcad.ui.complete_all_tutorials()
             assert(not bearcad.ui.tutorial_highlight(), "all complete, no highlight")
             "#,
         );

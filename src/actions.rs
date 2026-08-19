@@ -2582,8 +2582,10 @@ pub enum Action {
     SetChangelogWindow { open: Option<bool> },
     /// Show/hide/toggle the Tutorials pane (#1241).
     SetTutorialPane { open: Option<bool> },
-    /// Suppress (or restore) the unfinished-tutorials highlight and launch prompt (#1434).
-    SkipAllTutorials { skip: bool },
+    /// Mark every registered tutorial complete.
+    CompleteAllTutorials,
+    /// Clear every tutorial completion check.
+    UnstartAllTutorials,
     /// Open/close the McMaster-Carr catalog window (#1022), optionally at a part number.
     SetMcMasterWindow { open: Option<bool>, part: Option<String> },
     /// Open/close the DEV Report issue window (#627 / #1477).
@@ -3540,7 +3542,8 @@ impl Action {
                     | Action::SetSettingsWindow { .. }
                     | Action::SetChangelogWindow { .. }
                     | Action::SetTutorialPane { .. }
-                    | Action::SkipAllTutorials { .. }
+                    | Action::CompleteAllTutorials
+                    | Action::UnstartAllTutorials
                     | Action::SetElementsViewMode { .. }
                     | Action::SetHomeView
                     | Action::ForceRebuildGeometry
@@ -4172,11 +4175,6 @@ pub struct AppState {
     pub completed_tutorials: Vec<String>,
     /// Set when [`Self::completed_tutorials`] changes so the host can persist it.
     pub completed_tutorials_dirty: bool,
-    /// User dismissed tutorial prompting (#1434). Mirrored from
-    /// [`crate::settings::AppSettings`].
-    pub skip_all_tutorials: bool,
-    /// Set when [`Self::skip_all_tutorials`] changes so the host can persist it.
-    pub skip_all_tutorials_dirty: bool,
     /// Unix seconds of first launch on this machine, if this was a fresh install
     /// (#1434). `None` is an upgrade (or unknown) — no 30-day launch tooltip.
     pub installed_at_unix: Option<i64>,
@@ -4471,8 +4469,6 @@ impl Default for AppState {
             changelog_open: false,
             completed_tutorials: Vec::new(),
             completed_tutorials_dirty: false,
-            skip_all_tutorials: false,
-            skip_all_tutorials_dirty: false,
             installed_at_unix: None,
             tutorial_prompt: None,
             mcmaster_open: false,
@@ -8862,7 +8858,7 @@ impl AppState {
         let dirty_before = self.dirty;
         let dismiss_prompt = matches!(
             action,
-            Action::SkipAllTutorials { skip: true }
+            Action::CompleteAllTutorials
                 | Action::StartTutorial { .. }
         );
         let check_tutorial_pane = matches!(action, Action::SetTutorialPane { .. });
@@ -8970,9 +8966,9 @@ impl AppState {
             .any(|t| !self.tutorial_completed(t.name))
     }
 
-    /// Bright-blue Tutorials button: unfinished walkthroughs, unless they skipped all (#1434).
+    /// Bright-blue Tutorials button: unfinished walkthroughs remain (#1434).
     pub fn tutorials_button_highlighted(&self) -> bool {
-        !self.skip_all_tutorials && self.has_unfinished_tutorials()
+        self.has_unfinished_tutorials()
     }
 
     /// Seconds since this fresh install, if we know it was one (#1434).
@@ -9051,15 +9047,20 @@ impl AppState {
         self.tutorial_prompt = None;
     }
 
-    pub fn set_skip_all_tutorials(&mut self, skip: bool) {
-        if self.skip_all_tutorials == skip {
+    /// Mark every registered walkthrough complete.
+    pub fn mark_all_tutorials_completed(&mut self) {
+        for tut in crate::tutorial::TUTORIALS {
+            self.mark_tutorial_completed(tut.name);
+        }
+    }
+
+    /// Clear every completion check so each walkthrough is unstarted.
+    pub fn unstart_all_tutorials(&mut self) {
+        if self.completed_tutorials.is_empty() {
             return;
         }
-        self.skip_all_tutorials = skip;
-        self.skip_all_tutorials_dirty = true;
-        if skip {
-            self.dismiss_tutorial_prompt();
-        }
+        self.completed_tutorials.clear();
+        self.completed_tutorials_dirty = true;
     }
 
     fn apply_action(&mut self, action: Action) -> ActionResult {
@@ -11407,13 +11408,14 @@ impl AppState {
                 };
                 ActionResult::Ok
             }
-            Action::SkipAllTutorials { skip } => {
-                self.set_skip_all_tutorials(skip);
-                self.status = if skip {
-                    "Tutorial prompts skipped".to_string()
-                } else {
-                    "Tutorial prompts restored".to_string()
-                };
+            Action::CompleteAllTutorials => {
+                self.mark_all_tutorials_completed();
+                self.status = "All tutorials marked complete".to_string();
+                ActionResult::Ok
+            }
+            Action::UnstartAllTutorials => {
+                self.unstart_all_tutorials();
+                self.status = "All tutorials marked unstarted".to_string();
                 ActionResult::Ok
             }
             Action::SetHelpMode(on) => {

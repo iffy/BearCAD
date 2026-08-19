@@ -225,8 +225,10 @@ pub const PROMPT_WINDOW_DAYS: f64 = 30.0;
 pub const PROMPT_FADE_AFTER_SECS: f32 = 3.0;
 /// Fade duration after [`PROMPT_FADE_AFTER_SECS`] (#1434).
 pub const PROMPT_FADE_SECS: f32 = 0.8;
-/// Label of the Tutorials pane button that suppresses prompting (#1434).
-pub const SKIP_ALL_LABEL: &str = "Skip all tutorials";
+/// Label of the Tutorials pane button that marks every walkthrough finished.
+pub const COMPLETE_ALL_LABEL: &str = "Mark all complete";
+/// Label of the Tutorials pane button that clears every completion check.
+pub const UNSTART_ALL_LABEL: &str = "Mark all unstarted";
 
 /// The first-launch tooltip that points at the Tutorials button (#1434).
 #[derive(Clone, Debug, PartialEq)]
@@ -3658,7 +3660,7 @@ mod tests {
             .collect()
     }
 
-    /// #1434: unfinished tutorials light the status-bar button unless the user skipped all.
+    /// #1434: unfinished tutorials light the status-bar button.
     #[test]
     fn unfinished_tutorials_highlight_the_button() {
         let mut app = AppState::default();
@@ -3681,35 +3683,73 @@ mod tests {
         );
     }
 
-    /// #1434: Skip all tutorials kills the blue button and any launch prompt.
+    /// Mark all complete finishes every walkthrough and kills the blue button / launch prompt.
     #[test]
-    fn skip_all_tutorials_suppresses_highlight_and_prompt() {
+    fn complete_all_tutorials_marks_every_walkthrough_and_clears_prompt() {
         let mut app = AppState::default();
         app.set_install_age_days(Some(1.0));
         app.prepare_tutorial_prompt();
         assert!(app.tutorials_button_highlighted());
         assert_eq!(app.tutorial_prompt_text(), Some(PROMPT_TEXT));
+        app.mark_tutorial_completed(TUTORIALS[0].name);
 
-        app.apply(Action::SkipAllTutorials { skip: true });
-        assert!(app.skip_all_tutorials);
-        assert!(app.skip_all_tutorials_dirty);
+        app.apply(Action::CompleteAllTutorials);
+        assert!(app.completed_tutorials_dirty);
+        for tut in TUTORIALS {
+            assert!(
+                app.tutorial_completed(tut.name),
+                "{} should be complete",
+                tut.name
+            );
+        }
+        assert!(!app.has_unfinished_tutorials());
         assert!(
             !app.tutorials_button_highlighted(),
-            "skip-all suppresses the blue button"
+            "all complete drops the blue button"
         );
         assert!(
             app.tutorial_prompt_text().is_none(),
-            "skip-all dismisses the launch prompt"
-        );
-        assert!(
-            app.has_unfinished_tutorials(),
-            "skip-all does not mark walkthroughs complete"
+            "all complete dismisses the launch prompt"
         );
 
         app.prepare_tutorial_prompt();
         assert!(
             app.tutorial_prompt_text().is_none(),
-            "skip-all also blocks re-arming the prompt"
+            "all complete also blocks re-arming the prompt"
+        );
+    }
+
+    /// Mark all unstarted clears every completion check and restores the highlight.
+    #[test]
+    fn unstart_all_tutorials_clears_completion() {
+        let mut app = AppState::default();
+        app.set_install_age_days(Some(1.0));
+        for tut in TUTORIALS {
+            app.mark_tutorial_completed(tut.name);
+        }
+        app.completed_tutorials_dirty = false;
+        assert!(!app.tutorials_button_highlighted());
+
+        app.apply(Action::UnstartAllTutorials);
+        assert!(app.completed_tutorials_dirty);
+        for tut in TUTORIALS {
+            assert!(
+                !app.tutorial_completed(tut.name),
+                "{} should be unstarted",
+                tut.name
+            );
+        }
+        assert!(app.has_unfinished_tutorials());
+        assert!(
+            app.tutorials_button_highlighted(),
+            "unstarted walkthroughs light the button again"
+        );
+
+        app.prepare_tutorial_prompt();
+        assert_eq!(
+            app.tutorial_prompt_text(),
+            Some(PROMPT_TEXT),
+            "unstarting lets the launch prompt arm again"
         );
     }
 

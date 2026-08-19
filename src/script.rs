@@ -897,8 +897,10 @@ pub enum Instruction {
     SetChangelogWindow { open: Option<bool> },
     /// Show/hide/toggle the Tutorials pane (#1241).
     SetTutorialPane { open: Option<bool> },
-    /// Suppress (or restore) unfinished-tutorial highlighting and the launch prompt (#1434).
-    SkipAllTutorials { skip: bool },
+    /// Mark every registered tutorial complete.
+    CompleteAllTutorials,
+    /// Clear every tutorial completion check.
+    UnstartAllTutorials,
     /// Open/close the McMaster-Carr catalog window (#1022).
     SetMcMasterWindow { open: Option<bool>, part: Option<String> },
     /// Open/close the DEV Report issue window (#627 / #1477).
@@ -2126,8 +2128,11 @@ impl Instruction {
                 };
                 format!("bearcad.ui.tutorial_pane({verb:?})")
             }
-            Instruction::SkipAllTutorials { skip } => {
-                format!("bearcad.ui.skip_all_tutorials({skip})")
+            Instruction::CompleteAllTutorials => {
+                "bearcad.ui.complete_all_tutorials()".to_string()
+            }
+            Instruction::UnstartAllTutorials => {
+                "bearcad.ui.unstart_all_tutorials()".to_string()
             }
             Instruction::SetMcMasterWindow { open, part } => {
                 let verb = match open {
@@ -3339,7 +3344,8 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         Action::SetSettingsWindow { open } => Some(Instruction::SetSettingsWindow { open: *open }),
         Action::SetChangelogWindow { open } => Some(Instruction::SetChangelogWindow { open: *open }),
         Action::SetTutorialPane { open } => Some(Instruction::SetTutorialPane { open: *open }),
-        Action::SkipAllTutorials { skip } => Some(Instruction::SkipAllTutorials { skip: *skip }),
+        Action::CompleteAllTutorials => Some(Instruction::CompleteAllTutorials),
+        Action::UnstartAllTutorials => Some(Instruction::UnstartAllTutorials),
         Action::SetMcMasterWindow { open, part } => Some(Instruction::SetMcMasterWindow {
             open: *open,
             part: part.clone(),
@@ -7721,8 +7727,12 @@ impl ScriptRunner {
                 state.apply(Action::SetTutorialPane { open });
                 StepResult::Continue
             }
-            Instruction::SkipAllTutorials { skip } => {
-                state.apply(Action::SkipAllTutorials { skip });
+            Instruction::CompleteAllTutorials => {
+                state.apply(Action::CompleteAllTutorials);
+                StepResult::Continue
+            }
+            Instruction::UnstartAllTutorials => {
+                state.apply(Action::UnstartAllTutorials);
                 StepResult::Continue
             }
             Instruction::DeleteParameter { index } => {
