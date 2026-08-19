@@ -6214,10 +6214,10 @@ pub fn face_snap_on_face_point(
     })
 }
 
-/// World bounds of the current selection (#164):/// World bounds of the current selection (#164): union of every selected element's own
+/// World bounds of the current selection (#164): union of every selected element's own
 /// geometry (a body's solid, an extrusion's solid, a line/circle's sampled points, a point's
-/// position). `None` when nothing in the selection has world extent (then zoom-to-fit falls
-/// back to the whole document).
+/// position, a tracing image's displayed quad). `None` when nothing in the selection has
+/// world extent (then zoom-to-fit falls back to the whole document).
 pub fn selection_world_bounds(
     doc: &Document,
     selection: &crate::selection::SceneSelection,
@@ -6503,6 +6503,14 @@ pub fn selection_world_bounds(
                     }
                 }
             }
+            // A tracing image frames its displayed quad (#1584).
+            SceneElement::Image(ii) => {
+                if let Some(corners) = crate::construction::tracing_image_corners(doc, ii) {
+                    for p in corners {
+                        extend(p);
+                    }
+                }
+            }
             SceneElement::Sketch(_)
             | SceneElement::ConstructionPlane(_)
             | SceneElement::Constraint(_)
@@ -6528,7 +6536,6 @@ pub fn selection_world_bounds(
             | SceneElement::SketchSliceOp(_)
             | SceneElement::SketchText(_)
             | SceneElement::Component(_)
-            | SceneElement::Image(_)
             | SceneElement::Drawing(_) => {}
         }
     }
@@ -12542,6 +12549,40 @@ mod tests {
         assert!((max.x - min.x - 10.0).abs() < 1e-3, "covers the cap's x extent");
         assert!((max.y - min.y - 10.0).abs() < 1e-3, "covers the cap's y extent");
         assert!(max.z - min.z < 1e-3, "the cap is flat");
+    }
+
+    /// #1584: a selected tracing image contributes its displayed quad, so zoom-to-fit
+    /// frames the image instead of falling back to the rest of the document.
+    #[test]
+    fn selection_bounds_cover_a_tracing_image() {
+        let mut doc = Document::default();
+        let image = doc.tracing_images.insert(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "trace".to_string(),
+            plane: pkey(0),
+            origin: (100.0, 200.0),
+            width_mm: 40.0,
+            height_mm: 20.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
+            name: None,
+            calibration: None,
+            base_origin: None,
+        });
+        let mut selection = crate::selection::SceneSelection::default();
+        selection.insert(crate::hierarchy::SceneElement::Image(image));
+        let (min, max) = selection_world_bounds(&doc, &selection).expect("image has extent");
+        assert!(
+            (min.x - 100.0).abs() < 1e-3 && (max.x - 140.0).abs() < 1e-3,
+            "covers the image x extent, got {min:?}..{max:?}"
+        );
+        assert!(
+            (min.y - 200.0).abs() < 1e-3 && (max.y - 220.0).abs() < 1e-3,
+            "covers the image y extent, got {min:?}..{max:?}"
+        );
+        assert!(
+            min.z.abs() < 1e-3 && max.z.abs() < 1e-3,
+            "the image lies on the ground plane, got {min:?}..{max:?}"
+        );
     }
 
     /// #1379: shifting a Free-move selection's bounds by the live translation shifts every
