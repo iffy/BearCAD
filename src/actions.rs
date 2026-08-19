@@ -19749,6 +19749,15 @@ pub fn apply_pick(
         (P::MoveTargets, SceneElement::Image(ii)) => {
             let cm = state.creating_move.get_or_insert_with(CreatingMove::default);
             crate::element_picker::toggle_picked(&mut cm.image_targets, *ii);
+            // Point/Face Snap have nothing to snap on an image. An image-only set
+            // switches to Free so the translation gizmos come up (#1587).
+            if !cm.image_targets.is_empty()
+                && cm.targets.is_empty()
+                && cm.instance_targets.is_empty()
+                && cm.translate_mode.is_snap()
+            {
+                cm.translate_mode = crate::model::MoveTranslateMode::Free;
+            }
             true
         }
         (P::RepeatTargets, SceneElement::ConstructionPlane(pi)) => {
@@ -20309,7 +20318,12 @@ pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
         };
         let shift = glam::Vec3::new(mm(&cm.tx), mm(&cm.ty), mm(&cm.tz));
         let bounds =
-            crate::extrude::free_move_targets_bounds(&state.doc, &cm.targets, &cm.plane_targets);
+            crate::extrude::free_move_targets_bounds(
+                &state.doc,
+                &cm.targets,
+                &cm.plane_targets,
+                &cm.image_targets,
+            );
         let spacing = crate::extrude::free_move_gizmo_min_spacing_world(
             &state.cam,
             state.viewport_aspect,
@@ -22880,6 +22894,37 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             "translations add up to +30, got {:?}",
             state.doc.tracing_images[image].origin
         );
+    }
+
+    /// #1587: picking an image into an empty Move set switches to Free so gizmos appear.
+    #[test]
+    fn picking_an_image_into_move_switches_to_free() {
+        let mut state = AppState::default();
+        state.tool = Tool::Move;
+        let image = state.doc.tracing_images.insert(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "trace".to_string(),
+            plane: pkey(0),
+            origin: (0.0, 0.0),
+            width_mm: 100.0,
+            height_mm: 60.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
+            name: None,
+            calibration: None,
+            base_origin: None,
+        });
+        state.creating_move = Some(CreatingMove {
+            translate_mode: crate::model::MoveTranslateMode::PointSnap,
+            ..Default::default()
+        });
+        assert!(apply_pick(
+            &mut state,
+            crate::context::PickerTarget::MoveTargets,
+            &crate::hierarchy::SceneElement::Image(image),
+        ));
+        let cm = state.creating_move.as_ref().unwrap();
+        assert_eq!(cm.image_targets, vec![image]);
+        assert_eq!(cm.translate_mode, crate::model::MoveTranslateMode::Free);
     }
 
     /// #409: a selected wrapped text exposes a `text_width` gizmo; driving it re-wraps the

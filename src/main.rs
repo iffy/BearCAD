@@ -8940,15 +8940,14 @@ impl App {
         );
     }
 
-    /// Move tool (#176/#183): click bodies to toggle them into the move set; clicking a
-    /// line picks it as the rotation axis. Enter commits.
-    #[allow(clippy::too_many_arguments)]
     /// Whether Free Move's rotation/translation handles are on screen (#1423): Free
-    /// mode with at least one body or plane to move.
+    /// mode with at least one body, plane, or tracing image to move (#1587).
     fn free_move_gizmos_live(&self) -> bool {
         self.state.creating_move.as_ref().is_some_and(|cm| {
             cm.translate_mode == crate::model::MoveTranslateMode::Free
-                && (!cm.targets.is_empty() || !cm.plane_targets.is_empty())
+                && (!cm.targets.is_empty()
+                    || !cm.plane_targets.is_empty()
+                    || !cm.image_targets.is_empty())
         })
     }
 
@@ -8965,7 +8964,12 @@ impl App {
             return None;
         }
         let doc = &self.state.doc;
-        let (min, max) = extrude::free_move_targets_bounds(doc, &cm.targets, &cm.plane_targets)?;
+        let (min, max) = extrude::free_move_targets_bounds(
+            doc,
+            &cm.targets,
+            &cm.plane_targets,
+            &cm.image_targets,
+        )?;
         let mm = |s: &str| crate::value::eval_length_mm_in_doc(s, doc).unwrap_or(0.0);
         let translations = [mm(&cm.tx), mm(&cm.ty), mm(&cm.tz)];
         // The arrows ride the preview: shift the anchor AABB by the live Free translation so
@@ -8996,7 +9000,12 @@ impl App {
         }
         let cm = self.state.creating_move.as_ref()?;
         let (min, max) =
-            extrude::free_move_targets_bounds(&self.state.doc, &cm.targets, &cm.plane_targets)?;
+            extrude::free_move_targets_bounds(
+                &self.state.doc,
+                &cm.targets,
+                &cm.plane_targets,
+                &cm.image_targets,
+            )?;
         // The rings ride the preview too (#1379): shift the centre by the live Free
         // translation so they orbit the moving body rather than the original.
         let mm = |s: &str| crate::value::eval_length_mm_in_doc(s, &self.state.doc).unwrap_or(0.0);
@@ -9028,7 +9037,12 @@ impl App {
             return None;
         }
         let (min, max) =
-            extrude::free_move_targets_bounds(&self.state.doc, &cm.targets, &cm.plane_targets)?;
+            extrude::free_move_targets_bounds(
+                &self.state.doc,
+                &cm.targets,
+                &cm.plane_targets,
+                &cm.image_targets,
+            )?;
         let mm = |s: &str| crate::value::eval_length_mm_in_doc(s, &self.state.doc).unwrap_or(0.0);
         let shift = Vec3::new(mm(&cm.tx), mm(&cm.ty), mm(&cm.tz));
         extrude::free_move_rotation_rings(
@@ -9366,6 +9380,9 @@ impl App {
         false
     }
 
+    /// Move tool (#176/#183): click bodies (or tracing images, #1587) to toggle them into
+    /// the move set. Enter commits.
+    #[allow(clippy::too_many_arguments)]
     fn handle_move_tool(
         &mut self,
         ui: &egui::Ui,
@@ -9375,6 +9392,7 @@ impl App {
         viewport: egui::Rect,
         vp: &glam::Mat4,
         pick_occlusion: Option<&construction::PickOcclusion>,
+        tool_pickers: &[context::ToolPickerView],
     ) {
         // In-sketch selection gizmo (#306): a centred free-drag handle plus u/v arrows to
         // translate the whole selection. Runs before the text ring and the session gate.
@@ -9768,61 +9786,18 @@ impl App {
             }
             return;
         }
-        let gp = cam.ground_point(pp, viewport, vp);
-        let Some(target) = resolve_pick_target(pp, project, gp, &self.state.doc, pick_occlusion)
-        else {
-            return;
-        };
-        let Some(bi) = self.pick_whole_body(pp, project, cam, &target.kind) else {
-            // No body under the cursor: a click on a tracing image's quad toggles the
-            // image into the move set (#425) — images previously joined only from the
-            // Elements pane.
-            if let Some(ii) = self.pick_tracing_image(pp, viewport, vp, cam) {
-                let cm = self
-                    .state
-                    .creating_move
-                    .get_or_insert_with(actions::CreatingMove::default);
-                if let Some(pos) = cm.image_targets.iter().position(|i| *i == ii) {
-                    cm.image_targets.remove(pos);
-                } else {
-                    cm.image_targets.push(ii);
-                }
-                self.state.status =
-                    format!("Move: {} image(s) picked", cm.image_targets.len());
-            }
-            return;
-        };
-        if self.state.doc.bodies.get(bi).is_some_and(|b| b.shadow) {
-            self.state.status =
-                "That body is already consumed by another operation".to_string();
+        // Bodies, unit instances, and tracing images (#1587) all go through the focused
+        // picker, so a click takes what hover lights up.
+        if !self.click_into_focused_picker(tool_pickers, pp, project, pick_occlusion) {
             return;
         }
-        // A unit's materialized body (#735/#1406): what moves is the *instance* — its
-        // placement transform — so the click gathers the instance into the move's
-        // `instance_targets`, not the raw body into `targets` (which would spawn a
-        // detached Moved output body beside the unit in the Elements pane).
-        if let Some(crate::model::BodySource::UnitInstance(instance)) =
-            self.state.doc.bodies.get(bi).map(|b| b.source.clone())
-        {
-            let cm = self
-                .state
-                .creating_move
-                .get_or_insert_with(actions::CreatingMove::default);
-            crate::element_picker::toggle_picked(&mut cm.instance_targets, instance);
-            self.state.status =
-                format!("Move: {} instance(s) picked", cm.instance_targets.len());
-            return;
+        if let Some(cm) = self.state.creating_move.as_ref() {
+            self.state.status = format!(
+                "Move: {} body(ies), {} image(s) picked",
+                cm.targets.len(),
+                cm.image_targets.len()
+            );
         }
-        let cm = self
-            .state
-            .creating_move
-            .get_or_insert_with(actions::CreatingMove::default);
-        if let Some(pos) = cm.targets.iter().position(|b| *b == bi) {
-            cm.targets.remove(pos);
-        } else {
-            cm.targets.push(bi);
-        }
-        self.state.status = format!("Move: {} body(ies) picked", cm.targets.len());
     }
 
     /// Joint tool (#894): pick two parts, then feed the focused mating-point picker —
@@ -10778,46 +10753,6 @@ impl App {
                 _ => {}
             }
         }
-    }
-
-    /// The visible tracing image whose quad is under the cursor (#425), nearest plane hit
-    /// first.
-    fn pick_tracing_image(
-        &self,
-        pp: egui::Pos2,
-        viewport: egui::Rect,
-        vp: &glam::Mat4,
-        cam: &camera::Camera,
-    ) -> Option<model::TracingImageKey> {
-        let mut best: Option<(f32, model::TracingImageKey)> = None;
-        for (ii, img) in self.state.doc.tracing_images.iter() {
-            if !self
-                .state
-                .element_visibility
-                .effective_visible(&self.state.doc, SceneElement::Image(ii))
-            {
-                continue;
-            }
-            let Some(frame) =
-                face::sketch_frame(&self.state.doc, model::FaceId::ConstructionPlane(img.plane))
-            else {
-                continue;
-            };
-            let Some(hit) = cam.ray_plane_hit(pp, viewport, vp, frame.origin, frame.normal)
-            else {
-                continue;
-            };
-            let d = hit - frame.origin;
-            let (u, v) = (d.dot(frame.u_axis), d.dot(frame.v_axis));
-            let (ox, oy) = img.origin;
-            if u >= ox && u <= ox + img.width_mm && v >= oy && v <= oy + img.height_mm {
-                let dist = (hit - cam.eye()).length();
-                if best.is_none_or(|(b, _)| dist < b) {
-                    best = Some((dist, ii));
-                }
-            }
-        }
-        best.map(|(_, ii)| ii)
     }
 
     /// Repeat tool (#182): click bodies to toggle them into the repeat set; clicking a
@@ -28716,7 +28651,16 @@ impl App {
         }
 
         if self.state.tool == Tool::Move {
-            self.handle_move_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
+            self.handle_move_tool(
+                ui,
+                &project,
+                pointer_screen,
+                &cam,
+                viewport,
+                &vp,
+                pick_occlusion,
+                tool_pickers,
+            );
             // Value inputs beside the free-translate arrows (#648).
             self.show_move_translation_inputs(ui, &project);
         }

@@ -2028,15 +2028,17 @@ pub fn move_op_free_rotation_quat(
 /// The centre of what a move operation moves (#1076) — the pivot Free mode's typed turns act
 /// about. `None` when nothing it moves has world extent.
 fn move_targets_center(doc: &Document, op: &crate::model::MoveOperation) -> Option<Vec3> {
-    free_move_targets_bounds(doc, &op.targets, &op.plane_targets).map(|(lo, hi)| (lo + hi) * 0.5)
+    free_move_targets_bounds(doc, &op.targets, &op.plane_targets, &op.image_targets)
+        .map(|(lo, hi)| (lo + hi) * 0.5)
 }
 
-/// Axis-aligned bounds of Free-move targets (#1233): body solid meshes plus plane origins.
-/// `None` when nothing contributes world extent.
+/// Axis-aligned bounds of Free-move targets (#1233): body solid meshes, plane origins,
+/// and tracing-image quads (#1587). `None` when nothing contributes world extent.
 pub fn free_move_targets_bounds(
     doc: &Document,
     bodies: &[crate::model::BodyKey],
     planes: &[crate::model::ConstructionPlaneKey],
+    images: &[crate::model::TracingImageKey],
 ) -> Option<(Vec3, Vec3)> {
     let mut lo = Vec3::splat(f32::MAX);
     let mut hi = Vec3::splat(f32::MIN);
@@ -2054,6 +2056,15 @@ pub fn free_move_targets_bounds(
             lo = lo.min(p.origin);
             hi = hi.max(p.origin);
             any = true;
+        }
+    }
+    for &image in images {
+        if let Some(corners) = crate::construction::tracing_image_corners(doc, image) {
+            for p in corners {
+                lo = lo.min(p);
+                hi = hi.max(p);
+                any = true;
+            }
         }
     }
     any.then_some((lo, hi))
@@ -12585,6 +12596,28 @@ mod tests {
         );
     }
 
+    /// #1587: a tracing image's displayed quad contributes world extent to Free-move gizmos.
+    #[test]
+    fn free_move_targets_bounds_includes_a_tracing_image() {
+        let mut doc = Document::default();
+        let image = doc.tracing_images.insert(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "trace".to_string(),
+            plane: pkey(0),
+            origin: (-20.0, -10.0),
+            base_origin: None,
+            width_mm: 40.0,
+            height_mm: 20.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
+            name: None,
+            calibration: None,
+        });
+        let (min, max) = free_move_targets_bounds(&doc, &[], &[], &[image]).unwrap();
+        assert!((min.x + 20.0).abs() < 1e-3 && (max.x - 20.0).abs() < 1e-3);
+        assert!((min.y + 10.0).abs() < 1e-3 && (max.y - 10.0).abs() < 1e-3);
+        assert!(min.z.abs() < 1e-3 && max.z.abs() < 1e-3);
+    }
+
     /// #1379: shifting a Free-move selection's bounds by the live translation shifts every
     /// translation-handle origin and the rotation-ring centre by the same amount — the gizmos
     /// travel with the preview rather than staying anchored on the original body.
@@ -12602,7 +12635,7 @@ mod tests {
         let shift = glam::Vec3::new(3.0, -2.0, 7.0);
 
         // The translation arrow origins ride the AABB, so translating the bounds carries them.
-        let (min, max) = free_move_targets_bounds(&doc, &bodies, &[]).unwrap();
+        let (min, max) = free_move_targets_bounds(&doc, &bodies, &[], &[]).unwrap();
         let at_rest = free_move_translation_handles(min, max);
         let travelled =
             free_move_translation_handles(min + shift, max + shift);
@@ -12640,7 +12673,7 @@ mod tests {
             shadow: false,
         });
         let bodies = [bkey(0)];
-        let (min, max) = free_move_targets_bounds(&doc, &bodies, &[]).unwrap();
+        let (min, max) = free_move_targets_bounds(&doc, &bodies, &[], &[]).unwrap();
 
         // The three base references are pairwise-distinct.
         let (b0, b1, b2) = (free_move_rotation_base_dir(0), free_move_rotation_base_dir(1), free_move_rotation_base_dir(2));
@@ -12776,7 +12809,7 @@ mod tests {
             shadow: false,
         });
         let bodies = [bkey(0)];
-        let (min, max) = free_move_targets_bounds(&doc, &bodies, &[]).unwrap();
+        let (min, max) = free_move_targets_bounds(&doc, &bodies, &[], &[]).unwrap();
         // A -5° typed turn must evaluate to -5°, not 355°.
         let got = crate::value::eval_angle_rad_in_doc("-5", &doc).unwrap().to_degrees();
         assert!((got - -5.0).abs() < 1e-3, "typed -5° should stay -5°, got {got}");
@@ -12811,7 +12844,7 @@ mod tests {
             name: None,
             shadow: false,
         });
-        let (min, max) = free_move_targets_bounds(&doc, &[bkey(0)], &[]).unwrap();
+        let (min, max) = free_move_targets_bounds(&doc, &[bkey(0)], &[], &[]).unwrap();
         let rings =
             free_move_rotation_rings(&doc, min, max, glam::Vec3::ZERO, "30", "40", "50", 0.0).unwrap();
         let q = move_op_free_rotation_quat(&doc, "30", "40", "50").unwrap();

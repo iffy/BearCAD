@@ -465,6 +465,8 @@ pub enum Instruction {
     /// Move bodies (Move tool): translation + optional rotation, expressions allowed.
     CreateMoveOp {
         targets: Vec<usize>,
+        /// Tracing images to slide on their host plane (#217/#1587).
+        images: Vec<usize>,
         tx: String,
         ty: String,
         tz: String,
@@ -494,6 +496,8 @@ pub enum Instruction {
     EditMoveOp {
         op: usize,
         targets: Vec<usize>,
+        /// Tracing images to slide on their host plane (#217/#1587).
+        images: Vec<usize>,
         tx: String,
         ty: String,
         tz: String,
@@ -522,6 +526,8 @@ pub enum Instruction {
     /// can be driven from a script. `bearcad.move_bodies` is the committing counterpart.
     BeginMoveOp {
         targets: Vec<usize>,
+        /// Tracing images to slide on their host plane (#217/#1587).
+        images: Vec<usize>,
         tx: String,
         ty: String,
         tz: String,
@@ -1588,14 +1594,14 @@ impl Instruction {
             Instruction::EditBooleanOp { op, kind, a, b, keep_b } => {
                 boolean_op_lua("bearcad.edit_boolean", Some(*op), *kind, a, b, *keep_b)
             }
-            Instruction::CreateMoveOp { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
-                move_op_lua("bearcad.move_bodies", None, targets, tx, ty, tz, rx, ry, rz, roll_angle, *face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
+            Instruction::CreateMoveOp { targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
+                move_op_lua("bearcad.move_bodies", None, targets, images, tx, ty, tz, rx, ry, rz, roll_angle, *face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
             }
-            Instruction::BeginMoveOp { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
-                move_op_lua("bearcad.begin_move", None, targets, tx, ty, tz, rx, ry, rz, roll_angle, *face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
+            Instruction::BeginMoveOp { targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
+                move_op_lua("bearcad.begin_move", None, targets, images, tx, ty, tz, rx, ry, rz, roll_angle, *face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
             }
-            Instruction::EditMoveOp { op, targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
-                move_op_lua("bearcad.edit_move", Some(*op), targets, tx, ty, tz, rx, ry, rz, roll_angle, *face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
+            Instruction::EditMoveOp { op, targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
+                move_op_lua("bearcad.edit_move", Some(*op), targets, images, tx, ty, tz, rx, ry, rz, roll_angle, *face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
             }
             Instruction::CreateJointOp { members, base, kind, placement, frame, position, position2, position3, limits } => {
                 joint_op_lua("bearcad.joint", None, doc, members, *base, kind, placement, frame, position, position2, position3, limits)
@@ -2940,6 +2946,20 @@ fn image_key(
     doc.tracing_images.keys().nth(ordinal)
 }
 
+fn image_keys(
+    doc: &crate::model::Document,
+    ordinals: &[usize],
+) -> Vec<crate::model::TracingImageKey> {
+    ordinals.iter().filter_map(|o| image_key(doc, *o)).collect()
+}
+
+fn image_ordinals(
+    doc: &crate::model::Document,
+    keys: &[crate::model::TracingImageKey],
+) -> Option<Vec<usize>> {
+    keys.iter().map(|k| image_ordinal(doc, *k)).collect()
+}
+
 pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) -> Option<Instruction> {
     use crate::actions::dim_label_axis_for_target;
     match action {
@@ -2960,9 +2980,10 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 keep_b: *keep_b,
             })
         }
-        Action::CreateMoveOperation { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, .. } => {
+        Action::CreateMoveOperation { targets, image_targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, .. } => {
             Some(Instruction::CreateMoveOp {
                 targets: body_ordinals(doc, targets)?,
+                images: image_ordinals(doc, image_targets)?,
                 tx: tx.clone(),
                 ty: ty.clone(),
                 tz: tz.clone(),
@@ -2981,10 +3002,11 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 end_point_c: *end_point_c,
             })
         }
-        Action::EditMoveOperation { op, targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, .. } => {
+        Action::EditMoveOperation { op, targets, image_targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, .. } => {
             Some(Instruction::EditMoveOp {
                 op: move_op_ordinal(doc, *op)?,
                 targets: body_ordinals(doc, targets)?,
+                images: image_ordinals(doc, image_targets)?,
                 tx: tx.clone(),
                 ty: ty.clone(),
                 tz: tz.clone(),
@@ -3796,6 +3818,7 @@ fn move_op_lua(
     call: &str,
     op: Option<usize>,
     targets: &[usize],
+    images: &[usize],
     tx: &str,
     ty: &str,
     tz: &str,
@@ -3821,6 +3844,12 @@ fn move_op_lua(
         "bodies = {{{}}}",
         targets.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
     ));
+    if !images.is_empty() {
+        parts.push(format!(
+            "images = {{{}}}",
+            images.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+        ));
+    }
     // Naming both points makes it a snap translation (#648); the x/y/z components below are
     // then ignored, so they're left out.
     if let (Some(start), Some(end)) = (start_point_a, end_point_a) {
@@ -6829,8 +6858,9 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::CreateMoveOp { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
+            Instruction::CreateMoveOp { targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
                 let (targets, instance_targets) = split_move_bodies(&state.doc, &body_keys(&state.doc, &targets));
+                let image_targets = image_keys(&state.doc, &images);
                 let result = state.apply(Action::CreateMoveOperation {
                     translate_mode: move_translate_mode(&start_point_a, &end_point_a, &start_point_b),
                     start_point_a,
@@ -6841,7 +6871,7 @@ impl ScriptRunner {
                     end_point_c,
                     targets,
                     plane_targets: Vec::new(),
-                    image_targets: Vec::new(),
+                    image_targets,
                     instance_targets,
                     tx,
                     ty,
@@ -6858,8 +6888,9 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::EditMoveOp { op, targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
+            Instruction::EditMoveOp { op, targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
                 let targets = body_keys(&state.doc, &targets);
+                let image_targets = image_keys(&state.doc, &images);
                 let Some(op) = move_op_key(&state.doc, op) else {
                     self.last_action_error = Some(format!("Move operation {op} not found"));
                     return StepResult::Continue;
@@ -6875,7 +6906,7 @@ impl ScriptRunner {
                     end_point_c,
                     targets,
                     plane_targets: Vec::new(),
-                    image_targets: Vec::new(),
+                    image_targets,
                     instance_targets: Vec::new(),
                     tx,
                     ty,
@@ -6891,8 +6922,9 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::BeginMoveOp { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
+            Instruction::BeginMoveOp { targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
                 let (targets, instance_targets) = split_move_bodies(&state.doc, &body_keys(&state.doc, &targets));
+                let image_targets = image_keys(&state.doc, &images);
                 state.apply(crate::actions::Action::SetTool(crate::actions::Tool::Move));
                 state.creating_move = Some(crate::actions::CreatingMove {
                     targets,
@@ -6904,7 +6936,7 @@ impl ScriptRunner {
                     start_point_c,
                     end_point_c,
                     plane_targets: Vec::new(),
-                    image_targets: Vec::new(),
+                    image_targets,
                     instance_targets,
                     tx,
                     ty,

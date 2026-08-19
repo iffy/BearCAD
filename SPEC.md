@@ -1218,7 +1218,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   `move_x`/`move_y`/`move_z` values (so scriptable/testable via the gizmo API, §8).
   Each free-translate arrow also carries a **value input floating beside its handle** (#648),
   so a component can be typed where it's being dragged. Scripting:
-  `bearcad.move_bodies{ bodies = {…}, x?, y?, z?, from?, to?, name? }` and
+  `bearcad.move_bodies{ bodies = {…}, images = {…}, x?, y?, z?, from?, to?, name? }` and
   `bearcad.edit_move{ index, … }`; naming both `from` and `to` makes it a snap translation
   (`{ body = i, vertex = {x,y,z} }` or `{ body = i, edge = {{x,y,z}, {x,y,z}} }`, millimetres
   on the body's mesh); `from_b`/`to_b` add the optional B pair, and so the rotation, and
@@ -1238,8 +1238,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   move, then read back in the plane's u/v axes. In-plane translation slides the image; out-of-plane
   translation is dropped (the image can't leave its plane); an image on a plane that also moved
   follows the plane and then takes its own move on top (image recompute runs after plane recompute).
-  Dropping an image from a move restores its authored base. Images join the move set from the
-  Elements pane / selection like bodies and planes. **Coalescing (#217):** re-moving the same
+  Dropping an image from a move restores its authored base. Images join the move set from a
+  viewport click on the quad, the Elements pane, or the selection, like bodies. An image-only
+  set switches the tool to Free so the translation gizmos come up (#1587). **Coalescing (#217):** re-moving the same
   element (the same planes, the same images, or the moved-output bodies of an existing move) folds
   into that move op instead of stacking a new one, so a run of test nudges stays a single operation
   — for the representable cases: translations add, and same-axis rotations add their angles (a

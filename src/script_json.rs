@@ -588,11 +588,11 @@ pub fn instruction_from_json(
             Ok(Instruction::EditBooleanOp { op, kind, a, b, keep_b })
         }
         "move_bodies" => {
-            let (targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
+            let (targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
                  face_offset, start_point_a, end_point_a, start_point_b, end_point_b,
                  start_point_c, end_point_c) =
                 move_op_args(doc, o)?;
-            Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
+            Ok(Instruction::CreateMoveOp { targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
         }
         "joint" => {
             let (members, base, kind, placement, frame, position, position2, position3, limits) =
@@ -618,19 +618,19 @@ pub fn instruction_from_json(
             Ok(Instruction::EditJointOp { op, members, base, kind, placement, frame, position, position2, position3, limits })
         }
         "begin_move" => {
-            let (targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
+            let (targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
                  face_offset, start_point_a, end_point_a, start_point_b, end_point_b,
                  start_point_c, end_point_c) =
                 move_op_args(doc, o)?;
-            Ok(Instruction::BeginMoveOp { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
+            Ok(Instruction::BeginMoveOp { targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
         }
         "edit_move" => {
             let op = req_usize(o, "index", "edit_move")?;
-            let (targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
+            let (targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
                  face_offset, start_point_a, end_point_a, start_point_b, end_point_b,
                  start_point_c, end_point_c) =
                 move_op_args(doc, o)?;
-            Ok(Instruction::EditMoveOp { op, targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
+            Ok(Instruction::EditMoveOp { op, targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
         }
         "mirror_bodies" => {
             let (plane, targets, mode) = mirror_op_args(doc, o)?;
@@ -1587,6 +1587,7 @@ fn move_op_args(
 ) -> Result<
     (
         Vec<usize>,
+        Vec<usize>,
         String,
         String,
         String,
@@ -1607,8 +1608,10 @@ fn move_op_args(
     String,
 > {
     let targets = usize_list(o, "bodies")?;
+    let images = usize_list(o, "images")?;
     Ok((
         targets,
+        images,
         expr_arg(o, "x")?,
         expr_arg(o, "y")?,
         expr_arg(o, "z")?,
@@ -3324,6 +3327,7 @@ mod tests {
                 start_point_c: None,
                 end_point_c: None,
                 targets: vec![0],
+                images: vec![],
                 tx: "10".into(),
                 ty: "w/2".into(),
                 tz: String::new(),
@@ -3348,6 +3352,7 @@ mod tests {
                 end_point_c: None,
                 op: 1,
                 targets: vec![0],
+                images: vec![],
                 tx: String::new(),
                 ty: String::new(),
                 tz: "5".into(),
