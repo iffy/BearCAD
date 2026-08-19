@@ -2380,6 +2380,18 @@ fn cuboid_body_guide(app: &AppState) -> Option<glam::Vec3> {
     Some(r.origin + r.normal * (r.height * 0.5))
 }
 
+/// A bottom corner of the placed cuboid — where the Combine tutorial's overlap-sphere
+/// click should land, rather than tracking the in-progress sphere ghost (#1566).
+fn cuboid_bottom_corner_guide(app: &AppState) -> Option<glam::Vec3> {
+    let p = app
+        .doc
+        .primitives
+        .values()
+        .find(|p| p.kind == crate::model::PrimitiveKind::Cuboid)?;
+    let r = crate::primitives::resolve(&app.doc, p)?;
+    Some(r.cuboid_base()[2])
+}
+
 fn sphere_body_guide(app: &AppState) -> Option<glam::Vec3> {
     let p = app
         .doc
@@ -2557,7 +2569,9 @@ fn assist_place_overlap_sphere(app: &mut AppState) {
     }
     assist_place_cuboid(app);
     let mut shape = crate::model::Primitive::new(crate::model::PrimitiveKind::Sphere);
-    shape.origin = overlap_sphere_origin();
+    shape.origin = cuboid_bottom_corner_guide(app)
+        .map(|p| p.to_array())
+        .unwrap_or_else(overlap_sphere_origin);
     shape.radius = "12".into();
     app.apply(Action::CreateShape { shape });
 }
@@ -2821,7 +2835,7 @@ static COMBINE_STEPS: &[Step] = &[
     ),
     plain_step(
         "Click so the sphere overlaps the cube.",
-        StepAnchor::World(ground_anchor_b),
+        StepAnchor::World(cuboid_bottom_corner_guide),
         Some(sphere_anchored),
     ),
     assisted_step(
@@ -4824,6 +4838,62 @@ mod tests {
         let op = app.doc.boolean_ops.values().next().unwrap();
         assert_eq!(op.kind, crate::model::BooleanOpKind::Cut);
         assert!(!op.outputs.is_empty(), "cut should produce a body");
+    }
+
+    /// #1566: the overlap-sphere click points at a cuboid bottom corner, not the
+    /// in-progress sphere ghost (which follows the cursor).
+    #[test]
+    fn combine_overlap_orb_sits_on_a_cuboid_bottom_corner() {
+        let step = combine_tut()
+            .steps
+            .iter()
+            .find(|s| s.narration.to_ascii_lowercase().contains("overlaps the cube"))
+            .expect("overlap-sphere click step");
+        let StepAnchor::World(point) = step.anchor else {
+            panic!(
+                "overlap click should point at a cuboid corner, got {:?}",
+                step.anchor
+            );
+        };
+
+        let mut app = AppState::default();
+        assist_place_cuboid(&mut app);
+        let cuboid = app
+            .doc
+            .primitives
+            .values()
+            .find(|p| p.kind == crate::model::PrimitiveKind::Cuboid)
+            .expect("cuboid");
+        let corners = crate::primitives::resolve(&app.doc, cuboid)
+            .expect("sized cuboid")
+            .cuboid_base();
+
+        let mut creating =
+            crate::actions::CreatingShape::new(crate::model::PrimitiveKind::Sphere);
+        creating.shape.origin = [200.0, 180.0, 0.0];
+        creating.phase = crate::actions::ShapePhase::Anchor;
+        app.creating_shape = Some(creating);
+
+        let at = point(&app).expect("overlap guide");
+        assert!(
+            corners.iter().any(|c| (*c - at).length() < 0.1),
+            "orb should sit on a cuboid base corner {corners:?}, got {at:?}"
+        );
+        let ghost = glam::Vec3::from_array(
+            app.creating_shape.as_ref().unwrap().shape.origin,
+        );
+        assert!(
+            (at - ghost).length() > 50.0,
+            "orb followed the sphere ghost at {ghost:?} instead of a cuboid corner"
+        );
+
+        // The orb stays on that corner when the ghost moves.
+        app.creating_shape.as_mut().unwrap().shape.origin = [40.0, -90.0, 0.0];
+        let again = point(&app).expect("overlap guide after ghost move");
+        assert!(
+            (again - at).length() < 0.1,
+            "orb should not follow the cursor, moved from {at:?} to {again:?}"
+        );
     }
 
     /// #1557: sketch text on a cube and extrude it so the letters stand proud.
