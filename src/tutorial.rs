@@ -1377,6 +1377,7 @@ fn camera_at_home(app: &AppState) -> bool {
         && !app.cam.has_orbit_trackball_state()
 }
 
+#[cfg(test)]
 fn assist_nav_orbit(app: &mut AppState) {
     // Land clear of every StandardView so the later bear-snap step still has work to do.
     let home = app.cam.home_view();
@@ -1384,10 +1385,12 @@ fn assist_nav_orbit(app: &mut AppState) {
     app.cam.pitch = (home.pitch + 0.2).clamp(-1.4, 1.4);
 }
 
+#[cfg(test)]
 fn assist_nav_pan(app: &mut AppState) {
     app.cam.target += glam::Vec3::new(40.0, 20.0, 0.0);
 }
 
+#[cfg(test)]
 fn assist_nav_zoom(app: &mut AppState) {
     let home_d = app.cam.home_view().distance;
     app.cam.distance = (home_d * 0.45).max(40.0);
@@ -1401,6 +1404,7 @@ fn assist_nav_bear_snap(app: &mut AppState) {
     app.cam.leave_sketch_mode();
 }
 
+#[cfg(test)]
 fn assist_nav_home(app: &mut AppState) {
     let home = app.cam.home_view();
     app.cam.yaw = home.yaw;
@@ -1415,7 +1419,6 @@ const fn nav_drag_step(
     narration: &'static str,
     done: fn(&AppState) -> bool,
     drag_hint: &'static str,
-    assist: StepAssist,
     phone_narration: Option<&'static str>,
 ) -> Step {
     Step {
@@ -1423,7 +1426,7 @@ const fn nav_drag_step(
         anchor: StepAnchor::World(nav_cubes_guide),
         done: Some(done),
         on_enter: None,
-        assist: Some(assist),
+        assist: None,
         needs_shift: None,
         drag_hint: Some(drag_hint),
         key_hint: None,
@@ -1437,6 +1440,8 @@ const fn nav_drag_step(
 /// #1269: second walkthrough — pan, orbit, zoom, bear HUD, home.
 /// Starts with cubes already in the document. One action per step (#1253).
 /// The Selection Exploder step is gone (#1330): its tooltip covered the loupes.
+/// Orbit / pan / zoom / home have no "for me" assist (#1550–#1554); Next-only
+/// "Good job" steps sit after orbit and pan so the next action is obvious.
 static NAVIGATE_STEPS: &[Step] = &[
     plain_step_enter(
         "Here are a few cubes. Let's learn to move around them.",
@@ -1448,31 +1453,22 @@ static NAVIGATE_STEPS: &[Step] = &[
         "Right-drag to orbit around the model.",
         camera_has_orbited,
         "Right button",
-        StepAssist {
-            label: "Orbit for me",
-            run: assist_nav_orbit,
-        },
         Some("Drag with three fingers to orbit around the model."),
     ),
+    plain_step("Good job orbiting!", StepAnchor::None, None),
     nav_drag_step(
         "Middle-drag, or Shift + right-drag, to pan.",
         camera_has_panned,
         "Middle button",
-        StepAssist {
-            label: "Pan for me",
-            run: assist_nav_pan,
-        },
         Some("Drag with two fingers to pan."),
     ),
+    plain_step("Good job!", StepAnchor::None, None),
     Step {
         narration: "Scroll the mouse wheel to zoom in and out.",
         anchor: StepAnchor::World(nav_cubes_guide),
         done: Some(camera_has_zoomed),
         on_enter: None,
-        assist: Some(StepAssist {
-            label: "Zoom for me",
-            run: assist_nav_zoom,
-        }),
+        assist: None,
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
@@ -1492,15 +1488,10 @@ static NAVIGATE_STEPS: &[Step] = &[
         },
         None,
     ),
-    assisted_step(
+    plain_step(
         "Click the house under the bear to go to the Home view.",
         StepAnchor::Ui(UiAnchor::ViewHome),
         Some(camera_at_home),
-        StepAssist {
-            label: "Go home for me",
-            run: assist_nav_home,
-        },
-        None,
     ),
     plain_step(
         "That's the view: orbit, pan, zoom, the bear, and Home. Nice!",
@@ -3404,7 +3395,74 @@ mod tests {
         );
     }
 
-    /// #1269: assists drive camera steps; Next covers the rest.
+    fn nav_step(needle: &str) -> &'static Step {
+        let nav = &TUTORIALS[tutorial_index("navigate").unwrap()];
+        nav.steps
+            .iter()
+            .find(|s| s.narration.to_ascii_lowercase().contains(needle))
+            .unwrap_or_else(|| panic!("navigate step matching {needle:?}"))
+    }
+
+    fn nav_step_index(needle: &str) -> usize {
+        let nav = &TUTORIALS[tutorial_index("navigate").unwrap()];
+        nav.steps
+            .iter()
+            .position(|s| s.narration.to_ascii_lowercase().contains(needle))
+            .unwrap_or_else(|| panic!("navigate step matching {needle:?}"))
+    }
+
+    /// #1550–#1554: orbit / pan / zoom / home have no "for me" shortcut. After
+    /// orbit and after pan, a Next-only "Good job" step makes the next action obvious.
+    #[test]
+    fn navigate_tutorial_camera_steps_are_hands_on() {
+        let nav = &TUTORIALS[tutorial_index("navigate").unwrap()];
+        for needle in [
+            "right-drag to orbit",
+            "middle-drag",
+            "scroll the mouse wheel",
+            "house under the bear",
+        ] {
+            let s = nav_step(needle);
+            assert!(
+                s.assist.is_none(),
+                "camera step should have no assist: {}",
+                s.narration
+            );
+            assert!(
+                s.done.is_some(),
+                "camera step should auto-advance: {}",
+                s.narration
+            );
+        }
+
+        let orbit_i = nav_step_index("right-drag to orbit");
+        let orbit_ok = &nav.steps[orbit_i + 1];
+        assert_eq!(orbit_ok.narration, "Good job orbiting!");
+        assert!(orbit_ok.done.is_none(), "good-job orbiting waits for Next");
+        assert!(orbit_ok.assist.is_none());
+
+        let pan_i = nav_step_index("middle-drag");
+        let pan_ok = &nav.steps[pan_i + 1];
+        assert_eq!(pan_ok.narration, "Good job!");
+        assert!(pan_ok.done.is_none(), "good-job after pan waits for Next");
+        assert!(pan_ok.assist.is_none());
+        assert!(
+            orbit_i + 1 < pan_i,
+            "good-job orbiting sits between orbit and pan"
+        );
+        assert!(pan_i + 1 < nav_step_index("scroll the mouse wheel"));
+
+        let bear = nav_step("view cube");
+        assert!(
+            bear.assist
+                .as_ref()
+                .is_some_and(|a| a.label.contains("Snap")),
+            "bear snap still offers an assist"
+        );
+    }
+
+    /// #1269 / #1550–#1554: camera motion advances orbit / pan / zoom / home;
+    /// Next covers the good-job interstitials; the bear still has an assist.
     #[test]
     fn navigate_tutorial_walks_with_assists() {
         let mut app = AppState::default();
@@ -3419,11 +3477,22 @@ mod tests {
             assert!(guard < 40, "navigate tutorial should finish");
             let run = app.tutorial.unwrap();
             let step = &TUTORIALS[run.tutorial].steps[run.step];
-            if step.assist.is_some() {
+            let n = step.narration.to_ascii_lowercase();
+            if n.contains("right-drag to orbit") {
+                assist_nav_orbit(&mut app);
+                app.advance_tutorial();
+            } else if n.contains("middle-drag") {
+                assist_nav_pan(&mut app);
+                app.advance_tutorial();
+            } else if n.contains("scroll the mouse wheel") {
+                assist_nav_zoom(&mut app);
+                app.advance_tutorial();
+            } else if n.contains("house under the bear") {
+                assist_nav_home(&mut app);
+                app.advance_tutorial();
+            } else if step.assist.is_some() {
                 app.apply(Action::TutorialAssist);
-                // Assist should satisfy the step; if not (edge case), fall through to Next.
                 if app.tutorial.map(|r| r.step) == Some(run.step) && step.done.is_some() {
-                    // Force-advance stuck auto-step for the test.
                     app.apply(Action::TutorialNext);
                 }
             } else {

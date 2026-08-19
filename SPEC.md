@@ -5161,8 +5161,10 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   then change `height` in the pane. Title: **Parameters**.
 - **Second tutorial (`navigate`)** (#1269): pan / orbit / zoom and the view-bear HUD (snap a
   view + Home). Starts with a few cubes already in the document; camera steps auto-advance
-  on motion (with "…for me" assists). Orbs can point at `UiAnchor::ViewCube` / `ViewHome`.
-  No Selection Exploder step (#1330): its tooltip covered the loupes.
+  on motion. Orbit, pan, zoom, and Home have no "…for me" assist — the user does those.
+  After orbit and after pan, a Next-only "Good job" step makes the next action obvious.
+  The bear-snap step still offers an assist. Orbs can point at `UiAnchor::ViewCube` /
+  `ViewHome`. No Selection Exploder step (#1330): its tooltip covered the loupes.
 - Each tutorial is a list of **steps**: Bear's narration in a cartoon **speech
   bubble** tucked under the view cube (with a tail pointing at Bear), a **pulsing
   gold ring** on what to click next (toolbar buttons, the Parameters `+`, or a projected
@@ -5267,6 +5269,7 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
 - Scriptable: `bearcad.ui.tutorial("cube")`, `bearcad.ui.tutorial_next()`,
   `bearcad.ui.tutorial_assist()` (press the current step's "do it for me" button),
   `bearcad.ui.tutorial_end()`, `bearcad.ui.tutorial_step()` (current step index or nil),
+  `bearcad.ui.tutorial_narration()` (current step text, or nil),
   `bearcad.ui.tutorial_orb()` (`{x, y}` screen position of the guide ring, or nil).
   Prompting (#1434): `bearcad.ui.complete_all_tutorials()`, `bearcad.ui.unstart_all_tutorials()`,
   `bearcad.ui.install_age([days|false])`,

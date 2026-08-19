@@ -149,6 +149,7 @@ bearcad.ui.tutorial_next()
 bearcad.ui.tutorial_assist()
 bearcad.ui.tutorial_end()
 local step = bearcad.ui.tutorial_step()  -- nil when none running
+local text = bearcad.ui.tutorial_narration()  -- current step text, or nil
 local orb = bearcad.ui.tutorial_orb()    -- {x=, y=} screen px, or nil
 bearcad.ui.complete_all_tutorials()     -- mark every walkthrough finished
 bearcad.ui.unstart_all_tutorials()      -- clear every completion check

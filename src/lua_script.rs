@@ -5041,6 +5041,25 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             Ok(state.tutorial.map(|r| r.step))
         })?,
     )?;
+    // Current step's narration (device-aware), or nil when no tutorial is running.
+    api.set(
+        "tutorial_narration",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            state.advance_tutorial();
+            let Some(run) = state.tutorial else {
+                return Ok(Value::Nil);
+            };
+            let Some(step) = crate::tutorial::TUTORIALS
+                .get(run.tutorial)
+                .and_then(|t| t.steps.get(run.step))
+            else {
+                return Ok(Value::Nil);
+            };
+            Ok(Value::String(lua.create_string(step.narration_for(state))?))
+        })?,
+    )?;
     // Animated guide-orb screen position (#1346). Nil when no ring is drawn.
     api.set(
         "tutorial_orb",
@@ -7440,6 +7459,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "update_channel",
             "snapping", "picker_focus", "angle_snap",
             "tutorial", "tutorial_next", "tutorial_assist", "tutorial_end", "tutorial_step",
+            "tutorial_narration",
             "tutorial_orb",
             "tutorial_pane", "tutorials",
             "complete_all_tutorials", "unstart_all_tutorials",
@@ -7759,6 +7779,58 @@ mod tests {
                    "default planes should be gone, got " .. bearcad.count("construction_plane"))
             assert(bearcad.count("body") >= 2,
                    "seeded cubes, got " .. bearcad.count("body") .. " bodies")
+            "#,
+        );
+    }
+
+    /// #1550–#1554: orbit / pan / zoom / home have no assist. Camera motion
+    /// advances those steps; Next-only "Good job" interstitials sit after orbit and pan.
+    #[test]
+    fn navigate_tutorial_lua_walks_hands_on_camera_steps() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.ui.tutorial("navigate")
+            assert(bearcad.ui.tutorial_step() == 0)
+            local home = bearcad.ui.camera{}
+            bearcad.ui.tutorial_next()
+            assert(bearcad.ui.tutorial_narration():find("orbit", 1, true),
+                   bearcad.ui.tutorial_narration())
+            local orbit_step = bearcad.ui.tutorial_step()
+            bearcad.ui.tutorial_assist()
+            assert(bearcad.ui.tutorial_step() == orbit_step, "orbit has no assist")
+            bearcad.ui.camera{ yaw = home.yaw + 0.6 }
+            assert(bearcad.ui.tutorial_narration() == "Good job orbiting!")
+            bearcad.ui.tutorial_next()
+            assert(bearcad.ui.tutorial_narration():find("pan", 1, true),
+                   bearcad.ui.tutorial_narration())
+            local pan_step = bearcad.ui.tutorial_step()
+            bearcad.ui.tutorial_assist()
+            assert(bearcad.ui.tutorial_step() == pan_step, "pan has no assist")
+            bearcad.ui.camera{ target = {home.target[1] + 40, home.target[2] + 20, home.target[3]} }
+            assert(bearcad.ui.tutorial_narration() == "Good job!")
+            bearcad.ui.tutorial_next()
+            assert(bearcad.ui.tutorial_narration():find("zoom", 1, true),
+                   bearcad.ui.tutorial_narration())
+            local zoom_step = bearcad.ui.tutorial_step()
+            bearcad.ui.tutorial_assist()
+            assert(bearcad.ui.tutorial_step() == zoom_step, "zoom has no assist")
+            bearcad.ui.camera{ distance = home.distance * 0.45 }
+            assert(bearcad.ui.tutorial_narration():find("bear", 1, true),
+                   bearcad.ui.tutorial_narration())
+            bearcad.ui.tutorial_assist()
+            assert(bearcad.ui.tutorial_narration():find("Home", 1, true),
+                   bearcad.ui.tutorial_narration())
+            local home_step = bearcad.ui.tutorial_step()
+            bearcad.ui.tutorial_assist()
+            assert(bearcad.ui.tutorial_step() == home_step, "go home has no assist")
+            bearcad.ui.camera{
+              yaw = home.yaw, pitch = home.pitch, distance = home.distance,
+              target = {home.target[1], home.target[2], home.target[3]}
+            }
+            assert(bearcad.ui.tutorial_narration():find("Nice", 1, true),
+                   bearcad.ui.tutorial_narration())
+            bearcad.ui.tutorial_next()
+            assert(bearcad.ui.tutorial_step() == nil)
             "#,
         );
     }
