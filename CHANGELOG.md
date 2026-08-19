@@ -1,3 +1,9 @@
+# v0.5.1 - 2026-08-19
+
+- **FIX:** Shape Enter now advances through each dimension instead of creating a body on the first press, Extrude's Up to picker disarms after a pick, and a line-and-point construction plane stays through the point.
+- **FIX:** Chamfer and Fillet now highlight and pick only the remaining visible edges of a sliced or cut body, not the original body's vanished edges.
+- **FIX:** macOS no longer aborts at launch when attaching Finder file-open hooks.
+
 # v0.5.0 - 2026-08-18
 
 - **NEW:** The rotational Repeat Angle field now toggles where the last copy sits, so 360° and 5 items can space equally instead of stacking the last on the first.

@@ -1,1 +1,0 @@
-Shape Enter now advances through each dimension instead of creating a body on the first press, Extrude's Up to picker disarms after a pick, and a line-and-point construction plane stays through the point.
