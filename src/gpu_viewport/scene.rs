@@ -3047,7 +3047,7 @@ impl<'a> SceneMesh<'a> {
         doc: &Document,
         health: &DocumentHealth,
         selection: &SceneSelection,
-        _body_meshes: &std::collections::HashMap<crate::model::BodyKey, Option<crate::extrude::SolidMesh>>,
+        body_meshes: &std::collections::HashMap<crate::model::BodyKey, Option<crate::extrude::SolidMesh>>,
         cam: &Camera,
         viewport: UiRect,
         view_proj: &Mat4,
@@ -3224,7 +3224,15 @@ impl<'a> SceneMesh<'a> {
                 // just its own solid within the (possibly merged) body.
                 SceneElement::Body(_) => {}
                 SceneElement::Extrusion(index) => {
-                    self.push_sub_body_recolor(doc, index, BODY_SILHOUETTE_COLOR, cam, viewport, view_proj);
+                    self.push_sub_body_recolor(
+                        doc,
+                        index,
+                        BODY_SILHOUETTE_COLOR,
+                        cam,
+                        viewport,
+                        view_proj,
+                        body_meshes,
+                    );
                 }
                 // Selected world origin axis (#1124): 2× hover thickness, depth-test
                 // disabled so it bleeds through every body (same always-on-top path as
@@ -3259,20 +3267,44 @@ impl<'a> SceneMesh<'a> {
         cam: &Camera,
         viewport: UiRect,
         view_proj: &Mat4,
+        body_meshes: &std::collections::HashMap<
+            crate::model::BodyKey,
+            Option<crate::extrude::SolidMesh>,
+        >,
     ) {
-        let Some(ext) = doc.extrusions.get(extrusion) else {
-            return;
-        };
-        let Some(mesh) = crate::extrude::extrusion_mesh(doc, ext) else {
-            return;
+        // A standalone extrusion *is* its body (#1572): reuse the mesh this frame
+        // already built for the solid, instead of remeshing the kernel every idle
+        // highlight. Fused/cut extrusions still need their own solid.
+        let owned;
+        let mesh = if let Some(bi) =
+            crate::model::standalone_body_for_add_extrusion(doc, extrusion)
+        {
+            if let Some(Some(m)) = body_meshes.get(&bi) {
+                m
+            } else {
+                owned = crate::extrude::body_solid_mesh(doc, bi);
+                match owned.as_ref() {
+                    Some(m) => m,
+                    None => return,
+                }
+            }
+        } else {
+            let Some(ext) = doc.extrusions.get(extrusion) else {
+                return;
+            };
+            owned = crate::extrude::extrusion_mesh(doc, ext);
+            match owned.as_ref() {
+                Some(m) => m,
+                None => return,
+            }
         };
         if matches!(cam.shading_mode(), crate::camera::ShadingMode::Wireframe) {
-            self.push_solid_wireframe(&mesh, None, color, cam, viewport, view_proj);
+            self.push_solid_wireframe(mesh, None, color, cam, viewport, view_proj);
         } else {
             // The Overlay layer's toward-camera bias keeps this from z-fighting the body.
             let restore = self.index_layer;
             self.set_index_layer(MeshIndexLayer::Overlay);
-            self.push_solid_translucent(&mesh, color, 0.45);
+            self.push_solid_translucent(mesh, color, 0.45);
             self.set_index_layer(restore);
         }
     }
@@ -3801,7 +3833,7 @@ impl<'a> SceneMesh<'a> {
         doc: &Document,
         element: crate::hierarchy::SceneElement,
         color: Color32,
-        _body_meshes: &std::collections::HashMap<crate::model::BodyKey, Option<crate::extrude::SolidMesh>>,
+        body_meshes: &std::collections::HashMap<crate::model::BodyKey, Option<crate::extrude::SolidMesh>>,
         cam: &Camera,
         viewport: UiRect,
         view_proj: &Mat4,
@@ -4177,7 +4209,7 @@ impl<'a> SceneMesh<'a> {
             // recolors just its own solid.
             SceneElement::Body(_) => {}
             SceneElement::Extrusion(index) => {
-                self.push_sub_body_recolor(doc, index, color, cam, viewport, view_proj);
+                self.push_sub_body_recolor(doc, index, color, cam, viewport, view_proj, body_meshes);
             }
         }
         self.set_index_layer(restore);
@@ -7333,6 +7365,88 @@ mod tests {
         assert!(
             derived_tinted(&joint_hover) > derived_tinted(&base),
             "hovering a Joint must recolor the bodies it joins"
+        );
+    }
+
+    /// #1572: selecting (or hovering) an extrusion must not remesh its kernel solid
+    /// on every idle frame. Warmup pays for the body + highlight; repeats must be
+    /// cache hits.
+    #[test]
+    fn issue_1572_selecting_an_extrusion_does_not_remesh_every_frame() {
+        use crate::hierarchy::SceneElement;
+        use crate::selection::SceneSelection;
+
+        let state = state_with_one_body();
+        let ei = state.doc.extrusions.keys().next().expect("the box extrusion");
+        let mut selection = SceneSelection::default();
+        selection.insert(SceneElement::Extrusion(ei));
+        let cam = state.cam.clone();
+        let viewport = test_viewport();
+        let health = DocumentHealth::default();
+        let build = |selection: &SceneSelection| {
+            ViewportScene::build(&ViewportSceneInput {
+                doc: &state.doc,
+                cam: &cam,
+                viewport,
+                palette: ViewportPalette::default(),
+                sketch_session: None,
+                selection,
+                cut_highlight_bodies: Vec::new(),
+                faded_bodies: Vec::new(),
+                sketch_repeat_ghost: Vec::new(),
+                sketch_ghost_lines: Vec::new(),
+                edit_preview_meshes: std::collections::HashMap::new(),
+                element_visibility: &state.element_visibility,
+                preview_rect: None,
+                preview_line: None,
+                preview_circle: None,
+                preview_extrusion: None,
+                preview_solid: None,
+                repeat_ghosts: Vec::new(),
+                cut_surface_ghosts: Vec::new(),
+                preview_cut_body: None,
+                preview_replacement: PreviewReplacement::default(),
+                highlighted_bezier_handles: Vec::new(),
+                editing_extrusion: None,
+                plane_preview: None,
+                active_sketch_face: None,
+                dimension_labels: &[],
+                dim_label_view: None,
+                plane_gizmo: None,
+                extrude_gizmo: None,
+                vertex_treatment_gizmo: None,
+                arrow_gizmos: Vec::new(),
+                move_rotation_gizmos: Vec::new(),
+                revolve_arc_gizmo: None,
+                vertex_treatment_preview: None,
+                hover_highlight: None,
+                extra_pick_highlights: Vec::new(),
+                colored_pick_highlights: Vec::new(),
+                colored_element_highlights: Vec::new(),
+                tinted_bodies: Vec::new(),
+                colored_segments: Vec::new(),
+                parameter_highlight_elements: Vec::new(),
+                hover_color: crate::construction::PICK_HOVER_RGBA,
+                document_health: &health,
+                constraint_graphics: None,
+                constraint_connector_color: None,
+            })
+        };
+        // First selected frame pays for the highlight remesh (and the body).
+        let first = build(&selection);
+        assert!(
+            !first.overlay_indices.is_empty() || !first.plane_fill_indices.is_empty(),
+            "a selected extrusion must still draw its highlight"
+        );
+        crate::extrude::EXTRUSION_MESH_BUILDS.with(|c| c.set(0));
+        for _ in 0..20 {
+            let again = build(&selection);
+            assert_eq!(again.overlay_indices.len(), first.overlay_indices.len());
+        }
+        let rebuilds = crate::extrude::EXTRUSION_MESH_BUILDS.with(|c| c.get());
+        assert_eq!(
+            rebuilds, 0,
+            "idle frames with the extrusion selected must reuse the cached solid, rebuilt {rebuilds} times"
         );
     }
 
