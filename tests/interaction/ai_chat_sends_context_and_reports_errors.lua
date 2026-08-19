@@ -1,6 +1,7 @@
 -- Interaction regression (#1597/#1598): the chat pane assembles the document context,
 -- sends it to the selected backend, and reports a failure on the reply instead of
--- swallowing it.
+-- swallowing it. Also #1614: this sequence must not log egui "changed id between
+-- passes" on the Elements pane.
 --
 -- Run with BEARCAD_AI_CONFIG pointing at a throwaway file (CI does): this test adds a
 -- backend, and the first assertion fails rather than touching a real ai.json.
@@ -57,6 +58,13 @@ assert(messages[#messages - 1].text == "how wide is the rectangle?", "the questi
 
 bearcad.ai.clear()
 assert(#bearcad.ai.messages() == 0, "clear empties the conversation")
+
+-- One more frame so a last-pass warning is counted before we read it (#1614).
+bearcad.ui.wait(1)
+local id_warnings = bearcad.ui.widget_id_warnings()
+assert(id_warnings == 0,
+  "Elements pane must not log 'changed id between passes' during this sequence, got "
+    .. tostring(id_warnings))
 
 print("ok: chat builds document context, sends it, and reports failures on the reply")
 bearcad.quit()

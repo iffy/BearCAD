@@ -5113,6 +5113,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // egui multipass id-instability count (#1614). Zero on a healthy layout.
+    api.set(
+        "widget_id_warnings",
+        lua.create_function(|_, ()| Ok(crate::diag::widget_id_change_warnings()))?,
+    )?;
+
     api.set(
         "parameter",
         lua.create_function(|lua, args: MultiValue| {
@@ -8421,7 +8427,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         -- `bearcad.ui.*` sub-namespace so scripts can focus on modeling (#46).
         bearcad.ui = {}
         local ui_funcs = {
-            "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_dim", "pane", "pane_rect", "palette", "settings",
+            "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_dim", "pane", "pane_rect", "widget_id_warnings", "palette", "settings",
             "changelog",
             "mcmaster",
             "report_issue", "windows", "focused_window",
@@ -15438,6 +15444,20 @@ mod tests {
             err = tostring(err)
             assert(err:find("radius") and err:find("diameter"),
                    "error should name the accepted keys: " .. err)
+        "#,
+        );
+    }
+
+    /// #1614: scripts can read the egui multipass id-instability count. No UI is painted
+    /// here, so it stays at whatever the process has already logged (zero in isolation).
+    #[test]
+    fn lua_widget_id_warnings_is_readable() {
+        run_lua_expect_ok(
+            r#"
+            assert(type(bearcad.ui.widget_id_warnings) == "function")
+            local n = bearcad.ui.widget_id_warnings()
+            assert(type(n) == "number", "count should be a number, got " .. type(n))
+            assert(n >= 0, "count should not be negative")
         "#,
         );
     }

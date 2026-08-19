@@ -4030,7 +4030,7 @@ impl App {
             return;
         }
         let mut start: Option<usize> = None;
-        let kept = show_pane_shell(ui, "tutorials", tutorial::PANE_TITLE, true, 320.0, None, |ui| {
+        let kept = show_pane_shell(ui, "tutorials", tutorial::PANE_TITLE, true, 320.0, None, true, |ui| {
             ui.heading(tutorial::PANE_TITLE);
             ui.label(
                 egui::RichText::new("Pick a walkthrough — Bear guides you step by step.")
@@ -4117,9 +4117,10 @@ impl App {
     /// MCP server. Docks beside the other right-hand panes and closes from its own X, like
     /// every pane in `show_pane_shell`.
     fn show_ai_pane(&mut self, ui: &mut egui::Ui) {
-        if !self.state.panes.is_visible(Pane::Ai) {
-            return;
-        }
+        // Always allocate the docked slot, even while hidden (#1614 / #1211). Inserting
+        // this right panel only once it opens shifts auto-id salts for every later panel
+        // (Elements, Parameters, Context).
+        let open = self.state.panes.is_visible(Pane::Ai);
         let kept = show_pane_shell(
             ui,
             ai::panel::SHELL_ID,
@@ -4127,9 +4128,10 @@ impl App {
             true,
             340.0,
             None,
+            open,
             |ui| ai::panel::contents(ui, &mut self.state),
         );
-        if !kept {
+        if open && !kept {
             self.state.panes.set(Pane::Ai, false);
         }
     }
@@ -5538,7 +5540,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             context::begin_help_notes(ctx, None);
         }
         let mut changed = false;
-        let kept = show_pane_shell(ui, "settings", "Settings", true, 380.0, None, |ui| {
+        let kept = show_pane_shell(ui, "settings", "Settings", true, 380.0, None, true, |ui| {
             context::labeled_row(ui, "Library directory", |ui| {
                 if ui.button("Choose…").clicked() {
                     let mut dialog = rfd::FileDialog::new();
@@ -15105,7 +15107,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             let mut joint_rest: Option<hierarchy::JointRestCommand> = None;
             let mut do_copy = false;
             let mut do_paste: Option<bool> = None;
-            let pane_kept_open = show_pane_shell(ui, "tree", "Elements", false, 220.0, None, |ui| {
+            let pane_kept_open = show_pane_shell(ui, "tree", "Elements", false, 220.0, None, true, |ui| {
                     let mut queue_edit_sketch = |sketch: SketchId| {
                         edit_sketch = Some(sketch);
                     };
@@ -15532,7 +15534,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             if self.state.help_mode {
                 context::begin_help_notes(ctx, None);
             }
-            if !show_pane_shell(ui, "parameters", "Parameters", true, 240.0, None, |ui| {
+            if !show_pane_shell(ui, "parameters", "Parameters", true, 240.0, None, true, |ui| {
                 parameters::show_pane(ui, &mut self.state);
             }) {
                 self.state.apply(Action::SetPaneVisible { pane: Pane::Parameters, visible: false });
@@ -16493,7 +16495,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             } else {
                 context::end_help_notes(ctx);
             }
-            let pane_kept_open = show_pane_shell(ui, "context", "Context", true, 200.0, Some(280.0), |ui| {
+            let pane_kept_open = show_pane_shell(ui, "context", "Context", true, 200.0, Some(280.0), true, |ui| {
                     context::show_pane(
                         ui,
                         ctx,
@@ -18404,6 +18406,13 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
     }
 
     fn tick_script(&mut self, ctx: &egui::Context) {
+        // egui re-runs `ui()` on extra layout passes of the same frame. Advancing the
+        // script there used to let `wait(1)` finish on the settle pass that opening a
+        // pane requested, so later instructions mutated the widget tree while egui was
+        // still comparing ids — Elements flashed red (#1614 / #1211).
+        if ctx.current_pass_index() != 0 {
+            return;
+        }
         if self.script.as_ref().is_some_and(|r| !r.done) {
             self.state.command_log = None;
         } else if self.state.command_log.is_none() {
@@ -19575,6 +19584,10 @@ fn show_command_palette_panel(
 /// Container for a side pane: a docked side `Panel` normally, a closable floating
 /// window over the viewport in the compact (phone) layout. Returns false when the
 /// window's close button dismissed it, so the caller can hide the pane.
+///
+/// `open` is whether the pane should show its contents. Docked layout **always**
+/// allocates the panel — at width 0 when closed — so inserting it only while open
+/// cannot shift auto-id salts for later panels (#1614 / #1211).
 fn show_pane_shell(
     ui: &mut egui::Ui,
     id: &'static str,
@@ -19582,12 +19595,30 @@ fn show_pane_shell(
     right: bool,
     default_width: f32,
     max_width: Option<f32>,
+    open: bool,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) -> bool {
     let ctx = &ui.ctx().clone();
     // Explicit content id: side-panel widgets stay stable even if a sibling panel's
     // auto-id salt shifts (command palette open/close, #1211 / egui multipass).
     let content_id = egui::Id::new(("pane_contents", id));
+    if !open {
+        if !touch::compact(ctx) {
+            let panel = if right {
+                egui::Panel::right(id)
+            } else {
+                egui::Panel::left(id)
+            };
+            panel
+                .resizable(false)
+                .exact_size(0.0)
+                .show_separator_line(false)
+                .frame(egui::Frame::NONE)
+                .show(ui, |_| {});
+        }
+        remember_pane_rect(ctx, id, None);
+        return true;
+    }
     if touch::compact(ctx) {
         let mut open = true;
         let screen = ctx.content_rect();
@@ -39163,6 +39194,65 @@ mod tests {
                 egui::Panel::bottom("status").show(ui, |ui| {
                     ui.label("status");
                 });
+                egui::Panel::left("hierarchy").show(ui, |ui| {
+                    captured = Some(ui.button("Elements").id);
+                });
+            });
+            captured.expect("side-pane button id")
+        }
+        assert_ne!(
+            probe(false),
+            probe(true),
+            "sanity: the broken conditional allocation really does renumber ids"
+        );
+    }
+
+    /// #1614: opening the AI pane must not renumber Elements-pane widget ids.
+    ///
+    /// The AI pane is a right `Panel` allocated *before* Elements. Inserting it only while
+    /// open shifts the root auto-id salt for every later panel. [`show_pane_shell`] always
+    /// allocates the slot (width 0 when closed) so Elements salts stay put.
+    #[test]
+    fn ai_pane_slot_keeps_side_pane_widget_ids_stable() {
+        fn probe(open: bool) -> egui::Id {
+            let ctx = egui::Context::default();
+            let mut captured = None;
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                super::show_command_palette_panel(ui, false, |ui| {
+                    ui.label("palette");
+                });
+                egui::Panel::bottom("status").show(ui, |ui| {
+                    ui.label("status");
+                });
+                super::show_pane_shell(ui, "ai", "AI", true, 340.0, None, open, |ui| {
+                    ui.label("ai");
+                });
+                super::show_pane_shell(ui, "tree", "Elements", false, 220.0, None, true, |ui| {
+                    captured = Some(ui.button("Elements").id);
+                });
+            });
+            captured.expect("side-pane button id")
+        }
+        assert_eq!(
+            probe(false),
+            probe(true),
+            "toggling the AI pane must not renumber Elements-pane widget ids"
+        );
+    }
+
+    /// #1614: the pre-fix pattern — allocate the AI panel only while open — *does*
+    /// renumber later panels. Guards against deleting the always-on slot.
+    #[test]
+    fn conditional_ai_pane_would_renumber_side_pane_ids() {
+        fn probe(open: bool) -> egui::Id {
+            let ctx = egui::Context::default();
+            let mut captured = None;
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                if open {
+                    egui::Panel::right("ai").default_size(340.0).show(ui, |ui| {
+                        ui.label("ai");
+                    });
+                }
                 egui::Panel::left("hierarchy").show(ui, |ui| {
                     captured = Some(ui.button("Elements").id);
                 });
