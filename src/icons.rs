@@ -9,7 +9,7 @@ use eframe::egui::{
 use std::collections::HashMap;
 
 pub const ICON_DISPLAY_SIZE: f32 = 18.0;
-/// Combine Mode-row boolean icons (#1568): a step up from pane icons so the two-circle
+/// Combine Mode-row boolean icons (#1568): a step up from pane icons so the two-square
 /// glyphs stay readable, without matching the workbench toolbar.
 pub const COMBINE_MODE_ICON_SIZE: f32 = 24.0;
 const ICON_RASTER_SIZE: u32 = 64;
@@ -101,7 +101,7 @@ pub enum IconId {
     Project,
     /// Small "remove" ✕ used by the element picker's row-remove button (#256).
     Close,
-    /// Boolean-operation icons for the Combine tool (#267): two circles with kept regions
+    /// Boolean-operation icons for the Combine tool (#267): two corner-overlapping squares with kept regions
     /// solid and removed regions in faint red.
     BooleanUnion,
     BooleanCut,
@@ -891,3 +891,4 @@ mod tests {
         );
     }
 }
+
