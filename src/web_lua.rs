@@ -442,6 +442,70 @@ fn run_parameter(
             )?;
             Ok(Value::Null)
         }
+        "options" => {
+            let index = a
+                .get(1)
+                .and_then(Value::as_u64)
+                .ok_or("parameter options requires index")? as usize;
+            let Some(key) = state.doc.parameters.keys().nth(index) else {
+                return Err(format!("Parameter {index} not found"));
+            };
+            match a.get(2) {
+                None | Some(Value::Null) => Ok(json!(state.parameters_pane.options_open.contains(&key))),
+                Some(Value::Bool(open)) => {
+                    if *open {
+                        state.parameters_pane.options_open.insert(key);
+                    } else {
+                        state.parameters_pane.options_open.remove(&key);
+                        if state
+                            .parameters_pane
+                            .options_editing
+                            .is_some_and(|(k, _)| k == key)
+                        {
+                            state.parameters_pane.options_editing = None;
+                            state.parameters_pane.options_draft.clear();
+                        }
+                    }
+                    Ok(Value::Null)
+                }
+                _ => Err("parameter options open flag must be true/false".into()),
+            }
+        }
+        "edit" => {
+            let index = a
+                .get(1)
+                .and_then(Value::as_u64)
+                .ok_or("parameter edit requires index")? as usize;
+            let field = a
+                .get(2)
+                .and_then(Value::as_str)
+                .ok_or("parameter edit requires \"min\", \"max\", or \"step\"")?;
+            let which = crate::parameters::ParameterBound::from_name(field).ok_or(
+                "parameter edit field must be \"min\", \"max\", or \"step\"",
+            )?;
+            let Some(key) = state.doc.parameters.keys().nth(index) else {
+                return Err(format!("Parameter {index} not found"));
+            };
+            let current = crate::parameters::bound_expression(&state.doc.parameters[key], which)
+                .unwrap_or("")
+                .to_string();
+            state
+                .parameters_pane
+                .begin_options_edit(key, which, &current);
+            Ok(Value::Null)
+        }
+        "editing" => {
+            let Some((key, which)) = state.parameters_pane.options_editing else {
+                return Ok(Value::Null);
+            };
+            let Some(index) = state.doc.parameters.keys().position(|k| k == key) else {
+                return Ok(Value::Null);
+            };
+            Ok(json!({
+                "index": index,
+                "field": which.script_name(),
+            }))
+        }
         "slider" => {
             let index = a
                 .get(1)

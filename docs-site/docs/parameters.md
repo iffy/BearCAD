@@ -19,8 +19,9 @@ Each row's **gear** opens that parameter's options under its name (multiple can 
 at once):
 
 - **Min**, **Max**, **Step** — optional expressions. Unit kind (length vs angle) comes
-  from the default value. Importers must stay within these. With both min and max set, a
-  **slider** sits on the row below, spanning the name and value columns.
+  from the default value. Importers must stay within these. Tab walks Min → Max → Step.
+  With both min and max set, a **slider** sits on the row below, spanning the name and
+  value columns.
 - **Private** — checked = internal (hidden from
   [import](/docs/files#importing-bearcad-files) by default); unchecked = a knob importers
   are meant to change. Advisory only. A new parameter starts unchecked when its value is
@@ -121,6 +122,9 @@ bearcad.parameter("private", 0, true)        -- hide from import (internal)
 bearcad.parameter("min", 0, "1mm")           -- optional bounds; min+max ⇒ slider
 bearcad.parameter("max", 0, "100mm")
 bearcad.parameter("step", 0, "0.5mm")
+bearcad.parameter("options", 0, true)        -- open the row's gear-options
+bearcad.parameter("edit", 0, "min")          -- focus a bound field (Tab → max → step)
+bearcad.parameter("editing")                 -- {index=, field="min"|"max"|"step"} or nil
 bearcad.parameter("slider", 0)               -- {min=, max=, value=, step?} or nil
 bearcad.parameter("slider", 0, 15)           -- set via the slider (mm / rad, snapped)
 bearcad.parameter("min", 0)                  -- clear a bound

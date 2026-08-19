@@ -19,6 +19,8 @@ use crate::value::{
     EvaluatedParameter,
 };
 use eframe::egui::{self, Color32, Id, Key, RichText};
+use egui::text::{CCursor, CCursorRange};
+use egui::widgets::text_edit::TextEditState;
 
 pub const PANE_TITLE: &str = "Parameters";
 
@@ -42,6 +44,16 @@ fn param_name_id(key: ParameterKey) -> Id {
 
 fn param_value_id(key: ParameterKey) -> Id {
     Id::new(("bearcad_parameters_value", key.index(), key.generation()))
+}
+
+/// Widget id for a gear-options min/max/step field (#1576).
+pub fn param_bound_id(key: ParameterKey, which: ParameterBound) -> Id {
+    Id::new((
+        "bearcad_parameters_bound",
+        key.index(),
+        key.generation(),
+        which.label(),
+    ))
 }
 
 /// Whether a stored parameter value should show computed + expression text.
@@ -127,12 +139,16 @@ pub fn focused_derived_parameter_source(
         .unwrap_or_default()
 }
 
-/// Name of the parameter whose name/value field currently holds keyboard focus, if any.
+/// Name of the parameter whose name/value/bound field currently holds keyboard focus, if any.
 pub fn focused_parameter_name(ctx: &egui::Context, doc: &Document) -> Option<String> {
     let focused = ctx.memory(|m| m.focused())?;
     doc.parameters.iter().find_map(|(index, param)| {
-        (focused == param_name_id(index) || focused == param_value_id(index))
-            .then(|| param.name.clone())
+        (focused == param_name_id(index)
+            || focused == param_value_id(index)
+            || focused == param_bound_id(index, ParameterBound::Minimum)
+            || focused == param_bound_id(index, ParameterBound::Maximum)
+            || focused == param_bound_id(index, ParameterBound::Step))
+        .then(|| param.name.clone())
     })
 }
 
@@ -231,9 +247,13 @@ pub fn parameter_field_focused(ctx: &egui::Context, doc: &Document) -> bool {
             if id == Id::new(NEW_NAME_ID) || id == Id::new(NEW_VALUE_ID) {
                 return true;
             }
-            doc.parameters
-                .keys()
-                .any(|index| id == param_name_id(index) || id == param_value_id(index))
+            doc.parameters.keys().any(|index| {
+                id == param_name_id(index)
+                    || id == param_value_id(index)
+                    || id == param_bound_id(index, ParameterBound::Minimum)
+                    || id == param_bound_id(index, ParameterBound::Maximum)
+                    || id == param_bound_id(index, ParameterBound::Step)
+            })
         })
     })
 }
@@ -340,6 +360,19 @@ impl ParametersPaneState {
         self.editing = None;
         self.draft.clear();
         self.editing_focus = false;
+    }
+
+    /// Open gear-options and start editing one bound field, ready to type (#1576).
+    pub fn begin_options_edit(
+        &mut self,
+        index: ParameterKey,
+        which: ParameterBound,
+        current: &str,
+    ) {
+        self.options_open.insert(index);
+        self.options_editing = Some((index, which));
+        self.options_draft = current.to_string();
+        self.options_editing_focus = true;
     }
 }
 
@@ -1781,6 +1814,33 @@ impl ParameterBound {
     pub fn label_status(self) -> &'static str {
         self.label()
     }
+
+    /// Lua/UI short name: `"min"` / `"max"` / `"step"`.
+    pub fn script_name(self) -> &'static str {
+        match self {
+            Self::Minimum => "min",
+            Self::Maximum => "max",
+            Self::Step => "step",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "min" | "minimum" => Some(Self::Minimum),
+            "max" | "maximum" => Some(Self::Maximum),
+            "step" => Some(Self::Step),
+            _ => None,
+        }
+    }
+}
+
+/// Stored min/max/step expression on `param`.
+pub fn bound_expression(param: &Parameter, which: ParameterBound) -> Option<&str> {
+    match which {
+        ParameterBound::Minimum => param.minimum.as_deref(),
+        ParameterBound::Maximum => param.maximum.as_deref(),
+        ParameterBound::Step => param.step.as_deref(),
+    }
 }
 
 fn bound_slot_mut(param: &mut Parameter, which: ParameterBound) -> &mut Option<String> {
@@ -2039,6 +2099,37 @@ pub fn parameter_options_field_should_commit(
     lost_focus: bool,
 ) -> bool {
     lost_focus || parameter_edit_enter_pressed(enter_pressed, has_focus, lost_focus)
+}
+
+/// Next min/max/step field Tab should open (#1576).
+pub fn parameter_options_next_bound(which: ParameterBound) -> Option<ParameterBound> {
+    match which {
+        ParameterBound::Minimum => Some(ParameterBound::Maximum),
+        ParameterBound::Maximum => Some(ParameterBound::Step),
+        ParameterBound::Step => None,
+    }
+}
+
+/// Tab from a focused min/max/step field commits and opens the next bound (#1576).
+///
+/// [`Response::has_focus`] is false in scripted runs — pass `ctx.memory(|m| m.focused())`
+/// (or `lost_focus`, which a singleline [`egui::TextEdit`] still reports on Tab).
+pub fn parameter_options_tab_should_advance(
+    tab_pressed: bool,
+    has_focus: bool,
+    lost_focus: bool,
+) -> bool {
+    tab_pressed && (has_focus || lost_focus)
+}
+
+fn select_all_bound_field(ctx: &egui::Context, id: Id, text: &str) {
+    let mut state = TextEditState::load(ctx, id).unwrap_or_default();
+    let len = text.chars().count();
+    state.cursor.set_char_range(Some(CCursorRange::two(
+        CCursor::new(0),
+        CCursor::new(len),
+    )));
+    state.store(ctx, id);
 }
 
 /// Draft text → expression for [`Action::SetParameterBound`]: empty clears the bound.
@@ -2449,9 +2540,10 @@ fn show_parameter_options_fields(
                 ui.label(RichText::new(label).size(11.0));
                 let editing = app.parameters_pane.options_editing == Some((index, which));
                 if editing {
+                    let bound_id = param_bound_id(index, which);
                     let mut draft = app.parameters_pane.options_draft.clone();
-                    let resp = crate::expression_input::ValueInput::new(
-                        (index, which),
+                    let resp = crate::expression_input::ValueInput::from_id(
+                        bound_id,
                         value_kind,
                     )
                     .hint("expression")
@@ -2459,26 +2551,64 @@ fn show_parameter_options_fields(
                     .width(96.0)
                     .show(ui, &mut draft, &app.doc);
                     app.parameters_pane.options_draft = draft;
+                    let memory_focused = ui.ctx().memory(|m| m.focused()) == Some(bound_id);
+                    let has = memory_focused || resp.has_focus();
                     if app.parameters_pane.options_editing_focus {
                         resp.request_focus();
-                        app.parameters_pane.options_editing_focus = false;
+                        if has || resp.gained_focus() {
+                            select_all_bound_field(
+                                ui.ctx(),
+                                bound_id,
+                                &app.parameters_pane.options_draft,
+                            );
+                            app.parameters_pane.options_editing_focus = false;
+                        }
                     }
-                    if parameter_options_field_should_commit(
-                        enter,
-                        resp.has_focus(),
+                    // Autocomplete may have consumed Tab already; read after ValueInput::show.
+                    let tab = ui.input(|i| i.key_pressed(Key::Tab));
+                    let tab_advance = parameter_options_tab_should_advance(
+                        tab,
+                        has,
                         resp.lost_focus(),
-                    ) {
+                    );
+                    if tab_advance
+                        || parameter_options_field_should_commit(
+                            enter,
+                            has,
+                            resp.lost_focus(),
+                        )
+                    {
                         *set_bound = Some((
                             index,
                             which,
                             parameter_options_bound_expression(&app.parameters_pane.options_draft),
                         ));
-                        app.parameters_pane.options_editing = None;
-                        app.parameters_pane.options_draft.clear();
-                        if enter {
+                        if tab_advance {
+                            if let Some(next) = parameter_options_next_bound(which) {
+                                let next_current = match next {
+                                    ParameterBound::Minimum => minimum,
+                                    ParameterBound::Maximum => maximum,
+                                    ParameterBound::Step => step,
+                                };
+                                app.parameters_pane.options_editing = Some((index, next));
+                                app.parameters_pane.options_draft =
+                                    next_current.clone().unwrap_or_default();
+                                app.parameters_pane.options_editing_focus = true;
+                            } else {
+                                app.parameters_pane.options_editing = None;
+                                app.parameters_pane.options_draft.clear();
+                            }
                             ui.input_mut(|i| {
-                                i.consume_key(egui::Modifiers::NONE, Key::Enter);
+                                i.consume_key(egui::Modifiers::NONE, Key::Tab);
                             });
+                        } else {
+                            app.parameters_pane.options_editing = None;
+                            app.parameters_pane.options_draft.clear();
+                            if enter {
+                                ui.input_mut(|i| {
+                                    i.consume_key(egui::Modifiers::NONE, Key::Enter);
+                                });
+                            }
                         }
                     }
                 } else {
@@ -2492,10 +2622,11 @@ fn show_parameter_options_fields(
                         .on_hover_text(format!("{label} (optional expression)"))
                         .clicked()
                     {
-                        app.parameters_pane.options_editing = Some((index, which));
-                        app.parameters_pane.options_draft =
-                            current.clone().unwrap_or_default();
-                        app.parameters_pane.options_editing_focus = true;
+                        app.parameters_pane.begin_options_edit(
+                            index,
+                            which,
+                            current.as_deref().unwrap_or(""),
+                        );
                     }
                 }
             }
@@ -3686,6 +3817,150 @@ mod tests {
         assert!(!unit_parameter_edit_should_commit(false, false, false, true));
         // Nothing pressed, still focused: keep editing.
         assert!(!unit_parameter_edit_should_commit(false, false, true, false));
+    }
+
+    fn key_press(key: egui::Key) -> egui::RawInput {
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        input
+    }
+
+    fn text_input(text: &str) -> egui::RawInput {
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Text(text.to_string()));
+        input
+    }
+
+    fn paint_parameters_on(ctx: &egui::Context, app: &mut AppState, input: egui::RawInput) {
+        let _ = ctx.run_ui(input, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                ui.set_width(280.0);
+                show_pane(ui, app);
+            });
+        });
+    }
+
+    /// #1576: Tab from Min commits that bound and focuses Max so typing sets the max.
+    #[test]
+    fn tab_from_min_focuses_max_ready_to_type() {
+        let mut app = AppState::default();
+        let index = add_parameter(&mut app.doc, "width".into(), "10mm".into()).unwrap();
+        app.parameters_pane.options_open.insert(index);
+        app.parameters_pane.options_editing = Some((index, ParameterBound::Minimum));
+        app.parameters_pane.options_draft = "5mm".into();
+        app.parameters_pane.options_editing_focus = true;
+
+        let ctx = egui::Context::default();
+        ctx.options_mut(|o| {
+            o.max_passes = std::num::NonZeroUsize::new(3).unwrap();
+        });
+        for _ in 0..3 {
+            paint_parameters_on(&ctx, &mut app, Default::default());
+        }
+        let min_id = param_bound_id(index, ParameterBound::Minimum);
+        let max_id = param_bound_id(index, ParameterBound::Maximum);
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(min_id),
+            "setup: Min field should hold focus"
+        );
+
+        paint_parameters_on(&ctx, &mut app, key_press(egui::Key::Tab));
+        paint_parameters_on(&ctx, &mut app, Default::default());
+
+        assert_eq!(
+            app.parameters_pane.options_editing,
+            Some((index, ParameterBound::Maximum)),
+            "Tab from Min should start editing Max"
+        );
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(max_id),
+            "Max field should hold keyboard focus so typing sets the max"
+        );
+        assert_eq!(
+            app.doc.parameters[index].minimum.as_deref(),
+            Some("5mm"),
+            "Min draft should commit on Tab"
+        );
+
+        paint_parameters_on(&ctx, &mut app, text_input("100mm"));
+        paint_parameters_on(&ctx, &mut app, key_press(egui::Key::Enter));
+        paint_parameters_on(&ctx, &mut app, Default::default());
+        assert_eq!(
+            app.doc.parameters[index].maximum.as_deref(),
+            Some("100mm"),
+            "typing after Tab should set Max"
+        );
+    }
+
+    /// #1576: Tab from Max focuses Step the same way.
+    #[test]
+    fn tab_from_max_focuses_step_ready_to_type() {
+        let mut app = AppState::default();
+        let index = add_parameter(&mut app.doc, "width".into(), "10mm".into()).unwrap();
+        app.parameters_pane.options_open.insert(index);
+        app.parameters_pane.options_editing = Some((index, ParameterBound::Maximum));
+        app.parameters_pane.options_draft = "50mm".into();
+        app.parameters_pane.options_editing_focus = true;
+
+        let ctx = egui::Context::default();
+        ctx.options_mut(|o| {
+            o.max_passes = std::num::NonZeroUsize::new(3).unwrap();
+        });
+        for _ in 0..3 {
+            paint_parameters_on(&ctx, &mut app, Default::default());
+        }
+        let step_id = param_bound_id(index, ParameterBound::Step);
+
+        paint_parameters_on(&ctx, &mut app, key_press(egui::Key::Tab));
+        paint_parameters_on(&ctx, &mut app, Default::default());
+
+        assert_eq!(
+            app.parameters_pane.options_editing,
+            Some((index, ParameterBound::Step)),
+            "Tab from Max should start editing Step"
+        );
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(step_id),
+            "Step field should hold keyboard focus so typing sets the step"
+        );
+        assert_eq!(app.doc.parameters[index].maximum.as_deref(), Some("50mm"));
+
+        paint_parameters_on(&ctx, &mut app, text_input("2.5mm"));
+        paint_parameters_on(&ctx, &mut app, key_press(egui::Key::Enter));
+        paint_parameters_on(&ctx, &mut app, Default::default());
+        assert_eq!(app.doc.parameters[index].step.as_deref(), Some("2.5mm"));
+    }
+
+    /// #1576: Tab walks Min → Max → Step.
+    #[test]
+    fn parameter_options_next_bound_walks_min_max_step() {
+        assert_eq!(
+            parameter_options_next_bound(ParameterBound::Minimum),
+            Some(ParameterBound::Maximum)
+        );
+        assert_eq!(
+            parameter_options_next_bound(ParameterBound::Maximum),
+            Some(ParameterBound::Step)
+        );
+        assert_eq!(parameter_options_next_bound(ParameterBound::Step), None);
+    }
+
+    /// #1576: Tab while focused (or after singleline surrenders focus) advances.
+    #[test]
+    fn parameter_options_tab_advances_when_focused_or_lost() {
+        assert!(parameter_options_tab_should_advance(true, false, true));
+        assert!(parameter_options_tab_should_advance(true, true, false));
+        assert!(!parameter_options_tab_should_advance(false, false, true));
+        assert!(!parameter_options_tab_should_advance(true, false, false));
     }
 
     /// #1179: min/max/step must commit when the field loses focus, not only on Enter.
