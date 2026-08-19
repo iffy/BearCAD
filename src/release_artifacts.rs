@@ -92,6 +92,31 @@ mod tests {
         );
     }
 
+    /// #1546: the wasm web app ships on the same draft release as the desktop
+    /// binaries, so it must bake the same `BEARCAD_RELEASE_TAG`. Without it,
+    /// Help → About falls back to the crate version (`v0.1.0`).
+    #[test]
+    fn ci_bakes_release_identity_into_web_app() {
+        let workflow = include_str!("../.github/workflows/ci.yml");
+        let web = workflow
+            .split("  build-web-release:")
+            .nth(1)
+            .and_then(|s| s.split("\n  release:").next())
+            .expect("ci.yml should have a build-web-release job");
+        assert!(
+            web.contains("BEARCAD_RELEASE_TAG"),
+            "web release build should bake BEARCAD_RELEASE_TAG so About shows the real version"
+        );
+        assert!(
+            web.contains("needs.release-id.outputs.tag"),
+            "web release build should take its tag from the shared release-id job"
+        );
+        assert!(
+            web.contains("needs:") && web.contains("release-id"),
+            "build-web-release should depend on release-id"
+        );
+    }
+
     /// `release-changelog.sh full` is the file `changer bump` would write (new section + old).
     #[test]
     #[cfg(unix)]

@@ -19121,6 +19121,24 @@ pub fn full_version() -> String {
     }
 }
 
+#[cfg(test)]
+mod full_version_tests {
+    use super::*;
+
+    /// #1546: Help → About (web and native) must not report the bare crate version
+    /// when this build has git identity. Release CI bakes `BEARCAD_RELEASE_TAG`.
+    #[test]
+    fn full_version_includes_git_or_release_identity() {
+        let v = full_version();
+        assert!(v.starts_with('v'), "version should start with v, got {v}");
+        assert_ne!(
+            v,
+            format!("v{}", env!("CARGO_PKG_VERSION")),
+            "full_version should include a release tag or git SHA, got {v}"
+        );
+    }
+}
+
 fn build_gpu_dimension_labels(
     ctx: &egui::Context,
     layouts: &[CommittedDimLayout],

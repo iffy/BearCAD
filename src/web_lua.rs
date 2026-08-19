@@ -155,6 +155,7 @@ fn run_command(
     // sketch arg), handled before the generic positional adaptor.
     match name {
         "status" => return Ok(json!(state.status)),
+        "version" => return Ok(json!(crate::full_version())),
         "selection" => return Ok(selection_json(state)),
         "sketch_dof" => {
             let sketch = arg_sketch(&args, state)?;

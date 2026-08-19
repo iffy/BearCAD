@@ -398,8 +398,11 @@ jobs:
   # release instead of rebuilding it on every docs push (#1387). Built alongside the
   # desktop binaries and attached to the same draft release, so "latest published
   # (non-draft) release" always carries a matching web app.
+  # Bake the same release identity as the desktop jobs (#1546): without
+  # BEARCAD_RELEASE_TAG the wasm About dialog falls back to the crate version.
   build-web-release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: [release-id]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -443,6 +446,21 @@ jobs:
         run: |
           git submodule update --init --depth 1 third_party/solvespace
           git -C third_party/solvespace submodule update --init --depth 1 extlib/eigen extlib/mimalloc
+
+      # Same bake as the desktop release jobs (#466, #1129, #1546): the `release`
+      # job tags v{version}-build.YYMMDD-### *after* this build, and the shallow
+      # checkout has no tags for `git describe`.
+      - name: Download changelog
+        uses: actions/download-artifact@v7
+        with:
+          name: release-meta
+          path: release-meta
+
+      - name: Bake release identity
+        shell: bash
+        run: |
+          echo "BEARCAD_RELEASE_TAG=${{ needs.release-id.outputs.tag }}" >> "$GITHUB_ENV"
+          echo "BEARCAD_CHANGELOG_PATH=${GITHUB_WORKSPACE}/release-meta/changelog.md" >> "$GITHUB_ENV"
 
       - name: Build web app (kernel + app)
         run: scripts/build-web.sh

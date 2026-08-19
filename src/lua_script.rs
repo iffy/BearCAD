@@ -3610,6 +3610,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1546: the same identity Help → About shows (release tag, or crate version + SHA).
+    api.set(
+        "version",
+        lua.create_function(|_, ()| Ok(crate::full_version()))?,
+    )?;
+
     api.set(
         "selection",
         lua.create_function(|lua, ()| {
@@ -8557,7 +8563,7 @@ mod tests {
                                     "export_step", "export_preview",
                                     "import_stl", "import_step", "import_lua", "chamfer_vertex",
                                     "fillet_vertex", "chamfer_edge", "fillet_edge", "project",
-                                    "tool_table", "tool_row" }) do
+                                    "tool_table", "tool_row", "version" }) do
                 assert(type(bearcad[name]) == "function", "bearcad." .. name .. " should stay top-level")
             end
         "#,
@@ -11865,6 +11871,20 @@ mod tests {
             r#"
             bearcad.new()
             assert(type(bearcad.status()) == "string")
+        "#,
+        );
+    }
+
+    /// #1546: `bearcad.version()` is the Help → About identity, not the bare crate version.
+    #[test]
+    fn lua_version_returns_the_build_identity() {
+        run_lua_expect_ok(
+            r#"
+            local v = bearcad.version()
+            assert(type(v) == "string" and #v > 0, "version should be a non-empty string")
+            assert(v:match("^v"), "version should start with v, got: " .. v)
+            assert(v:find("%(") or v:find("build%.") or v:find("%-g"),
+                "version should include git/build identity, not just the crate version, got: " .. v)
         "#,
         );
     }
