@@ -2772,7 +2772,10 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   (`Option<String>`, empty clears). Unit kind (length vs angle) follows the default
   value's units. Scripted as `bearcad.parameter("min"|"max"|"step", i, expression?)`
   (`Action::SetParameterBound`). The gear cog on each Parameters-pane row toggles that
-  row's options panel (multiple open at once). **Imported unit instances** cannot edit
+  row's options panel (multiple open at once). Tab from a focused Min field commits and
+  focuses Max so typing sets the max; Tab from Max focuses Step (#1576). Scripted as
+  `bearcad.parameter("options", i[, open])`, `bearcad.parameter("edit", i, "min"|"max"|"step")`,
+  `bearcad.parameter("editing")`. **Imported unit instances** cannot edit
   these options; overrides (`SetUnitParameterOverride` / `unit_override`) are
   clamp-and-snapped to min/max/step (`clamp_and_snap_override_expression`). With both min
   and max resolved, a **slider** sits on the row below the parameter, spanning the name

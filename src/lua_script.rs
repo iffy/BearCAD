@@ -4634,6 +4634,101 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     }
                     Ok(Value::Nil)
                 }
+                // #1576: open/close the gear-options panel, or query whether it's open.
+                "options" => {
+                    let index = match args.get(1) {
+                        Some(Value::Integer(i)) => *i as usize,
+                        Some(Value::Number(n)) => n.round() as usize,
+                        _ => {
+                            return Err(mlua::Error::external(
+                                "parameter options requires index",
+                            ))
+                        }
+                    };
+                    let state = unsafe { tick.state() };
+                    let Some(key) = state.doc.parameters.keys().nth(index) else {
+                        return Err(mlua::Error::external(format!(
+                            "Parameter {index} not found"
+                        )));
+                    };
+                    match args.get(2) {
+                        None | Some(Value::Nil) => Ok(Value::Boolean(
+                            state.parameters_pane.options_open.contains(&key),
+                        )),
+                        Some(Value::Boolean(open)) => {
+                            if *open {
+                                state.parameters_pane.options_open.insert(key);
+                            } else {
+                                state.parameters_pane.options_open.remove(&key);
+                                if state
+                                    .parameters_pane
+                                    .options_editing
+                                    .is_some_and(|(k, _)| k == key)
+                                {
+                                    state.parameters_pane.options_editing = None;
+                                    state.parameters_pane.options_draft.clear();
+                                }
+                            }
+                            Ok(Value::Nil)
+                        }
+                        _ => Err(mlua::Error::external(
+                            "parameter options open flag must be true/false",
+                        )),
+                    }
+                }
+                // #1576: start editing a bound field so Tab/type drive the live widgets.
+                "edit" => {
+                    let index = match args.get(1) {
+                        Some(Value::Integer(i)) => *i as usize,
+                        Some(Value::Number(n)) => n.round() as usize,
+                        _ => {
+                            return Err(mlua::Error::external("parameter edit requires index"))
+                        }
+                    };
+                    let field = match args.get(2) {
+                        Some(Value::String(s)) => s.to_str()?.to_string(),
+                        _ => {
+                            return Err(mlua::Error::external(
+                                "parameter edit requires \"min\", \"max\", or \"step\"",
+                            ))
+                        }
+                    };
+                    let which = crate::parameters::ParameterBound::from_name(&field)
+                        .ok_or_else(|| {
+                            mlua::Error::external(
+                                "parameter edit field must be \"min\", \"max\", or \"step\"",
+                            )
+                        })?;
+                    let state = unsafe { tick.state() };
+                    let Some(key) = state.doc.parameters.keys().nth(index) else {
+                        return Err(mlua::Error::external(format!(
+                            "Parameter {index} not found"
+                        )));
+                    };
+                    let current = crate::parameters::bound_expression(
+                        &state.doc.parameters[key],
+                        which,
+                    )
+                    .unwrap_or("")
+                    .to_string();
+                    state
+                        .parameters_pane
+                        .begin_options_edit(key, which, &current);
+                    Ok(Value::Nil)
+                }
+                "editing" => {
+                    let state = unsafe { tick.state() };
+                    let Some((key, which)) = state.parameters_pane.options_editing else {
+                        return Ok(Value::Nil);
+                    };
+                    let Some(index) = state.doc.parameters.keys().position(|k| k == key) else {
+                        return Ok(Value::Nil);
+                    };
+                    let t = lua.create_table()?;
+                    t.set("index", index)?;
+                    t.set("field", which.script_name())?;
+                    Ok(Value::Table(t))
+                }
                 // #1559: local min+max slider — get `{min, max, value, step?}` or set a
                 // canonical-unit number (clamp-and-snapped like a drag).
                 "slider" => {
@@ -14071,6 +14166,30 @@ mod tests {
         );
         assert!((state.doc.extrusions[xkey(0)].distance - 9.0).abs() < 1e-3);
         assert_eq!(state.doc.extrusions[xkey(0)].expression, "d");
+    }
+
+    /// #1576: gear-options open/edit/editing are scriptable so Tab between bounds can be driven.
+    #[test]
+    fn lua_parameter_options_edit_is_scriptable() {
+        let state = run_lua(
+            r#"
+            bearcad.parameter("add", "width", "10mm")
+            assert(bearcad.parameter("options", 0) == false)
+            bearcad.parameter("options", 0, true)
+            assert(bearcad.parameter("options", 0) == true)
+            bearcad.parameter("edit", 0, "min")
+            local e = bearcad.parameter("editing")
+            assert(e.index == 0)
+            assert(e.field == "min")
+            bearcad.parameter("edit", 0, "max")
+            assert(bearcad.parameter("editing").field == "max")
+            bearcad.parameter("options", 0, false)
+            assert(bearcad.parameter("options", 0) == false)
+            assert(bearcad.parameter("editing") == nil)
+            "#,
+        );
+        assert!(state.parameters_pane.options_open.is_empty());
+        assert!(state.parameters_pane.options_editing.is_none());
     }
 
     /// #1176/#1180: parameter min/max/step and private are scriptable.
