@@ -65,6 +65,7 @@ mod polygon_boolean;
 mod model;
 mod offset;
 mod opsigs;
+mod testplan;
 mod tooltable;
 mod tutorial;
 mod units;
@@ -444,6 +445,10 @@ fn main() -> eframe::Result<()> {
         }
         script::CliOutcome::OpSigs { html } => {
             opsigs::run_cli(html);
+            return Ok(());
+        }
+        script::CliOutcome::Testplan => {
+            print!("{}", testplan::render());
             return Ok(());
         }
         script::CliOutcome::Run(script_opts) => run_app(script_opts),
@@ -858,6 +863,10 @@ mod cli_tests {
         assert_eq!(
             script::parse_cli(["bearcad", "opsigs", "--html"]),
             script::CliOutcome::OpSigs { html: true }
+        );
+        assert_eq!(
+            script::parse_cli(["bearcad", "testplan"]),
+            script::CliOutcome::Testplan
         );
     }
 

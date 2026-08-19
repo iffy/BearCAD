@@ -2,5 +2,7 @@
 rustflags = ["-D", "warnings"]
 
 # `cargo opsigs` → run the app's operation-signature table (markdown + HTML).
+# `cargo testplan` → print the exhaustive [ ] test checklist.
 [alias]
 opsigs = ["run", "--", "opsigs"]
+testplan = ["run", "--", "testplan"]
