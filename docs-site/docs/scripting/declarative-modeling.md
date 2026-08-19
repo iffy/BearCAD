@@ -379,7 +379,7 @@ bearcad.import_image{ path = "drawing.png", plane = 1 }
 -- (any expression). The image rescales about the span midpoint.
 bearcad.calibrate_image{ image = 0, from = { -100, -120 }, to = { 100, -120 }, length = 50 }
 bearcad.calibrate_image{ image = 0, length = "2 * scale" }   -- current line
-local img = bearcad.get{ kind = "image", index = 0 }        -- from/to/length/expression/opacity
+local img = bearcad.get{ kind = "image", index = 0 }        -- plane/from/to/length/expression/opacity
 bearcad.image_opacity{ image = 0, opacity = 0.5 }          -- 0..1; expressions ok
 ```
 

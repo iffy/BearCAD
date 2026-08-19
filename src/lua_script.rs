@@ -3511,6 +3511,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     }
                     t.set("source", img.source_name.as_str())?;
                     t.set("opacity", img.opacity)?;
+                    t.set(
+                        "plane",
+                        doc.construction_planes.keys().position(|k| k == img.plane),
+                    )?;
                     if let Some(cal) = &img.calibration {
                         let from = lua.create_table()?;
                         if let Some((x, y)) = crate::model::image_calibration_point_uv(img, 0) {
@@ -7808,6 +7812,34 @@ mod tests {
         ));
         let img = state.doc.tracing_images.values().next().unwrap();
         assert!((img.opacity - 0.5).abs() < 1e-6);
+    }
+
+    /// #1564: selecting a construction plane offers "Import image on this plane" in
+    /// the command palette; running it with a path (the scripted form) places the
+    /// image on that plane. Without a plane selected the command is not offered.
+    #[test]
+    fn lua_palette_imports_image_on_the_selected_plane() {
+        let path = write_test_png("palette_plane.png", 8, 8);
+        let state = run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.select{{ kind = "plane", index = 1 }}
+            bearcad.ui.palette("run", "import image on this plane", {path:?})
+            assert(bearcad.count("image") == 1, "imported via palette")
+            local img = bearcad.get{{ kind = "image", index = 0 }}
+            assert(img.plane == 1, "should land on the selected XZ plane, got " .. tostring(img.plane))
+
+            bearcad.clear_selection()
+            bearcad.ui.palette("run", "import image on this plane", {path:?})
+            assert(bearcad.count("image") == 1, "no extra import without a selected plane")
+            "#
+        ));
+        let img = state.doc.tracing_images.values().next().unwrap();
+        assert_eq!(
+            img.plane,
+            pkey(1),
+            "Rust-side host plane should be XZ"
+        );
     }
 
     /// #1055: a script names an arena-backed element by its **ordinal** among the live ones,

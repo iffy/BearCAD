@@ -1935,9 +1935,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
 
 ### 3.4.1 Tracing images (#163)
 - **Import (#169):** File → Import Image…, or right-click a construction plane in the
-  Elements pane → "Import image on this plane…" to target that plane directly (#175)
+  Elements pane → "Import image on this plane…" to target that plane directly (#175),
+  or the same command in the command palette when a construction plane is selected (#1564)
   (or `bearcad.import_image("p.png")` /
-  `bearcad.import_image{ path =, plane = }`) embeds a PNG/JPEG in the document (base64 in
+  `bearcad.import_image{ path =, plane = }` /
+  `bearcad.ui.palette("run", "import image on this plane", "p.png")` with that plane selected)
+  embeds a PNG/JPEG in the document (base64 in
   the saved JSON, so files stay self-contained like imported meshes) and places it on a
   construction plane (default: plane 0), centered on the plane origin at an initial scale
   of **1 px = 1 mm**. The image is an Elements-pane row nested under its host plane —
@@ -4458,6 +4461,9 @@ retina machine renders the same composition at 2x, just sharper.
 ### 11.2 Command palette
 - VS Code-style palette listing **context-pertinent** commands. Commands come from the
   shared action layer (§8) so palette, shortcuts, GUI buttons, and scripting stay in sync.
+  A selected construction plane offers **Import image on this plane…** (#1564), the same
+  action as the Elements-pane context menu: the GUI picks a file; a script passes the path
+  as the third value (`bearcad.ui.palette("run", "import image on this plane", "p.png")`).
 - Coverage includes **every modeling tool** — the sketch tools plus Extrude, Chamfer, Fillet,
   Offset, Projection, Loft, Revolve, Sweep, Combine, Move, Mirror, Repeat, Slice, and Text (each
   `SetTool`) — and the **Selection Exploder** ("Explode Selection Under Cursor", #576), which the
