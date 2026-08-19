@@ -875,7 +875,8 @@ fn parse_or_live_signed(text: &str, live: f32, user_edited: bool) -> f32 {
 
 /// A tracing image's four world corners, in UV order: (0,0), (1,0), (1,1), (0,1) —
 /// v flipped, since image v grows downward and plane-local v grows up. Shared by
-/// the textured quad, the hover outline, and the Select-tool pick (#1561).
+/// the textured quad, the hover outline, the Select-tool pick (#1561), and
+/// zoom-to-fit (#1584).
 pub fn tracing_image_corners(
     doc: &Document,
     image: crate::model::TracingImageKey,

@@ -14562,6 +14562,31 @@ mod tests {
         assert!(state.cam.distance > 0.0 && state.cam.distance.is_finite());
     }
 
+    /// #1584: `bearcad.ui.zoom_fit()` frames a selected tracing image, even when other
+    /// geometry would otherwise set the document bounds.
+    #[test]
+    fn lua_zoom_fit_frames_a_selected_tracing_image() {
+        let path = write_test_png("zoom_fit_image.png", 40, 20);
+        let state = run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.ui.animate_zoom_to_fit(false)
+            bearcad.rect{{ x = 0, y = 0, width = 10, height = 10 }}
+            bearcad.extrude{{ polygon = {{0, 1, 2, 3}}, distance = 5 }}
+            bearcad.import_image({path:?})
+            bearcad.select{{ kind = "image", index = 0 }}
+            bearcad.ui.zoom_fit()
+            "#
+        ));
+        // 40×20 px at 1 px = 1 mm, centered on the plane origin → centre (0, 0, 0).
+        // The cuboid is centred at (5, 5, 2.5); framing that would fail this check.
+        assert!(
+            (state.cam.target - glam::Vec3::ZERO).length() < 0.5,
+            "zoom_fit should center on the selected image, got {:?}",
+            state.cam.target
+        );
+    }
+
     /// #1276: `bearcad.ui.animate_zoom_to_fit(false)` makes zoom_fit snap.
     #[test]
     fn lua_animate_zoom_to_fit_toggles() {

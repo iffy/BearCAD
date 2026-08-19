@@ -33629,6 +33629,38 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         );
     }
 
+    /// #1584: Zoom to Fit frames a selected tracing image's quad, not the rest of the document.
+    #[test]
+    fn zoom_to_fit_frames_a_selected_tracing_image() {
+        let mut state = box_extrusion_state();
+        state.apply(Action::ExitSketch);
+        let image = state.doc.tracing_images.insert(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "trace".to_string(),
+            plane: pkey(0),
+            origin: (100.0, 200.0),
+            width_mm: 40.0,
+            height_mm: 20.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
+            name: None,
+            calibration: None,
+            base_origin: None,
+        });
+        state.apply(Action::ClickSceneElement {
+            element: crate::hierarchy::SceneElement::Image(image),
+            additive: false,
+        });
+        state.animate_zoom_to_fit = false;
+        state.cam.target = glam::Vec3::new(999.0, 999.0, 999.0);
+        let result = state.apply(Action::ZoomToFit);
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        let target = state.cam.target;
+        assert!(
+            (target - glam::Vec3::new(120.0, 210.0, 0.0)).length() < 0.5,
+            "camera should center on the selected image, not the body, got {target:?}"
+        );
+    }
+
     /// #1276: Zoom to Fit glides by default (half Home duration, #1303).
     #[test]
     fn zoom_to_fit_animates_by_default() {
