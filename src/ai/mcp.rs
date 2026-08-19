@@ -407,6 +407,65 @@ fn tool_definitions() -> Vec<Value> {
         .collect()
 }
 
+/// A ready-made configuration for one MCP client (#1606).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClientConfig {
+    /// Which client this is for.
+    pub id: &'static str,
+    pub label: &'static str,
+    /// Where it goes, or how to run it.
+    pub note: &'static str,
+    /// The text to paste.
+    pub text: String,
+}
+
+/// Configurations for the clients people actually use, filled in with this server's URL
+/// and token. Each shape is what that client's own documentation specifies — Codex takes
+/// the *name* of an environment variable rather than a token, so its snippet says so.
+pub fn client_configs(url: &str, token: &str) -> Vec<ClientConfig> {
+    let json_body = |wrapper: &str| {
+        format!(
+            "{{\n  \"{wrapper}\": {{\n    \"bearcad\": {{\n      \"type\": \"http\",\n      \"url\": \"{url}\",\n      \"headers\": {{ \"Authorization\": \"Bearer {token}\" }}\n    }}\n  }}\n}}"
+        )
+    };
+    vec![
+        ClientConfig {
+            id: "claude",
+            label: "Claude Code",
+            note: "run this once",
+            text: format!(
+                "claude mcp add --transport http bearcad {url} --header \"Authorization: Bearer {token}\""
+            ),
+        },
+        ClientConfig {
+            id: "json",
+            label: "JSON (Cursor, and most clients)",
+            note: "mcp.json / .mcp.json",
+            text: json_body("mcpServers"),
+        },
+        ClientConfig {
+            id: "vscode",
+            label: "VS Code",
+            note: ".vscode/mcp.json",
+            text: json_body("servers"),
+        },
+        ClientConfig {
+            id: "codex",
+            label: "OpenAI Codex",
+            note: "~/.codex/config.toml — Codex reads the token from the environment",
+            text: format!(
+                "# export BEARCAD_MCP_TOKEN={token}\n[mcp_servers.bearcad]\nurl = \"{url}\"\nbearer_token_env_var = \"BEARCAD_MCP_TOKEN\""
+            ),
+        },
+        ClientConfig {
+            id: "stdio",
+            label: "Any stdio-only client",
+            note: "bridges stdio to this server",
+            text: "bearcad mcp".to_string(),
+        },
+    ]
+}
+
 /// The names of every tool, for tests and the pane.
 pub fn tool_names() -> Vec<&'static str> {
     TOOLS.iter().map(|t| t.name).collect()
@@ -756,6 +815,51 @@ mod tests {
             log.iter().any(|e| e.what == "auth" && !e.ok),
             "a refused request is logged too: {log:?}"
         );
+    }
+
+    #[test]
+    fn every_client_config_carries_this_servers_url_and_token() {
+        let configs = client_configs("http://127.0.0.1:8721/mcp", "abc123");
+        assert!(configs.len() >= 4, "the clients people actually use");
+        for config in &configs {
+            assert!(!config.label.is_empty() && !config.note.is_empty());
+            // The stdio bridge is the one that needs neither: it inherits both from the app.
+            if config.id == "stdio" {
+                continue;
+            }
+            assert!(
+                config.text.contains("http://127.0.0.1:8721/mcp"),
+                "{} should carry the URL: {}",
+                config.id,
+                config.text
+            );
+            assert!(
+                config.text.contains("abc123"),
+                "{} should carry the token: {}",
+                config.id,
+                config.text
+            );
+        }
+
+        // The JSON shapes really are JSON, so a paste into a config file works.
+        for id in ["json", "vscode"] {
+            let config = configs.iter().find(|c| c.id == id).unwrap();
+            let parsed: Value = serde_json::from_str(&config.text)
+                .unwrap_or_else(|e| panic!("{id} config is not valid JSON: {e}
+{}", config.text));
+            let entry = if id == "vscode" {
+                &parsed["servers"]["bearcad"]
+            } else {
+                &parsed["mcpServers"]["bearcad"]
+            };
+            assert_eq!(entry["url"], "http://127.0.0.1:8721/mcp");
+            assert_eq!(entry["headers"]["Authorization"], "Bearer abc123");
+        }
+
+        // Codex takes the *name* of an environment variable, not the token itself.
+        let codex = configs.iter().find(|c| c.id == "codex").unwrap();
+        assert!(codex.text.contains(r#"bearer_token_env_var = "BEARCAD_MCP_TOKEN""#));
+        assert!(codex.text.contains("export BEARCAD_MCP_TOKEN="));
     }
 
     #[test]

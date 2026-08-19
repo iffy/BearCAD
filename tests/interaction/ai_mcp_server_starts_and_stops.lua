@@ -40,8 +40,24 @@ local fresh = bearcad.ai.mcp_token()
 assert(fresh ~= token, "regenerating should actually change the token")
 assert(bearcad.ai.mcp_status().running, "and leave the server running with the new one")
 
+-- Ready-made client configurations carry this server's URL and token, so what the pane
+-- copies is what a client needs.
+local configs = bearcad.ai.mcp_configs()
+assert(#configs >= 4, "expected configurations for the usual clients, got " .. #configs)
+local seen = {}
+for _, c in ipairs(configs) do seen[c.id] = c end
+assert(seen["claude"] and seen["json"] and seen["codex"], "the named clients are covered")
+assert(seen["json"].text:find(bearcad.ai.mcp_status().url, 1, true), "the JSON config has the URL")
+assert(seen["json"].text:find(fresh, 1, true), "and the current token")
+-- Codex takes the name of an environment variable, not the value.
+assert(seen["codex"].text:find("bearer_token_env_var"), "Codex's shape is its own")
+
 bearcad.ai.mcp_stop()
 assert(not bearcad.ai.mcp_status().running, "stop should stop it")
+
+-- With the server down there is nothing to configure a client against.
+assert(not pcall(function() return bearcad.ai.mcp_configs() end),
+  "configs need a running server")
 
 print("ok: the MCP server is opt-in, loopback-only, and keeps its token to itself")
 bearcad.quit()

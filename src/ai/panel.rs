@@ -755,10 +755,165 @@ fn home_dir() -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
 }
 
+/// **MCP Server** (#1606): switch the local server on, and copy what a client needs.
+#[cfg(target_arch = "wasm32")]
 fn mcp_section(ui: &mut egui::Ui, _state: &mut AppState) {
     ui.label(
-        egui::RichText::new("Off. Turn it on to let an agent drive the open document.")
+        egui::RichText::new("The MCP server needs the desktop app.")
             .size(12.0)
             .weak(),
     );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn mcp_section(ui: &mut egui::Ui, state: &mut AppState) {
+    let (running, port, url, log) = {
+        let ai = state.ai.borrow();
+        match &ai.mcp {
+            Some(server) => (true, server.port(), server.url(), server.log()),
+            None => (false, ai.config.mcp_port, String::new(), Vec::new()),
+        }
+    };
+    let mut action: Option<Action> = None;
+
+    ui.label(
+        egui::RichText::new(
+            "Lets an AI agent read and edit the document you have open. Loopback only, and \
+             it needs the token below.",
+        )
+        .size(11.0)
+        .weak(),
+    );
+    ui.add_space(4.0);
+
+    ui.horizontal(|ui| {
+        if running {
+            if ui.button("Stop").clicked() {
+                action = Some(Action::StopMcpServer);
+            }
+            ui.label(
+                egui::RichText::new(format!("● listening on {port}"))
+                    .size(11.0)
+                    .color(egui::Color32::from_rgb(46, 160, 67)),
+            );
+        } else {
+            if ui.button("Start").clicked() {
+                action = Some(Action::StartMcpServer { port: None });
+            }
+            ui.label(egui::RichText::new("off").size(11.0).weak());
+            // Only editable while stopped: the running port is whatever the socket got.
+            let mut port_text = port.to_string();
+            if ui
+                .add(
+                    egui::TextEdit::singleline(&mut port_text)
+                        .id_salt("ai_mcp_port")
+                        .desired_width(56.0),
+                )
+                .changed()
+            {
+                if let Ok(port) = port_text.trim().parse::<u16>() {
+                    state.ai.borrow_mut().config.mcp_port = port;
+                    state.ai.borrow_mut().config_dirty = true;
+                }
+            }
+        }
+    });
+
+    if running {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(&url).size(11.0).monospace());
+            if ui.small_button("Copy URL").clicked() {
+                ui.ctx().copy_text(url.clone());
+            }
+        });
+        ui.horizontal(|ui| {
+            // The token itself is never drawn: a pane screenshot would carry it. It goes to
+            // the clipboard, or into a client configuration below.
+            ui.label(egui::RichText::new("Token hidden").size(11.0).weak());
+            if ui
+                .small_button("Copy token")
+                .on_hover_text("Never shown on screen — a screenshot of this pane would carry it")
+                .clicked()
+            {
+                let token = state
+                    .ai
+                    .borrow()
+                    .mcp
+                    .as_ref()
+                    .map(|s| s.token())
+                    .unwrap_or_default();
+                ui.ctx().copy_text(token);
+            }
+            if ui
+                .small_button("New token")
+                .on_hover_text("Any client configured with the old token stops working")
+                .clicked()
+            {
+                action = Some(Action::RegenerateMcpToken);
+            }
+        });
+
+        // Ready-made configurations, filled in with this server's URL and token.
+        egui::CollapsingHeader::new("Connect a client")
+            .id_salt("ai_mcp_clients")
+            .show(ui, |ui| {
+                let token = state
+                    .ai
+                    .borrow()
+                    .mcp
+                    .as_ref()
+                    .map(|s| s.token())
+                    .unwrap_or_default();
+                for config in crate::ai::mcp::client_configs(&url, &token) {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(config.label).size(11.0).strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("Copy").clicked() {
+                                ui.ctx().copy_text(config.text.clone());
+                            }
+                        });
+                    });
+                    ui.label(egui::RichText::new(config.note).size(10.0).weak());
+                    ui.add_space(4.0);
+                }
+            });
+
+        // What an agent has been doing: the only visible sign something external is
+        // changing the document.
+        egui::CollapsingHeader::new(format!("Activity ({})", log.len()))
+            .id_salt("ai_mcp_log")
+            .show(ui, |ui| {
+                if log.is_empty() {
+                    ui.label(egui::RichText::new("Nothing yet.").size(11.0).weak());
+                }
+                egui::ScrollArea::vertical()
+                    .max_height(140.0)
+                    .id_salt("ai_mcp_log_scroll")
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        for entry in &log {
+                            let colour = if entry.ok {
+                                ui.visuals().weak_text_color()
+                            } else {
+                                ui.visuals().error_fg_color
+                            };
+                            ui.label(
+                                egui::RichText::new(format!("{}  {}", entry.what, entry.detail))
+                                    .size(10.0)
+                                    .color(colour),
+                            );
+                        }
+                    });
+            });
+    } else {
+        ui.label(
+            egui::RichText::new("Off — nothing is listening.")
+                .size(11.0)
+                .weak(),
+        );
+    }
+
+    if let Some(action) = action {
+        state.apply(action);
+    }
 }

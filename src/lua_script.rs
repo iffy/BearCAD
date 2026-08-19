@@ -5019,6 +5019,35 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Ready-made client configurations for the running server (#1606). Carries the token,
+    // deliberately — that is the point of a client configuration.
+    api.set(
+        "ai_mcp_configs",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let ai = unsafe { tick.state() }.ai.borrow();
+            let Some(server) = &ai.mcp else {
+                return Err(mlua::Error::external(
+                    "the MCP server is not running".to_string(),
+                ));
+            };
+            let list = lua.create_table()?;
+            for (index, config) in
+                crate::ai::mcp::client_configs(&server.url(), &server.token())
+                    .iter()
+                    .enumerate()
+            {
+                let t = lua.create_table()?;
+                t.set("id", config.id)?;
+                t.set("label", config.label)?;
+                t.set("note", config.note)?;
+                t.set("text", config.text.clone())?;
+                list.set(index + 1, t)?;
+            }
+            Ok(list)
+        })?,
+    )?;
+
     // The skill markdown itself, for a script that wants to write it somewhere of its own.
     api.set(
         "ai_skill",
@@ -8414,7 +8443,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             uninstall_skill = "ai_uninstall_skill", skill = "ai_skill",
             mcp_start = "ai_mcp_start", mcp_stop = "ai_mcp_stop",
             mcp_status = "ai_mcp_status", mcp_token = "ai_mcp_token",
-            mcp_new_token = "ai_mcp_new_token",
+            mcp_new_token = "ai_mcp_new_token", mcp_configs = "ai_mcp_configs",
             _request_context = "ai_request_context", _context = "ai_context",
         }
         for name, source in pairs(ai_funcs) do
