@@ -5256,13 +5256,14 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   bubble **follows the orb** (#825): below it by preference, above it when the bottom of the
   window is in the way, else to whichever side has room, with its tail on the edge facing the
   orb — so what to read and where to look are the same place, and the orb's glide carries the
-  bubble along. With no orb (narration-only steps) it
+  bubble along. With no orb (narration-only steps, including the **first step**) it
   hangs off the **left side** of the view-cube **HUD panel** (the cube rect grown by
   `view_cube::HUD_PANEL_PAD`, so the gear/home buttons count too), tail pointing right at
-  Bear — under it, the bubble covered the Context pane controls a step was pointing at
-  (#760). It's positioned from the bubble's **measured** width (frame margins make it wider
-  than its content) plus the tail and a gap, so it never clips the HUD (#767,
-  `tutorial_bubble_pos`).
+  Bear — the words come out of the bear's mouth (#1577). A leftover orb from an earlier
+  step does not count; under the HUD the bubble covered the Context pane controls a step
+  was pointing at (#760). It's positioned from the bubble's **measured** width (frame
+  margins make it wider than its content) plus the tail and a gap, so it never clips the
+  HUD (#767, `tutorial_bubble_layout`).
 - **Phone steps (#828):** on the compact layout the side panes are floating windows toggled
   from the status bar. A step can be `only_on_phone`: its predicate is already satisfied on a
   desktop (where the panes are docked), so it auto-advances and only ever shows on a phone;
@@ -5299,7 +5300,8 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   `bearcad.ui.tutorial_assist()` (press the current step's "do it for me" button),
   `bearcad.ui.tutorial_end()`, `bearcad.ui.tutorial_step()` (current step index or nil),
   `bearcad.ui.tutorial_narration()` (current step text, or nil),
-  `bearcad.ui.tutorial_orb()` (`{x, y}` screen position of the guide ring, or nil).
+  `bearcad.ui.tutorial_orb()` (`{x, y}` screen position of the guide ring, or nil),
+  `bearcad.ui.tutorial_bubble()` (`{x, y, w, h}` speech-bubble screen rect, or nil).
   Prompting (#1434): `bearcad.ui.complete_all_tutorials()`, `bearcad.ui.unstart_all_tutorials()`,
   `bearcad.ui.install_age([days|false])`,
   `bearcad.ui.tutorial_highlight()`, `bearcad.ui.tutorial_prompt()` / `"launch"` / `"work"` /

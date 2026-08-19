@@ -2777,6 +2777,19 @@ fn ui_anchor_orb(rect: egui::Rect) -> (egui::Pos2, f32) {
     (rect.center(), rect.size().min_elem() * 0.5 + 6.0)
 }
 
+/// The ring the speech bubble should follow this frame (#825/#1577).
+///
+/// Leftover glide positions from earlier steps are **not** a ring. Narration
+/// (the first step especially) parks by the view-cube HUD so the words come
+/// out of Bear's mouth, instead of sitting in the middle of the viewport.
+fn tutorial_speech_orb(
+    ring_drawn: bool,
+    leftover: Option<egui::Pos2>,
+    radius: f32,
+) -> Option<(egui::Pos2, f32)> {
+    leftover.filter(|_| ring_drawn).map(|p| (p, radius))
+}
+
 /// Where the tutorial speech bubble goes (#760/#767/#825).
 ///
 /// With an orb on screen the bubble **follows it** — below it by preference, above it when
@@ -4158,14 +4171,17 @@ impl App {
     ) {
         let Some(run) = self.state.tutorial else {
             self.state.tutorial_orb_screen = None;
+            self.state.tutorial_bubble_screen = None;
             return;
         };
         let Some(tut) = tutorial::TUTORIALS.get(run.tutorial) else {
             self.state.tutorial_orb_screen = None;
+            self.state.tutorial_bubble_screen = None;
             return;
         };
         let Some(step) = tut.steps.get(run.step) else {
             self.state.tutorial_orb_screen = None;
+            self.state.tutorial_bubble_screen = None;
             return;
         };
         let ctx = ui.ctx();
@@ -4365,6 +4381,7 @@ impl App {
         // Don't park the bubble at a mid-zoom screen position (#1332). The blue
         // ring still tracks the world point; the tooltip waits until the zoom lands.
         if world_orb && !tutorial_world_bubble_ready(self.state.cam.transition_active()) {
+            self.state.tutorial_bubble_screen = None;
             return;
         }
 
@@ -4378,11 +4395,18 @@ impl App {
         let cube = view_cube::cube_rect_in_viewport(viewport);
         // The HUD paints a padded panel around the cube; clear that, not just the cube.
         let hud = cube.expand(view_cube::HUD_PANEL_PAD);
-        // The bubble follows the orb (#825) — its size comes from last frame's measurement,
-        // and the orb's own glide carries the bubble along with it. World geometry
-        // parks below the ring with no arrow so the click target stays clear (#1333).
+        let ring_drawn = target.is_some();
+        if !ring_drawn {
+            // Next ring flies out of Bear's mouth (#1577); leftover world
+            // positions must not drag this narration bubble into the viewport.
+            self.tutorial_orb_pos = Some(cube.center());
+        }
+        // The bubble follows a *drawn* ring (#825). Narration (no ring) parks
+        // by the HUD so the first step comes out of Bear's mouth (#1577).
+        // World geometry parks below the ring with no arrow so the click
+        // target stays clear (#1333).
         let (anchor_pos, tail_side) = tutorial_bubble_layout(
-            self.tutorial_orb_pos.map(|p| (p, orb_radius)),
+            tutorial_speech_orb(ring_drawn, self.tutorial_orb_pos, orb_radius),
             hud,
             self.tutorial_bubble_size,
             ctx.content_rect(),
@@ -4576,6 +4600,7 @@ impl App {
             });
         // Next frame positions from what the bubble actually measured.
         self.tutorial_bubble_size = measured_size;
+        self.state.tutorial_bubble_screen = Some(egui::Rect::from_min_size(anchor_pos, measured_size));
         if assist {
             self.state.apply(Action::TutorialAssist);
         }
@@ -33622,6 +33647,41 @@ mod tests {
                 "at t={t} start A landed at {landed:?}, not on end A"
             );
         }
+    }
+
+    /// #1577: leftover orb from a previous step (or a previous tutorial) must not
+    /// drag a narration-only bubble into the viewport. The first step parks by
+    /// the view-cube HUD and reads as coming out of Bear's mouth.
+    #[test]
+    fn tutorial_first_step_parks_by_the_bear_hud() {
+        let bounds = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0));
+        let hud = view_cube::cube_rect_in_viewport(bounds).expand(view_cube::HUD_PANEL_PAD);
+        let size = egui::vec2(352.0, 120.0);
+        let leftover = egui::pos2(500.0, 400.0);
+
+        // No ring this frame (intro / "Good job" narration).
+        let orb = tutorial_speech_orb(false, Some(leftover), 26.0);
+        let (pos, tail) = tutorial_bubble_layout(orb, hud, size, bounds, None, None, false);
+        assert_eq!(tail, BubbleTail::Right, "tail points at Bear");
+        assert!(
+            pos.x + size.x + TUTORIAL_BUBBLE_TAIL <= hud.left(),
+            "first step should sit by the HUD, not on leftover orb {leftover:?}: {pos:?}"
+        );
+        assert!(
+            (pos.y - hud.top()).abs() < 1.0,
+            "aligned with the HUD: {pos:?} vs hud.top={}",
+            hud.top()
+        );
+        assert!(
+            (pos.x + size.x * 0.5 - leftover.x).abs() > 50.0,
+            "bubble was centred on the leftover orb: {pos:?}"
+        );
+
+        // A live ring still follows that leftover, so later steps are unchanged.
+        let orb = tutorial_speech_orb(true, Some(leftover), 26.0);
+        let (pos, tail) = tutorial_bubble_layout(orb, hud, size, bounds, None, None, false);
+        assert_eq!(tail, BubbleTail::Top);
+        assert!(pos.y > leftover.y, "below the live orb: {pos:?}");
     }
 
     /// #767/#825: with no orb the bubble sits clear of the view-cube HUD; with one it
