@@ -4419,6 +4419,27 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Last-frame pane rect in logical points (#1575), or nil when the pane is hidden.
+    api.set(
+        "pane_rect",
+        lua.create_function(|lua, pane: String| {
+            let pane = Pane::from_name(&pane)
+                .ok_or_else(|| mlua::Error::external(format!("unknown pane '{pane}'")))?;
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let Some(rect) = crate::script::pane_rect(unsafe { tick.egui_ctx() }, pane) else {
+                return Ok(Value::Nil);
+            };
+            let t = lua.create_table()?;
+            t.set("x", rect.min.x)?;
+            t.set("y", rect.min.y)?;
+            t.set("w", rect.width())?;
+            t.set("h", rect.height())?;
+            Ok(Value::Table(t))
+        })?,
+    )?;
+
     api.set(
         "parameter",
         lua.create_function(|lua, args: MultiValue| {
@@ -7601,7 +7622,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         -- `bearcad.ui.*` sub-namespace so scripts can focus on modeling (#46).
         bearcad.ui = {}
         local ui_funcs = {
-            "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_dim", "pane", "palette", "settings",
+            "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_dim", "pane", "pane_rect", "palette", "settings",
             "changelog",
             "mcmaster",
             "report_issue", "windows", "focused_window",
@@ -8958,7 +8979,7 @@ mod tests {
             r#"
             assert(bearcad.ui ~= nil, "bearcad.ui table missing")
             for _, name in ipairs({ "move", "click", "tool", "view", "orbit", "pan",
-                                    "key", "type", "pane", "palette", "wait", "help",
+                                    "key", "type", "pane", "pane_rect", "palette", "wait", "help",
                                     "toolbar_shortcuts", "toolbar_tools", "changelog",
                                     "mcmaster", "report_issue", "windows", "focused_window",
                                     "new_tab", "close_tab", "tab", "tabs", "tab_count",
@@ -14029,6 +14050,22 @@ mod tests {
             err = tostring(err)
             assert(err:find("radius") and err:find("diameter"),
                    "error should name the accepted keys: " .. err)
+        "#,
+        );
+    }
+
+    /// #1575: `bearcad.ui.pane_rect(...)` reports last-frame pane bounds, or nil when hidden.
+    #[test]
+    fn lua_pane_rect_rejects_unknown_panes_and_is_nil_without_a_frame() {
+        run_lua_expect_ok(
+            r#"
+            local ok = pcall(bearcad.ui.pane_rect, "spiral")
+            assert(not ok, "unknown pane should error")
+            -- run_lua never paints the app, so there is no last-frame rect.
+            assert(bearcad.ui.pane_rect("elements") == nil)
+            assert(bearcad.ui.pane_rect("hierarchy") == nil)
+            assert(bearcad.ui.pane_rect("context") == nil)
+            assert(bearcad.ui.pane_rect("parameters") == nil)
         "#,
         );
     }
