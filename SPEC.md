@@ -5350,7 +5350,7 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   however far the published build number has marched on (#764).
 
 Native builds check GitHub once at startup in a background thread
-(`updater::spawn_check`, system `curl` against the releases API — no TLS dependency; the
+(`updater::spawn_check`, ureq/rustls against the releases API; the
 check is best-effort and silent on failure; `BEARCAD_NO_UPDATE_CHECK` disables it, and
 the doc-screenshot harness sets it). The **update channel** setting (#1288,
 `AppSettings::update_channel`, default **Release**) chooses which stream is watched:
