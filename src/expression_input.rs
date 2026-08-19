@@ -522,11 +522,11 @@ pub fn interp_autocomplete_handle_keys(
     )
 }
 
-/// Whether the field's caret sits on a token an autocomplete would offer names for (#937).
+/// Whether Tab on this field should accept the highlighted autocomplete name (#937/#1573).
 ///
-/// While it does, **Tab** belongs to the dropdown (it accepts the highlighted name); with
-/// nothing to complete it should walk to the next input instead, which is what the field's
-/// `lock_focus` is gated on.
+/// True only while accepting would *change* the token. A fully-typed name (or a number,
+/// empty field, or unmatched prefix) leaves Tab free to walk to the next input — including
+/// the other live dimension while drawing a rectangle.
 pub fn autocomplete_has_candidates(
     ctx: &egui::Context,
     id: Id,
@@ -536,11 +536,17 @@ pub fn autocomplete_has_candidates(
 ) -> bool {
     let state = TextEditState::load(ctx, id);
     let cursor = cursor_char_index(state.as_ref(), text);
-    let Some(token) = identifier_token_at_cursor(text, cursor) else {
+    let Some(token) = qualified_token_at_cursor(text, cursor) else {
         return false;
     };
     let query = token_query(text, token);
-    !parameter_autocomplete_candidates(doc, &query, exclude_names).is_empty()
+    let candidates = parameter_autocomplete_candidates(doc, &query, exclude_names);
+    if candidates.is_empty() {
+        return false;
+    }
+    let ui_state = load_autocomplete_state(ctx, id);
+    let highlight = ui_state.highlight.min(candidates.len().saturating_sub(1));
+    candidates[highlight].name != query
 }
 
 fn autocomplete_handle_keys_with(
@@ -812,8 +818,8 @@ pub mod boxed {
             Some(w) => text_width(text).max(w),
             None => text_width(text),
         };
-        // Tab belongs to the autocomplete only while there's a name to complete (#507);
-        // with nothing to complete it walks to the next input in the pane (#937).
+        // Tab belongs to the autocomplete only while accepting would change the token
+        // (#507/#937/#1573); a completed name walks to the next input.
         let lock_tab = autocomplete_has_candidates(&ctx, id, text, doc, exclude_names);
         // #501: the computed value sits *below* the typed expression, inside the box.
         let frame_output = frame.show(ui, |ui| {
@@ -1266,6 +1272,37 @@ mod tests {
         assert!(
             !autocomplete_has_candidates(&ctx, id, "zzz", &doc, &[]),
             "nor a name nothing matches"
+        );
+        assert!(
+            !autocomplete_has_candidates(&ctx, id, "thickness", &doc, &[]),
+            "a fully-typed name has nothing left to complete — Tab should walk to the next input"
+        );
+    }
+
+    /// #1573: Tab completes only while the highlight would change the token. Arrowing to a
+    /// longer match still claims Tab even if a shorter name is already typed in full.
+    #[test]
+    fn autocomplete_tab_still_completes_a_longer_highlighted_name() {
+        let ctx = egui::Context::default();
+        let mut doc = Document::default();
+        add_parameter(&mut doc, "foo".to_string(), "10mm".to_string()).unwrap();
+        add_parameter(&mut doc, "foobar".to_string(), "20mm".to_string()).unwrap();
+        let id = Id::new("tab_longer_highlight");
+        assert!(
+            !autocomplete_has_candidates(&ctx, id, "foo", &doc, &[]),
+            "exact `foo` is already complete"
+        );
+        store_autocomplete_state(
+            &ctx,
+            id,
+            AutocompleteUiState {
+                highlight: 1,
+                last_query: "foo".to_string(),
+            },
+        );
+        assert!(
+            autocomplete_has_candidates(&ctx, id, "foo", &doc, &[]),
+            "arrowing onto `foobar` should still let Tab complete"
         );
     }
     use super::*;
