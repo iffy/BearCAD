@@ -14647,6 +14647,8 @@ mod tests {
             bearcad.rect{{ x = 0, y = 0, width = 10, height = 10 }}
             bearcad.extrude{{ polygon = {{0, 1, 2, 3}}, distance = 5 }}
             bearcad.import_image({path:?})
+            -- Import selects the image (#1582); clear so select doesn't toggle it off.
+            bearcad.clear_selection()
             bearcad.select{{ kind = "image", index = 0 }}
             bearcad.ui.zoom_fit()
             "#
