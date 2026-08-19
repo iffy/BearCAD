@@ -97,7 +97,7 @@ bearcad.begin_sketch{
   kind = "extrude_cap", extrusion = 0,
   profile = "polygon", profile_lines = {0, 1, 2, 3}, top = true,
 }
-bearcad.circle{ x = 0, y = 0, r = 5 }              -- r is a radius
+bearcad.circle{ x = 40, y = 25, r = 5 }            -- r is a radius; (0,0) is the rect corner
 bearcad.extrude{ circle = 0, distance = 20, body = "cut" }
 ```
 

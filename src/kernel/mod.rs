@@ -699,6 +699,28 @@ mod tests {
         assert!((mesh_volume(&tris) - 24.0).abs() < 1e-3, "mesh vol {}", mesh_volume(&tris));
     }
 
+    /// #1615: tessellating a block with a through hole must yield the BREP volume
+    /// (block minus cylinder), not a mesh that only subtracts a sliver of the hole.
+    #[test]
+    fn through_hole_tessellation_volume_matches_brep() {
+        let boxy =
+            Shape::prism(&square(0.0, 0.0, 40.0, 40.0), Vec3::new(0.0, 0.0, 10.0)).unwrap();
+        let hole = Shape::cylinder(Vec3::new(20.0, 20.0, -1.0), Vec3::Z, 5.0, 12.0).unwrap();
+        let cut = boxy.boolean(&hole, BoolOp::Cut).expect("through hole");
+        let brep = cut.volume().expect("brep volume");
+        let expected = 40.0 * 40.0 * 10.0 - std::f64::consts::PI * 25.0 * 10.0;
+        assert!(
+            (brep - expected).abs() < 1e-3,
+            "BREP through-hole volume {brep} expected {expected}"
+        );
+        let tris = cut.tessellate(0.05);
+        let mesh = mesh_volume(&tris) as f64;
+        assert!(
+            (mesh - expected).abs() < 20.0,
+            "mesh through-hole volume {mesh} expected {expected} (brep {brep})"
+        );
+    }
+
     #[test]
     fn loft_with_slanted_top_has_average_height_volume() {
         // Unit-square base at z=0; top square with the same x,y but z rising
