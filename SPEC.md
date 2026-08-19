@@ -1947,13 +1947,13 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   key to it stops resolving instead of naming whichever image slid into its place. A
   script still names an image by its **ordinal** among the live ones, resolved to a key at
   the script boundary (`lua_script::scene_element_from_kind`/`element_index`).
-- **Rendering (#170/#1548):** each image draws as a **textured quad** on its host plane.
+- **Rendering (#170/#1548/#1562):** each image draws as a **textured quad** on its host plane.
   Fresh imports default to **0.9** opacity; selecting the image shows a slider and
-  ValueInput (0–1). Depth-tested (bodies in front occlude it) but never writing depth, so
-  sketch geometry and fills always read on top. Decoded pixels and GPU textures are cached
-  by content, so the per-frame cost is one quad. Scriptable: `bearcad.image_opacity{
-  image, opacity }` (`opacity` is a number or expression) and `bearcad.get{ kind =
-  "image", index }.opacity`.
+  ValueInput (0–1). Depth-tested (bodies in front occlude it) but never writing depth, and
+  drawn **before** construction planes, so sketch geometry, fills, and planes in front of
+  the image always read on top. Decoded pixels and GPU textures are cached by content, so
+  the per-frame cost is one quad. Scriptable: `bearcad.image_opacity{ image, opacity }`
+  (`opacity` is a number or expression) and `bearcad.get{ kind = "image", index }.opacity`.
 - **Scale calibration (#163/#171/#1547):** selecting only a tracing image with the Select
   tool immediately enters calibration mode. A line with a point at each end always sits
   on the image's plane — on a fresh import, top-middle to bottom-middle — and always
@@ -1965,15 +1965,15 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   length/expression) is stored on the image. Scriptable: `bearcad.calibrate_image{ image,
   from, to, length }` (`from`/`to` optional; `length` is an expression),
   `bearcad.calibration_point{ image, index, x, y }`, `bearcad.get{ kind = "image", index }`.
-- **Image constraints & viewport move-pick (#425):** a calibrated image's two reference
+- **Image constraints & viewport pick (#425/#1561):** a calibrated image's two reference
   points are first-class constraint points (`ConstraintPoint::ImageCalibrationPoint`),
   pickable/snappable in sketches hosted on the image's plane and usable in
   coincident/midpoint/distance constraints against vertices, lines, and the
   origin/axes. Solving **translates** the whole image (`set_point_uv` shifts `origin`
   and `base_origin`; scale never changes), and the solver holds the non-image side of a
-  point-point coincidence so the image follows its target. The Move tool also picks an
-  image by clicking its quad in the viewport (`App::pick_tracing_image`), not only from
-  the Elements pane. Scriptable: `bearcad.select{ kind = "image", index, point = 0|1 }`.
+  point-point coincidence so the image follows its target. The Select and Move tools pick
+  an image by clicking its quad in the viewport, not only from the Elements pane.
+  Scriptable: `bearcad.select{ kind = "image", index, point = 0|1 }`.
   *Known limitation:* calibration mutates the image in place and is not yet individually
   undoable (3D edge treatments had the same gap and now undo via a transient snapshot
   marker, #168 — calibration can adopt the same mechanism).

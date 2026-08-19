@@ -760,8 +760,9 @@ impl ViewportGpuResources {
             cache: None,
         });
 
-        // Tracing-image pipeline (#170): textured world quads. Depth-test on, write off —
-        // bodies in front occlude images while images never occlude anything themselves.
+        // Tracing-image pipeline (#170/#1562): textured world quads. Depth-test on, write
+        // off — bodies in front occlude images while images never occlude anything
+        // themselves. Drawn before construction planes so a plane in front still reads.
         let image_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("bearcad_viewport_image_pipeline"),
             layout: Some(&text_pipeline_layout),
@@ -1847,21 +1848,10 @@ impl ViewportGpuResources {
                     pass.set_stencil_reference(0);
                     pass.draw_indexed(shadow_end..sketch_fill_end, 0, 0..1);
                 }
-                if plane_end > sketch_fill_end {
-                    pass.set_pipeline(&self.scene_transparent_pipeline);
-                    pass.draw_indexed(sketch_fill_end..plane_end, 0, 0..1);
-                }
-                // Solid faces that share a construction plane's surface, re-drawn after the
-                // translucent plane wash so they win coplanar depth ties without bias (#1215).
-                // Sketch fills wrote a closer depth with their own bias, so LessEqual keeps
-                // them in front of this pass.
-                if body_over_end > plane_end {
-                    pass.set_pipeline(&self.scene_pipeline);
-                    pass.draw_indexed(plane_end..body_over_end, 0, 0..1);
-                }
                 if !image_draws.is_empty() {
-                    // Tracing images (#170): depth-tested, no depth write — under all
-                    // overlay/gizmo geometry.
+                    // Tracing images (#170/#1562): depth-tested, no depth write, *before*
+                    // construction planes so a plane in front of the image still composites
+                    // on top. Bodies already wrote depth, so solids in front still occlude.
                     let textures = self.image_textures.lock().expect("image texture cache");
                     pass.set_pipeline(&self.image_pipeline);
                     pass.set_bind_group(0, &self.uniform_bind_group, &[]);
@@ -1876,6 +1866,18 @@ impl ViewportGpuResources {
                     pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                     pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                     pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                }
+                if plane_end > sketch_fill_end {
+                    pass.set_pipeline(&self.scene_transparent_pipeline);
+                    pass.draw_indexed(sketch_fill_end..plane_end, 0, 0..1);
+                }
+                // Solid faces that share a construction plane's surface, re-drawn after the
+                // translucent plane wash so they win coplanar depth ties without bias (#1215).
+                // Sketch fills wrote a closer depth with their own bias, so LessEqual keeps
+                // them in front of this pass.
+                if body_over_end > plane_end {
+                    pass.set_pipeline(&self.scene_pipeline);
+                    pass.draw_indexed(plane_end..body_over_end, 0, 0..1);
                 }
                 if overlay_end > body_over_end {
                     pass.set_pipeline(&self.overlay_pipeline);

@@ -119,6 +119,7 @@ pub fn plane_anchor_source_from_pick(kind: &PickTargetKind) -> PlaneAnchorSource
         PickTargetKind::BodyAxis { .. } => PlaneAnchorSource::Axis,
         PickTargetKind::BodyFace { .. }
         | PickTargetKind::ConstructionPlane(_)
+        | PickTargetKind::TracingImage(_)
         | PickTargetKind::Ground(_)
         | PickTargetKind::SketchFace(_) => PlaneAnchorSource::Face,
         // A round wall is no plane to anchor against; classify it as a point so this is total.
@@ -797,6 +798,7 @@ pub fn sketch_from_pick_target(doc: &Document, kind: PickTargetKind) -> Option<S
         | PickTargetKind::Body(_)
         | PickTargetKind::GlobalAxis(_)
         | PickTargetKind::OriginAxis(_)
+        | PickTargetKind::TracingImage(_)
         | PickTargetKind::Ground(_) => None,
     }
 }
@@ -869,6 +871,21 @@ fn parse_or_live_signed(text: &str, live: f32, user_edited: bool) -> f32 {
     } else {
         live
     }
+}
+
+/// A tracing image's four world corners, in UV order: (0,0), (1,0), (1,1), (0,1) —
+/// v flipped, since image v grows downward and plane-local v grows up. Shared by
+/// the textured quad, the hover outline, and the Select-tool pick (#1561).
+pub fn tracing_image_corners(
+    doc: &Document,
+    image: crate::model::TracingImageKey,
+) -> Option<[Vec3; 4]> {
+    let img = doc.tracing_images.get(image)?;
+    let frame = crate::face::sketch_frame(doc, FaceId::ConstructionPlane(img.plane))?;
+    let at = |x: f32, y: f32| frame.origin + frame.u_axis * x + frame.v_axis * y;
+    let (x0, y0) = img.origin;
+    let (x1, y1) = (x0 + img.width_mm, y0 + img.height_mm);
+    Some([at(x0, y1), at(x1, y1), at(x1, y0), at(x0, y0)])
 }
 
 /// Corners of the visible plane quad in world space.
@@ -1466,6 +1483,10 @@ pub enum PickTargetKind {
     /// with the world triad.
     OriginAxis(crate::model::SketchAxis),
     ConstructionPlane(crate::model::ConstructionPlaneKey),
+    /// A tracing image's displayed quad (#1561). Same pick band as a construction
+    /// plane; when both sit under the cursor, the nearer (or the image, if coplanar
+    /// with its host) wins.
+    TracingImage(crate::model::TracingImageKey),
     Ground(Vec3),
     /// A sketch constraint's annotation icon (#568), by its index into `Document::constraints`.
     /// Constraints have no world geometry of their own — the icon is a screen-space glyph placed
@@ -1598,6 +1619,9 @@ impl PickOcclusion {
             }
             PickTargetKind::ConstructionPlane(i) => {
                 vis.effective_visible(doc, SceneElement::ConstructionPlane(*i))
+            }
+            PickTargetKind::TracingImage(i) => {
+                vis.effective_visible(doc, SceneElement::Image(*i))
             }
             // A constraint badge is pickable when it is visible (its icon is only drawn for visible
             // constraints anyway, #568).
@@ -1842,27 +1866,52 @@ pub fn resolve_pick_target(
         }
     }
 
-    // Prefer the frontmost plane under the cursor (#1277): when several display quads
-    // contain the pointer (a big buried XZ covering a smaller front XY, say), only the
-    // one nearer the eye is what a click would take. Eye comes from the occlusion context
-    // when present; without it, ties fall back to iteration order.
+    // Prefer the frontmost plane *or tracing image* under the cursor (#1277/#1561):
+    // when several display quads contain the pointer, only the one nearer the eye is
+    // what a click would take. An image coplanar with its host plane beats the plane
+    // (it's the thing you're pointing at). Eye comes from the occlusion context when
+    // present; without it, ties fall back to iteration order, with images beating
+    // coplanar planes.
     let eye = occlusion.map(|occ| occ.eye());
-    if let Some((index, dist)) =
-        nearest_construction_plane(screen, project, &doc.construction_planes, eye)
-    {
-        let plane = &doc.construction_planes[index];
-        let origin = ground_point.unwrap_or(plane.origin);
-        let projected = project_point_on_plane(origin, plane);
-        if pickable(&PickTargetKind::ConstructionPlane(index)) {
-        consider(PickTarget {
-            kind: PickTargetKind::ConstructionPlane(index),
-            reference: PlaneReference::Face {
-                origin: projected,
-                normal: plane.normal,
-                label: "Construction plane".to_string(),
-            },
-            distance_px: dist,
-        });
+    if let Some((kind, dist, at)) = nearest_plane_or_image(screen, project, doc, eye) {
+        if pickable(&kind) {
+            match &kind {
+                PickTargetKind::ConstructionPlane(index) => {
+                    let plane = &doc.construction_planes[*index];
+                    let origin = ground_point.unwrap_or(plane.origin);
+                    let projected = project_point_on_plane(origin, plane);
+                    consider(PickTarget {
+                        kind: kind.clone(),
+                        reference: PlaneReference::Face {
+                            origin: projected,
+                            normal: plane.normal,
+                            label: "Construction plane".to_string(),
+                        },
+                        distance_px: dist,
+                    });
+                }
+                PickTargetKind::TracingImage(_) => {
+                    let normal = match &kind {
+                        PickTargetKind::TracingImage(i) => doc
+                            .tracing_images
+                            .get(*i)
+                            .and_then(|img| doc.construction_planes.get(img.plane))
+                            .map(|p| p.normal)
+                            .unwrap_or(Vec3::Z),
+                        _ => Vec3::Z,
+                    };
+                    consider(PickTarget {
+                        kind: kind.clone(),
+                        reference: PlaneReference::Face {
+                            origin: at,
+                            normal,
+                            label: "Image".to_string(),
+                        },
+                        distance_px: dist,
+                    });
+                }
+                _ => {}
+            }
         }
     }
 
@@ -2085,6 +2134,7 @@ pub fn scene_element_from_pick(kind: &PickTargetKind) -> Option<SceneElement> {
         // keeps a single identity.
         PickTargetKind::SketchFace(face) => Some(SceneElement::from_face_id(face.clone())),
         PickTargetKind::ConstructionPlane(index) => Some(SceneElement::ConstructionPlane(*index)),
+        PickTargetKind::TracingImage(index) => Some(SceneElement::Image(*index)),
         _ => None,
     }
 }
@@ -2227,6 +2277,19 @@ pub fn draw_pick_highlight(
         PickTargetKind::ConstructionPlane(index) => {
             if let Some(plane) = doc.construction_planes.get(index) {
                 draw_plane_face_highlight(painter, project, plane, color);
+            }
+        }
+        PickTargetKind::TracingImage(index) => {
+            if let Some(corners) = tracing_image_corners(doc, index) {
+                for i in 0..corners.len() {
+                    draw_segment_highlight(
+                        painter,
+                        project,
+                        corners[i],
+                        corners[(i + 1) % corners.len()],
+                        color,
+                    );
+                }
             }
         }
         PickTargetKind::Ground(p) => {
@@ -3344,6 +3407,28 @@ pub fn collect_pick_candidates(
         }
     }
 
+    // Tracing images (#1561): their displayed quad is pickable like a plane, so the
+    // Select tool and the exploder can take one without going through the Elements pane.
+    for (index, _) in doc.tracing_images.iter() {
+        let Some(corners) = tracing_image_corners(doc, index) else {
+            continue;
+        };
+        let Some(pts) = corners.iter().map(|&c| project(c)).collect::<Option<Vec<_>>>() else {
+            continue;
+        };
+        let quad = [pts[0], pts[1], pts[2], pts[3]];
+        let dist = if point_in_screen_quad(screen, quad) {
+            0.0
+        } else {
+            dist_point_to_quad_edges(screen, quad)
+        };
+        let kind = PickTargetKind::TracingImage(index);
+        if dist <= FACE_PICK_MARGIN_PX && pickable(&kind) {
+            let at = plane_point_under_cursor(screen, &pts, &corners).unwrap_or(corners[0]);
+            raw.push((kind, at, dist));
+        }
+    }
+
     // Every body face near the cursor (#555/#556): not just the nearest ray-hit face, but every
     // face — front and back — whose projected area is within the pick radius, so a narrow face
     // seen edge-on (a thin sliver between its two edges) and buried back faces both get loupes.
@@ -3718,50 +3803,85 @@ fn plane_point_under_cursor(
     None
 }
 
-fn nearest_construction_plane(
+/// Screen-space hit on a world quad: pixel distance (0 inside) and the world point
+/// under the cursor. `None` when the quad is off-screen or farther than the face
+/// pick margin.
+fn screen_quad_hit(
     screen: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
-    planes: &crate::arena::Arena<ConstructionPlane>,
+    corners: &[Vec3; 4],
+) -> Option<(f32, Vec3)> {
+    let pts: Option<Vec<egui::Pos2>> = corners.iter().map(|&c| project(c)).collect();
+    let pts = pts?;
+    let quad = [pts[0], pts[1], pts[2], pts[3]];
+    let dist = if point_in_screen_quad(screen, quad) {
+        0.0
+    } else {
+        dist_point_to_quad_edges(screen, quad)
+    };
+    if dist > FACE_PICK_MARGIN_PX {
+        return None;
+    }
+    let at = plane_point_under_cursor(screen, &pts, corners).unwrap_or(corners[0]);
+    Some((dist, at))
+}
+
+/// The frontmost construction plane or tracing image under the cursor (#1561/#1562).
+/// Same screen-distance / eye-depth ranking planes used to have on their own; a
+/// coplanar image beats its host plane because it's the thing you're pointing at.
+fn nearest_plane_or_image(
+    screen: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &Document,
     eye: Option<Vec3>,
-) -> Option<(crate::model::ConstructionPlaneKey, f32)> {
-    // (index, screen dist, eye depth at the point under the cursor)
-    let mut best: Option<(crate::model::ConstructionPlaneKey, f32, f32)> = None;
-    for (index, plane) in planes.iter() {
-        let corners = plane_corners(plane);
-        let pts: Option<Vec<egui::Pos2>> = corners.iter().map(|&c| project(c)).collect();
-        let Some(pts) = pts else { continue };
-        let quad = [pts[0], pts[1], pts[2], pts[3]];
-        let dist = if point_in_screen_quad(screen, quad) {
-            0.0
-        } else {
-            dist_point_to_quad_edges(screen, quad)
-        };
-        if dist > FACE_PICK_MARGIN_PX {
-            continue;
-        }
-        // Depth at the point under the cursor, not the plane origin: a large plane's centre
-        // can sit farther from the eye than a small front one the cursor is actually on
-        // (#1277 / same rule as face::quad_face_pick_distance).
-        let at = plane_point_under_cursor(screen, &pts, &corners).unwrap_or(plane.origin);
+) -> Option<(PickTargetKind, f32, Vec3)> {
+    let mut best: Option<(PickTargetKind, f32, f32, Vec3)> = None;
+    let consider = |best: &mut Option<(PickTargetKind, f32, f32, Vec3)>,
+                    kind: PickTargetKind,
+                    dist: f32,
+                    at: Vec3| {
         let depth = eye.map(|e| (at - e).length()).unwrap_or(f32::MAX);
-        let better = match best {
+        let better = match best.as_ref() {
             None => true,
-            Some((_, d, dep)) => {
+            Some((bk, d, dep, _)) => {
                 if dist < d - PLANE_PICK_DEPTH_TIE_PX {
                     true
                 } else if dist > d + PLANE_PICK_DEPTH_TIE_PX {
                     false
+                } else if (depth - *dep).abs() > 1e-3 {
+                    depth < *dep
                 } else {
-                    // Same screen distance (cursor inside both quads): nearer the camera wins.
-                    depth < dep
+                    // Coplanar (or no-eye) tie: the image is the thing you're pointing at.
+                    matches!(kind, PickTargetKind::TracingImage(_))
+                        && matches!(bk, PickTargetKind::ConstructionPlane(_))
                 }
             }
         };
         if better {
-            best = Some((index, dist, depth));
+            *best = Some((kind, dist, depth, at));
+        }
+    };
+
+    for (index, plane) in doc.construction_planes.iter() {
+        let corners = plane_corners(plane);
+        if let Some((dist, at)) = screen_quad_hit(screen, project, &corners) {
+            consider(
+                &mut best,
+                PickTargetKind::ConstructionPlane(index),
+                dist,
+                at,
+            );
         }
     }
-    best.map(|(i, d, _)| (i, d))
+    for (index, _) in doc.tracing_images.iter() {
+        let Some(corners) = tracing_image_corners(doc, index) else {
+            continue;
+        };
+        if let Some((dist, at)) = screen_quad_hit(screen, project, &corners) {
+            consider(&mut best, PickTargetKind::TracingImage(index), dist, at);
+        }
+    }
+    best.map(|(kind, dist, _, at)| (kind, dist, at))
 }
 
 fn dist_point_to_quad_edges(p: egui::Pos2, quad: [egui::Pos2; 4]) -> f32 {
@@ -6073,6 +6193,124 @@ mod tests {
         assert!(
             matches!(t.kind, PickTargetKind::ConstructionPlane(i) if i == pkey(0)),
             "front plane (z=0) must win over the buried one (z=-40), got {:?}",
+            t.kind
+        );
+    }
+
+    fn tracing_image_on_xy(origin: (f32, f32), width: f32, height: f32) -> crate::model::TracingImage {
+        crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "trace".to_string(),
+            plane: pkey(0),
+            origin,
+            base_origin: None,
+            width_mm: width,
+            height_mm: height,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
+            name: None,
+            calibration: None,
+        }
+    }
+
+    /// #1561: the Select tool picks a tracing image by clicking its quad — including the
+    /// part of the image that is *not* sitting on a construction-plane display rectangle.
+    #[test]
+    fn clicking_a_tracing_image_selects_the_image() {
+        let mut doc = Document::default();
+        // Image in the -X/-Y quadrant, well clear of the 5..105 datum-plane quads and
+        // the world axes along x=0 / y=0.
+        let image = doc
+            .tracing_images
+            .insert(tracing_image_on_xy((-200.0, -200.0), 150.0, 150.0));
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let cursor = Pos2::new(-120.0, -120.0);
+        let target = resolve_pick_target(
+            cursor,
+            &project,
+            Some(Vec3::new(-120.0, -120.0, 0.0)),
+            &doc,
+            None,
+        )
+        .expect("something under the cursor");
+        assert_eq!(
+            scene_element_from_pick(&target.kind),
+            Some(SceneElement::Image(image)),
+            "clicking the image quad should select the image, got {:?}",
+            target.kind
+        );
+
+        let cands = collect_pick_candidates(cursor, &project, &doc, Vec3::new(0.0, 0.0, 200.0), None);
+        assert!(
+            cands.iter().any(|c| {
+                matches!(
+                    scene_element_from_pick(&c.kind),
+                    Some(SceneElement::Image(i)) if i == image
+                )
+            }),
+            "the exploder crowd should include the tracing image"
+        );
+    }
+
+    /// #1561: on the overlap of an image and its host plane, the image is the thing
+    /// you're pointing at.
+    #[test]
+    fn a_tracing_image_beats_its_coplanar_host_plane() {
+        let mut doc = Document::default();
+        // Covers the XY datum (5..105) plus some extra so the overlap is unambiguous.
+        let image = doc
+            .tracing_images
+            .insert(tracing_image_on_xy((0.0, 0.0), 100.0, 100.0));
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let target = resolve_pick_target(
+            Pos2::new(50.0, 50.0),
+            &project,
+            Some(Vec3::new(50.0, 50.0, 0.0)),
+            &doc,
+            None,
+        )
+        .expect("something under the cursor");
+        assert_eq!(
+            scene_element_from_pick(&target.kind),
+            Some(SceneElement::Image(image)),
+            "image should win over its host plane, got {:?}",
+            target.kind
+        );
+    }
+
+    /// #1562 (pick): a construction plane that is nearer the eye than the image still
+    /// wins — you can click the standing plane in front of the picture.
+    #[test]
+    fn a_front_plane_beats_a_buried_tracing_image() {
+        let mut doc = Document::default();
+        let _image = doc
+            .tracing_images
+            .insert(tracing_image_on_xy((0.0, 0.0), 100.0, 100.0));
+        let mut front = crate::face::default_xy_plane();
+        front.origin = Vec3::new(0.0, 0.0, 20.0);
+        front.extent = crate::model::PlaneExtent {
+            u_min: 0.0,
+            u_max: 100.0,
+            v_min: 0.0,
+            v_max: 100.0,
+        };
+        front.name = Some("Front".to_string());
+        let front_key = doc.construction_planes.insert(front);
+
+        let project = |p: Vec3| Some(egui::pos2(p.x, p.y));
+        let eye = Vec3::new(50.0, 50.0, 200.0);
+        let vis = crate::hierarchy::ElementVisibility::default();
+        let occ = PickOcclusion::new(&doc, &vis, eye);
+        let t = resolve_pick_target(
+            egui::pos2(50.0, 50.0),
+            &project,
+            Some(Vec3::new(50.0, 50.0, 0.0)),
+            &doc,
+            Some(&occ),
+        )
+        .expect("a plane or image under the cursor");
+        assert!(
+            matches!(t.kind, PickTargetKind::ConstructionPlane(i) if i == front_key),
+            "front plane (z=20) must win over the image on z=0, got {:?}",
             t.kind
         );
     }
