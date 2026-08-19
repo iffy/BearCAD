@@ -1079,6 +1079,7 @@ mod tests {
             size_expr: "5".to_string(),
             origin: (2.0, 2.0),
             rotation: 0.0,
+            flip: false,
             wrap_width: None,
             baseline_line: None,
             contours: Vec::new(),

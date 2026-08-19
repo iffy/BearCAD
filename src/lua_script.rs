@@ -3493,6 +3493,29 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     t.set("name", param.name.as_str())?;
                     t.set("expression", param.expression.as_str())?;
                 }
+                "sketch_text" | "text" => {
+                    let Some(text) = doc.sketch_texts.keys().nth(index).map(|k| &doc.sketch_texts[k])
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("text", text.text.as_str())?;
+                    t.set("x", text.origin.0)?;
+                    t.set("y", text.origin.1)?;
+                    t.set("rotation", text.rotation.to_degrees())?;
+                    t.set("flip", text.flip)?;
+                    t.set("size", text.size)?;
+                    t.set("font", text.font_family.as_str())?;
+                    t.set("bold", text.bold)?;
+                    t.set("italic", text.italic)?;
+                    t.set("underline", text.underline)?;
+                    if let Some(w) = text.wrap_width {
+                        t.set("wrap", w)?;
+                    }
+                    if let Some(name) = &text.name {
+                        t.set("name", name.as_str())?;
+                    }
+                    t.set("sketch", doc.sketches.keys().position(|k| k == text.sketch))?;
+                }
                 "image" | "tracing_image" => {
                     let Some(img) = doc
                         .tracing_images
@@ -3535,7 +3558,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 other => {
                     return Err(mlua::Error::external(format!(
                         "unknown get kind '{other}' (valid kinds: line, circle, sketch, \
-                         constraint, construction_plane, extrusion, body, parameter, image)"
+                         constraint, construction_plane, extrusion, body, parameter, \
+                         sketch_text, image)"
                     )))
                 }
             }
@@ -5654,6 +5678,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let underline: bool = opts.get::<Option<bool>>("underline")?.unwrap_or(false);
             let rotation_deg: f32 = opts.get::<Option<f32>>("rotation")?.unwrap_or(0.0);
             let wrap: Option<f32> = opts.get("wrap")?;
+            let flip: bool = opts.get::<Option<bool>>("flip")?.unwrap_or(false);
             unsafe {
                 if tick.state().sketch_session.is_none() {
                     let ground = tick.state().doc.ground_plane().ok_or_else(|| {
@@ -5674,6 +5699,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     y,
                     rotation_deg,
                     wrap,
+                    flip,
                 })?;
             }
             // The text just committed (#1055): the newest live one.
@@ -8028,6 +8054,51 @@ mod tests {
             end
             assert(bearcad.count("body") >= 3, "cube, sphere, and cut result")
             "#,
+        );
+    }
+
+    /// #1570/#1571: a selected sketch text exposes a rotation gizmo, and `flip`
+    /// mirrors the glyphs about the box centre.
+    #[test]
+    fn lua_text_rotation_gizmo_and_flip() {
+        let family = ["Helvetica", "Arial", "DejaVu Sans", "Liberation Sans"]
+            .into_iter()
+            .find(|f| crate::text::font_bytes(f, false, false).is_some());
+        if family.is_none() {
+            eprintln!("no usable system font; skipping");
+            return;
+        }
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.text{ text = "R", x = 0, y = 0, size = 20 }
+            bearcad.select{ kind = "sketch_text", index = 0 }
+            local names = {}
+            for _, g in ipairs(bearcad.gizmos()) do names[g.name] = g end
+            assert(names.text_rotation, "selected text exposes text_rotation")
+            assert(math.abs(names.text_rotation.value) < 1e-5)
+            bearcad.set_gizmo{ name = "text_rotation", value = math.rad(45) }
+            local t = bearcad.get{ kind = "sketch_text", index = 0 }
+            assert(math.abs(t.rotation - 45) < 0.05, "rotation should be 45°, got " .. tostring(t.rotation))
+            assert(t.flip == false, "starts unflipped")
+            "#,
+        );
+        assert!(
+            (state.doc.sketch_texts[tkey(0)].rotation.to_degrees() - 45.0).abs() < 0.05,
+            "set_gizmo should turn the text"
+        );
+
+        let flipped = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.text{ text = "R", x = 0, y = 0, size = 20, flip = true }
+            local t = bearcad.get{ kind = "sketch_text", index = 0 }
+            assert(t.flip == true, "create with flip = true")
+            "#,
+        );
+        assert!(
+            flipped.doc.sketch_texts[tkey(0)].flip,
+            "bearcad.text{{ flip = true }} stores the flag"
         );
     }
 

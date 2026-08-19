@@ -316,6 +316,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             origin_u REAL NOT NULL,
             origin_v REAL NOT NULL,
             rotation REAL NOT NULL DEFAULT 0,
+            flip INTEGER NOT NULL DEFAULT 0,
             wrap_width REAL,
             baseline_line INTEGER,
             name TEXT,
@@ -1504,8 +1505,8 @@ fn save_sketch_texts(tx: &Connection, arena: &Arena<SketchText>) -> Result<()> {
         let id = key_bits(key);
         tx.execute(
             "INSERT INTO sketch_texts (id, sketch_id, text, font_family, bold, italic, underline,
-             size, size_expr, origin_u, origin_v, rotation, wrap_width, baseline_line, name, contours_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+             size, size_expr, origin_u, origin_v, rotation, flip, wrap_width, baseline_line, name, contours_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 id,
                 key_bits(t.sketch),
@@ -1519,6 +1520,7 @@ fn save_sketch_texts(tx: &Connection, arena: &Arena<SketchText>) -> Result<()> {
                 t.origin.0,
                 t.origin.1,
                 t.rotation,
+                flag(t.flip),
                 t.wrap_width,
                 t.baseline_line.map(|i| i as i64),
                 t.name,
@@ -3260,7 +3262,7 @@ fn load_sketch_texts(conn: &Connection) -> Result<Arena<SketchText>> {
     let mut stmt = conn
         .prepare(
             "SELECT id, sketch_id, text, font_family, bold, italic, underline, size, size_expr,
-                    origin_u, origin_v, rotation, wrap_width, baseline_line, name, contours_json
+                    origin_u, origin_v, rotation, flip, wrap_width, baseline_line, name, contours_json
              FROM sketch_texts",
         )
         .map_err(|e| e.to_string())?;
@@ -3279,10 +3281,11 @@ fn load_sketch_texts(conn: &Connection) -> Result<Arena<SketchText>> {
                 row.get::<_, f64>(9)?,
                 row.get::<_, f64>(10)?,
                 row.get::<_, f64>(11)?,
-                row.get::<_, Option<f64>>(12)?,
-                row.get::<_, Option<i64>>(13)?,
-                row.get::<_, Option<String>>(14)?,
+                row.get::<_, i64>(12)?,
+                row.get::<_, Option<f64>>(13)?,
+                row.get::<_, Option<i64>>(14)?,
                 row.get::<_, Option<String>>(15)?,
+                row.get::<_, Option<String>>(16)?,
             ))
         })
         .map_err(|e| e.to_string())?;
@@ -3301,6 +3304,7 @@ fn load_sketch_texts(conn: &Connection) -> Result<Arena<SketchText>> {
             origin_u,
             origin_v,
             rotation,
+            flip,
             wrap_width,
             baseline_line,
             name,
@@ -3319,6 +3323,7 @@ fn load_sketch_texts(conn: &Connection) -> Result<Arena<SketchText>> {
                 size_expr,
                 origin: (origin_u as f32, origin_v as f32),
                 rotation: rotation as f32,
+                flip: flip != 0,
                 wrap_width: wrap_width.map(|v| v as f32),
                 baseline_line: baseline_line.map(|v| v as usize),
                 contours: from_json_or_default(contours_json.as_deref())?,

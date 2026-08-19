@@ -459,6 +459,7 @@ pub fn instruction_from_json(
                 y: opt_f32(o, "y")?.unwrap_or(0.0),
                 rotation_deg: opt_f32(o, "rotation")?.unwrap_or(0.0),
                 wrap: opt_f32(o, "wrap")?,
+                flip: opt_bool(o, "flip")?.unwrap_or(false),
             })
         }
 

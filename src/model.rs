@@ -4361,6 +4361,9 @@ pub struct SketchText {
     /// Rotation about `origin`, radians (also settable with the Move tool, #282d).
     #[serde(default)]
     pub rotation: f32,
+    /// Mirror the glyphs about the text box's vertical centre (#1571).
+    #[serde(default)]
+    pub flip: bool,
     /// Optional wrap width (mm); when set, text wraps to this width and grows downward.
     #[serde(default)]
     pub wrap_width: Option<f32>,

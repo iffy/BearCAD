@@ -3384,6 +3384,8 @@ pub enum Action {
         origin: (f32, f32),
         rotation: f32,
         wrap_width: Option<f32>,
+        /// Mirror the glyphs about the text box's vertical centre (#1571).
+        flip: bool,
     },
     /// Resize a wrapped text box (#409): set the wrap width (and, when dragging the left
     /// handle, the shifted origin) and re-wrap the glyphs. Only meaningful for a text that
@@ -3405,6 +3407,8 @@ pub enum Action {
         size_expr: String,
         rotation: f32,
         wrap_width: Option<f32>,
+        /// Mirror the glyphs about the text box's vertical centre (#1571).
+        flip: bool,
     },
     /// Re-point an existing in-sketch slice (#224).
     EditSketchSliceOperation {
@@ -14374,6 +14378,7 @@ impl AppState {
                 origin,
                 rotation,
                 wrap_width,
+                flip,
             } => {
                 if self.doc.sketches.get(sketch).is_none() {
                     let e = format!("Sketch {} not found", sketch.index());
@@ -14413,6 +14418,7 @@ impl AppState {
                     origin,
                     rotation,
                     wrap_width,
+                    flip,
                     baseline_line: None,
                     contours: shaped.contours,
                     font_bytes,
@@ -14458,6 +14464,7 @@ impl AppState {
                 size_expr,
                 rotation,
                 wrap_width,
+                flip,
             } => {
                 let Some(existing) = self.doc.sketch_texts.get(index) else {
                     let e = format!("Sketch text {} not found", index.index());
@@ -14502,6 +14509,7 @@ impl AppState {
                 t.size_expr = size_expr;
                 t.rotation = rotation;
                 t.wrap_width = wrap_width;
+                t.flip = flip;
                 t.contours = contours;
                 t.font_bytes = font_bytes;
                 // Re-solve so anchor constraints keep holding through the new bounding box
@@ -20361,11 +20369,26 @@ pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
         }
     }
     // A selected wrapped text exposes its box width (#409) — the value the edge drag
-    // handles control.
+    // handles control. A selected text also exposes its rotation about the origin (#1570).
     if let Some(i) = single_selected_sketch_text(state) {
-        if let Some(wrap) = state.doc.sketch_texts[i].wrap_width {
+        let t = &state.doc.sketch_texts[i];
+        if let Some(wrap) = t.wrap_width {
             gizmos.push(GizmoInfo { kind: "offset", name: "text_width", value: wrap, position: None });
         }
+        let position = crate::face::sketch_geometry_frame(&state.doc, t.sketch).map(|frame| {
+            let center = crate::face::local_to_world(&frame, t.origin.0, t.origin.1);
+            let radius = crate::text::text_rotation_radius(t);
+            let n = frame.normal.normalize_or_zero();
+            let start = (frame.u_axis - n * frame.u_axis.dot(n)).normalize_or_zero();
+            let handle_dir = glam::Quat::from_axis_angle(n, t.rotation) * start;
+            center + handle_dir * radius
+        });
+        gizmos.push(GizmoInfo {
+            kind: "rotate",
+            name: "text_rotation",
+            value: t.rotation,
+            position,
+        });
     }
     gizmos
 }
@@ -20696,6 +20719,28 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
             } else {
                 false
             }
+        }
+        // Selected-text rotation about the origin (#1570): radians in, same as the model.
+        "text_rotation" => {
+            if let Some(i) = single_selected_sketch_text(state) {
+                if let Some(existing) = state.doc.sketch_texts.get(i).cloned() {
+                    state.apply(Action::EditSketchText {
+                        index: i,
+                        text: existing.text,
+                        font_family: existing.font_family,
+                        bold: existing.bold,
+                        italic: existing.italic,
+                        underline: existing.underline,
+                        size: existing.size,
+                        size_expr: existing.size_expr,
+                        rotation: value,
+                        wrap_width: existing.wrap_width,
+                        flip: existing.flip,
+                    });
+                    return true;
+                }
+            }
+            false
         }
         // Wrapped-text box width (#409): resize the selected text's wrap, keeping its origin.
         "text_width" => {
@@ -22838,6 +22883,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             origin: (0.0, 0.0),
             rotation: 0.0,
             wrap_width: Some(60.0),
+            flip: false,
         });
         // No gizmo until the text is selected.
         assert!(available_gizmos(&state).is_empty());
@@ -22846,9 +22892,15 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             additive: false,
         });
         let gizmos = available_gizmos(&state);
-        assert_eq!(gizmos.len(), 1);
-        assert_eq!(gizmos[0].name, "text_width");
-        assert!((gizmos[0].value - 60.0).abs() < 1e-3);
+        let width = gizmos
+            .iter()
+            .find(|g| g.name == "text_width")
+            .expect("selected wrapped text exposes text_width");
+        assert!((width.value - 60.0).abs() < 1e-3);
+        assert!(
+            gizmos.iter().any(|g| g.name == "text_rotation"),
+            "selected text also exposes text_rotation"
+        );
 
         let min_y_before = state.doc.sketch_texts[tkey(0)]
             .contours
@@ -22870,6 +22922,136 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         // The minimum width clamps.
         assert!(set_gizmo(&mut state, "text_width", 0.1));
         assert_eq!(state.doc.sketch_texts[tkey(0)].wrap_width, Some(MIN_TEXT_WRAP_MM));
+    }
+
+    /// #1570: a selected sketch text exposes a `text_rotation` gizmo (radians about the
+    /// origin). Driving it turns the text the same way the viewport rotation handle does.
+    #[test]
+    fn text_rotation_gizmo_turns_a_selected_text() {
+        let family = ["Helvetica", "Arial", "DejaVu Sans", "Liberation Sans"]
+            .into_iter()
+            .find(|f| crate::text::font_bytes(f, false, false).is_some());
+        let Some(family) = family else {
+            eprintln!("no usable system font; skipping");
+            return;
+        };
+        let mut state = AppState::default();
+        let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
+        state.apply(Action::CreateSketchText {
+            sketch,
+            text: "Bear".to_string(),
+            font_family: family.to_string(),
+            bold: false,
+            italic: false,
+            underline: false,
+            size: 10.0,
+            size_expr: "10".to_string(),
+            origin: (0.0, 0.0),
+            rotation: 0.0,
+            wrap_width: None,
+            flip: false,
+        });
+        assert!(
+            available_gizmos(&state).iter().all(|g| g.name != "text_rotation"),
+            "no rotation gizmo until the text is selected"
+        );
+        state.apply(Action::ClickSceneElement {
+            element: crate::hierarchy::SceneElement::SketchText(tkey(0)),
+            additive: false,
+        });
+        let gizmos = available_gizmos(&state);
+        let rot = gizmos
+            .iter()
+            .find(|g| g.name == "text_rotation")
+            .expect("selected text exposes a text_rotation gizmo");
+        assert_eq!(rot.kind, "rotate");
+        assert!(rot.value.abs() < 1e-5, "starts at 0 rad");
+        assert!(rot.position.is_some(), "rotation handle has a world position");
+
+        assert!(set_gizmo(&mut state, "text_rotation", 90f32.to_radians()));
+        let got = state.doc.sketch_texts[tkey(0)].rotation.to_degrees();
+        assert!(
+            (got - 90.0).abs() < 1e-3,
+            "set_gizmo should turn the text to 90°, got {got}"
+        );
+        assert!(
+            (gizmo_value(&state, "text_rotation").unwrap() - 90f32.to_radians()).abs() < 1e-4
+        );
+    }
+
+    /// #1571: Flip mirrors the glyphs about the text box's vertical centre so the
+    /// letters read backwards but stay in the same place.
+    #[test]
+    fn flipping_sketch_text_mirrors_glyphs_about_the_box_center() {
+        let family = ["Helvetica", "Arial", "DejaVu Sans", "Liberation Sans"]
+            .into_iter()
+            .find(|f| crate::text::font_bytes(f, false, false).is_some());
+        let Some(family) = family else {
+            eprintln!("no usable system font; skipping");
+            return;
+        };
+        let mut state = AppState::default();
+        let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
+        state.apply(Action::CreateSketchText {
+            sketch,
+            text: "R".to_string(),
+            font_family: family.to_string(),
+            bold: false,
+            italic: false,
+            underline: false,
+            size: 20.0,
+            size_expr: "20".to_string(),
+            origin: (0.0, 0.0),
+            rotation: 0.0,
+            wrap_width: None,
+            flip: false,
+        });
+        let t = &state.doc.sketch_texts[tkey(0)];
+        assert!(!t.flip, "text starts unflipped");
+        let before: Vec<(f32, f32)> = t
+            .contours
+            .iter()
+            .flat_map(|c| c.iter().map(|&p| crate::text::glyph_to_local(t, p.0, p.1)))
+            .collect();
+        assert!(!before.is_empty(), "R has outlines");
+        let (min_x, max_x) = before.iter().fold((f32::MAX, f32::MIN), |(lo, hi), &(x, _)| {
+            (lo.min(x), hi.max(x))
+        });
+        let mid = (min_x + max_x) * 0.5;
+
+        state.apply(Action::EditSketchText {
+            index: tkey(0),
+            text: "R".to_string(),
+            font_family: family.to_string(),
+            bold: false,
+            italic: false,
+            underline: false,
+            size: 20.0,
+            size_expr: "20".to_string(),
+            rotation: 0.0,
+            wrap_width: None,
+            flip: true,
+        });
+        let t = &state.doc.sketch_texts[tkey(0)];
+        assert!(t.flip, "edit stores the flip flag");
+        let after: Vec<(f32, f32)> = t
+            .contours
+            .iter()
+            .flat_map(|c| c.iter().map(|&p| crate::text::glyph_to_local(t, p.0, p.1)))
+            .collect();
+        assert_eq!(before.len(), after.len());
+        // Each point should have mirrored across the box centre: x' ≈ 2*mid − x.
+        for (&(bx, by), &(ax, ay)) in before.iter().zip(&after) {
+            assert!(
+                ((2.0 * mid - bx) - ax).abs() < 0.05 && (by - ay).abs() < 0.05,
+                "flipped ({ax}, {ay}) should be the mirror of ({bx}, {by}) about x={mid}"
+            );
+        }
+        // The box itself stays put.
+        let (amin, amax) = after.iter().fold((f32::MAX, f32::MIN), |(lo, hi), &(x, _)| {
+            (lo.min(x), hi.max(x))
+        });
+        assert!((amin - min_x).abs() < 0.05 && (amax - max_x).abs() < 0.05);
     }
 
     /// #214: the extrude tool's in-progress push/pull depth is exposed as a gizmo and driven by
@@ -28789,6 +28971,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             origin: (0.0, 0.0),
             rotation: 0.0,
             wrap_width: None,
+            flip: false,
         });
         assert!(matches!(result, ActionResult::Ok), "{}", state.status);
         let t = &state.doc.sketch_texts[tkey(0)];
@@ -28808,6 +28991,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             size_expr: "10".to_string(),
             rotation: 0.0,
             wrap_width: None,
+            flip: false,
         });
         assert!(matches!(result, ActionResult::Ok), "{}", state.status);
         assert!(
@@ -28843,6 +29027,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             origin: (0.0, 0.0),
             rotation: 0.0,
             wrap_width: None,
+            flip: false,
         });
         assert!(matches!(result, ActionResult::Ok), "{}", state.status);
         // The raw template is stored; the outlines are baked from the interpolated string.
@@ -28891,6 +29076,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             origin: (0.0, 0.0),
             rotation: 0.0,
             wrap_width: None,
+            flip: false,
         });
         // Constrain the text's centre anchor coincident with the line's start (#408), then
         // solve: the text translates so its anchor sits on the point.

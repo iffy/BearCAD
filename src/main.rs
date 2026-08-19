@@ -1072,9 +1072,9 @@ struct DrawingViewResizeDrag {
 
 /// A drag on the Move tool's rotation ring (#216): the cursor's angle around the ring centre
 /// and the move angle when the grab started; the ring turns with the cursor.
-/// A drag rotating a selected sketch text with the Move tool's rotation ring (#286). The text's
-/// `rotation` follows the cursor's angle around the text origin; the context pane's Rotation°
-/// field reads the model each frame, so it stays in sync automatically.
+/// A drag rotating a selected sketch text with the Text/Move handle-disc gizmo (#286/#1570).
+/// `start_cursor_angle` is the 3D plane heading (degrees) at grab; `start_rotation` is the
+/// model rotation in radians. The context pane's Rotation° field reads the model each frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct TextRotationDrag {
     index: model::SketchTextKey,
@@ -9056,24 +9056,118 @@ impl App {
         only.filter(|&i| self.state.doc.sketch_texts.contains(i))
     }
 
-    /// Rotation-ring geometry for the selected sketch text (#286): `(text index, ring centre,
-    /// sketch-plane normal, radius)`. The ring sits in the text's sketch plane, centred on the
-    /// text origin — the point `rotation` turns about.
-    fn text_rotation_geom(&self) -> Option<(model::SketchTextKey, Vec3, Vec3, f32)> {
+    /// Rotation-gizmo geometry for the selected sketch text (#286/#1570):
+    /// `(text, centre, axis, radius, zero_dir, angle_deg)`. The handle sits in the
+    /// text's sketch plane, centred on the origin `rotation` turns about. `zero_dir`
+    /// is the sketch +U axis (unrotated baseline).
+    fn text_rotation_geom(&self) -> Option<(model::SketchTextKey, Vec3, Vec3, f32, Vec3, f32)> {
         let index = self.single_selected_sketch_text()?;
         let text = self.state.doc.sketch_texts.get(index)?;
         let frame = sketch_geometry_frame(&self.state.doc, text.sketch)?;
         let center = local_to_world(&frame, text.origin.0, text.origin.1);
-        // Contours are baseline-relative (origin at (0,0)), so the farthest outline point puts
-        // the ring just outside the glyphs.
-        let mut reach: f32 = 0.0;
-        for contour in &text.contours {
-            for &(u, v) in contour {
-                reach = reach.max(u.hypot(v));
+        let radius = crate::text::text_rotation_radius(text);
+        Some((
+            index,
+            center,
+            frame.normal,
+            radius,
+            frame.u_axis,
+            text.rotation.to_degrees(),
+        ))
+    }
+
+    /// True when the Text or Move tool should paint/grab the text rotation gizmo (#1570).
+    fn shows_text_rotation_gizmo(&self) -> bool {
+        matches!(self.state.tool, Tool::Text | Tool::Move) && self.single_selected_sketch_text().is_some()
+    }
+
+    /// Handle-disc rotation gizmo for a selected sketch text (#286/#1570): same dial as
+    /// Face Snap / construction-plane angle. Returns true if it consumed the pointer.
+    fn handle_text_rotation_gizmo(
+        &mut self,
+        ui: &egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+        cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
+    ) -> bool {
+        if !self.shows_text_rotation_gizmo() {
+            if self.text_rotation_drag.is_some() {
+                self.text_rotation_drag = None;
+            }
+            return false;
+        }
+        let Some((index, center, axis, radius, zero_dir, angle_deg)) = self.text_rotation_geom()
+        else {
+            self.text_rotation_drag = None;
+            return false;
+        };
+        let plane_angle = |pp: egui::Pos2| -> Option<f32> {
+            let hit = cam.ray_plane_hit(pp, viewport, vp, center, axis)?;
+            Some(signed_angle_deg_about_axis(center, axis, zero_dir, hit))
+        };
+        if let Some(drag) = self.text_rotation_drag {
+            if drag.index == index && ui.input(|i| i.pointer.primary_down()) {
+                if let (Some(angle), Some(existing)) = (
+                    pointer_screen.and_then(plane_angle),
+                    self.state.doc.sketch_texts.get(index).cloned(),
+                ) {
+                    let raw = rotation_gizmo_drag_deg(
+                        drag.start_rotation.to_degrees(),
+                        drag.start_cursor_angle,
+                        angle,
+                    );
+                    let deg = crate::value::snap_gizmo_angle_deg(
+                        raw,
+                        self.state.doc.default_angle_unit,
+                    );
+                    let rotation = wrap_signed_deg(deg).to_radians();
+                    if (rotation - existing.rotation).abs() > 1e-6 {
+                        self.state.apply(Action::EditSketchText {
+                            index,
+                            text: existing.text,
+                            font_family: existing.font_family,
+                            bold: existing.bold,
+                            italic: existing.italic,
+                            underline: existing.underline,
+                            size: existing.size,
+                            size_expr: existing.size_expr,
+                            rotation,
+                            wrap_width: existing.wrap_width,
+                            flip: existing.flip,
+                        });
+                    }
+                }
+                return true;
+            }
+            // Consume the release so the Text tool doesn't also drop a new text.
+            self.text_rotation_drag = None;
+            return true;
+        }
+        if ui.input(|i| i.pointer.primary_pressed()) {
+            if let Some(pp) = pointer_screen {
+                let handle = face_spin_handle_pos(center, axis, radius, Some(zero_dir), angle_deg);
+                if rotation_handle_hit(pp, &project, handle) {
+                    if let Some(angle) = plane_angle(pp) {
+                        let start_rotation = self
+                            .state
+                            .doc
+                            .sketch_texts
+                            .get(index)
+                            .map(|t| t.rotation)
+                            .unwrap_or(0.0);
+                        self.text_rotation_drag = Some(TextRotationDrag {
+                            index,
+                            start_cursor_angle: angle,
+                            start_rotation,
+                        });
+                        return true;
+                    }
+                }
             }
         }
-        let radius = reach.max(1.0) * 1.15;
-        Some((index, center, frame.normal, radius))
+        false
     }
 
     /// Face Snap's spin ring (#1077): centred on the **mate point**, normal to the target
@@ -9248,67 +9342,10 @@ impl App {
         if self.handle_sketch_move_gizmo(ui, project, pointer_screen, cam, viewport, vp) {
             return;
         }
-        // Rotation ring for a selected sketch text (#286): the Move tool turns the text about
-        // its origin. The context pane's Rotation° field follows automatically since it reads
-        // the model each frame. Runs before the sketch-session gate so it works in-sketch too.
-        if let Some((index, center, axis, radius)) = self.text_rotation_geom() {
-            let cursor_angle =
-                |pp: egui::Pos2| project(center).map(|c| (pp.y - c.y).atan2(pp.x - c.x));
-            // Screen angles run clockwise (y grows downward); sketch rotation runs
-            // counter-clockwise around the plane normal. Viewing the front of the plane
-            // flips the apparent direction.
-            let sign = if axis.dot(cam.eye() - center) > 0.0 { -1.0 } else { 1.0 };
-            if let Some(drag) = self.text_rotation_drag {
-                if drag.index == index && ui.input(|i| i.pointer.primary_down()) {
-                    if let (Some(angle), Some(existing)) = (
-                        pointer_screen.and_then(cursor_angle),
-                        self.state.doc.sketch_texts.get(index).cloned(),
-                    ) {
-                        let rotation =
-                            drag.start_rotation + sign * (angle - drag.start_cursor_angle);
-                        if rotation != existing.rotation {
-                            self.state.apply(Action::EditSketchText {
-                                index,
-                                text: existing.text,
-                                font_family: existing.font_family,
-                                bold: existing.bold,
-                                italic: existing.italic,
-                                underline: existing.underline,
-                                size: existing.size,
-                                size_expr: existing.size_expr,
-                                rotation,
-                                wrap_width: existing.wrap_width,
-                            });
-                        }
-                    }
-                } else {
-                    self.text_rotation_drag = None;
-                }
-                return;
-            }
-            if ui.input(|i| i.pointer.primary_pressed()) {
-                if let Some(pp) = pointer_screen {
-                    if rotation_ring_hit(pp, &project, center, axis, radius) {
-                        if let Some(angle) = cursor_angle(pp) {
-                            let start_rotation = self
-                                .state
-                                .doc
-                                .sketch_texts
-                                .get(index)
-                                .map(|t| t.rotation)
-                                .unwrap_or(0.0);
-                            self.text_rotation_drag = Some(TextRotationDrag {
-                                index,
-                                start_cursor_angle: angle,
-                                start_rotation,
-                            });
-                            return;
-                        }
-                    }
-                }
-            }
-        } else if self.text_rotation_drag.is_some() {
-            self.text_rotation_drag = None;
+        // Rotation handle for a selected sketch text (#286/#1570): the Move tool turns the
+        // text about its origin. The context pane's Rotation° field follows automatically.
+        if self.handle_text_rotation_gizmo(ui, project, pointer_screen, cam, viewport, vp) {
+            return;
         }
 
         // Face Snap's spin ring (#1077): the same grab-and-drag as the text ring, writing the
@@ -12167,10 +12204,8 @@ impl App {
                 continue;
             };
             let (wu, wv) = world_to_local(&frame, world);
-            // Undo the text's origin/rotation to test against baseline-space glyph regions.
-            let (sin, cos) = text.rotation.sin_cos();
-            let (du, dv) = (wu - text.origin.0, wv - text.origin.1);
-            let local = (du * cos + dv * sin, -du * sin + dv * cos);
+            // Undo the text's origin/rotation/flip to test against baseline-space glyph regions.
+            let local = crate::text::local_to_glyph(text, wu, wv);
             let regions = crate::text::group_glyphs(&text.contours);
             let hit = regions.iter().any(|r| {
                 crate::polygon::point_in_polygon_2d(local, &r.outer)
@@ -12201,6 +12236,12 @@ impl App {
         viewport: egui::Rect,
         vp: &glam::Mat4,
     ) {
+        // Rotation handle while creating/editing (#1570): consume the pointer so a
+        // handle drag doesn't also drop a new text.
+        if self.handle_text_rotation_gizmo(ui, project, pointer_screen, cam, viewport, vp) {
+            self.text_tool_anchor = None;
+            return;
+        }
         let Some(session) = self.state.sketch_session else {
             self.text_tool_anchor = None;
             return;
@@ -12273,6 +12314,7 @@ impl App {
             origin: (u, v),
             rotation: 0.0,
             wrap_width,
+            flip: false,
         });
         // Select the new text so its context editor opens right away.
         if self.state.doc.sketch_texts.len() > before {
@@ -15529,6 +15571,7 @@ impl App {
                         size_mm: t.size,
                         rotation_deg: format!("{:.0}", t.rotation.to_degrees()),
                         wrap: t.wrap_width.map(|w| format!("{w:.0}")).unwrap_or_default(),
+                        flip: t.flip,
                     })
             },
             drawing_view: {
@@ -16791,6 +16834,7 @@ impl App {
                     let mut size_expr = existing.size_expr.clone();
                     let mut rotation = existing.rotation;
                     let mut wrap_width = existing.wrap_width;
+                    let mut flip = existing.flip;
                     let mut valid = true;
                     match edit {
                         context::SketchTextEdit::Text(v) => text = v,
@@ -16812,6 +16856,7 @@ impl App {
                             Ok(deg) => rotation = deg.to_radians(),
                             Err(_) => valid = false,
                         },
+                        context::SketchTextEdit::Flip(v) => flip = v,
                         // Empty clears wrapping; a positive number wraps to that width (#282).
                         context::SketchTextEdit::Wrap(v) => {
                             let t = v.trim();
@@ -16839,6 +16884,7 @@ impl App {
                             size_expr,
                             rotation,
                             wrap_width,
+                            flip,
                         });
                     }
                 }
@@ -19186,38 +19232,6 @@ fn face_spin_handle_pos(
     center + handle_dir * radius
 }
 
-/// Whether the cursor is near the Move rotation ring's projected circle (#216): sample the
-/// circle and test the cursor's distance to the projected polyline.
-fn rotation_ring_hit(
-    pp: egui::Pos2,
-    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
-    center: Vec3,
-    axis: Vec3,
-    radius: f32,
-) -> bool {
-    const TOL_PX: f32 = 8.0;
-    let n = axis.normalize_or_zero();
-    if n == Vec3::ZERO {
-        return false;
-    }
-    let reference = if n.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
-    let u = n.cross(reference).normalize_or_zero();
-    let v = n.cross(u);
-    const SEG: usize = 48;
-    let mut prev: Option<egui::Pos2> = None;
-    for i in 0..=SEG {
-        let t = i as f32 / SEG as f32 * std::f32::consts::TAU;
-        let world = center + (u * t.cos() + v * t.sin()) * radius;
-        let sp = project(world);
-        if let (Some(a), Some(b)) = (prev, sp) {
-            if dist_point_to_segment(pp, a, b) < TOL_PX {
-                return true;
-            }
-        }
-        prev = sp;
-    }
-    false
-}
 
 /// Whichever anchor candidate is nearer the eye (#932) — what the cursor is actually
 /// pointing at, rather than whatever kind of face was looked for first.
@@ -30448,22 +30462,32 @@ impl App {
                     }
                 }
             }
-        } else if self.state.tool == Tool::Move {
-            if let Some((_, center, axis, radius)) = self.text_rotation_geom() {
+        } else if self.shows_text_rotation_gizmo() {
+            if let Some((_, center, axis, radius, zero_dir, angle_deg)) = self.text_rotation_geom()
+            {
+                let handle = face_spin_handle_pos(center, axis, radius, Some(zero_dir), angle_deg);
                 let hovered = self.text_rotation_drag.is_some()
-                    || pointer_screen.is_some_and(|pp| {
-                        rotation_ring_hit(pp, &project, center, axis, radius)
-                    });
+                    || pointer_screen
+                        .is_some_and(|pp| rotation_handle_hit(pp, &project, handle));
                 move_rotation_gizmos.push(gpu_viewport::MoveRotationGizmo {
                     center,
                     axis,
                     radius,
                     color: col::PREVIEW,
                     hovered,
-                    zero_dir: None,
-                    angle_deg: None,
+                    zero_dir: Some(zero_dir),
+                    angle_deg: Some(angle_deg),
                     dragging: self.text_rotation_drag.is_some(),
                 });
+                if angle_deg.abs() > 1e-3 {
+                    if let Some(sp) = project(handle) {
+                        move_turn_labels.push((
+                            sp,
+                            format!("{:.0}°", wrap_signed_deg(angle_deg)),
+                            col::PREVIEW,
+                        ));
+                    }
+                }
             }
         }
         // Live ghost of the in-progress in-sketch repeat's duplicates (#232): dashed copies of

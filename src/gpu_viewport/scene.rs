@@ -1490,9 +1490,7 @@ impl ViewportScene {
                 let mut pts: Vec<Vec3> = contour
                     .iter()
                     .map(|&(x, y)| {
-                        // Rotate about the text origin, then place on the sketch plane.
-                        let rx = x * cos - y * sin + text.origin.0;
-                        let ry = x * sin + y * cos + text.origin.1;
+                        let (rx, ry) = crate::text::glyph_to_local(text, x, y);
                         crate::face::local_to_world(&frame, rx, ry)
                     })
                     .collect();
@@ -4107,7 +4105,6 @@ impl<'a> SceneMesh<'a> {
                 let Some(frame) = crate::face::sketch_geometry_frame(doc, text.sketch) else {
                     return;
                 };
-                let (sin, cos) = text.rotation.sin_cos();
                 for contour in &text.contours {
                     if contour.len() < 2 {
                         continue;
@@ -4115,8 +4112,7 @@ impl<'a> SceneMesh<'a> {
                     let mut pts: Vec<Vec3> = contour
                         .iter()
                         .map(|&(x, y)| {
-                            let rx = x * cos - y * sin + text.origin.0;
-                            let ry = x * sin + y * cos + text.origin.1;
+                            let (rx, ry) = crate::text::glyph_to_local(text, x, y);
                             crate::face::local_to_world(&frame, rx, ry)
                         })
                         .collect();

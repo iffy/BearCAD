@@ -8911,13 +8911,17 @@ fn text_glyph_region_uv(
     let t = doc.sketch_texts.get(text_index)?;
     let regions = crate::text::group_glyphs(&t.contours);
     let region = regions.get(glyph_index)?;
-    let (sin, cos) = t.rotation.sin_cos();
-    let xf = |&(x, y): &(f32, f32)| {
-        (x * cos - y * sin + t.origin.0, x * sin + y * cos + t.origin.1)
-    };
-    let outer: Vec<(f32, f32)> = region.outer.iter().map(xf).collect();
-    let holes: Vec<Vec<(f32, f32)>> =
+    let xf = |&(x, y): &(f32, f32)| crate::text::glyph_to_local(t, x, y);
+    let mut outer: Vec<(f32, f32)> = region.outer.iter().map(xf).collect();
+    let mut holes: Vec<Vec<(f32, f32)>> =
         region.holes.iter().map(|h| h.iter().map(xf).collect()).collect();
+    // Flip mirrors x, which reverses winding; put it back so holes stay holes.
+    if t.flip {
+        outer.reverse();
+        for h in &mut holes {
+            h.reverse();
+        }
+    }
     Some((outer, holes))
 }
 
@@ -13056,6 +13060,7 @@ mod tests {
             size_expr: "20".to_string(),
             origin: (0.0, 0.0),
             rotation: 0.0,
+            flip: false,
             wrap_width: None,
             baseline_line: None,
             contours: shaped.contours,

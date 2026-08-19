@@ -1312,6 +1312,7 @@ impl<'a> EmitCtx<'a> {
             y: t.origin.1,
             rotation_deg: t.rotation.to_degrees(),
             wrap: t.wrap_width,
+            flip: t.flip,
         };
         out.push_str(&instr.as_lua_in(Some(self.doc)));
         out.push('\n');

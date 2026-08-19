@@ -937,6 +937,8 @@ pub struct SketchTextControl {
     pub rotation_deg: String,
     /// Wrap width in mm, empty when unwrapped (#282).
     pub wrap: String,
+    /// Mirror the glyphs about the box's vertical centre (#1571).
+    pub flip: bool,
 }
 
 /// One edit from the sketch-text context section (#286). Each re-bakes the text.
@@ -951,6 +953,8 @@ pub enum SketchTextEdit {
     Rotation(String),
     /// Wrap width in mm (#282): empty clears wrapping (a growing single-line box).
     Wrap(String),
+    /// Mirror the glyphs about the box's vertical centre (#1571).
+    Flip(bool),
 }
 
 /// One edit from the Combine context section.
@@ -1589,6 +1593,12 @@ pub fn prune_selection_for_tool(
     open_sketch: Option<crate::model::SketchId>,
     selection: &mut SceneSelection,
 ) {
+    // The Text tool edits a selected sketch text (#1570): keep those so switching
+    // to Text from Select still shows the editor and rotation gizmo.
+    if tool == Tool::Text && open_sketch.is_some() {
+        selection.retain(|element| matches!(element, SceneElement::SketchText(_)));
+        return;
+    }
     if let Some(picker) = selection_picker_for(doc, tool, open_sketch, selection) {
         selection.retain(|element| picker.accepts(doc, element));
     } else {
@@ -8031,6 +8041,10 @@ pub fn show_pane(
                 on_sketch_text_edit(SketchTextEdit::Wrap(wrap));
             }
         });
+        let mut flip = control.flip;
+        if checkbox_row(ui, "Flip", &mut flip, None) {
+            on_sketch_text_edit(SketchTextEdit::Flip(flip));
+        }
     }
 
     // Drawing-projection editor (#289): the selected view card's source, orientation, and a
@@ -8890,6 +8904,41 @@ mod tests {
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::body_key_for_slot as bkey;
     use super::*;
+
+    /// #1570: switching to the Text tool in a sketch keeps a selected sketch text
+    /// so the editor and rotation gizmo stay up.
+    #[test]
+    fn text_tool_keeps_a_selected_sketch_text() {
+        use crate::model::sketch_key_for_slot as skey;
+        use crate::model::sketch_text_key_for_slot as tkey;
+        let mut doc = Document::default();
+        doc.sketch_texts.insert(crate::model::SketchText {
+            sketch: skey(0),
+            text: "Hi".into(),
+            font_family: String::new(),
+            bold: false,
+            italic: false,
+            underline: false,
+            size: 10.0,
+            size_expr: "10".into(),
+            origin: (0.0, 0.0),
+            rotation: 0.0,
+            flip: false,
+            wrap_width: None,
+            baseline_line: None,
+            contours: Vec::new(),
+            font_bytes: Vec::new(),
+            pin: None,
+            name: None,
+        });
+        let mut selection = SceneSelection::default();
+        selection.insert(crate::hierarchy::SceneElement::SketchText(tkey(0)));
+        prune_selection_for_tool(&doc, Tool::Text, Some(skey(0)), &mut selection);
+        assert!(
+            selection.is_selected(crate::hierarchy::SceneElement::SketchText(tkey(0))),
+            "Text tool should keep the selected sketch text"
+        );
+    }
 
     /// #1282: labeled_row / checkbox_row salts keep nested widget ids stable across
     /// multipass frames (Context pane field labels flashing red).
