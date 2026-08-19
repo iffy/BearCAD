@@ -48,6 +48,62 @@ pub struct CodeBlock {
     pub outcome: Option<Result<String, String>>,
 }
 
+/// One piece of a reply as the pane draws it: prose, or a fenced code block.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Segment {
+    Prose(String),
+    Code(String),
+}
+
+/// Split a reply into prose and code, so the pane can draw fenced blocks as code rather
+/// than printing ``` markers at the reader.
+///
+/// An unterminated block — one still streaming in — is still shown, as code: the text has
+/// arrived, only its closing fence has not.
+pub fn segments(text: &str) -> Vec<Segment> {
+    let mut out = Vec::new();
+    let mut prose = String::new();
+    let mut code: Option<String> = None;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        match &mut code {
+            Some(block) => {
+                if trimmed == "```" {
+                    out.push(Segment::Code(std::mem::take(block).trim_end().to_string()));
+                    code = None;
+                } else {
+                    block.push_str(line);
+                    block.push('\n');
+                }
+            }
+            None => {
+                if trimmed.starts_with("```") {
+                    let text = prose.trim().to_string();
+                    if !text.is_empty() {
+                        out.push(Segment::Prose(text));
+                    }
+                    prose.clear();
+                    code = Some(String::new());
+                } else {
+                    prose.push_str(line);
+                    prose.push('\n');
+                }
+            }
+        }
+    }
+    if let Some(block) = code {
+        let block = block.trim_end();
+        if !block.is_empty() {
+            out.push(Segment::Code(block.to_string()));
+        }
+    }
+    let text = prose.trim().to_string();
+    if !text.is_empty() {
+        out.push(Segment::Prose(text));
+    }
+    out
+}
+
 /// Every ```lua block in `text`, in order. A block still being streamed — one whose closing
 /// fence has not arrived — is left out: half a script is not something to offer a Run button
 /// for.
@@ -442,6 +498,31 @@ mod tests {
         assert!(lua_blocks("```python\nprint(1)\n```").is_empty());
         // An untagged fence in a BearCAD answer is Lua.
         assert_eq!(lua_blocks("```\nbearcad.new()\n```").len(), 1);
+    }
+
+    #[test]
+    fn a_reply_splits_into_prose_and_code_so_no_fence_markers_are_shown() {
+        let reply = "Widen it:\n\n```lua\nbearcad.rect{ width = 100 }\n```\n\nThen extrude.";
+        assert_eq!(
+            segments(reply),
+            vec![
+                Segment::Prose("Widen it:".into()),
+                Segment::Code("bearcad.rect{ width = 100 }".into()),
+                Segment::Prose("Then extrude.".into()),
+            ]
+        );
+
+        // A block still arriving is shown as code, without waiting for its closing fence.
+        assert_eq!(
+            segments("here:\n```lua\nbearcad.rect{ wid"),
+            vec![
+                Segment::Prose("here:".into()),
+                Segment::Code("bearcad.rect{ wid".into()),
+            ]
+        );
+        // Plain prose stays one segment.
+        assert_eq!(segments("just text"), vec![Segment::Prose("just text".into())]);
+        assert!(segments("").is_empty());
     }
 
     #[test]

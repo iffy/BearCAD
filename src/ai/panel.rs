@@ -271,8 +271,22 @@ fn thread(ui: &mut egui::Ui, state: &mut AppState) {
                     }
                 };
                 ui.label(egui::RichText::new(who).size(10.0).color(colour));
-                if !entry.text.is_empty() {
-                    ui.label(egui::RichText::new(&entry.text).size(12.0));
+                // Fenced blocks draw as code rather than showing ``` markers to the reader;
+                // the latest reply's blocks also get Run buttons below the thread.
+                for segment in crate::ai::chat::segments(&entry.text) {
+                    match segment {
+                        crate::ai::chat::Segment::Prose(text) => {
+                            ui.label(egui::RichText::new(text).size(12.0));
+                        }
+                        crate::ai::chat::Segment::Code(code) => {
+                            ui.label(
+                                egui::RichText::new(code)
+                                    .size(11.0)
+                                    .monospace()
+                                    .background_color(ui.visuals().extreme_bg_color),
+                            );
+                        }
+                    }
                 }
                 if entry.streaming && entry.text.is_empty() {
                     ui.label(egui::RichText::new("…").size(12.0).weak());
