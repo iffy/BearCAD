@@ -1314,6 +1314,12 @@ fn cuboid_kind_ready(app: &AppState) -> bool {
         || (shape_tool_active(app) && app.shape_kind == crate::model::PrimitiveKind::Cuboid)
 }
 
+/// Grab-Shape-tool step: the toolbar is armed, even if the last-used kind isn't cuboid
+/// (#1569). A following Cuboid-kind step then points at the Context button.
+fn shape_tool_active_or_has_cuboid(app: &AppState) -> bool {
+    shape_tool_active(app) || has_cuboid(app)
+}
+
 fn cylinder_kind_ready(app: &AppState) -> bool {
     has_cylinder(app)
         || (shape_tool_active(app) && app.shape_kind == crate::model::PrimitiveKind::Cylinder)
@@ -1585,8 +1591,14 @@ static SHAPES_STEPS: &[Step] = &[
         None,
     ),
     plain_step(
-        "Grab the Shape tool \u{2014} the glowing button, or press `B`. It starts as a cuboid.",
+        "Grab the Shape tool \u{2014} the glowing button, or press `B`.",
         StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        Some(shape_tool_active_or_has_cuboid),
+    ),
+    // #1569: last-used kind may be cylinder/sphere; skip this when already cuboid.
+    plain_step(
+        "Click Cuboid in the Context pane (or press `B`).",
+        StepAnchor::Ui(UiAnchor::ShapeKind(crate::model::PrimitiveKind::Cuboid)),
         Some(cuboid_kind_ready),
     ),
     plain_step(
@@ -2776,8 +2788,14 @@ static COMBINE_STEPS: &[Step] = &[
         None,
     ),
     plain_step(
-        "Grab the Shape tool \u{2014} the glowing button, or press `B`. It starts as a cuboid.",
+        "Grab the Shape tool \u{2014} the glowing button, or press `B`.",
         StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        Some(shape_tool_active_or_has_cuboid),
+    ),
+    // #1569: last-used kind may be cylinder/sphere; skip this when already cuboid.
+    plain_step(
+        "Click Cuboid in the Context pane (or press `B`).",
+        StepAnchor::Ui(UiAnchor::ShapeKind(crate::model::PrimitiveKind::Cuboid)),
         Some(cuboid_kind_ready),
     ),
     plain_step(
@@ -2873,6 +2891,12 @@ static RAISED_TEXT_STEPS: &[Step] = &[
     plain_step(
         "Grab the Shape tool \u{2014} the glowing button, or press `B`.",
         StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        Some(shape_tool_active_or_has_cuboid),
+    ),
+    // #1569: last-used kind may be cylinder/sphere; skip this when already cuboid.
+    plain_step(
+        "Click Cuboid in the Context pane (or press `B`).",
+        StepAnchor::Ui(UiAnchor::ShapeKind(crate::model::PrimitiveKind::Cuboid)),
         Some(cuboid_kind_ready),
     ),
     plain_step(
@@ -3673,6 +3697,27 @@ mod tests {
     fn shapes_kind_steps_target_context_shape_buttons() {
         use crate::model::PrimitiveKind as K;
         let shapes = &TUTORIALS[tutorial_index("shapes").unwrap()];
+        let cuboid = shapes
+            .steps
+            .iter()
+            .find(|s| {
+                let n = s.narration.to_ascii_lowercase();
+                n.contains("cuboid")
+                    && (n.contains("click") || n.contains("context"))
+                    && !n.contains("anchor")
+                    && !n.contains("corner")
+                    && !n.contains("height")
+                    && !n.contains("cycle")
+            })
+            .expect("cuboid kind-pick step");
+        assert!(
+            matches!(
+                cuboid.anchor,
+                StepAnchor::Ui(UiAnchor::ShapeKind(K::Cuboid))
+            ),
+            "cuboid kind should point at Context Cuboid button: {}",
+            cuboid.narration
+        );
         let cylinder = shapes
             .steps
             .iter()
@@ -4938,5 +4983,87 @@ mod tests {
             "text should be extruded, status={}",
             app.status
         );
+    }
+
+    /// #1569: cuboid-first walkthroughs must point at Cuboid in the Context pane
+    /// when the last-used Shape kind isn't cuboid. Grabbing the Shape tool (already
+    /// armed as a sphere) must not stall on the toolbar button.
+    #[test]
+    fn cuboid_start_tutorials_guide_back_to_cuboid_when_sphere_is_armed() {
+        for name in ["shapes", "combine", "raised_text"] {
+            let mut app = AppState::default();
+            app.apply(Action::SetTool(Tool::Shape));
+            app.apply(Action::SetShapeKind {
+                kind: crate::model::PrimitiveKind::Sphere,
+            });
+            app.apply(Action::StartTutorial {
+                index: tutorial_index(name).unwrap(),
+            });
+            assert_eq!(app.tool, Tool::Select, "{name}: start resets the tool");
+            assert_eq!(
+                app.shape_kind,
+                crate::model::PrimitiveKind::Sphere,
+                "{name}: last-used kind survives a new document"
+            );
+            app.apply(Action::TutorialNext); // past the intro
+            let run = app.tutorial.expect("{name} running");
+            let step = &TUTORIALS[run.tutorial].steps[run.step];
+            assert!(
+                step.narration.to_ascii_lowercase().contains("shape tool"),
+                "{name}: should be on grab-shape: {}",
+                step.narration
+            );
+
+            app.apply(Action::SetTool(Tool::Shape));
+            let run = app.tutorial.expect("{name} still running");
+            let step = &TUTORIALS[run.tutorial].steps[run.step];
+            let n = step.narration.to_ascii_lowercase();
+            assert!(
+                n.contains("cuboid") && (n.contains("click") || n.contains("context")),
+                "{name}: after grabbing Shape (sphere), should ask for Cuboid, got: {}",
+                step.narration
+            );
+            assert!(
+                matches!(
+                    step.anchor,
+                    StepAnchor::Ui(UiAnchor::ShapeKind(crate::model::PrimitiveKind::Cuboid))
+                ),
+                "{name}: orb should sit on the Cuboid button: {:?}",
+                step.anchor
+            );
+
+            app.apply(Action::SetShapeKind {
+                kind: crate::model::PrimitiveKind::Cuboid,
+            });
+            let run = app.tutorial.expect("{name} still running");
+            let step = &TUTORIALS[run.tutorial].steps[run.step];
+            let n = step.narration.to_ascii_lowercase();
+            assert!(
+                n.contains("corner") || n.contains("anchor"),
+                "{name}: cuboid armed → place the cuboid, got: {}",
+                step.narration
+            );
+        }
+    }
+
+    /// #1569: default cuboid kind skips the "click Cuboid" step.
+    #[test]
+    fn cuboid_start_tutorials_skip_cuboid_kind_when_already_cuboid() {
+        for name in ["shapes", "combine", "raised_text"] {
+            let mut app = AppState::default();
+            app.apply(Action::StartTutorial {
+                index: tutorial_index(name).unwrap(),
+            });
+            app.apply(Action::TutorialNext);
+            app.apply(Action::SetTool(Tool::Shape));
+            let run = app.tutorial.expect("{name} running");
+            let step = &TUTORIALS[run.tutorial].steps[run.step];
+            let n = step.narration.to_ascii_lowercase();
+            assert!(
+                n.contains("corner") || n.contains("anchor"),
+                "{name}: default cuboid should skip the kind-pick, got: {}",
+                step.narration
+            );
+        }
     }
 }

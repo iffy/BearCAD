@@ -8031,6 +8031,30 @@ mod tests {
         );
     }
 
+    /// #1569: grabbing Shape while the last-used kind is a sphere must then
+    /// point at Cuboid — the toolbar grab is already done.
+    #[test]
+    fn raised_text_tutorial_guides_back_to_cuboid_from_sphere() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.ui.tool("shape")
+            bearcad.ui.tool_mode("sphere")
+            bearcad.ui.tutorial("raised_text")
+            bearcad.ui.tutorial_next()
+            local grab = bearcad.ui.tutorial_narration()
+            assert(grab:find("Shape tool", 1, true), grab)
+            bearcad.ui.tool("shape")
+            local kind = bearcad.ui.tutorial_narration()
+            assert(kind:find("Cuboid", 1, true),
+                   "should ask for Cuboid after grabbing a leftover sphere: " .. tostring(kind))
+            bearcad.ui.tool_mode("cuboid")
+            local place = bearcad.ui.tutorial_narration()
+            assert(place:find("corner", 1, true) or place:find("anchor", 1, true),
+                   "cuboid armed → place it: " .. tostring(place))
+            "#,
+        );
+    }
+
     /// #1557: raised-text tutorial walks with assists and extrudes letters.
     #[test]
     fn raised_text_tutorial_lua_walks_and_extrudes_letters() {
