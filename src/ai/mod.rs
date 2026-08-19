@@ -53,6 +53,9 @@ pub struct AiState {
     pub preview_wanted: bool,
     /// The answer to the last preview request, or `None` while one is outstanding.
     pub preview: Option<context::Context>,
+    /// Set when something asks for the Agents & Skill section specifically (Help ▸ Install
+    /// AI Agent Skill…), so the pane opens showing it rather than the chat (#1604).
+    pub open_skill_section: bool,
 }
 
 impl AiState {

@@ -2589,6 +2589,13 @@ pub enum Action {
     /// Run one Lua block from the latest reply (#1600). Never automatic: this is only ever
     /// the user clicking **Run** on that block, or a script asking for it by index.
     RunAiBlock { index: usize },
+    /// Install the AI agent skill for one target (#1604). `dir` is the project directory
+    /// for project-scoped targets.
+    InstallAiSkill { target: String, dir: Option<std::path::PathBuf> },
+    /// Remove the AI agent skill from one target.
+    UninstallAiSkill { target: String, dir: Option<std::path::PathBuf> },
+    /// Open the AI pane at its Agents & Skill section (Help ▸ Install AI Agent Skill…).
+    ShowAiSkillSection,
     /// Put a reply into the conversation without asking a backend for it (#1600).
     ///
     /// For canned conversations: documentation screenshots and tests need a thread with
@@ -3575,6 +3582,9 @@ impl Action {
                     | Action::ClearAiConversation
                     | Action::SetAiContextScope { .. }
                     | Action::ResetAiBackendSpend { .. }
+                    | Action::InstallAiSkill { .. }
+                    | Action::UninstallAiSkill { .. }
+                    | Action::ShowAiSkillSection
                     | Action::SetMcMasterWindow { .. }
                     | Action::SetReportIssueWindow { .. }
                     | Action::SetSettingsWindow { .. }
@@ -4150,6 +4160,14 @@ fn identifier_name(base: &str) -> String {
     } else {
         cleaned
     }
+}
+
+/// The user's home directory, where user-scoped skill installs land (#1604).
+#[cfg(not(target_arch = "wasm32"))]
+fn home_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
 }
 
 /// `base`, made unique against live instance names by appending 2, 3, … (#721).
@@ -12004,6 +12022,46 @@ impl AppState {
             #[cfg(target_arch = "wasm32")]
             Action::RunAiBlock { .. } => {
                 ActionResult::Err("AI chat is only available in the desktop app".to_string())
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::InstallAiSkill { target, dir } => {
+                let Some(spec) = crate::ai::skill::target(&target) else {
+                    return ActionResult::Err(format!("unknown skill target '{target}'"));
+                };
+                match crate::ai::skill::install(spec, home_dir().as_deref(), dir.as_deref()) {
+                    Ok(path) => {
+                        self.status = format!("Installed the BearCAD skill: {}", path.display());
+                        ActionResult::Ok
+                    }
+                    Err(e) => ActionResult::Err(e),
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::UninstallAiSkill { target, dir } => {
+                let Some(spec) = crate::ai::skill::target(&target) else {
+                    return ActionResult::Err(format!("unknown skill target '{target}'"));
+                };
+                match crate::ai::skill::uninstall(spec, home_dir().as_deref(), dir.as_deref()) {
+                    Ok(Some(path)) => {
+                        self.status = format!("Removed the BearCAD skill from {}", path.display());
+                        ActionResult::Ok
+                    }
+                    Ok(None) => {
+                        self.status = format!("The skill was not installed for {}", spec.label);
+                        ActionResult::Ok
+                    }
+                    Err(e) => ActionResult::Err(e),
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            Action::InstallAiSkill { .. } | Action::UninstallAiSkill { .. } => {
+                ActionResult::Err("Installing the skill needs the desktop app".to_string())
+            }
+            Action::ShowAiSkillSection => {
+                self.panes.set(Pane::Ai, true);
+                self.ai.borrow_mut().open_skill_section = true;
+                self.status = "AI ▸ Agents & Skill".to_string();
+                ActionResult::Ok
             }
             Action::ResetAiBackendSpend { id } => {
                 let mut ai = self.ai.borrow_mut();

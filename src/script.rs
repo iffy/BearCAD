@@ -897,6 +897,10 @@ pub enum Instruction {
     RunAiBlock { index: usize },
     /// Put a canned reply in the conversation, for screenshots and tests (#1600).
     SeedAiReply { question: String, reply: String },
+    /// Install the AI agent skill for one target (#1604).
+    InstallAiSkill { target: String, dir: Option<String> },
+    /// Remove the AI agent skill from one target.
+    UninstallAiSkill { target: String, dir: Option<String> },
     AddParameter { name: String, expression: String },
     CreateParameterFromLineLength { line_index: usize, name: Option<String> },
     /// Create a derived (measured) parameter from a geometry source (#432).
@@ -2087,6 +2091,18 @@ impl Instruction {
             Instruction::SeedAiReply { question, reply } => {
                 format!("bearcad.ai.seed_reply({question:?}, {reply:?})")
             }
+            Instruction::InstallAiSkill { target, dir } => match dir {
+                Some(dir) => {
+                    format!("bearcad.ai.install_skill{{ target = {target:?}, dir = {dir:?} }}")
+                }
+                None => format!("bearcad.ai.install_skill{{ target = {target:?} }}"),
+            },
+            Instruction::UninstallAiSkill { target, dir } => match dir {
+                Some(dir) => {
+                    format!("bearcad.ai.uninstall_skill{{ target = {target:?}, dir = {dir:?} }}")
+                }
+                None => format!("bearcad.ai.uninstall_skill{{ target = {target:?} }}"),
+            },
             Instruction::SelectAiBackend { id } => {
                 format!("bearcad.ai.set_backend({id:?})")
             }
@@ -7923,6 +7939,22 @@ impl ScriptRunner {
             }
             Instruction::SeedAiReply { question, reply } => {
                 let result = state.apply(Action::SeedAiReply { question, reply });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::InstallAiSkill { target, dir } => {
+                let result = state.apply(Action::InstallAiSkill {
+                    target,
+                    dir: dir.map(std::path::PathBuf::from),
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::UninstallAiSkill { target, dir } => {
+                let result = state.apply(Action::UninstallAiSkill {
+                    target,
+                    dir: dir.map(std::path::PathBuf::from),
+                });
                 self.record_action_error(result);
                 StepResult::Continue
             }

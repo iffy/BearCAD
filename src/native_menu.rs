@@ -56,6 +56,8 @@ pub struct MenuIds {
     pub shortcuts_help: MenuId,
     /// Help ▸ Changelog (#1328).
     pub changelog: MenuId,
+    /// Help ▸ Install AI Agent Skill… (#1604).
+    pub install_ai_skill: MenuId,
     /// Help ▸ Report Problem… (#1372): open the browser at a new-issue form on the repo.
     pub report_problem: MenuId,
     /// Settings… (#720): the app menu on macOS, the File menu elsewhere.
@@ -187,6 +189,9 @@ pub fn command_for_id(
     }
     if ids.changelog == id {
         return Some(MenuCommand::ShowChangelog);
+    }
+    if ids.install_ai_skill == id {
+        return Some(MenuCommand::InstallAiSkill);
     }
     if ids.report_problem == id {
         return Some(MenuCommand::ReportProblem);
@@ -397,6 +402,13 @@ impl NativeMenu {
             true,
             None,
         );
+        // #1604: the same idea for AI tools — opens the AI pane at Agents & Skill.
+        let install_ai_skill = MenuItem::with_id(
+            "install_ai_skill",
+            "Install AI Agent Skill…",
+            true,
+            None,
+        );
         let mut pane_checks = Vec::new();
         let mut pane_ids = Vec::new();
         for &pane in Pane::ALL {
@@ -472,6 +484,7 @@ impl NativeMenu {
         help_menu.append(&changelog)?;
         help_menu.append(&report_problem)?;
         help_menu.append(&install_cli)?;
+        help_menu.append(&install_ai_skill)?;
         help_menu.append(&PredefinedMenuItem::separator())?;
         help_menu.append(&licenses)?;
         help_menu.append(&about)?;
@@ -523,6 +536,7 @@ impl NativeMenu {
             about: about.id().clone(),
             licenses: licenses.id().clone(),
             install_cli: install_cli.id().clone(),
+            install_ai_skill: install_ai_skill.id().clone(),
             command_palette: command_palette.id().clone(),
             fps_mode: fps_mode.id().clone(),
             zoom_to_fit: zoom_to_fit.id().clone(),
@@ -657,6 +671,7 @@ mod tests {
             about: MenuId::new("about"),
             licenses: MenuId::new("licenses"),
             install_cli: MenuId::new("install_cli"),
+            install_ai_skill: MenuId::new("install_ai_skill"),
             command_palette: MenuId::new("command_palette"),
             fps_mode: MenuId::new("fps_mode"),
             zoom_to_fit: MenuId::new("zoom_to_fit"),

@@ -127,6 +127,8 @@ jobs:
           # AI backend tests (#1595) write real config; point them at a throwaway file so
           # they never touch the ai.json of the machine running them.
           BEARCAD_AI_CONFIG: ${{ runner.temp }}/bearcad-ai.json
+          # The skill-install test (#1604) writes an AGENTS.md; give it a scratch project.
+          BEARCAD_SKILL_PROJECT: ${{ runner.temp }}/bearcad-skill-project
         run: |
           shopt -s nullglob
           tests=(tests/interaction/*.lua)
@@ -134,6 +136,7 @@ jobs:
             echo "No interaction tests found in tests/interaction/" >&2
             exit 1
           fi
+          mkdir -p "$BEARCAD_SKILL_PROJECT"
           failed=0
           for script in "${tests[@]}"; do
             echo "::group::Running $script"

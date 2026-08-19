@@ -28,8 +28,14 @@ pub fn contents(ui: &mut egui::Ui, state: &mut AppState) {
     ui.label(egui::RichText::new(SUBTITLE).size(12.0).weak());
     ui.add_space(8.0);
 
+    // Help ▸ Install AI Agent Skill… opens the pane at that section, so it wins over the
+    // usual default of Chat for one frame.
+    let open_skill = std::mem::take(&mut state.ai.borrow_mut().open_skill_section);
+
     section(ui, "Chat", true, |ui| chat_section(ui, state));
-    section(ui, "Agents & Skill", false, |ui| skill_section(ui, state));
+    section_open(ui, "Agents & Skill", false, open_skill.then_some(true), |ui| {
+        skill_section(ui, state)
+    });
     section(ui, "MCP Server", false, |ui| mcp_section(ui, state));
 }
 
@@ -41,9 +47,22 @@ fn section(
     default_open: bool,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
+    section_open(ui, title, default_open, None, add_contents);
+}
+
+/// As [`section`], but `force` overrides the remembered state for this frame — how a menu
+/// item can open the pane *at* a particular section.
+fn section_open(
+    ui: &mut egui::Ui,
+    title: &str,
+    default_open: bool,
+    force: Option<bool>,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
     egui::CollapsingHeader::new(egui::RichText::new(title).strong())
         .id_salt(("ai_section", title))
         .default_open(default_open)
+        .open(force)
         .show(ui, |ui| {
             ui.add_space(2.0);
             add_contents(ui);
@@ -580,12 +599,160 @@ impl Draft {
     }
 }
 
-fn skill_section(ui: &mut egui::Ui, _state: &mut AppState) {
-    ui.label(
-        egui::RichText::new("Install the BearCAD skill into the AI tools on this machine.")
-            .size(12.0)
+/// **Agents & Skill** (#1604): install the BearCAD agent skill into the AI tools on this
+/// machine, so an outside agent knows how to drive the app.
+fn skill_section(ui: &mut egui::Ui, state: &mut AppState) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use crate::ai::skill;
+
+        ui.label(
+            egui::RichText::new(
+                "One page that teaches an AI agent to drive BearCAD. Install it where your                  tools look for instructions.",
+            )
+            .size(11.0)
             .weak(),
-    );
+        );
+        ui.add_space(4.0);
+
+        let home = home_dir();
+        // Project targets write into a project; default to the open document's folder,
+        // which is the project the user is most likely thinking of.
+        let mut project = ui.data_mut(|d| {
+            d.get_temp::<std::path::PathBuf>(egui::Id::new("ai_skill_project"))
+        });
+        if project.is_none() {
+            project = state
+                .path
+                .as_deref()
+                .map(std::path::Path::new)
+                .and_then(|p| p.parent())
+                .map(|p| p.to_path_buf());
+        }
+
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Project").size(11.0));
+            let label = project
+                .as_ref()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .unwrap_or_else(|| "none".to_string());
+            ui.label(egui::RichText::new(label).size(11.0).weak());
+            if ui
+                .small_button("Choose…")
+                .on_hover_text("Where project-scoped installs (AGENTS.md, Copilot, Cursor) go")
+                .clicked()
+            {
+                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                    ui.data_mut(|d| {
+                        d.insert_temp(egui::Id::new("ai_skill_project"), dir.clone())
+                    });
+                    project = Some(dir);
+                }
+            }
+        });
+
+        let mut action: Option<Action> = None;
+        ui.add_space(4.0);
+        for target in skill::TARGETS {
+            let dir = matches!(target.scope, skill::Scope::Project)
+                .then(|| project.clone())
+                .flatten();
+            let usable = !matches!(target.scope, skill::Scope::Project) || dir.is_some();
+            let installed = target.installed(home.as_deref(), dir.as_deref());
+            let detected = target.detected(home.as_deref(), dir.as_deref());
+
+            ui.horizontal(|ui| {
+                let mark = if installed {
+                    "✓"
+                } else if detected {
+                    "·"
+                } else {
+                    " "
+                };
+                ui.label(egui::RichText::new(format!("{mark} {}", target.label)).size(12.0));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if installed {
+                        if ui.small_button("Remove").clicked() {
+                            action = Some(Action::UninstallAiSkill {
+                                target: target.id.to_string(),
+                                dir: dir.clone(),
+                            });
+                        }
+                    } else if ui
+                        .add_enabled(usable, egui::Button::new("Install").small())
+                        .on_hover_text(if usable {
+                            target.note
+                        } else {
+                            "Choose a project directory first"
+                        })
+                        .clicked()
+                    {
+                        action = Some(Action::InstallAiSkill {
+                            target: target.id.to_string(),
+                            dir: dir.clone(),
+                        });
+                    }
+                });
+            });
+            ui.label(egui::RichText::new(target.note).size(10.0).weak());
+            ui.add_space(2.0);
+        }
+
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if ui
+                .small_button("Copy skill")
+                .on_hover_text("For a tool that is not listed")
+                .clicked()
+            {
+                ui.ctx().copy_text(skill::SKILL.to_string());
+            }
+            if ui.small_button("Save as…").clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .set_file_name("SKILL.md")
+                    .save_file()
+                {
+                    match std::fs::write(&path, skill::SKILL) {
+                        Ok(()) => state.status = format!("Wrote {}", path.display()),
+                        Err(e) => state.status = format!("Could not write {}: {e}", path.display()),
+                    }
+                }
+            }
+            if ui
+                .small_button("Copy URL")
+                .on_hover_text(skill::SKILL_URL)
+                .clicked()
+            {
+                ui.ctx().copy_text(skill::SKILL_URL.to_string());
+            }
+        });
+        ui.label(
+            egui::RichText::new("Same thing from a terminal: bearcad skill install")
+                .size(10.0)
+                .weak(),
+        );
+
+        if let Some(action) = action {
+            state.apply(action);
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = state;
+        ui.label(
+            egui::RichText::new("Installing the skill needs the desktop app.")
+                .size(12.0)
+                .weak(),
+        );
+    }
+}
+
+/// The user's home directory, where user-scoped installs land.
+#[cfg(not(target_arch = "wasm32"))]
+fn home_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
 }
 
 fn mcp_section(ui: &mut egui::Ui, _state: &mut AppState) {

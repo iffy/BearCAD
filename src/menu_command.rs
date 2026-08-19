@@ -61,6 +61,8 @@ pub enum MenuCommand {
     ShowShortcuts,
     /// Open the Changelog window (Help menu, #1328).
     ShowChangelog,
+    /// Help ▸ Install AI Agent Skill… (#1604): open the AI pane at Agents & Skill.
+    InstallAiSkill,
     /// Open the Settings window (#720): app-level preferences (Cmd/Ctrl+comma).
     ShowSettings,
     /// Toggle help mode (#672): every pane control grows a note saying what it wants.
@@ -116,6 +118,7 @@ impl MenuCommand {
             // Toggles UI-only window state; handled in the app frame loop.
             MenuCommand::ShowShortcuts => None,
             MenuCommand::ShowChangelog => Some(Action::SetChangelogWindow { open: Some(true) }),
+            MenuCommand::InstallAiSkill => Some(Action::ShowAiSkillSection),
             MenuCommand::ShowSettings => None,
             MenuCommand::ToggleHelpMode => Some(Action::SetHelpMode(None)),
             MenuCommand::ToggleToolHints => Some(Action::SetToolHints(None)),

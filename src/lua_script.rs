@@ -4888,6 +4888,67 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Where the agent skill can be installed, and what is installed already (#1604).
+    api.set(
+        "ai_skill_targets",
+        lua.create_function(|lua, dir: Option<String>| {
+            let home = std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map(std::path::PathBuf::from);
+            let project = dir.map(std::path::PathBuf::from);
+            let list = lua.create_table()?;
+            for (index, target) in crate::ai::skill::TARGETS.iter().enumerate() {
+                let project = matches!(target.scope, crate::ai::skill::Scope::Project)
+                    .then(|| project.as_deref())
+                    .flatten();
+                let t = lua.create_table()?;
+                t.set("id", target.id)?;
+                t.set("label", target.label)?;
+                t.set(
+                    "scope",
+                    match target.scope {
+                        crate::ai::skill::Scope::User => "user",
+                        crate::ai::skill::Scope::Project => "project",
+                    },
+                )?;
+                t.set("detected", target.detected(home.as_deref(), project))?;
+                t.set("installed", target.installed(home.as_deref(), project))?;
+                match target.path(home.as_deref(), project) {
+                    Some(path) => t.set("path", path.display().to_string())?,
+                    None => t.set("path", Value::Nil)?,
+                }
+                list.set(index + 1, t)?;
+            }
+            Ok(list)
+        })?,
+    )?;
+
+    api.set(
+        "ai_install_skill",
+        lua.create_function(|lua, spec: Table| {
+            let target: String = spec.get("target")?;
+            let dir: Option<String> = spec.get("dir")?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::InstallAiSkill { target, dir }) }
+        })?,
+    )?;
+
+    api.set(
+        "ai_uninstall_skill",
+        lua.create_function(|lua, spec: Table| {
+            let target: String = spec.get("target")?;
+            let dir: Option<String> = spec.get("dir")?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::UninstallAiSkill { target, dir }) }
+        })?,
+    )?;
+
+    // The skill markdown itself, for a script that wants to write it somewhere of its own.
+    api.set(
+        "ai_skill",
+        lua.create_function(|_lua, ()| Ok(crate::ai::skill::SKILL.to_string()))?,
+    )?;
+
     // Run one block by its 1-based position, matching `bearcad.ai.blocks()`.
     api.set(
         "ai_run_block",
@@ -8273,6 +8334,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             usage = "ai_usage", reset_usage = "ai_reset_usage",
             blocks = "ai_blocks", _run_block = "ai_run_block",
             seed_reply = "ai_seed_reply",
+            skill_targets = "ai_skill_targets", install_skill = "ai_install_skill",
+            uninstall_skill = "ai_uninstall_skill", skill = "ai_skill",
             _request_context = "ai_request_context", _context = "ai_context",
         }
         for name, source in pairs(ai_funcs) do
