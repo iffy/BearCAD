@@ -374,10 +374,12 @@ bearcad.select{ kind = "unit_instance", index = 1 }          -- or by instance n
 bearcad.import_image{ path = "drawing.png" }
 bearcad.import_image{ path = "drawing.png", plane = 1 }
 
--- Scale calibration: mark a feature of known size (plane-local mm at the
--- image's current scale) and declare its real length; the image rescales
--- uniformly about the span's midpoint.
+-- Scale calibration: a selected image already has a top-middle → bottom-middle
+-- line. Drag its endpoints, or set them here, then assign a real length
+-- (any expression). The image rescales about the span midpoint.
 bearcad.calibrate_image{ image = 0, from = { -100, -120 }, to = { 100, -120 }, length = 50 }
+bearcad.calibrate_image{ image = 0, length = "2 * scale" }   -- current line
+local img = bearcad.get{ kind = "image", index = 0 }        -- from/to/length/expression
 ```
 
 STEP export writes real BREP and import reads it back, curved/NURBS surfaces

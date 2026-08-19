@@ -2595,8 +2595,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // #171: calibrate a tracing image's scale from a plane-local reference segment.
-    // Move / delete a calibration reference point (#424).
+    // #171/#1547: calibrate a tracing image's scale from a plane-local reference segment
+    // (or, with `from`/`to` omitted, the current calibration line). `length` is a
+    // ValueInput expression. Move a calibration reference point (#424).
     api.set(
         "calibration_point",
         lua.create_function(|lua, opts: Table| {
@@ -2623,15 +2624,36 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "calibrate_image",
         lua.create_function(|lua, opts: Table| {
+            check_keys(&opts, "calibrate_image", &["image", "from", "to", "length"])?;
             let image: usize = opts.get("image")?;
             let parse_point = |t: Table| -> mlua::Result<(f32, f32)> {
                 Ok((t.get(1)?, t.get(2)?))
             };
-            let a = parse_point(opts.get::<Table>("from")?)?;
-            let b = parse_point(opts.get::<Table>("to")?)?;
-            let length: f32 = opts.get("length")?;
+            let a = match opts.get::<Option<Table>>("from")? {
+                Some(t) => Some(parse_point(t)?),
+                None => None,
+            };
+            let b = match opts.get::<Option<Table>>("to")? {
+                Some(t) => Some(parse_point(t)?),
+                None => None,
+            };
+            if a.is_some() != b.is_some() {
+                return Err(mlua::Error::external(
+                    "calibrate_image: `from` and `to` must both be set, or both omitted",
+                ));
+            }
+            let expression = lua_amount_expr(&opts, "length")?;
+            let length = expression.parse::<f32>().unwrap_or(0.0);
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            unsafe { tick.exec(Instruction::CalibrateImage { image, a, b, length }) }
+            unsafe {
+                tick.exec(Instruction::CalibrateImage {
+                    image,
+                    a,
+                    b,
+                    length,
+                    expression,
+                })
+            }
         })?,
     )?;
 
@@ -3452,10 +3474,48 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     t.set("name", param.name.as_str())?;
                     t.set("expression", param.expression.as_str())?;
                 }
+                "image" | "tracing_image" => {
+                    let Some(img) = doc
+                        .tracing_images
+                        .keys()
+                        .nth(index)
+                        .map(|k| &doc.tracing_images[k])
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("origin_x", img.origin.0)?;
+                    t.set("origin_y", img.origin.1)?;
+                    t.set("width", img.width_mm)?;
+                    t.set("height", img.height_mm)?;
+                    if let Some(name) = &img.name {
+                        t.set("name", name.as_str())?;
+                    }
+                    t.set("source", img.source_name.as_str())?;
+                    if let Some(cal) = &img.calibration {
+                        let from = lua.create_table()?;
+                        if let Some((x, y)) = crate::model::image_calibration_point_uv(img, 0) {
+                            from.set(1, x)?;
+                            from.set(2, y)?;
+                            t.set("from", from)?;
+                        }
+                        let to = lua.create_table()?;
+                        if let Some((x, y)) = crate::model::image_calibration_point_uv(img, 1) {
+                            to.set(1, x)?;
+                            to.set(2, y)?;
+                            t.set("to", to)?;
+                        }
+                        t.set(
+                            "length",
+                            crate::model::image_calibration_span_mm(img).unwrap_or(cal.length_mm),
+                        )?;
+                        t.set("expression", cal.expression.as_str())?;
+                        let _ = cal;
+                    }
+                }
                 other => {
                     return Err(mlua::Error::external(format!(
                         "unknown get kind '{other}' (valid kinds: line, circle, sketch, \
-                         constraint, construction_plane, extrusion, body, parameter)"
+                         constraint, construction_plane, extrusion, body, parameter, image)"
                     )))
                 }
             }
@@ -7598,6 +7658,75 @@ mod tests {
     use super::*;
     use crate::actions::AppState;
     use crate::model::FaceId;
+
+    fn write_test_png(name: &str, w: u32, h: u32) -> String {
+        let dir = std::env::temp_dir().join("bearcad_test_image_calibrate");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        image::RgbaImage::from_pixel(w, h, image::Rgba([255, 0, 0, 255]))
+            .save(&path)
+            .unwrap();
+        path.to_string_lossy().to_string()
+    }
+
+    /// #1547: import seeds a top-middle → bottom-middle calibration line; `get` exposes it;
+    /// `calibrate_image` with an expression rescales while keeping the points on the image;
+    /// `from`/`to` can be omitted to use the current line.
+    #[test]
+    fn lua_image_calibration_is_scriptable() {
+        let path = write_test_png("grid.png", 40, 80);
+        let state = run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.import_image({path:?})
+            assert(bearcad.count("image") == 1)
+            local img = bearcad.get{{ kind = "image", index = 0 }}
+            assert(math.abs(img.width - 40) < 1e-3, "width " .. img.width)
+            assert(math.abs(img.height - 80) < 1e-3, "height " .. img.height)
+            assert(math.abs(img.from[1]) < 1e-3 and math.abs(img.from[2] - 40) < 1e-3,
+              "top middle, got " .. img.from[1] .. "," .. img.from[2])
+            assert(math.abs(img.to[1]) < 1e-3 and math.abs(img.to[2] + 40) < 1e-3,
+              "bottom middle, got " .. img.to[1] .. "," .. img.to[2])
+            assert(math.abs(img.length - 80) < 1e-3, "span " .. img.length)
+
+            bearcad.parameter("add", "scale", "20")
+            bearcad.calibrate_image{{ image = 0, length = "2 * scale" }}
+            img = bearcad.get{{ kind = "image", index = 0 }}
+            assert(math.abs(img.height - 40) < 1e-3, "halved height, got " .. img.height)
+            assert(math.abs(img.width - 20) < 1e-3, "halved width, got " .. img.width)
+            assert(math.abs(img.length - 40) < 1e-3, "span " .. img.length)
+            assert(img.expression == "2 * scale", img.expression)
+            -- Points stay at the same locations on the image (top/bottom middle).
+            assert(math.abs(img.from[1]) < 1e-3 and math.abs(img.from[2] - 20) < 1e-3)
+            assert(math.abs(img.to[1]) < 1e-3 and math.abs(img.to[2] + 20) < 1e-3)
+
+            bearcad.calibration_point{{ image = 0, index = 0, x = 5, y = 10 }}
+            bearcad.calibration_point{{ image = 0, index = 1, x = 5, y = -10 }}
+            img = bearcad.get{{ kind = "image", index = 0 }}
+            assert(math.abs(img.from[1] - 5) < 1e-3 and math.abs(img.from[2] - 10) < 1e-3)
+            -- Dragging does not rescale.
+            assert(math.abs(img.height - 40) < 1e-3)
+
+            local ok, err = pcall(function()
+                bearcad.remove_calibration_point{{ image = 0, index = 0 }}
+            end)
+            assert(not ok, "points cannot be removed")
+            assert(tostring(err):find("cannot be removed") or tostring(err):find("Calibration"),
+              tostring(err))
+
+            bearcad.select{{ kind = "image", index = 0 }}
+            bearcad.edit_dim("length")
+            bearcad.set_dim("length", "10")
+            bearcad.commit_dim()
+            img = bearcad.get{{ kind = "image", index = 0 }}
+            assert(math.abs(img.length - 10) < 1e-3, "dim edit span " .. img.length)
+            assert(img.expression == "10", img.expression)
+            "#
+        ));
+        let img = state.doc.tracing_images.values().next().unwrap();
+        let span = crate::model::image_calibration_span_mm(img).unwrap();
+        assert!((span - 10.0).abs() < 1e-3);
+    }
 
     /// #1055: a script names an arena-backed element by its **ordinal** among the live ones,
     /// not by its slot. Deleting the first image used to renumber the rest; now the key moves

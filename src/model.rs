@@ -1062,6 +1062,45 @@ pub fn image_calibration_point_uv(img: &TracingImage, index: usize) -> Option<(f
     }
 }
 
+/// Default calibration on a fresh import: a vertical span from the image's top-middle
+/// to its bottom-middle, measuring the image height.
+pub fn default_image_calibration(height_mm: f32) -> ImageCalibration {
+    ImageCalibration {
+        u0: 0.5,
+        v0: 1.0,
+        u1: 0.5,
+        v1: 0.0,
+        length_mm: height_mm.max(1e-6),
+        expression: String::new(),
+    }
+}
+
+/// Seed the default top-middle → bottom-middle span when the image has none.
+pub fn ensure_image_calibration(img: &mut TracingImage) {
+    if img.calibration.is_none() {
+        img.calibration = Some(default_image_calibration(img.height_mm));
+    }
+}
+
+/// World-space length of the calibration span, in millimetres.
+pub fn image_calibration_span_mm(img: &TracingImage) -> Option<f32> {
+    let (a, b) = image_calibration_endpoints(img)?;
+    Some(((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt())
+}
+
+/// The two calibration endpoints in host-plane-local mm. Falls back to top-middle →
+/// bottom-middle when the image has no stored calibration yet.
+pub fn image_calibration_endpoints(img: &TracingImage) -> Option<((f32, f32), (f32, f32))> {
+    match (image_calibration_point_uv(img, 0), image_calibration_point_uv(img, 1)) {
+        (Some(a), Some(b)) => Some((a, b)),
+        _ => {
+            let (ox, oy) = img.origin;
+            let (w, h) = (img.width_mm, img.height_mm);
+            Some(((ox + w * 0.5, oy + h), (ox + w * 0.5, oy)))
+        }
+    }
+}
+
 /// A line-like sketch entity for parallel, perpendicular, and orientation constraints.
 ///
 /// Not `Copy` — see [`ConstraintPoint`]'s doc comment.
@@ -4402,13 +4441,17 @@ pub struct TracingImage {
 }
 
 /// A tracing image's scale calibration (#171).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ImageCalibration {
     pub u0: f32,
     pub v0: f32,
     pub u1: f32,
     pub v1: f32,
     pub length_mm: f32,
+    /// Length expression last typed into the dimension ValueInput. Empty until the user
+    /// (or a script) assigns a length — the label then shows the measured span.
+    #[serde(default)]
+    pub expression: String,
 }
 
 /// Serde codec storing [`TracingImage::bytes`] as base64 (JSON documents would otherwise

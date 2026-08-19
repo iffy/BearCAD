@@ -6798,13 +6798,7 @@ impl App {
 
             let delete_pressed = ctx.input(|i| i.key_pressed(egui::Key::Delete))
                 || ctx.input(|i| i.key_pressed(egui::Key::Backspace));
-            if delete_pressed && self.selected_calibration_point.is_some() {
-                // #424: a selected calibration point deletes; the calibration re-opens with
-                // the other point so a click re-places this one.
-                if let Some((image, index)) = self.selected_calibration_point.take() {
-                    self.state.apply(Action::RemoveCalibrationPoint { image, index });
-                }
-            } else if delete_pressed && self.selected_bezier_handle.is_some() {
+            if delete_pressed && self.selected_bezier_handle.is_some() {
                 // #75: deleting a selected bezier handle straightens its line — there's no
                 // independent per-handle state to remove (a curve is either both handles or
                 // neither, see `Line::bezier`).
@@ -15047,57 +15041,16 @@ impl App {
             // line (on the image's host plane) are selected — the line is the
             // reference segment drawn over a known image feature.
             calibrate_image: {
-                // Guided flow (#163): both reference points placed — the length field.
-                let guided = self.state.creating_calibration.as_ref().and_then(|cal| {
-                    (cal.points.len() == 2).then(|| context::CalibrateImageControl {
-                        image: cal.image,
-                        a: cal.points[0],
-                        b: cal.points[1],
+                // Select tool + only an image: the calibration line is live; the pane
+                // length field edits the same span as the viewport dimension.
+                (self.state.tool == Tool::Select)
+                    .then(|| self.single_selected_tracing_image())
+                    .flatten()
+                    .and_then(|i| {
+                        let img = self.state.doc.tracing_images.get(i)?;
+                        let (a, b) = model::image_calibration_endpoints(img)?;
+                        Some(context::CalibrateImageControl { image: i, a, b })
                     })
-                });
-                // Legacy selection flow (#171): exactly one image + one line on the
-                // image's host plane selected.
-                let mut image = None;
-                let mut line = None;
-                let mut extras = false;
-                for element in self.state.scene_selection.iter() {
-                    match element {
-                        SceneElement::Image(i) if image.is_none() => image = Some(i),
-                        SceneElement::Line(li) if line.is_none() => line = Some(li),
-                        _ => extras = true,
-                    }
-                }
-                // A selected calibrated image re-opens its length for editing (#424):
-                // the stored marker span is the reference segment.
-                let recalibrate = self.single_selected_tracing_image().and_then(|i| {
-                    let img = self.state.doc.tracing_images.get(i)?;
-                    let cal = img.calibration.as_ref()?;
-                    let (ox, oy) = img.origin;
-                    let (w, h) = (img.width_mm.max(1e-6), img.height_mm.max(1e-6));
-                    Some(context::CalibrateImageControl {
-                        image: i,
-                        a: (ox + cal.u0 * w, oy + cal.v0 * h),
-                        b: (ox + cal.u1 * w, oy + cal.v1 * h),
-                    })
-                });
-                guided.or(recalibrate).or(match (image, line, extras) {
-                    (Some(image), Some(li), false) => self
-                        .state
-                        .doc
-                        .tracing_images
-                        .get(image)
-                        .zip(self.state.doc.lines.get(li))
-                        .filter(|(img, line)| {
-                            self.state.doc.sketch_face(line.sketch)
-                                == Some(model::FaceId::ConstructionPlane(img.plane))
-                        })
-                        .map(|(_, line)| context::CalibrateImageControl {
-                            image,
-                            a: (line.x0, line.y0),
-                            b: (line.x1, line.y1),
-                        }),
-                    _ => None,
-                })
             },
             // "Calibrate scale" button (#163): one tracing image selected, nothing
             // else, no calibration already running.
@@ -15772,22 +15725,8 @@ impl App {
                     cut_bodies: cr.map(|c| c.cut_bodies.clone()).unwrap_or_default(),
                 }
             }),
-            calibrate_start: (self.state.creating_calibration.is_none()).then(|| {
-                let mut only_image = None;
-                for element in self.state.scene_selection.iter() {
-                    match (element, only_image) {
-                        (SceneElement::Image(i), None) => only_image = Some(i),
-                        _ => return None,
-                    }
-                }
-                only_image.filter(|&i| self.state.doc.tracing_images.contains(i))
-            }).flatten(),
-            calibrate_pending: self
-                .state
-                .creating_calibration
-                .as_ref()
-                .filter(|cal| cal.points.len() < 2)
-                .map(|cal| cal.points.len()),
+            calibrate_start: None,
+            calibrate_pending: None,
             // Dimension tool in 3D (#618): the derived-parameter name/value/commit block.
             dimension_derive: (self.state.tool == Tool::Dimension
                 && self.state.sketch_session.is_none()
@@ -17096,6 +17035,7 @@ impl App {
                             a: control.a,
                             b: control.b,
                             length,
+                            expression: text,
                         });
                     }
                     _ => {
@@ -22216,6 +22156,68 @@ fn draw_placing_length_preview(
         color,
         Some((&world_geom, label_view, project)),
     );
+}
+
+fn image_calibration_label_text(doc: &model::Document, img: &model::TracingImage) -> String {
+    let span = model::image_calibration_span_mm(img).unwrap_or(0.0);
+    if let Some(cal) = &img.calibration {
+        if !cal.expression.trim().is_empty() && (span - cal.length_mm).abs() < 1e-3 {
+            return cal.expression.clone();
+        }
+    }
+    crate::value::format_length_display_in(span, doc.default_length_unit)
+}
+
+fn image_calibration_dim_geom(
+    painter: &egui::Painter,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    frame: &face::SketchFrame,
+    cam: &camera::Camera,
+    a: (f32, f32),
+    b: (f32, f32),
+    label: &str,
+) -> Option<(
+    dimensions::LinearDimensionGeom,
+    dimensions::LinearDimensionWorldGeom,
+    PlanarLabelView,
+    egui::Rect,
+)> {
+    let pa = local_to_world(frame, a.0, a.1);
+    let pb = local_to_world(frame, b.0, b.1);
+    let mid_u = (a.0 + b.0) * 0.5;
+    let mid_v = (a.1 + b.1) * 0.5;
+    let outward_uv = outward_perpendicular_uv(a.0, a.1, b.0, b.1, mid_u - 1.0, mid_v - 1.0);
+    let outward_world = uv_dir_to_world(frame.u_axis, frame.v_axis, outward_uv.0, outward_uv.1);
+    if outward_world.length_squared() < 1e-8 {
+        return None;
+    }
+    let anchor = pa.lerp(pb, 0.5);
+    let pixel_offset = effective_dim_offset(None);
+    let offset_world = pixels_to_world_distance(&project, anchor, outward_world, pixel_offset);
+    let overshoot_world =
+        pixels_to_world_distance(&project, anchor, outward_world, EXTENSION_OVERSHOOT);
+    let label_outset_world =
+        pixels_to_world_distance(&project, anchor, outward_world, LABEL_OUTSET);
+    let world_geom = linear_dimension_world_geom(
+        pa,
+        pb,
+        outward_world,
+        offset_world,
+        overshoot_world,
+        label_outset_world,
+    );
+    let geom = project_linear_dimension_geom(&world_geom, &project)?;
+    let label_view = PlanarLabelView::from_camera_and_plane(cam, frame.normal);
+    let color = col::DIM_ANNOTATION;
+    let label_rect = planar_dimension_label_layout(
+        painter,
+        &world_geom,
+        &label_view,
+        label,
+        color,
+        &project,
+    );
+    Some((geom, world_geom, label_view, label_rect))
 }
 
 fn committed_dim_layout(
@@ -27393,30 +27395,35 @@ impl App {
         let additive_modifiers_held = ui.input(|i| additive_click_modifiers(&i.modifiers));
         // A click that *starts* placement must not also drop the label in the same frame.
         let placing_at_frame_start = self.state.placing_dimension.is_some();
-        // Image calibration markers (#163/#424): while placing reference points (guided
-        // flow) or with a calibrated image selected, the reference points and their span
-        // draw on the image's host plane; points drag to move, click to select (Delete
-        // removes), and during placement a dot under the cursor previews the click.
-        let calibration_target: Option<(model::TracingImageKey, Vec<(f32, f32)>, bool)> =
-            if let Some(cal) = self.state.creating_calibration.clone() {
-                Some((cal.image, cal.points, true))
-            } else {
-                self.single_selected_tracing_image().and_then(|i| {
+        // Image calibration (#1547): Select tool + only an image selected enters
+        // calibration mode — a line with endpoints and a dimension that cannot be removed.
+        if self.state.tool == Tool::Select {
+            if let Some(i) = self.single_selected_tracing_image() {
+                if let Some(img) = self.state.doc.tracing_images.get_mut(i) {
+                    crate::model::ensure_image_calibration(img);
+                }
+            }
+        }
+        let editing_calibration = matches!(
+            self.state.editing_committed_dim.as_ref().map(|e| &e.target),
+            Some(DimEditTarget::ImageCalibration(_))
+        );
+        let calibration_target: Option<(model::TracingImageKey, [(f32, f32); 2])> =
+            (self.state.tool == Tool::Select)
+                .then(|| self.single_selected_tracing_image())
+                .flatten()
+                .and_then(|i| {
                     let img = self.state.doc.tracing_images.get(i)?;
-                    let cal = img.calibration.as_ref()?;
-                    let (ox, oy) = img.origin;
-                    let (w, h) = (img.width_mm.max(1e-6), img.height_mm.max(1e-6));
                     Some((
                         i,
-                        vec![
-                            (ox + cal.u0 * w, oy + cal.v0 * h),
-                            (ox + cal.u1 * w, oy + cal.v1 * h),
+                        [
+                            model::image_calibration_point_uv(img, 0)?,
+                            model::image_calibration_point_uv(img, 1)?,
                         ],
-                        false,
                     ))
-                })
-            };
-        if let Some((image, points, placing)) = calibration_target {
+                });
+        let mut calibration_dim_rect: Option<(model::TracingImageKey, egui::Rect)> = None;
+        if let Some((image, points)) = calibration_target {
             let frame = self
                 .state
                 .doc
@@ -27445,13 +27452,43 @@ impl App {
                 let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
                 let primary_down = ui.input(|i| i.pointer.primary_down());
                 let primary_released = ui.input(|i| i.pointer.primary_released());
+                let double_clicked =
+                    ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary));
 
                 if primary_released {
                     self.calibration_point_drag = None;
                 }
+                let img = &self.state.doc.tracing_images[image];
+                let label = image_calibration_label_text(&self.state.doc, img);
+                if let Some((geom, world_geom, label_view, label_rect)) = image_calibration_dim_geom(
+                    &painter,
+                    &project,
+                    &frame,
+                    &cam,
+                    points[0],
+                    points[1],
+                    &label,
+                ) {
+                    calibration_dim_rect = Some((image, label_rect));
+                    if double_clicked
+                        && pointer_screen.is_some_and(|pp| label_rect.contains(pp))
+                        && !editing_calibration
+                    {
+                        self.calibration_point_drag = None;
+                        self.state
+                            .apply(Action::BeginEditImageCalibration { image });
+                    }
+                    let dim_label = if editing_calibration { "" } else { label.as_str() };
+                    draw_linear_dimension(
+                        &painter,
+                        &geom,
+                        dim_label,
+                        col::DIM_ANNOTATION,
+                        Some((&world_geom, &label_view, &project)),
+                    );
+                }
                 if let Some((di, idx)) = self.calibration_point_drag {
-                    // Dragging a marker point follows the cursor on the plane (#424).
-                    if di == image && primary_down {
+                    if di == image && primary_down && !editing_calibration {
                         if let Some((x, y)) = pointer_screen.and_then(&local) {
                             let _ = self.state.apply(Action::SetCalibrationPoint {
                                 image,
@@ -27460,33 +27497,23 @@ impl App {
                                 y,
                             });
                         }
-                    } else {
+                    } else if !primary_down {
                         self.calibration_point_drag = None;
                     }
-                } else if primary_pressed {
+                } else if primary_pressed && !double_clicked && !editing_calibration {
                     if let Some(pp) = pointer_screen {
+                        let over_label = calibration_dim_rect
+                            .as_ref()
+                            .is_some_and(|(_, r)| r.contains(pp));
                         if let Some(idx) = point_under(pp) {
-                            // Grab an existing point: select it and start dragging.
                             self.selected_calibration_point = Some((image, idx));
                             self.calibration_point_drag = Some((image, idx));
-                        } else if placing && points.len() < 2 {
-                            if let Some((x, y)) = local(pp) {
-                                self.state.apply(Action::AddCalibrationPoint { x, y });
-                            }
-                        } else {
+                        } else if !over_label {
                             self.selected_calibration_point = None;
                         }
                     }
                 }
 
-                // Draw with post-click state so a just-placed point shows immediately.
-                let points = self
-                    .state
-                    .creating_calibration
-                    .as_ref()
-                    .filter(|c| c.image == image)
-                    .map(|c| c.points.clone())
-                    .unwrap_or(points);
                 for (i, &pt) in points.iter().enumerate() {
                     if let Some(sp) = project(world(pt)) {
                         let selected = self.selected_calibration_point == Some((image, i));
@@ -27495,44 +27522,24 @@ impl App {
                         painter.circle_stroke(sp, 6.0, egui::Stroke::new(1.5, color));
                     }
                 }
-                match points.as_slice() {
-                    [a, b] => draw_world_segment(&painter, &project, world(*a), world(*b), col::PREVIEW, 2.0),
-                    [a] => {
-                        if let Some(cursor) = pointer_screen.and_then(&local) {
-                            draw_world_segment_dashed(
-                                &painter,
-                                &project,
-                                world(*a),
-                                world(cursor),
-                                col::PREVIEW,
-                                1.5,
-                            );
-                        }
-                    }
-                    _ => {}
-                }
-                // Placement preview (#424): a dot under the cursor where a click would land.
-                if placing && points.len() < 2 && self.calibration_point_drag.is_none() {
-                    if let Some(sp) = pointer_screen
-                        .and_then(|pp| local(pp))
-                        .and_then(|p| project(world(p)))
-                    {
-                        painter.circle_stroke(sp, 4.0, egui::Stroke::new(1.5, col::PREVIEW));
-                        painter.circle_filled(sp, 1.5, col::PREVIEW);
-                    }
-                }
             }
         } else {
             self.selected_calibration_point = None;
             self.calibration_point_drag = None;
         }
+        let over_calibration_dim = calibration_dim_rect
+            .as_ref()
+            .zip(pointer_screen)
+            .is_some_and(|((_, r), pp)| r.contains(pp))
+            || self.calibration_point_drag.is_some();
 
         // Select/Constraint drag geometry; Dimension only needs the same pick→select path
         // so edges can accumulate for length/angle (#486/#487) — never start a drag.
         if matches!(
             self.state.tool,
             Tool::Select | Tool::Constraint | Tool::Dimension
-        ) && self.state.creating_calibration.is_none()
+        ) && self.calibration_point_drag.is_none()
+            && !over_calibration_dim
             // Typing a value normally owns the pointer, but Shift+click has to keep working
             // so a second edge can join what's being dimensioned (#780).
             && (self.state.editing_committed_dim.is_none()
@@ -28109,6 +28116,8 @@ impl App {
             && (self.state.placing_dimension.is_none()
                 || (self.state.tool == Tool::Dimension && additive_modifiers_held))
             && !over_committed_dim_label
+            && !over_calibration_dim
+            && self.calibration_point_drag.is_none()
             && self.dim_label_drag.is_none()
             && self.angle_gizmo_drag.is_none()
             && !vertex_dragging
@@ -29359,7 +29368,7 @@ impl App {
         let editing_constraint = self.state.editing_committed_dim.as_ref().and_then(|edit| {
             match &edit.target {
                 DimEditTarget::Constraint(id) => Some(*id),
-                DimEditTarget::New(_) => None,
+                DimEditTarget::New(_) | DimEditTarget::ImageCalibration(_) => None,
             }
         });
         let gpu_dim_labels = if self.gpu_viewport {
@@ -31128,7 +31137,7 @@ impl App {
                     let is_angle = edit.target.is_angle(&self.state.doc);
                     let constraint_id = match &edit.target {
                         DimEditTarget::Constraint(id) => Some(*id),
-                        DimEditTarget::New(_) => None,
+                        DimEditTarget::New(_) | DimEditTarget::ImageCalibration(_) => None,
                     };
                     // #503: angle ValueInput sits on the bisector, farther from the vertex
                     // than the arc (same placement for new and existing constraints).
@@ -31355,7 +31364,100 @@ impl App {
             }
         } else {
             self.dim_label_drag = None;
-            self.state.editing_committed_dim = None;
+            if !matches!(
+                self.state.editing_committed_dim.as_ref().map(|e| &e.target),
+                Some(DimEditTarget::ImageCalibration(_))
+            ) {
+                self.state.editing_committed_dim = None;
+            }
+        }
+        let mut commit_calibration_dim = false;
+        if let Some(edit) = self.state.editing_committed_dim.as_mut() {
+            if matches!(edit.target, DimEditTarget::ImageCalibration(_)) {
+                let text = edit.text.clone();
+                let input_layout = calibration_dim_rect
+                    .as_ref()
+                    .map(|(_, rect)| dim_input_layout_centered_on(*rect, &text))
+                    .unwrap_or_else(|| {
+                        dim_input_layout_centered_on(
+                            egui::Rect::from_center_size(
+                                viewport.center(),
+                                dim_input_size_for_text(&text),
+                            ),
+                            &text,
+                        )
+                    });
+                let ctx = ui.ctx();
+                let id = egui::Id::new("image_calibration_dim_value");
+                let field_focused = ctx.memory(|m| m.has_focus(id));
+                let other_wants_kb = ctx.egui_wants_keyboard_input() && !field_focused;
+                if should_grab_unfocused_tool_typing(field_focused, other_wants_kb) {
+                    let typed: String = ctx.input(|i| {
+                        i.events
+                            .iter()
+                            .filter_map(|e| match e {
+                                egui::Event::Text(t) => Some(t.as_str()),
+                                _ => None,
+                            })
+                            .collect()
+                    });
+                    let typed: String = typed
+                        .chars()
+                        .filter(|c| c.is_ascii_alphanumeric() || "._-+*/()= ".contains(*c))
+                        .collect();
+                    if !typed.is_empty() {
+                        if edit.user_edited {
+                            edit.text.push_str(&typed);
+                        } else {
+                            edit.text = typed;
+                        }
+                        edit.user_edited = true;
+                        edit.pending_focus = true;
+                    }
+                }
+                let mut want_focus = should_request_pending_tool_focus(
+                    edit.pending_focus,
+                    ctx.memory(|m| m.focused().is_some_and(|f| f != id)),
+                );
+                let mut commit_dim = false;
+                let mut dim_field_result = SketchDimFieldResult::default();
+                let user_edited = edit.user_edited;
+                let doc = &mut self.state.doc;
+                egui::Area::new(egui::Id::new("image_calibration_dim_area"))
+                    .fixed_pos(input_layout.pos)
+                    .order(egui::Order::Foreground)
+                    .show(ctx, |ui| {
+                        dim_field_result = show_sketch_dimension_field(
+                            ui,
+                            ctx,
+                            id,
+                            &mut edit.text,
+                            doc,
+                            None,
+                            true,
+                            &mut want_focus,
+                            user_edited,
+                            false,
+                        );
+                        commit_dim = dim_field_result.enter_commit;
+                    });
+                if dim_field_result.changed {
+                    edit.user_edited = true;
+                }
+                edit.pending_focus = want_focus;
+                inline_parameter_field_results.push(dim_field_result);
+                if edit.pending_focus {
+                    ctx.memory_mut(|m| m.request_focus(id));
+                }
+                let enter = sketch_dimension_enter_pressed(ui);
+                if commit_dim || enter {
+                    consume_sketch_dimension_enter(ui);
+                    commit_calibration_dim = true;
+                }
+            }
+        }
+        if commit_calibration_dim {
+            self.state.apply(Action::CommitCommittedDim);
         }
         if let (Some(cr), Some(session)) =
             (&self.state.creating_rect, self.state.sketch_session)

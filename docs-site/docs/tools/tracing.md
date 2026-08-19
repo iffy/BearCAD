@@ -22,20 +22,13 @@ on top.
 
 ## Setting the scale
 
-Find a feature whose real size you know — a scale bar, a ruler, a printed dimension:
+Select the image with the Select tool. A line appears from the top-middle of the image
+to the bottom-middle, with a dimension that cannot be removed.
 
-1. Select the image and click **Calibrate scale**.
-2. Click two points at either end of the known feature — a dot under the cursor previews
-   each click, and a line connects the points (**Esc** cancels).
-3. The length field pre-fills with the span's current measured length; type the real
-   length, **Enter**.
-
-The image rescales so the span measures exactly that length.
-
-The marker line stays visible whenever the image is selected, and its length stays
-editable in the context pane. **Drag** either point to move it (the field re-syncs to the
-measured span — apply the real length again to rescale), or **click** a point and press
-**Delete** to remove it, then click to re-place it.
+Drag the endpoints onto a feature whose real size you know. Double-click the dimension
+(or type the length in the context pane) and enter the real length — any expression.
+The image rescales so those two points stay on the same spots of the image and the
+line measures that length.
 
 <a
   href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/tracing.bearcad.json"))}

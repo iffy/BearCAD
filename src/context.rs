@@ -3674,10 +3674,18 @@ pub fn sync_calibrate_draft(
         return;
     }
     let span = ((control.b.0 - control.a.0).powi(2) + (control.b.1 - control.a.1).powi(2)).sqrt();
-    state.calibrate_length_draft = crate::value::format_length_display_in(
-        span,
-        doc.default_length_unit,
-    );
+    state.calibrate_length_draft = doc
+        .tracing_images
+        .get(control.image)
+        .and_then(|img| img.calibration.as_ref())
+        .and_then(|cal| {
+            let keep_expr = !cal.expression.trim().is_empty()
+                && (span - cal.length_mm).abs() < 1e-3;
+            keep_expr.then(|| cal.expression.clone())
+        })
+        .unwrap_or_else(|| {
+            crate::value::format_length_display_in(span, doc.default_length_unit)
+        });
     state.calibrate_synced = Some(key);
 }
 
@@ -4300,12 +4308,12 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         ),
 
         (_, "Calibrate scale") => Some(
-            "Sets the image's real-world size: click two points over a feature of known \
-             size, then type its length.",
+            "Selecting the image shows a line with a dimension. Drag the endpoints onto a \
+             known feature, then type its real length.",
         ),
         (_, "Real length") => Some(
-            "How long the marked span really is. Apply rescales the whole image so \
-             that span measures this.",
+            "How long the marked span really is. Apply (or edit the dimension on the line) \
+             rescales the image so that span measures this.",
         ),
         (Some(Tool::Text), "Text") => Some(
             "What the text says. {curly braces} interpolate an expression — {w * 2} — \
@@ -4582,8 +4590,7 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             Some("Whether drawing snaps to nearby geometry — vertices, midpoints, and axes.")
         }
         "Points" => Some(
-            "How many of the two calibration points are placed. Click the image over a \
-             feature of known size, once at each end.",
+            "The calibration line's two endpoints. Drag them onto a feature of known size.",
         ),
         "Link" => Some(
             "Whether this part follows its source file: Dynamic picks up the file's \
@@ -5195,7 +5202,7 @@ pub fn show_pane(
     on_shell_edit_start: &mut impl FnMut(crate::model::ShellOpKey),
     on_revolve_edit_start: &mut impl FnMut(crate::model::RevolutionKey),
     on_sweep_edit_start: &mut impl FnMut(crate::model::SweepKey),
-    on_calibrate_start: &mut impl FnMut(crate::model::TracingImageKey),
+    _on_calibrate_start: &mut impl FnMut(crate::model::TracingImageKey),
     on_calibrate_image: &mut impl FnMut(CalibrateImageControl, String),
     on_dimension_derive_edit: &mut impl FnMut(DimensionDeriveEdit),
     on_dimension_edit: &mut impl FnMut(DimensionEditEdit),
@@ -8266,27 +8273,6 @@ pub fn show_pane(
         if ui.button("Edit sweep").clicked() {
             on_sweep_edit_start(op);
         }
-    }
-
-    if let Some(image) = content.calibrate_start {
-        any_control = true;
-        ui.separator();
-        let resp = ui.button("Calibrate scale");
-        note_help(ui, "Calibrate scale", resp.rect);
-        if resp.clicked() {
-            on_calibrate_start(image);
-        }
-    }
-
-    if let Some(placed) = content.calibrate_pending {
-        any_control = true;
-        ui.separator();
-        section_label(ui, "Calibrate scale");
-        // A value, not prose (#662): how the two-point placement is going. What the
-        // points mean lives in help mode.
-        labeled_row(ui, "Points", |ui| {
-            ui.label(format!("{placed} / 2"));
-        });
     }
 
     if let Some(control) = content.calibrate_image {

@@ -804,17 +804,6 @@ impl CreatingVertexTreatment {
 /// [`CreatingVertexTreatment`] — kept as a parallel, separate state rather than folded into it,
 /// since resolving the target/geometry is entirely different (an extrusion's own analytic
 /// side/cap edge, via `ExtrusionEdgeRef`, not a sketch vertex).
-/// State for an in-progress image scale calibration (#163/#171): after "Calibrate
-/// scale" is clicked with a tracing image selected, the user places two reference points
-/// on the image (plane-local mm) over a feature of known size, then types that real
-/// length in the context pane to rescale the image.
-#[derive(Clone, Debug)]
-pub struct CreatingCalibration {
-    pub image: crate::model::TracingImageKey,
-    /// Placed reference points in host-plane-local mm (0..=2).
-    pub points: Vec<(f32, f32)>,
-}
-
 /// Where a committed revolve lands (#revolve): its own body, fused into whatever bodies
 /// it touches (resolved at commit), or cut from an explicitly picked body set.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -2388,12 +2377,14 @@ pub enum Action {
     ImportImage { path: String, plane: Option<crate::model::ConstructionPlaneKey> },
     /// Calibrate a tracing image's scale (#171): the plane-local segment `a`-`b` (drawn over
     /// a known feature) is assigned the real `length`; the image rescales uniformly about
-    /// the segment midpoint so that span measures `length`.
+    /// the segment midpoint so that span measures `length`. `expression` is the ValueInput
+    /// text that produced `length` (any length expression); empty stores a formatted number.
     CalibrateImage {
         image: crate::model::TracingImageKey,
         a: (f32, f32),
         b: (f32, f32),
         length: f32,
+        expression: String,
     },
     /// Move one calibration reference point (#424): during the guided flow it moves the
     /// in-progress point; on a calibrated image it moves the stored marker (no rescale —
@@ -2408,11 +2399,10 @@ pub enum Action {
     /// calibrated image the calibration re-opens with only the other point, so the next
     /// click re-places the deleted one.
     RemoveCalibrationPoint { image: crate::model::TracingImageKey, index: usize },
-    /// Start the guided image calibration (#163): the user will click two points on the
-    /// image over a feature of known size, then type its real length.
+    /// Ensure the image has the default calibration line (#1547).
     BeginImageCalibration { image: crate::model::TracingImageKey },
-    /// Place one calibration reference point (host-plane-local mm).
-    AddCalibrationPoint { x: f32, y: f32 },
+    /// Open the calibration dimension ValueInput for an image (#1547).
+    BeginEditImageCalibration { image: crate::model::TracingImageKey },
     /// Import a STEP file's `FACETED_BREP` geometry (#71) as a new body.
     ImportStep { path: String },
     /// Import another BearCAD document as a unit (#721): embed one copy of it (reused if
@@ -3843,11 +3833,14 @@ pub fn dim_label_axis_for_target(doc: &Document, target: DimLabelTarget) -> Opti
 pub enum DimEditTarget {
     Constraint(ConstraintId),
     New(DimensionTarget),
+    /// The calibration dimension on a tracing image (#1547): editing it rescales the image.
+    ImageCalibration(crate::model::TracingImageKey),
 }
 
 impl DimEditTarget {
     pub fn dimension_target(&self, doc: &Document) -> Option<DimensionTarget> {
         match self {
+            DimEditTarget::ImageCalibration(_) => None,
             DimEditTarget::New(target) => Some(target.clone()),
             DimEditTarget::Constraint(id) => doc.constraints.get(*id).and_then(|c| match &c.kind {
                 crate::model::ConstraintKind::Distance { target } => {
@@ -3893,7 +3886,7 @@ pub fn angle_gizmo_constraint_for_edit(
     }
     match edit.target {
         DimEditTarget::Constraint(id) => Some(id),
-        DimEditTarget::New(_) => None,
+        DimEditTarget::New(_) | DimEditTarget::ImageCalibration(_) => None,
     }
 }
 
@@ -3942,6 +3935,9 @@ fn apply_committed_dim_expression(
         DimEditTarget::Constraint(id) => set_constraint_expression(doc, id, expression.to_string()),
         DimEditTarget::New(dimension_target) => {
             apply_dimension_expression(doc, sketch, dimension_target, expression)
+        }
+        DimEditTarget::ImageCalibration(_) => {
+            Err("Image calibration is committed through CalibrateImage".to_string())
         }
     }
 }
@@ -4272,9 +4268,6 @@ pub struct AppState {
     /// The drawing element the Select-tool element picker is hovering (#328), highlighted on the
     /// page. UI state (never persisted).
     pub hovered_drawing_element: Option<crate::context::DrawingElementRef>,
-    /// In-progress image scale calibration (#163/#171): Some while the user is placing
-    /// the two reference points / typing the real length.
-    pub creating_calibration: Option<CreatingCalibration>,
     /// Viewport width/height, refreshed each frame by the UI — camera framing (ZoomToFit)
     /// needs it to fit the horizontal field of view.
     pub viewport_aspect: f32,
@@ -4518,7 +4511,6 @@ impl Default for AppState {
             editing_drawing: None,
             selected_drawing_elements: Vec::new(),
             hovered_drawing_element: None,
-            creating_calibration: None,
             viewport_aspect: 16.0 / 9.0,
             viewport_height: 600.0,
             compact_layout: false,
@@ -5987,7 +5979,7 @@ impl AppState {
             width_mm: dims.0,
             height_mm: dims.1,
             name: None,
-            calibration: None,
+            calibration: Some(crate::model::default_image_calibration(dims.1)),
             base_origin: None,
         });
         self.doc.shape_order.push(crate::model::ShapeKind::Image);
@@ -8689,6 +8681,58 @@ pub enum ActionResult {
 }
 
 impl AppState {
+    /// Commit a calibration-dimension edit: evaluate the ValueInput expression and rescale
+    /// the image so the two points stay at the same locations on the image.
+    fn commit_image_calibration_dim(
+        &mut self,
+        image: crate::model::TracingImageKey,
+        mut text: String,
+    ) -> ActionResult {
+        if let Err(e) = try_commit_inline_parameter_definition(&mut self.doc, &mut text) {
+            self.editing_committed_dim = Some(EditingCommittedDim {
+                target: DimEditTarget::ImageCalibration(image),
+                text,
+                pending_focus: true,
+                user_edited: true,
+                dim_offset: None,
+            });
+            self.status = e.clone();
+            return ActionResult::Err(e);
+        }
+        let length = match crate::value::eval_parameter_in_doc(&text, &self.doc) {
+            Some(crate::value::EvaluatedParameter::LengthMm(v)) if v > 0.0 => v,
+            _ => {
+                self.editing_committed_dim = Some(EditingCommittedDim {
+                    target: DimEditTarget::ImageCalibration(image),
+                    text: text.clone(),
+                    pending_focus: true,
+                    user_edited: true,
+                    dim_offset: None,
+                });
+                self.status = format!("Not a usable length: {text}");
+                return ActionResult::Err(self.status.clone());
+            }
+        };
+        let Some(img) = self.doc.tracing_images.get_mut(image) else {
+            return ActionResult::Err(format!("Image {image:?} not found"));
+        };
+        crate::model::ensure_image_calibration(img);
+        let img = &self.doc.tracing_images[image];
+        let Some(a) = crate::model::image_calibration_point_uv(img, 0) else {
+            return ActionResult::Err("Image has no calibration points".to_string());
+        };
+        let Some(b) = crate::model::image_calibration_point_uv(img, 1) else {
+            return ActionResult::Err("Image has no calibration points".to_string());
+        };
+        self.apply(Action::CalibrateImage {
+            image,
+            a,
+            b,
+            length,
+            expression: text,
+        })
+    }
+
     /// Whether committed sketch dimensions can be edited or repositioned.
     pub fn can_edit_sketch_dimensions(&self) -> bool {
         self.sketch_session.is_some()
@@ -8766,7 +8810,8 @@ impl AppState {
             (None, DimEditTarget::Constraint(id)) => {
                 committed_dim_expression(&self.doc, *id).unwrap_or_default()
             }
-            (None, DimEditTarget::New(_)) => String::new(),
+            (None, DimEditTarget::New(_) | DimEditTarget::ImageCalibration(_)) => String::new(),
+            (_, DimEditTarget::ImageCalibration(_)) => String::new(),
         };
         let kind_label = match target {
             DimensionTarget::Distance(_) => "length",
@@ -9606,7 +9651,7 @@ impl AppState {
                     }
                 }
             }
-            Action::CalibrateImage { image, a, b, length } => {
+            Action::CalibrateImage { image, a, b, length, expression } => {
                 let Some(img) = self.doc.tracing_images.get(image) else {
                     return ActionResult::Err(format!("Image {image:?} not found"));
                 };
@@ -9619,14 +9664,24 @@ impl AppState {
                 }
                 let factor = length / span;
                 // Reference segment in image-UV (of the pre-scale quad), kept for re-editing.
+                // UV may fall outside 0..1 when the user dragged a point off the image.
                 let (ox, oy) = img.origin;
                 let (w, h) = (img.width_mm.max(1e-6), img.height_mm.max(1e-6));
+                let expression = {
+                    let trimmed = expression.trim();
+                    if trimmed.is_empty() {
+                        crate::value::format_length_display(length)
+                    } else {
+                        trimmed.to_string()
+                    }
+                };
                 let calibration = crate::model::ImageCalibration {
                     u0: (a.0 - ox) / w,
                     v0: (a.1 - oy) / h,
                     u1: (b.0 - ox) / w,
                     v1: (b.1 - oy) / h,
                     length_mm: length,
+                    expression,
                 };
                 // Uniform rescale about the segment midpoint, so the calibrated feature
                 // stays where the user drew the line.
@@ -9645,7 +9700,6 @@ impl AppState {
                 img.width_mm *= factor;
                 img.height_mm *= factor;
                 img.calibration = Some(calibration);
-                self.creating_calibration = None;
                 self.status = format!(
                     "Calibrated image: {} (x{factor:.3})",
                     crate::value::format_length_display(length)
@@ -9653,21 +9707,16 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::SetCalibrationPoint { image, index, x, y } => {
-                if let Some(cal) = self.creating_calibration.as_mut().filter(|c| c.image == image) {
-                    let Some(p) = cal.points.get_mut(index) else {
-                        return ActionResult::Err(format!("No calibration point {index}"));
-                    };
-                    *p = (x, y);
-                    return ActionResult::Ok;
-                }
                 let Some(img) = self.doc.tracing_images.get_mut(image) else {
                     return ActionResult::Err(format!("Image {image:?} not found"));
                 };
+                crate::model::ensure_image_calibration(img);
                 let (ox, oy) = img.origin;
                 let (w, h) = (img.width_mm.max(1e-6), img.height_mm.max(1e-6));
                 let Some(cal) = img.calibration.as_mut() else {
                     return ActionResult::Err("Image has no calibration".to_string());
                 };
+                // UV may fall outside 0..1 — points can sit off the image, still in-plane.
                 let (u, v) = ((x - ox) / w, (y - oy) / h);
                 match index {
                     0 => (cal.u0, cal.v0) = (u, v),
@@ -9676,67 +9725,47 @@ impl AppState {
                 }
                 ActionResult::Ok
             }
-            Action::RemoveCalibrationPoint { image, index } => {
-                if let Some(cal) = self.creating_calibration.as_mut().filter(|c| c.image == image) {
-                    if index >= cal.points.len() {
-                        return ActionResult::Err(format!("No calibration point {index}"));
-                    }
-                    cal.points.remove(index);
-                    self.status = "Calibrate: click to place the point".to_string();
-                    return ActionResult::Ok;
-                }
-                let Some(img) = self.doc.tracing_images.get_mut(image) else {
-                    return ActionResult::Err(format!("Image {image:?} not found"));
-                };
-                let Some(cal) = img.calibration.take() else {
-                    return ActionResult::Err("Image has no calibration".to_string());
-                };
-                let (ox, oy) = img.origin;
-                let (w, h) = (img.width_mm.max(1e-6), img.height_mm.max(1e-6));
-                let keep = match index {
-                    0 => (ox + cal.u1 * w, oy + cal.v1 * h),
-                    1 => (ox + cal.u0 * w, oy + cal.v0 * h),
-                    _ => {
-                        img.calibration = Some(cal);
-                        return ActionResult::Err(format!("No calibration point {index}"));
-                    }
-                };
-                self.tool = Tool::Select;
-                self.creating_calibration = Some(CreatingCalibration {
-                    image,
-                    points: vec![keep],
-                });
-                self.status = "Calibrate: click to re-place the point".to_string();
-                ActionResult::Ok
-            }
-            Action::BeginImageCalibration { image } => {
+            Action::RemoveCalibrationPoint { image, index: _ } => {
                 if !self.doc.tracing_images.contains(image) {
                     return ActionResult::Err(format!("Image {image:?} not found"));
                 }
-                // Calibration point-placing takes over viewport clicks, so make sure no
-                // drawing tool is armed underneath it.
+                self.status = "Calibration points cannot be removed".to_string();
+                ActionResult::Err(self.status.clone())
+            }
+            Action::BeginImageCalibration { image } => {
+                let Some(img) = self.doc.tracing_images.get_mut(image) else {
+                    return ActionResult::Err(format!("Image {image:?} not found"));
+                };
+                crate::model::ensure_image_calibration(img);
                 self.tool = Tool::Select;
-                self.creating_calibration = Some(CreatingCalibration {
-                    image,
-                    points: Vec::new(),
-                });
-                self.status =
-                    "Calibrate: click two points on the image over a feature of known size"
-                        .to_string();
+                self.status = "Calibrate: drag the endpoints, then edit the dimension".to_string();
                 ActionResult::Ok
             }
-            Action::AddCalibrationPoint { x, y } => {
-                let Some(cal) = self.creating_calibration.as_mut() else {
-                    return ActionResult::Err("No calibration in progress".to_string());
+            Action::BeginEditImageCalibration { image } => {
+                let Some(img) = self.doc.tracing_images.get_mut(image) else {
+                    return ActionResult::Err(format!("Image {image:?} not found"));
                 };
-                if cal.points.len() >= 2 {
-                    return ActionResult::Err("Both calibration points are placed".to_string());
-                }
-                cal.points.push((x, y));
-                self.status = match cal.points.len() {
-                    1 => "Calibrate: click the second point".to_string(),
-                    _ => "Calibrate: type the real length of the marked span".to_string(),
+                crate::model::ensure_image_calibration(img);
+                let img = &self.doc.tracing_images[image];
+                let text = {
+                    let cal = img.calibration.as_ref().unwrap();
+                    if !cal.expression.trim().is_empty() {
+                        cal.expression.clone()
+                    } else {
+                        crate::value::format_length_display_in(
+                            crate::model::image_calibration_span_mm(img).unwrap_or(cal.length_mm),
+                            self.doc.default_length_unit,
+                        )
+                    }
                 };
+                self.editing_committed_dim = Some(EditingCommittedDim {
+                    target: DimEditTarget::ImageCalibration(image),
+                    text,
+                    pending_focus: true,
+                    user_edited: false,
+                    dim_offset: None,
+                });
+                self.status = "Edit calibration length • Enter to commit • Esc to cancel".to_string();
                 ActionResult::Ok
             }
             Action::ImportImage { path, plane } => {
@@ -9777,7 +9806,7 @@ impl AppState {
                     width_mm: dims.0,
                     height_mm: dims.1,
                     name: None,
-                    calibration: None,
+                    calibration: Some(crate::model::default_image_calibration(dims.1)),
                     base_origin: None,
                 });
                 self.doc.shape_order.push(crate::model::ShapeKind::Image);
@@ -9988,9 +10017,6 @@ impl AppState {
                 }
                 if self.creating_sweep.is_some() && tool != Tool::Sweep {
                     self.creating_sweep = None;
-                }
-                if self.creating_calibration.is_some() && tool != Tool::Select {
-                    self.creating_calibration = None;
                 }
 
                 // 3D-only tools act on the solid, not sketch geometry: leave the sketch
@@ -10213,8 +10239,6 @@ impl AppState {
                     self.status = "Cancelled".to_string();
                 } else if self.creating_paste.is_some() {
                     let _ = self.apply_inner(Action::CancelPaste);
-                } else if self.creating_calibration.take().is_some() {
-                    self.status = "Cancelled calibration".to_string();
                 } else if self.draft_has_picks(row.draft) {
                     self.clear_draft(row.draft);
                     self.status = format!("Cancelled {}", crate::opsigs::tool_label(self.tool).to_lowercase());
@@ -10425,7 +10449,7 @@ impl AppState {
                         DimEditTarget::New(DimensionTarget::Distance(
                             DistanceTarget::LineLength(_),
                         )) => true,
-                        DimEditTarget::New(_) => false,
+                        DimEditTarget::New(_) | DimEditTarget::ImageCalibration(_) => false,
                     };
                     if matches {
                         edit.text = value;
@@ -10612,6 +10636,7 @@ impl AppState {
                         DimEditTarget::New(DimensionTarget::Distance(DistanceTarget::LineLength(_))) => {
                             true
                         }
+                        DimEditTarget::ImageCalibration(_) => true,
                         DimEditTarget::New(_) => false,
                     };
                     if matches {
@@ -10676,6 +10701,7 @@ impl AppState {
                         DimEditTarget::New(DimensionTarget::Distance(DistanceTarget::LineLength(_))) => {
                             true
                         }
+                        DimEditTarget::ImageCalibration(_) => true,
                         DimEditTarget::New(_) => false,
                     };
                     if matches {
@@ -10769,7 +10795,7 @@ impl AppState {
                         DimEditTarget::New(DimensionTarget::Distance(
                             DistanceTarget::CircleDiameter(_),
                         )) => true,
-                        DimEditTarget::New(_) => false,
+                        DimEditTarget::New(_) | DimEditTarget::ImageCalibration(_) => false,
                     };
                     if matches {
                         edit.text = value;
@@ -10792,7 +10818,7 @@ impl AppState {
                         DimEditTarget::New(DimensionTarget::Distance(
                             DistanceTarget::CircleDiameter(_),
                         )) => true,
-                        DimEditTarget::New(_) => false,
+                        DimEditTarget::New(_) | DimEditTarget::ImageCalibration(_) => false,
                     };
                     if matches {
                         edit.pending_focus = true;
@@ -10840,11 +10866,15 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::CommitCommittedDim => {
-                let Some(session) = self.sketch_session else {
-                    return ActionResult::Err("Not in sketch mode".to_string());
-                };
                 let Some(edit) = self.editing_committed_dim.take() else {
                     return ActionResult::Err("No committed dimension being edited".to_string());
+                };
+                if let DimEditTarget::ImageCalibration(image) = edit.target {
+                    return self.commit_image_calibration_dim(image, edit.text);
+                }
+                let Some(session) = self.sketch_session else {
+                    self.editing_committed_dim = Some(edit);
+                    return ActionResult::Err("Not in sketch mode".to_string());
                 };
                 let frozen = match &edit.target {
                     DimEditTarget::Constraint(id) => {
@@ -10853,6 +10883,7 @@ impl AppState {
                     DimEditTarget::New(target) => {
                         require_dimension_target_editable(&self.document_health, &self.doc, target.clone())
                     }
+                    DimEditTarget::ImageCalibration(_) => Ok(()),
                 };
                 if let Err(e) = frozen {
                     self.editing_committed_dim = Some(edit);
@@ -32636,12 +32667,11 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         );
     }
 
-    /// #171: calibrating with a reference segment rescales the image uniformly about the
-    /// segment midpoint and stores the calibration for re-editing.
-    /// Guided calibration (#163): Begin → two viewport points → CalibrateImage commit;
-    /// the in-progress state gates each step and clears on commit and on cancel.
+    /// #1547: a fresh image gets a top-middle → bottom-middle calibration line. Begin
+    /// seeds that default; placing extra points is refused; the dimension cannot be
+    /// removed.
     #[test]
-    fn guided_calibration_flow_places_points_then_commits() {
+    fn image_calibration_is_always_a_two_point_line() {
         let mut state = AppState::default();
         let image = state.doc.tracing_images.insert(crate::model::TracingImage {
             bytes: Vec::new(),
@@ -32654,7 +32684,6 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             calibration: None,
             base_origin: None,
         });
-        // A key to a removed image is rejected; a point without a session is rejected.
         let stale = {
             let key = state.doc.tracing_images.insert(state.doc.tracing_images[image].clone());
             state.doc.tracing_images.remove(key);
@@ -32664,49 +32693,51 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             state.apply(Action::BeginImageCalibration { image: stale }),
             ActionResult::Err(_)
         ));
-        assert!(matches!(
-            state.apply(Action::AddCalibrationPoint { x: 0.0, y: 0.0 }),
-            ActionResult::Err(_)
-        ));
 
         state.tool = Tool::Line;
         assert!(matches!(
             state.apply(Action::BeginImageCalibration { image }),
             ActionResult::Ok
         ));
-        // Point placement takes over clicks, so the tool falls back to Select.
         assert_eq!(state.tool, Tool::Select);
-        state.apply(Action::AddCalibrationPoint { x: -20.0, y: 0.0 });
-        state.apply(Action::AddCalibrationPoint { x: 20.0, y: 0.0 });
-        let cal = state.creating_calibration.as_ref().expect("still in progress");
-        assert_eq!(cal.points, vec![(-20.0, 0.0), (20.0, 0.0)]);
-        // A third point is refused.
+        let img = &state.doc.tracing_images[image];
+        let cal = img.calibration.as_ref().expect("default calibration");
+        assert!((cal.u0 - 0.5).abs() < 1e-6 && (cal.v0 - 1.0).abs() < 1e-6);
+        assert!((cal.u1 - 0.5).abs() < 1e-6 && (cal.v1 - 0.0).abs() < 1e-6);
+        let (top_x, top_y) = crate::model::image_calibration_point_uv(img, 0).unwrap();
+        let (bot_x, bot_y) = crate::model::image_calibration_point_uv(img, 1).unwrap();
+        assert!((top_x - 0.0).abs() < 1e-3 && (top_y - 30.0).abs() < 1e-3);
+        assert!((bot_x - 0.0).abs() < 1e-3 && (bot_y + 30.0).abs() < 1e-3);
+
         assert!(matches!(
-            state.apply(Action::AddCalibrationPoint { x: 1.0, y: 1.0 }),
+            state.apply(Action::RemoveCalibrationPoint { image, index: 0 }),
             ActionResult::Err(_)
         ));
+        assert!(state.doc.tracing_images[image].calibration.is_some());
 
-        // Committing rescales and ends the session.
         let result = state.apply(Action::CalibrateImage {
             image,
             a: (-20.0, 0.0),
             b: (20.0, 0.0),
             length: 80.0,
+            expression: "80".into(),
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
-        assert!(state.creating_calibration.is_none());
         assert!((state.doc.tracing_images[image].width_mm - 200.0).abs() < 1e-3);
-
-        // Esc cancels a fresh session.
-        state.apply(Action::BeginImageCalibration { image });
-        state.apply(Action::CancelOperation);
-        assert!(state.creating_calibration.is_none());
+        assert_eq!(
+            state.doc.tracing_images[image]
+                .calibration
+                .as_ref()
+                .unwrap()
+                .expression,
+            "80"
+        );
     }
 
-    /// #424: calibration marker points move by drag (stored uv updates, no rescale) and
-    /// delete/re-place — removing a point re-opens the guided flow with the other point.
+    /// #424/#1547: dragging a marker updates UV (including off the image) and never
+    /// rescales; deleting a point is refused so the line always stays.
     #[test]
-    fn calibration_points_move_and_delete_then_replace() {
+    fn calibration_points_move_without_rescale_and_cannot_be_removed() {
         let mut state = AppState::default();
         let image = state.doc.tracing_images.insert(crate::model::TracingImage {
             bytes: Vec::new(),
@@ -32720,45 +32751,44 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             base_origin: None,
         });
         state.apply(Action::BeginImageCalibration { image });
-        state.apply(Action::AddCalibrationPoint { x: -20.0, y: 0.0 });
-        // Moving an in-progress point relocates it.
         state.apply(Action::SetCalibrationPoint { image, index: 0, x: -25.0, y: 0.0 });
-        assert_eq!(
-            state.creating_calibration.as_ref().unwrap().points,
-            vec![(-25.0, 0.0)]
-        );
-        state.apply(Action::AddCalibrationPoint { x: 25.0, y: 0.0 });
+        let (x, y) = crate::model::image_calibration_point_uv(
+            &state.doc.tracing_images[image],
+            0,
+        )
+        .unwrap();
+        assert!((x + 25.0).abs() < 1e-3 && y.abs() < 1e-3);
+        state.apply(Action::SetCalibrationPoint { image, index: 1, x: 25.0, y: 0.0 });
         state.apply(Action::CalibrateImage {
             image,
             a: (-25.0, 0.0),
             b: (25.0, 0.0),
             length: 100.0,
+            expression: "width".into(),
         });
         let img = &state.doc.tracing_images[image];
         assert!((img.width_mm - 200.0).abs() < 1e-3);
         let cal = img.calibration.clone().unwrap();
+        assert_eq!(cal.expression, "width");
 
-        // Moving a stored marker point updates the uv and never rescales.
         let width_before = state.doc.tracing_images[image].width_mm;
-        state.apply(Action::SetCalibrationPoint { image, index: 1, x: 60.0, y: 10.0 });
+        // Off the image, still in the image plane.
+        state.apply(Action::SetCalibrationPoint { image, index: 1, x: 160.0, y: 10.0 });
         let img = &state.doc.tracing_images[image];
         assert_eq!(img.width_mm, width_before, "moving a marker never rescales");
         let moved = img.calibration.clone().unwrap();
         assert_ne!((moved.u1, moved.v1), (cal.u1, cal.v1));
+        assert!(moved.u1 > 1.0, "off-image UV is allowed, got {}", moved.u1);
         let (ox, oy) = img.origin;
         let (w, h) = (img.width_mm, img.height_mm);
-        assert!((ox + moved.u1 * w - 60.0).abs() < 1e-3);
+        assert!((ox + moved.u1 * w - 160.0).abs() < 1e-3);
         assert!((oy + moved.v1 * h - 10.0).abs() < 1e-3);
 
-        // Deleting point 0 re-opens the guided flow holding point 1's position.
-        state.apply(Action::RemoveCalibrationPoint { image, index: 0 });
-        assert!(state.doc.tracing_images[image].calibration.is_none());
-        let creating = state.creating_calibration.as_ref().expect("re-opened");
-        assert_eq!(creating.points.len(), 1);
-        assert!((creating.points[0].0 - 60.0).abs() < 1e-3);
-        // Clicking re-places the deleted point.
-        state.apply(Action::AddCalibrationPoint { x: -40.0, y: 10.0 });
-        assert_eq!(state.creating_calibration.as_ref().unwrap().points.len(), 2);
+        assert!(matches!(
+            state.apply(Action::RemoveCalibrationPoint { image, index: 0 }),
+            ActionResult::Err(_)
+        ));
+        assert!(state.doc.tracing_images[image].calibration.is_some());
     }
 
     /// #425: a calibrated image's reference points are constraint points — coincident to a
@@ -32781,6 +32811,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 u1: 0.75,
                 v1: 0.5,
                 length_mm: 50.0,
+                expression: String::new(),
             }),
             base_origin: None,
         });
@@ -32849,6 +32880,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             a: (-20.0, 0.0),
             b: (20.0, 0.0),
             length: 80.0,
+            expression: "2 * 40".into(),
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         let img = &state.doc.tracing_images[image];
@@ -32856,14 +32888,25 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert!((img.height_mm - 120.0).abs() < 1e-3);
         // Scaled about the segment midpoint (0, 0): origin doubles away from it.
         assert!((img.origin.0 + 100.0).abs() < 1e-3 && (img.origin.1 + 60.0).abs() < 1e-3);
-        let cal = img.calibration.expect("calibration stored");
+        let cal = img.calibration.clone().expect("calibration stored");
         assert!((cal.length_mm - 80.0).abs() < 1e-3);
+        assert_eq!(cal.expression, "2 * 40");
         // UV of the reference points on the pre-scale quad: x -20 → u 0.3, x 20 → u 0.7.
         assert!((cal.u0 - 0.3).abs() < 1e-3 && (cal.u1 - 0.7).abs() < 1e-3);
+        // After rescale the points stay at the same locations on the image.
+        let (ax, ay) = crate::model::image_calibration_point_uv(img, 0).unwrap();
+        let (bx, by) = crate::model::image_calibration_point_uv(img, 1).unwrap();
+        let span = ((bx - ax).powi(2) + (by - ay).powi(2)).sqrt();
+        assert!((span - 80.0).abs() < 1e-3);
 
         // Degenerate inputs error, and so does a key to an image that is gone.
-        let degenerate =
-            Action::CalibrateImage { image, a: (0.0, 0.0), b: (0.0, 0.0), length: 10.0 };
+        let degenerate = Action::CalibrateImage {
+            image,
+            a: (0.0, 0.0),
+            b: (0.0, 0.0),
+            length: 10.0,
+            expression: String::new(),
+        };
         let r = state.apply(degenerate);
         assert!(matches!(r, ActionResult::Err(_)));
         let stale = {
@@ -32876,8 +32919,55 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             a: (0.0, 0.0),
             b: (1.0, 0.0),
             length: 10.0,
+            expression: String::new(),
         });
         assert!(matches!(r, ActionResult::Err(_)));
+    }
+
+    /// #1547: editing the calibration dimension rescales so the points stay on the same
+    /// image locations and the world-space span becomes the evaluated expression.
+    #[test]
+    fn editing_the_calibration_dimension_rescales_the_image() {
+        let mut state = AppState::default();
+        let image = state.doc.tracing_images.insert(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "grid".to_string(),
+            plane: pkey(0),
+            origin: (-50.0, -30.0),
+            width_mm: 100.0,
+            height_mm: 60.0,
+            name: None,
+            calibration: Some(crate::model::default_image_calibration(60.0)),
+            base_origin: None,
+        });
+        assert!(matches!(
+            state.apply(Action::BeginEditImageCalibration { image }),
+            ActionResult::Ok
+        ));
+        assert!(matches!(
+            state.editing_committed_dim.as_ref().map(|e| &e.target),
+            Some(DimEditTarget::ImageCalibration(_))
+        ));
+        state.apply(Action::SetLineLength { value: "30".into() });
+        assert!(matches!(
+            state.apply(Action::CommitCommittedDim),
+            ActionResult::Ok
+        ));
+        let img = &state.doc.tracing_images[image];
+        // Default span is the image height (60). Setting 30 halves the image.
+        assert!((img.height_mm - 30.0).abs() < 1e-3);
+        assert!((img.width_mm - 50.0).abs() < 1e-3);
+        let (a, b) = (
+            crate::model::image_calibration_point_uv(img, 0).unwrap(),
+            crate::model::image_calibration_point_uv(img, 1).unwrap(),
+        );
+        let span = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+        assert!((span - 30.0).abs() < 1e-3);
+        assert_eq!(img.calibration.as_ref().unwrap().expression, "30");
+        // UV unchanged: still top-middle to bottom-middle.
+        let cal = img.calibration.as_ref().unwrap();
+        assert!((cal.u0 - 0.5).abs() < 1e-6 && (cal.v0 - 1.0).abs() < 1e-6);
+        assert!((cal.u1 - 0.5).abs() < 1e-6 && (cal.v1 - 0.0).abs() < 1e-6);
     }
 
     /// #169: importing a PNG creates a tracing image on the plane, seeded 1 px = 1 mm and
@@ -32905,6 +32995,13 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert_eq!(img.plane, state.doc.ground_plane().unwrap());
         assert_eq!((img.width_mm, img.height_mm), (4.0, 2.0));
         assert_eq!(img.origin, (-2.0, -1.0), "centered on the plane origin");
+        let cal = img.calibration.as_ref().expect("fresh import seeds the default line");
+        assert!((cal.u0 - 0.5).abs() < 1e-6 && (cal.v0 - 1.0).abs() < 1e-6);
+        assert!((cal.u1 - 0.5).abs() < 1e-6 && (cal.v1 - 0.0).abs() < 1e-6);
+        let (top_x, top_y) = crate::model::image_calibration_point_uv(img, 0).unwrap();
+        let (bot_x, bot_y) = crate::model::image_calibration_point_uv(img, 1).unwrap();
+        assert!((top_x).abs() < 1e-3 && (top_y - 1.0).abs() < 1e-3, "top middle, got ({top_x}, {top_y})");
+        assert!((bot_x).abs() < 1e-3 && (bot_y + 1.0).abs() < 1e-3, "bottom middle, got ({bot_x}, {bot_y})");
 
         // JSON round trip: bytes survive the base64 codec.
         let json = serde_json::to_string(&state.doc).unwrap();
