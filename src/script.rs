@@ -7893,6 +7893,27 @@ impl ScriptRunner {
                         PaletteOutcome::Action(action) => {
                             state.apply(action);
                         }
+                        PaletteOutcome::ImportImageOnThisPlane { path } => {
+                            let Some(plane) =
+                                crate::command_palette::selected_construction_plane(state)
+                            else {
+                                state.status = "No construction plane selected".to_string();
+                                return StepResult::Continue;
+                            };
+                            match path {
+                                Some(path) => {
+                                    let r = state.apply(Action::ImportImage {
+                                        path,
+                                        plane: Some(plane),
+                                    });
+                                    self.record_action_error(r);
+                                }
+                                None => {
+                                    state.status =
+                                        "Palette file commands require the GUI".to_string();
+                                }
+                            }
+                        }
                         PaletteOutcome::OpenFile | PaletteOutcome::SaveFile
                         | PaletteOutcome::SaveFileAs
                         | PaletteOutcome::ExportLua

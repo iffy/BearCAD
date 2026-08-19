@@ -85,6 +85,8 @@ pub enum PaletteCommandId {
     ShowSettings,
     /// Import another BearCAD document as a unit (#721). Native only (path-based).
     ImportUnit,
+    /// Import a PNG/JPEG onto the selected construction plane (#1564).
+    ImportImageOnThisPlane,
     /// Open the McMaster-Carr catalog window (#1022). Native only: it runs a second process.
     ImportMcMaster,
     ShowHelpMode,
@@ -103,6 +105,9 @@ pub enum PaletteOutcome {
     ShowSettings,
     /// Pick a BearCAD file and import it as a unit (#721).
     ImportUnit,
+    /// Import a PNG/JPEG onto the selected construction plane (#1564).
+    /// `path` is set when a script supplied one; `None` means pick a file in the GUI.
+    ImportImageOnThisPlane { path: Option<String> },
     OpenFile,
     SaveFile,
     SaveFileAs,
@@ -238,6 +243,16 @@ impl PaletteCommand {
             }
             PaletteCommandId::ShowSettings => PaletteOutcome::ShowSettings,
             PaletteCommandId::ImportUnit => PaletteOutcome::ImportUnit,
+            PaletteCommandId::ImportImageOnThisPlane => {
+                let path = argument.trim();
+                PaletteOutcome::ImportImageOnThisPlane {
+                    path: if path.is_empty() {
+                        None
+                    } else {
+                        Some(path.to_string())
+                    },
+                }
+            }
             // The catalog opens with the search already done for whatever was typed (#1022);
             // nothing typed opens their front page.
             PaletteCommandId::ImportMcMaster => {
@@ -333,6 +348,14 @@ pub fn fuzzy_score(query: &str, target: &str) -> Option<i32> {
     }
 }
 
+/// The most recently selected construction plane, if any (#1564).
+pub fn selected_construction_plane(state: &AppState) -> Option<crate::model::ConstructionPlaneKey> {
+    state.scene_selection.iter().filter_map(|el| match el {
+        crate::hierarchy::SceneElement::ConstructionPlane(k) => Some(k),
+        _ => None,
+    }).last()
+}
+
 /// Commands available for the current application state.
 pub fn commands_for_state(state: &AppState) -> Vec<PaletteCommand> {
     let mut out = Vec::new();
@@ -349,6 +372,16 @@ pub fn commands_for_state(state: &AppState) -> Vec<PaletteCommand> {
                 PaletteCommandId::DeleteSelection,
                 "Delete Selection",
                 "delete selection remove backspace del",
+            ),
+        );
+    }
+    if selected_construction_plane(state).is_some() {
+        push(
+            &mut out,
+            PaletteCommand::new(
+                PaletteCommandId::ImportImageOnThisPlane,
+                "Import image on this plane…",
+                "import image on this plane tracing photo png jpeg jpg scan",
             ),
         );
     }
@@ -1136,6 +1169,62 @@ mod tests {
         assert_eq!(
             cmd.outcome(""),
             PaletteOutcome::Action(Action::SetStandardView(StandardView::Top))
+        );
+    }
+
+    /// #1564: "Import image on this plane" is offered only when a construction plane
+    /// is selected, and running it with a path (the scripted form) names that plane.
+    #[test]
+    fn import_image_on_this_plane_only_when_a_plane_is_selected() {
+        use crate::hierarchy::SceneElement;
+        use crate::model::plane_key_for_slot as pkey;
+
+        let mut state = AppState::default();
+        assert!(
+            !commands_for_state(&state)
+                .iter()
+                .any(|c| c.id == PaletteCommandId::ImportImageOnThisPlane),
+            "no plane selected → command hidden"
+        );
+        assert!(
+            best_match("import image on this plane", &commands_for_state(&state)).is_none(),
+            "the query should not land on some other import command"
+        );
+
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::ConstructionPlane(pkey(1)),
+            additive: false,
+        });
+        let cmds = commands_for_state(&state);
+        let cmd = cmds
+            .iter()
+            .find(|c| c.id == PaletteCommandId::ImportImageOnThisPlane)
+            .expect("a selected plane offers the command");
+        assert_eq!(cmd.label, "Import image on this plane…");
+        assert_eq!(
+            best_match("import image on this plane", &cmds).map(|c| c.id),
+            Some(PaletteCommandId::ImportImageOnThisPlane)
+        );
+        assert_eq!(
+            cmd.outcome(""),
+            PaletteOutcome::ImportImageOnThisPlane { path: None }
+        );
+        assert_eq!(
+            cmd.outcome("drawing.png"),
+            PaletteOutcome::ImportImageOnThisPlane {
+                path: Some("drawing.png".into()),
+            }
+        );
+
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::ConstructionPlane(pkey(1)),
+            additive: false,
+        });
+        assert!(
+            !commands_for_state(&state)
+                .iter()
+                .any(|c| c.id == PaletteCommandId::ImportImageOnThisPlane),
+            "deselecting the plane hides the command again"
         );
     }
 

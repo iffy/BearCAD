@@ -6157,6 +6157,20 @@ impl App {
             PaletteOutcome::ShowSettings => self.state.settings_open = true,
             #[cfg(not(target_arch = "wasm32"))]
             PaletteOutcome::ImportUnit => self.import_unit(),
+            PaletteOutcome::ImportImageOnThisPlane { path } => {
+                if let Some(plane) = command_palette::selected_construction_plane(&self.state) {
+                    if let Some(path) = path {
+                        self.state.apply(Action::ImportImage {
+                            path,
+                            plane: Some(plane),
+                        });
+                    } else {
+                        self.import_image_on_plane(plane);
+                    }
+                } else {
+                    self.state.status = "No construction plane selected".to_string();
+                }
+            }
             #[cfg(target_arch = "wasm32")]
             PaletteOutcome::ShowSettings | PaletteOutcome::ImportUnit => {}
             PaletteOutcome::OpenFile => self.open(),

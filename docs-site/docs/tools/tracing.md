@@ -14,8 +14,8 @@ like any other element.
 ## Importing
 
 **File → Import Image…** places a PNG or JPEG on the ground plane. For a different plane,
-right-click that construction plane in the Elements pane → **Import image on this
-plane…**.
+select it and run **Import image on this plane…** from the command palette, or
+right-click it in the Elements pane.
 
 Images draw slightly translucent (0.9 by default): bodies in front hide them, but sketch
 lines stay visible on top. Select an image to change its opacity with the slider.

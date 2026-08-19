@@ -14,7 +14,8 @@ button is reachable here.
 - Matching is **fuzzy**: type any subsequence, like `zf` for **Zoom to Fit**.
 - **↑/↓** move the highlight, **Enter** runs it, **Esc** closes.
 - The list is **context-pertinent**: e.g. **Exit Sketch** appears only inside a sketch,
-  **Delete Selection** only with something selected.
+  **Delete Selection** only with something selected, **Import image on this plane…**
+  only with a construction plane selected.
 - **Every tool** is here — the sketch tools and the 3D ones (Extrude, Chamfer, Fillet, Revolve,
   Sweep, Combine, Mirror, Slice, and the rest) — so you can switch tool without hunting the
   toolbar.
