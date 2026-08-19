@@ -208,8 +208,58 @@ pub(crate) fn document_world_bounds(doc: &Document) -> Option<(Vec3, Vec3)> {
     bounds
 }
 
+thread_local! {
+    /// Per-thread memo for [`extrusion_mesh`] (#1572): selecting or hovering an
+    /// extrusion used to rebuild its kernel solid every idle frame. Keyed by
+    /// `(document fingerprint, extrusion hash)` so a live probe (gizmo drag)
+    /// misses while unchanged committed geometry stays free.
+    static EXTRUSION_MESH_CACHE: std::cell::RefCell<(u64, HashMap<u64, Option<SolidMesh>>)> =
+        std::cell::RefCell::new((0, HashMap::new()));
+}
+
+fn extrusion_mesh_hash(extrusion: &Extrusion) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    format!("{extrusion:?}").hash(&mut h);
+    h.finish()
+}
+
 /// Build the solid mesh for an extrusion, or `None` if it has no faces or zero distance.
+/// Memoized per document state (#1572): the viewport highlight remeshes the selected
+/// extrusion every frame, and a text extrusion's per-glyph kernel booleans made that
+/// unusably laggy even with the camera still.
 pub fn extrusion_mesh(doc: &Document, extrusion: &Extrusion) -> Option<SolidMesh> {
+    let fingerprint = document_mesh_fingerprint(doc);
+    let hash = extrusion_mesh_hash(extrusion);
+    let cached = EXTRUSION_MESH_CACHE.with(|cache| match cache.try_borrow_mut() {
+        Ok(mut cache) => {
+            if cache.0 != fingerprint {
+                cache.0 = fingerprint;
+                cache.1.clear();
+            }
+            cache.1.get(&hash).cloned()
+        }
+        Err(_) => None,
+    });
+    if let Some(hit) = cached {
+        return hit;
+    }
+    #[cfg(test)]
+    EXTRUSION_MESH_BUILDS.with(|c| c.set(c.get().saturating_add(1)));
+    let mesh = extrusion_mesh_uncached(doc, extrusion);
+    EXTRUSION_MESH_CACHE.with(|cache| {
+        if let Ok(mut cache) = cache.try_borrow_mut() {
+            if cache.0 != fingerprint {
+                cache.0 = fingerprint;
+                cache.1.clear();
+            }
+            cache.1.insert(hash, mesh.clone());
+        }
+    });
+    mesh
+}
+
+fn extrusion_mesh_uncached(doc: &Document, extrusion: &Extrusion) -> Option<SolidMesh> {
     let distance = effective_distance(doc, extrusion);
     if extrusion.faces.is_empty() || distance.abs() < 1e-4 {
         return None;
@@ -5938,6 +5988,9 @@ thread_local! {
     /// How many times [`body_solid_mesh_for_face_key`] rebuilt a kernel mesh.
     /// Hover/orbit must not increment this after the first lookup (#1466/#1467).
     pub(crate) static FACE_KEY_MESH_BUILDS: std::cell::Cell<u32> = std::cell::Cell::new(0);
+    /// How many times [`extrusion_mesh`] rebuilt a solid. Selecting/hovering an
+    /// extrusion must not increment this after the first call (#1572).
+    pub(crate) static EXTRUSION_MESH_BUILDS: std::cell::Cell<u32> = std::cell::Cell::new(0);
 }
 
 /// The coplanar-triangle group of `solid` whose quantized centroid+normal match the key —
@@ -12083,6 +12136,54 @@ mod tests {
         assert!(
             FACE_KEY_MESH_BUILDS.with(|c| c.get()) >= 1,
             "a mesh_rev bump must rebuild the face-key solid"
+        );
+    }
+
+    /// #1572: selecting an extrusion remeshed its kernel solid every idle frame.
+    /// After a warmup, repeats must be cache hits — not a wall-clock budget.
+    #[test]
+    fn issue_1572_extrusion_mesh_lookups_are_cached() {
+        let (mut doc, _sketch, ext) = box_doc();
+        doc.extrusions.insert(ext);
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(xkey(0)),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        doc.bump_mesh_rev();
+        let first = extrusion_mesh(&doc, &doc.extrusions[xkey(0)]).expect("mesh");
+        assert!(!first.triangles.is_empty());
+        EXTRUSION_MESH_BUILDS.with(|c| c.set(0));
+        for _ in 0..20 {
+            let again = extrusion_mesh(&doc, &doc.extrusions[xkey(0)]).expect("cached");
+            assert_eq!(again.triangles.len(), first.triangles.len());
+        }
+        let rebuilds = EXTRUSION_MESH_BUILDS.with(|c| c.get());
+        assert_eq!(
+            rebuilds, 0,
+            "repeated extrusion_mesh lookups must reuse the cached solid, rebuilt {rebuilds} times"
+        );
+        doc.bump_mesh_rev();
+        EXTRUSION_MESH_BUILDS.with(|c| c.set(0));
+        let _ = extrusion_mesh(&doc, &doc.extrusions[xkey(0)]);
+        assert!(
+            EXTRUSION_MESH_BUILDS.with(|c| c.get()) >= 1,
+            "a mesh_rev bump must rebuild the extrusion solid"
+        );
+        // A live probe (gizmo drag) that isn't a document edit still has to miss:
+        // hashing only the document fingerprint would overlay the stale height.
+        let mut probe = doc.extrusions[xkey(0)].clone();
+        probe.distance = 40.0;
+        EXTRUSION_MESH_BUILDS.with(|c| c.set(0));
+        let taller = extrusion_mesh(&doc, &probe).expect("taller probe");
+        assert!(
+            EXTRUSION_MESH_BUILDS.with(|c| c.get()) >= 1,
+            "a different extrusion must not reuse the committed mesh"
+        );
+        assert!(
+            taller.triangles.len() >= first.triangles.len(),
+            "the probe mesh is the taller solid"
         );
     }
 
