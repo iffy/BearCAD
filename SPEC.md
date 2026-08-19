@@ -1948,7 +1948,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   embeds a PNG/JPEG in the document (base64 in
   the saved JSON, so files stay self-contained like imported meshes) and places it on a
   construction plane (default: plane 0), centered on the plane origin at an initial scale
-  of **1 px = 1 mm**. The image is an Elements-pane row nested under its host plane —
+  of **1 px = 1 mm**. The new image is selected as the only thing so you can
+  immediately calibrate its scale (#1582). The image is an Elements-pane row nested under its host plane —
   renamable, hideable, deletable, undoable. `Document::tracing_images` is an
   `arena::Arena` (#1055): an image is named by a `TracingImageKey` — by the move ops that
   target it and the calibration constraints on it — and deleting one **removes** it, so a

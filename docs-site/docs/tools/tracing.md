@@ -15,14 +15,15 @@ like any other element.
 
 **File → Import Image…** places a PNG or JPEG on the ground plane. For a different plane,
 select it and run **Import image on this plane…** from the command palette, or
-right-click it in the Elements pane.
+right-click it in the Elements pane. Import selects the new image so you can
+calibrate it right away.
 
 Images draw slightly translucent (0.9 by default): bodies in front hide them, but sketch
 lines stay visible on top. Select an image to change its opacity with the slider.
 
 ## Setting the scale
 
-Select the image with the Select tool. A line appears from the top-middle of the image
+While the image is selected, a line appears from the top-middle of the image
 to the bottom-middle, with a dimension that cannot be removed.
 
 Drag the endpoints onto a feature whose real size you know. Double-click the dimension
