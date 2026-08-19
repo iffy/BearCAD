@@ -8521,8 +8521,9 @@ mod tests {
         );
     }
 
-    /// #1550–#1554: orbit / pan / zoom / home have no assist. Camera motion
-    /// advances those steps; Next-only "Good job" interstitials sit after orbit and pan.
+    /// #1550–#1554 / #1583: orbit / pan / zoom / Zoom to Fit / home have no assist.
+    /// Camera motion (and `zoom_fit`) advances those steps; Next-only "Good job"
+    /// interstitials sit after orbit and pan.
     #[test]
     fn navigate_tutorial_lua_walks_hands_on_camera_steps() {
         run_lua_expect_ok(
@@ -8553,6 +8554,12 @@ mod tests {
             bearcad.ui.tutorial_assist()
             assert(bearcad.ui.tutorial_step() == zoom_step, "zoom has no assist")
             bearcad.ui.camera{ distance = home.distance * 0.45 }
+            local fit_n = bearcad.ui.tutorial_narration()
+            assert(fit_n:lower():find("zoom to fit", 1, true), fit_n)
+            local fit_step = bearcad.ui.tutorial_step()
+            bearcad.ui.tutorial_assist()
+            assert(bearcad.ui.tutorial_step() == fit_step, "zoom to fit has no assist")
+            bearcad.ui.zoom_fit()
             assert(bearcad.ui.tutorial_narration():find("bear", 1, true),
                    bearcad.ui.tutorial_narration())
             bearcad.ui.tutorial_assist()

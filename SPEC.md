@@ -5203,12 +5203,13 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
 - **Numbered list** (#1558): the Tutorials pane prefixes each walkthrough with its catalog
   number (`1. Sketch & Extrude`, …). Scripting exposes the same 1-based `number` on
   `bearcad.ui.tutorials()`.
-- **Second tutorial (`navigate`)** (#1269): pan / orbit / zoom and the view-bear HUD (snap a
-  view + Home). Starts with a few cubes already in the document; camera steps auto-advance
-  on motion. Orbit, pan, zoom, and Home have no "…for me" assist — the user does those.
-  After orbit and after pan, a Next-only "Good job" step makes the next action obvious.
-  The bear-snap step still offers an assist. Orbs can point at `UiAnchor::ViewCube` /
-  `ViewHome`. No Selection Exploder step (#1330): its tooltip covered the loupes.
+- **Second tutorial (`navigate`)** (#1269): pan / orbit / zoom, Zoom to Fit (toolbar
+  button + `Z`, #1583), and the view-bear HUD (snap a view + Home). Starts with a few
+  cubes already in the document; camera steps auto-advance on motion. Orbit, pan, zoom,
+  Zoom to Fit, and Home have no "…for me" assist — the user does those. After orbit and
+  after pan, a Next-only "Good job" step makes the next action obvious. The bear-snap
+  step still offers an assist. Orbs can point at `UiAnchor::ViewCube` / `ViewHome` /
+  `ZoomToFit`. No Selection Exploder step (#1330): its tooltip covered the loupes.
 - Each tutorial is a list of **steps**: Bear's narration in a cartoon **speech
   bubble** tucked under the view cube (with a tail pointing at Bear), a **pulsing
   gold ring** on what to click next (toolbar buttons, the Parameters `+`, or a projected

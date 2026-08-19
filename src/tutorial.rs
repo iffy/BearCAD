@@ -54,6 +54,8 @@ pub enum UiAnchor {
     ViewCube,
     /// The house (Home view) button under the view cube (#1269).
     ViewHome,
+    /// The toolbar Zoom to Fit (magnifying glass) button (#1583).
+    ZoomToFit,
     /// A status-bar pane toggle (phone layout only, #828): Elements / Context / Params.
     PaneButton(crate::actions::Pane),
     /// The status-bar Tutorials launcher (#1434): the launch prompt points here.
@@ -1470,11 +1472,11 @@ const fn nav_drag_step(
     }
 }
 
-/// #1269: second walkthrough — pan, orbit, zoom, bear HUD, home.
+/// #1269: second walkthrough — pan, orbit, zoom, Zoom to Fit, bear HUD, home.
 /// Starts with cubes already in the document. One action per step (#1253).
 /// The Selection Exploder step is gone (#1330): its tooltip covered the loupes.
-/// Orbit / pan / zoom / home have no "for me" assist (#1550–#1554); Next-only
-/// "Good job" steps sit after orbit and pan so the next action is obvious.
+/// Orbit / pan / zoom / Zoom to Fit / home have no "for me" assist (#1550–#1554 / #1583);
+/// Next-only "Good job" steps sit after orbit and pan so the next action is obvious.
 static NAVIGATE_STEPS: &[Step] = &[
     plain_step_enter(
         "Here are a few cubes. Let's learn to move around them.",
@@ -1510,6 +1512,20 @@ static NAVIGATE_STEPS: &[Step] = &[
         phone_narration: Some("Pinch to zoom in and out."),
         only_on_phone: false,
     },
+    Step {
+        narration: "Click Zoom to Fit, or press `Z`, to frame the model.",
+        anchor: StepAnchor::Ui(UiAnchor::ZoomToFit),
+        done: Some(zoomed_to_fit),
+        on_enter: None,
+        assist: None,
+        needs_shift: None,
+        drag_hint: None,
+        key_hint: Some(("Z", "Zoom to Fit")),
+        marks: None,
+        type_hint: None,
+        phone_narration: Some("Tap Zoom to Fit to frame the model."),
+        only_on_phone: false,
+    },
     assisted_step(
         "The bear in the corner is your view cube. Click a face, edge, or corner to snap \
          a view \u{2014} or drag the bear to orbit.",
@@ -1527,7 +1543,7 @@ static NAVIGATE_STEPS: &[Step] = &[
         Some(camera_at_home),
     ),
     plain_step(
-        "That's the view: orbit, pan, zoom, the bear, and Home. Nice!",
+        "That's the view: orbit, pan, zoom, Zoom to Fit, the bear, and Home. Nice!",
         StepAnchor::None,
         None,
     ),
@@ -4197,7 +4213,7 @@ mod tests {
             .map(|s| s.narration.to_ascii_lowercase())
             .collect::<Vec<_>>()
             .join(" ");
-        for needle in ["orbit", "pan", "zoom", "bear", "home"] {
+        for needle in ["orbit", "pan", "zoom", "bear", "home", "zoom to fit"] {
             assert!(
                 joined.contains(needle),
                 "navigate tutorial should mention {needle}"
@@ -4211,6 +4227,51 @@ mod tests {
             nav.steps.iter().any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::ViewHome))),
             "should point at the home button"
         );
+        assert!(
+            nav.steps
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::ZoomToFit))),
+            "should point at the Zoom to Fit button"
+        );
+    }
+
+    /// #1583: Zoom to Fit (toolbar button + Z) sits after wheel zoom, is hands-on,
+    /// and auto-advances when the view is framed.
+    #[test]
+    fn navigate_tutorial_teaches_zoom_to_fit() {
+        let s = nav_step("zoom to fit");
+        assert!(
+            matches!(s.anchor, StepAnchor::Ui(UiAnchor::ZoomToFit)),
+            "should point at the Zoom to Fit button: {}",
+            s.narration
+        );
+        assert!(s.done.is_some(), "should auto-advance when Zoom to Fit lands");
+        assert!(s.assist.is_none(), "zoom-to-fit should have no assist: {}", s.narration);
+        assert!(
+            s.key_hint.is_some_and(|(k, _)| k.eq_ignore_ascii_case("z")),
+            "should show a Z key hint: {}",
+            s.narration
+        );
+        let n = s.narration.to_ascii_lowercase();
+        assert!(
+            n.contains("`z`") || n.contains("press `z`") || n.contains(" or press"),
+            "should mention the Z shortcut: {}",
+            s.narration
+        );
+
+        let wheel_i = nav_step_index("scroll the mouse wheel");
+        let fit_i = nav_step_index("zoom to fit");
+        let bear_i = nav_step_index("view cube");
+        assert!(
+            wheel_i < fit_i && fit_i < bear_i,
+            "wheel zoom, then Zoom to Fit, then the bear (got {wheel_i}, {fit_i}, {bear_i})"
+        );
+
+        let mut app = AppState::default();
+        seed_nav_cubes(&mut app);
+        assert!(!zoomed_to_fit(&app));
+        app.apply(Action::ZoomToFit);
+        assert!(zoomed_to_fit(&app));
     }
 
     fn nav_step(needle: &str) -> &'static Step {
@@ -4229,8 +4290,9 @@ mod tests {
             .unwrap_or_else(|| panic!("navigate step matching {needle:?}"))
     }
 
-    /// #1550–#1554: orbit / pan / zoom / home have no "for me" shortcut. After
-    /// orbit and after pan, a Next-only "Good job" step makes the next action obvious.
+    /// #1550–#1554 / #1583: orbit / pan / zoom / Zoom to Fit / home have no "for me"
+    /// shortcut. After orbit and after pan, a Next-only "Good job" step makes the next
+    /// action obvious.
     #[test]
     fn navigate_tutorial_camera_steps_are_hands_on() {
         let nav = &TUTORIALS[tutorial_index("navigate").unwrap()];
@@ -4238,6 +4300,7 @@ mod tests {
             "right-drag to orbit",
             "middle-drag",
             "scroll the mouse wheel",
+            "zoom to fit",
             "house under the bear",
         ] {
             let s = nav_step(needle);
@@ -4279,8 +4342,9 @@ mod tests {
         );
     }
 
-    /// #1269 / #1550–#1554: camera motion advances orbit / pan / zoom / home;
-    /// Next covers the good-job interstitials; the bear still has an assist.
+    /// #1269 / #1550–#1554 / #1583: camera motion advances orbit / pan / zoom / home;
+    /// Zoom to Fit advances on Z / the toolbar button; Next covers the good-job
+    /// interstitials; the bear still has an assist.
     #[test]
     fn navigate_tutorial_walks_with_assists() {
         let mut app = AppState::default();
@@ -4304,6 +4368,9 @@ mod tests {
                 app.advance_tutorial();
             } else if n.contains("scroll the mouse wheel") {
                 assist_nav_zoom(&mut app);
+                app.advance_tutorial();
+            } else if n.contains("click zoom to fit") {
+                assist_zoom_to_fit(&mut app);
                 app.advance_tutorial();
             } else if n.contains("house under the bear") {
                 assist_nav_home(&mut app);
