@@ -2981,7 +2981,7 @@ pub struct Sweep {
 pub type SweepKey = crate::arena::Key<Sweep>;
 
 /// Which set algebra a boolean operation (Combine tool) applies to its input bodies.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BooleanOpKind {
     /// Union of all `a` inputs into one solid.

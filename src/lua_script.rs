@@ -4615,6 +4615,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 let row = lua.create_table()?;
                 row.set("name", tut.name)?;
                 row.set("title", tut.title)?;
+                row.set("number", i + 1)?;
                 row.set("completed", state.tutorial_completed(tut.name))?;
                 list.set(i + 1, row)?;
             }
@@ -7679,6 +7680,92 @@ mod tests {
             local ok, err = pcall(function() bearcad.ui.tutorial("bracket") end)
             assert(not ok, "starting the removed tutorial should fail")
             assert(tostring(err):find("unknown tutorial", 1, true), tostring(err))
+            "#,
+        );
+    }
+
+    /// #1558: every walkthrough is numbered in catalog order, including the three
+    /// added in #1555–#1557.
+    #[test]
+    fn tutorials_lua_list_is_numbered() {
+        run_lua_expect_ok(
+            r#"
+            local list = bearcad.ui.tutorials()
+            assert(#list == 8, "catalog size, got " .. #list)
+            local names = {}
+            for i, t in ipairs(list) do
+              assert(t.number == i, t.name .. " should be #" .. i .. ", got " .. tostring(t.number))
+              names[t.name] = t.title
+            end
+            assert(names.chamfer == "Chamfer")
+            assert(names.combine == "Combine")
+            assert(names.raised_text == "Raised text")
+            "#,
+        );
+    }
+
+    /// #1555: chamfer tutorial walks with assists and leaves a sketch + solid chamfer.
+    #[test]
+    fn chamfer_tutorial_lua_walks_and_bevels_a_box() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.ui.tutorial("chamfer")
+            assert(bearcad.ui.tutorial_step() == 0)
+            local guard = 0
+            while bearcad.ui.tutorial_step() ~= nil do
+              guard = guard + 1
+              assert(guard < 50, "chamfer tutorial should finish")
+              bearcad.ui.tutorial_assist()
+              if bearcad.ui.tutorial_step() ~= nil then
+                bearcad.ui.tutorial_next()
+              end
+            end
+            assert(bearcad.count("extrusion") == 1, "extruded")
+            assert(bearcad.count("line") >= 4, "chamfered profile")
+            assert(bearcad.count("body") >= 1, "solid")
+            "#,
+        );
+    }
+
+    /// #1556: combine tutorial walks with assists and cuts a sphere from a cube.
+    #[test]
+    fn combine_tutorial_lua_walks_and_cuts_a_sphere() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.ui.tutorial("combine")
+            assert(bearcad.ui.tutorial_step() == 0)
+            local guard = 0
+            while bearcad.ui.tutorial_step() ~= nil do
+              guard = guard + 1
+              assert(guard < 50, "combine tutorial should finish")
+              bearcad.ui.tutorial_assist()
+              if bearcad.ui.tutorial_step() ~= nil then
+                bearcad.ui.tutorial_next()
+              end
+            end
+            assert(bearcad.count("body") >= 3, "cube, sphere, and cut result")
+            "#,
+        );
+    }
+
+    /// #1557: raised-text tutorial walks with assists and extrudes letters.
+    #[test]
+    fn raised_text_tutorial_lua_walks_and_extrudes_letters() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.ui.tutorial("raised_text")
+            assert(bearcad.ui.tutorial_step() == 0)
+            local guard = 0
+            while bearcad.ui.tutorial_step() ~= nil do
+              guard = guard + 1
+              assert(guard < 50, "raised_text tutorial should finish")
+              bearcad.ui.tutorial_assist()
+              if bearcad.ui.tutorial_step() ~= nil then
+                bearcad.ui.tutorial_next()
+              end
+            end
+            assert(bearcad.count("sketch_text") == 1, "letters")
+            assert(bearcad.count("extrusion") >= 1, "raised")
             "#,
         );
     }

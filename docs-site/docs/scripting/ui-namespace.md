@@ -143,7 +143,7 @@ Docs screenshot scripts turn it off so the line does not cover the model.
 
 ```lua
 bearcad.ui.tutorial_pane("show")   -- list every walkthrough (status-bar Tutorials button)
-local list = bearcad.ui.tutorials() -- { {name=, title=, completed=}, ... }
+local list = bearcad.ui.tutorials() -- { {name=, title=, number=, completed=}, ... }
 bearcad.ui.tutorial("cube")        -- start by registry name; fresh document
 bearcad.ui.tutorial_next()
 bearcad.ui.tutorial_assist()

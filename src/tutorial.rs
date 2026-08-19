@@ -58,6 +58,10 @@ pub enum UiAnchor {
     PaneButton(crate::actions::Pane),
     /// The status-bar Tutorials launcher (#1434): the launch prompt points here.
     TutorialsButton,
+    /// A Combine-tool Mode button in the Context pane (#1556): Combine / Cut / Intersect / Difference.
+    CombineKind(crate::model::BooleanOpKind),
+    /// The Text tool's string field in the Context pane (#1557).
+    TextContent,
 }
 
 /// What a step's glowing orb points at, once resolved against the live state.
@@ -312,10 +316,33 @@ pub static TUTORIALS: &[Tutorial] = &[
         title: "Parameters",
         steps: PARAMETERS_STEPS,
     },
+    // #1555: sketch-chamfer a rectangle, extrude, chamfer the top of the solid.
+    Tutorial {
+        name: "chamfer",
+        title: "Chamfer",
+        steps: CHAMFER_STEPS,
+    },
+    // #1556: cut a sphere out of a cube with the Combine tool.
+    Tutorial {
+        name: "combine",
+        title: "Combine",
+        steps: COMBINE_STEPS,
+    },
+    // #1557: stamp raised letters on a cube.
+    Tutorial {
+        name: "raised_text",
+        title: "Raised text",
+        steps: RAISED_TEXT_STEPS,
+    },
 ];
 
 pub fn tutorial_index(name: &str) -> Option<usize> {
     TUTORIALS.iter().position(|t| t.name == name)
+}
+
+/// Pane / list label: catalog order as a 1-based number plus the skill title (#1558).
+pub fn numbered_title(index: usize, title: &str) -> String {
+    format!("{}. {title}", index + 1)
 }
 
 /// A plain step (no assist, no phone-only branches) for the shorter tutorials.
@@ -2197,6 +2224,743 @@ static PARAMETERS_STEPS: &[Step] = &[
     ),
 ];
 
+fn chamfer_tool_active(app: &AppState) -> bool {
+    app.tool == Tool::Chamfer
+}
+
+fn combine_tool_active(app: &AppState) -> bool {
+    app.tool == Tool::Combine
+}
+
+fn text_tool_active(app: &AppState) -> bool {
+    app.tool == Tool::Text
+}
+
+fn sketch_tool_active(app: &AppState) -> bool {
+    app.tool == Tool::Sketch
+}
+
+fn has_sketch_chamfer(app: &AppState) -> bool {
+    !app.doc.sketch_vertex_treatment_ops.is_empty()
+}
+
+fn sketch_chamfer_picked(app: &AppState) -> bool {
+    app.creating_vertex_treatment
+        .as_ref()
+        .is_some_and(|c| c.kind == crate::model::VertexTreatmentKind::Chamfer)
+        || has_sketch_chamfer(app)
+}
+
+fn has_solid_chamfer(app: &AppState) -> bool {
+    app.doc
+        .edge_treatment_ops
+        .values()
+        .any(|op| op.kind == crate::model::VertexTreatmentKind::Chamfer)
+}
+
+fn solid_chamfer_picked(app: &AppState) -> bool {
+    app.creating_edge_treatment
+        .as_ref()
+        .is_some_and(|c| {
+            c.kind == crate::model::VertexTreatmentKind::Chamfer && !c.edges.is_empty()
+        })
+        || has_solid_chamfer(app)
+}
+
+fn combine_cut_mode_ready(app: &AppState) -> bool {
+    has_combine_cut(app)
+        || app
+            .creating_boolean
+            .as_ref()
+            .is_some_and(|cb| cb.kind == crate::model::BooleanOpKind::Cut)
+}
+
+fn combine_a_picked(app: &AppState) -> bool {
+    has_combine_cut(app)
+        || app
+            .creating_boolean
+            .as_ref()
+            .is_some_and(|cb| !cb.a.is_empty())
+}
+
+fn combine_b_picked(app: &AppState) -> bool {
+    has_combine_cut(app)
+        || app
+            .creating_boolean
+            .as_ref()
+            .is_some_and(|cb| !cb.b.is_empty())
+}
+
+fn has_combine_cut(app: &AppState) -> bool {
+    app.doc
+        .boolean_ops
+        .values()
+        .any(|op| op.kind == crate::model::BooleanOpKind::Cut && !op.outputs.is_empty())
+}
+
+fn has_sketch_text(app: &AppState) -> bool {
+    !app.doc.sketch_texts.is_empty()
+}
+
+fn text_says_bear(app: &AppState) -> bool {
+    app.doc
+        .sketch_texts
+        .values()
+        .any(|t| t.text.to_ascii_uppercase().contains("BEAR"))
+}
+
+fn has_raised_text(app: &AppState) -> bool {
+    app.doc.extrusions.values().any(|e| {
+        e.faces
+            .iter()
+            .any(|f| matches!(f, crate::model::ExtrudeFace::TextGlyph { .. }))
+    })
+}
+
+fn text_extrude_picked(app: &AppState) -> bool {
+    has_raised_text(app)
+        || app.creating_extrusion.as_ref().is_some_and(|ce| {
+            ce.faces
+                .iter()
+                .any(|f| matches!(f, crate::model::ExtrudeFace::TextGlyph { .. }))
+        })
+}
+
+fn sketch_on_cuboid(app: &AppState) -> bool {
+    has_sketch_text(app)
+        || app.sketch_session.is_some_and(|s| {
+            matches!(
+                app.doc.sketches.get(s.sketch).map(|sk| &sk.face),
+                Some(crate::model::FaceId::PrimitiveFace { .. })
+            )
+        })
+}
+
+fn first_usable_font() -> Option<String> {
+    for fam in ["Helvetica", "Arial", "Segoe UI", "DejaVu Sans", "Liberation Sans"] {
+        if crate::text::font_bytes(fam, false, false).is_some() {
+            return Some(fam.to_string());
+        }
+    }
+    crate::text::system_font_families().into_iter().next()
+}
+
+fn rect_chamfer_corner_guide(app: &AppState) -> Option<glam::Vec3> {
+    let lines = first_sketch_rect_lines(app);
+    let line = app.doc.lines.get(*lines.get(1)?)?;
+    let frame = crate::face::sketch_geometry_frame(&app.doc, line.sketch)?;
+    Some(crate::face::local_to_world(&frame, line.x1, line.y1))
+}
+
+fn extrusion_top_guide(app: &AppState) -> Option<glam::Vec3> {
+    let mut sum = glam::Vec3::ZERO;
+    let mut n = 0u32;
+    for (_, edge, a, b) in crate::extrude::treatable_edges(&app.doc) {
+        if matches!(
+            edge,
+            crate::model::ExtrusionEdgeRef::Cap { top: true, .. }
+        ) {
+            sum += (a + b) * 0.5;
+            n += 1;
+        }
+    }
+    if n > 0 {
+        return Some(sum / n as f32);
+    }
+    rectangle_face_guide(app).map(|p| p + glam::Vec3::Z * 10.0)
+}
+
+fn cuboid_body_guide(app: &AppState) -> Option<glam::Vec3> {
+    let p = app
+        .doc
+        .primitives
+        .values()
+        .find(|p| p.kind == crate::model::PrimitiveKind::Cuboid)?;
+    let r = crate::primitives::resolve(&app.doc, p)?;
+    Some(r.origin + r.normal * (r.height * 0.5))
+}
+
+fn sphere_body_guide(app: &AppState) -> Option<glam::Vec3> {
+    let p = app
+        .doc
+        .primitives
+        .values()
+        .find(|p| p.kind == crate::model::PrimitiveKind::Sphere)?;
+    crate::primitives::resolve(&app.doc, p).map(|r| r.sphere_center())
+}
+
+fn cuboid_top_guide(app: &AppState) -> Option<glam::Vec3> {
+    let p = app
+        .doc
+        .primitives
+        .values()
+        .find(|p| p.kind == crate::model::PrimitiveKind::Cuboid)?;
+    let r = crate::primitives::resolve(&app.doc, p)?;
+    Some(r.origin + r.normal * r.height)
+}
+
+fn text_or_cuboid_top_guide(app: &AppState) -> Option<glam::Vec3> {
+    if let Some(t) = app.doc.sketch_texts.values().next() {
+        if let Some(frame) = crate::face::sketch_geometry_frame(&app.doc, t.sketch) {
+            return Some(crate::face::local_to_world(&frame, t.origin.0 + 8.0, t.origin.1));
+        }
+    }
+    cuboid_top_guide(app)
+}
+
+fn first_rect_corner_point(app: &AppState) -> Option<crate::model::ConstraintPoint> {
+    let lines = first_sketch_rect_lines(app);
+    let &line = lines.get(1)?;
+    Some(crate::model::ConstraintPoint::LineEndpoint {
+        line,
+        end: crate::model::LineEnd::End,
+    })
+}
+
+fn live_body_for_primitive(
+    app: &AppState,
+    kind: crate::model::PrimitiveKind,
+) -> Option<crate::model::BodyKey> {
+    let prim = app
+        .doc
+        .primitives
+        .iter()
+        .find(|(_, p)| p.kind == kind)
+        .map(|(k, _)| k)?;
+    app.doc.bodies.iter().find_map(|(bi, b)| {
+        (!b.shadow && matches!(b.source, crate::model::BodySource::Primitive(p) if p == prim))
+            .then_some(bi)
+    })
+}
+
+fn assist_chamfer_rect_corner(app: &mut AppState) {
+    if has_sketch_chamfer(app) {
+        return;
+    }
+    assist_draw_square(app);
+    let Some(point) = first_rect_corner_point(app) else {
+        return;
+    };
+    app.apply(Action::CommitVertexTreatment {
+        point,
+        kind: crate::model::VertexTreatmentKind::Chamfer,
+        amount: "5".into(),
+    });
+}
+
+fn assist_extrude_chamfered_profile(app: &mut AppState) {
+    if has_extrusion(app) {
+        return;
+    }
+    assist_chamfer_rect_corner(app);
+    let Some(sketch) = app
+        .doc
+        .lines
+        .values()
+        .find(|l| !l.construction)
+        .map(|l| l.sketch)
+    else {
+        return;
+    };
+    let Some(lines) = crate::polygon::closed_line_loops(&app.doc, sketch)
+        .into_iter()
+        .max_by_key(|loop_| loop_.len())
+    else {
+        return;
+    };
+    if lines.len() < 4 {
+        return;
+    }
+    if app.sketch_session.is_some() {
+        app.apply(Action::ExitSketch);
+    }
+    app.apply(Action::CreateExtrusion {
+        sketch,
+        faces: vec![crate::model::ExtrudeFace::Polygon(lines)],
+        distance: 20.0,
+        body: crate::actions::ExtrudeBodyChoice::New,
+        target: None,
+        expression: Some("20".into()),
+        symmetric: false,
+        taper: 0.0,
+        taper_mode: crate::model::ExtrudeTaperMode::Distance,
+        taper_expression: None,
+    });
+}
+
+fn assist_chamfer_top_edges(app: &mut AppState) {
+    if has_solid_chamfer(app) {
+        return;
+    }
+    assist_extrude_chamfered_profile(app);
+    let Some(extrusion) = app.doc.extrusions.keys().next() else {
+        return;
+    };
+    // Opposite cap edges in one op — adjacent edges on the same face share a corner.
+    let edges = vec![
+        (
+            crate::model::TreatableSolid::Extrusion(extrusion),
+            crate::model::ExtrusionEdgeRef::Cap {
+                face: 0,
+                edge: 0,
+                top: true,
+            },
+        ),
+        (
+            crate::model::TreatableSolid::Extrusion(extrusion),
+            crate::model::ExtrusionEdgeRef::Cap {
+                face: 0,
+                edge: 2,
+                top: true,
+            },
+        ),
+        (
+            crate::model::TreatableSolid::Extrusion(extrusion),
+            crate::model::ExtrusionEdgeRef::Cap {
+                face: 0,
+                edge: 1,
+                top: true,
+            },
+        ),
+        (
+            crate::model::TreatableSolid::Extrusion(extrusion),
+            crate::model::ExtrusionEdgeRef::Cap {
+                face: 0,
+                edge: 3,
+                top: true,
+            },
+        ),
+    ];
+    // Face-click fills every edge of the top; commit keeps the ones that don't share
+    // a corner. Then stack the remaining pair so all four edges of that side land.
+    let _ = app.apply(Action::CommitEdgeTreatments {
+        edges: vec![edges[0], edges[1]],
+        kind: crate::model::VertexTreatmentKind::Chamfer,
+        amount: 3.0,
+        expression: "3".into(),
+    });
+    let _ = app.apply(Action::CommitEdgeTreatments {
+        edges: vec![edges[2], edges[3]],
+        kind: crate::model::VertexTreatmentKind::Chamfer,
+        amount: 3.0,
+        expression: "3".into(),
+    });
+}
+
+fn overlap_sphere_origin() -> [f32; 3] {
+    [8.0, 8.0, 0.0]
+}
+
+fn assist_place_overlap_sphere(app: &mut AppState) {
+    if has_sphere(app) {
+        return;
+    }
+    assist_place_cuboid(app);
+    let mut shape = crate::model::Primitive::new(crate::model::PrimitiveKind::Sphere);
+    shape.origin = overlap_sphere_origin();
+    shape.radius = "12".into();
+    app.apply(Action::CreateShape { shape });
+}
+
+fn assist_combine_cut_sphere(app: &mut AppState) {
+    if has_combine_cut(app) {
+        return;
+    }
+    assist_place_overlap_sphere(app);
+    let Some(cube) = live_body_for_primitive(app, crate::model::PrimitiveKind::Cuboid) else {
+        return;
+    };
+    let Some(sphere) = live_body_for_primitive(app, crate::model::PrimitiveKind::Sphere) else {
+        return;
+    };
+    app.apply(Action::CreateBooleanOperation {
+        kind: crate::model::BooleanOpKind::Cut,
+        a: vec![cube],
+        b: vec![sphere],
+        keep_b: false,
+        solid_count: None,
+    });
+}
+
+fn assist_place_bear_text(app: &mut AppState) {
+    if text_says_bear(app) {
+        return;
+    }
+    assist_place_cuboid(app);
+    let Some(prim) = app
+        .doc
+        .primitives
+        .iter()
+        .find(|(_, p)| p.kind == crate::model::PrimitiveKind::Cuboid)
+        .map(|(k, _)| k)
+    else {
+        return;
+    };
+    if app.sketch_session.is_none() {
+        app.apply(Action::BeginSketch {
+            face: crate::model::FaceId::PrimitiveFace {
+                primitive: prim,
+                face: crate::model::PrimitiveFace::CuboidTop,
+            },
+            viewport: None,
+        });
+    }
+    let existing_text = app.doc.sketch_texts.keys().next();
+    if let Some(key) = existing_text {
+        let existing = app.doc.sketch_texts[key].clone();
+        app.apply(Action::EditSketchText {
+            index: key,
+            text: "BEAR".into(),
+            font_family: existing.font_family,
+            bold: existing.bold,
+            italic: existing.italic,
+            underline: existing.underline,
+            size: existing.size,
+            size_expr: existing.size_expr,
+            rotation: existing.rotation,
+            wrap_width: existing.wrap_width,
+        });
+        return;
+    }
+    let Some(session) = app.sketch_session else {
+        return;
+    };
+    let Some(family) = first_usable_font() else {
+        return;
+    };
+    app.apply(Action::CreateSketchText {
+        sketch: session.sketch,
+        text: "BEAR".into(),
+        font_family: family,
+        bold: false,
+        italic: false,
+        underline: false,
+        size: 8.0,
+        size_expr: "8".into(),
+        origin: (-8.0, 3.0),
+        rotation: 0.0,
+        wrap_width: None,
+    });
+}
+
+fn assist_extrude_raised_text(app: &mut AppState) {
+    if has_raised_text(app) {
+        return;
+    }
+    assist_place_bear_text(app);
+    let Some((key, sketch, glyphs)) = app.doc.sketch_texts.iter().next().map(|(k, t)| {
+        (k, t.sketch, crate::text::group_glyphs(&t.contours).len())
+    }) else {
+        return;
+    };
+    if glyphs == 0 {
+        return;
+    }
+    let faces: Vec<_> = (0..glyphs)
+        .map(|glyph| crate::model::ExtrudeFace::TextGlyph { text: key, glyph })
+        .collect();
+    if app.sketch_session.is_some() {
+        app.apply(Action::ExitSketch);
+    }
+    app.apply(Action::CreateExtrusion {
+        sketch,
+        faces,
+        distance: 2.0,
+        body: crate::actions::ExtrudeBodyChoice::Merge,
+        target: None,
+        expression: Some("2".into()),
+        symmetric: false,
+        taper: 0.0,
+        taper_mode: crate::model::ExtrudeTaperMode::Distance,
+        taper_expression: None,
+    });
+}
+
+fn sphere_kind_or_placed(app: &AppState) -> bool {
+    has_sphere(app)
+        || (shape_tool_active(app) && app.shape_kind == crate::model::PrimitiveKind::Sphere)
+}
+
+/// #1555: chamfer a rectangle corner, extrude, then chamfer the top of the solid.
+static CHAMFER_STEPS: &[Step] = &[
+    plain_step(
+        "Let's chamfer a corner, extrude the profile, then chamfer the top of the box.",
+        StepAnchor::None,
+        None,
+    ),
+    plain_step(
+        "Click the Rectangle tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Rectangle)),
+        Some(rectangle_tool_active),
+    ),
+    plain_step_enter(
+        "Click a corner on the ground.",
+        StepAnchor::World(rect_first_corner_guide),
+        Some(rect_first_corner_placed),
+        ensure_rect_sketch_for_tutorial,
+    ),
+    assisted_step(
+        "Click the opposite corner.",
+        StepAnchor::World(rect_opposite_corner_guide),
+        Some(has_rectangle_outline),
+        StepAssist {
+            label: "Draw it for me",
+            run: assist_draw_square,
+        },
+        None,
+    ),
+    plain_step(
+        "Click the Chamfer tool \u{2014} glowing button, or `K`.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Chamfer)),
+        Some(chamfer_tool_active),
+    ),
+    plain_step(
+        "Click a corner of the square.",
+        StepAnchor::World(rect_chamfer_corner_guide),
+        Some(sketch_chamfer_picked),
+    ),
+    assisted_step(
+        "Type `5`, then Enter.",
+        StepAnchor::None,
+        Some(has_sketch_chamfer),
+        StepAssist {
+            label: "Chamfer it for me",
+            run: assist_chamfer_rect_corner,
+        },
+        Some(TypeHint::Fixed("5")),
+    ),
+    plain_step(
+        "Click the Extrude tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude)),
+        Some(extrude_tool_active),
+    ),
+    plain_step(
+        "Click the profile.",
+        StepAnchor::World(rectangle_face_guide),
+        Some(extrude_face_picked),
+    ),
+    assisted_step(
+        "Press Enter. A solid with a cut corner.",
+        StepAnchor::None,
+        Some(has_extrusion),
+        StepAssist {
+            label: "Extrude it for me",
+            run: assist_extrude_chamfered_profile,
+        },
+        None,
+    ),
+    plain_step(
+        "Chamfer tool again \u{2014} glowing button, or `K`.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Chamfer)),
+        Some(chamfer_tool_active),
+    ),
+    plain_step(
+        "Click the top of the box \u{2014} Chamfer picks every edge of that side.",
+        StepAnchor::World(extrusion_top_guide),
+        Some(solid_chamfer_picked),
+    ),
+    assisted_step(
+        "Type `3`, then Enter.",
+        StepAnchor::None,
+        Some(has_solid_chamfer),
+        StepAssist {
+            label: "Chamfer it for me",
+            run: assist_chamfer_top_edges,
+        },
+        Some(TypeHint::Fixed("3")),
+    ),
+    plain_step(
+        "A chamfered corner in the sketch, and a beveled top. Nice!",
+        StepAnchor::None,
+        None,
+    ),
+];
+
+/// #1556: place a cube and a sphere, then cut the sphere out of the cube.
+static COMBINE_STEPS: &[Step] = &[
+    plain_step(
+        "Let's cut a sphere out of a cube with the Combine tool.",
+        StepAnchor::None,
+        None,
+    ),
+    plain_step(
+        "Grab the Shape tool \u{2014} the glowing button, or press `B`. It starts as a cuboid.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        Some(cuboid_kind_ready),
+    ),
+    plain_step(
+        "Click a ground corner to anchor the cuboid.",
+        StepAnchor::World(ground_anchor_a),
+        Some(cuboid_anchored),
+    ),
+    plain_step(
+        "Click the opposite corner of the base.",
+        StepAnchor::World(ground_anchor_b),
+        Some(cuboid_base_set),
+    ),
+    assisted_step_enter(
+        "Type the height: `20`, then Enter.",
+        StepAnchor::Ui(UiAnchor::ShapeHeight),
+        Some(has_cuboid),
+        StepAssist {
+            label: "Place it for me",
+            run: assist_place_cuboid,
+        },
+        Some(TypeHint::Fixed("20")),
+        ensure_shape_height_focus,
+    ),
+    plain_step(
+        "Press `B` to re-arm the Shape tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        Some(shape_tool_active),
+    ),
+    plain_step(
+        "Click Sphere in the Context pane (or press `B`).",
+        StepAnchor::Ui(UiAnchor::ShapeKind(crate::model::PrimitiveKind::Sphere)),
+        Some(sphere_kind_or_placed),
+    ),
+    plain_step(
+        "Click so the sphere overlaps the cube.",
+        StepAnchor::World(ground_anchor_b),
+        Some(sphere_anchored),
+    ),
+    assisted_step(
+        "Type the radius: `12`, then Enter.",
+        StepAnchor::Ui(UiAnchor::ShapeRadius),
+        Some(has_sphere),
+        StepAssist {
+            label: "Place it for me",
+            run: assist_place_overlap_sphere,
+        },
+        Some(TypeHint::Fixed("12")),
+    ),
+    plain_step(
+        "Click the Combine tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Combine)),
+        Some(combine_tool_active),
+    ),
+    plain_step(
+        "Click Cut in the Context pane (or press `Y`).",
+        StepAnchor::Ui(UiAnchor::CombineKind(crate::model::BooleanOpKind::Cut)),
+        Some(combine_cut_mode_ready),
+    ),
+    plain_step(
+        "Click the cube \u{2014} that's side A, the body we keep.",
+        StepAnchor::World(cuboid_body_guide),
+        Some(combine_a_picked),
+    ),
+    plain_step(
+        "Click the sphere \u{2014} side B, the one we cut away.",
+        StepAnchor::World(sphere_body_guide),
+        Some(combine_b_picked),
+    ),
+    assisted_step(
+        "Press Enter. The sphere bites the cube.",
+        StepAnchor::None,
+        Some(has_combine_cut),
+        StepAssist {
+            label: "Cut it for me",
+            run: assist_combine_cut_sphere,
+        },
+        None,
+    ),
+    plain_step(
+        "That's a cut: Combine's A minus B. Nice!",
+        StepAnchor::None,
+        None,
+    ),
+];
+
+/// #1557: sketch letters on a cube and extrude them so they stand proud.
+static RAISED_TEXT_STEPS: &[Step] = &[
+    plain_step(
+        "Let's stamp raised letters on a cube.",
+        StepAnchor::None,
+        None,
+    ),
+    plain_step(
+        "Grab the Shape tool \u{2014} the glowing button, or press `B`.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        Some(cuboid_kind_ready),
+    ),
+    plain_step(
+        "Click a ground corner to anchor the cuboid.",
+        StepAnchor::World(ground_anchor_a),
+        Some(cuboid_anchored),
+    ),
+    plain_step(
+        "Click the opposite corner of the base.",
+        StepAnchor::World(ground_anchor_b),
+        Some(cuboid_base_set),
+    ),
+    assisted_step_enter(
+        "Type the height: `20`, then Enter.",
+        StepAnchor::Ui(UiAnchor::ShapeHeight),
+        Some(has_cuboid),
+        StepAssist {
+            label: "Place it for me",
+            run: assist_place_cuboid,
+        },
+        Some(TypeHint::Fixed("20")),
+        ensure_shape_height_focus,
+    ),
+    plain_step(
+        "Click the Sketch tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Sketch)),
+        Some(sketch_tool_active),
+    ),
+    plain_step(
+        "Click the top of the cube.",
+        StepAnchor::World(cuboid_top_guide),
+        Some(sketch_on_cuboid),
+    ),
+    plain_step(
+        "Click the Text tool \u{2014} glowing button, or `T`.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Text)),
+        Some(text_tool_active),
+    ),
+    plain_step(
+        "Click on the face to drop the text.",
+        StepAnchor::World(cuboid_top_guide),
+        Some(has_sketch_text),
+    ),
+    assisted_step(
+        "Type `BEAR` in the Context pane.",
+        StepAnchor::Ui(UiAnchor::TextContent),
+        Some(text_says_bear),
+        StepAssist {
+            label: "Type it for me",
+            run: assist_place_bear_text,
+        },
+        Some(TypeHint::Fixed("BEAR")),
+    ),
+    plain_step(
+        "Click the Extrude tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude)),
+        Some(extrude_tool_active),
+    ),
+    plain_step(
+        "Click the letters.",
+        StepAnchor::World(text_or_cuboid_top_guide),
+        Some(text_extrude_picked),
+    ),
+    assisted_step(
+        "Type `2`, then Enter. The letters stand proud.",
+        StepAnchor::Ui(UiAnchor::ExtrudeDistance),
+        Some(has_raised_text),
+        StepAssist {
+            label: "Extrude it for me",
+            run: assist_extrude_raised_text,
+        },
+        Some(TypeHint::Fixed("2")),
+    ),
+    plain_step(
+        "That's raised text \u{2014} sketch on a face, type, extrude. Nice!",
+        StepAnchor::None,
+        None,
+    ),
+];
+
 fn shape_tool_active_or_past_cuboid(app: &AppState) -> bool {
     // Re-arm step: tool is Shape again, or the user already cycled / placed further shapes.
     shape_tool_active(app) || has_cylinder(app) || has_sphere(app) || cylinder_kind_ready(app)
@@ -2325,10 +3089,13 @@ mod tests {
         assert_eq!(tutorial_index("shapes"), Some(2));
         assert_eq!(tutorial_index("dimensioned_box"), Some(3));
         assert_eq!(tutorial_index("parameters"), Some(4), "#1347: parameters is fifth");
+        assert_eq!(tutorial_index("chamfer"), Some(5), "#1555: chamfer is sixth");
+        assert_eq!(tutorial_index("combine"), Some(6), "#1556: combine is seventh");
+        assert_eq!(tutorial_index("raised_text"), Some(7), "#1557: raised text is eighth");
         assert_eq!(tutorial_index("bracket"), None, "#1334: build-a-bracket tutorial is gone");
         assert_eq!(tutorial_index("nope"), None);
-        assert_eq!(TUTORIALS.last().unwrap().name, "parameters");
-        assert_eq!(TUTORIALS.len(), 5, "pane lists every remaining walkthrough");
+        assert_eq!(TUTORIALS.last().unwrap().name, "raised_text");
+        assert_eq!(TUTORIALS.len(), 8, "pane lists every remaining walkthrough");
         for tut in TUTORIALS {
             assert_ne!(tut.name, "bracket");
             assert_ne!(tut.title, "Build an angle bracket");
@@ -3190,6 +3957,18 @@ mod tests {
             TUTORIALS[tutorial_index("parameters").unwrap()].title,
             "Parameters"
         );
+        assert_eq!(
+            TUTORIALS[tutorial_index("chamfer").unwrap()].title,
+            "Chamfer"
+        );
+        assert_eq!(
+            TUTORIALS[tutorial_index("combine").unwrap()].title,
+            "Combine"
+        );
+        assert_eq!(
+            TUTORIALS[tutorial_index("raised_text").unwrap()].title,
+            "Raised text"
+        );
     }
 
     /// #1316: the Dimensions tutorial never mentions parameters.
@@ -3553,7 +4332,6 @@ mod tests {
         assert_eq!(tut.name, "parameters");
         assert_eq!(tut.title, "Parameters");
         assert_eq!(tutorial_index("parameters"), Some(4));
-        assert_eq!(TUTORIALS.last().unwrap().name, "parameters");
     }
 
     /// #1347: create width → rect width / width*2 → change width → extrude
@@ -3908,6 +4686,209 @@ mod tests {
             app.tutorial_prompt()
                 .is_some_and(|p| p.work_started),
             "creating a parameter starts the fade clock"
+        );
+    }
+
+    /// #1558: the Tutorials pane prefixes every walkthrough with its catalog number.
+    #[test]
+    fn tutorials_are_numbered_in_catalog_order() {
+        assert_eq!(numbered_title(0, "Sketch & Extrude"), "1. Sketch & Extrude");
+        assert_eq!(numbered_title(7, "Raised text"), "8. Raised text");
+        for (i, tut) in TUTORIALS.iter().enumerate() {
+            let shown = numbered_title(i, tut.title);
+            assert!(
+                shown.starts_with(&format!("{}. ", i + 1)),
+                "catalog #{i} should start with its number: {shown}"
+            );
+            assert!(
+                shown.ends_with(tut.title),
+                "numbering must keep the skill title: {shown}"
+            );
+        }
+        assert_eq!(TUTORIALS.len(), 8);
+    }
+
+    fn chamfer_tut() -> &'static Tutorial {
+        &TUTORIALS[tutorial_index("chamfer").expect("chamfer tutorial is registered")]
+    }
+
+    fn combine_tut() -> &'static Tutorial {
+        &TUTORIALS[tutorial_index("combine").expect("combine tutorial is registered")]
+    }
+
+    fn raised_text_tut() -> &'static Tutorial {
+        &TUTORIALS[tutorial_index("raised_text").expect("raised_text tutorial is registered")]
+    }
+
+    /// #1555: sketch-chamfer a rectangle, extrude, then chamfer the top of the solid.
+    #[test]
+    fn chamfer_tutorial_is_registered_and_covers_sketch_then_solid() {
+        let tut = chamfer_tut();
+        assert_eq!(tut.name, "chamfer");
+        assert_eq!(tut.title, "Chamfer");
+        let joined: String = tut
+            .steps
+            .iter()
+            .map(|s| s.narration.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("chamfer"), "{}", tut.steps[0].narration);
+        assert!(joined.contains("rectangle") || joined.contains("square"), "{joined}");
+        assert!(joined.contains("extrude"), "{joined}");
+        assert!(
+            joined.contains("top") || joined.contains("side") || joined.contains("edge"),
+            "should chamfer a side of the solid: {joined}"
+        );
+        assert!(
+            tut.steps
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::Tool(Tool::Chamfer)))),
+            "should pick the Chamfer tool"
+        );
+        assert!(
+            tut.steps
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude)))),
+            "should pick the Extrude tool"
+        );
+    }
+
+    /// #1555: assists produce a sketch chamfer plus a 3D edge chamfer.
+    #[test]
+    fn chamfer_tutorial_assists_bevel_a_box() {
+        let mut app = AppState::default();
+        finish_tutorial_via_next(&mut app, "chamfer");
+        assert!(
+            !app.doc.sketch_vertex_treatment_ops.is_empty(),
+            "sketch corner should be chamfered, status={}",
+            app.status
+        );
+        assert!(has_extrusion(&app), "profile should be extruded");
+        assert!(
+            !app.doc.edge_treatment_ops.is_empty(),
+            "solid edges should be chamfered, status={}",
+            app.status
+        );
+        let treated: usize = app
+            .doc
+            .edge_treatment_ops
+            .values()
+            .filter(|op| op.kind == crate::model::VertexTreatmentKind::Chamfer)
+            .map(|op| op.edges.len())
+            .sum();
+        assert!(
+            treated >= 4,
+            "all four edges of one side should be chamfered, got {treated}, status={}",
+            app.status
+        );
+    }
+
+    /// #1556: place a cube and a sphere, then cut the sphere out of the cube.
+    #[test]
+    fn combine_tutorial_is_registered_and_covers_a_cut() {
+        let tut = combine_tut();
+        assert_eq!(tut.name, "combine");
+        assert_eq!(tut.title, "Combine");
+        let joined: String = tut
+            .steps
+            .iter()
+            .map(|s| s.narration.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("combine") || joined.contains("cut"), "{joined}");
+        assert!(joined.contains("sphere"), "{joined}");
+        assert!(joined.contains("cube") || joined.contains("cuboid"), "{joined}");
+        assert!(
+            tut.steps
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::Tool(Tool::Combine)))),
+            "should pick the Combine tool"
+        );
+        assert!(
+            tut.steps.iter().any(|s| matches!(
+                s.anchor,
+                StepAnchor::Ui(UiAnchor::CombineKind(crate::model::BooleanOpKind::Cut))
+            )),
+            "should point at Cut in the Combine mode row"
+        );
+    }
+
+    /// #1556: assists cut a sphere out of a cube.
+    #[test]
+    fn combine_tutorial_assists_cut_a_sphere_from_a_cube() {
+        let mut app = AppState::default();
+        finish_tutorial_via_next(&mut app, "combine");
+        assert!(has_cuboid(&app), "cube");
+        assert!(has_sphere(&app), "sphere");
+        assert_eq!(app.doc.boolean_ops.len(), 1, "one combine op, status={}", app.status);
+        let op = app.doc.boolean_ops.values().next().unwrap();
+        assert_eq!(op.kind, crate::model::BooleanOpKind::Cut);
+        assert!(!op.outputs.is_empty(), "cut should produce a body");
+    }
+
+    /// #1557: sketch text on a cube and extrude it so the letters stand proud.
+    #[test]
+    fn raised_text_tutorial_is_registered_and_covers_text_on_a_cube() {
+        let tut = raised_text_tut();
+        assert_eq!(tut.name, "raised_text");
+        assert_eq!(tut.title, "Raised text");
+        let joined: String = tut
+            .steps
+            .iter()
+            .map(|s| s.narration.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("text"), "{joined}");
+        assert!(joined.contains("cube") || joined.contains("cuboid"), "{joined}");
+        assert!(joined.contains("extrude"), "{joined}");
+        assert!(
+            tut.steps
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::Tool(Tool::Text)))),
+            "should pick the Text tool"
+        );
+        assert!(
+            tut.steps
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude)))),
+            "should pick the Extrude tool"
+        );
+    }
+
+    /// #1557: assists stamp raised letters on a cube.
+    #[test]
+    fn raised_text_tutorial_assists_extrude_letters_on_a_cube() {
+        if crate::text::font_bytes("Helvetica", false, false).is_none()
+            && crate::text::font_bytes("Arial", false, false).is_none()
+            && crate::text::font_bytes("DejaVu Sans", false, false).is_none()
+            && crate::text::font_bytes("Liberation Sans", false, false).is_none()
+            && crate::text::system_font_families().is_empty()
+        {
+            eprintln!("no usable system font; skipping");
+            return;
+        }
+        let mut app = AppState::default();
+        finish_tutorial_via_next(&mut app, "raised_text");
+        assert!(has_cuboid(&app), "cube");
+        assert!(
+            !app.doc.sketch_texts.is_empty(),
+            "letters should exist, status={}",
+            app.status
+        );
+        let text = app.doc.sketch_texts.values().next().unwrap();
+        assert!(
+            text.text.to_ascii_uppercase().contains("BEAR"),
+            "expected BEAR, got {:?}",
+            text.text
+        );
+        assert!(
+            app.doc.extrusions.values().any(|e| {
+                e.faces
+                    .iter()
+                    .any(|f| matches!(f, crate::model::ExtrudeFace::TextGlyph { .. }))
+            }),
+            "text should be extruded, status={}",
+            app.status
         );
     }
 }

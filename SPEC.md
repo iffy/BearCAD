@@ -5159,6 +5159,15 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
 - **Parameters** (`parameters`, #1347): add `width` in the Parameters pane, type `width` and
   `width*2` into the rectangle fields, change `width`, extrude with inline `height=30mm`,
   then change `height` in the pane. Title: **Parameters**.
+- **Chamfer** (`chamfer`, #1555): rectangle on the ground, chamfer one corner, extrude, then
+  click the top of the box so Chamfer takes every edge of that side. Title: **Chamfer**.
+- **Combine** (`combine`, #1556): place a cuboid and an overlapping sphere, switch Combine to
+  Cut, pick the cube then the sphere, Enter. Title: **Combine**.
+- **Raised text** (`raised_text`, #1557): place a cuboid, sketch on its top, drop text, type
+  `BEAR`, extrude the letters so they stand proud. Title: **Raised text**.
+- **Numbered list** (#1558): the Tutorials pane prefixes each walkthrough with its catalog
+  number (`1. Sketch & Extrude`, …). Scripting exposes the same 1-based `number` on
+  `bearcad.ui.tutorials()`.
 - **Second tutorial (`navigate`)** (#1269): pan / orbit / zoom and the view-bear HUD (snap a
   view + Home). Starts with a few cubes already in the document; camera steps auto-advance
   on motion. Orbit, pan, zoom, and Home have no "…for me" assist — the user does those.
