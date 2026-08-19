@@ -2684,7 +2684,7 @@ fn sphere_kind_or_placed(app: &AppState) -> bool {
 /// #1555: chamfer a rectangle corner, extrude, then chamfer the top of the solid.
 static CHAMFER_STEPS: &[Step] = &[
     plain_step(
-        "Let's chamfer a corner, extrude the profile, then chamfer the top of the box.",
+        "Let's chamfer!",
         StepAnchor::None,
         None,
     ),
@@ -2779,7 +2779,7 @@ static CHAMFER_STEPS: &[Step] = &[
 /// #1556: place a cube and a sphere, then cut the sphere out of the cube.
 static COMBINE_STEPS: &[Step] = &[
     plain_step(
-        "Let's cut a sphere out of a cube with the Combine tool.",
+        "Let's learn how to cut shapes with the Combine tool.",
         StepAnchor::None,
         None,
     ),
