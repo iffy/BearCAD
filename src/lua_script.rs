@@ -10113,6 +10113,58 @@ mod tests {
         ));
     }
 
+    /// #1565: chamfering every top-cap edge of a cutoff rectangle (the chamfer tutorial
+    /// solid) must keep all five sides — adjacent cap edges share a corner, but that is
+    /// two bevels, not a 3-edge vertex miter.
+    #[test]
+    fn lua_chamfer_edge_treats_every_top_edge_of_a_cutoff_box() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ x = 0, y = 0, width = 40, height = 40 }
+            bearcad.chamfer_vertex{
+                point = { kind = "line", index = 1, ["end"] = "end" },
+                distance = 5,
+            }
+            bearcad.extrude{ polygon = {0, 4, 6, 5, 3}, distance = 10 }
+            bearcad.chamfer_edge{
+                extrusion = 0,
+                edges = {
+                    { kind = "cap", face = 0, edge = 0, top = true },
+                    { kind = "cap", face = 0, edge = 1, top = true },
+                    { kind = "cap", face = 0, edge = 2, top = true },
+                    { kind = "cap", face = 0, edge = 3, top = true },
+                    { kind = "cap", face = 0, edge = 4, top = true },
+                },
+                distance = 3,
+            }
+        "#,
+        );
+        let treated: usize = state
+            .doc
+            .edge_treatment_ops
+            .values()
+            .map(|op| op.edges.len())
+            .sum();
+        assert_eq!(
+            treated, 5,
+            "all five top-face edges should be chamfered, got {treated}; status={}",
+            state.status
+        );
+        let output = state
+            .doc
+            .edge_treatment_ops
+            .values()
+            .next()
+            .expect("one chamfer op")
+            .outputs[0];
+        let mesh = crate::extrude::body_solid_mesh(&state.doc, output).expect("beveled mesh");
+        assert!(
+            mesh.triangles.len() > 16,
+            "five cap chamfers should add bevel faces, got {} triangles",
+            mesh.triangles.len()
+        );
+    }
+
     /// #1321: `fillet_edge` with radius 0 is a no-op — no error, no operation, no extra body.
     #[test]
     fn lua_fillet_edge_zero_radius_is_a_noop() {

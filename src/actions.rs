@@ -2761,9 +2761,10 @@ pub enum Action {
     /// vertical side and side/cap edges of a `Rect`/`Polygon`-profiled extrusion (SPEC §3.4).
     /// Stores (or updates, if `edge` is already treated) an `EdgeTreatment` on the extrusion —
     /// parametric, re-evaluated every frame like everything else in this app, not a baked mesh
-    /// edit. Rejects an edge that would share a corner with another already-treated edge on the
-    /// same face (a vertex miter — this mesh-bevel approximation doesn't attempt to blend
-    /// three-or-more bevels together). Atomic and declarative: usable directly from Lua
+    /// edit. Rejects an edge that would make three treated edges meet at one corner (a vertex
+    /// miter — this mesh-bevel approximation doesn't attempt to blend three-or-more bevels
+    /// together). Two edges at a corner (every side of a clicked face) is allowed. Atomic
+    /// and declarative: usable directly from Lua
     /// (`bearcad.chamfer_edge`/`fillet_edge`) as well as from the interactive gizmo tool.
     /// Apply one chamfer/fillet amount to a whole set of edges (#166) as a single operation
     /// (one undo, one amount). Sequential commits on the same body chain onto the live
@@ -6118,8 +6119,8 @@ impl AppState {
         }
         let mut targets: Vec<crate::model::BodyKey> = Vec::new();
         let mut treated: Vec<TreatedEdge> = Vec::new();
-        // Per-solid treatment lists, accumulated so an intra-operation corner conflict is
-        // caught (two treated edges meeting at one corner), mirroring the old in-place check.
+        // Per-solid treatment lists, accumulated so an intra-operation 3-edge vertex miter
+        // is caught, mirroring the old in-place check.
         let mut per_solid: std::collections::HashMap<TreatableSolid, Vec<EdgeTreatment>> =
             std::collections::HashMap::new();
         let mut first_error: Option<String> = None;
@@ -6168,7 +6169,7 @@ impl AppState {
             let existing = per_solid.entry(solid).or_default();
             if crate::extrude::edge_treatment_conflicts(existing, edge, n) {
                 reject(
-                    "Edges share a corner (blending 3+ bevels at one corner isn't supported)"
+                    "Three edges meet at a corner (blending 3+ bevels at one corner isn't supported)"
                         .to_string(),
                     &mut first_error,
                 );
@@ -34076,28 +34077,154 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert_eq!(live[0].amount, 2.5);
     }
 
-    /// #531: within one operation, two edges sharing a corner can't both be beveled (a vertex
-    /// miter is out of scope, SPEC §3.4) — the conflicting edge is skipped, the other applies.
+    /// #531: two treated edges at a corner is a normal face chamfer; a *third* edge at the
+    /// same vertex is a vertex miter (SPEC §3.4) and is skipped.
     #[test]
-    fn commit_edge_treatment_rejects_a_conflicting_shared_vertex() {
+    fn commit_edge_treatment_rejects_a_three_edge_vertex_miter() {
         let mut state = box_extrusion_state();
-        // Vertical edge 0 and base cap edge 0 share profile vertex 1.
+        // Vertical 0 + the two base caps that meet it all claim profile vertex 1 on the base ring.
         let result = state.apply(Action::CommitEdgeTreatments {
             edges: vec![
                 (crate::model::TreatableSolid::Extrusion(xkey(0)), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 }),
                 (crate::model::TreatableSolid::Extrusion(xkey(0)), crate::model::ExtrusionEdgeRef::Cap { face: 0, edge: 0, top: false }),
+                (crate::model::TreatableSolid::Extrusion(xkey(0)), crate::model::ExtrusionEdgeRef::Cap { face: 0, edge: 1, top: false }),
             ],
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.0,
             expression: String::new(),
         });
-        // The first edge applies, the conflicting second is skipped — still Ok overall.
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         assert_eq!(state.doc.edge_treatment_ops.len(), 1);
         assert_eq!(
             state.doc.edge_treatment_ops.values().nth(0).unwrap().edges.len(),
-            1,
-            "the conflicting edge is skipped"
+            2,
+            "the third edge at the shared corner is the miter and is skipped"
+        );
+    }
+
+    /// #1565: every edge of a face belongs in one chamfer — adjacent cap edges share a
+    /// corner (two bevels, not a 3-edge miter) and must not be dropped.
+    #[test]
+    fn commit_edge_treatment_chamfers_every_top_cap_edge_of_a_box() {
+        let mut state = box_extrusion_state();
+        let edges: Vec<_> = (0..4)
+            .map(|edge| {
+                (
+                    crate::model::TreatableSolid::Extrusion(xkey(0)),
+                    crate::model::ExtrusionEdgeRef::Cap {
+                        face: 0,
+                        edge,
+                        top: true,
+                    },
+                )
+            })
+            .collect();
+        let result = state.apply(Action::CommitEdgeTreatments {
+            edges,
+            kind: VertexTreatmentKind::Chamfer,
+            amount: 1.5,
+            expression: String::new(),
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?} status={}", state.status);
+        let treated: usize = state
+            .doc
+            .edge_treatment_ops
+            .values()
+            .map(|op| op.edges.len())
+            .sum();
+        assert_eq!(
+            treated, 4,
+            "all four top edges should be chamfered, got {treated}; status={}",
+            state.status
+        );
+    }
+
+    /// #1565: the chamfer tutorial's solid is a rectangle with one sketch-corner cut off.
+    /// Selecting the top face must chamfer all five sides, not a pair of opposites.
+    #[test]
+    fn commit_edge_treatment_chamfers_every_cap_edge_of_a_cutoff_box() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        let lines = crate::construction::add_line_rectangle(
+            &mut state.doc,
+            sketch,
+            0.0,
+            0.0,
+            40.0,
+            40.0,
+            [false; 4],
+        );
+        assert!(matches!(
+            state.apply(Action::CommitVertexTreatment {
+                point: ConstraintPoint::LineEndpoint {
+                    line: lines[1],
+                    end: crate::model::LineEnd::End,
+                },
+                kind: VertexTreatmentKind::Chamfer,
+                amount: "5".into(),
+            }),
+            ActionResult::Ok
+        ));
+        let vt = state
+            .doc
+            .sketch_vertex_treatment_ops
+            .values()
+            .next()
+            .expect("sketch chamfer");
+        let profile = vec![
+            lines[0],
+            vt.line_outputs[0],
+            vt.bridge_outputs[0],
+            vt.line_outputs[1],
+            lines[3],
+        ];
+        assert!(matches!(
+            state.apply(Action::CreateExtrusion {
+                expression: None,
+                sketch,
+                faces: vec![ExtrudeFace::Polygon(profile)],
+                distance: 10.0,
+                body: crate::actions::ExtrudeBodyChoice::New,
+                target: None,
+                symmetric: false,
+                taper: 0.0,
+                taper_mode: crate::model::ExtrudeTaperMode::Distance,
+                taper_expression: None,
+            }),
+            ActionResult::Ok
+        ));
+        let extrusion = state.doc.extrusions.keys().next().expect("extrusion");
+        let n = crate::extrude::side_face_count(&state.doc.extrusions[extrusion].faces[0]);
+        assert_eq!(n, 5, "cutoff corner makes a 5-sided profile");
+        let edges: Vec<_> = (0..n)
+            .map(|edge| {
+                (
+                    crate::model::TreatableSolid::Extrusion(extrusion),
+                    crate::model::ExtrusionEdgeRef::Cap {
+                        face: 0,
+                        edge,
+                        top: true,
+                    },
+                )
+            })
+            .collect();
+        let result = state.apply(Action::CommitEdgeTreatments {
+            edges,
+            kind: VertexTreatmentKind::Chamfer,
+            amount: 3.0,
+            expression: "3".into(),
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?} status={}", state.status);
+        let treated: usize = state
+            .doc
+            .edge_treatment_ops
+            .values()
+            .map(|op| op.edges.len())
+            .sum();
+        assert_eq!(
+            treated, 5,
+            "all five top-face edges should be chamfered, got {treated}; status={}",
+            state.status
         );
     }
 
