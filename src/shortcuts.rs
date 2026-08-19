@@ -393,7 +393,10 @@ pub fn all_shortcuts() -> Vec<ShortcutSection> {
                 "V".to_string(),
                 "Toggle visibility of the selection (Select tool)".to_string(),
             ),
-            ("Tab".to_string(), "Next dimension field while drawing".to_string()),
+            (
+                "Tab".to_string(),
+                "Next dimension field while drawing (completes a variable name first)".to_string(),
+            ),
         ],
     });
 
@@ -464,7 +467,11 @@ pub fn all_shortcuts() -> Vec<ShortcutSection> {
         title: "Expression fields",
         scope: Some("while typing in any value input"),
         entries: vec![
-            ("Space / Tab".to_string(), "Accept the highlighted autocomplete name".to_string()),
+            (
+                "Space / Tab".to_string(),
+                "Accept the highlighted autocomplete name; a second Tab moves to the next input"
+                    .to_string(),
+            ),
             ("Enter".to_string(), "Accept the name and commit the field".to_string()),
         ],
     });

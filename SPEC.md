@@ -2891,7 +2891,9 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   sits inside the box under the expression, and the **autocomplete dropdown opens below the
   box**, so the two never overlap (#793). **Tab** belongs to the autocomplete only while
   there is a name to complete (`autocomplete_has_candidates` gates the field's `lock_focus`);
-  with nothing to complete it walks to the **next input** in the pane (#937). Kinds: `Length` (document
+  with nothing to complete it walks to the **next input** in the pane (#937). The same rule
+  applies to live sketch/shape fields: first Tab accepts the highlighted name, a second Tab
+  switches to the other dimension. Kinds: `Length` (document
   length unit), `Angle` (document angle unit), `Count` (unitless). Optional **min/max** clamp
   the computed value and show a warning (extrude taper angle: −90°…89°). The Parameters pane's
   value cells use it with **definitions disallowed** (the row is the definition) and

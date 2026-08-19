@@ -24462,6 +24462,65 @@ fn face_outline_world(doc: &model::Document, face: &FaceId) -> Option<Vec<Vec3>>
     }
 }
 
+/// The focused in-progress value field (id + current text), if any.
+fn in_progress_focused_expression(state: &AppState) -> Option<(egui::Id, &str)> {
+    if let Some(cr) = state.creating_rect.as_ref() {
+        let idx = cr.focused.min(1);
+        let id = if idx == 0 {
+            egui::Id::new("cr_width")
+        } else {
+            egui::Id::new("cr_height")
+        };
+        return Some((id, cr.texts[idx].as_str()));
+    }
+    if let Some(c) = state.creating_shape.as_ref() {
+        if c.shape.kind == model::PrimitiveKind::Cuboid && c.phase == actions::ShapePhase::Base {
+            let idx = c.focused.min(1);
+            let id = if idx == 0 {
+                egui::Id::new("shape_base_width")
+            } else {
+                egui::Id::new("shape_base_depth")
+            };
+            let text = if idx == 0 {
+                c.shape.width.as_str()
+            } else {
+                c.shape.depth.as_str()
+            };
+            return Some((id, text));
+        }
+        if let Some(field) = shape_phase_focus_field(c.shape.kind, c.phase) {
+            let (label, text) = match field {
+                actions::ShapeDimension::Width => ("Width", c.shape.width.as_str()),
+                actions::ShapeDimension::Depth => ("Depth", c.shape.depth.as_str()),
+                actions::ShapeDimension::Height => ("Height", c.shape.height.as_str()),
+                actions::ShapeDimension::Radius => ("Radius", c.shape.radius.as_str()),
+            };
+            return Some((context::shape_dimension_field_id(label), text));
+        }
+    }
+    if let Some(cl) = state.creating_line.as_ref() {
+        return Some((egui::Id::new("cl_length"), cl.text.as_str()));
+    }
+    if let Some(cp) = state.creating_plane.as_ref() {
+        return match cp.focused {
+            PlaneDim::Offset => Some((egui::Id::new("cp_offset"), cp.offset_text.as_str())),
+            PlaneDim::Angle => Some((egui::Id::new("cp_angle"), cp.angle_text.as_str())),
+        };
+    }
+    if let Some(edit) = state.editing_committed_dim.as_ref() {
+        return Some((egui::Id::new("committed_dim_value"), edit.text.as_str()));
+    }
+    None
+}
+
+/// True when Tab should complete the highlighted variable instead of switching fields.
+fn in_progress_tab_claimed_by_autocomplete(state: &AppState, ctx: &egui::Context) -> bool {
+    let Some((id, text)) = in_progress_focused_expression(state) else {
+        return false;
+    };
+    expression_input::autocomplete_has_candidates(ctx, id, text, &state.doc, &[])
+}
+
 impl App {
     /// Tab for in-progress sketch dimensions. Consumes Tab so focus cannot escape to the toolbar
     /// while creating geometry. Enter is handled after dim TextEdits render (see draw_viewport).
@@ -24474,6 +24533,10 @@ impl App {
         }
 
         let tab_pressed = ui.input(|i| i.key_pressed(egui::Key::Tab));
+        // Don't steal Tab from a live value input that's still completing a name (#1573).
+        if tab_pressed && in_progress_tab_claimed_by_autocomplete(&self.state, ui.ctx()) {
+            return;
+        }
 
         if self.state.creating_rect.is_some() {
             if tab_pressed {
@@ -34116,6 +34179,60 @@ mod tests {
         use super::{next_rect_focus_axis, RectAxis};
         assert_eq!(next_rect_focus_axis(0), RectAxis::Height);
         assert_eq!(next_rect_focus_axis(1), RectAxis::Width);
+    }
+
+    /// #1573: Tab-complete looks at the focused live rectangle field.
+    #[test]
+    fn in_progress_rect_expression_follows_focused_axis() {
+        use super::in_progress_focused_expression;
+        use crate::actions::{CreatingRect, RectAnchor};
+        let mut state = AppState::default();
+        state.creating_rect = Some(CreatingRect {
+            origin: Vec3::ZERO,
+            texts: ["fo".into(), "10".into()],
+            focused: 0,
+            last_mouse: Vec3::ZERO,
+            user_edited: [true, true],
+            pending_focus: false,
+            construction: false,
+            anchor: RectAnchor::Corner,
+        });
+        let (id, text) = in_progress_focused_expression(&state).expect("width field");
+        assert_eq!(id, egui::Id::new("cr_width"));
+        assert_eq!(text, "fo");
+        state.creating_rect.as_mut().unwrap().focused = 1;
+        let (id, text) = in_progress_focused_expression(&state).expect("height field");
+        assert_eq!(id, egui::Id::new("cr_height"));
+        assert_eq!(text, "10");
+    }
+
+    /// #1573: a half-typed variable keeps Tab on the field; the completed name lets it switch.
+    #[test]
+    fn in_progress_rect_tab_claimed_while_completing_a_variable() {
+        use super::in_progress_tab_claimed_by_autocomplete;
+        use crate::actions::{CreatingRect, RectAnchor};
+        let mut state = AppState::default();
+        crate::parameters::add_parameter(&mut state.doc, "foo".into(), "20mm".into()).unwrap();
+        state.creating_rect = Some(CreatingRect {
+            origin: Vec3::ZERO,
+            texts: ["fo".into(), String::new()],
+            focused: 0,
+            last_mouse: Vec3::ZERO,
+            user_edited: [true, false],
+            pending_focus: false,
+            construction: false,
+            anchor: RectAnchor::Corner,
+        });
+        let ctx = egui::Context::default();
+        assert!(
+            in_progress_tab_claimed_by_autocomplete(&state, &ctx),
+            "prefix `fo` should let Tab complete `foo`"
+        );
+        state.creating_rect.as_mut().unwrap().texts[0] = "foo".into();
+        assert!(
+            !in_progress_tab_claimed_by_autocomplete(&state, &ctx),
+            "completed `foo` should let Tab switch fields"
+        );
     }
 
     /// #125: an uncaught script error under `--exit` must close (so CI doesn't hang) and
