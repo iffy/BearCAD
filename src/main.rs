@@ -14113,9 +14113,17 @@ impl App {
                     self.tool_button(ui, icons::IconId::Dimension, Tool::Dimension, "Dimension");
                     self.tool_button(ui, icons::IconId::Text, Tool::Text, "Text");
                     ui.separator();
-                    if icons::selectable_icon_button_at(ui, icons::IconId::Zoom, false, "Zoom to fit (Z)", TOOLBAR_ICON_SIZE)
-                        .clicked()
-                    {
+                    let zoom_btn = icons::selectable_icon_button_at(
+                        ui,
+                        icons::IconId::Zoom,
+                        false,
+                        "Zoom to fit (Z)",
+                        TOOLBAR_ICON_SIZE,
+                    );
+                    self.state
+                        .tutorial_anchor_rects
+                        .insert(tutorial::UiAnchor::ZoomToFit, zoom_btn.rect);
+                    if zoom_btn.clicked() {
                         // In the Drawing workbench, fit = reset the page pan/zoom (#273/#279).
                         self.drawing_zoom = 1.0;
                         self.drawing_pan = egui::Vec2::ZERO;
@@ -14183,9 +14191,17 @@ impl App {
                 self.tool_button(ui, icons::IconId::Dimension, Tool::Dimension, "Dimension");
                 self.tool_button(ui, icons::IconId::Constraint, Tool::Constraint, "Constraint");
                 ui.separator();
-                if icons::selectable_icon_button_at(ui, icons::IconId::Zoom, false, "Zoom to fit (Z)", TOOLBAR_ICON_SIZE)
-                    .clicked()
-                {
+                let zoom_btn = icons::selectable_icon_button_at(
+                    ui,
+                    icons::IconId::Zoom,
+                    false,
+                    "Zoom to fit (Z)",
+                    TOOLBAR_ICON_SIZE,
+                );
+                self.state
+                    .tutorial_anchor_rects
+                    .insert(tutorial::UiAnchor::ZoomToFit, zoom_btn.rect);
+                if zoom_btn.clicked() {
                     self.state.apply(Action::ZoomToFit);
                 }
                 // Auto-zoom toggle (#438/#1371/#1574): while on, the view re-frames to fit the
