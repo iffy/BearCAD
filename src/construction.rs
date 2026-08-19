@@ -3432,7 +3432,7 @@ pub fn collect_pick_candidates(
     // Every body face near the cursor (#555/#556): not just the nearest ray-hit face, but every
     // face — front and back — whose projected area is within the pick radius, so a narrow face
     // seen edge-on (a thin sliver between its two edges) and buried back faces both get loupes.
-    for (kind, centroid, dist) in crate::face::body_faces_near(screen, project, doc, point_r) {
+    for (kind, centroid, dist) in crate::face::body_faces_near(screen, project, doc, eye, point_r) {
         if pickable(&kind) {
             raw.push((kind, centroid, dist));
         }
@@ -5230,6 +5230,73 @@ mod tests {
         );
     }
 
+    fn overlapping_sphere_on_cuboid_corner() -> (Document, crate::model::BodyKey, crate::model::BodyKey)
+    {
+        use crate::model::{Body, BodySource, Primitive, PrimitiveKind};
+        let mut doc = Document::default();
+        let mut cuboid = Primitive::new(PrimitiveKind::Cuboid);
+        cuboid.width = "40".to_string();
+        cuboid.depth = "40".to_string();
+        cuboid.height = "20".to_string();
+        let ci = doc.primitives.insert(cuboid);
+        let cube = doc.bodies.insert(Body {
+            source: BodySource::Primitive(ci),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let mut sphere = Primitive::new(PrimitiveKind::Sphere);
+        sphere.origin = [20.0, 20.0, 0.0];
+        sphere.radius = "12".to_string();
+        let pi = doc.primitives.insert(sphere);
+        let sphere_body = doc.bodies.insert(Body {
+            source: BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        (doc, cube, sphere_body)
+    }
+
+    fn pick_kind_body(kind: &PickTargetKind) -> Option<crate::model::BodyKey> {
+        match kind {
+            PickTargetKind::BodyFace { body, .. }
+            | PickTargetKind::BodyCylinder { body, .. }
+            | PickTargetKind::BodyEdge { body, .. }
+            | PickTargetKind::BodyVertex { body, .. }
+            | PickTargetKind::Body(body) => Some(*body),
+            _ => None,
+        }
+    }
+
+    /// #1578: clicking the middle of a sphere's silhouette picks the sphere, even when that
+    /// disc overlaps a cuboid whose edges run through the same pixel.
+    #[test]
+    fn a_sphere_is_picked_through_the_middle_of_its_disc() {
+        let (doc, _cube, sphere) = overlapping_sphere_on_cuboid_corner();
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let eye = Vec3::new(20.0, 20.0, 100.0);
+        let cursor = Pos2::new(20.0, 20.0);
+        let vis = crate::hierarchy::ElementVisibility::default();
+        let occ = PickOcclusion::new(&doc, &vis, eye);
+
+        let picked = resolve_pick_target(cursor, &project, None, &doc, Some(&occ))
+            .expect("the sphere's disc should pick something");
+        assert_eq!(
+            pick_kind_body(&picked.kind),
+            Some(sphere),
+            "the middle of the sphere must take the sphere, not the cuboid, got {:?}",
+            picked.kind
+        );
+
+        let cands = collect_pick_candidates(cursor, &project, &doc, eye, Some(&occ));
+        assert!(
+            cands.iter().any(|c| matches!(c.kind, PickTargetKind::Body(b) if b == sphere)),
+            "the crowd must offer the sphere body at its centre, got {:?}",
+            cands.iter().map(|c| &c.kind).collect::<Vec<_>>()
+        );
+    }
+
     /// #258: a hidden or shadow sketch line is neither selectable nor hoverable — it drops out
     /// of the pick candidates whenever a visibility/occlusion context is present.
     #[test]
@@ -5492,7 +5559,7 @@ mod tests {
         let doc = box_body_doc();
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
         // Cursor on the projected line of the x=0 side face (which has zero projected area).
-        let near = crate::face::body_faces_near(Pos2::new(0.0, 5.0), &project, &doc, 12.0);
+        let near = crate::face::body_faces_near(Pos2::new(0.0, 5.0), &project, &doc, Vec3::ZERO, 12.0);
         assert!(
             near.iter().any(|(kind, _, _)| matches!(
                 kind,
