@@ -2596,6 +2596,13 @@ pub enum Action {
     UninstallAiSkill { target: String, dir: Option<std::path::PathBuf> },
     /// Open the AI pane at its Agents & Skill section (Help ▸ Install AI Agent Skill…).
     ShowAiSkillSection,
+    /// Start the local MCP server (#1605). `port` of `None` uses the configured one.
+    StartMcpServer { port: Option<u16> },
+    /// Stop it.
+    StopMcpServer,
+    /// Issue a fresh bearer token. Any client configured with the old one stops working —
+    /// which is the point.
+    RegenerateMcpToken,
     /// Put a reply into the conversation without asking a backend for it (#1600).
     ///
     /// For canned conversations: documentation screenshots and tests need a thread with
@@ -3585,6 +3592,9 @@ impl Action {
                     | Action::InstallAiSkill { .. }
                     | Action::UninstallAiSkill { .. }
                     | Action::ShowAiSkillSection
+                    | Action::StartMcpServer { .. }
+                    | Action::StopMcpServer
+                    | Action::RegenerateMcpToken
                     | Action::SetMcMasterWindow { .. }
                     | Action::SetReportIssueWindow { .. }
                     | Action::SetSettingsWindow { .. }
@@ -12056,6 +12066,68 @@ impl AppState {
             #[cfg(target_arch = "wasm32")]
             Action::InstallAiSkill { .. } | Action::UninstallAiSkill { .. } => {
                 ActionResult::Err("Installing the skill needs the desktop app".to_string())
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::StartMcpServer { port } => {
+                let mut ai = self.ai.borrow_mut();
+                if ai.mcp.is_some() {
+                    return ActionResult::Err("The MCP server is already running".to_string());
+                }
+                if let Some(port) = port {
+                    ai.config.mcp_port = port;
+                }
+                if ai.config.mcp_token.is_empty() {
+                    ai.config.mcp_token = crate::ai::mcp::generate_token();
+                }
+                let (port, token) = (ai.config.mcp_port, ai.config.mcp_token.clone());
+                match crate::ai::mcp::Server::start(port, token) {
+                    Ok(server) => {
+                        // An OS-assigned port (0) becomes the remembered one, so a copied
+                        // client config keeps working.
+                        ai.config.mcp_port = server.port();
+                        ai.config.mcp_enabled = true;
+                        ai.config_dirty = true;
+                        let url = server.url();
+                        ai.mcp = Some(server);
+                        drop(ai);
+                        self.status = format!("MCP server listening on {url}");
+                        ActionResult::Ok
+                    }
+                    Err(e) => ActionResult::Err(e),
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::StopMcpServer => {
+                let mut ai = self.ai.borrow_mut();
+                let was_running = ai.mcp.take().is_some();
+                ai.config.mcp_enabled = false;
+                ai.config_dirty = true;
+                drop(ai);
+                self.status = if was_running {
+                    "MCP server stopped".to_string()
+                } else {
+                    "The MCP server was not running".to_string()
+                };
+                ActionResult::Ok
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::RegenerateMcpToken => {
+                let mut ai = self.ai.borrow_mut();
+                let token = crate::ai::mcp::generate_token();
+                ai.config.mcp_token = token.clone();
+                ai.config_dirty = true;
+                // The running server takes the new token in place: restarting to change a
+                // token would race its own listener for the port.
+                if let Some(server) = &ai.mcp {
+                    server.set_token(token);
+                }
+                drop(ai);
+                self.status = "New MCP token — update your client configuration".to_string();
+                ActionResult::Ok
+            }
+            #[cfg(target_arch = "wasm32")]
+            Action::StartMcpServer { .. } | Action::StopMcpServer | Action::RegenerateMcpToken => {
+                ActionResult::Err("The MCP server needs the desktop app".to_string())
             }
             Action::ShowAiSkillSection => {
                 self.panes.set(Pane::Ai, true);

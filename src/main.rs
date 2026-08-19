@@ -3534,6 +3534,21 @@ struct CommittedDimLayout {
     offset: f32,
 }
 
+/// The MCP tool call being run right now (#1605), ticked one frame at a time.
+#[cfg(not(target_arch = "wasm32"))]
+struct McpJob {
+    runner: ScriptRunner,
+    reply: std::sync::mpsc::SyncSender<Result<String, String>>,
+    /// What to tell the agent when the script finishes without error.
+    success: String,
+    ticks: u32,
+}
+
+/// How many frames one MCP tool call may take before it is abandoned. Generous enough for
+/// a screenshot (which waits for a real rendered frame) and a heavy rebuild.
+#[cfg(not(target_arch = "wasm32"))]
+const MCP_JOB_MAX_TICKS: u32 = 1_800;
+
 struct App {
     state: AppState,
     /// Multi-document tabs / detached windows. The main window's **active** tab state lives
@@ -3559,6 +3574,9 @@ struct App {
     /// was, to the viewport center) as one huge pointer-motion delta, which would spin the
     /// view on entry. Entry must not move the view, so the first frames' motion is dropped.
     fps_look_warmup: u8,
+    /// The MCP tool call in progress, if any (#1605).
+    #[cfg(not(target_arch = "wasm32"))]
+    mcp_job: Option<McpJob>,
     #[cfg(not(target_arch = "wasm32"))]
     native_menu: NativeMenu,
     /// Results of async browser file dialogs (open/import picks), drained each frame.
@@ -4089,6 +4107,11 @@ impl App {
             }
         }
 
+        // Tool calls from a connected agent (#1605). The listener thread never touches the
+        // document; this is where its work is actually done.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.pump_mcp(ctx);
+
         // A block the user clicked **Run** on (#1600). Never automatic — the action is only
         // ever raised by that click or by an explicit `bearcad.ai.run_block(i)`.
         let pending_run = self.state.ai.borrow_mut().chat.pending_run.take();
@@ -4109,6 +4132,154 @@ impl App {
             let mut ai = self.state.ai.borrow_mut();
             ai.preview = Some(context);
             ai.preview_wanted = false;
+        }
+    }
+
+    /// Serve the MCP server's queued tool calls (#1605).
+    ///
+    /// One call at a time, and a call that needs to wait for frames — a screenshot, a
+    /// script with `bearcad.ui.wait` in it — is ticked across frames rather than spun
+    /// inside one, so the app keeps drawing while an agent works.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn pump_mcp(&mut self, ctx: &egui::Context) {
+        // Finish the job in progress first: the agent is waiting on it.
+        if let Some(mut job) = self.mcp_job.take() {
+            job.runner.tick(&mut self.state, &mut self.synthetic, self.last_viewport, ctx);
+            job.ticks += 1;
+            if job.runner.done || job.ticks > MCP_JOB_MAX_TICKS {
+                self.rebind_active_document();
+                let answer = if !job.runner.done {
+                    Err("the script did not finish in time".to_string())
+                } else {
+                    match job.runner.error.take() {
+                        Some(error) => Err(error),
+                        None => Ok(job.success),
+                    }
+                };
+                let _ = job.reply.send(answer);
+            } else {
+                self.mcp_job = Some(job);
+            }
+            ctx.request_repaint();
+            return;
+        }
+
+        let Some(job) = self
+            .state
+            .ai
+            .borrow()
+            .mcp
+            .as_ref()
+            .and_then(|server| server.next_job())
+        else {
+            return;
+        };
+        ctx.request_repaint();
+        match self.start_mcp_job(job) {
+            // An immediate answer: sent already.
+            Ok(()) => {}
+            Err(()) => {}
+        }
+    }
+
+    /// Answer a tool call, either now or by starting a script that answers it over the next
+    /// frames.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start_mcp_job(&mut self, job: ai::mcp::Job) -> Result<(), ()> {
+        let arg = |name: &str| -> Option<String> {
+            job.arguments
+                .get(name)
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        };
+        match job.tool.as_str() {
+            "document_summary" => {
+                let mut out = String::new();
+                for doc in self.open_documents() {
+                    out.push_str(&format!(
+                        "{}{}
+",
+                        doc.title,
+                        if doc.active { "  (active)" } else { "" }
+                    ));
+                }
+                out.push_str(&format!(
+                    "
+Active document: {} bodies, {} sketches, {} lines, {} parameters
+",
+                    self.state.doc.bodies.len(),
+                    self.state.doc.sketches.len(),
+                    self.state.doc.lines.len(),
+                    self.state.doc.parameters.len()
+                ));
+                if let Some(path) = &self.state.path {
+                    out.push_str(&format!("File: {path}
+"));
+                }
+                let _ = job.reply.send(Ok(out));
+                Ok(())
+            }
+            "document_lua" => {
+                let _ = job
+                    .reply
+                    .send(Ok(export_lua::document_to_lua(&self.state.doc)));
+                Ok(())
+            }
+            "undo" => {
+                self.state.apply(Action::UndoLast);
+                let _ = job.reply.send(Ok(self.state.status.clone()));
+                Ok(())
+            }
+            "run_lua" => {
+                let Some(source) = arg("source") else {
+                    let _ = job.reply.send(Err("run_lua needs a `source`".to_string()));
+                    return Ok(());
+                };
+                self.begin_mcp_script(&source, "ok".to_string(), job.reply)
+            }
+            "screenshot" => {
+                let path = arg("path").unwrap_or_else(|| {
+                    std::env::temp_dir()
+                        .join("bearcad-mcp-screenshot.png")
+                        .display()
+                        .to_string()
+                });
+                let mut source = String::new();
+                if let Some(view) = arg("view") {
+                    source.push_str(&format!("bearcad.ui.view({view:?})
+"));
+                }
+                source.push_str("bearcad.ui.zoom_fit()
+");
+                source.push_str(&format!("bearcad.ui.screenshot({path:?})
+"));
+                self.begin_mcp_script(&source, format!("Wrote {path}"), job.reply)
+            }
+            other => {
+                let _ = job.reply.send(Err(format!("unknown tool '{other}'")));
+                Ok(())
+            }
+        }
+    }
+
+    /// Start a script that answers a tool call, replying `success` when it finishes.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn begin_mcp_script(
+        &mut self,
+        source: &str,
+        success: String,
+        reply: std::sync::mpsc::SyncSender<Result<String, String>>,
+    ) -> Result<(), ()> {
+        match ScriptRunner::from_lua_source(source) {
+            Ok(mut runner) => {
+                runner.verbose = false;
+                self.mcp_job = Some(McpJob { runner, reply, success, ticks: 0 });
+                Ok(())
+            }
+            Err(e) => {
+                let _ = reply.send(Err(e.message));
+                Err(())
+            }
         }
     }
 
@@ -5069,6 +5240,11 @@ impl App {
             // shares this one handle (`Workspace::ai`), so load into it rather than
             // replacing it.
             *state.ai.borrow_mut() = ai::AiState::load();
+            // Bring the MCP server back up only if the user switched it on before (#1605);
+            // a fresh install has it off and stays silent.
+            if state.ai.borrow().config.mcp_enabled {
+                state.apply(Action::StartMcpServer { port: None });
+            }
         }
         if let Some(path) = document_path {
             match state.apply(Action::Open { path }) {
@@ -5095,6 +5271,8 @@ impl App {
         Self {
             state,
             workspace,
+            #[cfg(not(target_arch = "wasm32"))]
+            mcp_job: None,
             synthetic: SyntheticInput::default(),
             script,
             exit_on_script_complete,

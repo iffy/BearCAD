@@ -16,6 +16,9 @@ pub mod backends;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod chat;
 pub mod context;
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)] // Started from the pane in #1606.
+pub mod mcp;
 pub mod panel;
 pub mod pricing;
 #[cfg(not(target_arch = "wasm32"))]
@@ -56,6 +59,10 @@ pub struct AiState {
     /// Set when something asks for the Agents & Skill section specifically (Help ▸ Install
     /// AI Agent Skill…), so the pane opens showing it rather than the chat (#1604).
     pub open_skill_section: bool,
+    /// The running MCP server (#1605), or `None` — which is the default, and the state a
+    /// fresh install stays in until the user switches it on.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub mcp: Option<mcp::Server>,
 }
 
 impl AiState {

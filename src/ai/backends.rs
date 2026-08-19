@@ -234,13 +234,42 @@ impl Backend {
 }
 
 /// Every configured backend, plus which one the next message goes to.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AiConfig {
     #[serde(default)]
     pub backends: Vec<Backend>,
     /// Id of the selected backend. `None` when nothing is configured.
     #[serde(default)]
     pub selected: Option<String>,
+    /// Whether the local MCP server starts with the app (#1605). Off by default.
+    #[serde(default)]
+    pub mcp_enabled: bool,
+    /// The port it listens on. 0 asks the OS for a free one.
+    #[serde(default = "default_mcp_port")]
+    pub mcp_port: u16,
+    /// The bearer token clients must send. Persisted so a copied client configuration keeps
+    /// working across restarts; regenerating it is a deliberate act.
+    #[serde(default)]
+    pub mcp_token: String,
+}
+
+/// The port the MCP server offers by default. Nothing standard claims it, and a fixed
+/// default means a client config keeps working across restarts.
+fn default_mcp_port() -> u16 {
+    8721
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            backends: Vec::new(),
+            selected: None,
+            // Opt-in: nothing listens until the user says so.
+            mcp_enabled: false,
+            mcp_port: default_mcp_port(),
+            mcp_token: String::new(),
+        }
+    }
 }
 
 impl AiConfig {

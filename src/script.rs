@@ -901,6 +901,12 @@ pub enum Instruction {
     InstallAiSkill { target: String, dir: Option<String> },
     /// Remove the AI agent skill from one target.
     UninstallAiSkill { target: String, dir: Option<String> },
+    /// Start the local MCP server (#1605).
+    StartMcpServer { port: Option<u16> },
+    /// Stop it.
+    StopMcpServer,
+    /// Issue a fresh MCP bearer token.
+    RegenerateMcpToken,
     AddParameter { name: String, expression: String },
     CreateParameterFromLineLength { line_index: usize, name: Option<String> },
     /// Create a derived (measured) parameter from a geometry source (#432).
@@ -2091,6 +2097,12 @@ impl Instruction {
             Instruction::SeedAiReply { question, reply } => {
                 format!("bearcad.ai.seed_reply({question:?}, {reply:?})")
             }
+            Instruction::StartMcpServer { port } => match port {
+                Some(port) => format!("bearcad.ai.mcp_start{{ port = {port} }}"),
+                None => "bearcad.ai.mcp_start{}".to_string(),
+            },
+            Instruction::StopMcpServer => "bearcad.ai.mcp_stop()".to_string(),
+            Instruction::RegenerateMcpToken => "bearcad.ai.mcp_new_token()".to_string(),
             Instruction::InstallAiSkill { target, dir } => match dir {
                 Some(dir) => {
                     format!("bearcad.ai.install_skill{{ target = {target:?}, dir = {dir:?} }}")
@@ -7940,6 +7952,19 @@ impl ScriptRunner {
             Instruction::SeedAiReply { question, reply } => {
                 let result = state.apply(Action::SeedAiReply { question, reply });
                 self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::StartMcpServer { port } => {
+                let result = state.apply(Action::StartMcpServer { port });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::StopMcpServer => {
+                state.apply(Action::StopMcpServer);
+                StepResult::Continue
+            }
+            Instruction::RegenerateMcpToken => {
+                state.apply(Action::RegenerateMcpToken);
                 StepResult::Continue
             }
             Instruction::InstallAiSkill { target, dir } => {

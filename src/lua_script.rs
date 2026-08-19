@@ -4943,6 +4943,82 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // The local MCP server (#1605): start, stop, and what it is doing.
+    api.set(
+        "ai_mcp_start",
+        lua.create_function(|lua, spec: Option<Table>| {
+            let port = match &spec {
+                Some(spec) => spec.get::<Option<u16>>("port")?,
+                None => None,
+            };
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::StartMcpServer { port }) }
+        })?,
+    )?;
+
+    api.set(
+        "ai_mcp_stop",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::StopMcpServer) }
+        })?,
+    )?;
+
+    api.set(
+        "ai_mcp_new_token",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::RegenerateMcpToken) }
+        })?,
+    )?;
+
+    // Status **without** the token: this is what a script prints, and a printed token ends
+    // up in logs and screenshots. `mcp_token()` is the deliberate way to get it.
+    api.set(
+        "ai_mcp_status",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let ai = unsafe { tick.state() }.ai.borrow();
+            let t = lua.create_table()?;
+            match &ai.mcp {
+                Some(server) => {
+                    t.set("running", true)?;
+                    t.set("port", server.port())?;
+                    t.set("url", server.url())?;
+                    let log = lua.create_table()?;
+                    for (index, entry) in server.log().iter().enumerate() {
+                        let e = lua.create_table()?;
+                        e.set("what", entry.what.clone())?;
+                        e.set("ok", entry.ok)?;
+                        e.set("detail", entry.detail.clone())?;
+                        log.set(index + 1, e)?;
+                    }
+                    t.set("log", log)?;
+                }
+                None => {
+                    t.set("running", false)?;
+                    t.set("port", ai.config.mcp_port)?;
+                }
+            }
+            Ok(t)
+        })?,
+    )?;
+
+    api.set(
+        "ai_mcp_token",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let ai = unsafe { tick.state() }.ai.borrow();
+            Ok(match &ai.mcp {
+                Some(server) => Value::String(lua.create_string(server.token())?),
+                None if !ai.config.mcp_token.is_empty() => {
+                    Value::String(lua.create_string(&ai.config.mcp_token)?)
+                }
+                None => Value::Nil,
+            })
+        })?,
+    )?;
+
     // The skill markdown itself, for a script that wants to write it somewhere of its own.
     api.set(
         "ai_skill",
@@ -8336,6 +8412,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             seed_reply = "ai_seed_reply",
             skill_targets = "ai_skill_targets", install_skill = "ai_install_skill",
             uninstall_skill = "ai_uninstall_skill", skill = "ai_skill",
+            mcp_start = "ai_mcp_start", mcp_stop = "ai_mcp_stop",
+            mcp_status = "ai_mcp_status", mcp_token = "ai_mcp_token",
+            mcp_new_token = "ai_mcp_new_token",
             _request_context = "ai_request_context", _context = "ai_context",
         }
         for name, source in pairs(ai_funcs) do
