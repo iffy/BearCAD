@@ -30944,6 +30944,14 @@ impl App {
                     |p: (f32, f32)| frame.origin + frame.u_axis * p.0 + frame.v_axis * p.1;
                 let img = &self.state.doc.tracing_images[image];
                 let label = image_calibration_label_text(&self.state.doc, img);
+                // Feature line first (#1585): selected-line color and weight, on top of
+                // the GPU image so the span is always visible while the image is selected.
+                if let (Some(sa), Some(sb)) = (project(world(points[0])), project(world(points[1]))) {
+                    painter.line_segment(
+                        [sa, sb],
+                        egui::Stroke::new(3.0, col::DIM_EDGE_HIGHLIGHT),
+                    );
+                }
                 if let Some((geom, world_geom, label_view, _)) = image_calibration_dim_geom(
                     &painter,
                     &project,

@@ -3218,6 +3218,31 @@ impl<'a> SceneMesh<'a> {
                         body_meshes,
                     );
                 }
+                // A selected tracing image (#1585): its calibration span draws as a
+                // selected line — highlight color, 3px, depth-disabled — so it stays
+                // visible on top of the picture.
+                SceneElement::Image(index) => {
+                    let Some(img) = doc.tracing_images.get(index) else {
+                        continue;
+                    };
+                    let Some(((u0, v0), (u1, v1))) =
+                        crate::model::image_calibration_endpoints(img)
+                    else {
+                        continue;
+                    };
+                    let Some(frame) = crate::face::sketch_frame(
+                        doc,
+                        crate::model::FaceId::ConstructionPlane(img.plane),
+                    ) else {
+                        continue;
+                    };
+                    let a = crate::face::local_to_world(&frame, u0, v0);
+                    let b = crate::face::local_to_world(&frame, u1, v1);
+                    let restore = self.index_layer;
+                    self.set_index_layer(MeshIndexLayer::Wireframe);
+                    self.push_line_segment(a, b, color, 3.0, cam, viewport, view_proj);
+                    self.set_index_layer(restore);
+                }
                 // Selected world origin axis (#1124): 2× hover thickness, depth-test
                 // disabled so it bleeds through every body (same always-on-top path as
                 // selected body edges). Normal axes stay behind bodies; selected ones don't.
@@ -10613,6 +10638,130 @@ mod tests {
         );
     }
 
+    /// #1585: selecting a tracing image draws its calibration span as a selected line —
+    /// highlight color, bold, on the depth-disabled wireframe layer — so it stays visible
+    /// on top of the picture.
+    #[test]
+    fn selected_image_draws_calibration_line_like_a_selected_line() {
+        use crate::model::default_image_calibration;
+        use crate::selection::SceneSelection;
+
+        let mut state = AppState::default();
+        let image = state.doc.tracing_images.insert(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "trace".to_string(),
+            plane: pkey(0),
+            origin: (0.0, 0.0),
+            base_origin: None,
+            width_mm: 40.0,
+            height_mm: 30.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
+            name: None,
+            calibration: Some(default_image_calibration(30.0)),
+        });
+
+        let palette = ViewportPalette::default();
+        let cam = state.cam.clone();
+        let viewport = test_viewport();
+        let empty_selection = SceneSelection::default();
+        let mut selected = SceneSelection::default();
+        crate::selection::click_scene_selection(
+            &mut selected,
+            SceneElement::Image(image),
+            false,
+        );
+
+        let scene_for = |selection: &SceneSelection| {
+            ViewportScene::build(&ViewportSceneInput {
+                doc: &state.doc,
+                cam: &cam,
+                viewport,
+                palette,
+                sketch_session: None,
+                selection,
+                cut_highlight_bodies: Vec::new(),
+                faded_bodies: Vec::new(),
+                sketch_repeat_ghost: Vec::new(),
+                sketch_ghost_lines: Vec::new(),
+                edit_preview_meshes: std::collections::HashMap::new(),
+                element_visibility: &state.element_visibility,
+                preview_rect: None,
+                preview_line: None,
+                preview_circle: None,
+                preview_extrusion: None,
+                preview_solid: None,
+                repeat_ghosts: Vec::new(),
+                cut_surface_ghosts: Vec::new(),
+                preview_cut_body: None,
+                preview_replacement: PreviewReplacement::default(),
+                highlighted_bezier_handles: Vec::new(),
+                editing_extrusion: None,
+                plane_preview: None,
+                active_sketch_face: None,
+                dimension_labels: &[],
+                dim_label_view: None,
+                plane_gizmo: None,
+                extrude_gizmo: None,
+                vertex_treatment_gizmo: None,
+                arrow_gizmos: Vec::new(),
+                move_rotation_gizmos: Vec::new(),
+                revolve_arc_gizmo: None,
+                vertex_treatment_preview: None,
+                hover_highlight: None,
+                extra_pick_highlights: Vec::new(),
+                colored_pick_highlights: Vec::new(),
+                colored_element_highlights: Vec::new(),
+                tinted_bodies: Vec::new(),
+                colored_segments: Vec::new(),
+                parameter_highlight_elements: Vec::new(),
+                hover_color: Color32::WHITE,
+                document_health: &DocumentHealth::default(),
+                constraint_graphics: None,
+                constraint_connector_color: None,
+            })
+        };
+
+        let unselected = scene_for(&empty_selection);
+        let selected_scene = scene_for(&selected);
+
+        let highlight = color32_to_gpu(palette.dim_edge_highlight);
+        let highlight_wire = |scene: &ViewportScene| {
+            scene
+                .wireframe_indices
+                .iter()
+                .filter(|&&index| scene.vertices[index as usize].color == highlight)
+                .count()
+        };
+        assert_eq!(
+            highlight_wire(&unselected),
+            0,
+            "an unselected image should not draw a selected-style calibration line"
+        );
+        assert!(
+            highlight_wire(&selected_scene) > 0,
+            "a selected image should draw its calibration line in the selected-line highlight color"
+        );
+
+        // Default calibration is top-middle → bottom-middle: (20, 30) → (20, 0) on XY.
+        let near = |scene: &ViewportScene, x: f32, y: f32| {
+            scene.wireframe_indices.iter().any(|&index| {
+                let v = &scene.vertices[index as usize];
+                if v.color != highlight {
+                    return false;
+                }
+                let [px, py, _] = v.position;
+                (px - x).abs() < 2.0 && (py - y).abs() < 2.0
+            })
+        };
+        assert!(
+            near(&selected_scene, 20.0, 30.0),
+            "calibration line should reach the top-middle endpoint"
+        );
+        assert!(
+            near(&selected_scene, 20.0, 0.0),
+            "calibration line should reach the bottom-middle endpoint"
+        );
+    }
 
 
 
