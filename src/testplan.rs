@@ -1,8 +1,11 @@
 //! Exhaustive `[ ]` test checklist (`bearcad testplan`).
 //!
-//! Print with `bearcad testplan`. Extra one-off items go in [`CUSTOM_ITEMS`].
+//! Print with `bearcad testplan`. Tutorials are listed from
+//! [`crate::tutorial::TUTORIALS`] so a new walkthrough shows up automatically.
+//! Extra one-off items go in [`CUSTOM_ITEMS`].
 
 use crate::opsigs::{OpSpace, ALL_OPERATIONS};
+use crate::tutorial::TUTORIALS;
 
 /// One-off items included at the end of `bearcad testplan`.
 ///
@@ -376,6 +379,14 @@ pub fn render_with_custom(custom: &[&str]) -> String {
         }
     }
 
+    out.push_str("\n## Tutorials\n");
+    for tut in TUTORIALS {
+        push_item(
+            &mut out,
+            &format!("Walk through tutorial: {} ({})", tut.title, tut.name),
+        );
+    }
+
     out.push_str("\n## Custom\n");
     if custom.is_empty() {
         out.push_str("# (none — add lines to CUSTOM_ITEMS in src/testplan.rs)\n");
@@ -577,5 +588,43 @@ mod tests {
     fn usage_mentions_testplan() {
         // Smoke: the module's public render is what the CLI prints.
         assert!(!render().contains("[x]"));
+    }
+
+    fn tutorials_section(plan: &str) -> Option<String> {
+        let mut lines = plan.lines();
+        lines.find(|l| l.trim() == "## Tutorials")?;
+        let mut out = String::new();
+        for line in lines {
+            if line.starts_with("## ") {
+                break;
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+        Some(out)
+    }
+
+    /// #1590: every registered walkthrough is a checklist item, so a new entry
+    /// in `TUTORIALS` shows up in `bearcad testplan` without a second edit.
+    #[test]
+    fn every_registered_tutorial_has_an_item() {
+        let p = plan();
+        let section = tutorials_section(&p)
+            .expect("testplan should have a ## Tutorials section generated from TUTORIALS");
+        assert!(
+            !TUTORIALS.is_empty(),
+            "TUTORIALS is the source of the Tutorials section"
+        );
+        for tut in TUTORIALS {
+            assert!(
+                section.lines().any(|l| {
+                    let l = l.trim();
+                    l.starts_with("[ ]") && l.contains(tut.title) && l.contains(tut.name)
+                }),
+                "missing a [ ] item for tutorial {} ({}):\n{section}",
+                tut.name,
+                tut.title
+            );
+        }
     }
 }

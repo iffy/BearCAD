@@ -8266,9 +8266,10 @@ Commands:
                         file it downloads. The app runs this itself when you import a part
   opsigs [--html]       Print every tool operation's inputs, outputs, and shadows
                         (markdown; pass --html for HTML). Also: `cargo opsigs`
-  testplan              Print a [ ] checklist of tools, variants, and features
-                        for exhaustive manual or AI testing. Extra items live in
-                        src/testplan.rs (`CUSTOM_ITEMS`)
+  testplan              Print a [ ] checklist of tools, variants, tutorials, and
+                        features for exhaustive manual or AI testing. Tutorials
+                        come from TUTORIALS; extra items live in src/testplan.rs
+                        (`CUSTOM_ITEMS`)
 
 Options:
   --script <path>       Run a Lua script
@@ -8827,6 +8828,10 @@ mod tests {
         assert!(
             usage.contains("CUSTOM_ITEMS"),
             "help should point at the custom-items hook"
+        );
+        assert!(
+            usage.to_ascii_lowercase().contains("tutorial"),
+            "help should mention that testplan lists tutorials"
         );
     }
 
