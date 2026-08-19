@@ -8266,22 +8266,50 @@ mod tests {
         );
     }
 
-    /// #1558: every walkthrough is numbered in catalog order, including the three
-    /// added in #1555–#1557.
+    /// #1558: every walkthrough is numbered in catalog order.
     #[test]
     fn tutorials_lua_list_is_numbered() {
         run_lua_expect_ok(
             r#"
             local list = bearcad.ui.tutorials()
-            assert(#list == 8, "catalog size, got " .. #list)
+            assert(#list == 9, "catalog size, got " .. #list)
             local names = {}
             for i, t in ipairs(list) do
               assert(t.number == i, t.name .. " should be #" .. i .. ", got " .. tostring(t.number))
               names[t.name] = t.title
             end
             assert(names.chamfer == "Chamfer")
+            assert(names.constraints == "Constraints")
             assert(names.combine == "Combine")
             assert(names.raised_text == "Raised text")
+            "#,
+        );
+    }
+
+    /// #1591: constraints tutorial walks with assists and leaves a constrained polygon.
+    #[test]
+    fn constraints_tutorial_lua_walks_and_constrains_a_polygon() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.ui.tutorial("constraints")
+            assert(bearcad.ui.tutorial_step() == 0)
+            local guard = 0
+            while bearcad.ui.tutorial_step() ~= nil do
+              guard = guard + 1
+              assert(guard < 50, "constraints tutorial should finish")
+              bearcad.ui.tutorial_assist()
+              if bearcad.ui.tutorial_step() ~= nil then
+                bearcad.ui.tutorial_next()
+              end
+            end
+            assert(bearcad.count("line") >= 4, "polygon sides")
+            local kinds = {}
+            for i = 0, bearcad.count("constraint") - 1 do
+              local c = bearcad.get{ kind = "constraint", index = i }
+              if c then kinds[c.kind] = (kinds[c.kind] or 0) + 1 end
+            end
+            assert((kinds.parallel or 0) >= 2, "horizontal and vertical")
+            assert((kinds.equal or 0) >= 1, "equal sides")
             "#,
         );
     }
