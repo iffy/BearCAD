@@ -5167,6 +5167,8 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   Cut, pick the cube then the sphere, Enter. Title: **Combine**.
 - **Raised text** (`raised_text`, #1557): place a cuboid, sketch on its top, drop text, type
   `BEAR`, extrude the letters so they stand proud. Title: **Raised text**.
+  3D Bodies, Combine, and Raised text all start with a cuboid: if the Shape tool's last-used
+  kind isn't cuboid, a step points at Cuboid in the Context pane (#1569).
 - **Numbered list** (#1558): the Tutorials pane prefixes each walkthrough with its catalog
   number (`1. Sketch & Extrude`, …). Scripting exposes the same 1-based `number` on
   `bearcad.ui.tutorials()`.
