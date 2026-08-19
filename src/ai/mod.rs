@@ -14,6 +14,14 @@
 
 pub mod backends;
 pub mod panel;
+// #1596: the request/stream layer. Consumed by the chat panel in #1598 — the same staged
+// shape `mod text` used for #282a — so the whole surface is not reachable yet.
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
+pub mod providers;
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
+pub mod transport;
 
 /// Live AI state on [`crate::actions::AppState`].
 ///
