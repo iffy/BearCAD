@@ -372,6 +372,11 @@ pub fn config_path() -> Option<PathBuf> {
             return Some(PathBuf::from(path));
         }
     }
+    default_config_path()
+}
+
+/// Where the config lives when nothing overrides it.
+fn default_config_path() -> Option<PathBuf> {
     Some(crate::settings::settings_path()?.with_file_name("ai.json"))
 }
 
@@ -563,9 +568,10 @@ mod tests {
 
     #[test]
     fn the_config_file_sits_beside_settings_but_apart_from_it() {
-        // Not while the override is in play (the tests above set it).
-        std::env::remove_var("BEARCAD_AI_CONFIG");
-        let (Some(ai), Some(settings)) = (config_path(), crate::settings::settings_path()) else {
+        // The unoverridden location: tests run in one process, and a sibling test sets
+        // BEARCAD_AI_CONFIG.
+        let (Some(ai), Some(settings)) = (default_config_path(), crate::settings::settings_path())
+        else {
             return; // No home directory on this platform; nothing to check.
         };
         assert_eq!(ai.parent(), settings.parent());

@@ -50,20 +50,188 @@ fn section(
         });
 }
 
+#[cfg(target_arch = "wasm32")]
 fn chat_section(ui: &mut egui::Ui, state: &mut AppState) {
     backend_picker(ui, state);
-    ui.add_space(6.0);
     ui.label(
-        egui::RichText::new("Add a backend to start a conversation about your documents.")
+        egui::RichText::new("Chat runs in the desktop app.")
             .size(12.0)
             .weak(),
     );
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn chat_section(ui: &mut egui::Ui, state: &mut AppState) {
+    use crate::ai::context::ContextScope;
+
+    backend_picker(ui, state);
+
+    let mut action: Option<Action> = None;
+    let (has_backend, streaming, scope) = {
+        let ai = state.ai.borrow();
+        (
+            ai.config.selected().is_some(),
+            ai.chat.is_streaming() || ai.chat.awaiting_context,
+            ai.chat.scope,
+        )
+    };
+
+    // What the next message will carry. The default is the one document in front of you.
+    ui.horizontal(|ui| {
+        ui.label("Sees");
+        for option in [ContextScope::Document, ContextScope::AllOpen] {
+            if ui
+                .selectable_label(scope == option, option.label())
+                .clicked()
+                && scope != option
+            {
+                action = Some(Action::SetAiContextScope { scope: option });
+            }
+        }
+    });
+
+    ui.add_space(4.0);
+    thread(ui, state);
+    ui.add_space(4.0);
+
+    // What was actually sent last time, exactly as sent (#1597).
+    let last = {
+        let ai = state.ai.borrow();
+        ai.chat
+            .last_context
+            .as_ref()
+            .map(|c| (c.documents, c.estimated_tokens, c.truncated, c.text.clone()))
+    };
+    if let Some((documents, tokens, truncated, text)) = last {
+        let summary = format!(
+            "Sent {documents} document(s), ~{tokens} tokens{}",
+            if truncated { ", truncated" } else { "" }
+        );
+        egui::CollapsingHeader::new(egui::RichText::new(summary).size(11.0).weak())
+            .id_salt("ai_context_disclosure")
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(160.0)
+                    .id_salt("ai_context_scroll")
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut text.as_str())
+                                .font(egui::TextStyle::Monospace)
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
+            });
+    }
+
+    // The input box. Enter sends, Shift+Enter starts a new line.
+    let mut send_clicked = false;
+    {
+        let mut ai = state.ai.borrow_mut();
+        let input = &mut ai.chat.input;
+        let response = ui.add_enabled(
+            has_backend && !streaming,
+            egui::TextEdit::multiline(input)
+                .id_salt("ai_chat_input")
+                .hint_text("Ask about this document…")
+                .desired_rows(2)
+                .desired_width(f32::INFINITY),
+        );
+        if response.has_focus()
+            && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift)
+        {
+            send_clicked = true;
+        }
+    }
+
+    ui.horizontal(|ui| {
+        let text = state.ai.borrow().chat.input.trim().to_string();
+        if streaming {
+            if ui.button("Stop").clicked() {
+                action = Some(Action::CancelAiMessage);
+            }
+            ui.spinner();
+        } else if ui
+            .add_enabled(has_backend && !text.is_empty(), egui::Button::new("Send"))
+            .clicked()
+            || (send_clicked && has_backend && !text.is_empty())
+        {
+            action = Some(Action::SendAiMessage { text });
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let any = !state.ai.borrow().chat.entries.is_empty();
+            if ui
+                .add_enabled(any, egui::Button::new("Clear"))
+                .on_hover_text("Forget this conversation — it is never saved anyway")
+                .clicked()
+            {
+                action = Some(Action::ClearAiConversation);
+            }
+        });
+    });
+
+    if !has_backend {
+        ui.label(
+            egui::RichText::new("Add a backend above to start a conversation.")
+                .size(11.0)
+                .weak(),
+        );
+    }
+
+    if let Some(action) = action {
+        state.apply(action);
+    }
+}
+
+/// The message thread. Assistant text renders as-is; a reply still arriving shows what has
+/// landed so far.
+#[cfg(not(target_arch = "wasm32"))]
+fn thread(ui: &mut egui::Ui, state: &mut AppState) {
+    let ai = state.ai.borrow();
+    if ai.chat.entries.is_empty() {
+        return;
+    }
+    egui::ScrollArea::vertical()
+        .max_height(260.0)
+        .stick_to_bottom(true)
+        .id_salt("ai_chat_thread")
+        .show(ui, |ui| {
+            for entry in &ai.chat.entries {
+                let (who, colour) = match entry.role {
+                    crate::ai::providers::Role::User => ("You", ui.visuals().strong_text_color()),
+                    crate::ai::providers::Role::Assistant => {
+                        ("BearCAD AI", ui.visuals().weak_text_color())
+                    }
+                };
+                ui.label(egui::RichText::new(who).size(10.0).color(colour));
+                if !entry.text.is_empty() {
+                    ui.label(egui::RichText::new(&entry.text).size(12.0));
+                }
+                if entry.streaming && entry.text.is_empty() {
+                    ui.label(egui::RichText::new("…").size(12.0).weak());
+                }
+                if let Some(error) = &entry.error {
+                    ui.label(
+                        egui::RichText::new(error)
+                            .size(11.0)
+                            .color(ui.visuals().error_fg_color),
+                    );
+                }
+                ui.add_space(6.0);
+            }
+        });
+}
+
 /// The backend row: which service the conversation talks to, and the editor for adding and
 /// removing them (#1595).
 fn backend_picker(ui: &mut egui::Ui, state: &mut AppState) {
-    let selected = state.ai.config.selected().cloned();
+    let (selected, backends, none_yet) = {
+        let ai = state.ai.borrow();
+        (
+            ai.config.selected().cloned(),
+            ai.config.backends.clone(),
+            ai.config.backends.is_empty(),
+        )
+    };
     let mut action: Option<Action> = None;
 
     ui.horizontal(|ui| {
@@ -75,7 +243,7 @@ fn backend_picker(ui: &mut egui::Ui, state: &mut AppState) {
         egui::ComboBox::from_id_salt("ai_backend_picker")
             .selected_text(label)
             .show_ui(ui, |ui| {
-                for backend in &state.ai.config.backends {
+                for backend in &backends {
                     let picked = selected.as_ref().is_some_and(|s| s.id == backend.id);
                     if ui.selectable_label(picked, &backend.name).clicked() && !picked {
                         action = Some(Action::SelectAiBackend {
@@ -83,7 +251,7 @@ fn backend_picker(ui: &mut egui::Ui, state: &mut AppState) {
                         });
                     }
                 }
-                if state.ai.config.backends.is_empty() {
+                if none_yet {
                     ui.label(egui::RichText::new("No backends yet").weak());
                 }
             });
@@ -108,9 +276,9 @@ fn backend_picker(ui: &mut egui::Ui, state: &mut AppState) {
 
     egui::CollapsingHeader::new("Manage backends")
         .id_salt("ai_manage_backends")
-        .default_open(state.ai.config.backends.is_empty())
+        .default_open(none_yet)
         .show(ui, |ui| {
-            for backend in &state.ai.config.backends {
+            for backend in &backends {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(format!("{} · {}", backend.name, backend.model))

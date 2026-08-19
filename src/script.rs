@@ -883,6 +883,14 @@ pub enum Instruction {
     RemoveAiBackend { id: String },
     /// Choose the AI backend the conversation uses.
     SelectAiBackend { id: String },
+    /// Send a chat message to the selected backend (#1598).
+    SendAiMessage { text: String },
+    /// Stop a reply in progress.
+    CancelAiMessage,
+    /// Empty the conversation.
+    ClearAiConversation,
+    /// Choose how much of the workspace a message carries (#1597).
+    SetAiContextScope { scope: crate::ai::context::ContextScope },
     AddParameter { name: String, expression: String },
     CreateParameterFromLineLength { line_index: usize, name: Option<String> },
     /// Create a derived (measured) parameter from a geometry source (#432).
@@ -2055,6 +2063,14 @@ impl Instruction {
             }
             Instruction::RemoveAiBackend { id } => {
                 format!("bearcad.ai.remove_backend({id:?})")
+            }
+            Instruction::SendAiMessage { text } => {
+                format!("bearcad.ai.ask({text:?})")
+            }
+            Instruction::CancelAiMessage => "bearcad.ai.stop()".to_string(),
+            Instruction::ClearAiConversation => "bearcad.ai.clear()".to_string(),
+            Instruction::SetAiContextScope { scope } => {
+                format!("bearcad.ai.context_scope({:?})", scope.as_str())
             }
             Instruction::SelectAiBackend { id } => {
                 format!("bearcad.ai.set_backend({id:?})")
@@ -7854,6 +7870,23 @@ impl ScriptRunner {
             }
             Instruction::SelectAiBackend { id } => {
                 state.apply(Action::SelectAiBackend { id });
+                StepResult::Continue
+            }
+            Instruction::SendAiMessage { text } => {
+                let result = state.apply(Action::SendAiMessage { text });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::CancelAiMessage => {
+                state.apply(Action::CancelAiMessage);
+                StepResult::Continue
+            }
+            Instruction::ClearAiConversation => {
+                state.apply(Action::ClearAiConversation);
+                StepResult::Continue
+            }
+            Instruction::SetAiContextScope { scope } => {
+                state.apply(Action::SetAiContextScope { scope });
                 StepResult::Continue
             }
             Instruction::AddParameter { name, expression } => {

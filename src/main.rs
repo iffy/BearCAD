@@ -3906,6 +3906,98 @@ impl App {
         }
     }
 
+    /// Start any waiting AI message and pull in the streamed reply (#1598).
+    ///
+    /// The context spans every open document, which only `App` can see — the action layer
+    /// records the turn and leaves the sending to here.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn pump_ai_chat(&mut self, ctx: &egui::Context) {
+        let awaiting = self.state.ai.borrow().chat.awaiting_context;
+        if awaiting {
+            match self.build_ai_request() {
+                Ok((request, context)) => {
+                    let exchange = ai::transport::send(request, Some(ctx.clone()));
+                    self.state.ai.borrow_mut().chat.start(exchange, context);
+                }
+                Err(message) => {
+                    self.state.status = message.clone();
+                    self.state.ai.borrow_mut().chat.fail_pending(message);
+                }
+            }
+        }
+        // A running reply repaints on every chunk, but ask anyway: the spinner should keep
+        // spinning between chunks.
+        if self.state.ai.borrow_mut().chat.poll() {
+            ctx.request_repaint();
+        }
+
+        // `bearcad.ai.context_preview()` (#1597): the script asks, the frame loop answers,
+        // because only here is every open document reachable.
+        if self.state.ai.borrow().preview_wanted {
+            let scope = self.state.ai.borrow().chat.scope;
+            let context = ai::context::build(scope, &self.open_documents());
+            let mut ai = self.state.ai.borrow_mut();
+            ai.preview = Some(context);
+            ai.preview_wanted = false;
+        }
+    }
+
+    /// Assemble the request for the message waiting to go out: the selected backend, the
+    /// document context for the chosen scope, and the conversation so far.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn build_ai_request(
+        &mut self,
+    ) -> Result<(ai::transport::Request, ai::context::Context), String> {
+        let (backend, scope, messages) = {
+            let ai = self.state.ai.borrow();
+            let backend = ai
+                .config
+                .selected()
+                .cloned()
+                .ok_or_else(|| "No AI backend configured".to_string())?;
+            (backend, ai.chat.scope, ai.chat.wire_messages())
+        };
+        if let Some(reason) = backend.unusable_reason() {
+            return Err(format!("AI backend {}: {reason}", backend.name));
+        }
+        let context = ai::context::build(scope, &self.open_documents());
+        Ok((
+            ai::transport::Request {
+                backend,
+                system: context.text.clone(),
+                messages,
+            },
+            context,
+        ))
+    }
+
+    /// Every document open in the app, active one flagged. Borrows straight out of the
+    /// workspace — building a context never clones a document.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_documents(&self) -> Vec<ai::context::DocumentInput<'_>> {
+        let mut docs = vec![ai::context::DocumentInput {
+            title: tabs::Workspace::tab_title(&self.state),
+            active: true,
+            doc: &self.state.doc,
+        }];
+        let active_window = tabs::WindowId::MAIN;
+        let active_tab = self.workspace.main().active;
+        for window in &self.workspace.windows {
+            for (index, tab) in window.tabs.iter().enumerate() {
+                // The live state *is* the active tab; its parked slot holds a placeholder.
+                if window.id == active_window && index == active_tab {
+                    continue;
+                }
+                docs.push(ai::context::DocumentInput {
+                    title: tabs::Workspace::tab_title(&tab.state),
+                    active: false,
+                    doc: &tab.state.doc,
+                });
+            }
+        }
+        docs
+    }
+
     /// First-launch tooltip pointing at the Tutorials button (#1434).
     fn show_tutorial_prompt(&mut self, ctx: &egui::Context) {
         let Some(alpha) = self.state.tutorial_prompt_alpha() else {
@@ -4774,8 +4866,10 @@ impl App {
             state.installed_at_unix = settings.installed_at_unix;
             state.animate_zoom_to_fit = settings.animate_zoom_to_fit;
             state.update_channel = settings.update_channel;
-            // AI backends live in their own 0600 file, not settings.json (#1595).
-            state.ai = ai::AiState::load();
+            // AI backends live in their own 0600 file, not settings.json (#1595). Every tab
+            // shares this one handle (`Workspace::ai`), so load into it rather than
+            // replacing it.
+            *state.ai.borrow_mut() = ai::AiState::load();
         }
         if let Some(path) = document_path {
             match state.apply(Action::Open { path }) {
@@ -14473,12 +14567,21 @@ impl App {
         // tutorials are written back — `ai.json` is the long-term copy, `state.ai` the live
         // one. Written 0600 by `AiConfig::save`.
         #[cfg(not(target_arch = "wasm32"))]
-        if self.state.ai.config_dirty {
-            if let Err(err) = self.state.ai.config.save() {
-                self.state.status = format!("Could not save AI backends: {err}");
+        {
+            let dirty = self.state.ai.borrow().config_dirty;
+            if dirty {
+                let result = self.state.ai.borrow().config.save();
+                if let Err(err) = result {
+                    self.state.status = format!("Could not save AI backends: {err}");
+                }
+                self.state.ai.borrow_mut().config_dirty = false;
             }
-            self.state.ai.config_dirty = false;
         }
+
+        // Drive the conversation (#1598): start a waiting message now that the workspace is
+        // reachable, and copy in whatever of the reply has arrived.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.pump_ai_chat(ctx);
 
         #[cfg(not(target_arch = "wasm32"))]
         if self.state.completed_tutorials_dirty {

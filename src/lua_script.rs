@@ -4591,8 +4591,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, ()| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let state = unsafe { tick.state() };
+            let ai = state.ai.borrow();
             let list = lua.create_table()?;
-            for (index, backend) in state.ai.config.backends.iter().enumerate() {
+            for (index, backend) in ai.config.backends.iter().enumerate() {
                 let t = lua.create_table()?;
                 t.set("id", backend.id.clone())?;
                 t.set("name", backend.name.clone())?;
@@ -4601,7 +4602,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 t.set("base_url", backend.effective_base_url().to_string())?;
                 t.set("key", backend.key_description())?;
                 t.set("usable", backend.is_usable())?;
-                t.set("selected", state.ai.config.selected.as_deref() == Some(&backend.id))?;
+                t.set("selected", ai.config.selected.as_deref() == Some(&backend.id))?;
                 list.set(index + 1, t)?;
             }
             Ok(list)
@@ -4614,7 +4615,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, ()| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let state = unsafe { tick.state() };
-            Ok(match state.ai.config.selected() {
+            let ai = state.ai.borrow();
+            Ok(match ai.config.selected() {
                 Some(backend) => Value::String(lua.create_string(&backend.id)?),
                 None => Value::Nil,
             })
@@ -4636,6 +4638,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let existing = unsafe { tick.state() }
                 .ai
+                .borrow()
                 .config
                 .get(&id)
                 .cloned()
@@ -4658,6 +4661,122 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, id: String| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::SelectAiBackend { id }) }
+        })?,
+    )?;
+
+    // Send a chat message (#1598). The reply streams in over the following frames; the
+    // `bearcad.ai.ask` wrapper in the prelude waits for it and returns the text.
+    api.set(
+        "ai_send",
+        lua.create_function(|lua, text: String| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::SendAiMessage { text }) }
+        })?,
+    )?;
+
+    api.set(
+        "ai_stop",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::CancelAiMessage) }
+        })?,
+    )?;
+
+    api.set(
+        "ai_clear",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::ClearAiConversation) }
+        })?,
+    )?;
+
+    // Whether a reply is on its way — what `ask` waits on.
+    api.set(
+        "ai_streaming",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let ai = unsafe { tick.state() }.ai.borrow();
+            Ok(ai.chat.is_streaming() || ai.chat.awaiting_context)
+        })?,
+    )?;
+
+    // The conversation so far: role, text, any error, and the tokens each turn used.
+    api.set(
+        "ai_messages",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let ai = unsafe { tick.state() }.ai.borrow();
+            let list = lua.create_table()?;
+            for (index, entry) in ai.chat.entries.iter().enumerate() {
+                let t = lua.create_table()?;
+                t.set(
+                    "role",
+                    match entry.role {
+                        crate::ai::providers::Role::User => "user",
+                        crate::ai::providers::Role::Assistant => "assistant",
+                    },
+                )?;
+                t.set("text", entry.text.clone())?;
+                t.set("backend", entry.backend.clone())?;
+                t.set("streaming", entry.streaming)?;
+                match &entry.error {
+                    Some(error) => t.set("error", error.clone())?,
+                    None => t.set("error", Value::Nil)?,
+                }
+                t.set("input_tokens", entry.usage.input_tokens)?;
+                t.set("output_tokens", entry.usage.output_tokens)?;
+                list.set(index + 1, t)?;
+            }
+            Ok(list)
+        })?,
+    )?;
+
+    // Get or set how much of the workspace a message carries (#1597).
+    api.set(
+        "ai_context_scope",
+        lua.create_function(|lua, scope: Option<String>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let Some(scope) = scope else {
+                let ai = unsafe { tick.state() }.ai.borrow();
+                return Ok(Value::String(lua.create_string(ai.chat.scope.as_str())?));
+            };
+            let parsed = crate::ai::context::ContextScope::parse(&scope).ok_or_else(|| {
+                mlua::Error::external(format!(
+                    "unknown context scope '{scope}' (expected 'document' or 'all')"
+                ))
+            })?;
+            unsafe { tick.exec(Instruction::SetAiContextScope { scope: parsed }) }?;
+            Ok(Value::Nil)
+        })?,
+    )?;
+
+    // Ask the frame loop to assemble what the next message would send.
+    api.set(
+        "ai_request_context",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let mut ai = unsafe { tick.state() }.ai.borrow_mut();
+            ai.preview = None;
+            ai.preview_wanted = true;
+            Ok(())
+        })?,
+    )?;
+
+    // The assembled context, or nil while the request is outstanding.
+    api.set(
+        "ai_context",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let ai = unsafe { tick.state() }.ai.borrow();
+            let Some(context) = &ai.preview else {
+                return Ok(Value::Nil);
+            };
+            let t = lua.create_table()?;
+            t.set("text", context.text.clone())?;
+            t.set("documents", context.documents)?;
+            t.set("tokens", context.estimated_tokens)?;
+            t.set("truncated", context.truncated)?;
+            Ok(Value::Table(t))
         })?,
     )?;
 
@@ -8026,10 +8145,37 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             backends = "ai_backends", backend = "ai_backend",
             add_backend = "ai_add_backend", update_backend = "ai_update_backend",
             remove_backend = "ai_remove_backend", set_backend = "ai_set_backend",
+            send = "ai_send", stop = "ai_stop", clear = "ai_clear",
+            streaming = "ai_streaming", messages = "ai_messages",
+            context_scope = "ai_context_scope",
+            _request_context = "ai_request_context", _context = "ai_context",
         }
         for name, source in pairs(ai_funcs) do
             bearcad.ai[name] = bearcad[source]
             bearcad[source] = nil
+        end
+
+        -- Send a message and wait for the whole reply, returning its text. Yields between
+        -- frames like every other waiting call, so the app keeps drawing while it streams.
+        function bearcad.ai.ask(text)
+          bearcad.ai.send(text)
+          while bearcad.ai.streaming() do coroutine.yield() end
+          local messages = bearcad.ai.messages()
+          local last = messages[#messages]
+          if last and last.error then error(last.error, 2) end
+          return last and last.text or ""
+        end
+
+        -- What the next message would send, exactly (#1597). Assembled by the frame loop,
+        -- so this waits a frame for it.
+        function bearcad.ai.context_preview()
+          bearcad.ai._request_context()
+          local context = bearcad.ai._context()
+          while context == nil do
+            coroutine.yield()
+            context = bearcad.ai._context()
+          end
+          return context
         end
 
         bearcad.ui.drag_vertex = bearcad.drag_vertex

@@ -13,26 +13,42 @@
 //!   value, a Lua export, `--show-commands`, the diagnostics file, or a screenshot.
 
 pub mod backends;
-pub mod panel;
-// #1596: the request/stream layer. Consumed by the chat panel in #1598 — the same staged
-// shape `mod text` used for #282a — so the whole surface is not reachable yet.
 #[cfg(not(target_arch = "wasm32"))]
-#[allow(dead_code)]
+pub mod chat;
+pub mod context;
+pub mod panel;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod providers;
 #[cfg(not(target_arch = "wasm32"))]
-#[allow(dead_code)]
 pub mod transport;
 
-/// Live AI state on [`crate::actions::AppState`].
+/// A handle to the one [`AiState`] the app has.
+///
+/// Every tab's [`crate::actions::AppState`] holds a clone of the *same* handle: backends and
+/// the conversation belong to the app, not to a document, and switching tabs swaps whole
+/// `AppState`s (`tabs::Workspace`). Sharing the state is what keeps a reply streaming into
+/// the pane while the user looks at another tab.
+pub type SharedAi = std::rc::Rc<std::cell::RefCell<AiState>>;
+
+/// Live AI state, shared by every tab through [`SharedAi`].
 ///
 /// Only the configuration lives here so far. The conversation (#1598) is session-only and
 /// will join it; the MCP server (#1605) keeps its handle here too.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub struct AiState {
     /// Configured backends and the selected one, mirrored from `ai.json`.
     pub config: backends::AiConfig,
     /// Set when [`Self::config`] changes so the host writes `ai.json` after the frame.
     pub config_dirty: bool,
+    /// The session-only conversation (#1598). Native only: the browser build has no
+    /// transport to answer with.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub chat: chat::Conversation,
+    /// A script asked what the next message would send (`bearcad.ai.context_preview`).
+    /// Answered by the frame loop, which is the only place every open document is reachable.
+    pub preview_wanted: bool,
+    /// The answer to the last preview request, or `None` while one is outstanding.
+    pub preview: Option<context::Context>,
 }
 
 impl AiState {
@@ -43,7 +59,7 @@ impl AiState {
         {
             Self {
                 config: backends::AiConfig::load(),
-                config_dirty: false,
+                ..Self::default()
             }
         }
         #[cfg(target_arch = "wasm32")]

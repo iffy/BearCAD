@@ -38,6 +38,7 @@ pub struct ChatMessage {
     pub text: String,
 }
 
+#[allow(dead_code)] // Constructors used by tests and by the MCP tool surface (#1605).
 impl ChatMessage {
     pub fn user(text: impl Into<String>) -> Self {
         Self { role: Role::User, text: text.into() }
@@ -78,6 +79,7 @@ impl Usage {
     }
 
     /// Total tokens, cached ones included.
+    #[allow(dead_code)] // The cost readout (#1599) shows this.
     pub fn total(&self) -> u64 {
         self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_write_tokens
     }
@@ -95,6 +97,7 @@ pub struct HttpRequest {
 impl HttpRequest {
     /// The request with every credential replaced by `<redacted>` — for diagnostics and
     /// error messages, which must never carry the key (#1595).
+    #[allow(dead_code)] // Exercised by tests; the privacy audit (#1609) wires it into diag.
     pub fn redacted(&self) -> HttpRequest {
         let headers = self
             .headers

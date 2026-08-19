@@ -2575,6 +2575,15 @@ pub enum Action {
     RemoveAiBackend { id: String },
     /// Point the conversation at a configured backend.
     SelectAiBackend { id: String },
+    /// Send a chat message (#1598). The frame loop supplies the document context and starts
+    /// the request; this only records the turn.
+    SendAiMessage { text: String },
+    /// Stop a reply in progress. What already arrived stays in the thread.
+    CancelAiMessage,
+    /// Empty the conversation (and stop anything running).
+    ClearAiConversation,
+    /// Choose how much of the workspace a message carries (#1597).
+    SetAiContextScope { scope: crate::ai::context::ContextScope },
     /// Turn help mode on, off, or (with `None`) the other way (#672): the Context pane's
     /// controls each grow a floating note explaining what they want.
     SetHelpMode(Option<bool>),
@@ -3551,6 +3560,10 @@ impl Action {
                     | Action::UpdateAiBackend { .. }
                     | Action::RemoveAiBackend { .. }
                     | Action::SelectAiBackend { .. }
+                    | Action::SendAiMessage { .. }
+                    | Action::CancelAiMessage
+                    | Action::ClearAiConversation
+                    | Action::SetAiContextScope { .. }
                     | Action::SetMcMasterWindow { .. }
                     | Action::SetReportIssueWindow { .. }
                     | Action::SetSettingsWindow { .. }
@@ -4208,9 +4221,10 @@ pub struct AppState {
     pub completed_tutorials: Vec<String>,
     /// Set when [`Self::completed_tutorials`] changes so the host can persist it.
     pub completed_tutorials_dirty: bool,
-    /// AI backends and (later) the conversation (#1593). Mirrored from `ai.json`; the host
-    /// writes it back when [`crate::ai::AiState::config_dirty`] is set.
-    pub ai: crate::ai::AiState,
+    /// AI backends and the conversation (#1593), shared with every other tab — see
+    /// [`crate::ai::SharedAi`]. Mirrored from `ai.json`; the host writes it back when
+    /// [`crate::ai::AiState::config_dirty`] is set.
+    pub ai: crate::ai::SharedAi,
     /// Unix seconds of first launch on this machine, if this was a fresh install
     /// (#1434). `None` is an upgrade (or unknown) — no 30-day launch tooltip.
     pub installed_at_unix: Option<i64>,
@@ -4504,7 +4518,7 @@ impl Default for AppState {
             changelog_open: false,
             completed_tutorials: Vec::new(),
             completed_tutorials_dirty: false,
-            ai: crate::ai::AiState::default(),
+            ai: crate::ai::SharedAi::default(),
             installed_at_unix: None,
             tutorial_prompt: None,
             mcmaster_open: false,
@@ -11866,37 +11880,100 @@ impl AppState {
             }
             Action::AddAiBackend { backend } => {
                 let name = backend.name.clone();
-                let id = self.ai.config.add(backend);
-                self.ai.config_dirty = true;
+                let mut ai = self.ai.borrow_mut();
+                let id = ai.config.add(backend);
+                ai.config_dirty = true;
+                drop(ai);
                 self.status = format!("Added AI backend {name} ({id})");
                 ActionResult::Ok
             }
             Action::UpdateAiBackend { id, backend } => {
-                let Some(existing) = self.ai.config.get_mut(&id) else {
+                let mut ai = self.ai.borrow_mut();
+                let Some(existing) = ai.config.get_mut(&id) else {
                     return ActionResult::Err(format!("no AI backend '{id}'"));
                 };
                 // The id is the handle scripts and the selection hold; editing the settings
                 // behind it must not invalidate them.
                 *existing = crate::ai::backends::Backend { id: id.clone(), ..backend };
-                self.ai.config_dirty = true;
+                ai.config_dirty = true;
+                drop(ai);
                 self.status = format!("Updated AI backend {id}");
                 ActionResult::Ok
             }
             Action::RemoveAiBackend { id } => {
-                if !self.ai.config.remove(&id) {
+                let mut ai = self.ai.borrow_mut();
+                if !ai.config.remove(&id) {
                     return ActionResult::Err(format!("no AI backend '{id}'"));
                 }
-                self.ai.config_dirty = true;
+                ai.config_dirty = true;
+                drop(ai);
                 self.status = format!("Removed AI backend {id}");
                 ActionResult::Ok
             }
             Action::SelectAiBackend { id } => {
-                if let Err(e) = self.ai.config.select(&id) {
+                let mut ai = self.ai.borrow_mut();
+                if let Err(e) = ai.config.select(&id) {
                     return ActionResult::Err(e);
                 }
-                self.ai.config_dirty = true;
+                ai.config_dirty = true;
+                drop(ai);
                 self.status = format!("AI backend: {id}");
                 ActionResult::Ok
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::SendAiMessage { text } => {
+                let text = text.trim().to_string();
+                if text.is_empty() {
+                    return ActionResult::Err("Nothing to send".to_string());
+                }
+                let mut ai = self.ai.borrow_mut();
+                if ai.chat.is_streaming() || ai.chat.awaiting_context {
+                    return ActionResult::Err("A reply is already on its way".to_string());
+                }
+                // Refuse before recording anything: an unusable backend is a setup problem,
+                // not a failed message.
+                let Some(backend) = ai.config.selected().cloned() else {
+                    return ActionResult::Err("No AI backend configured".to_string());
+                };
+                if let Some(reason) = backend.unusable_reason() {
+                    return ActionResult::Err(format!("AI backend {}: {reason}", backend.name));
+                }
+                ai.chat.begin(text, backend.id.clone());
+                ai.chat.input.clear();
+                drop(ai);
+                self.status = format!("Asking {}…", backend.name);
+                ActionResult::Ok
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::CancelAiMessage => {
+                let mut ai = self.ai.borrow_mut();
+                if !ai.chat.is_streaming() {
+                    return ActionResult::Err("Nothing to stop".to_string());
+                }
+                ai.chat.cancel();
+                drop(ai);
+                self.status = "Stopped".to_string();
+                ActionResult::Ok
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::ClearAiConversation => {
+                self.ai.borrow_mut().chat.clear();
+                self.status = "Conversation cleared".to_string();
+                ActionResult::Ok
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::SetAiContextScope { scope } => {
+                self.ai.borrow_mut().chat.scope = scope;
+                self.status = format!("AI sees: {}", scope.label());
+                ActionResult::Ok
+            }
+            // The browser build has no transport, so chat actions are inert there.
+            #[cfg(target_arch = "wasm32")]
+            Action::SendAiMessage { .. }
+            | Action::CancelAiMessage
+            | Action::ClearAiConversation
+            | Action::SetAiContextScope { .. } => {
+                ActionResult::Err("AI chat is only available in the desktop app".to_string())
             }
             Action::DragVertex { point, u, v } => {
                 let Some(sketch) = self.sketch_session.map(|s| s.sketch) else {

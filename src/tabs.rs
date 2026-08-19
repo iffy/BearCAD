@@ -69,6 +69,9 @@ pub enum CloseOutcome {
 /// All windows and id counters for the session.
 pub struct Workspace {
     pub windows: Vec<TabWindow>,
+    /// The one AI state every tab shares (#1598). Backends and the conversation belong to
+    /// the app, so a tab created here adopts this handle rather than starting its own.
+    pub ai: crate::ai::SharedAi,
     next_tab_id: u64,
     next_doc_id: u64,
     next_window_id: u64,
@@ -85,6 +88,7 @@ impl Workspace {
     pub fn new() -> Self {
         let mut ws = Self {
             windows: Vec::new(),
+            ai: crate::ai::SharedAi::default(),
             next_tab_id: 1,
             next_doc_id: 1,
             next_window_id: 1,
@@ -125,10 +129,12 @@ impl Workspace {
     }
 
     pub fn make_blank_tab(&mut self) -> Tab {
+        let mut state = AppState::default();
+        state.ai = std::rc::Rc::clone(&self.ai);
         Tab {
             id: self.alloc_tab_id(),
             document_id: self.alloc_doc_id(),
-            state: AppState::default(),
+            state,
         }
     }
 
@@ -240,6 +246,7 @@ impl Workspace {
         let (swi, sti) = self.find_tab(source_tab)?;
         let doc_id = self.windows[swi].tabs[sti].document_id;
         let mut state = AppState::default();
+        state.ai = std::rc::Rc::clone(&self.ai);
         copy_document_core(&self.windows[swi].tabs[sti].state, &mut state);
         // Carry the drawing workbench flag only if we want independent views — leave
         // editing_drawing unset so the new tab opens on the 3D model; the user can open
