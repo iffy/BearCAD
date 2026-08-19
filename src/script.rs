@@ -173,6 +173,12 @@ pub enum Instruction {
         length: f32,
         expression: String,
     },
+    /// Set a tracing image's draw opacity (#1548).
+    SetImageOpacity {
+        image: usize,
+        opacity: f32,
+        expression: String,
+    },
     /// Import a STEP file at `path` as a new body (#71).
     ImportStep { path: String },
     /// Import a document Lua script (#1160): run the file against the live document.
@@ -1053,6 +1059,14 @@ impl Instruction {
                         "bearcad.calibrate_image{{ image = {image}, length = {length_arg} }}"
                     ),
                 }
+            }
+            Instruction::SetImageOpacity { image, opacity, expression } => {
+                let opacity_arg = if expression.is_empty() {
+                    opacity.to_string()
+                } else {
+                    format!("{expression:?}")
+                };
+                format!("bearcad.image_opacity{{ image = {image}, opacity = {opacity_arg} }}")
             }
             Instruction::ImportStep { path } => format!("bearcad.import_step({path:?})"),
             Instruction::ImportLua { path, force } => {
@@ -3142,6 +3156,11 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 expression: expression.clone(),
             })
         }
+        Action::SetImageOpacity { image, opacity } => Some(Instruction::SetImageOpacity {
+            image: image_ordinal(doc, *image)?,
+            opacity: *opacity,
+            expression: String::new(),
+        }),
         Action::ImportStep { path } => Some(Instruction::ImportStep { path: path.clone() }),
         Action::UpdateExtrusion { extrusion, distance, target, expression } => {
             Some(Instruction::UpdateExtrusion {
@@ -5898,6 +5917,35 @@ impl ScriptRunner {
                 };
                 let r = state.apply(Action::ImportImage { path, plane });
                 self.record_action_error(r);
+                StepResult::Continue
+            }
+            Instruction::SetImageOpacity { image, opacity, expression } => {
+                let Some(image) = image_key(&state.doc, image) else {
+                    self.last_action_error = Some(format!("Image {image} not found"));
+                    return StepResult::Continue;
+                };
+                let mut expression = expression;
+                if let Err(e) = crate::actions::commit_inline_parameter_defs(
+                    &mut state.doc,
+                    [&mut expression],
+                ) {
+                    self.record_action_error(crate::actions::ActionResult::Err(e));
+                    return StepResult::Continue;
+                }
+                let opacity = if !expression.trim().is_empty() {
+                    match crate::value::eval_count_in_doc(&expression, &state.doc) {
+                        Some(v) => v,
+                        None => {
+                            self.last_action_error =
+                                Some(format!("Not a usable opacity: {expression}"));
+                            return StepResult::Continue;
+                        }
+                    }
+                } else {
+                    opacity
+                };
+                let result = state.apply(Action::SetImageOpacity { image, opacity });
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::SetCalibrationPoint { image, index, x, y } => {

@@ -15049,7 +15049,12 @@ impl App {
                     .and_then(|i| {
                         let img = self.state.doc.tracing_images.get(i)?;
                         let (a, b) = model::image_calibration_endpoints(img)?;
-                        Some(context::CalibrateImageControl { image: i, a, b })
+                        Some(context::CalibrateImageControl {
+                            image: i,
+                            a,
+                            b,
+                            opacity: img.opacity,
+                        })
                     })
             },
             // "Calibrate scale" button (#163): one tracing image selected, nothing
@@ -15797,6 +15802,7 @@ impl App {
             let mut tool_picker_edit: Option<(context::PickerTarget, context::ToolPickerAction)> =
                 None;
             let mut calibrate_apply: Option<(context::CalibrateImageControl, String)> = None;
+            let mut image_opacity: Option<(model::TracingImageKey, f32)> = None;
             let mut calibrate_begin: Option<model::TracingImageKey> = None;
             let mut dimension_derive_edit: Option<context::DimensionDeriveEdit> = None;
             let mut dimension_edit: Option<context::DimensionEditEdit> = None;
@@ -15907,6 +15913,7 @@ impl App {
                         &mut |op| sweep_edit_begin = Some(op),
                         &mut |image| calibrate_begin = Some(image),
                         &mut |control, text| calibrate_apply = Some((control, text)),
+                        &mut |image, opacity| image_opacity = Some((image, opacity)),
                         &mut |edit| dimension_derive_edit = Some(edit),
                         &mut |edit| dimension_edit = Some(edit),
                         &mut |edit| treatment_edit = Some(edit),
@@ -17024,6 +17031,9 @@ impl App {
                 }
                 Some(context::TreatmentEdit::Commit) => self.commit_treatment_from_pane(),
                 None => {}
+            }
+            if let Some((image, opacity)) = image_opacity {
+                self.state.apply(Action::SetImageOpacity { image, opacity });
             }
             if let Some((control, mut text)) = calibrate_apply {
                 // #201: a typed length can define a parameter (`name = expr`).

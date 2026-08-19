@@ -2657,6 +2657,25 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1548: set a tracing image's draw opacity (0..1). Number or expression.
+    api.set(
+        "image_opacity",
+        lua.create_function(|lua, opts: Table| {
+            check_keys(&opts, "image_opacity", &["image", "opacity"])?;
+            let image: usize = opts.get("image")?;
+            let expression = lua_amount_expr(&opts, "opacity")?;
+            let opacity = expression.parse::<f32>().unwrap_or(0.0);
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe {
+                tick.exec(Instruction::SetImageOpacity {
+                    image,
+                    opacity,
+                    expression,
+                })
+            }
+        })?,
+    )?;
+
     api.set(
         "import_step",
         lua.create_function(|lua, path: String| {
@@ -3491,6 +3510,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         t.set("name", name.as_str())?;
                     }
                     t.set("source", img.source_name.as_str())?;
+                    t.set("opacity", img.opacity)?;
                     if let Some(cal) = &img.calibration {
                         let from = lua.create_table()?;
                         if let Some((x, y)) = crate::model::image_calibration_point_uv(img, 0) {
@@ -7636,6 +7656,46 @@ mod tests {
         assert!((span - 10.0).abs() < 1e-3);
     }
 
+    /// #1548: a freshly imported image is 0.9 opaque; `get` exposes it; `image_opacity`
+    /// sets it (clamped to 0..1) so the Context slider/valueinput is scriptable.
+    #[test]
+    fn lua_image_opacity_defaults_and_is_scriptable() {
+        let path = write_test_png("opacity.png", 8, 8);
+        let state = run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.import_image({path:?})
+            local img = bearcad.get{{ kind = "image", index = 0 }}
+            assert(math.abs(img.opacity - 0.9) < 1e-6, "default opacity " .. tostring(img.opacity))
+
+            bearcad.image_opacity{{ image = 0, opacity = 0.4 }}
+            img = bearcad.get{{ kind = "image", index = 0 }}
+            assert(math.abs(img.opacity - 0.4) < 1e-6, "set opacity " .. tostring(img.opacity))
+
+            bearcad.image_opacity{{ image = 0, opacity = 1.5 }}
+            img = bearcad.get{{ kind = "image", index = 0 }}
+            assert(math.abs(img.opacity - 1.0) < 1e-6, "clamped high " .. tostring(img.opacity))
+
+            bearcad.image_opacity{{ image = 0, opacity = -0.2 }}
+            img = bearcad.get{{ kind = "image", index = 0 }}
+            assert(math.abs(img.opacity - 0.0) < 1e-6, "clamped low " .. tostring(img.opacity))
+
+            bearcad.parameter("add", "fade", "0.25")
+            bearcad.image_opacity{{ image = 0, opacity = "2 * fade" }}
+            img = bearcad.get{{ kind = "image", index = 0 }}
+            assert(math.abs(img.opacity - 0.5) < 1e-6, "expr opacity " .. tostring(img.opacity))
+
+            local ok, err = pcall(function()
+                bearcad.image_opacity{{ image = 9, opacity = 0.5 }}
+            end)
+            assert(not ok, "missing image should error")
+            assert(tostring(err):find("Image") or tostring(err):find("image"), tostring(err))
+            "#
+        ));
+        let img = state.doc.tracing_images.values().next().unwrap();
+        assert!((img.opacity - 0.5).abs() < 1e-6);
+    }
+
     /// #1055: a script names an arena-backed element by its **ordinal** among the live ones,
     /// not by its slot. Deleting the first image used to renumber the rest; now the key moves
     /// and the ordinal is what has to be recomputed, in both directions.
@@ -7649,6 +7709,7 @@ mod tests {
             base_origin: None,
             width_mm: 10.0,
             height_mm: 10.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: None,
         };

@@ -509,6 +509,15 @@ pub fn instruction_from_json(
                 expression,
             })
         }
+        "image_opacity" => {
+            let expression = req_expr(o, "opacity", "image_opacity")?;
+            let opacity = expression.parse::<f32>().unwrap_or(0.0);
+            Ok(Instruction::SetImageOpacity {
+                image: req_usize(o, "image", "image_opacity")?,
+                opacity,
+                expression,
+            })
+        }
 
         // ----- Declarative 3D modeling ops. -----
         "revolve" => {
@@ -2963,6 +2972,18 @@ mod tests {
                 b: Some((10.0, 0.0)),
                 length: 25.0,
                 expression: "25".into(),
+            })
+        );
+        assert_eq!(
+            instruction_from_json(
+                &Document::default(),
+                "image_opacity",
+                &json!({ "image": 0, "opacity": 0.4 })
+            ),
+            Ok(Instruction::SetImageOpacity {
+                image: 0,
+                opacity: 0.4,
+                expression: "0.4".into(),
             })
         );
     }

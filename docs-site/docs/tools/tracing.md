@@ -17,8 +17,8 @@ like any other element.
 right-click that construction plane in the Elements pane → **Import image on this
 plane…**.
 
-Images draw slightly translucent: bodies in front hide them, but sketch lines stay visible
-on top.
+Images draw slightly translucent (0.9 by default): bodies in front hide them, but sketch
+lines stay visible on top. Select an image to change its opacity with the slider.
 
 ## Setting the scale
 

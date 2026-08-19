@@ -4432,12 +4432,22 @@ pub struct TracingImage {
     /// Displayed size in mm. Import seeds 1 px = 1 mm; calibration (#171) rescales.
     pub width_mm: f32,
     pub height_mm: f32,
+    /// How opaque the image draws, 0 (invisible) to 1 (solid). Import seeds 0.9 (#1548).
+    #[serde(default = "default_tracing_image_opacity")]
+    pub opacity: f32,
     #[serde(default)]
     pub name: Option<String>,
     /// Last applied scale calibration (#171), kept for re-editing: the reference segment in
     /// image-UV space (0..1 across the displayed quad) and the real length it was assigned.
     #[serde(default)]
     pub calibration: Option<ImageCalibration>,
+}
+
+/// Freshly imported tracing images are slightly translucent so sketch lines read on top (#1548).
+pub const DEFAULT_TRACING_IMAGE_OPACITY: f32 = 0.9;
+
+fn default_tracing_image_opacity() -> f32 {
+    DEFAULT_TRACING_IMAGE_OPACITY
 }
 
 /// A tracing image's scale calibration (#171).
