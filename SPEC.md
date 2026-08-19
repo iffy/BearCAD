@@ -3850,7 +3850,8 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   `bearcad.get{ kind, index }` over lines, circles, sketches, constraints, construction
   planes, extrusions, bodies, and parameters (`count` also takes `drawing`, `sketch_text`,
   and `image`); `bearcad.body_stats(i)` (mesh
-  volume/triangles/bbox); `bearcad.status()`; `bearcad.selection()`;
+  volume/triangles/bbox); `bearcad.status()`; `bearcad.version()` (Help → About
+  identity: release tag, or crate version + SHA); `bearcad.selection()`;
   `bearcad.parameter("get"|"get_expression", name)`; and **`bearcad.pickers()`** (#968), the
   active tool's element pickers — per picker its `name`, whether it's `focused`, its `limit`
   (absent when unlimited), the element-kind names it `accepts`, and the `items` it holds. This
