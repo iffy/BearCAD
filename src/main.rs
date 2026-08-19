@@ -3656,11 +3656,11 @@ enum WebIoEvent {
 type WebIoQueue = std::rc::Rc<std::cell::RefCell<Vec<WebIoEvent>>>;
 
 impl App {
-    /// Auto-zoom (#1371): while enabled, perform a zoom-to-fit 500 ms after the user
+    /// Auto-zoom (#1371/#1574): while enabled, perform a zoom-to-fit 300 ms after the user
     /// stops interacting — whether that's mouse movement, clicks, or keyboard input.
-    /// The 500 ms is a debounce: continuous input keeps pushing the deadline out, so a
-    /// zoom only fires once the user has been quiet for half a second. A drag (pointer
-    /// held) pauses the countdown instead of restarting it — see [`AutoZoomArm::step`].
+    /// The 300 ms is a debounce: continuous input keeps pushing the deadline out, so a
+    /// zoom only fires once the user has been quiet for three tenths of a second. A drag
+    /// (pointer held) pauses the countdown instead of restarting it — see [`AutoZoomArm::step`].
     /// Runs before `tick_transition`; frames the committed document ∪ live previews
     /// and glides, like the Zoom to Fit toolbar button with an empty selection (#1429).
     fn tick_auto_zoom(&mut self, ctx: &egui::Context) {
@@ -3676,7 +3676,7 @@ impl App {
         let now = ctx.input(|i| i.time);
         // Any user input re-arms the countdown — pointer moves, button presses, keyboard
         // (down *or* up) — so continuous interaction debounces it: it only ever fires once
-        // the user has been quiet for 500 ms (#1371). While the pointer is held, `step`
+        // the user has been quiet for 300 ms (#1371/#1574). While the pointer is held, `step`
         // pauses instead (see [`AutoZoomArm::step`]), so a drag never re-frames.
         let is_input = ctx.input(|i| {
             i.events.iter().any(|e| match e {
@@ -14172,13 +14172,13 @@ impl App {
                 {
                     self.state.apply(Action::ZoomToFit);
                 }
-                // Auto-zoom toggle (#438/#1371): while on, the view re-frames to fit the whole
-                // document 500 ms after the user stops interacting.
+                // Auto-zoom toggle (#438/#1371/#1574): while on, the view re-frames to fit the
+                // whole document 300 ms after the user stops interacting.
                 if icons::selectable_icon_button_at(
                     ui,
                     icons::IconId::AutoZoom,
                     self.state.auto_zoom,
-                    "Auto-zoom — zoom to fit 500 ms after you stop interacting",
+                    "Auto-zoom — zoom to fit 300 ms after you stop interacting",
                     TOOLBAR_ICON_SIZE,
                 )
                 .clicked()
@@ -19370,7 +19370,7 @@ fn viewport_pointer_pos(
 
 /// Auto-zoom's debounce state (#1371). [`AutoZoomArm::step`] is called every frame with
 /// whether this frame carried any user input, whether the pointer is currently down, and
-/// the repaint-clock time; it returns `true` once 500 ms have passed since the last input
+/// the repaint-clock time; it returns `true` once 300 ms have passed since the last input
 /// (so a drag — held down with moves — keeps pausing it). Pure so it's unit-testable.
 #[derive(Clone, Copy, Debug)]
 pub struct AutoZoomArm {
@@ -19380,8 +19380,8 @@ pub struct AutoZoomArm {
     fired: bool,
 }
 
-/// How long the user must be quiet before auto-zoom re-frames the view (#1371).
-pub const AUTO_ZOOM_SETTLE_SECS: f64 = 0.5;
+/// How long the user must be quiet before auto-zoom re-frames the view (#1371/#1574).
+pub const AUTO_ZOOM_SETTLE_SECS: f64 = 0.3;
 
 impl AutoZoomArm {
     pub fn new() -> Self {
@@ -19393,8 +19393,8 @@ impl AutoZoomArm {
 
     /// Advance one frame. `input` is true when this frame carried *any* user input —
     /// pointer move, button press/release, or key press/release. Continuous input keeps
-    /// re-arming the 500 ms countdown, so it debounces: the zoom only fires once the user
-    /// has been quiet for half a second. `dragging` is true while the pointer is held
+    /// re-arming the 300 ms countdown, so it debounces: the zoom only fires once the user
+    /// has been quiet for three tenths of a second. `dragging` is true while the pointer is held
     /// down; during a drag the countdown is *paused* — it neither fires nor re-arms — so
     /// dragging never yanks the camera out from under the pointer (#1371). Returns whether
     /// a zoom-to-fit should fire *this* frame.
@@ -33989,9 +33989,14 @@ mod tests {
         assert!(!element_in_sketch(&doc, model::sketch_key_for_slot(0), &SceneElement::BodyVertex { body: bkey(0), p: [0; 3] }));
     }
 
-    /// Auto-zoom (#1371) fires 500 ms after any user input, debounced (the countdown
+    /// Auto-zoom (#1371/#1574) fires 300 ms after any user input, debounced (the countdown
     /// restarts on each input), and never fires while the pointer is down — it pauses
     /// during a drag.
+    #[test]
+    fn auto_zoom_settle_is_three_tenths_of_a_second() {
+        assert_eq!(AUTO_ZOOM_SETTLE_SECS, 0.3);
+    }
+
     #[test]
     fn auto_zoom_arm_debounces_and_pauses_on_drag() {
         let mut arm = AutoZoomArm::new();
@@ -34000,7 +34005,7 @@ mod tests {
         assert!(!arm.step(false, false, 1000.0 + AUTO_ZOOM_SETTLE_SECS));
         // Any input arms it; it does not fire immediately.
         assert!(!arm.step(true, false, 0.0));
-        // Still not 500 ms later.
+        // Still not 300 ms later.
         assert!(!arm.step(false, false, AUTO_ZOOM_SETTLE_SECS * 0.5));
         // Exactly at the deadline it fires, then only once until new input re-arms.
         assert!(arm.step(false, false, AUTO_ZOOM_SETTLE_SECS));
