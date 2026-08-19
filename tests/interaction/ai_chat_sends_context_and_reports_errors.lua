@@ -24,6 +24,15 @@ assert(context.text:find("bearcad.rect"), "the document is described as its Lua 
 assert(context.tokens > 0, "context should have an estimated token count")
 assert(not context.truncated, "a small document is not truncated")
 
+-- #1623: the model needs the real Lua API in the system prompt, or it invents
+-- `bearcad.box` (which is not a function; a cube is `bearcad.cuboid`).
+assert(context.text:find("bearcad.cuboid"), "the system prompt should enumerate cuboid")
+assert(context.text:find("bearcad.extrude"), "and the rest of the modeling API")
+local catalog = bearcad.ai.api()
+assert(type(catalog) == "string" and #catalog > 500, "bearcad.ai.api() is the catalog")
+assert(catalog:find("bearcad.cuboid"), "the catalog documents cuboid")
+assert(catalog:find("width"), "and cuboid's real keys, not size/position")
+
 -- Two documents once a second tab is open, but only with the wider scope.
 bearcad.ui.new_tab()
 bearcad.ui.wait(1)

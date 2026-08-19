@@ -1,9 +1,9 @@
 //! What the AI is told about your documents (#1597).
 //!
 //! A document is described to the model as **the Lua script that recreates it**
-//! ([`crate::export_lua`]). That is the same language the published agent skill teaches, so
-//! the model reads the document in a notation it already understands and can answer in a
-//! form the user can run.
+//! ([`crate::export_lua`]), after the Lua API catalog ([`crate::ai::api`]). The model
+//! reads the document in a notation it already understands and answers with calls that
+//! actually exist.
 //!
 //! The scope switch decides how much goes: the active document only (the default), or every
 //! document open in the app. Everything assembled here is shown to the user before it is
@@ -69,17 +69,28 @@ pub struct Context {
     pub truncated: bool,
 }
 
-/// What the model is told it is doing. Kept short: the document itself is the context, and
-/// the agent skill (#1602) is where the full API lives.
+/// What the model is told it is doing. Kept short: the Lua API catalog (#1623) and the
+/// document itself follow it.
 const PREAMBLE: &str = "\
 You are helping with BearCAD, a parametric CAD app. Each open document is given below as \
 the Lua script that recreates it, using BearCAD's scripting API — the same API the user can \
 run. Lengths are millimetres and angles are radians unless a call says otherwise.
 
+The Lua API is enumerated after this preamble. Use only those functions.
+
 Answer questions about the geometry directly. When you propose a change, write it as a Lua \
 snippet in a ```lua block that would apply to the document as it is now: the user runs \
 blocks themselves, one click each, so a block should do one coherent thing and should not \
 recreate the whole document unless asked.";
+
+/// The fixed head of every system prompt: the preamble plus the Lua API catalog (#1623).
+/// Always sent in full; the token budget applies to the documents after it.
+fn prompt_header() -> String {
+    let mut text = String::from(PREAMBLE);
+    text.push_str("\n\n");
+    text.push_str(crate::ai::api::document());
+    text
+}
 
 /// Roughly how many tokens a string costs. Four characters per token is the usual English
 /// approximation; this only has to be good enough to warn about a large context and to
@@ -112,7 +123,7 @@ pub fn build_with_budget(
         ordered.extend(docs.iter().filter(|d| !d.active));
     }
 
-    let mut text = String::from(PREAMBLE);
+    let mut text = prompt_header();
     let mut truncated = false;
     let mut included = 0usize;
     let mut skipped = 0usize;
@@ -305,8 +316,8 @@ mod tests {
         let other = with_rect(20.0, 20.0);
         let docs = inputs(&[("bracket", true, &active), ("plate", false, &other)]);
 
-        // Room for the preamble and roughly one document.
-        let budget = estimate_tokens(PREAMBLE) + 120;
+        // Room for the preamble, the API catalog, and roughly one document.
+        let budget = estimate_tokens(&prompt_header()) + 120;
         let context = build_with_budget(ContextScope::AllOpen, &docs, budget);
         assert_eq!(context.documents, 1, "the active document is never the one dropped");
         assert!(context.truncated);
@@ -322,7 +333,7 @@ mod tests {
     fn an_active_document_larger_than_the_whole_budget_is_cut_not_dropped() {
         let doc = with_rect(80.0, 50.0);
         let docs = inputs(&[("bracket", true, &doc)]);
-        let context = build_with_budget(ContextScope::Document, &docs, estimate_tokens(PREAMBLE) + 10);
+        let context = build_with_budget(ContextScope::Document, &docs, estimate_tokens(&prompt_header()) + 10);
         assert_eq!(context.documents, 1);
         assert!(context.truncated);
         assert!(context.text.contains("truncated"), "a cut is always declared");
@@ -335,6 +346,35 @@ mod tests {
         assert!(context.text.starts_with("You are helping with BearCAD"));
         assert!(context.text.contains("millimetres"));
         assert!(context.text.contains("```lua block"));
+    }
+
+    /// #1623: the chat used to send only the document Lua, so the model invented
+    /// `bearcad.box{ size = … }` — a call that does not exist. The system prompt now
+    /// enumerates the real API, including the cuboid that a cube actually is.
+    #[test]
+    fn the_system_prompt_enumerates_the_lua_api() {
+        let doc = Document::default();
+        let context = build(ContextScope::Document, &inputs(&[("Untitled", true, &doc)]));
+        for needle in [
+            "bearcad.cuboid{",
+            "width",
+            "depth",
+            "height",
+            "bearcad.rect{",
+            "bearcad.extrude{",
+            "bearcad.cylinder{",
+            "bearcad.sphere{",
+        ] {
+            assert!(
+                context.text.contains(needle),
+                "system prompt should teach {needle}, got: {}",
+                &context.text[..context.text.len().min(1200)]
+            );
+        }
+        // The catalog is the instructions; the document still follows it.
+        let api = context.text.find("bearcad.cuboid{").expect("cuboid in catalog");
+        let document = context.text.find("## Document:").expect("document section");
+        assert!(api < document, "the API comes before the document Lua");
     }
 
     #[test]
