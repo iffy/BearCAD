@@ -3995,6 +3995,9 @@ fn section_label(ui: &mut egui::Ui, text: impl Into<String>) {
 const FIELD_LABEL_W: f32 = 78.0;
 /// Inspector label for the Move/Joint mode dropdown (#1417).
 const MOVE_MODE_ROW_LABEL: &str = "Move mode";
+/// Combine Mode row (#606 / #1579): the Y shortcut sits next to the field name,
+/// the same parenthetical form as Name (N).
+const COMBINE_MODE_ROW_LABEL: &str = "Mode (Y)";
 
 // --- Help mode (#672) --------------------------------------------------------------------
 //
@@ -4570,9 +4573,9 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         (Some(Tool::Combine), "Bodies") => {
             Some("The bodies to fuse into one. Click a body to add it, click it again to drop it.")
         }
-        (Some(Tool::Combine), "Mode") => Some(
-            "Which boolean to perform: combine, cut, intersect, or difference. The pickers \
-             below follow — a two-sided operation asks for side A and side B.",
+        (Some(Tool::Combine), COMBINE_MODE_ROW_LABEL) => Some(
+            "Which boolean to perform: combine, cut, intersect, or difference. Y cycles \
+             them. The pickers below follow — a two-sided operation asks for side A and side B.",
         ),
         (Some(Tool::Combine), "Side A") => {
             Some("The bodies kept. For a cut, the one being carved into.")
@@ -6155,8 +6158,9 @@ pub fn show_pane(
         // (#608) is drawn once at the top of the pane.
         // A segmented icon group (#267): two-circle boolean icons with kept regions solid and
         // removed regions faint red — in the right column under a "Mode" label (#606).
+        // Y cycles the kind (#1534); the shortcut sits next to the field name (#1579).
         let kind = control.kind;
-        labeled_row(ui, "Mode", |ui| {
+        labeled_row(ui, COMBINE_MODE_ROW_LABEL, |ui| {
             if let Some(next) = show_combine_mode_icons(ui, kind) {
                 on_boolean_edit(BooleanEdit::Kind(next));
             }
@@ -11718,7 +11722,7 @@ mod tests {
             )
             .rect
             .height();
-            labeled_row(ui, "Mode", |ui| {
+            labeled_row(ui, COMBINE_MODE_ROW_LABEL, |ui| {
                 let _ = show_combine_mode_icons(ui, crate::model::BooleanOpKind::Cut);
             });
         });
@@ -11813,6 +11817,22 @@ mod tests {
             "help is keyed by the painted row label"
         );
         assert_eq!(row_help(Some(Tool::Move), "Translate"), None);
+    }
+
+    /// #1579: Combine's Mode row shows the Y shortcut next to the field name.
+    #[test]
+    fn combine_mode_row_shows_y_shortcut() {
+        assert_eq!(
+            COMBINE_MODE_ROW_LABEL,
+            shortcuts::compact_label("Mode", Some(shortcuts::CYCLE_TOOL_OUTPUT_MODE)).as_str()
+        );
+        let help = row_help(Some(Tool::Combine), COMBINE_MODE_ROW_LABEL)
+            .expect("help is keyed by the painted row label");
+        assert!(
+            help.contains('Y'),
+            "help mentions the Y shortcut: {help}"
+        );
+        assert_eq!(row_help(Some(Tool::Combine), "Mode"), None);
     }
 
     #[test]

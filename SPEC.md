@@ -921,7 +921,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   selected when the tool is picked **seed side A** (#943), like Repeat and Joint. The context
   pane reads as one contiguous block — no dividers between the body pickers and the controls
   below — with the four operations as a segmented icon group in the right column of a
-  two-column **Mode** row (#606).
+  two-column **Mode** row (#606). **Y** cycles the kind and is shown next to the field
+  name (#1534 / #1579), the same parenthetical form as Name (N).
   - Committing creates a **boolean operation element** (`Document::boolean_ops`,
     `ShapeKind::BooleanOperation`) and one **output body per result solid**
     (`BodySource::Boolean { op, solid }`) — a cut or difference that severs a body into
