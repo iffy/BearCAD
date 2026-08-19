@@ -2181,7 +2181,8 @@ pub fn body_shadowed_by_other_ops_ex(
     skip_shell: Option<ShellOpKey>,
 ) -> bool {
     doc.boolean_ops.iter().any(|(oi, o)| {
-        skip_boolean != Some(oi) && (o.a.contains(&body) || (!o.keep_b && o.b.contains(&body)))
+        skip_boolean != Some(oi)
+            && (o.a.contains(&body) || (o.consumes_b() && o.b.contains(&body)))
     }) || doc.move_ops.iter().any(|(oi, o)| {
         // Paste Linked (#1236) keeps its inputs live — it does not consume them.
         skip_move != Some(oi) && !o.keep_inputs && o.targets.contains(&body)
@@ -3074,12 +3075,19 @@ impl BooleanOpKind {
             Self::Difference => Self::Combine,
         }
     }
+
+    /// Cut with leftovers on leaves the B-side bodies live (the cutting shape).
+    /// Intersect and Difference leftovers are extra result solids, so B is consumed.
+    pub fn keep_leaves_b_live(self, keep: bool) -> bool {
+        keep && self == Self::Cut
+    }
 }
 
 /// A boolean operation between whole bodies (the Combine tool). Its inputs become
-/// **shadow** bodies (unless `keep_b`), its outputs are fresh [`Body`] elements with
-/// [`BodySource::Boolean`] sources, and the operation itself is an editable element in
-/// the pane: outputs depend on the operation, the operation depends on every input.
+/// **shadow** bodies (unless leftovers leave B live — a cut's cutting shape), its
+/// outputs are fresh [`Body`] elements with [`BodySource::Boolean`] sources, and the
+/// operation itself is an editable element in the pane: outputs depend on the
+/// operation, the operation depends on every input.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BooleanOperation {
     pub kind: BooleanOpKind,
@@ -3088,7 +3096,10 @@ pub struct BooleanOperation {
     /// Input bodies on the B side (cut/intersect/difference).
     #[serde(default)]
     pub b: Vec<BodyKey>,
-    /// Keep the B-side inputs as real bodies after the operation instead of shadowing them.
+    /// Keep leftovers (#1581): Cut leaves the B-side inputs live (the cutting shape).
+    /// Intersect and Difference add the leftover pieces as extra result solids
+    /// (trimmed-off parts / the hole), so with this on they produce the same
+    /// three-part split of A and B.
     #[serde(default)]
     pub keep_b: bool,
     /// Output bodies, in solid-ordinal order.
@@ -3096,6 +3107,13 @@ pub struct BooleanOperation {
     pub outputs: Vec<BodyKey>,
     #[serde(default)]
     pub name: Option<String>,
+}
+
+impl BooleanOperation {
+    /// B-side inputs become shadows unless leftovers leave the cutting shape live.
+    pub fn consumes_b(&self) -> bool {
+        !self.kind.keep_leaves_b_live(self.keep_b)
+    }
 }
 
 /// How anything names a boolean operation (#1055).

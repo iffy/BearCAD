@@ -916,7 +916,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   **Intersect** (only what's common), **Difference** (symmetric difference — only what's
   *not* common). Combine uses a single picker; the two-sided operations have A and B
   pickers (multi-select each, clicking a body in the viewport toggles it into the active
-  side) plus a **Keep B** toggle that leaves the B-side inputs as real bodies. Switching
+  side) plus a leftovers toggle that names what each op keeps: **Keep cutting shape**
+  (Cut leaves the B-side inputs live), **Keep trimmed parts** / **Keep hole** (Intersect
+  and Difference add the leftover pieces as extra result solids — the same three-part
+  split of A and B). Switching
   from Combine to a two-sided mode after side A is filled focuses side B. Bodies already
   selected when the tool is picked **seed side A** (#943), like Repeat and Joint. The context
   pane reads as one contiguous block — no dividers between the body pickers and the controls
@@ -945,7 +948,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     outputs of *earlier* operations are fine, so booleans chain acyclically; shadow
     bodies can't be re-picked unless the operation being edited already owns them).
   - The operation element is **editable**: selecting it offers "Edit operation", which
-    re-opens the pickers (kind, sides, keep-B) and applies in place, re-shadowing inputs
+    re-opens the pickers (kind, sides, leftovers) and applies in place, re-shadowing inputs
     accordingly. Deleting the operation removes its outputs and releases its inputs
     from shadow (unless another live operation still consumes them). Undo of a commit
     restores inputs and removes the operation and its outputs as one step.
@@ -957,8 +960,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     The kernel result is cached per (document, kind, sides), so it is computed once per
     pick rather than once per frame.
   - Scripting: `bearcad.combine{ op = "combine"|"cut"|"intersect"|"difference", a = {…},
-    b = {…}, keep_b?, name? }` and `bearcad.edit_boolean{ index, … }`; session-command
-    export replays both. `bearcad.begin_combine{ op, a, b, keep_b? }` arms the tool with
+    b = {…}, keep_b? / keep_leftovers?, name? }` and `bearcad.edit_boolean{ index, … }`;
+    session-command export replays both. `bearcad.begin_combine{ op, a, b, keep_b? }` arms
+    the tool with
     picked sides **without** committing, so a script can drive the result preview — the
     counterpart `begin_move` gives Move. The result geometry is kernel-computed (difference
     is (A∪B) − (A∩B); multi-solid results split via `Shape::solids`), on desktop and web

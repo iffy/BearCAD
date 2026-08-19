@@ -45,8 +45,9 @@ After — the cutting body is carved away:
    side A.
 2. Click bodies to add them. Two-sided operations have **Side A** and **Side B** pickers;
    click a picker to make it the active side. Re-clicking a body removes it.
-3. **Keep B** leaves the B-side bodies as real bodies (by default all inputs become
-   shadow bodies).
+3. **Keep cutting shape** / **Keep trimmed parts** / **Keep hole** keeps what that
+   operation would discard. Intersect and Difference with it on both split A and B
+   into three parts.
 4. Press **Enter**.
 
 Once every side the operation needs is picked, the result previews in the viewport —
@@ -68,7 +69,7 @@ you hover or select them in the Elements pane, where they ghost translucently.
 ## The operation element
 
 The operation is an element with the new bodies nested under it. **Edit operation**
-changes the kind, inputs, or **Keep B**; deleting it restores the inputs. Result bodies
+changes the kind, inputs, or leftovers; deleting it restores the inputs. Result bodies
 are ordinary bodies, so operations chain.
 
 ## Scripting
@@ -76,7 +77,7 @@ are ordinary bodies, so operations chain.
 ```lua
 bearcad.combine{ op = "cut", a = {0}, b = {1}, name = "Notched block" }
 bearcad.combine{ op = "combine", a = {0, 1, 2} }
-bearcad.combine{ op = "intersect", a = {0}, b = {1}, keep_b = true }
+bearcad.combine{ op = "intersect", a = {0}, b = {1}, keep_leftovers = true }
 bearcad.edit_boolean{ index = 0, op = "difference", a = {0}, b = {1} }
 -- `begin_combine` takes the same arguments but leaves the tool armed rather than
 -- committing, so the result preview is on screen for a screenshot.

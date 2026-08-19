@@ -270,7 +270,7 @@ pub enum PlaneToolEdit {
 }
 
 /// What the Combine tool's context section shows: the operation kind, both picker
-/// sides (labels), which side the next viewport click lands on, and the keep-B toggle.
+/// sides (labels), which side the next viewport click lands on, and the leftovers toggle.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BooleanControl {
     pub kind: crate::model::BooleanOpKind,
@@ -4588,9 +4588,16 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         (Some(Tool::Combine), "Side B") => {
             Some("The bodies applied to side A. For a cut, the ones carved away.")
         }
-        (Some(Tool::Combine), "Keep B bodies") => Some(
-            "Leaves the side B bodies as real bodies afterwards; by default every input \
+        (Some(Tool::Combine), "Keep cutting shape") => Some(
+            "Leaves the cutting shape as a real body afterwards; by default every input \
              becomes a shadow body.",
+        ),
+        (Some(Tool::Combine), "Keep trimmed parts") => Some(
+            "Keeps the parts of A and B that are not in the intersection as their own \
+             bodies.",
+        ),
+        (Some(Tool::Combine), "Keep hole") => Some(
+            "Keeps the overlapping hole as its own body instead of discarding it.",
         ),
         _ => None,
     };
@@ -4680,12 +4687,24 @@ pub(crate) fn labeled_row<R>(
     label: impl Into<egui::WidgetText>,
     add_input: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
+    labeled_row_salted(ui, None, label, add_input)
+}
+
+/// [`labeled_row`] with a stable widget salt so a changing visible label (#1581) does
+/// not remount the input on the same rect (#1580).
+fn labeled_row_salted<R>(
+    ui: &mut egui::Ui,
+    salt: Option<&str>,
+    label: impl Into<egui::WidgetText>,
+    add_input: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
     let label = label.into();
     let help_key = label.text().to_string();
+    let id_key = salt.unwrap_or(help_key.as_str());
     // Explicit row salt so nested label/input auto-ids don't thrash across multipass
     // when a sibling panel renegotiates layout (#1282 / egui#8343).
     let out = ui
-        .push_id(("labeled_row", help_key.as_str()), |ui| {
+        .push_id(("labeled_row", id_key), |ui| {
             ui.horizontal(|ui| {
                 ui.allocate_ui_with_layout(
                     egui::vec2(FIELD_LABEL_W, 18.0),
@@ -5068,9 +5087,34 @@ pub(crate) fn combine_picker_slot_visible(
     }
 }
 
-/// Keep-B is only a two-sided Combine option (Cut / Intersect / Difference).
+/// Keep leftovers is only a two-sided Combine option (Cut / Intersect / Difference).
 pub(crate) fn combine_keep_b_visible(kind: crate::model::BooleanOpKind) -> bool {
     kind != crate::model::BooleanOpKind::Combine
+}
+
+/// #1581: the leftover checkbox names what this two-sided op actually keeps.
+pub(crate) fn combine_keep_label(kind: crate::model::BooleanOpKind) -> &'static str {
+    match kind {
+        crate::model::BooleanOpKind::Combine => "Keep leftovers",
+        crate::model::BooleanOpKind::Cut => "Keep cutting shape",
+        crate::model::BooleanOpKind::Intersect => "Keep trimmed parts",
+        crate::model::BooleanOpKind::Difference => "Keep hole",
+    }
+}
+
+fn combine_keep_hover(kind: crate::model::BooleanOpKind) -> &'static str {
+    match kind {
+        crate::model::BooleanOpKind::Combine => {
+            "Leave leftover pieces as real bodies instead of discarding them"
+        }
+        crate::model::BooleanOpKind::Cut => {
+            "Leave the cutting shape as a real body instead of a shadow"
+        }
+        crate::model::BooleanOpKind::Intersect => {
+            "Keep the trimmed-off parts as their own bodies"
+        }
+        crate::model::BooleanOpKind::Difference => "Keep the overlapping hole as its own body",
+    }
 }
 
 /// One Combine picker row. Hidden kinds still mount the widget off-layout (#1580).
@@ -6229,8 +6273,8 @@ pub fn show_pane(
 
     if let Some(control) = &content.boolean_op {
         any_control = true;
-        // Pickers, Mode, Keep B, and Do read as one contiguous Combine block (#606). Hidden
-        // Bodies / Side A / Side B / Keep B slots stay mounted so switching kinds does not
+        // Pickers, Mode, leftovers, and Do read as one contiguous Combine block (#606). Hidden
+        // Bodies / Side A / Side B / leftover slots stay mounted so switching kinds does not
         // remount a different widget on the same rect (#1580).
         let kind = control.kind;
         let dummy_combine = ElementPicker::new(
@@ -6263,11 +6307,12 @@ pub fn show_pane(
         let two_sided = combine_keep_b_visible(kind);
         with_optional_slot(ui, ("combine_slot", "keep_b"), two_sided, None, |ui| {
             // Two-column like every other checkbox row (#933): the label in the left
-            // column, the box itself in the right one.
+            // column, the box itself in the right one. Salt is stable so switching
+            // Cut/Intersect/Difference does not remount the checkbox (#1580/#1581).
             let mut keep_b = control.keep_b;
-            let changed = labeled_row(ui, "Keep B bodies", |ui| {
+            let changed = labeled_row_salted(ui, Some("keep_b"), combine_keep_label(kind), |ui| {
                 ui.checkbox(&mut keep_b, "")
-                    .on_hover_text("Leave the B-side inputs as real bodies instead of shadows")
+                    .on_hover_text(combine_keep_hover(kind))
                     .changed()
             });
             if two_sided && changed {
@@ -9975,7 +10020,12 @@ mod tests {
             None,
             |ui| {
                 let mut keep_b = false;
-                let _ = labeled_row(ui, "Keep B bodies", |ui| ui.checkbox(&mut keep_b, ""));
+                let _ = labeled_row_salted(
+                    ui,
+                    Some("keep_b"),
+                    combine_keep_label(kind),
+                    |ui| ui.checkbox(&mut keep_b, ""),
+                );
                 ui.ctx().data_mut(|d| {
                     d.insert_temp(combine_picker_painted_id("keep_b"), true);
                 });
@@ -10126,6 +10176,29 @@ mod tests {
             assert!(combine_picker_slot_visible(kind, "combine_side_b"));
             assert!(combine_keep_b_visible(kind));
         }
+    }
+
+    /// #1581: the leftover checkbox names what each two-sided op actually keeps.
+    #[test]
+    fn combine_keep_label_matches_kind() {
+        use crate::model::BooleanOpKind as K;
+        assert_eq!(combine_keep_label(K::Cut), "Keep cutting shape");
+        assert_eq!(combine_keep_label(K::Intersect), "Keep trimmed parts");
+        assert_eq!(combine_keep_label(K::Difference), "Keep hole");
+        for kind in [K::Cut, K::Intersect, K::Difference] {
+            let label = combine_keep_label(kind);
+            let help = row_help(Some(Tool::Combine), label)
+                .unwrap_or_else(|| panic!("{label} should have help"));
+            assert!(!help.is_empty(), "{label} help");
+        }
+        assert_ne!(
+            combine_keep_label(K::Cut),
+            combine_keep_label(K::Intersect)
+        );
+        assert_ne!(
+            combine_keep_label(K::Intersect),
+            combine_keep_label(K::Difference)
+        );
     }
 
     /// #982: with a sketch open, the Select tool's picker view carries the sketch-only rule
