@@ -3790,8 +3790,8 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
                 IconId::Body
             }
         }
-        // No dedicated image icon yet; the plane icon reads as "flat thing on a plane".
-        HierarchyNode::Image(_) => IconId::Plane,
+        // Tracing images (#1549): the picture icon, distinct from the host plane.
+        HierarchyNode::Image(_) => IconId::Image,
         HierarchyNode::BooleanOp(_) => IconId::Combine,
         HierarchyNode::MoveOp(_) => IconId::Move,
         HierarchyNode::MirrorOp(_) => IconId::Mirror,
@@ -6343,6 +6343,39 @@ mod tests {
             icon_for_hierarchy_node(&doc, HierarchyNode::Line(projected_li)),
             Some(IconId::Project),
             "projected lines wear the Projection (projector) icon"
+        );
+    }
+
+    /// #1549: tracing images wear the picture icon in the Elements pane, not the plane glyph.
+    #[test]
+    fn tracing_image_uses_image_icon_in_elements_pane() {
+        let mut doc = Document::default();
+        let image = doc.tracing_images.insert(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "trace".to_string(),
+            plane: pkey(0),
+            origin: (0.0, 0.0),
+            base_origin: None,
+            width_mm: 100.0,
+            height_mm: 60.0,
+            name: None,
+            calibration: None,
+        });
+
+        assert_eq!(
+            icon_for_hierarchy_node(&doc, HierarchyNode::Image(image)),
+            Some(IconId::Image),
+            "tracing images wear the picture icon"
+        );
+        assert_eq!(
+            icon_for_hierarchy_node(&doc, HierarchyNode::ConstructionPlane(pkey(0))),
+            Some(IconId::Plane),
+            "construction planes keep the plane icon"
+        );
+        assert_ne!(
+            IconId::Image.svg_source(),
+            IconId::Plane.svg_source(),
+            "the picture icon is a distinct asset from the plane parallelogram"
         );
     }
 
