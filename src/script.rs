@@ -8389,7 +8389,57 @@ pub enum CliOutcome {
     OpSigs { html: bool },
     /// Print an exhaustive `[ ]` test checklist (`bearcad testplan`).
     Testplan,
+    /// Install, remove, list or print the AI agent skill (`bearcad skill …`, #1603).
+    Skill(SkillCommand),
     Run(ScriptOptions),
+}
+
+/// What `bearcad skill …` was asked to do (#1603).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SkillCommand {
+    /// Write the skill markdown to stdout.
+    Print,
+    /// List every target, with whether its tool was found and whether it is installed.
+    Targets,
+    /// Install into one target, or every detected user-level target when `target` is
+    /// `None`. Project targets need a directory.
+    Install { target: Option<String>, dir: Option<String> },
+    /// Remove the skill from a target (or every one it is installed in).
+    Uninstall { target: Option<String>, dir: Option<String> },
+}
+
+/// Parse `bearcad skill …`'s arguments (everything after the subcommand).
+fn parse_skill_args(args: &[String]) -> SkillCommand {
+    let mut target = None;
+    let mut dir = None;
+    let mut verb = "install";
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--target" | "-t" => {
+                i += 1;
+                target = args.get(i).cloned();
+            }
+            "--dir" | "-d" => {
+                i += 1;
+                dir = args.get(i).cloned();
+            }
+            other if !other.starts_with('-') => verb = match other {
+                "print" | "show" => "print",
+                "targets" | "list" => "targets",
+                "uninstall" | "remove" => "uninstall",
+                _ => "install",
+            },
+            _ => {}
+        }
+        i += 1;
+    }
+    match verb {
+        "print" => SkillCommand::Print,
+        "targets" => SkillCommand::Targets,
+        "uninstall" => SkillCommand::Uninstall { target, dir },
+        _ => SkillCommand::Install { target, dir },
+    }
 }
 
 /// Print usage information to stdout.
@@ -8418,6 +8468,12 @@ Commands:
                         features for exhaustive manual or AI testing. Tutorials
                         come from TUTORIALS; extra items live in src/testplan.rs
                         (`CUSTOM_ITEMS`)
+  skill [targets|print|install|uninstall] [--target <id>] [--dir <path>]
+                        The AI agent skill: `targets` lists where it can go and
+                        what is installed, `print` writes it to stdout, `install`
+                        (the default) writes it for every AI tool found here.
+                        `--dir` installs into a project (AGENTS.md, Copilot,
+                        Cursor, project-local Claude skills)
 
 Options:
   --script <path>       Run a Lua script
@@ -8443,6 +8499,8 @@ Examples:
   bearcad --exit --timeout 30
   bearcad install-cli
   bearcad testplan
+  bearcad skill install
+  bearcad skill install --target agents --dir .
 
 Diagnostics:
   Every run writes a log; the path is printed on startup. Warnings and notable
@@ -8476,6 +8534,7 @@ pub fn parse_cli(args: impl IntoIterator<Item = impl AsRef<str>>) -> CliOutcome 
             return CliOutcome::OpSigs { html };
         }
         Some("testplan") => return CliOutcome::Testplan,
+        Some("skill") => return CliOutcome::Skill(parse_skill_args(&args[2..])),
         _ => {}
     }
     CliOutcome::Run(parse_args_from_vec(&args))

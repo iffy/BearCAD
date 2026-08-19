@@ -430,6 +430,11 @@ fn main() -> eframe::Result<()> {
             run_cli_action(cli_install::run_uninstall());
             return Ok(());
         }
+        // The AI agent skill (#1603): print it, list where it can go, install, remove.
+        script::CliOutcome::Skill(command) => {
+            run_skill_command(command);
+            return Ok(());
+        }
         // The catalog window (#1022) is this same binary under a subcommand: it owns its own
         // event loop, so it has to run instead of the app, not alongside it.
         script::CliOutcome::McMaster { part } => {
@@ -563,6 +568,116 @@ fn rewrite_legacy_open_url(url: &str) -> String {
 
 /// Print the result of a CLI install/uninstall action and exit non-zero on failure.
 #[cfg(not(target_arch = "wasm32"))]
+/// `bearcad skill …` (#1603).
+///
+/// Installing with no `--target` covers every AI tool found on this machine. Project
+/// targets (AGENTS.md, Copilot, Cursor) are only written when a directory is named, so a
+/// bare install never drops a file into whatever directory you happened to be in.
+#[cfg(not(target_arch = "wasm32"))]
+fn run_skill_command(command: script::SkillCommand) {
+    use ai::skill;
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from);
+    let home = home.as_deref();
+
+    match command {
+        script::SkillCommand::Print => print!("{}", skill::SKILL),
+        script::SkillCommand::Targets => {
+            let cwd = std::env::current_dir().ok();
+            println!("BearCAD agent skill — {}
+", skill::SKILL_URL);
+            for target in skill::TARGETS {
+                let project = matches!(target.scope, skill::Scope::Project)
+                    .then(|| cwd.as_deref())
+                    .flatten();
+                let state = if target.installed(home, project) {
+                    "installed"
+                } else if target.detected(home, project) {
+                    "found"
+                } else {
+                    "-"
+                };
+                let path = target
+                    .path(home, project)
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "(needs --dir)".to_string());
+                println!("  {:<16} {:<10} {}", target.id, state, path);
+                println!("  {:<16} {:<10} {}", "", "", target.note);
+            }
+            println!("
+Install with: bearcad skill install [--target <id>] [--dir <project>]");
+        }
+        script::SkillCommand::Install { target, dir } => {
+            let project = dir.map(std::path::PathBuf::from);
+            let mut wrote = 0;
+            for t in skill_targets_for(target.as_deref(), project.is_some()) {
+                let project = project.as_deref();
+                if matches!(t.scope, ai::skill::Scope::Project) && project.is_none() {
+                    continue;
+                }
+                match skill::install(t, home, project) {
+                    Ok(path) => {
+                        println!("Installed the BearCAD skill for {}: {}", t.label, path.display());
+                        wrote += 1;
+                    }
+                    Err(err) => eprintln!("{}: {err}", t.label),
+                }
+            }
+            if wrote == 0 {
+                eprintln!(
+                    "Nothing installed. `bearcad skill targets` lists what is available;                      project targets need --dir."
+                );
+                std::process::exit(1);
+            }
+        }
+        script::SkillCommand::Uninstall { target, dir } => {
+            let project = dir.map(std::path::PathBuf::from);
+            let mut removed = 0;
+            for t in skill_targets_for(target.as_deref(), project.is_some()) {
+                match skill::uninstall(t, home, project.as_deref()) {
+                    Ok(Some(path)) => {
+                        println!("Removed the BearCAD skill from {}", path.display());
+                        removed += 1;
+                    }
+                    Ok(None) => {}
+                    Err(err) => eprintln!("{}: {err}", t.label),
+                }
+            }
+            if removed == 0 {
+                println!("The skill was not installed anywhere that was checked.");
+            }
+        }
+    }
+}
+
+/// The targets a `skill` command applies to: one named target, or — with no name — every
+/// user-level target, plus project ones only when a directory was given.
+#[cfg(not(target_arch = "wasm32"))]
+fn skill_targets_for(named: Option<&str>, have_dir: bool) -> Vec<&'static ai::skill::Target> {
+    use ai::skill;
+    match named {
+        Some(id) => match skill::target(id) {
+            Some(t) => vec![t],
+            None => {
+                eprintln!(
+                    "Unknown target '{id}'. Known targets: {}",
+                    skill::TARGETS
+                        .iter()
+                        .map(|t| t.id)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                std::process::exit(1);
+            }
+        },
+        None => skill::TARGETS
+            .iter()
+            .filter(|t| have_dir || matches!(t.scope, skill::Scope::User))
+            .collect(),
+    }
+}
+
 fn run_cli_action(result: Result<String, String>) {
     match result {
         Ok(msg) => println!("{msg}"),
@@ -844,6 +959,38 @@ mod cli_tests {
         assert_ne!(
             script::parse_cli(["bearcad", "--help"]),
             script::CliOutcome::Run(script::ScriptOptions::default())
+        );
+    }
+
+    #[test]
+    fn skill_subcommands_parse() {
+        use script::SkillCommand;
+        // Bare `skill` installs — the common case, so it needs no verb.
+        assert_eq!(
+            script::parse_cli(["bearcad", "skill"]),
+            script::CliOutcome::Skill(SkillCommand::Install { target: None, dir: None })
+        );
+        assert_eq!(
+            script::parse_cli(["bearcad", "skill", "print"]),
+            script::CliOutcome::Skill(SkillCommand::Print)
+        );
+        assert_eq!(
+            script::parse_cli(["bearcad", "skill", "targets"]),
+            script::CliOutcome::Skill(SkillCommand::Targets)
+        );
+        assert_eq!(
+            script::parse_cli(["bearcad", "skill", "install", "--target", "claude"]),
+            script::CliOutcome::Skill(SkillCommand::Install {
+                target: Some("claude".into()),
+                dir: None
+            })
+        );
+        assert_eq!(
+            script::parse_cli(["bearcad", "skill", "uninstall", "--target", "agents", "--dir", "/tmp/p"]),
+            script::CliOutcome::Skill(SkillCommand::Uninstall {
+                target: Some("agents".into()),
+                dir: Some("/tmp/p".into())
+            })
         );
     }
 
