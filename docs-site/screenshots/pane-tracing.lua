@@ -24,7 +24,7 @@ bearcad.ui.wait(2)
 bearcad.ui.zoom_fit()
 bearcad.ui.wait(2)
 
-bearcad.select{ kind = "image", index = 0 }
+-- Import already selected the image (#1582).
 bearcad.ui.wait(6)
 bearcad.ui.screenshot(out, "context")
 

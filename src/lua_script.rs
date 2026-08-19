@@ -7915,7 +7915,7 @@ mod tests {
             assert(tostring(err):find("cannot be removed") or tostring(err):find("Calibration"),
               tostring(err))
 
-            bearcad.select{{ kind = "image", index = 0 }}
+            -- Import already selected the image (#1582).
             bearcad.edit_dim("length")
             bearcad.set_dim("length", "10")
             bearcad.commit_dim()
@@ -8026,6 +8026,45 @@ mod tests {
             pkey(1),
             "Rust-side host plane should be XZ"
         );
+    }
+
+    /// #1582: after importing an image — onto a plane or not — it is the only selection,
+    /// so you can immediately calibrate its scale.
+    #[test]
+    fn lua_import_image_selects_the_new_image() {
+        let path = write_test_png("select_import.png", 8, 8);
+        run_lua_expect_ok(&format!(
+            r#"
+            bearcad.new()
+            bearcad.ui.tool("line")
+            bearcad.select{{ kind = "plane", index = 0 }}
+            bearcad.import_image({path:?})
+            local sel = bearcad.selection()
+            assert(#sel == 1 and sel[1].kind == "image" and sel[1].index == 0,
+              "import without a named plane should select only the image, got "
+              .. (#sel > 0 and (sel[1].kind .. " " .. tostring(sel[1].index)) or "nothing"))
+            -- Selection + Select tool is enough to type a calibration length.
+            bearcad.edit_dim("length")
+            bearcad.set_dim("length", "10")
+            bearcad.commit_dim()
+            local img = bearcad.get{{ kind = "image", index = 0 }}
+            assert(math.abs(img.length - 10) < 1e-3, "immediate calibrate span " .. img.length)
+
+            bearcad.select{{ kind = "plane", index = 1 }}
+            bearcad.import_image{{ path = {path:?}, plane = 1 }}
+            sel = bearcad.selection()
+            assert(#sel == 1 and sel[1].kind == "image" and sel[1].index == 1,
+              "import onto a named plane should select only the new image, got "
+              .. (#sel > 0 and (sel[1].kind .. " " .. tostring(sel[1].index)) or "nothing"))
+
+            bearcad.select{{ kind = "plane", index = 2 }}
+            bearcad.ui.palette("run", "import image on this plane", {path:?})
+            sel = bearcad.selection()
+            assert(#sel == 1 and sel[1].kind == "image" and sel[1].index == 2,
+              "palette import-on-this-plane should select only the new image, got "
+              .. (#sel > 0 and (sel[1].kind .. " " .. tostring(sel[1].index)) or "nothing"))
+            "#
+        ));
     }
 
     /// #1055: a script names an arena-backed element by its **ordinal** among the live ones,

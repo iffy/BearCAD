@@ -2,6 +2,8 @@
 -- selecting it shows the calibration line (top-middle → bottom-middle by default).
 bearcad.new()
 bearcad.import_image("rectangle_preview.png")
+-- Import selects the image (#1582); clear so this test is about clicking the quad.
+bearcad.clear_selection()
 bearcad.ui.tool("select")
 bearcad.ui.pane("elements", "hide")
 bearcad.ui.pane("context", "hide")

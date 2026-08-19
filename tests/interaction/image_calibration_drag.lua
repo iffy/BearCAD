@@ -14,8 +14,7 @@ bearcad.ui.wait(5)
 bearcad.ui.camera{ target = {0, 0, 0}, distance = 2800 }
 bearcad.ui.wait(5)
 
-bearcad.select{ kind = "image", index = 0 }
-bearcad.ui.wait(5)
+-- Import already selected the image (#1582).
 
 local img = bearcad.get{ kind = "image", index = 0 }
 assert(img.from and img.to, "selecting the image should expose the calibration line")

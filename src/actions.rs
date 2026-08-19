@@ -5957,7 +5957,7 @@ impl AppState {
     }
 
     /// Import a PNG/JPEG from raw bytes as a tracing image on `plane` (default: ground).
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    /// Selects the new image as the only thing so you can immediately calibrate (#1582).
     pub fn import_image_bytes(
         &mut self,
         name: &str,
@@ -5984,7 +5984,7 @@ impl AppState {
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "image".to_string());
-        self.doc.tracing_images.insert(crate::model::TracingImage {
+        let key = self.doc.tracing_images.insert(crate::model::TracingImage {
             bytes,
             source_name: source_name.clone(),
             plane,
@@ -5997,8 +5997,16 @@ impl AppState {
             base_origin: None,
         });
         self.doc.shape_order.push(crate::model::ShapeKind::Image);
+        // Select-only so calibration mode starts immediately (#1547/#1582).
+        self.tool = Tool::Select;
+        self.scene_selection.clear();
+        self.scene_selection
+            .insert(crate::hierarchy::SceneElement::Image(key));
         self.refresh_document_health();
-        self.status = format!("Imported image {source_name}");
+        self.status = format!(
+            "Imported image {source_name} ({} x {} px)",
+            dims.0 as u32, dims.1 as u32
+        );
         ActionResult::Ok
     }
 
@@ -9797,47 +9805,7 @@ impl AppState {
                         return ActionResult::Err(self.status.clone());
                     }
                 };
-                let dims = match image::load_from_memory(&bytes) {
-                    Ok(img) => (img.width() as f32, img.height() as f32),
-                    Err(e) => {
-                        self.status = format!("Import failed: not a readable image ({e})");
-                        return ActionResult::Err(self.status.clone());
-                    }
-                };
-                // With no plane named, the image lands on the first datum plane (#1055).
-                let Some(plane) = plane.or_else(|| self.doc.construction_planes.keys().next())
-                else {
-                    self.status = "Import failed: no construction plane".to_string();
-                    return ActionResult::Err(self.status.clone());
-                };
-                if !self.doc.construction_planes.contains(plane) {
-                    self.status = format!("Import failed: construction plane {} not found", plane.index());
-                    return ActionResult::Err(self.status.clone());
-                }
-                let source_name = std::path::Path::new(&path)
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "image".to_string());
-                self.doc.tracing_images.insert(crate::model::TracingImage {
-                    bytes,
-                    source_name: source_name.clone(),
-                    plane,
-                    // Centered on the plane origin at 1 px = 1 mm.
-                    origin: (-dims.0 / 2.0, -dims.1 / 2.0),
-                    width_mm: dims.0,
-                    height_mm: dims.1,
-                    opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
-                    name: None,
-                    calibration: Some(crate::model::default_image_calibration(dims.1)),
-                    base_origin: None,
-                });
-                self.doc.shape_order.push(crate::model::ShapeKind::Image);
-                self.refresh_document_health();
-                self.status = format!(
-                    "Imported image {source_name} ({} x {} px)",
-                    dims.0 as u32, dims.1 as u32
-                );
-                ActionResult::Ok
+                self.import_image_bytes(&path, bytes, plane)
             }
             Action::ImportStl { path } => {
                 let bytes = match std::fs::read(&path) {
@@ -33470,6 +33438,81 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             plane: None,
         });
         assert!(matches!(result, ActionResult::Err(_)));
+    }
+
+    /// #1582: importing an image selects it as the only thing so you can calibrate immediately.
+    #[test]
+    fn import_image_selects_the_new_image_as_the_only_thing() {
+        use crate::hierarchy::SceneElement;
+
+        let dir = std::env::temp_dir().join("bearcad_test_import_image_selects");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("swatch.png");
+        image::RgbaImage::from_pixel(4, 2, image::Rgba([255, 0, 0, 255]))
+            .save(&path)
+            .unwrap();
+        let path_str = path.to_string_lossy().to_string();
+
+        let mut state = AppState::default();
+        state.tool = Tool::Line;
+        crate::selection::click_scene_selection(
+            &mut state.scene_selection,
+            SceneElement::ConstructionPlane(pkey(1)),
+            false,
+        );
+        let result = state.apply(Action::ImportImage {
+            path: path_str.clone(),
+            plane: Some(pkey(1)),
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}: {}", state.status);
+        let first = state
+            .doc
+            .tracing_images
+            .keys()
+            .next()
+            .expect("the imported image");
+        assert_eq!(
+            state.scene_selection.single(),
+            Some(SceneElement::Image(first)),
+            "import onto a plane should select only the image, not the plane"
+        );
+        assert_eq!(state.tool, Tool::Select, "import arms Select so calibration is live");
+
+        crate::selection::click_scene_selection(
+            &mut state.scene_selection,
+            SceneElement::ConstructionPlane(pkey(0)),
+            false,
+        );
+        let result = state.apply(Action::ImportImage {
+            path: path_str,
+            plane: None,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}: {}", state.status);
+        assert_eq!(
+            state.scene_selection.iter().count(),
+            1,
+            "a second import should replace the prior selection"
+        );
+        assert!(
+            matches!(
+                state.scene_selection.single(),
+                Some(SceneElement::Image(i)) if i != first
+            ),
+            "the second import should select the new image, got {:?}",
+            state.scene_selection.single()
+        );
+
+        let before = state.scene_selection.ordered();
+        let result = state.apply(Action::ImportImage {
+            path: dir.join("missing.png").to_string_lossy().to_string(),
+            plane: None,
+        });
+        assert!(matches!(result, ActionResult::Err(_)));
+        assert_eq!(
+            state.scene_selection.ordered(),
+            before,
+            "a failed import should leave the selection alone"
+        );
     }
 
     /// #1548: SetImageOpacity clamps to 0..1 and errors on a missing image.
