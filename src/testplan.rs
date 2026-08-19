@@ -347,7 +347,6 @@ pub fn render() -> String {
 pub fn render_with_custom(custom: &[&str]) -> String {
     let mut out = String::from(
         "# BearCAD test plan\n\n\
-         A [ ] checklist for exhaustive manual or AI testing. Tick items as you go.\n\n\
          Extra one-off items: add a line to `CUSTOM_ITEMS` in `src/testplan.rs`.\n",
     );
 

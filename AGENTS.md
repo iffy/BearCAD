@@ -1,4 +1,4 @@
-When adding new features, always write tests first and watch the tests fail. This is important. Then fix the code so the tests pass. Unless it's impossible to test, of course.
+When adding new features, always write tests first and watch the tests fail. This is important. Then fix the code so the tests pass. Unless it's impossible to test or doesn't make sense to test, of course. For example, if I'm removing some text, don't write a test that the text has been removed -- just remove it.
 
 Also, every added feature should be scriptable.
 
