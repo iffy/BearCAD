@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <!-- Union / Combine: both squares kept, so the glyph is the union silhouette of two 16x16
-       squares offset diagonally by 6 (a 62.5% corner overlap on each axis). No internal
-       outlines: a union has no seam. -->
+  <!-- Two 16x16 squares offset diagonally by 6 (a 62.5% corner overlap on each axis), both
+       outlined. Union / Combine: everything is kept, so the whole silhouette is filled. -->
   <path d="M5 5 H21 V11 H27 V27 H11 V21 H5 Z" fill="currentColor" stroke="none" fill-opacity="0.85" />
-  <path d="M5 5 H21 V11 H27 V27 H11 V21 H5 Z" />
+  <rect x="5" y="5" width="16" height="16" />
+  <rect x="11" y="11" width="16" height="16" />
 </svg>

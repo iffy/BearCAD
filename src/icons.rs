@@ -101,8 +101,8 @@ pub enum IconId {
     Project,
     /// Small "remove" ✕ used by the element picker's row-remove button (#256).
     Close,
-    /// Boolean-operation icons for the Combine tool (#267): two corner-overlapping squares with kept regions
-    /// solid and removed regions in faint red.
+    /// Boolean-operation icons for the Combine tool (#267): two corner-overlapping squares,
+    /// with the areas the operation keeps filled in and the areas it removes left blank.
     BooleanUnion,
     BooleanCut,
     BooleanIntersect,
@@ -765,22 +765,51 @@ mod tests {
         }
     }
 
-    /// #267: the boolean-op icons that carve something away actually render red pixels for the
-    /// removed region (union keeps everything, so it has none).
+    /// #267: the boolean-op icons are drawn in the icon's own color — no red — and they show
+    /// the result of the operation: kept areas are filled, removed areas are left blank.
     #[test]
-    fn boolean_op_icons_render_their_removed_region_in_red() {
-        // Red-dominant pixels; the removed regions are faint (low opacity), so a modest
-        // dominance margin distinguishes them from the neutral kept fills.
-        let has_red = |id: IconId| {
-            rasterize_svg(id.svg_source(), ICON_RASTER_SIZE)
-                .pixels
-                .iter()
-                .any(|p| p.a() > 0 && p.r() as i32 > p.g() as i32 + 15 && p.r() as i32 > p.b() as i32 + 15)
+    fn boolean_op_icons_show_kept_areas_filled_and_removed_areas_blank() {
+        // Probe points in the 32-unit viewBox: the part of A that B does not cover, the
+        // overlapping corner, and the part of B that A does not cover.
+        const A_ONLY: (f32, f32) = (8.0, 8.0);
+        const OVERLAP: (f32, f32) = (16.0, 16.0);
+        const B_ONLY: (f32, f32) = (24.0, 24.0);
+
+        let filled = |id: IconId, (x, y): (f32, f32)| {
+            let image = rasterize_svg(id.svg_source(), ICON_RASTER_SIZE);
+            let scale = ICON_RASTER_SIZE as f32 / 32.0;
+            let px = (x * scale) as usize;
+            let py = (y * scale) as usize;
+            image.pixels[py * ICON_RASTER_SIZE as usize + px].a() > 0
         };
-        assert!(has_red(IconId::BooleanCut), "cut shows removed region in red");
-        assert!(has_red(IconId::BooleanIntersect), "intersect shows removed region in red");
-        assert!(has_red(IconId::BooleanDifference), "difference shows removed lens in red");
-        assert!(!has_red(IconId::BooleanUnion), "union keeps everything, no red");
+
+        for (id, a_only, overlap, b_only) in [
+            (IconId::BooleanUnion, true, true, true),
+            (IconId::BooleanCut, true, false, false),
+            (IconId::BooleanIntersect, false, true, false),
+            (IconId::BooleanDifference, true, false, true),
+        ] {
+            assert_eq!(filled(id, A_ONLY), a_only, "{}: A-only area", id.label());
+            assert_eq!(filled(id, OVERLAP), overlap, "{}: overlap area", id.label());
+            assert_eq!(filled(id, B_ONLY), b_only, "{}: B-only area", id.label());
+        }
+    }
+
+    /// #267: no boolean icon paints red any more — they follow the icon color like every
+    /// other glyph.
+    #[test]
+    fn boolean_op_icons_are_never_red() {
+        for id in [
+            IconId::BooleanUnion,
+            IconId::BooleanCut,
+            IconId::BooleanIntersect,
+            IconId::BooleanDifference,
+        ] {
+            let red = rasterize_svg(id.svg_source(), ICON_RASTER_SIZE).pixels.iter().any(|p| {
+                p.a() > 0 && p.r() as i32 > p.g() as i32 + 15 && p.r() as i32 > p.b() as i32 + 15
+            });
+            assert!(!red, "{} should not render red pixels", id.label());
+        }
     }
 
     #[test]
@@ -891,5 +920,6 @@ mod tests {
         );
     }
 }
+
 
 

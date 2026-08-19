@@ -1,10 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <!-- Cut (A minus B): the first square is kept (solid) minus the corner B carves out of it;
-       B itself is the removed region — brighter red, outline included (#935), so the removed
-       side reads as red rather than as a wash over the kept one. The kept outline stops at
-       B's edge, so no dark line runs through the removed region. -->
+  <!-- Cut (A minus B): only what is left of A is filled; B, including the corner it carves
+       away, stays blank. A's outline stops where B begins, so the kept shape reads as one
+       piece rather than as a square lying under another. -->
   <path d="M5 5 H21 V11 H11 V21 H5 Z" fill="currentColor" stroke="none" fill-opacity="0.85" />
-  <rect x="11" y="11" width="16" height="16" fill="#e8615c" stroke="none" fill-opacity="0.72" />
-  <rect x="11" y="11" width="16" height="16" stroke="#e8615c" />
+  <rect x="11" y="11" width="16" height="16" />
   <path d="M21 11 V5 H5 V21 H11" stroke-linecap="butt" />
 </svg>

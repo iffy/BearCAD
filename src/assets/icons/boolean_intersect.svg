@@ -1,8 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <!-- Intersect: only the overlapping corner square is kept (solid, dark outline); the rest
-       of both squares is removed (faint red, red outline) and carries no dark lines. -->
-  <path d="M5 5 H21 V11 H27 V27 H11 V21 H5 Z M11 11 H21 V21 H11 Z" fill-rule="evenodd" fill="#d76a6a" stroke="none" fill-opacity="0.55" />
-  <path d="M5 5 H21 V11 H27 V27 H11 V21 H5 Z" stroke="#d76a6a" />
-  <rect x="11" y="11" width="10" height="10" fill="currentColor" stroke="none" fill-opacity="0.9" />
-  <rect x="11" y="11" width="10" height="10" />
+  <!-- Intersect: only the overlapping corner is kept, so just that square is filled; the
+       rest of both outlined squares stays blank. -->
+  <rect x="11" y="11" width="10" height="10" fill="currentColor" stroke="none" fill-opacity="0.85" />
+  <rect x="5" y="5" width="16" height="16" />
+  <rect x="11" y="11" width="16" height="16" />
 </svg>
