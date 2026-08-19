@@ -4415,14 +4415,19 @@ pub fn show_pane(
     if let Some(marker) = rollback_marker {
         ui.horizontal(|ui| {
             let noun = if marker.inclusive { "just before" } else { "" };
-            ui.label(
-                egui::RichText::new(format!(
-                    "⏮ Rolled back to {noun} {}",
-                    crate::names::scene_element_label(doc, &marker.element)
-                ))
-                .color(crate::theme::FOCUS_ACCENT)
-                .size(11.5),
+            let banner = format!(
+                "⏮ Rolled back to {noun} {}",
+                crate::names::scene_element_label(doc, &marker.element)
             );
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(&banner)
+                        .color(crate::theme::FOCUS_ACCENT)
+                        .size(11.5),
+                )
+                .truncate(),
+            )
+            .on_hover_text(&banner);
             if ui
                 .small_button("Done")
                 .on_hover_text("Roll forward — re-enable everything after this point")
@@ -5251,6 +5256,27 @@ fn show_graph_view(
         });
 }
 
+/// Selectable row label that clips to the remaining pane width instead of stretching it (#1575).
+fn clipped_selectable_label(
+    ui: &mut egui::Ui,
+    selected: bool,
+    text: impl Into<egui::WidgetText>,
+    full: &str,
+) -> egui::Response {
+    let available = ui.available_width();
+    let too_long = ui.fonts_mut(|f| {
+        f.layout_no_wrap(full.to_string(), egui::FontId::default(), Color32::WHITE)
+            .size()
+            .x
+    }) > available;
+    let resp = ui.add(egui::Button::selectable(selected, text).truncate());
+    if too_long {
+        resp.on_hover_text(full)
+    } else {
+        resp
+    }
+}
+
 /// Truncate `label` (with an ellipsis) so it fits within `max_width` pixels at the default
 /// font — graph-node labels must stay inside their column (#34).
 fn truncate_label(label: &str, max_width: f32, painter: &egui::Painter) -> String {
@@ -5395,9 +5421,12 @@ fn show_drawings_section_row(
         if let Some(icon) = icon_for_hierarchy_node(doc, HierarchyNode::Drawings) {
             ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
         }
-        let _ = ui.selectable_label(
+        let drawings = node_label(doc, HierarchyNode::Drawings);
+        let _ = clipped_selectable_label(
+            ui,
             false,
-            RichText::new(node_label(doc, HierarchyNode::Drawings)).strong(),
+            RichText::new(&drawings).strong(),
+            &drawings,
         );
     });
 }
@@ -5481,13 +5510,15 @@ fn show_component_row(
         // colour with a painted dot marker (#520).
         let text = if active_component == Some(ci) {
             active_marker_dot(ui);
-            RichText::new(label).color(crate::theme::FOCUS_ACCENT)
+            RichText::new(&label).color(crate::theme::FOCUS_ACCENT)
         } else {
             styled_label(&label, style)
         };
-        let response = ui.selectable_label(
+        let response = clipped_selectable_label(
+            ui,
             row_shows_selection(&element, selection, style_selection),
             text,
+            &label,
         );
         if RowClick::of(&response, ui)
             .or(RowClick::of(&icon_response, ui))
@@ -5648,9 +5679,12 @@ fn show_row(
             if let Some(icon) = icon_for_hierarchy_node(doc, node) {
                 ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
             }
-            let _ = ui.selectable_label(
+            let drawings = node_label(doc, node);
+            let _ = clipped_selectable_label(
+                ui,
                 false,
-                RichText::new(node_label(doc, node)).strong(),
+                RichText::new(&drawings).strong(),
+                &drawings,
             );
         });
         return;
@@ -5667,15 +5701,16 @@ fn show_row(
                 // glyph, so it renders even when the font lacks that codepoint (#520).
                 active_marker_dot(ui);
             }
+            let label = node_label(doc, node);
             let text = if active_root {
-                RichText::new(node_label(doc, node))
+                RichText::new(&label)
                     .color(crate::theme::FOCUS_ACCENT)
                     .strong()
             } else {
-                RichText::new(node_label(doc, node)).strong()
+                RichText::new(&label).strong()
             };
             let resp = ui
-                .add(egui::Label::new(text).sense(egui::Sense::click()))
+                .add(egui::Label::new(text).truncate().sense(egui::Sense::click()))
                 .on_hover_text("Click to make new elements land at the document root");
             if resp.clicked() {
                 on_activate_component(None);
@@ -5720,7 +5755,8 @@ fn show_row(
             if let Some(icon) = icon_for_hierarchy_node(doc, node) {
                 ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
             }
-            let response = ui.selectable_label(false, node_label(doc, node));
+            let label = node_label(doc, node);
+            let response = clipped_selectable_label(ui, false, &label, &label);
             if response.double_clicked() {
                 on_edit_edge_treatment(extrusion, index);
             }
@@ -5742,7 +5778,8 @@ fn show_row(
             if let Some(icon) = icon_for_hierarchy_node(doc, node) {
                 ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
             }
-            let response = ui.selectable_label(false, node_label(doc, node));
+            let label = node_label(doc, node);
+            let response = clipped_selectable_label(ui, false, &label, &label);
             if response.clicked() {
                 on_edit_drawing(index);
             }
@@ -5763,9 +5800,12 @@ fn show_row(
                         .tint(Color32::from_gray(140)),
                 );
             }
-            ui.add(egui::Label::new(
-                RichText::new(node_label(doc, node)).color(Color32::from_gray(150)),
-            ))
+            ui.add(
+                egui::Label::new(
+                    RichText::new(node_label(doc, node)).color(Color32::from_gray(150)),
+                )
+                .truncate(),
+            )
             .on_hover_text("Part of an imported unit — read-only here; edit the source file");
         });
         return;
@@ -5783,9 +5823,12 @@ fn show_row(
             if let Some(icon) = icon_for_hierarchy_node(doc, node) {
                 ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
             }
-            let resp = ui.selectable_label(
+            let label = node_label(doc, node);
+            let resp = clipped_selectable_label(
+                ui,
                 selected_drawing_leaf == Some(node),
-                node_label(doc, node),
+                &label,
+                &label,
             );
             if resp.clicked() {
                 on_edit_drawing(drawing);
@@ -5858,9 +5901,11 @@ fn show_row(
         });
 
         let label = node_label(doc, node);
-        let response = ui.selectable_label(
+        let response = clipped_selectable_label(
+            ui,
             row_shows_selection(&element, selection, style_selection),
             styled_label(&label, style),
+            &label,
         );
         // A stale unit (#732): the embedded copy is behind the source file. An amber dot
         // says so; right-click → "Update from source file" picks the change up.
@@ -7532,6 +7577,138 @@ label_hidden: false,
         assert!(
             ids[1..].windows(2).all(|w| w[0] == w[1]),
             "list-row widget id must not renumber after settle: {ids:?}"
+        );
+    }
+
+    /// Paint the Elements list into `ui` with no-op callbacks — layout tests only.
+    fn paint_elements_list_for_test(
+        ui: &mut egui::Ui,
+        doc: &Document,
+        sketch_session: Option<SketchSession>,
+    ) {
+        let mut visibility = ElementVisibility::default();
+        let selection = SceneSelection::default();
+        let health = crate::document_health::recompute_document_health(doc);
+        let mut view_mode = HierarchyViewMode::List;
+        let mut graph_layout = GraphLayout::default();
+        let mut filter = ElementFilter::default();
+        let mut filter_expanded = false;
+        let mut collapsed_components = HashSet::new();
+        let mut expanded_units = HashSet::new();
+        let mut drawings_section_collapsed = false;
+        let none: HashSet<SceneElement> = HashSet::new();
+        show_pane(
+            ui,
+            doc,
+            sketch_session,
+            &mut visibility,
+            &selection,
+            &health,
+            &mut view_mode,
+            &mut graph_layout,
+            &mut filter,
+            &mut filter_expanded,
+            &mut |_| {},
+            &mut |_| {},
+            &mut |_| {},
+            &mut |_| {},
+            &mut |_, _| {},
+            &mut |_| {},
+            &mut |_| {},
+            &mut |_| {},
+            &mut |_| {},
+            &mut |_| {},
+            &mut |_| {},
+            None,
+            &mut |_, _| {},
+            &mut |_, _| {},
+            &mut |_| {},
+            &mut |_| {},
+            &mut |_| {},
+            &mut |_| {},
+            &mut |_| {},
+            &mut |_| {},
+            &mut |_, _| {},
+            &mut |_, _| {},
+            &mut |_| {},
+            &mut |_| {},
+            &mut |_| {},
+            false,
+            false,
+            &mut || {},
+            &mut |_| {},
+            None,
+            &mut |_| {},
+            &mut |_| {},
+            &none,
+            None,
+            &none,
+            None,
+            &mut |_| {},
+            &mut collapsed_components,
+            &mut expanded_units,
+            &mut drawings_section_collapsed,
+            &mut |_| {},
+            &mut |_, _| {},
+            None,
+            &mut |_| {},
+        );
+    }
+
+    /// #1575: a long row label must clip inside the pane instead of stretching it.
+    #[test]
+    fn long_element_names_do_not_widen_the_elements_pane() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
+        let line = doc
+            .lines
+            .insert(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 510.0, 0.0));
+        crate::names::set_element_name(
+            &mut doc,
+            SceneElement::Line(line),
+            "this is an extremely long element name that must not stretch the elements pane".into(),
+        )
+        .unwrap();
+        crate::constraints::add_distance_constraint(
+            &mut doc,
+            sketch,
+            crate::model::DistanceTarget::LineLength(line),
+            "510mm".to_string(),
+        )
+        .unwrap();
+
+        const PANE: f32 = 220.0;
+        let label = crate::names::node_label(&doc, HierarchyNode::Line(line));
+        let ctx = egui::Context::default();
+        let mut last_width = 0.0f32;
+        let mut galley_width = 0.0f32;
+        for _ in 0..4 {
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                galley_width = ui.fonts_mut(|f| {
+                    f.layout_no_wrap(label.clone(), egui::FontId::default(), Color32::WHITE)
+                        .size()
+                        .x
+                });
+                let resp = egui::Panel::left("tree")
+                    .resizable(true)
+                    .default_size(PANE)
+                    .show(ui, |ui| {
+                        paint_elements_list_for_test(
+                            ui,
+                            &doc,
+                            Some(SketchSession { sketch }),
+                        );
+                    });
+                last_width = resp.response.rect.width();
+            });
+        }
+        assert!(
+            galley_width > PANE,
+            "fixture name should be wider than the default pane (galley {galley_width})"
+        );
+        assert!(
+            last_width <= PANE + 1.0,
+            "long names must clip, not widen the Elements pane (got {last_width}, default {PANE})"
         );
     }
 

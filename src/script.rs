@@ -5135,7 +5135,7 @@ fn pane_shell_id(pane: crate::actions::Pane) -> Option<&'static str> {
 }
 
 /// Where `pane` was drawn last frame, in logical points. `None` when it is hidden.
-fn pane_rect(ctx: &egui::Context, pane: crate::actions::Pane) -> Option<egui::Rect> {
+pub fn pane_rect(ctx: &egui::Context, pane: crate::actions::Pane) -> Option<egui::Rect> {
     let id = pane_rect_id(pane_shell_id(pane)?);
     ctx.data(|data| data.get_temp::<egui::Rect>(id))
 }

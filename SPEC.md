@@ -3778,7 +3778,7 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   (`bearcad.ui.move`, `bearcad.ui.click` (with an optional `{ shift = true }` for a
   Shift+click, #835), `bearcad.ui.key`, `bearcad.ui.type`,
   `bearcad.ui.orbit`, `bearcad.ui.pan`, `bearcad.ui.wheel`, `bearcad.ui.view`,
-  `bearcad.ui.tool`, `bearcad.ui.pane`, `bearcad.ui.palette`,
+  `bearcad.ui.tool`, `bearcad.ui.pane`, `bearcad.ui.pane_rect`, `bearcad.ui.palette`,
   `bearcad.ui.wait`, `bearcad.ui.screenshot`, …). Examples and documentation should model
   with the top-level API and avoid `bearcad.ui.*` except where a UI interaction is the point.
 - **Semantic gizmo manipulation (#114).** `bearcad.drag_vertex` and `bearcad.drag_line` take
@@ -4367,7 +4367,9 @@ retina machine renders the same composition at 2x, just sharper.
   lands the same whichever the pointer was over. Applies to element rows and component rows
   alike. The eye toggle and the collapse triangle keep their own actions.
 - **Elements pane view modes (#34/#252):** two icon-toggle buttons next to the pane heading
-  switch between **List** (the default flat, topologically-sorted view) and **Graph**. The
+  switch between **List** (the default flat, topologically-sorted view) and **Graph**. Long
+  row labels **clip** to the pane width (ellipsis; full name on hover) instead of stretching
+  the pane (#1575). The
   List order depends only on the **element graph** — the nesting tree plus the input
   dependency edges, so a consumer always follows its inputs — with independent nodes
   tiebroken by kind+index (#540). It never depends on **when** an element was created;

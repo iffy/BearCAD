@@ -59,6 +59,7 @@ view bear's gear/shading-modes popup.
 ```lua
 bearcad.ui.pane("hierarchy", "hide")    -- show / hide / toggle a pane
 bearcad.ui.pane("view_bear", "show")    -- panes: hierarchy, context, parameters, view_bear
+local r = bearcad.ui.pane_rect("elements")  -- {x, y, w, h} last frame, or nil if hidden
 bearcad.ui.palette("run", "view top")   -- run a command palette entry by name
 bearcad.ui.elements_view("graph")       -- Elements-pane layout: "list" | "tree" | "graph"
 ```
