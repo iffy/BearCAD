@@ -3582,6 +3582,10 @@ pub enum Pane {
     Context,
     /// Interactive walkthrough list (#1241 / #1291). Closed by default.
     Tutorials,
+    /// Everything AI-related in one place (#1593/#1594): chat, the agent skill, the local
+    /// MCP server. Opt-in — closed by default, and nothing in it reaches the network until
+    /// the user configures a backend.
+    Ai,
 }
 
 impl Pane {
@@ -3591,6 +3595,7 @@ impl Pane {
         Pane::Context,
         Pane::Parameters,
         Pane::Tutorials,
+        Pane::Ai,
         Pane::ViewCube,
     ];
 
@@ -3602,6 +3607,7 @@ impl Pane {
             Pane::Parameters => "Parameters",
             Pane::Context => "Context",
             Pane::Tutorials => "Tutorials",
+            Pane::Ai => "AI",
         }
     }
 
@@ -3613,6 +3619,7 @@ impl Pane {
             Pane::Parameters => "parameters",
             Pane::Context => "context",
             Pane::Tutorials => "tutorials",
+            Pane::Ai => "ai",
         }
     }
 
@@ -3625,6 +3632,7 @@ impl Pane {
             "parameters" | "params" | "param" => Some(Pane::Parameters),
             "context" | "properties" | "props" => Some(Pane::Context),
             "tutorials" | "tutorial" => Some(Pane::Tutorials),
+            "ai" | "assistant" | "chat" => Some(Pane::Ai),
             _ => None,
         }
     }
@@ -3640,6 +3648,8 @@ pub struct PaneVisibility {
     /// Tutorials list (#1241); off until the user opens it (or a finished walkthrough
     /// reopens it when more remain, #1289).
     pub tutorials: bool,
+    /// AI pane (#1594); off until the user opens it.
+    pub ai: bool,
 }
 
 impl Default for PaneVisibility {
@@ -3650,6 +3660,7 @@ impl Default for PaneVisibility {
             parameters: true,
             context: true,
             tutorials: false,
+            ai: false,
         }
     }
 }
@@ -3662,6 +3673,7 @@ impl PaneVisibility {
             Pane::Parameters => self.parameters,
             Pane::Context => self.context,
             Pane::Tutorials => self.tutorials,
+            Pane::Ai => self.ai,
         }
     }
 
@@ -3672,6 +3684,7 @@ impl PaneVisibility {
             Pane::Parameters => self.parameters = visible,
             Pane::Context => self.context = visible,
             Pane::Tutorials => self.tutorials = visible,
+            Pane::Ai => self.ai = visible,
         }
     }
 
@@ -37697,6 +37710,31 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         });
         state.apply(Action::FocusLineLength);
         assert!(state.creating_line.as_ref().unwrap().pending_focus);
+    }
+
+    #[test]
+    fn ai_pane_is_hidden_by_default_and_names_round_trip() {
+        let state = AppState::default();
+        // Opt-in: the AI pane never opens itself (#1594).
+        assert!(!state.panes.is_visible(Pane::Ai));
+        assert_eq!(Pane::Ai.label(), "AI");
+        assert_eq!(Pane::Ai.script_name(), "ai");
+        assert_eq!(Pane::from_name("ai"), Some(Pane::Ai));
+        assert_eq!(Pane::from_name("assistant"), Some(Pane::Ai));
+        assert_eq!(Pane::from_name("chat"), Some(Pane::Ai));
+        assert!(Pane::ALL.contains(&Pane::Ai), "AI belongs in View ▸ Panes");
+    }
+
+    #[test]
+    fn ai_pane_toggles_like_any_other_pane() {
+        let mut state = AppState::default();
+        state.apply(Action::TogglePane(Pane::Ai));
+        assert!(state.panes.is_visible(Pane::Ai));
+        state.apply(Action::SetPaneVisible {
+            pane: Pane::Ai,
+            visible: false,
+        });
+        assert!(!state.panes.is_visible(Pane::Ai));
     }
 
     #[test]

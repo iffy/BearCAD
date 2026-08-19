@@ -69,6 +69,9 @@ pub enum PaletteCommandId {
     HidePaneContext,
     ShowPaneViewCube,
     HidePaneViewCube,
+    /// The AI pane (#1594): chat, agent skill, MCP server.
+    ShowPaneAi,
+    HidePaneAi,
     DeleteSelection,
     ExportLua,
     /// Import a document Lua script (#1160).
@@ -297,6 +300,14 @@ impl PaletteCommand {
             PaletteCommandId::HideToolHints => {
                 PaletteOutcome::Action(Action::SetToolHints(Some(false)))
             }
+            PaletteCommandId::ShowPaneAi => PaletteOutcome::Action(Action::SetPaneVisible {
+                pane: Pane::Ai,
+                visible: true,
+            }),
+            PaletteCommandId::HidePaneAi => PaletteOutcome::Action(Action::SetPaneVisible {
+                pane: Pane::Ai,
+                visible: false,
+            }),
             PaletteCommandId::ShowPaneViewCube => PaletteOutcome::Action(Action::SetPaneVisible {
                 pane: Pane::ViewCube,
                 visible: true,
@@ -521,6 +532,19 @@ const PANE_COMMANDS: &[(Pane, PaletteCommand, PaletteCommand)] = &[
             PaletteCommandId::HidePaneContext,
             "Hide Context Pane",
             "hide context pane properties selection",
+        ),
+    ),
+    (
+        Pane::Ai,
+        PaletteCommand::new(
+            PaletteCommandId::ShowPaneAi,
+            "Show AI Pane",
+            "show ai pane chat assistant agent skill mcp",
+        ),
+        PaletteCommand::new(
+            PaletteCommandId::HidePaneAi,
+            "Hide AI Pane",
+            "hide ai pane chat assistant agent skill mcp",
         ),
     ),
     (
@@ -1138,6 +1162,22 @@ mod tests {
             !cmds.iter()
                 .any(|c| c.id == PaletteCommandId::HidePaneParameters)
         );
+    }
+
+    #[test]
+    fn ai_pane_is_reachable_from_the_palette() {
+        // The AI pane is off by default, so the palette is one of the two ways to find it
+        // (#1594); typing "ai" must reach it.
+        let cmds = commands_for_state(&AppState::default());
+        let cmd = best_match("ai pane", &cmds).expect("an AI pane command");
+        assert_eq!(cmd.id, PaletteCommandId::ShowPaneAi);
+        assert!(matches!(
+            cmd.outcome(""),
+            PaletteOutcome::Action(Action::SetPaneVisible {
+                pane: Pane::Ai,
+                visible: true
+            })
+        ));
     }
 
     #[test]

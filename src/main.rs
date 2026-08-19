@@ -16,6 +16,7 @@
 #![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports, unused_variables))]
 
 mod actions;
+mod ai;
 mod arena;
 #[cfg(not(target_arch = "wasm32"))]
 mod window_probe;
@@ -3881,6 +3882,27 @@ impl App {
         }
         if !kept {
             self.state.panes.set(Pane::Tutorials, false);
+        }
+    }
+
+    /// The AI pane (#1594): one place for the chat, the agent skill installer and the local
+    /// MCP server. Docks beside the other right-hand panes and closes from its own X, like
+    /// every pane in `show_pane_shell`.
+    fn show_ai_pane(&mut self, ui: &mut egui::Ui) {
+        if !self.state.panes.is_visible(Pane::Ai) {
+            return;
+        }
+        let kept = show_pane_shell(
+            ui,
+            ai::panel::SHELL_ID,
+            ai::panel::PANE_TITLE,
+            true,
+            340.0,
+            None,
+            |ui| ai::panel::contents(ui, &mut self.state),
+        );
+        if !kept {
+            self.state.panes.set(Pane::Ai, false);
         }
     }
 
@@ -14433,6 +14455,9 @@ impl App {
 
         // Tutorials pane (#1241): same dock side as Settings; lists every walkthrough.
         self.show_tutorial_pane(ui, ctx);
+
+        // AI pane (#1594): chat, agent skill, MCP server. Same dock side; hidden by default.
+        self.show_ai_pane(ui);
 
         if self.state.tutorial_prompt().is_some() {
             let dt = ctx.input(|i| i.stable_dt).min(0.1);
