@@ -20142,6 +20142,10 @@ fn pick_into(
     let mut candidates: Vec<(usize, Vec<SceneElement>)> =
         construction::collect_pick_candidates(pp, project, doc, eye, occlusion)
             .into_iter()
+            // Buried geometry stays in the Exploder crowd; a normal click takes what you can
+            // see (#1578). A cuboid edge through a sphere would otherwise outrank the sphere's
+            // face and steal the pick from the middle of the disc.
+            .filter(|c| occlusion.is_none_or(|occ| !occ.occluded(c.anchor)))
             .filter_map(|c| {
                 let element = scene_element_from_pick(&c.kind)?;
                 let taken =
@@ -36238,6 +36242,60 @@ mod tests {
                 Some(gpu_viewport::ViewportHoverHighlight::Element(SceneElement::Body(b))) if b == bkey(0)
             ),
             "combine tool should hover-highlight the whole body, got {hover:?}"
+        );
+    }
+
+    /// #1578: Combine's body picker takes a sphere when the cursor is in the middle of its
+    /// disc, even if that pixel also covers a cuboid the sphere overlaps.
+    #[test]
+    fn combine_picks_a_sphere_through_the_middle_of_its_disc() {
+        use crate::model::{Body, BodySource, Primitive, PrimitiveKind};
+        let mut doc = crate::model::Document::default();
+        let mut cuboid = Primitive::new(PrimitiveKind::Cuboid);
+        cuboid.width = "40".to_string();
+        cuboid.depth = "40".to_string();
+        cuboid.height = "20".to_string();
+        let ci = doc.primitives.insert(cuboid);
+        let cube = doc.bodies.insert(Body {
+            source: BodySource::Primitive(ci),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let mut sphere = Primitive::new(PrimitiveKind::Sphere);
+        sphere.origin = [20.0, 20.0, 0.0];
+        sphere.radius = "12".to_string();
+        let pi = doc.primitives.insert(sphere);
+        let sphere_body = doc.bodies.insert(Body {
+            source: BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+
+        let project = |w: glam::Vec3| Some(egui::pos2(w.x, w.y));
+        let eye = glam::Vec3::new(20.0, 20.0, 100.0);
+        let cursor = egui::pos2(20.0, 20.0);
+        let vis = crate::hierarchy::ElementVisibility::default();
+        let occ = construction::PickOcclusion::new(&doc, &vis, eye);
+        let pickers = test_pickers(
+            crate::element_picker::ElementFilter::kind(crate::element_picker::ElementKind::Body),
+            context::PickerTarget::CombineB,
+            crate::element_picker::PickLimit::Infinite,
+        );
+        let (_target, taken) = super::pick_for_focused_picker(
+            &doc,
+            &pickers,
+            cursor,
+            &project,
+            eye,
+            Some(&occ),
+            false,
+        )
+        .expect("clicking the sphere's disc should feed the Combine picker");
+        assert!(
+            taken.iter().any(|e| matches!(e, SceneElement::Body(b) if *b == sphere_body)),
+            "Combine must take the sphere, not the cuboid {cube:?}, got {taken:?}"
         );
     }
 

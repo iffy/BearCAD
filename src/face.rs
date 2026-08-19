@@ -1923,19 +1923,24 @@ pub fn pick_body_face_where(
             }) {
                 continue;
             }
-            let inside = triangles.iter().any(|tri| {
-                matches!(
-                    (project(tri[0]), project(tri[1]), project(tri[2])),
-                    (Some(a), Some(b), Some(c)) if point_in_tri(screen, a, b, c)
-                )
-            });
-            if !inside {
-                continue;
+            // Depth is the nearest *surface* point under the cursor, not the group's
+            // centroid (#1578). A sphere's tessellation merges into one group whose
+            // centroid is the centre — behind any cuboid face the sphere overlaps —
+            // so centroid depth would pick the cuboid when the cursor is in the
+            // middle of the sphere.
+            let mut nearest: Option<f32> = None;
+            for tri in triangles {
+                let Some(hit) = triangle_hit_under_cursor(screen, project, tri) else {
+                    continue;
+                };
+                let depth = (hit - eye).length();
+                if nearest.is_none_or(|d| depth < d) {
+                    nearest = Some(depth);
+                }
             }
-            let count = (triangles.len() * 3).max(1) as f32;
-            let centroid =
-                triangles.iter().flat_map(|t| t.iter()).copied().sum::<Vec3>() / count;
-            let depth = (centroid - eye).length();
+            let Some(depth) = nearest else {
+                continue;
+            };
             if best.as_ref().is_none_or(|(_, d)| depth < *d) {
                 // A round wall is a cylinder, not a face (#1013): it has no one normal, so
                 // calling it flat gives it a nonsense plane. Fit against the borrowed group
@@ -1969,12 +1974,14 @@ pub fn pick_body_face_where(
 /// minimum screen distance from the cursor to its projected triangles: 0 when the cursor is inside
 /// any projected triangle, else the min distance to the projected triangle edges. This catches a
 /// narrow face seen edge-on — a thin projected sliver between its two edges — that no single-face
-/// ray hit would report. Returns each face's `PickTargetKind::BodyFace`, its world centroid (the
-/// exploder's connecting-line anchor), and that screen distance (for nearest-first ordering).
+/// ray hit would report. Returns each face's `PickTargetKind::BodyFace`, the world point under
+/// the cursor (the nearest surface hit, or the centroid when only an edge is close), and that
+/// screen distance (for nearest-first ordering).
 pub fn body_faces_near(
     screen: eframe::egui::Pos2,
     project: &impl Fn(Vec3) -> Option<eframe::egui::Pos2>,
     doc: &Document,
+    eye: Vec3,
     radius: f32,
 ) -> Vec<(crate::construction::PickTargetKind, Vec3, f32)> {
     let mut out: Vec<(crate::construction::PickTargetKind, Vec3, f32)> = Vec::new();
@@ -1985,20 +1992,27 @@ pub fn body_faces_near(
         // By reference until a group is near enough to keep (#1141).
         for triangles in crate::extrude::body_face_groups(doc, bi).iter() {
             let mut dist = f32::MAX;
+            let mut hit: Option<Vec3> = None;
             for tri in triangles {
+                if let Some(p) = triangle_hit_under_cursor(screen, project, tri) {
+                    let depth = (p - eye).length();
+                    if dist > 0.0 || hit.is_none_or(|h| depth < (h - eye).length()) {
+                        dist = 0.0;
+                        hit = Some(p);
+                    }
+                    continue;
+                }
                 let (Some(a), Some(b), Some(c)) =
                     (project(tri[0]), project(tri[1]), project(tri[2]))
                 else {
                     continue;
                 };
-                if point_in_tri(screen, a, b, c) {
-                    dist = 0.0;
-                    break;
-                }
                 let edge = dist_point_to_segment_px(screen, a, b)
                     .min(dist_point_to_segment_px(screen, b, c))
                     .min(dist_point_to_segment_px(screen, c, a));
-                dist = dist.min(edge);
+                if edge < dist {
+                    dist = edge;
+                }
             }
             if dist > radius {
                 continue;
@@ -2006,6 +2020,7 @@ pub fn body_faces_near(
             let count = (triangles.len() * 3).max(1) as f32;
             let centroid =
                 triangles.iter().flat_map(|t| t.iter()).copied().sum::<Vec3>() / count;
+            let anchor = hit.unwrap_or(centroid);
             let normal = (triangles[0][1] - triangles[0][0])
                 .cross(triangles[0][2] - triangles[0][0])
                 .normalize_or_zero();
@@ -2015,7 +2030,7 @@ pub fn body_faces_near(
                     triangles: triangles.clone(),
                     normal,
                 },
-                centroid,
+                anchor,
                 dist,
             ));
         }
@@ -2102,6 +2117,16 @@ fn point_in_screen_quad(p: eframe::egui::Pos2, quad: [eframe::egui::Pos2; 4]) ->
 }
 
 fn point_in_tri(p: eframe::egui::Pos2, a: eframe::egui::Pos2, b: eframe::egui::Pos2, c: eframe::egui::Pos2) -> bool {
+    tri_barycentric(p, a, b, c).is_some()
+}
+
+/// Screen-space barycentric of `p` in triangle `a,b,c`. `p = (1-u-v)·a + v·b + u·c`.
+fn tri_barycentric(
+    p: eframe::egui::Pos2,
+    a: eframe::egui::Pos2,
+    b: eframe::egui::Pos2,
+    c: eframe::egui::Pos2,
+) -> Option<(f32, f32)> {
     let v0 = c - a;
     let v1 = b - a;
     let v2 = p - a;
@@ -2112,7 +2137,7 @@ fn point_in_tri(p: eframe::egui::Pos2, a: eframe::egui::Pos2, b: eframe::egui::P
     let dot12 = v1.dot(v2);
     let denom = dot00 * dot11 - dot01 * dot01;
     if denom.abs() < 1e-8 {
-        return false;
+        return None;
     }
     let inv = 1.0 / denom;
     let u = (dot11 * dot02 - dot01 * dot12) * inv;
@@ -2121,7 +2146,20 @@ fn point_in_tri(p: eframe::egui::Pos2, a: eframe::egui::Pos2, b: eframe::egui::P
     // Exact boundary hits (e.g. rectangle diagonal under a true top view) otherwise
     // drop out of both fan triangles and leave only the construction plane to pick.
     const EPS: f32 = 1e-4;
-    u >= -EPS && v >= -EPS && (u + v) <= 1.0 + EPS
+    (u >= -EPS && v >= -EPS && (u + v) <= 1.0 + EPS).then_some((u, v))
+}
+
+/// World point on `tri` under `screen`, or `None` when the cursor is not inside its projection.
+fn triangle_hit_under_cursor(
+    screen: eframe::egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<eframe::egui::Pos2>,
+    tri: &[Vec3; 3],
+) -> Option<Vec3> {
+    let (Some(a), Some(b), Some(c)) = (project(tri[0]), project(tri[1]), project(tri[2])) else {
+        return None;
+    };
+    let (u, v) = tri_barycentric(screen, a, b, c)?;
+    Some(tri[0] * (1.0 - u - v) + tri[1] * v + tri[2] * u)
 }
 
 fn dist_point_to_quad_edges(p: eframe::egui::Pos2, quad: [eframe::egui::Pos2; 4]) -> f32 {
@@ -2551,6 +2589,82 @@ mod tests {
             Vec3::new(5.0, 5.0, 100.0),
         )
         .is_none());
+    }
+
+    fn doc_with_sphere_at(origin: [f32; 3], radius: &str) -> (Document, crate::model::BodyKey) {
+        use crate::model::{Body, BodySource, Primitive, PrimitiveKind};
+        let mut doc = Document::default();
+        let mut sphere = Primitive::new(PrimitiveKind::Sphere);
+        sphere.origin = origin;
+        sphere.radius = radius.to_string();
+        let pi = doc.primitives.insert(sphere);
+        let bi = doc.bodies.insert(Body {
+            source: BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        (doc, bi)
+    }
+
+    fn pick_body_index(kind: &crate::construction::PickTargetKind) -> crate::model::BodyKey {
+        match kind {
+            crate::construction::PickTargetKind::BodyFace { body, .. }
+            | crate::construction::PickTargetKind::BodyCylinder { body, .. }
+            | crate::construction::PickTargetKind::Body(body) => *body,
+            other => panic!("expected a body surface, got {other:?}"),
+        }
+    }
+
+    /// #1578: a sphere is pickable through the middle of its silhouette, not only on the rim.
+    #[test]
+    fn pick_body_face_hits_a_sphere_at_its_centre() {
+        let (doc, sphere) = doc_with_sphere_at([0.0, 0.0, 0.0], "10");
+        let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.y));
+        let kind = pick_body_face(
+            eframe::egui::pos2(0.0, 0.0),
+            &project,
+            &doc,
+            Vec3::new(0.0, 0.0, 100.0),
+        )
+        .expect("the centre of a sphere's disc should pick the sphere");
+        assert_eq!(
+            pick_body_index(&kind),
+            sphere,
+            "clicking the middle of a sphere must take the sphere, got {kind:?}"
+        );
+    }
+
+    /// #1578: a sphere overlapping a cuboid corner still wins when the cursor is in the
+    /// middle of the sphere — the cuboid's buried faces/edges must not steal the pick.
+    #[test]
+    fn pick_body_face_prefers_a_sphere_overlapping_a_cuboid() {
+        use crate::model::{Body, BodySource, Primitive, PrimitiveKind};
+        let (mut doc, sphere) = doc_with_sphere_at([20.0, 20.0, 0.0], "12");
+        let mut cuboid = Primitive::new(PrimitiveKind::Cuboid);
+        cuboid.width = "40".to_string();
+        cuboid.depth = "40".to_string();
+        cuboid.height = "20".to_string();
+        let ci = doc.primitives.insert(cuboid);
+        let _cube = doc.bodies.insert(Body {
+            source: BodySource::Primitive(ci),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.y));
+        let kind = pick_body_face(
+            eframe::egui::pos2(20.0, 20.0),
+            &project,
+            &doc,
+            Vec3::new(20.0, 20.0, 100.0),
+        )
+        .expect("the overlapping sphere's disc should still pick");
+        assert_eq!(
+            pick_body_index(&kind),
+            sphere,
+            "the sphere in front must beat the cuboid behind it, got {kind:?}"
+        );
     }
 
     #[test]
