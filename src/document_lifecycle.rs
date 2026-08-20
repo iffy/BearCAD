@@ -78,6 +78,10 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             | crate::model::MovePointRef::EdgeMidpoint { body, .. }
             | crate::model::MovePointRef::OnEdge { body, .. }
             | crate::model::MovePointRef::OnFace { body, .. } => body_alive(doc, body),
+            // An image box point (#1601) lives as long as its image.
+            crate::model::MovePointRef::ImageAnchor { image, .. } => {
+                doc.tracing_images.contains(image)
+            }
         },
         SceneElement::UnitInstance(index) => doc.unit_instances.contains(index),
         SceneElement::Component(index) => doc.components.contains(index),
@@ -1030,6 +1034,8 @@ mod tests {
             opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: None,
+            rotation: 0.0,
+            base_rotation: None,
         };
         let mut doc = Document::default();
         let first = doc.tracing_images.insert(image("first"));

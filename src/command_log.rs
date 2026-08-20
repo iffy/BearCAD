@@ -392,6 +392,8 @@ mod tests {
             opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: None,
+            rotation: 0.0,
+            base_rotation: None,
         };
         let gone = doc.tracing_images.insert(image());
         let kept = doc.tracing_images.insert(image());

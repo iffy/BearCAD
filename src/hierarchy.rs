@@ -333,6 +333,9 @@ impl SceneElement {
         match point {
             MovePointRef::Vertex { body, p } => SceneElement::BodyVertex { body, p },
             MovePointRef::Origin => SceneElement::Origin,
+            MovePointRef::ImageAnchor { image, anchor } => SceneElement::Point(
+                crate::model::ConstraintPoint::ImageAnchor { image, anchor },
+            ),
             other => SceneElement::MovePoint(other),
         }
     }
@@ -521,6 +524,12 @@ impl SceneElement {
                 Some(MovePointRef::Vertex { body: *body, p: *p })
             }
             SceneElement::Origin => Some(MovePointRef::Origin),
+            SceneElement::Point(crate::model::ConstraintPoint::ImageAnchor { image, anchor }) => {
+                Some(MovePointRef::ImageAnchor {
+                    image: *image,
+                    anchor: *anchor,
+                })
+            }
             _ => None,
         }
     }
@@ -6425,6 +6434,8 @@ mod tests {
             opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
 
         assert_eq!(

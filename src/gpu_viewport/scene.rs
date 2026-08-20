@@ -9,7 +9,7 @@ use crate::document_health::{health_tint_color, DocumentHealth};
 use crate::document_lifecycle::{circle_alive, constraint_alive, line_alive};
 use crate::construction::{
     axis_angle_handle, axis_normal, axis_reference_perp, gizmo_display_offset, global_axis_segment,
-    plane_corners, tracing_image_corners, AxisGizmoHit, AXIS_ANGLE_GIZMO_RADIUS_MM,
+    plane_corners, tracing_image_corners, tracing_image_live_corners, AxisGizmoHit, AXIS_ANGLE_GIZMO_RADIUS_MM,
     CONSTRUCTION_DASH_GAP_PX, CONSTRUCTION_DASH_LENGTH_PX, CONSTRUCTION_RGBA,
     FACE_HOVER_FILL_MULTIPLIER, PLANE_FILL_RGBA, GIZMO_HANDLE_HOVER_RGBA, PickTargetKind,
     PlaneEditDependentPreview, PlaneReference,
@@ -709,6 +709,8 @@ pub struct PreviewReplacement {
 #[derive(Clone, Debug)]
 pub struct ViewportSceneInput<'a> {
     pub doc: &'a Document,
+    /// In-progress Move, so tracing-image quads preview the live drag (#1611).
+    pub creating_move: Option<&'a crate::actions::CreatingMove>,
     pub cam: &'a Camera,
     pub viewport: UiRect,
     pub palette: ViewportPalette,
@@ -840,7 +842,8 @@ impl ViewportScene {
             let Some((id, w, h, rgba)) = decoded_tracing_image(img) else {
                 continue;
             };
-            let Some(corners) = tracing_image_corners(input.doc, ii) else {
+            let pose = crate::actions::live_image_pose(input.doc, ii, input.creating_move);
+            let Some(corners) = tracing_image_live_corners(input.doc, ii, pose) else {
                 continue;
             };
             scene.images.push(ViewportImageQuad {
@@ -6290,6 +6293,7 @@ mod tests {
         cam.set_shading_mode(mode);
         ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
             palette: ViewportPalette::default(),
@@ -7014,6 +7018,7 @@ mod tests {
         let viewport = test_viewport();
         let base = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            creating_move: None,
             cam: &cam,
             viewport,
             palette: ViewportPalette::default(),
@@ -7062,6 +7067,7 @@ mod tests {
         let preview_plane = state.doc.construction_planes[pkey(0)].clone();
         let with_preview = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            creating_move: None,
             cam: &cam,
             viewport,
             palette: ViewportPalette::default(),
@@ -7159,6 +7165,7 @@ mod tests {
         let build = |hover: Option<ViewportHoverHighlight>| {
             let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            creating_move: None,
             cam: &cam,
             viewport,
             palette: ViewportPalette::default(),
@@ -7310,6 +7317,8 @@ mod tests {
             opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
 
         let drawn = |element: SceneElement| {
@@ -7356,6 +7365,7 @@ mod tests {
         let build = |hover: Option<ViewportHoverHighlight>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                creating_move: None,
                 cam: &state.cam,
                 viewport: test_viewport(),
                 palette,
@@ -7447,6 +7457,7 @@ mod tests {
         let build = |selection: &SceneSelection| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                creating_move: None,
                 cam: &cam,
                 viewport,
                 palette: ViewportPalette::default(),
@@ -7539,6 +7550,8 @@ mod tests {
             opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
 
         let drawn = |kind: PickTargetKind| {
@@ -7626,6 +7639,7 @@ mod tests {
         let build = |hover: Option<ViewportHoverHighlight>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                creating_move: None,
                 cam: &cam,
                 viewport,
                 palette: ViewportPalette::default(),
@@ -7748,6 +7762,7 @@ mod tests {
         let build = |hover: Option<ViewportHoverHighlight>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                creating_move: None,
                 cam: &cam,
                 viewport,
                 palette: ViewportPalette::default(),
@@ -7862,6 +7877,7 @@ mod tests {
         let viewport = test_viewport();
         ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            creating_move: None,
             cam: &cam,
             viewport,
             palette: ViewportPalette::default(),
@@ -8009,6 +8025,7 @@ mod tests {
         let viewport = test_viewport();
         let base = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            creating_move: None,
             cam: &cam,
             viewport,
             palette: ViewportPalette::default(),
@@ -8067,6 +8084,7 @@ mod tests {
         };
         let with_gizmo = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            creating_move: None,
             cam: &cam,
             viewport,
             palette: ViewportPalette::default(),
@@ -8126,6 +8144,7 @@ mod tests {
         let base = build_scene_for_doc(&state);
         let mut input = ViewportSceneInput {
             doc: &state.doc,
+            creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
             palette: ViewportPalette::default(),
@@ -8235,6 +8254,7 @@ mod tests {
         let cam = state.cam.clone();
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
             palette: ViewportPalette::default(),
@@ -9272,6 +9292,7 @@ mod tests {
         let cam = state.cam.clone();
         ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
             palette: ViewportPalette::default(),
@@ -9449,6 +9470,7 @@ mod tests {
         let build = |editing: Option<crate::model::ExtrusionKey>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                creating_move: None,
                 cam: &cam,
                 viewport: test_viewport(),
                 palette: ViewportPalette::default(),
@@ -9722,6 +9744,7 @@ mod tests {
         let cam = state.cam.clone();
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
             palette: ViewportPalette::default(),
@@ -9861,6 +9884,7 @@ mod tests {
         let base = build_scene_for_doc(&state);
         let with_hover = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
             palette: ViewportPalette::default(),
@@ -10060,6 +10084,7 @@ mod tests {
         // build with the real session so we exercise the in-sketch stroke path.
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
             palette: ViewportPalette::default(),
@@ -10287,6 +10312,7 @@ mod tests {
         let cam = state.cam.clone();
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
             palette: ViewportPalette::default(),
@@ -10359,6 +10385,7 @@ mod tests {
         let cam = state.cam.clone();
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
             palette: ViewportPalette::default(),
@@ -10554,6 +10581,7 @@ mod tests {
 
         let unselected = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            creating_move: None,
             cam: &cam,
             viewport,
             palette,
@@ -10601,6 +10629,7 @@ mod tests {
         });
         let selected_scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            creating_move: None,
             cam: &cam,
             viewport,
             palette,
@@ -10697,6 +10726,8 @@ mod tests {
             opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: Some(default_image_calibration(30.0)),
+            rotation: 0.0,
+            base_rotation: None,
         });
 
         let palette = ViewportPalette::default();
@@ -10713,6 +10744,7 @@ mod tests {
         let scene_for = |selection: &SceneSelection| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                creating_move: None,
                 cam: &cam,
                 viewport,
                 palette,
@@ -10818,6 +10850,7 @@ mod tests {
         let build = |hover: Option<ViewportHoverHighlight>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                creating_move: None,
                 cam: &cam,
                 viewport,
                 palette,
@@ -10976,6 +11009,7 @@ mod tests {
         let build = |hover: Option<ViewportHoverHighlight>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                creating_move: None,
                 cam: &cam,
                 viewport,
                 palette,
@@ -11065,6 +11099,7 @@ mod tests {
                      extra: Vec<crate::construction::PickTargetKind>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                creating_move: None,
                 cam: &cam,
                 viewport,
                 palette,
@@ -11175,6 +11210,7 @@ mod tests {
         let build = |session: Option<SketchSession>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                creating_move: None,
                 cam: &cam,
                 viewport,
                 palette: ViewportPalette::default(),
@@ -11273,6 +11309,7 @@ mod tests {
         let build = |tint: Vec<(crate::model::BodyKey, Color32)>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                creating_move: None,
                 cam: &cam,
                 viewport,
                 palette,
@@ -11376,6 +11413,7 @@ mod tests {
         let build = |sel: &SceneSelection| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                creating_move: None,
                 cam: &cam,
                 viewport,
                 palette,
@@ -11451,6 +11489,7 @@ mod tests {
         let viewport = test_viewport();
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            creating_move: None,
             cam: &cam,
             viewport,
             palette: ViewportPalette::default(),
@@ -11537,6 +11576,7 @@ mod tests {
         let build = |cut: Vec<crate::model::BodyKey>, sel: &SceneSelection| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                creating_move: None,
                 cam: &cam,
                 viewport,
                 palette: ViewportPalette::default(),
@@ -11632,6 +11672,7 @@ mod tests {
         let cam = state.cam.clone();
         let without = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
             palette: ViewportPalette::default(),
@@ -11679,6 +11720,7 @@ mod tests {
         });
         let with = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
             palette: ViewportPalette::default(),
@@ -11875,6 +11917,7 @@ mod tests {
         };
         let vertex_count_before = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            creating_move: None,
             cam: &cam,
             viewport,
             palette: ViewportPalette::default(),
@@ -11926,6 +11969,7 @@ mod tests {
         .len();
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            creating_move: None,
             cam: &cam,
             viewport,
             palette: ViewportPalette::default(),
@@ -12053,6 +12097,7 @@ mod tests {
         let build = |labels: &[crate::gpu_viewport::ViewportDimLabel]| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                creating_move: None,
                 cam: &cam,
                 viewport,
                 palette: ViewportPalette::default(),
@@ -12183,6 +12228,7 @@ mod tests {
         );
         let dashed_scene = ViewportScene::build(&ViewportSceneInput {
             doc: &dashed_doc,
+            creating_move: None,
             cam: scene_fields.0,
             viewport: scene_fields.1,
             palette: scene_fields.2,
@@ -12230,6 +12276,7 @@ mod tests {
         });
         let solid_scene = ViewportScene::build(&ViewportSceneInput {
             doc: &solid_doc,
+            creating_move: None,
             cam: scene_fields.0,
             viewport: scene_fields.1,
             palette: scene_fields.2,
@@ -12328,6 +12375,7 @@ mod tests {
         let build = |doc: &crate::model::Document| {
             ViewportScene::build(&ViewportSceneInput {
                 doc,
+                creating_move: None,
                 cam: &cam,
                 viewport,
                 palette: ViewportPalette::default(),
@@ -12449,6 +12497,7 @@ mod tests {
         let build = |doc: &crate::model::Document| {
             ViewportScene::build(&ViewportSceneInput {
                 doc,
+                creating_move: None,
                 cam: &cam,
                 viewport,
                 palette: ViewportPalette::default(),
@@ -12556,6 +12605,7 @@ mod tests {
         let empty_vis = crate::hierarchy::ElementVisibility::default();
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            creating_move: None,
             cam: &cam,
             viewport,
             palette: ViewportPalette::default(),
@@ -12718,6 +12768,7 @@ mod perf_probe {
         let build = |sel: &SceneSelection| {
             let input = ViewportSceneInput {
                 doc: &state.doc,
+                creating_move: None,
                 cam: &state.cam,
                 viewport,
                 sketch_session: None,
@@ -12818,6 +12869,7 @@ mod cut_preview_tests {
         let selection = SceneSelection::default();
         let input = ViewportSceneInput {
             doc: &state.doc,
+            creating_move: None,
             cam: &state.cam,
             viewport,
             sketch_session: None,
@@ -12966,6 +13018,7 @@ mod issue_1141_hole_orbit {
             let selection = SceneSelection::default();
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                creating_move: None,
                 cam: &cam,
                 viewport,
                 sketch_session: None,

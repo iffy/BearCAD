@@ -2400,6 +2400,8 @@ mod tests {
             opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
         let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.y));
         let eye = Vec3::new(0.0, 0.0, 100.0);

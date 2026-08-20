@@ -120,6 +120,7 @@ bearcad.find("name")
 bearcad.set_name(el, "name")
 bearcad.element("line", i)
 bearcad.line_endpoints(i)          -- x0, y0, x1, y1
+bearcad.image_corners(i)           -- tracing image quad in world mm, live Move included
 bearcad.body_stats(i)              -- volume, triangles, bbox
 bearcad.body_faces(i)
 bearcad.body_edges(i)

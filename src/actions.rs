@@ -1645,6 +1645,23 @@ impl CreatingMove {
         }
     }
 
+    /// Image-only planar Move (#1601): the host-plane normal when every target is an image
+    /// on the same (or parallel) plane.
+    pub fn planar_normal(&self, doc: &crate::model::Document) -> Option<glam::Vec3> {
+        crate::extrude::image_planar_move_normal(
+            doc,
+            &self.image_targets,
+            &self.targets,
+            &self.plane_targets,
+            &self.instance_targets,
+        )
+    }
+
+    /// World-axis index an image-only move skips for translation and keeps for rotation.
+    pub fn planar_skip_axis(&self, doc: &crate::model::Document) -> Option<usize> {
+        self.planar_normal(doc).map(crate::extrude::planar_skip_axis)
+    }
+
     /// The face a Face Snap side has settled on (#1075): the one whose point is already
     /// picked, else the one waiting for its point.
     pub fn face_pick(&self, moving: bool) -> Option<crate::model::MateRef> {
@@ -6083,6 +6100,8 @@ impl AppState {
             name: None,
             calibration: Some(crate::model::default_image_calibration(dims.1)),
             base_origin: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
         self.doc.shape_order.push(crate::model::ShapeKind::Image);
         // Select-only so calibration mode starts immediately (#1547/#1582).
@@ -9775,8 +9794,8 @@ impl AppState {
                 let factor = length / span;
                 // Reference segment in image-UV (of the pre-scale quad), kept for re-editing.
                 // UV may fall outside 0..1 when the user dragged a point off the image.
-                let (ox, oy) = img.origin;
-                let (w, h) = (img.width_mm.max(1e-6), img.height_mm.max(1e-6));
+                let (u0, v0) = crate::model::image_plane_to_uv(img, a.0, a.1);
+                let (u1, v1) = crate::model::image_plane_to_uv(img, b.0, b.1);
                 let expression = {
                     let trimmed = expression.trim();
                     if trimmed.is_empty() {
@@ -9786,10 +9805,10 @@ impl AppState {
                     }
                 };
                 let calibration = crate::model::ImageCalibration {
-                    u0: (a.0 - ox) / w,
-                    v0: (a.1 - oy) / h,
-                    u1: (b.0 - ox) / w,
-                    v1: (b.1 - oy) / h,
+                    u0,
+                    v0,
+                    u1,
+                    v1,
                     length_mm: length,
                     expression,
                 };
@@ -18037,12 +18056,12 @@ pub fn recompute_moved_planes(doc: &mut crate::model::Document) {
     }
 }
 
-/// Recompute the plane-local origins of tracing images moved by a Move op (#217). Each targeted
-/// image's `origin` is its pristine `base_origin` projected onto the (already-recomputed) host
-/// plane frame and pushed through every non-deleted Move op targeting the image, in op order.
-/// Because the base corner is projected through the *current* plane frame, an image on a plane
-/// that also moved follows the plane and then takes its own move on top. Untargeted images that
-/// were previously moved are restored to their authored base and cleared; others are untouched.
+/// Recompute the plane-local origins (and in-plane rotation) of tracing images moved by a
+/// Move op (#217/#1601). Each targeted image's pose is its pristine `base_origin` /
+/// `base_rotation` pushed through every Move op targeting it, then read back in the host
+/// plane: translation along the plane, rotation about the plane normal. Out-of-plane
+/// translation and tilt are dropped. An image on a plane that also moved follows the plane
+/// and then takes its own move on top.
 ///
 /// Must run *after* [`recompute_moved_planes`], so the host plane frame is up to date.
 pub fn recompute_moved_images(doc: &mut crate::model::Document) {
@@ -18052,54 +18071,106 @@ pub fn recompute_moved_images(doc: &mut crate::model::Document) {
         .values()
         .flat_map(|o| o.image_targets.iter().copied())
         .collect();
-    // Precompute each op's world transform (immutable borrow, before mutating images).
-    let transforms: std::collections::HashMap<crate::model::MoveOpKey, Option<glam::Mat4>> = doc
-        .move_ops
-        .iter()
-        .map(|(key, op)| {
-            let m = (!op.image_targets.is_empty())
-                .then(|| crate::extrude::move_op_transform(doc, op))
-                .flatten();
-            (key, m)
-        })
-        .collect();
-    // (image, new origin, new base_origin).
     let mut updates: Vec<(
         crate::model::TracingImageKey,
         (f32, f32),
+        f32,
         Option<(f32, f32)>,
+        Option<f32>,
     )> = Vec::new();
     for (i, img) in doc.tracing_images.iter() {
         if targeted.contains(&i) {
-            // Lock in the pristine base the first time the image is targeted (its `origin`
-            // has no move applied yet at that moment), then always recompute from it.
             let base = img.base_origin.unwrap_or(img.origin);
-            let Some(frame) =
-                crate::face::sketch_frame(doc, crate::model::FaceId::ConstructionPlane(img.plane))
-            else {
+            let base_rot = img.base_rotation.unwrap_or(img.rotation);
+            let Some((origin, rotation)) = live_image_pose(doc, i, None) else {
                 continue;
             };
-            let mut world = frame.origin + frame.u_axis * base.0 + frame.v_axis * base.1;
-            for (op_idx, op) in doc.move_ops.iter() {
-                if !op.image_targets.contains(&i) {
-                    continue;
-                }
-                if let Some(m) = transforms.get(&op_idx).copied().flatten() {
-                    world = m.transform_point3(world);
-                }
-            }
-            let d = world - frame.origin;
-            updates.push((i, (d.dot(frame.u_axis), d.dot(frame.v_axis)), Some(base)));
-        } else if let Some(base) = img.base_origin {
-            // No longer moved by any op → snap back to the authored position and forget the base.
-            updates.push((i, base, None));
+            updates.push((i, origin, rotation, Some(base), Some(base_rot)));
+        } else if img.base_origin.is_some() || img.base_rotation.is_some() {
+            let origin = img.base_origin.unwrap_or(img.origin);
+            let rotation = img.base_rotation.unwrap_or(img.rotation);
+            updates.push((i, origin, rotation, None, None));
         }
     }
-    for (i, origin, base) in updates {
+    for (i, origin, rotation, base, base_rot) in updates {
         let img = &mut doc.tracing_images[i];
         img.origin = origin;
+        img.rotation = rotation;
         img.base_origin = base;
+        img.base_rotation = base_rot;
     }
+}
+
+/// World transform of each Move op, with an in-progress draft standing in for a new or
+/// edited op so a live preview matches commit (#1611).
+fn image_move_transforms(
+    doc: &crate::model::Document,
+    live: Option<&CreatingMove>,
+) -> Vec<(Option<crate::model::MoveOpKey>, Option<glam::Mat4>, Vec<crate::model::TracingImageKey>)> {
+    let mut out = Vec::new();
+    let skip = live.and_then(|cm| cm.editing);
+    for (key, op) in doc.move_ops.iter() {
+        if skip == Some(key) {
+            continue;
+        }
+        if op.image_targets.is_empty() {
+            continue;
+        }
+        let m = crate::extrude::move_op_transform(doc, op);
+        out.push((Some(key), m, op.image_targets.clone()));
+    }
+    if let Some(cm) = live {
+        if !cm.image_targets.is_empty() {
+            out.push((cm.editing, crate::extrude::move_op_transform(doc, &cm.as_op()), cm.image_targets.clone()));
+        }
+    }
+    out
+}
+
+/// Displayed origin and in-plane rotation of a tracing image, including an in-progress
+/// Move so the quad previews the live drag (#1611).
+pub fn live_image_pose(
+    doc: &crate::model::Document,
+    image: crate::model::TracingImageKey,
+    live: Option<&CreatingMove>,
+) -> Option<((f32, f32), f32)> {
+    let img = doc.tracing_images.get(image)?;
+    let targeted = doc
+        .move_ops
+        .values()
+        .any(|op| op.image_targets.contains(&image))
+        || live.is_some_and(|cm| cm.image_targets.contains(&image));
+    if !targeted {
+        return Some((img.origin, img.rotation));
+    }
+    let base = img.base_origin.unwrap_or(img.origin);
+    let base_rot = img.base_rotation.unwrap_or(img.rotation);
+    let transforms = image_move_transforms(doc, live);
+    let frame =
+        crate::face::sketch_frame(doc, crate::model::FaceId::ConstructionPlane(img.plane))?;
+    let (w, h) = (img.width_mm, img.height_mm);
+    let center = (base.0 + w * 0.5, base.1 + h * 0.5);
+    let mut world_center = frame.origin + frame.u_axis * center.0 + frame.v_axis * center.1;
+    let (c, s) = (base_rot.cos(), base_rot.sin());
+    let mut world_u = frame.u_axis * c + frame.v_axis * s;
+    for (_, m, targets) in &transforms {
+        if !targets.contains(&image) {
+            continue;
+        }
+        if let Some(m) = m {
+            world_center = m.transform_point3(world_center);
+            world_u = m.transform_vector3(world_u);
+        }
+    }
+    let d = world_center - frame.origin;
+    let center_uv = (d.dot(frame.u_axis), d.dot(frame.v_axis));
+    let u_uv = (world_u.dot(frame.u_axis), world_u.dot(frame.v_axis));
+    let rotation = if u_uv.0 * u_uv.0 + u_uv.1 * u_uv.1 < 1e-12 {
+        base_rot
+    } else {
+        u_uv.1.atan2(u_uv.0)
+    };
+    Some(((center_uv.0 - w * 0.5, center_uv.1 - h * 0.5), rotation))
 }
 
 /// Recompute the cached frames of construction planes generated as Repeat-op instances (#221).
@@ -19696,6 +19767,21 @@ pub fn focus_tool_picker(state: &mut AppState, target: crate::context::PickerTar
         // has a flag on the tool that the next click reads (#988).
         P::ExtrudeUpTo => state.extrude_target_pick = true,
         P::RepeatDistanceTo => state.repeat_target_pick = true,
+        // The Move tool's rows are a focus *chain* (#654/#656): the viewport reads
+        // `move_focus_override`, not the picker's own focus flag, so arming a row from the
+        // pane or a script has to set it — otherwise the picker lights up and the click
+        // still lands in Bodies (#1601).
+        P::MoveTargets => state.move_focus_override = Some(crate::MoveFocus::Bodies),
+        P::MoveStartA | P::MoveFaceMoving => {
+            state.move_focus_override = Some(crate::MoveFocus::StartPointA)
+        }
+        P::MoveEndA | P::MoveFaceFixed => {
+            state.move_focus_override = Some(crate::MoveFocus::EndPointA)
+        }
+        P::MoveStartB => state.move_focus_override = Some(crate::MoveFocus::StartPointB),
+        P::MoveEndB => state.move_focus_override = Some(crate::MoveFocus::EndPointB),
+        P::MoveStartC => state.move_focus_override = Some(crate::MoveFocus::StartPointC),
+        P::MoveEndC => state.move_focus_override = Some(crate::MoveFocus::EndPointC),
         // Everything else needs no flag of its own: the override is what arms it.
         _ => {}
     }
@@ -20101,8 +20187,9 @@ pub fn apply_pick(
         (P::MoveTargets, SceneElement::Image(ii)) => {
             let cm = state.creating_move.get_or_insert_with(CreatingMove::default);
             crate::element_picker::toggle_picked(&mut cm.image_targets, *ii);
-            // Point/Face Snap have nothing to snap on an image. An image-only set
-            // switches to Free so the translation gizmos come up (#1587).
+            // An image-only set lands in Free so the translation gizmos come up (#1587).
+            // Point Snap is still on the menu — it is the 2D in-plane snap (#1601) — but
+            // Free is what a picked image opens in, and Face Snap is gone for good.
             if !cm.image_targets.is_empty()
                 && cm.targets.is_empty()
                 && cm.instance_targets.is_empty()
@@ -20700,9 +20787,18 @@ pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
                 })
             })
         };
-        gizmos.push(GizmoInfo { kind: "offset", name: "move_x", value: mm(&cm.tx), position: trans_pos(0) });
-        gizmos.push(GizmoInfo { kind: "offset", name: "move_y", value: mm(&cm.ty), position: trans_pos(1) });
-        gizmos.push(GizmoInfo { kind: "offset", name: "move_z", value: mm(&cm.tz), position: trans_pos(2) });
+        let skip_axis = cm.planar_skip_axis(&state.doc);
+        for axis in 0..3 {
+            if skip_axis == Some(axis) {
+                continue;
+            }
+            let (name, value) = match axis {
+                0 => ("move_x", mm(&cm.tx)),
+                1 => ("move_y", mm(&cm.ty)),
+                _ => ("move_z", mm(&cm.tz)),
+            };
+            gizmos.push(GizmoInfo { kind: "offset", name, value, position: trans_pos(axis) });
+        }
         // Face Snap's spin ring (#1077/#1426): the turn about the target face's normal.
         if cm.translate_mode == crate::model::MoveTranslateMode::FaceSnap {
             if let (Some(start), Some(end)) = (cm.start_point_a.as_ref(), cm.end_point_a.as_ref()) {
@@ -20738,24 +20834,23 @@ pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
                     spacing,
                 )
             });
-            gizmos.push(GizmoInfo {
-                kind: "rotate",
-                name: "move_rx",
-                value: rad(&cm.rx),
-                position: handles.map(|h| h[0]),
-            });
-            gizmos.push(GizmoInfo {
-                kind: "rotate",
-                name: "move_ry",
-                value: rad(&cm.ry),
-                position: handles.map(|h| h[1]),
-            });
-            gizmos.push(GizmoInfo {
-                kind: "rotate",
-                name: "move_rz",
-                value: rad(&cm.rz),
-                position: handles.map(|h| h[2]),
-            });
+            let keep_rot = skip_axis;
+            for axis in 0..3 {
+                if keep_rot.is_some_and(|k| k != axis) {
+                    continue;
+                }
+                let (name, value) = match axis {
+                    0 => ("move_rx", rad(&cm.rx)),
+                    1 => ("move_ry", rad(&cm.ry)),
+                    _ => ("move_rz", rad(&cm.rz)),
+                };
+                gizmos.push(GizmoInfo {
+                    kind: "rotate",
+                    name,
+                    value,
+                    position: handles.map(|h| h[axis]),
+                });
+            }
         }
     }
     // A selected wrapped text exposes its box width (#409) — the value the edge drag
@@ -20817,6 +20912,13 @@ pub fn set_tool_mode(state: &mut AppState, name: &str) -> Result<(), String> {
             // In place is the Joint tool's (#1076): a Move that moves nothing is a no-op.
             if mode == crate::model::MoveTranslateMode::InPlace {
                 return Err(format!("the Move tool has no '{}' mode", mode.name()));
+            }
+            let planar = state
+                .creating_move
+                .as_ref()
+                .is_some_and(|cm| cm.planar_normal(&state.doc).is_some());
+            if planar && mode == crate::model::MoveTranslateMode::FaceSnap {
+                return Err("an image move has no face_snap mode".to_string());
             }
             match state.creating_move.as_mut() {
                 Some(cm) => {
@@ -21061,6 +21163,18 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
             // Drag (and scripted drag) lands on 0.1 of the length unit, written
             // with the same formatter as the computed subtitle so the two do not
             // flicker (`60.600002mm` vs `60.6 mm`, #1431).
+            let axis = match name {
+                "move_x" => 0,
+                "move_y" => 1,
+                _ => 2,
+            };
+            let skip = state
+                .creating_move
+                .as_ref()
+                .and_then(|cm| cm.planar_skip_axis(&state.doc));
+            if skip == Some(axis) {
+                return false;
+            }
             let unit = state.doc.default_length_unit;
             if let Some(cm) = state.creating_move.as_mut() {
                 let snapped = crate::value::snap_gizmo_length_mm(value, unit);
@@ -21078,11 +21192,23 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
         // Free-mode rotation rings (#1234): value is radians, stored as a 0.1-step
         // degree expression so the field and computed subtitle stay in lockstep (#1431).
         "move_rx" | "move_ry" | "move_rz" => {
+            let axis = match name {
+                "move_rx" => 0,
+                "move_ry" => 1,
+                _ => 2,
+            };
+            let (is_free, skip) = match state.creating_move.as_ref() {
+                Some(cm) => (
+                    cm.translate_mode == crate::model::MoveTranslateMode::Free,
+                    cm.planar_skip_axis(&state.doc),
+                ),
+                None => return false,
+            };
+            if !is_free || skip.is_some_and(|k| k != axis) {
+                return false;
+            }
             let unit = state.doc.default_angle_unit;
             if let Some(cm) = state.creating_move.as_mut() {
-                if cm.translate_mode != crate::model::MoveTranslateMode::Free {
-                    return false;
-                }
                 let snapped = crate::value::snap_gizmo_angle_rad(value, unit);
                 let text = crate::value::format_angle_display_in(snapped, unit);
                 match name {
@@ -22885,6 +23011,8 @@ mod tests {
             name: None,
             calibration: None,
             base_origin: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
         state.apply(Action::SetTool(Tool::Sketch));
         state.apply(Action::ClickSceneElement {
@@ -23138,6 +23266,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             name: None,
             calibration: None,
             base_origin: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
         // Plane 0 is the XY ground (u = X, v = Y), so a +25 world-X move lands +25 in the
         // image's plane-local x, and a world-Z move (out of plane) doesn't touch the origin.
@@ -23247,6 +23377,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             name: None,
             calibration: None,
             base_origin: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
         let move_image = |state: &mut AppState, tx: &str| {
             state.creating_move = Some(CreatingMove {
@@ -23279,6 +23411,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
     }
 
     /// #1587: picking an image into an empty Move set switches to Free so gizmos appear.
+    /// Point Snap is still *offered* for an image (#1601) — it is just not where a fresh
+    /// pick lands.
     #[test]
     fn picking_an_image_into_move_switches_to_free() {
         let mut state = AppState::default();
@@ -23294,6 +23428,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             name: None,
             calibration: None,
             base_origin: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
         state.creating_move = Some(CreatingMove {
             translate_mode: crate::model::MoveTranslateMode::PointSnap,
@@ -23307,6 +23443,170 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         let cm = state.creating_move.as_ref().unwrap();
         assert_eq!(cm.image_targets, vec![image]);
         assert_eq!(cm.translate_mode, crate::model::MoveTranslateMode::Free);
+        // Point Snap is still a mode the user can pick for an image (#1601).
+        assert!(set_tool_mode(&mut state, "point_snap").is_ok());
+        assert_eq!(
+            state.creating_move.as_ref().unwrap().translate_mode,
+            crate::model::MoveTranslateMode::PointSnap
+        );
+    }
+
+    fn test_tracing_image(
+        state: &mut AppState,
+        plane: crate::model::ConstructionPlaneKey,
+        origin: (f32, f32),
+        width: f32,
+        height: f32,
+    ) -> crate::model::TracingImageKey {
+        state.doc.tracing_images.insert(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "trace".to_string(),
+            plane,
+            origin,
+            width_mm: width,
+            height_mm: height,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
+            name: None,
+            calibration: None,
+            base_origin: None,
+            rotation: 0.0,
+            base_rotation: None,
+        })
+    }
+
+    /// #1601: Free-move gizmos on an XY image skip Z translation and only rotate about Z.
+    #[test]
+    fn image_only_free_move_gizmos_are_planar() {
+        let mut state = AppState::default();
+        let image = test_tracing_image(&mut state, pkey(0), (0.0, 0.0), 100.0, 60.0);
+        state.creating_move = Some(CreatingMove {
+            translate_mode: crate::model::MoveTranslateMode::Free,
+            image_targets: vec![image],
+            ..Default::default()
+        });
+        let names: Vec<&str> = available_gizmos(&state).iter().map(|g| g.name).collect();
+        assert!(names.contains(&"move_x") && names.contains(&"move_y"), "{names:?}");
+        assert!(!names.contains(&"move_z"), "XY image must skip Z translation, got {names:?}");
+        assert!(names.contains(&"move_rz"), "XY image rotates about Z, got {names:?}");
+        assert!(!names.contains(&"move_rx") && !names.contains(&"move_ry"), "{names:?}");
+        assert!(!set_gizmo(&mut state, "move_z", 10.0));
+        assert!(!set_gizmo(&mut state, "move_rx", 1.0));
+        assert!(set_gizmo(&mut state, "move_rz", std::f32::consts::FRAC_PI_2));
+        assert_eq!(state.creating_move.as_ref().unwrap().rz, "90.0 deg");
+
+        // Front plane (XZ, normal Y): skip Y, rotate about Y.
+        let xz = test_tracing_image(&mut state, pkey(1), (0.0, 0.0), 40.0, 20.0);
+        state.creating_move = Some(CreatingMove {
+            translate_mode: crate::model::MoveTranslateMode::Free,
+            image_targets: vec![xz],
+            ..Default::default()
+        });
+        let names: Vec<&str> = available_gizmos(&state).iter().map(|g| g.name).collect();
+        assert!(names.contains(&"move_x") && names.contains(&"move_z"), "{names:?}");
+        assert!(!names.contains(&"move_y"), "{names:?}");
+        assert!(names.contains(&"move_ry") && !names.contains(&"move_rx") && !names.contains(&"move_rz"), "{names:?}");
+    }
+
+    /// #1601: rotating an image about the plane normal turns the displayed quad.
+    #[test]
+    fn rotating_an_image_about_the_plane_normal_turns_the_quad() {
+        let mut state = AppState::default();
+        let image = test_tracing_image(&mut state, pkey(0), (0.0, 0.0), 100.0, 60.0);
+        let result = state.apply(Action::CreateMoveOperation {
+            keep_inputs: false,
+            translate_mode: crate::model::MoveTranslateMode::Free,
+            start_point_a: None,
+            end_point_a: None,
+            start_point_b: None,
+            end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
+            targets: vec![],
+            plane_targets: vec![],
+            image_targets: vec![image],
+            instance_targets: Vec::new(),
+            tx: String::new(),
+            ty: String::new(),
+            tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: "90".to_string(),
+            face_flip: false,
+            face_spin: String::new(),
+            roll_angle: String::new(),
+            face_offset: String::new(),
+        });
+        assert!(matches!(result, ActionResult::Ok), "{}", state.status);
+        let img = &state.doc.tracing_images[image];
+        assert!(
+            (img.rotation - std::f32::consts::FRAC_PI_2).abs() < 1e-3,
+            "90° about Z should land on the image, got {}",
+            img.rotation
+        );
+        assert!(
+            img.origin.0.abs() < 1e-2 && img.origin.1.abs() < 1e-2,
+            "rotation about the centre should leave origin put, got {:?}",
+            img.origin
+        );
+        let corners = crate::construction::tracing_image_corners(&state.doc, image).unwrap();
+        // Unrotated lower-left (0,0) goes to (80, -20) after 90° CCW about (50, 30).
+        let ll = corners[3];
+        assert!(
+            (ll.x - 80.0).abs() < 0.2 && (ll.y + 20.0).abs() < 0.2 && ll.z.abs() < 0.2,
+            "lower-left should orbit the centre, got {ll:?}"
+        );
+    }
+
+    /// #1611: an in-progress image move previews the pose before commit.
+    #[test]
+    fn in_progress_image_move_previews_the_pose() {
+        let mut state = AppState::default();
+        let image = test_tracing_image(&mut state, pkey(0), (0.0, 0.0), 100.0, 60.0);
+        state.creating_move = Some(CreatingMove {
+            translate_mode: crate::model::MoveTranslateMode::Free,
+            image_targets: vec![image],
+            tx: "25mm".to_string(),
+            rz: "90".to_string(),
+            ..Default::default()
+        });
+        let (origin, rotation) =
+            live_image_pose(&state.doc, image, state.creating_move.as_ref()).unwrap();
+        assert!(
+            (origin.0 - 25.0).abs() < 1e-2 && origin.1.abs() < 1e-2,
+            "preview origin should include the live translation, got {origin:?}"
+        );
+        assert!(
+            (rotation - std::f32::consts::FRAC_PI_2).abs() < 1e-3,
+            "preview rotation should include the live turn, got {rotation}"
+        );
+        let committed = &state.doc.tracing_images[image];
+        assert!(
+            committed.origin.0.abs() < 1e-6 && committed.rotation.abs() < 1e-6,
+            "commit hasn't happened yet"
+        );
+    }
+
+    /// #1601: Face Snap is not a mode for an image-only move.
+    #[test]
+    fn image_only_move_rejects_face_snap() {
+        let mut state = AppState::default();
+        state.tool = Tool::Move;
+        let image = test_tracing_image(&mut state, pkey(0), (0.0, 0.0), 40.0, 20.0);
+        state.creating_move = Some(CreatingMove {
+            translate_mode: crate::model::MoveTranslateMode::Free,
+            image_targets: vec![image],
+            ..Default::default()
+        });
+        assert!(set_tool_mode(&mut state, "point_snap").is_ok());
+        assert!(set_tool_mode(&mut state, "free").is_ok());
+        assert!(set_tool_mode(&mut state, "face_snap").is_err());
+        assert_eq!(
+            crate::model::MoveTranslateMode::for_targets(false, true),
+            vec![
+                crate::model::MoveTranslateMode::PointSnap,
+                crate::model::MoveTranslateMode::Free,
+            ]
+        );
     }
 
     /// #409: a selected wrapped text exposes a `text_width` gizmo; driving it re-wraps the
@@ -33509,6 +33809,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             name: None,
             calibration: None,
             base_origin: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
         let stale = {
             let key = state.doc.tracing_images.insert(state.doc.tracing_images[image].clone());
@@ -33576,6 +33878,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             name: None,
             calibration: None,
             base_origin: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
         state.apply(Action::BeginImageCalibration { image });
         state.apply(Action::SetCalibrationPoint { image, index: 0, x: -25.0, y: 0.0 });
@@ -33642,6 +33946,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 expression: String::new(),
             }),
             base_origin: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
         let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         state
@@ -33702,6 +34008,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             name: None,
             calibration: None,
             base_origin: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
         // A feature spanning 40 mm on screen is declared to really be 80 mm → 2x.
         let result = state.apply(Action::CalibrateImage {
@@ -33769,6 +34077,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             name: None,
             calibration: Some(crate::model::default_image_calibration(60.0)),
             base_origin: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
         assert!(matches!(
             state.apply(Action::BeginEditImageCalibration { image }),
@@ -33944,6 +34254,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             name: None,
             calibration: None,
             base_origin: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
         assert!(matches!(
             state.apply(Action::SetImageOpacity { image, opacity: 0.35 }),
@@ -34147,6 +34459,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             name: None,
             calibration: None,
             base_origin: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
         state.apply(Action::ClickSceneElement {
             element: crate::hierarchy::SceneElement::Image(image),

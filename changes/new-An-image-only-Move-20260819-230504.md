@@ -1,0 +1,1 @@
+An image-only Move stays in its host plane — the two in-plane axes slide and only the plane-normal turn is offered — and the 2D Point Snap moves an image by its nine box points, with the quad previewing the live move before Enter commits it.

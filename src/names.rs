@@ -754,6 +754,9 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::Circle(i) => format!("Circle {}", i.index()),
         SceneElement::Origin => "Origin".to_string(),
         SceneElement::GlobalAxis(axis) => axis.label().to_string(),
+        SceneElement::Point(crate::model::ConstraintPoint::ImageAnchor { image, anchor }) => {
+            format!("{} of Image {}", anchor.lua_name(), image.index())
+        }
         SceneElement::Point(_) => "Point".to_string(),
         SceneElement::Constraint(i) => format!("Constraint {}", i.index()),
         // The same label the Elements pane gives the row (#967), so the picker and the pane
@@ -819,6 +822,10 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         }
         // A snap point reads by which feature of the body it sits on (#955), the wording the
         // Move tool's own picker rows used before they became real pickers.
+        // An image box point (#1601) names its image and which of the nine points it is.
+        SceneElement::MovePoint(crate::model::MovePointRef::ImageAnchor { image, anchor }) => {
+            format!("{} of Image {}", anchor.lua_name(), image.index())
+        }
         SceneElement::MovePoint(point) => match point.body() {
             Some(body) => {
                 let body = body_label(doc, body);
@@ -832,7 +839,8 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
                         format!("Middle of a face of {body}")
                     }
                     crate::model::MovePointRef::OnFace { .. } => format!("On a face of {body}"),
-                    crate::model::MovePointRef::Origin => "Origin".to_string(),
+                    crate::model::MovePointRef::Origin
+                    | crate::model::MovePointRef::ImageAnchor { .. } => "Origin".to_string(),
                 }
             }
             None => "Origin".to_string(),

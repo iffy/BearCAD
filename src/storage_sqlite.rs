@@ -170,7 +170,9 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             name TEXT,
             base_origin_u REAL,
             base_origin_v REAL,
-            calibration_json TEXT
+            calibration_json TEXT,
+            rotation REAL NOT NULL DEFAULT 0,
+            base_rotation REAL
         );
         CREATE TABLE IF NOT EXISTS lofts (
             id INTEGER PRIMARY KEY,
@@ -1076,8 +1078,9 @@ fn save_tracing_images(tx: &Connection, arena: &Arena<TracingImage>) -> Result<(
         let id = key_bits(key);
         tx.execute(
             "INSERT INTO tracing_images (id, source_name, plane_id, origin_u, origin_v,
-             width_mm, height_mm, opacity, name, base_origin_u, base_origin_v, calibration_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             width_mm, height_mm, opacity, name, base_origin_u, base_origin_v, calibration_json,
+             rotation, base_rotation)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 id,
                 img.source_name,
@@ -1091,6 +1094,8 @@ fn save_tracing_images(tx: &Connection, arena: &Arena<TracingImage>) -> Result<(
                 img.base_origin.map(|o| o.0),
                 img.base_origin.map(|o| o.1),
                 img.calibration.as_ref().map(to_json).transpose()?,
+                img.rotation as f64,
+                img.base_rotation.map(|r| r as f64),
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -2357,7 +2362,8 @@ fn load_tracing_images(conn: &Connection) -> Result<Arena<TracingImage>> {
     let mut stmt = conn
         .prepare(
             "SELECT id, source_name, plane_id, origin_u, origin_v, width_mm, height_mm,
-                    opacity, name, base_origin_u, base_origin_v, calibration_json FROM tracing_images",
+                    opacity, name, base_origin_u, base_origin_v, calibration_json,
+                    rotation, base_rotation FROM tracing_images",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -2375,6 +2381,8 @@ fn load_tracing_images(conn: &Connection) -> Result<Arena<TracingImage>> {
                 row.get::<_, Option<f64>>(9)?,
                 row.get::<_, Option<f64>>(10)?,
                 row.get::<_, Option<String>>(11)?,
+                row.get::<_, f64>(12)?,
+                row.get::<_, Option<f64>>(13)?,
             ))
         })
         .map_err(|e| e.to_string())?;
@@ -2393,6 +2401,8 @@ fn load_tracing_images(conn: &Connection) -> Result<Arena<TracingImage>> {
             base_origin_u,
             base_origin_v,
             calibration_json,
+            rotation,
+            base_rotation,
         ) = row.map_err(|e| e.to_string())?;
         let base_origin = match (base_origin_u, base_origin_v) {
             (Some(u), Some(v)) => Some((u as f32, v as f32)),
@@ -2414,6 +2424,8 @@ fn load_tracing_images(conn: &Connection) -> Result<Arena<TracingImage>> {
                     Some(s) if !s.is_empty() => Some(from_json(&s)?),
                     _ => None,
                 },
+                rotation: rotation as f32,
+                base_rotation: base_rotation.map(|r| r as f32),
             },
         ));
     }

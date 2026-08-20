@@ -206,8 +206,12 @@ refused (lengths never change).
 ## Moving tracing images
 
 Click a tracing image (or pick it in the Elements pane) with the Move tool. The tool
-switches to Free so you can type or drag X/Y/Z. It slides on its host plane (and follows
-the plane if the plane moves). Editing the move back to zero returns it home.
+switches to Free. An image never leaves its plane, so only the two in-plane axes slide
+and only the turn about the plane's normal is offered — the third axis and the two
+tilting turns are hidden. Face Snap is not a mode for an image; Point Snap is, snapping
+its nine box points onto other geometry in the plane. The image follows its plane if the
+plane moves, and the quad previews the slide and turn as you drag. Editing the move back
+to zero returns it home.
 
 ## Rotating sketch text
 
@@ -219,6 +223,7 @@ about its start point.
 ```lua
 bearcad.move_bodies{ bodies = {0}, x = "25", name = "Shifted" }
 bearcad.move_bodies{ bodies = {0, 1}, x = "gap * 2", z = "10mm" }
-bearcad.move_bodies{ images = {0}, x = 25 }
+bearcad.move_bodies{ images = {0}, x = 25, rz = 90 }   -- in-plane slide + turn
 bearcad.edit_move{ index = 0, bodies = {0}, x = "30" }
+local corners = bearcad.image_corners(0)              -- world quad, live preview included
 ```
