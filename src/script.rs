@@ -881,6 +881,8 @@ pub enum Instruction {
     ScrollPane { pane: Pane, dy: f32 },
     /// Open or collapse every section of the AI pane at once (#1619).
     SetAiSectionsOpen { open: bool },
+    /// Open the AI pane at its MCP Server section (Integration ▸ AI MCP Server…, #1622).
+    ShowMcpServerSection,
     AddParameter { name: String, expression: String },
     CreateParameterFromLineLength { line_index: usize, name: Option<String> },
     /// Create a derived (measured) parameter from a geometry source (#432).
@@ -2043,6 +2045,7 @@ impl Instruction {
                     if *open { "open" } else { "close" }
                 )
             }
+            Instruction::ShowMcpServerSection => "bearcad.ui.ai_mcp(\"show\")".to_string(),
             Instruction::AddParameter { name, expression } => {
                 format!("bearcad.parameter(\"add\", {name:?}, {expression:?})")
             }
@@ -7898,6 +7901,10 @@ impl ScriptRunner {
             }
             Instruction::SetAiSectionsOpen { open } => {
                 state.apply(Action::SetAiSectionsOpen { open });
+                StepResult::Continue
+            }
+            Instruction::ShowMcpServerSection => {
+                state.apply(Action::ShowMcpServerSection);
                 StepResult::Continue
             }
             Instruction::AddParameter { name, expression } => {

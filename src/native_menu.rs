@@ -58,6 +58,8 @@ pub struct MenuIds {
     pub changelog: MenuId,
     /// Help ▸ Install AI Agent Skill… (#1604).
     pub install_ai_skill: MenuId,
+    /// Integration ▸ AI MCP Server… (#1622): open the AI pane at its MCP Server section.
+    pub mcp_server: MenuId,
     /// Help ▸ Report Problem… (#1372): open the browser at a new-issue form on the repo.
     pub report_problem: MenuId,
     /// Settings… (#720): the app menu on macOS, the File menu elsewhere.
@@ -88,6 +90,16 @@ pub struct NativeMenu {
 
 static PENDING_MENU_EVENTS: Mutex<Vec<MenuEvent>> = Mutex::new(Vec::new());
 static EGUI_CTX: OnceLock<egui::Context> = OnceLock::new();
+
+/// The built menu bar's shape, recorded at install time (#1622): top-level menu titles,
+/// each with the labels of its direct items. `bearcad.ui.menu_structure()` surfaces this
+/// to scripts so the OS menu bar — which pointer input can't drive — stays testable.
+static MENU_STRUCTURE: Mutex<Vec<(String, Vec<String>)>> = Mutex::new(Vec::new());
+
+/// Snapshot of the built menu bar: top-level title → direct item labels.
+pub fn menu_structure() -> Vec<(String, Vec<String>)> {
+    MENU_STRUCTURE.lock().expect("menu structure").clone()
+}
 
 fn primary_modifier() -> Modifiers {
     #[cfg(target_os = "macos")]
@@ -192,6 +204,9 @@ pub fn command_for_id(
     }
     if ids.install_ai_skill == id {
         return Some(MenuCommand::InstallAiSkill);
+    }
+    if ids.mcp_server == id {
+        return Some(MenuCommand::McpServer);
     }
     if ids.report_problem == id {
         return Some(MenuCommand::ReportProblem);
@@ -303,6 +318,9 @@ impl NativeMenu {
         let view_menu = Submenu::new("View", true);
         let panes_menu = Submenu::new("Panes", true);
         let help_menu = Submenu::new("Help", true);
+        // #1622: the developer-facing integration items (CLI symlink, AI agent skill, AI
+        // MCP server) group into their own top-level menu instead of sprawling through Help.
+        let integration_menu = Submenu::new("Integration", true);
 
         let new_document = MenuItem::with_id(
             "new_document",
@@ -409,6 +427,8 @@ impl NativeMenu {
             true,
             None,
         );
+        // #1622: open the AI pane at its MCP Server section.
+        let mcp_server = MenuItem::with_id("mcp_server", "AI MCP Server…", true, None);
         let mut pane_checks = Vec::new();
         let mut pane_ids = Vec::new();
         for &pane in Pane::ALL {
@@ -483,13 +503,21 @@ impl NativeMenu {
         help_menu.append(&shortcuts_help)?;
         help_menu.append(&changelog)?;
         help_menu.append(&report_problem)?;
-        help_menu.append(&install_cli)?;
-        help_menu.append(&install_ai_skill)?;
+        integration_menu.append(&install_cli)?;
+        integration_menu.append(&install_ai_skill)?;
+        integration_menu.append(&mcp_server)?;
         help_menu.append(&PredefinedMenuItem::separator())?;
         help_menu.append(&licenses)?;
         help_menu.append(&about)?;
 
-        menu.append_items(&[&file_menu, &edit_menu, &cad_menu, &view_menu, &help_menu])?;
+        menu.append_items(&[
+            &file_menu,
+            &edit_menu,
+            &cad_menu,
+            &view_menu,
+            &integration_menu,
+            &help_menu,
+        ])?;
 
         // DEV menu (#627/#1159), debug builds (`cargo run`) only: developer utilities.
         let report_issue = MenuItem::with_id("report_issue", "Report issue…", true, None);
@@ -503,6 +531,9 @@ impl NativeMenu {
         }
 
         attach_to_platform(&menu, cc)?;
+
+        // Publish the bar's shape for `bearcad.ui.menu_structure()` (#1622).
+        *MENU_STRUCTURE.lock().expect("menu structure") = summarize_menu(&menu);
 
         #[cfg(target_os = "macos")]
         help_menu.set_as_help_menu_for_nsapp();
@@ -537,6 +568,7 @@ impl NativeMenu {
             licenses: licenses.id().clone(),
             install_cli: install_cli.id().clone(),
             install_ai_skill: install_ai_skill.id().clone(),
+            mcp_server: mcp_server.id().clone(),
             command_palette: command_palette.id().clone(),
             fps_mode: fps_mode.id().clone(),
             zoom_to_fit: zoom_to_fit.id().clone(),
@@ -589,6 +621,33 @@ impl NativeMenu {
     pub fn sync_tool_hints(&self, active: bool) {
         self.tool_hints.set_checked(active);
     }
+}
+
+/// The labels a menu's items show, in order; submenu entries contribute their own titles.
+fn summarize_items(items: Vec<muda::MenuItemKind>) -> Vec<String> {
+    let mut labels = Vec::new();
+    for item in items {
+        match item {
+            muda::MenuItemKind::Submenu(sub) => labels.push(sub.text()),
+            muda::MenuItemKind::MenuItem(item) => labels.push(item.text()),
+            muda::MenuItemKind::Check(item) => labels.push(item.text()),
+            muda::MenuItemKind::Predefined(item) => labels.push(item.text()),
+            // Icon items carry no label of interest to the tests.
+            muda::MenuItemKind::Icon(_) => {}
+        }
+    }
+    labels
+}
+
+/// The top-level menu titles and the labels of their direct items, as built (#1622).
+fn summarize_menu(menu: &Menu) -> Vec<(String, Vec<String>)> {
+    let mut sections = Vec::new();
+    for item in menu.items() {
+        if let Some(sub) = item.as_submenu() {
+            sections.push((sub.text(), summarize_items(sub.items())));
+        }
+    }
+    sections
 }
 
 fn install_event_handler() {
@@ -672,6 +731,7 @@ mod tests {
             licenses: MenuId::new("licenses"),
             install_cli: MenuId::new("install_cli"),
             install_ai_skill: MenuId::new("install_ai_skill"),
+            mcp_server: MenuId::new("mcp_server"),
             command_palette: MenuId::new("command_palette"),
             fps_mode: MenuId::new("fps_mode"),
             zoom_to_fit: MenuId::new("zoom_to_fit"),
@@ -731,6 +791,24 @@ mod tests {
         assert_eq!(
             command_for_id(&ids.install_cli, &ids, |_| true),
             Some(MenuCommand::InstallCli)
+        );
+    }
+
+    #[test]
+    fn maps_mcp_server_menu_item() {
+        // #1622: Integration ▸ AI MCP Server… opens the AI pane at its MCP Server section.
+        let ids = ids_with_pane("view_cube").0;
+        assert_eq!(
+            command_for_id(&ids.mcp_server, &ids, |_| true),
+            Some(MenuCommand::McpServer)
+        );
+        assert_eq!(
+            MenuCommand::McpServer.to_action(),
+            Some(Action::ShowMcpServerSection)
+        );
+        assert_eq!(
+            command_for_id(&ids.install_ai_skill, &ids, |_| true),
+            Some(MenuCommand::InstallAiSkill)
         );
     }
 

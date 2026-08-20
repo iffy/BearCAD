@@ -2626,6 +2626,8 @@ pub enum Action {
     UninstallAiSkill { target: String, dir: Option<std::path::PathBuf> },
     /// Open the AI pane at its Have AI use BearCAD section (Help ▸ Install AI Agent Skill…).
     ShowAiSkillSection,
+    /// Open the AI pane at its MCP Server section (Integration ▸ AI MCP Server…).
+    ShowMcpServerSection,
     /// Open or collapse every AI pane section at once (`bearcad.ui.ai_sections`, #1619).
     SetAiSectionsOpen { open: bool },
     /// Start the local MCP server (#1605). `port` of `None` uses the configured one.
@@ -3625,6 +3627,7 @@ impl Action {
                     | Action::InstallAiSkill { .. }
                     | Action::UninstallAiSkill { .. }
                     | Action::ShowAiSkillSection
+                    | Action::ShowMcpServerSection
                     | Action::SetAiSectionsOpen { .. }
                     | Action::StartMcpServer { .. }
                     | Action::StopMcpServer
@@ -12190,6 +12193,12 @@ impl AppState {
                 self.panes.set(Pane::Ai, true);
                 self.ai.borrow_mut().open_skill_section = true;
                 self.status = "AI ▸ Have AI use BearCAD".to_string();
+                ActionResult::Ok
+            }
+            Action::ShowMcpServerSection => {
+                self.panes.set(Pane::Ai, true);
+                self.ai.borrow_mut().open_mcp_section = true;
+                self.status = "AI ▸ MCP Server".to_string();
                 ActionResult::Ok
             }
             Action::SetAiSectionsOpen { open } => {
