@@ -427,6 +427,7 @@ fn backend_picker(ui: &mut egui::Ui, state: &mut AppState) {
         )
     };
     let mut action: Option<Action> = None;
+    let mut connect_after_adding = false;
 
     ui.horizontal(|ui| {
         ui.label("Backend");
@@ -462,10 +463,25 @@ fn backend_picker(ui: &mut egui::Ui, state: &mut AppState) {
     }
     if let Some(backend) = &selected {
         ui.label(
-            egui::RichText::new(format!("{} · key {}", backend.model, backend.key_description()))
-                .size(11.0)
-                .weak(),
+            egui::RichText::new(format!(
+                "{} · key {}",
+                if backend.model.is_empty() { "no model" } else { &backend.model },
+                backend.key_description()
+            ))
+            .size(11.0)
+            .weak(),
         );
+        // Connecting (#1624) and choosing a model (#1617) are the two steps between adding a
+        // backend and using it, so both sit here rather than inside the editor.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if let Some(connect) = connect_row(ui, state, backend) {
+                action = Some(connect);
+            }
+            if let Some(model) = model_row(ui, state, backend) {
+                action = Some(model);
+            }
+        }
     }
 
     egui::CollapsingHeader::new("Manage backends")
@@ -534,19 +550,198 @@ fn backend_picker(ui: &mut egui::Ui, state: &mut AppState) {
                 ui.add_space(4.0);
             }
             ui.separator();
-            if let Some(added) = add_backend_form(ui) {
+            if let Some((added, connect)) = add_backend_form(ui) {
                 action = Some(Action::AddAiBackend { backend: added });
+                // "Add and connect" is one button to the user; two actions here, because the
+                // backend has to exist before there is anything to connect.
+                connect_after_adding = connect;
             }
         });
 
     if let Some(action) = action {
         state.apply(action);
+        if connect_after_adding {
+            let id = state.ai.borrow().config.backends.last().map(|b| b.id.clone());
+            if let Some(id) = id {
+                state.apply(Action::ConnectAiBackend { id });
+            }
+        }
     }
+}
+
+/// The connect button for a backend whose provider offers PKCE OAuth (#1624), and the
+/// "waiting for your browser" line while an attempt is running.
+///
+/// Nothing here for a provider without a flow: those show the key fields in the editor, the
+/// way they always have.
+#[cfg(not(target_arch = "wasm32"))]
+fn connect_row(ui: &mut egui::Ui, state: &mut AppState, backend: &Backend) -> Option<Action> {
+    use crate::ai::oauth::Connect;
+
+    let running = {
+        let ai = state.ai.borrow();
+        ai.connect
+            .as_ref()
+            .filter(|flow| flow.backend == backend.id)
+            .map(|flow| (flow.authorize_url.clone(), flow.state()))
+    };
+    if let Some((url, connect)) = running {
+        let mut action = None;
+        ui.horizontal(|ui| {
+            match connect {
+                Connect::Failed(message) => {
+                    ui.label(
+                        egui::RichText::new(message)
+                            .size(11.0)
+                            .color(ui.visuals().error_fg_color),
+                    );
+                }
+                _ => {
+                    ui.spinner();
+                    ui.label(egui::RichText::new("Waiting for your browser…").size(11.0));
+                }
+            }
+            if ui
+                .small_button("Open again")
+                .on_hover_text(&url)
+                .clicked()
+            {
+                let _ = crate::open_in_browser(&url);
+            }
+            if ui.small_button("Cancel").clicked() {
+                action = Some(Action::CancelAiConnect);
+            }
+        });
+        return action;
+    }
+
+    backend.provider.oauth()?;
+    let connected = matches!(&backend.key, KeySource::OAuth(key) if !key.trim().is_empty());
+    let label = if connected {
+        "Reconnect".to_string()
+    } else {
+        format!("Connect to {}", backend.provider.label())
+    };
+    let mut action = None;
+    ui.horizontal(|ui| {
+        if ui
+            .button(label)
+            .on_hover_text(
+                "Opens your browser to approve BearCAD. The key is issued to this app — you \
+                 never see or paste one.",
+            )
+            .clicked()
+        {
+            action = Some(Action::ConnectAiBackend { id: backend.id.clone() });
+        }
+        if connected {
+            ui.label(egui::RichText::new("Connected").size(11.0).weak());
+        }
+    });
+    action
+}
+
+/// The **Model** row (#1617): a dropdown of what the backend says it has, or a field to type
+/// a name into when it has not been asked yet.
+#[cfg(not(target_arch = "wasm32"))]
+fn model_row(ui: &mut egui::Ui, state: &mut AppState, backend: &Backend) -> Option<Action> {
+    use crate::ai::models::Catalog;
+
+    let catalog = state
+        .ai
+        .borrow()
+        .models
+        .get(&backend.id)
+        .map(|c| c.lock().expect("catalog lock").clone());
+    // An escape hatch for a model the backend does not list: typing beats a dropdown that
+    // cannot hold what you want.
+    let typing_id = egui::Id::new(("ai_model_typed", &backend.id));
+    let mut typing: bool = ui.data_mut(|d| d.get_temp(typing_id).unwrap_or(false));
+    let mut action = None;
+
+    ui.horizontal(|ui| {
+        ui.label("Model");
+        match (&catalog, typing) {
+            (Some(Catalog::Ready(models)), false) => {
+                let selected = if backend.model.is_empty() {
+                    "Choose a model".to_string()
+                } else {
+                    backend.model.clone()
+                };
+                egui::ComboBox::from_id_salt(("ai_model_picker", &backend.id))
+                    .selected_text(selected)
+                    .width(220.0)
+                    .show_ui(ui, |ui| {
+                        for model in models {
+                            let picked = model.id == backend.model;
+                            if ui.selectable_label(picked, &model.label).clicked() && !picked {
+                                action = Some(Action::SetAiBackendModel {
+                                    id: backend.id.clone(),
+                                    model: model.id.clone(),
+                                });
+                            }
+                        }
+                        ui.separator();
+                        if ui.selectable_label(false, "Type a name…").clicked() {
+                            typing = true;
+                        }
+                    });
+            }
+            (Some(Catalog::Loading), _) => {
+                ui.spinner();
+                ui.label(egui::RichText::new("asking the backend…").size(11.0).weak());
+            }
+            _ => {
+                let text_id = egui::Id::new(("ai_model_text", &backend.id));
+                let mut text: String =
+                    ui.data_mut(|d| d.get_temp(text_id).unwrap_or_else(|| backend.model.clone()));
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut text)
+                        .hint_text("model id")
+                        .desired_width(200.0),
+                );
+                if response.lost_focus() {
+                    if text.trim() != backend.model {
+                        action = Some(Action::SetAiBackendModel {
+                            id: backend.id.clone(),
+                            model: text.trim().to_string(),
+                        });
+                    }
+                } else if !response.has_focus() {
+                    // Not being edited: follow the backend, so a model chosen elsewhere shows.
+                    text = backend.model.clone();
+                }
+                ui.data_mut(|d| d.insert_temp(text_id, text));
+            }
+        }
+        if ui
+            .small_button("⟳")
+            .on_hover_text("Ask this backend which models it has")
+            .clicked()
+        {
+            typing = false;
+            action = Some(Action::RefreshAiModels { id: backend.id.clone() });
+        }
+    });
+    if let Some(Catalog::Failed(message)) = &catalog {
+        ui.label(
+            egui::RichText::new(message)
+                .size(10.0)
+                .color(ui.visuals().error_fg_color),
+        );
+    }
+    ui.data_mut(|d| d.insert_temp(typing_id, typing));
+    action
 }
 
 /// The "add a backend" form. Keeps its draft in egui memory — it is UI-only state, and a
 /// half-typed key has no business living in `AppState` (or reaching a script).
-fn add_backend_form(ui: &mut egui::Ui) -> Option<Backend> {
+///
+/// It never asks for a model (#1617): which models a backend has is a question for the
+/// backend, and it cannot be asked until the backend exists and has a key. The flag returned
+/// alongside says the user pressed **Add and connect**, so the caller starts the OAuth flow
+/// as soon as the backend is there (#1624).
+fn add_backend_form(ui: &mut egui::Ui) -> Option<(Backend, bool)> {
     let id = ui.make_persistent_id("ai_add_backend_draft");
     let mut draft: Draft = ui.data_mut(|d| d.get_temp(id).unwrap_or_default());
     let mut added = None;
@@ -572,11 +767,15 @@ fn add_backend_form(ui: &mut egui::Ui) -> Option<Backend> {
 
     let preset = Backend::preset(draft.provider);
     labelled(ui, "Name", &mut draft.name, &preset.name);
-    labelled(ui, "Model", &mut draft.model, &preset.model);
     labelled(ui, "URL", &mut draft.base_url, preset.effective_base_url());
 
+    let connectable = draft.provider.oauth().is_some();
     ui.horizontal(|ui| {
         ui.label("Key");
+        if connectable {
+            ui.selectable_value(&mut draft.key_mode, KeyMode::Connect, "Connect")
+                .on_hover_text("Approve BearCAD in your browser — no key to find or paste");
+        }
         ui.selectable_value(&mut draft.key_mode, KeyMode::Env, "Env var")
             .on_hover_text("Read at send time from an environment variable — nothing is stored");
         ui.selectable_value(&mut draft.key_mode, KeyMode::Stored, "Paste")
@@ -597,31 +796,42 @@ fn add_backend_form(ui: &mut egui::Ui) -> Option<Backend> {
                     .desired_width(f32::INFINITY),
             );
         }
-        KeyMode::None => {}
+        KeyMode::Connect | KeyMode::None => {}
     }
 
-    if ui.button("Add backend").clicked() {
+    let connect = draft.key_mode == KeyMode::Connect && connectable;
+    let button = if connect { "Add and connect" } else { "Add backend" };
+    if ui
+        .button(button)
+        .on_hover_text("Which models it has is asked afterwards, once it can answer")
+        .clicked()
+    {
         let name = non_empty(&draft.name, &preset.name);
-        added = Some(Backend {
-            id: String::new(),
-            name,
-            provider: draft.provider,
-            model: non_empty(&draft.model, &preset.model),
-            base_url: non_empty(&draft.base_url, preset.effective_base_url()),
-            key: match draft.key_mode {
-                KeyMode::None => KeySource::None,
-                KeyMode::Env => KeySource::Env(non_empty(
-                    &draft.key_env,
-                    preset.provider.default_env_var().unwrap_or("API_KEY"),
-                )),
-                KeyMode::Stored => KeySource::Stored(draft.key.clone()),
+        added = Some((
+            Backend {
+                id: String::new(),
+                name,
+                provider: draft.provider,
+                // No model yet: the dropdown fills from what the backend reports (#1617).
+                model: preset.model.clone(),
+                base_url: non_empty(&draft.base_url, preset.effective_base_url()),
+                key: match draft.key_mode {
+                    KeyMode::None => KeySource::None,
+                    KeyMode::Connect if connectable => KeySource::OAuth(String::new()),
+                    KeyMode::Connect | KeyMode::Env => KeySource::Env(non_empty(
+                        &draft.key_env,
+                        preset.provider.default_env_var().unwrap_or("API_KEY"),
+                    )),
+                    KeyMode::Stored => KeySource::Stored(draft.key.clone()),
+                },
+                // Rates come from the shipped table until the user overrides them (#1599).
+                price: None,
+                spend: crate::ai::pricing::Spend::default(),
+                // The first message to it asks before sending anything (#1609).
+                consented: false,
             },
-            // Rates come from the shipped table until the user overrides them (#1599).
-            price: None,
-            spend: crate::ai::pricing::Spend::default(),
-            // The first message to it asks before sending anything (#1609).
-            consented: false,
-        });
+            connect,
+        ));
         draft = Draft::for_provider(draft.provider);
     }
 
@@ -658,6 +868,10 @@ enum KeyMode {
     Env,
     Stored,
     None,
+    /// Ask the provider for a key through its OAuth flow (#1624). Offered only where the
+    /// provider has one, and the default there: it is the shortest path to a working
+    /// backend.
+    Connect,
 }
 
 /// The add-backend form's in-progress values. Lives in egui memory for the pane's lifetime.
@@ -665,7 +879,6 @@ enum KeyMode {
 struct Draft {
     provider: Provider,
     name: String,
-    model: String,
     base_url: String,
     key_mode: KeyMode,
     key_env: String,
@@ -676,11 +889,13 @@ impl Draft {
     fn for_provider(provider: Provider) -> Self {
         Self {
             provider,
-            // A local server usually wants no key at all; everything else defaults to the
-            // environment variable it conventionally uses.
-            key_mode: match provider.default_env_var() {
-                Some(_) => KeyMode::Env,
-                None => KeyMode::None,
+            // Connecting where the provider allows it; a local server usually wants no key at
+            // all; everything else defaults to the environment variable it conventionally
+            // uses.
+            key_mode: match (provider.oauth(), provider.default_env_var()) {
+                (Some(_), _) => KeyMode::Connect,
+                (None, Some(_)) => KeyMode::Env,
+                (None, None) => KeyMode::None,
             },
             ..Default::default()
         }

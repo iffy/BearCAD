@@ -2587,6 +2587,18 @@ pub enum Action {
     ResolveAiConsent { agreed: bool },
     /// Start a backend's running cost total from zero (#1599).
     ResetAiBackendSpend { id: String },
+    /// Connect a backend through its provider's PKCE OAuth flow (#1624). Starts the flow and
+    /// hands the frame loop a URL to open; the key arrives later, without the user ever
+    /// seeing one. Refused for a provider that offers no such flow.
+    ConnectAiBackend { id: String },
+    /// Abandon a connection attempt: the browser tab is forgotten and the callback closes.
+    CancelAiConnect,
+    /// Ask a backend which models it has (#1617), filling its **Model** dropdown. Only ever
+    /// from an explicit request — the app asks nothing on its own.
+    RefreshAiModels { id: String },
+    /// Choose the model a backend runs. Takes the published rate with it when the backend's
+    /// own list carried one (#1599).
+    SetAiBackendModel { id: String, model: String },
     /// Run one Lua block from the latest reply (#1600). Never automatic: this is only ever
     /// the user clicking **Run** on that block, or a script asking for it by index.
     RunAiBlock { index: usize },
@@ -3589,6 +3601,10 @@ impl Action {
                     | Action::SetAiContextScope { .. }
                     | Action::ResolveAiConsent { .. }
                     | Action::ResetAiBackendSpend { .. }
+                    | Action::ConnectAiBackend { .. }
+                    | Action::CancelAiConnect
+                    | Action::RefreshAiModels { .. }
+                    | Action::SetAiBackendModel { .. }
                     | Action::InstallAiSkill { .. }
                     | Action::UninstallAiSkill { .. }
                     | Action::ShowAiSkillSection
@@ -12160,6 +12176,98 @@ impl AppState {
                 ActionResult::Ok
             }
             #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::ConnectAiBackend { id } => {
+                let mut ai = self.ai.borrow_mut();
+                let Some(backend) = ai.config.get(&id).cloned() else {
+                    return ActionResult::Err(format!("no AI backend '{id}'"));
+                };
+                // Starting a second flow would leave the first listener bound with nobody
+                // waiting for it; dropping the old one closes it.
+                ai.connect = None;
+                match crate::ai::oauth::start(
+                    &id,
+                    backend.provider,
+                    backend.effective_base_url(),
+                    None,
+                ) {
+                    Ok(flow) => {
+                        ai.connect = Some(flow);
+                        drop(ai);
+                        self.status = format!("Connecting to {}…", backend.name);
+                        ActionResult::Ok
+                    }
+                    Err(message) => ActionResult::Err(message),
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::CancelAiConnect => {
+                let mut ai = self.ai.borrow_mut();
+                if ai.connect.take().is_none() {
+                    return ActionResult::Err("Nothing is connecting".to_string());
+                }
+                drop(ai);
+                self.status = "Connection cancelled".to_string();
+                ActionResult::Ok
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::RefreshAiModels { id } => {
+                let mut ai = self.ai.borrow_mut();
+                let Some(backend) = ai.config.get(&id).cloned() else {
+                    return ActionResult::Err(format!("no AI backend '{id}'"));
+                };
+                if !backend.has_key() {
+                    return ActionResult::Err(format!(
+                        "AI backend {}: {}",
+                        backend.name,
+                        backend.unusable_reason().unwrap_or_default()
+                    ));
+                }
+                let catalog = crate::ai::models::fetch(&backend, None);
+                ai.models.insert(id, catalog);
+                drop(ai);
+                self.status = format!("Asking {} for its models…", backend.name);
+                ActionResult::Ok
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::SetAiBackendModel { id, model } => {
+                let model = model.trim().to_string();
+                let mut ai = self.ai.borrow_mut();
+                // The rate the backend itself published for this model, when it published
+                // one — better than the shipped table, which cannot know a gateway's prices.
+                let price = ai.models.get(&id).and_then(|catalog| {
+                    match &*catalog.lock().expect("catalog lock") {
+                        crate::ai::models::Catalog::Ready(models) => models
+                            .iter()
+                            .find(|candidate| candidate.id == model)
+                            .and_then(|candidate| candidate.price),
+                        _ => None,
+                    }
+                });
+                let Some(backend) = ai.config.get_mut(&id) else {
+                    return ActionResult::Err(format!("no AI backend '{id}'"));
+                };
+                backend.model = model.clone();
+                if price.is_some() {
+                    backend.price = price;
+                }
+                let name = backend.name.clone();
+                ai.config_dirty = true;
+                drop(ai);
+                self.status = if model.is_empty() {
+                    format!("{name}: no model chosen")
+                } else {
+                    format!("{name}: {model}")
+                };
+                ActionResult::Ok
+            }
+            #[cfg(target_arch = "wasm32")]
+            Action::ConnectAiBackend { .. }
+            | Action::CancelAiConnect
+            | Action::RefreshAiModels { .. }
+            | Action::SetAiBackendModel { .. } => {
+                ActionResult::Err("AI backends are only available in the desktop app".to_string())
+            }
             Action::SetAiContextScope { scope } => {
                 self.ai.borrow_mut().chat.scope = scope;
                 self.status = format!("AI sees: {}", scope.label());

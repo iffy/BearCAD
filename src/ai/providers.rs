@@ -85,6 +85,10 @@ impl Usage {
     }
 }
 
+/// The Anthropic API version every request to it declares. One constant so the chat and the
+/// model list (#1617) can never drift apart.
+pub const ANTHROPIC_VERSION: &str = "2023-06-01";
+
 /// A request ready to put on the wire.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HttpRequest {
@@ -144,7 +148,7 @@ pub fn build_request(backend: &Backend, system: &str, messages: &[ChatMessage]) 
 fn anthropic_request(backend: &Backend, system: &str, messages: &[ChatMessage]) -> HttpRequest {
     let mut headers = vec![
         ("content-type".to_string(), "application/json".to_string()),
-        ("anthropic-version".to_string(), "2023-06-01".to_string()),
+        ("anthropic-version".to_string(), ANTHROPIC_VERSION.to_string()),
     ];
     if let Some(key) = backend.resolve_key() {
         headers.push(("x-api-key".to_string(), key));

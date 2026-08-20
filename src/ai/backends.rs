@@ -30,6 +30,9 @@ pub enum Provider {
     #[default]
     Anthropic,
     OpenAi,
+    /// A gateway in front of every other vendor's models (#1617). The one backend that can
+    /// be connected with a browser click rather than a pasted key (#1624).
+    OpenRouter,
     XAi,
     /// Any endpoint speaking OpenAI's chat-completions shape: a local model server, a
     /// gateway, a provider not listed above.
@@ -41,6 +44,7 @@ impl Provider {
     pub const ALL: &'static [Provider] = &[
         Provider::Anthropic,
         Provider::OpenAi,
+        Provider::OpenRouter,
         Provider::XAi,
         Provider::OpenAiCompatible,
     ];
@@ -50,6 +54,7 @@ impl Provider {
         match self {
             Self::Anthropic => "anthropic",
             Self::OpenAi => "openai",
+            Self::OpenRouter => "openrouter",
             Self::XAi => "xai",
             Self::OpenAiCompatible => "openai_compatible",
         }
@@ -60,31 +65,52 @@ impl Provider {
         match self {
             Self::Anthropic => "Anthropic",
             Self::OpenAi => "OpenAI",
+            Self::OpenRouter => "OpenRouter",
             Self::XAi => "xAI (Grok)",
             Self::OpenAiCompatible => "OpenAI-compatible",
         }
     }
 
-    /// The API root a new backend of this provider starts with. Editable afterwards — a
+/// The API root a new backend of this provider starts with. Editable afterwards — a
     /// gateway or a self-hosted server is the whole point of the compatible variant.
     pub fn default_base_url(self) -> &'static str {
         match self {
             Self::Anthropic => "https://api.anthropic.com",
             Self::OpenAi => "https://api.openai.com/v1",
+            Self::OpenRouter => "https://openrouter.ai/api/v1",
             Self::XAi => "https://api.x.ai/v1",
             // Ollama's OpenAI-compatible endpoint, the most common local server.
             Self::OpenAiCompatible => "http://localhost:11434/v1",
         }
     }
 
-    /// The model a new backend starts with. A starting point only: models change faster
-    /// than releases do, so the backend editor lets the user type any name.
+    /// The model a new backend starts with, or `""` when there is no sensible guess.
+    ///
+    /// A starting point only. Adding a backend never asks for a model (#1617): the backend
+    /// itself is asked which models it has once it is connected, and the answer fills the
+    /// **Model** dropdown. A gateway carrying hundreds of models has no default at all, so
+    /// one of those starts empty and is unusable until a model is picked.
     pub fn default_model(self) -> &'static str {
         match self {
             Self::Anthropic => "claude-opus-5",
             Self::OpenAi => "gpt-5",
+            Self::OpenRouter => "",
             Self::XAi => "grok-4",
             Self::OpenAiCompatible => "llama3.2",
+        }
+    }
+
+    /// How to connect to this provider with a browser instead of a pasted key (#1624), or
+    /// `None` for one that offers no such flow — those still take an API key.
+    pub fn oauth(self) -> Option<OAuthService> {
+        match self {
+            // OpenRouter's PKCE flow: send the user to `/auth` with a code challenge, take
+            // the code it hands back, trade it for a key at `/auth/keys`.
+            Self::OpenRouter => Some(OAuthService {
+                authorize_url: "https://openrouter.ai/auth",
+                token_path: "/auth/keys",
+            }),
+            Self::Anthropic | Self::OpenAi | Self::XAi | Self::OpenAiCompatible => None,
         }
     }
 
@@ -94,10 +120,24 @@ impl Provider {
         match self {
             Self::Anthropic => Some("ANTHROPIC_API_KEY"),
             Self::OpenAi => Some("OPENAI_API_KEY"),
+            Self::OpenRouter => Some("OPENROUTER_API_KEY"),
             Self::XAi => Some("XAI_API_KEY"),
             Self::OpenAiCompatible => None,
         }
     }
+}
+
+/// A provider's PKCE OAuth endpoints (#1624).
+///
+/// PKCE only — BearCAD is a desktop app and has no client secret to keep, which is exactly
+/// the case the flow was designed for. The code challenge, the loopback callback and the
+/// exchange live in [`super::oauth`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OAuthService {
+    /// Where the browser is sent to ask the user for permission.
+    pub authorize_url: &'static str,
+    /// Path under the backend's API root that trades the code for a key.
+    pub token_path: &'static str,
 }
 
 /// Where a backend's API key comes from.
@@ -113,6 +153,11 @@ pub enum KeySource {
     Env(String),
     /// The key itself, kept in `ai.json` (0600).
     Stored(String),
+    /// A key the provider issued through its OAuth flow (#1624), kept in `ai.json` the same
+    /// way. Separate from [`Self::Stored`] so the pane can say **Connected** and offer to
+    /// reconnect rather than asking for a key the user never typed. Empty until the flow
+    /// finishes.
+    OAuth(String),
 }
 
 impl std::fmt::Debug for KeySource {
@@ -121,6 +166,7 @@ impl std::fmt::Debug for KeySource {
             Self::None => write!(f, "None"),
             Self::Env(var) => write!(f, "Env({var})"),
             Self::Stored(_) => write!(f, "Stored(<redacted>)"),
+            Self::OAuth(_) => write!(f, "OAuth(<redacted>)"),
         }
     }
 }
@@ -209,6 +255,8 @@ impl Backend {
             KeySource::None => "none".to_string(),
             KeySource::Env(var) => format!("env:{var}"),
             KeySource::Stored(_) => "stored".to_string(),
+            KeySource::OAuth(key) if key.trim().is_empty() => "not connected".to_string(),
+            KeySource::OAuth(_) => "connected".to_string(),
         }
     }
 
@@ -222,25 +270,31 @@ impl Backend {
                 Ok(value) if !value.trim().is_empty() => Some(value),
                 _ => None,
             },
-            KeySource::Stored(key) if !key.trim().is_empty() => Some(key.clone()),
-            KeySource::Stored(_) => None,
+            KeySource::Stored(key) | KeySource::OAuth(key) if !key.trim().is_empty() => {
+                Some(key.clone())
+            }
+            KeySource::Stored(_) | KeySource::OAuth(_) => None,
         }
     }
 
-    /// Whether this backend can actually be used: a key is present, or none is needed.
-    pub fn is_usable(&self) -> bool {
+    /// Whether a request to this backend would carry the credential it needs.
+    pub fn has_key(&self) -> bool {
         matches!(self.key, KeySource::None) || self.resolve_key().is_some()
     }
 
     /// Why this backend cannot be used, for the UI to show next to it.
     pub fn unusable_reason(&self) -> Option<String> {
-        if self.is_usable() {
-            return None;
+        if !self.has_key() {
+            return Some(match &self.key {
+                KeySource::Env(var) => format!("${var} is not set"),
+                KeySource::OAuth(_) => format!("not connected to {}", self.provider.label()),
+                _ => "no API key".to_string(),
+            });
         }
-        match &self.key {
-            KeySource::Env(var) => Some(format!("${var} is not set")),
-            _ => Some("no API key".to_string()),
+        if self.model.trim().is_empty() {
+            return Some("no model chosen".to_string());
         }
+        None
     }
 }
 
@@ -460,13 +514,73 @@ mod tests {
         for &provider in Provider::ALL {
             let backend = Backend::preset(provider);
             assert_eq!(backend.provider, provider);
-            assert!(!backend.model.is_empty(), "{provider:?} needs a model");
             assert!(
                 backend.effective_base_url().starts_with("http"),
                 "{provider:?} needs a base URL"
             );
             assert!(!backend.id.is_empty(), "{provider:?} needs a stable id");
         }
+    }
+
+    #[test]
+    fn openrouter_is_a_gateway_that_starts_without_a_model() {
+        // #1617: a gateway carries hundreds of models, so guessing one would be worse than
+        // asking. The backend is added first and the model is picked from what it reports.
+        let backend = Backend::preset(Provider::OpenRouter);
+        assert_eq!(backend.effective_base_url(), "https://openrouter.ai/api/v1");
+        assert_eq!(backend.model, "");
+        // With the key in hand, the only thing still missing is the model.
+        std::env::set_var("OPENROUTER_API_KEY", "sk-or-from-the-environment");
+        assert_eq!(backend.unusable_reason().as_deref(), Some("no model chosen"));
+
+        let chosen = Backend { model: "anthropic/claude-opus-5".into(), ..backend };
+        assert!(chosen.unusable_reason().is_none());
+        assert!(chosen.unusable_reason().is_none());
+        std::env::remove_var("OPENROUTER_API_KEY");
+    }
+
+    #[test]
+    fn only_providers_with_a_pkce_flow_offer_to_connect() {
+        // #1624: connecting is a browser click where the provider supports it, and a pasted
+        // key everywhere else. Nothing here invents a flow a provider does not have.
+        let service = Provider::OpenRouter.oauth().expect("OpenRouter connects");
+        assert_eq!(service.authorize_url, "https://openrouter.ai/auth");
+        assert_eq!(service.token_path, "/auth/keys");
+        for provider in [
+            Provider::Anthropic,
+            Provider::OpenAi,
+            Provider::XAi,
+            Provider::OpenAiCompatible,
+        ] {
+            assert!(provider.oauth().is_none(), "{provider:?} has no PKCE flow");
+        }
+    }
+
+    #[test]
+    fn a_connected_key_reads_back_as_connected_and_never_as_itself() {
+        const SECRET: &str = "sk-or-v1-issued-by-the-flow";
+        let backend = Backend {
+            key: KeySource::OAuth(SECRET.into()),
+            model: "anthropic/claude-opus-5".into(),
+            ..Backend::preset(Provider::OpenRouter)
+        };
+        assert_eq!(backend.key_description(), "connected");
+        assert!(backend.unusable_reason().is_none());
+        let debugged = format!("{backend:?}");
+        assert!(!debugged.contains(SECRET), "Debug leaked the key: {debugged}");
+        assert_eq!(backend.resolve_key().as_deref(), Some(SECRET));
+
+        // Before the flow finishes there is no key, and the pane says so in those words.
+        let waiting = Backend {
+            key: KeySource::OAuth(String::new()),
+            ..backend
+        };
+        assert_eq!(waiting.key_description(), "not connected");
+        assert!(waiting.resolve_key().is_none());
+        assert_eq!(
+            waiting.unusable_reason().as_deref(),
+            Some("not connected to OpenRouter")
+        );
     }
 
     #[test]
@@ -537,15 +651,11 @@ mod tests {
 
         std::env::remove_var(var);
         assert!(backend.resolve_key().is_none());
-        assert!(!backend.is_usable());
-        assert_eq!(
-            backend.unusable_reason().as_deref(),
-            Some("$BEARCAD_TEST_AI_KEY is not set")
-        );
+        assert_eq!(backend.unusable_reason().as_deref(), Some("$BEARCAD_TEST_AI_KEY is not set"));
 
         std::env::set_var(var, "key-from-the-environment");
         assert_eq!(backend.resolve_key().as_deref(), Some("key-from-the-environment"));
-        assert!(backend.is_usable());
+        assert!(backend.unusable_reason().is_none());
         std::env::remove_var(var);
     }
 
@@ -579,7 +689,7 @@ mod tests {
     fn a_local_backend_with_no_key_is_usable() {
         let backend = Backend::preset(Provider::OpenAiCompatible);
         assert_eq!(backend.key_description(), "none");
-        assert!(backend.is_usable());
+        assert!(backend.has_key());
         assert!(backend.unusable_reason().is_none());
     }
 

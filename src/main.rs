@@ -4155,6 +4155,35 @@ impl App {
                 }
             }
         }
+        // A connection attempt (#1624) runs on its own thread; the key it produced is stored
+        // here, and the browser page is opened here too — the action layer only starts the
+        // flow, so a test never opens a browser.
+        {
+            let url = {
+                let mut ai = self.state.ai.borrow_mut();
+                ai.connect
+                    .as_mut()
+                    .filter(|flow| !flow.opened)
+                    .map(|flow| {
+                        flow.opened = true;
+                        flow.authorize_url.clone()
+                    })
+            };
+            if let Some(url) = url {
+                if let Err(e) = crate::open_in_browser(&url) {
+                    self.state.status = format!("Could not open your browser: {e}");
+                }
+            }
+            let finished = self.state.ai.borrow_mut().poll_connect(Some(ctx.clone()));
+            if let Some(status) = finished {
+                self.state.status = status;
+            }
+            if self.state.ai.borrow().connect.is_some() {
+                // Nothing else is driving repaints while the user is in the browser.
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            }
+        }
+
         // A running reply repaints on every chunk, but ask anyway: the spinner should keep
         // spinning between chunks.
         let poll = self.state.ai.borrow_mut().chat.poll();
