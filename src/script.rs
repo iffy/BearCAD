@@ -877,6 +877,10 @@ pub enum Instruction {
     SetElementsView { mode: crate::hierarchy::HierarchyViewMode },
     /// Show/hide a UI pane. `None` toggles.
     SetPane { pane: Pane, visible: Option<bool> },
+    /// Wheel over a pane to scroll it (#1619). Positive `dy` scrolls the content down.
+    ScrollPane { pane: Pane, dy: f32 },
+    /// Open or collapse every section of the AI pane at once (#1619).
+    SetAiSectionsOpen { open: bool },
     AddParameter { name: String, expression: String },
     CreateParameterFromLineLength { line_index: usize, name: Option<String> },
     /// Create a derived (measured) parameter from a geometry source (#432).
@@ -2029,6 +2033,15 @@ impl Instruction {
                     None => "toggle",
                 };
                 format!("bearcad.ui.pane({:?}, {verb:?})", pane.script_name())
+            }
+            Instruction::ScrollPane { pane, dy } => {
+                format!("bearcad.ui.scroll_pane({:?}, {dy})", pane.script_name())
+            }
+            Instruction::SetAiSectionsOpen { open } => {
+                format!(
+                    "bearcad.ui.ai_sections({:?})",
+                    if *open { "open" } else { "close" }
+                )
             }
             Instruction::AddParameter { name, expression } => {
                 format!("bearcad.parameter(\"add\", {name:?}, {expression:?})")
@@ -5076,6 +5089,22 @@ impl SyntheticInput {
         });
     }
 
+    /// A wheel scroll with the pointer over `pos` (absolute screen points, #1619).
+    /// Positive `dy` scrolls the content *down*, the way dragging a scrollbar toward the
+    /// bottom does.
+    pub fn scroll_at(&mut self, pos: egui::Pos2, dy: f32) {
+        self.pointer_pos = Some(pos);
+        self.push_batch(vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -dy),
+                phase: egui::TouchPhase::Move,
+                modifiers: Modifiers::NONE,
+            },
+        ]);
+    }
+
     pub fn type_text(&mut self, text: &str) {
         self.push_event(egui::Event::Text(text.to_string()));
     }
@@ -5209,6 +5238,39 @@ fn pane_shell_id(pane: crate::actions::Pane) -> Option<&'static str> {
 pub fn pane_rect(ctx: &egui::Context, pane: crate::actions::Pane) -> Option<egui::Rect> {
     let id = pane_rect_id(pane_shell_id(pane)?);
     ctx.data(|data| data.get_temp::<egui::Rect>(id))
+}
+
+/// A pane's vertical scroll, as of last frame (#1619). Heights are logical points.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PaneScroll {
+    /// How far down the content has been scrolled. `0.0` is the top.
+    pub offset: f32,
+    /// The full height of the pane's content, scrolled-away part included.
+    pub content: f32,
+    /// The height actually on screen. Content taller than this is what scrolls.
+    pub viewport: f32,
+}
+
+/// egui data key under which a scrolling pane records its offset for scripts (#1619).
+pub fn pane_scroll_id(shell_id: &str) -> egui::Id {
+    egui::Id::new(("bearcad_pane_scroll", shell_id))
+}
+
+/// Record (or, with `None`, forget) a pane's scroll for `bearcad.ui.pane_scroll` (#1619).
+pub fn remember_pane_scroll(ctx: &egui::Context, shell_id: &str, scroll: Option<PaneScroll>) {
+    let key = pane_scroll_id(shell_id);
+    ctx.data_mut(|data| match scroll {
+        Some(scroll) => {
+            data.insert_temp(key, scroll);
+        }
+        None => data.remove::<PaneScroll>(key),
+    });
+}
+
+/// How far `pane` is scrolled, or `None` when it is hidden or does not scroll itself.
+pub fn pane_scroll(ctx: &egui::Context, pane: crate::actions::Pane) -> Option<PaneScroll> {
+    let id = pane_scroll_id(pane_shell_id(pane)?);
+    ctx.data(|data| data.get_temp::<PaneScroll>(id))
 }
 
 /// A pending screenshot request, resolved when egui delivers the captured frame.
@@ -7815,6 +7877,21 @@ impl ScriptRunner {
                     Some(v) => state.apply(Action::SetPaneVisible { pane, visible: v }),
                     None => state.apply(Action::TogglePane(pane)),
                 };
+                StepResult::Continue
+            }
+            Instruction::ScrollPane { pane, dy } => {
+                let Some(rect) = pane_rect(ctx, pane) else {
+                    self.last_action_error = Some(format!(
+                        "Pane '{}' is not on screen — nothing to scroll",
+                        pane.script_name()
+                    ));
+                    return StepResult::Continue;
+                };
+                synthetic.scroll_at(rect.center(), dy);
+                StepResult::Continue
+            }
+            Instruction::SetAiSectionsOpen { open } => {
+                state.apply(Action::SetAiSectionsOpen { open });
                 StepResult::Continue
             }
             Instruction::AddParameter { name, expression } => {
