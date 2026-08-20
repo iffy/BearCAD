@@ -23,25 +23,10 @@ pub enum ContextScope {
 }
 
 impl ContextScope {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Document => "document",
-            Self::AllOpen => "all",
-        }
-    }
-
     pub fn label(self) -> &'static str {
         match self {
             Self::Document => "This document",
             Self::AllOpen => "All open documents",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "document" | "current" | "this" | "active" => Some(Self::Document),
-            "all" | "all_open" | "everything" | "workspace" => Some(Self::AllOpen),
-            _ => None,
         }
     }
 }
@@ -252,14 +237,10 @@ mod tests {
     }
 
     #[test]
-    fn scope_names_round_trip() {
+    fn every_scope_has_a_label_and_the_default_is_the_smallest() {
         for scope in [ContextScope::Document, ContextScope::AllOpen] {
-            assert_eq!(ContextScope::parse(scope.as_str()), Some(scope));
+            assert!(!scope.label().is_empty(), "{scope:?} needs a label");
         }
-        assert_eq!(ContextScope::parse("current"), Some(ContextScope::Document));
-        assert_eq!(ContextScope::parse("all_open"), Some(ContextScope::AllOpen));
-        assert_eq!(ContextScope::parse("nonsense"), None);
-        // The default is the smallest scope: one document.
         assert_eq!(ContextScope::default(), ContextScope::Document);
     }
 

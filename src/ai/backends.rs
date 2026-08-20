@@ -71,22 +71,7 @@ impl Provider {
         }
     }
 
-    /// Parse a script/UI string. Accepts the vendor's common names as well as the stable
-    /// one, so `bearcad.ai.add_backend{ provider = "claude" }` works.
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.trim().to_ascii_lowercase().replace('-', "_").as_str() {
-            "anthropic" | "claude" => Some(Self::Anthropic),
-            "openai" | "chatgpt" | "gpt" => Some(Self::OpenAi),
-            "openrouter" | "open_router" | "router" => Some(Self::OpenRouter),
-            "xai" | "grok" => Some(Self::XAi),
-            "openai_compatible" | "compatible" | "custom" | "local" | "ollama" => {
-                Some(Self::OpenAiCompatible)
-            }
-            _ => None,
-        }
-    }
-
-    /// The API root a new backend of this provider starts with. Editable afterwards — a
+/// The API root a new backend of this provider starts with. Editable afterwards — a
     /// gateway or a self-hosted server is the whole point of the compatible variant.
     pub fn default_base_url(self) -> &'static str {
         match self {
@@ -539,13 +524,8 @@ mod tests {
                 backend.effective_base_url().starts_with("http"),
                 "{provider:?} needs a base URL"
             );
-            assert_eq!(Provider::parse(provider.as_str()), Some(provider));
+            assert!(!backend.id.is_empty(), "{provider:?} needs a stable id");
         }
-        // The vendors' own names work too, so a script reads naturally.
-        assert_eq!(Provider::parse("claude"), Some(Provider::Anthropic));
-        assert_eq!(Provider::parse("grok"), Some(Provider::XAi));
-        assert_eq!(Provider::parse("ollama"), Some(Provider::OpenAiCompatible));
-        assert_eq!(Provider::parse("openrouter"), Some(Provider::OpenRouter));
     }
 
     #[test]

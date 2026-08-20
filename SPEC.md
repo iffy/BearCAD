@@ -4062,6 +4062,10 @@ The application must be fully scriptable via a file containing a sequence of ins
   - File I/O and export.
   - The screenshot instruction above.
   - Simple sequencing / waits if needed for UI settling or animations.
+- **Exception — the AI is not scriptable.** No script may reach the AI pane: no backends, no
+  chat, no MCP server, no skill install. A `.lua` file arrives from anywhere and gets run
+  without being read, and none of them gets to spend the user's key or open their document
+  to a network service. Everything AI is done by hand, in the pane.
 - This mechanism exists primarily to enable automated testing. Test scripts can drive the exact
   interactive flows (e.g. the rectangle tool's click → move → type → enter sequence) and emit
   screenshots that can be compared against golden images in CI.
