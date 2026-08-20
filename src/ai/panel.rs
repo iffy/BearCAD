@@ -27,6 +27,11 @@ pub fn contents(ui: &mut egui::Ui, state: &mut AppState) {
     ui.heading(PANE_TITLE);
     ui.add_space(8.0);
 
+    // Widget rects recorded for `bearcad.ui.ai_backend_widget` are scoped to a frame: clear
+    // before drawing, re-record only what this frame shows, so a script never aims at a
+    // control that is gone (#1627).
+    crate::script::clear_widget_rects(ui.ctx());
+
     // On phones the pane is a window that scrolls itself; nesting a second scroll area
     // inside it would only fight it.
     if crate::touch::compact(ui.ctx()) {
@@ -429,6 +434,11 @@ fn backend_picker(ui: &mut egui::Ui, state: &mut AppState) {
     let mut action: Option<Action> = None;
     let mut connect_after_adding = false;
 
+    // Which backend's Edit form is open, if any (#1627). UI-only state, in egui memory —
+    // the half-typed draft itself belongs to the form, not to `AppState` (or a script).
+    let edit_target = egui::Id::new("ai_edit_backend");
+    let mut editing: Option<String> = ui.data_mut(|d| d.get_temp(edit_target).unwrap_or(None));
+
     ui.horizontal(|ui| {
         ui.label("Backend");
         let label = selected
@@ -495,11 +505,24 @@ fn backend_picker(ui: &mut egui::Ui, state: &mut AppState) {
                             .size(12.0),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
+                        // Edit (#1627): opens this backend's inline form, which changes its
+                        // name, model and key in place — keeping the all-time spend.
+                        let edit_button = ui
+                            .small_button("Edit")
+                            .on_hover_text(
+                                "Edit this backend in place — its all-time spend survives",
+                            );
+                        script_widget(ui, format!("edit:{}", backend.id), edit_button.rect);
+                        if edit_button.clicked() {
+                            editing = Some(backend.id.clone());
+                        }
+                        let remove_button = ui
                             .small_button("Remove")
-                            .on_hover_text("Forget this backend and any key stored for it")
-                            .clicked()
-                        {
+                            .on_hover_text(
+                                "Forget this backend and any key stored for it",
+                            );
+                        script_widget(ui, format!("remove:{}", backend.id), remove_button.rect);
+                        if remove_button.clicked() {
                             action = Some(Action::RemoveAiBackend {
                                 id: backend.id.clone(),
                             });
@@ -547,6 +570,17 @@ fn backend_picker(ui: &mut egui::Ui, state: &mut AppState) {
                         }
                     });
                 }
+                // Editing one backend at a time: the inline form under it (#1627).
+                if editing == Some(backend.id.clone()) {
+                    if let Some(commit) = edit_backend_form(ui, &backend) {
+                        if let Some(a) = commit.action {
+                            action = Some(a);
+                        }
+                        if commit.close {
+                            editing = None;
+                        }
+                    }
+                }
                 ui.add_space(4.0);
             }
             ui.separator();
@@ -557,6 +591,16 @@ fn backend_picker(ui: &mut egui::Ui, state: &mut AppState) {
                 connect_after_adding = connect;
             }
         });
+
+    // Persist which backend's Edit form is open (or none) for the next frame.
+    ui.data_mut(|d| match &editing {
+        Some(id) => {
+            let _ = d.insert_temp(edit_target, Some(id.clone()));
+        }
+        None => {
+            let _ = d.remove_temp::<Option<String>>(edit_target);
+        }
+    });
 
     if let Some(action) = action {
         state.apply(action);
@@ -766,46 +810,55 @@ fn add_backend_form(ui: &mut egui::Ui) -> Option<(Backend, bool)> {
     });
 
     let preset = Backend::preset(draft.provider);
-    labelled(ui, "Name", &mut draft.name, &preset.name);
-    labelled(ui, "URL", &mut draft.base_url, preset.effective_base_url());
+    labelled_script(ui, "Name", "add_name", &mut draft.name, &preset.name);
+    labelled_script(ui, "URL", "add_url", &mut draft.base_url, preset.effective_base_url());
 
     let connectable = draft.provider.oauth().is_some();
     ui.horizontal(|ui| {
         ui.label("Key");
         if connectable {
-            ui.selectable_value(&mut draft.key_mode, KeyMode::Connect, "Connect")
+            let connect = ui
+                .selectable_value(&mut draft.key_mode, KeyMode::Connect, "Connect")
                 .on_hover_text("Approve BearCAD in your browser — no key to find or paste");
+            let _ = connect;
         }
-        ui.selectable_value(&mut draft.key_mode, KeyMode::Env, "Env var")
+        let env = ui
+            .selectable_value(&mut draft.key_mode, KeyMode::Env, "Env var")
             .on_hover_text("Read at send time from an environment variable — nothing is stored");
-        ui.selectable_value(&mut draft.key_mode, KeyMode::Stored, "Paste")
+        let _ = env;
+        let stored = ui
+            .selectable_value(&mut draft.key_mode, KeyMode::Stored, "Paste")
             .on_hover_text("Stored in ai.json, readable only by you");
-        ui.selectable_value(&mut draft.key_mode, KeyMode::None, "None")
+        script_widget(ui, "add_key_mode_stored", stored.rect);
+        let none = ui
+            .selectable_value(&mut draft.key_mode, KeyMode::None, "None")
             .on_hover_text("A local server that needs no key");
+        let _ = none;
     });
     match draft.key_mode {
         KeyMode::Env => {
             let hint = preset.provider.default_env_var().unwrap_or("API_KEY");
-            labelled(ui, "Var", &mut draft.key_env, hint);
+            labelled_script(ui, "Var", "add_key_var", &mut draft.key_env, hint);
         }
         KeyMode::Stored => {
-            ui.add(
+            let response = ui.add(
                 egui::TextEdit::singleline(&mut draft.key)
                     .password(true)
                     .hint_text("sk-…")
                     .desired_width(f32::INFINITY),
             );
+            script_widget(ui, "add_key_paste", response.rect);
         }
         KeyMode::Connect | KeyMode::None => {}
     }
 
     let connect = draft.key_mode == KeyMode::Connect && connectable;
     let button = if connect { "Add and connect" } else { "Add backend" };
-    if ui
+    let add_response = ui
         .button(button)
-        .on_hover_text("Which models it has is asked afterwards, once it can answer")
-        .clicked()
-    {
+        .on_hover_text("Which models it has is asked afterwards, once it can answer");
+    script_widget(ui, "add_button", add_response.rect);
+    if add_response.clicked() {
         let name = non_empty(&draft.name, &preset.name);
         added = Some((
             Backend {
@@ -839,17 +892,132 @@ fn add_backend_form(ui: &mut egui::Ui) -> Option<(Backend, bool)> {
     added
 }
 
-/// A labelled single-line field that shows the preset value as its placeholder, so leaving
-/// it blank is the same as accepting the default.
-fn labelled(ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str) {
-    ui.horizontal(|ui| {
-        ui.label(label);
-        ui.add(
-            egui::TextEdit::singleline(value)
-                .hint_text(hint)
-                .desired_width(f32::INFINITY),
-        );
+/// The inline "edit this backend" form (#1627): name, URL, model and key — the fields a
+/// remove-and-re-add used to cost somebody. Saving dispatches `Action::EditAiBackend`,
+/// which changes the one entry in place and keeps the all-time spend; the draft is
+/// pre-filled from the backend and lives in egui memory, so an existing key is never drawn.
+#[cfg(not(target_arch = "wasm32"))]
+fn edit_backend_form(ui: &mut egui::Ui, backend: &Backend) -> Option<EditCommit> {
+    let draft_id = egui::Id::new(("ai_edit_draft", &backend.id));
+    let mut draft: EditDraft = ui.data_mut(|d| {
+        d.get_temp::<EditDraft>(draft_id).unwrap_or_else(|| EditDraft::from_backend(backend))
     });
+    let mut commit = None;
+
+    ui.label(
+        egui::RichText::new(format!("Editing {} — the all-time spend survives", backend.name))
+            .size(10.0)
+            .weak(),
+    );
+    labelled_script(ui, "Name", format!("edit_name:{}", backend.id), &mut draft.name, &backend.name);
+    labelled_script(
+        ui,
+        "URL",
+        format!("edit_url:{}", backend.id),
+        &mut draft.base_url,
+        backend.effective_base_url(),
+    );
+    labelled_script(
+        ui,
+        "Model",
+        format!("edit_model:{}", backend.id),
+        &mut draft.model,
+        "model id",
+    );
+
+    ui.horizontal(|ui| {
+        ui.label("Key");
+        for (mode, script, label, hover) in [
+            (EditKeyMode::Keep, "keep", "Leave", "Leave the key exactly as it is"),
+            (EditKeyMode::Env, "env", "Env var", "Read at send time from an environment variable"),
+            (EditKeyMode::Stored, "stored", "Paste", "Stored in ai.json, readable only by you"),
+            (EditKeyMode::None, "none", "None", "A local server that needs no key"),
+        ] {
+            let selected = ui
+                .selectable_value(&mut draft.key_mode, mode, label)
+                .on_hover_text(hover);
+            script_widget(ui, format!("edit_key_mode_{script}:{}", backend.id), selected.rect);
+        }
+    });
+    match draft.key_mode {
+        EditKeyMode::Env => {
+let hint = match &backend.key {
+        KeySource::Env(var) => var.clone(),
+        _ => backend.provider.default_env_var().unwrap_or("API_KEY").to_string(),
+    };
+            labelled_script(
+                ui,
+                "Var",
+                format!("edit_key_var:{}", backend.id),
+                &mut draft.key_env,
+                &hint,
+            );
+        }
+        EditKeyMode::Stored => {
+            ui.horizontal(|ui| {
+                ui.label("Key");
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut draft.key)
+                        .password(true)
+                        .hint_text("sk-… (leave blank to keep)")
+                        .desired_width(f32::INFINITY),
+                );
+                script_widget(ui, format!("edit_key_paste:{}", backend.id), response.rect);
+            });
+        }
+        EditKeyMode::Keep | EditKeyMode::None => {}
+    }
+
+    ui.horizontal(|ui| {
+        let save = ui
+            .button("Save")
+            .on_hover_text("Edit in place — the all-time spend survives");
+        script_widget(ui, format!("edit_save:{}", backend.id), save.rect);
+        if save.clicked() {
+            let key = match draft.key_mode {
+                EditKeyMode::None => crate::ai::backends::KeySource::None,
+                EditKeyMode::Env => {
+                    let hint = match &backend.key {
+                        KeySource::Env(var) => var.clone(),
+                        _ => backend.provider.default_env_var().unwrap_or("API_KEY").to_string(),
+                    };
+                    crate::ai::backends::KeySource::Env(non_empty(&draft.key_env, &hint))
+                }
+                EditKeyMode::Stored if draft.key.trim().is_empty() => backend.key.clone(),
+                EditKeyMode::Stored => {
+                    crate::ai::backends::KeySource::Stored(draft.key.trim().to_string())
+                }
+                EditKeyMode::Keep => backend.key.clone(),
+            };
+            commit = Some(EditCommit {
+                action: Some(Action::EditAiBackend {
+                    id: backend.id.clone(),
+                    name: non_empty(&draft.name, &backend.name),
+                    base_url: non_empty(&draft.base_url, backend.effective_base_url()),
+                    model: draft.model.trim().to_string(),
+                    key,
+                }),
+                close: true,
+            });
+        }
+        let cancel = ui.button("Cancel").on_hover_text("Close without changing this backend");
+        script_widget(ui, format!("edit_cancel:{}", backend.id), cancel.rect);
+        if cancel.clicked() {
+            commit = Some(EditCommit { action: None, close: true });
+        }
+    });
+
+    // Keep the draft only while the form stays open: closing (Save or Cancel) drops it, so
+    // the next edit of this backend re-seeds from the backend.
+    match commit {
+        Some(EditCommit { close: true, .. }) => {
+            ui.data_mut(|d| d.remove_temp::<EditDraft>(draft_id));
+        }
+        _ => {
+            ui.data_mut(|d| d.insert_temp(draft_id, draft));
+        }
+    }
+    commit
 }
 
 fn non_empty(value: &str, fallback: &str) -> String {
@@ -858,6 +1026,33 @@ fn non_empty(value: &str, fallback: &str) -> String {
     } else {
         value.trim().to_string()
     }
+}
+
+/// Record where a pane widget a script's interaction test targets landed this frame
+/// (#1627) — read back by `bearcad.ui.ai_backend_widget(name)`. UI geometry only, the
+/// same policy as `pane_rect`/`pane_scroll`; never an AI state or a key.
+fn script_widget(ui: &egui::Ui, name: impl Into<String>, rect: egui::Rect) {
+    crate::script::remember_widget_rect(ui.ctx(), &name.into(), rect);
+}
+
+/// A labelled single-line field, with its screen rect also remembered for scripted
+/// clicks (#1627).
+fn labelled_script(
+    ui: &mut egui::Ui,
+    label: &str,
+    widget: impl Into<String>,
+    value: &mut String,
+    hint: &str,
+) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        let response = ui.add(
+            egui::TextEdit::singleline(value)
+                .hint_text(hint)
+                .desired_width(f32::INFINITY),
+        );
+        script_widget(ui, widget.into(), response.rect);
+    });
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -900,6 +1095,62 @@ impl Draft {
             ..Default::default()
         }
     }
+}
+
+/// How the Edit form treats the key (#1627). A backend may be OAuth-connected, hold a
+/// stored key, or read one from an environment variable; the form never shows an existing
+/// secret, so **Keep** is the safe way to say "leave it alone", and a pasted key is the
+/// only way to replace one.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum EditKeyMode {
+    /// Leave the existing key untouched — the default for a backend that has one.
+    #[default]
+    Keep,
+    Env,
+    Stored,
+    None,
+}
+
+/// The edit-backend form's in-progress values (#1627). Like the add form's `Draft`, it
+/// lives in egui memory — a half-typed key never reaches `AppState` or a screenshot.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Debug, Default)]
+struct EditDraft {
+    name: String,
+    base_url: String,
+    model: String,
+    key_mode: EditKeyMode,
+    key_env: String,
+    key: String,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl EditDraft {
+    fn from_backend(b: &Backend) -> Self {
+        let (key_mode, key_env) = match &b.key {
+            KeySource::None => (EditKeyMode::None, String::new()),
+            KeySource::Env(var) => (EditKeyMode::Env, var.clone()),
+            KeySource::Stored(_) | KeySource::OAuth(_) => (EditKeyMode::Keep, String::new()),
+        };
+        Self {
+            name: b.name.clone(),
+            base_url: b.base_url.clone(),
+            model: b.model.clone(),
+            key_mode,
+            key_env,
+            key: String::new(),
+        }
+    }
+}
+
+/// What closing the Edit form means: an action to dispatch (Edit, or none for Cancel) and
+/// whether the form should stop being shown (#1627).
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Debug, Default)]
+struct EditCommit {
+    action: Option<Action>,
+    close: bool,
 }
 
 /// **Agents & Skill** (#1604): install the BearCAD agent skill into the AI tools on this

@@ -5240,6 +5240,38 @@ pub fn pane_rect(ctx: &egui::Context, pane: crate::actions::Pane) -> Option<egui
     ctx.data(|data| data.get_temp::<egui::Rect>(id))
 }
 
+/// egui data key under which a pane records a single widget's rect for scripts (#1627).
+pub fn widget_rect_id(name: &str) -> egui::Id {
+    egui::Id::new(("bearcad_widget_rect", name))
+}
+
+/// A widget rect recorded for scripts, held as its own type so a whole-frame clear
+/// (`[`Self::clear_widget_rects`]`) cannot touch the `egui::Rect` temps that keep
+/// `pane_rect` (#1627).
+#[derive(Clone, Copy)]
+struct WidgetRect(egui::Rect);
+
+/// Record where a named pane widget landed this frame, for `bearcad.ui.ai_backend_widget`
+/// (#1627). The same policy as [`Self::pane_rect`]:
+/// read-only UI geometry for interaction tests — nothing about the AI state, and no key.
+pub fn remember_widget_rect(ctx: &egui::Context, name: &str, rect: egui::Rect) {
+    let key = widget_rect_id(name);
+    ctx.data_mut(|data| data.insert_temp(key, WidgetRect(rect)));
+}
+
+/// Forget every widget rect recorded last frame. The AI pane calls this before drawing,
+/// so `bearcad.ui.ai_backend_widget` never aims at a control that is no longer drawn
+/// (#1627).
+pub fn clear_widget_rects(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.remove_by_type::<WidgetRect>());
+}
+
+/// Where a named pane widget landed last frame, in logical points. `None` while hidden.
+pub fn widget_rect(ctx: &egui::Context, name: &str) -> Option<egui::Rect> {
+    let key = widget_rect_id(name);
+    ctx.data(|data| data.get_temp::<WidgetRect>(key).map(|WidgetRect(rect)| rect))
+}
+
 /// A pane's vertical scroll, as of last frame (#1619). Heights are logical points.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PaneScroll {

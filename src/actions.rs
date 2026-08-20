@@ -2599,6 +2599,16 @@ pub enum Action {
     /// Choose the model a backend runs. Takes the published rate with it when the backend's
     /// own list carried one (#1599).
     SetAiBackendModel { id: String, model: String },
+    /// Edit an existing backend in place (#1627): name, base URL, model and key all change;
+    /// the id, rates, all-time spend and consent survive. The old remove-and-re-add flow
+    /// threw the spend away; this does not recreate the backend.
+    EditAiBackend {
+        id: String,
+        name: String,
+        base_url: String,
+        model: String,
+        key: crate::ai::backends::KeySource,
+    },
     /// Run one Lua block from the latest reply (#1600). Never automatic: this is only ever
     /// the user clicking **Run** on that block, or a script asking for it by index.
     RunAiBlock { index: usize },
@@ -3605,6 +3615,7 @@ impl Action {
                     | Action::CancelAiConnect
                     | Action::RefreshAiModels { .. }
                     | Action::SetAiBackendModel { .. }
+                    | Action::EditAiBackend { .. }
                     | Action::InstallAiSkill { .. }
                     | Action::UninstallAiSkill { .. }
                     | Action::ShowAiSkillSection
@@ -12261,11 +12272,41 @@ impl AppState {
                 };
                 ActionResult::Ok
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::EditAiBackend { id, name, base_url, model, key } => {
+                let model = model.trim().to_string();
+                let mut ai = self.ai.borrow_mut();
+                // Same rate-carry as SetAiBackendModel: a model the backend itself listed
+                // with a price brings its published rate along (#1599).
+                let price = ai.models.get(&id).and_then(|catalog| {
+                    match &*catalog.lock().expect("catalog lock") {
+                        crate::ai::models::Catalog::Ready(models) => models
+                            .iter()
+                            .find(|candidate| candidate.id == model)
+                            .and_then(|candidate| candidate.price),
+                        _ => None,
+                    }
+                });
+                if ai.config.edit(&id, name, base_url, model.clone(), key).is_err() {
+                    return ActionResult::Err(format!("no AI backend '{id}'"));
+                }
+                if let Some(price) = price {
+                    if let Some(backend) = ai.config.get_mut(&id) {
+                        backend.price = Some(price);
+                    }
+                }
+                let name = ai.config.get(&id).map(|b| b.name.clone()).unwrap_or(id.clone());
+                ai.config_dirty = true;
+                drop(ai);
+                self.status = format!("Edited AI backend {name}");
+                ActionResult::Ok
+            }
             #[cfg(target_arch = "wasm32")]
             Action::ConnectAiBackend { .. }
             | Action::CancelAiConnect
             | Action::RefreshAiModels { .. }
-            | Action::SetAiBackendModel { .. } => {
+            | Action::SetAiBackendModel { .. }
+            | Action::EditAiBackend { .. } => {
                 ActionResult::Err("AI backends are only available in the desktop app".to_string())
             }
             Action::SetAiContextScope { scope } => {

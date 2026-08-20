@@ -4600,6 +4600,27 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Where one AI-pane backend-management widget landed this frame (#1627): a rect an
+    // interaction test clicks (real pointer input). Pane UI geometry only, on the same
+    // policy as `pane_rect`/`pane_scroll`; nil while the widget is not on screen.
+    api.set(
+        "ai_backend_widget",
+        lua.create_function(|lua, name: String| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let Some(rect) = crate::script::widget_rect(unsafe { tick.egui_ctx() }, &name) else {
+                return Ok(Value::Nil);
+            };
+            let t = lua.create_table()?;
+            t.set("x", rect.min.x)?;
+            t.set("y", rect.min.y)?;
+            t.set("w", rect.width())?;
+            t.set("h", rect.height())?;
+            Ok(Value::Table(t))
+        })?,
+    )?;
+
     // egui multipass id-instability count (#1614). Zero on a healthy layout.
     api.set(
         "widget_id_warnings",
@@ -7914,7 +7935,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         -- `bearcad.ui.*` sub-namespace so scripts can focus on modeling (#46).
         bearcad.ui = {}
         local ui_funcs = {
-"tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_calibrate", "focus_dim", "pane", "pane_rect", "pane_scroll", "scroll_pane", "ai_sections", "widget_id_warnings", "palette", "settings",
+"tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_calibrate", "focus_dim", "pane", "pane_rect", "pane_scroll", "scroll_pane", "ai_sections", "ai_backend_widget", "widget_id_warnings", "palette", "settings",
             "changelog",
             "mcmaster",
             "report_issue", "windows", "focused_window",
@@ -9708,7 +9729,7 @@ mod tests {
             assert(bearcad.ui ~= nil, "bearcad.ui table missing")
             for _, name in ipairs({ "move", "click", "tool", "view", "orbit", "pan",
                                     "key", "type", "pane", "pane_rect", "pane_scroll",
-                                    "scroll_pane", "ai_sections", "palette", "wait", "help",
+                                    "scroll_pane", "ai_sections", "ai_backend_widget", "palette", "wait", "help",
                                     "toolbar_shortcuts", "toolbar_tools", "changelog",
                                     "mcmaster", "report_issue", "windows", "focused_window",
                                     "new_tab", "close_tab", "tab", "tabs", "tab_count",
