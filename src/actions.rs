@@ -2607,7 +2607,7 @@ pub enum Action {
     InstallAiSkill { target: String, dir: Option<std::path::PathBuf> },
     /// Remove the AI agent skill from one target.
     UninstallAiSkill { target: String, dir: Option<std::path::PathBuf> },
-    /// Open the AI pane at its Agents & Skill section (Help ▸ Install AI Agent Skill…).
+    /// Open the AI pane at its Have AI use BearCAD section (Help ▸ Install AI Agent Skill…).
     ShowAiSkillSection,
     /// Open or collapse every AI pane section at once (`bearcad.ui.ai_sections`, #1619).
     SetAiSectionsOpen { open: bool },
@@ -3661,6 +3661,10 @@ pub enum Pane {
     /// MCP server. Opt-in — closed by default, and nothing in it reaches the network until
     /// the user configures a backend.
     Ai,
+    /// The conversation itself (#1620), reassigned its own pane so the config above can be
+    /// reached without leaving it. A full-width bottom console, like the command palette;
+    /// also closed by default.
+    AiChat,
 }
 
 impl Pane {
@@ -3671,6 +3675,7 @@ impl Pane {
         Pane::Parameters,
         Pane::Tutorials,
         Pane::Ai,
+        Pane::AiChat,
         Pane::ViewCube,
     ];
 
@@ -3683,6 +3688,7 @@ impl Pane {
             Pane::Context => "Context",
             Pane::Tutorials => "Tutorials",
             Pane::Ai => "AI",
+            Pane::AiChat => "AI Chat",
         }
     }
 
@@ -3695,6 +3701,7 @@ impl Pane {
             Pane::Context => "context",
             Pane::Tutorials => "tutorials",
             Pane::Ai => "ai",
+            Pane::AiChat => "ai_chat",
         }
     }
 
@@ -3707,7 +3714,8 @@ impl Pane {
             "parameters" | "params" | "param" => Some(Pane::Parameters),
             "context" | "properties" | "props" => Some(Pane::Context),
             "tutorials" | "tutorial" => Some(Pane::Tutorials),
-            "ai" | "assistant" | "chat" => Some(Pane::Ai),
+            "ai" | "assistant" | "configuration" | "config" => Some(Pane::Ai),
+            "ai_chat" | "aichat" | "chat" => Some(Pane::AiChat),
             _ => None,
         }
     }
@@ -3725,6 +3733,8 @@ pub struct PaneVisibility {
     pub tutorials: bool,
     /// AI pane (#1594); off until the user opens it.
     pub ai: bool,
+    /// AI Chat pane (#1620); off until the user opens it.
+    pub ai_chat: bool,
 }
 
 impl Default for PaneVisibility {
@@ -3736,6 +3746,7 @@ impl Default for PaneVisibility {
             context: true,
             tutorials: false,
             ai: false,
+            ai_chat: false,
         }
     }
 }
@@ -3749,6 +3760,7 @@ impl PaneVisibility {
             Pane::Context => self.context,
             Pane::Tutorials => self.tutorials,
             Pane::Ai => self.ai,
+            Pane::AiChat => self.ai_chat,
         }
     }
 
@@ -3760,6 +3772,7 @@ impl PaneVisibility {
             Pane::Context => self.context = visible,
             Pane::Tutorials => self.tutorials = visible,
             Pane::Ai => self.ai = visible,
+            Pane::AiChat => self.ai_chat = visible,
         }
     }
 
@@ -12157,7 +12170,7 @@ impl AppState {
             Action::ShowAiSkillSection => {
                 self.panes.set(Pane::Ai, true);
                 self.ai.borrow_mut().open_skill_section = true;
-                self.status = "AI ▸ Agents & Skill".to_string();
+                self.status = "AI ▸ Have AI use BearCAD".to_string();
                 ActionResult::Ok
             }
             Action::SetAiSectionsOpen { open } => {
@@ -38178,8 +38191,15 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert_eq!(Pane::Ai.script_name(), "ai");
         assert_eq!(Pane::from_name("ai"), Some(Pane::Ai));
         assert_eq!(Pane::from_name("assistant"), Some(Pane::Ai));
-        assert_eq!(Pane::from_name("chat"), Some(Pane::Ai));
+        assert_eq!(Pane::from_name("chat"), Some(Pane::AiChat));
+        assert_eq!(Pane::from_name("ai_chat"), Some(Pane::AiChat));
         assert!(Pane::ALL.contains(&Pane::Ai), "AI belongs in View ▸ Panes");
+        assert!(
+            Pane::ALL.contains(&Pane::AiChat),
+            "AI Chat belongs in View ▸ Panes"
+        );
+        // #1620: the chat is its own pane, and both are closed until asked.
+        assert!(!state.panes.is_visible(Pane::AiChat));
     }
 
     #[test]

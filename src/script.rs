@@ -5230,6 +5230,7 @@ fn pane_shell_id(pane: crate::actions::Pane) -> Option<&'static str> {
         Pane::Context => Some("context"),
         Pane::Tutorials => Some("tutorials"),
         Pane::Ai => Some("ai"),
+        Pane::AiChat => Some("ai_chat"),
         Pane::ViewCube => None,
     }
 }

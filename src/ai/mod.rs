@@ -1,8 +1,10 @@
-//! Everything AI-related, in one pane (#1593).
+//! Everything AI, split across two panes (#1593/#1620): an **AI** configuration pane and
+//! an **AI Chat** pane.
 //!
-//! The pane has three sections — **Chat** (talk to a model about the open documents),
-//! **Agents & Skill** (install the BearCAD agent skill into the AI tools on this machine),
-//! and **MCP Server** (let an outside agent drive the document that is open on screen).
+//! The configuration pane has two sections (#1621) — **Use AI inside BearCAD** (the chat
+//! backends BearCAD talks to) and **Have AI use BearCAD** (the agent skill for outside
+//! agents, and the MCP server that lets one drive the open document). The conversation
+//! itself lives in the **AI Chat** bottom pane.
 //!
 //! Two rules hold across the whole module:
 //!
@@ -56,8 +58,9 @@ pub struct AiState {
     /// transport to answer with.
     #[cfg(not(target_arch = "wasm32"))]
     pub chat: chat::Conversation,
-    /// Set when something asks for the Agents & Skill section specifically (Help ▸ Install
-    /// AI Agent Skill…), so the pane opens showing it rather than the chat (#1604).
+    /// Set when something asks for the "Have AI use BearCAD" section specifically (Help ▸
+    /// Install AI Agent Skill…), so the pane opens showing it rather than the chat
+    /// backend configuration (#1604).
     pub open_skill_section: bool,
     /// Set for one frame when something asks every section to open (or collapse) at once —
     /// `bearcad.ui.ai_sections(...)` (#1619). The headers remember it from there.
@@ -163,7 +166,11 @@ mod privacy_tests {
 
         let state = AppState::default();
         assert!(state.ai.borrow().mcp.is_none());
-        assert!(!state.panes.is_visible(crate::actions::Pane::Ai), "the pane is closed too");
+        assert!(!state.panes.is_visible(crate::actions::Pane::Ai), "the config pane is closed too");
+        assert!(
+            !state.panes.is_visible(crate::actions::Pane::AiChat),
+            "so is the AI Chat pane (#1620)"
+        );
     }
 
     #[test]

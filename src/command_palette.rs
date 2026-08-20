@@ -72,6 +72,9 @@ pub enum PaletteCommandId {
     /// The AI pane (#1594): chat, agent skill, MCP server.
     ShowPaneAi,
     HidePaneAi,
+    /// The AI Chat pane (#1620): the conversation, in its own bottom console.
+    ShowPaneAiChat,
+    HidePaneAiChat,
     DeleteSelection,
     ExportLua,
     /// Import a document Lua script (#1160).
@@ -308,6 +311,14 @@ impl PaletteCommand {
                 pane: Pane::Ai,
                 visible: false,
             }),
+            PaletteCommandId::ShowPaneAiChat => PaletteOutcome::Action(Action::SetPaneVisible {
+                pane: Pane::AiChat,
+                visible: true,
+            }),
+            PaletteCommandId::HidePaneAiChat => PaletteOutcome::Action(Action::SetPaneVisible {
+                pane: Pane::AiChat,
+                visible: false,
+            }),
             PaletteCommandId::ShowPaneViewCube => PaletteOutcome::Action(Action::SetPaneVisible {
                 pane: Pane::ViewCube,
                 visible: true,
@@ -539,12 +550,25 @@ const PANE_COMMANDS: &[(Pane, PaletteCommand, PaletteCommand)] = &[
         PaletteCommand::new(
             PaletteCommandId::ShowPaneAi,
             "Show AI Pane",
-            "show ai pane chat assistant agent skill mcp",
+            "show ai pane configuration backend agent skill mcp",
         ),
         PaletteCommand::new(
             PaletteCommandId::HidePaneAi,
             "Hide AI Pane",
-            "hide ai pane chat assistant agent skill mcp",
+            "hide ai pane configuration backend agent skill mcp",
+        ),
+    ),
+    (
+        Pane::AiChat,
+        PaletteCommand::new(
+            PaletteCommandId::ShowPaneAiChat,
+            "Show AI Chat Pane",
+            "show ai chat pane conversation assistant backend",
+        ),
+        PaletteCommand::new(
+            PaletteCommandId::HidePaneAiChat,
+            "Hide AI Chat Pane",
+            "hide ai chat pane conversation assistant backend",
         ),
     ),
     (
