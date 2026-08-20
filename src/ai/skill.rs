@@ -19,23 +19,23 @@ pub const SKILL_URL: &str = "https://iffy.github.io/BearCAD/bearcad-skill.md";
 /// The skill's YAML front matter (`name:` / `description:`), which Anthropic-style skills
 /// require and every other tool ignores.
 pub fn front_matter() -> Option<&'static str> {
-    parts().map(|(front, _)| front)
+    parts(SKILL).map(|(front, _)| front)
 }
 
 /// The skill with its front matter removed — the form for tools that take a plain
 /// instructions file (`AGENTS.md`, Copilot instructions) rather than a skill bundle.
 pub fn body() -> &'static str {
-    match parts() {
+    match parts(SKILL) {
         Some((_, body)) => body.trim_start(),
         None => SKILL,
     }
 }
 
-/// `(front matter, body)` with the skill's enclosing `---` lines removed. Tolerates LF or
+/// `(front matter, body)` with `skill`'s enclosing `---` lines removed. Tolerates LF or
 /// CRLF line endings so the embedded copy parses identically whatever platform checked the
 /// source out (a Windows checkout writes `\r\n`; the parser must not care).
-fn parts() -> Option<(&'static str, &'static str)> {
-    let Some(rest) = SKILL.strip_prefix("---") else {
+fn parts(skill: &str) -> Option<(&str, &str)> {
+    let Some(rest) = skill.strip_prefix("---") else {
         return None;
     };
     let Some(after_open) = strip_eol(rest) else {
@@ -53,7 +53,7 @@ fn parts() -> Option<(&'static str, &'static str)> {
 }
 
 /// `s` with one leading line ending removed, LF or CRLF.
-fn strip_eol(s: &'static str) -> Option<&'static str> {
+fn strip_eol(s: &str) -> Option<&str> {
     if s.starts_with("\r\n") {
         Some(&s[2..])
     } else if s.starts_with("\n") {
@@ -206,6 +206,19 @@ Always run the tests.
         assert!(!body.starts_with("---"), "front matter is stripped");
         assert!(body.starts_with("# BearCAD"), "got: {}", &body[..40.min(body.len())]);
         assert!(body.contains("bearcad.extrude"));
+    }
+
+    #[test]
+    fn a_crlf_skill_parses_like_an_lf_one() {
+        // #1626: a Windows checkout writes the embedded skill with CRLF. The front-matter
+        // parser must tolerate either line ending or `cargo test` fails in the windows-occt
+        // CI job. Pin the CRLF path here so that regression can't silently slip back in.
+        let crlf = "---\r\nname: bearcad\r\ndescription: a test skill\r\n---\r\nbody line one\r\nbody line two";
+        let (front, body) = parts(crlf).expect("a CRLF skill parses");
+        assert_eq!(front, "name: bearcad\r\ndescription: a test skill",
+            "the front matter (with its CRLF line endings) is kept");
+        assert_eq!(body, "body line one\r\nbody line two",
+            "the body after the closing fence is kept");
     }
 
     #[test]
