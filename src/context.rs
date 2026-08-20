@@ -12368,6 +12368,8 @@ mod tests {
             opacity: 0.9,
             name: None,
             calibration: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
         let img = doc.tracing_images.get(image).unwrap();
         let (a, b) = crate::model::image_calibration_endpoints(img).unwrap();

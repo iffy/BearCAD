@@ -38775,6 +38775,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             name: None,
             calibration: None,
             base_origin: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
         state.scene_selection.insert(SceneElement::Image(image));
         assert_eq!(state.apply(Action::FocusCalibrateLength), ActionResult::Ok);
