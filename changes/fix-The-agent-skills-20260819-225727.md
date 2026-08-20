@@ -1,0 +1,1 @@
+The agent skill's front-matter parser now handles CRLF line endings, which a Windows checkout produces (the skill file is LF in the repo, so the parse used to fail there and break the agent skill install).
