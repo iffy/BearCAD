@@ -11,12 +11,17 @@ until you configure a backend and press Send.
 
 ## Chat
 
-Add a backend under **Manage backends**: pick Anthropic, OpenAI, xAI or an OpenAI-compatible
-server (Ollama and friends), then a model and a key.
+Add a backend under **Manage backends**: pick Anthropic, OpenAI, OpenRouter, xAI or an
+OpenAI-compatible server (Ollama and friends). A backend is added *without* a model —
+which models it has is a question only the backend can answer, so the **Model** row asks it
+once the backend is connected and fills a dropdown from the answer.
 
-A key is either read from an environment variable at send time — nothing is stored — or
-pasted and kept in `ai.json` next to your settings, written owner-only. Neither the pane,
-nor a script, nor `--show-commands`, nor a Lua export will hand a key back out.
+**OpenRouter** (and any provider that offers it) connects with a browser click:
+**Connect to OpenRouter** sends you to the provider, you approve, and the app is given the
+key — you never see or paste one. Everywhere else still takes a key, which is either read
+from an environment variable at send time — nothing is stored — or pasted and kept in
+`ai.json` next to your settings, written owner-only. Neither the pane, nor a script, nor
+`--show-commands`, nor a Lua export will hand a key back out.
 
 The first message to a backend asks first, naming where it would go. Answer once per
 backend.

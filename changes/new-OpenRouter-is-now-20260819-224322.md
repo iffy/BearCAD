@@ -1,0 +1,1 @@
+OpenRouter is now a first-class AI backend: add it like any other, connect it through a browser (PKCE OAuth, no key to paste) or an API key, and pick a model from the dropdown it learns by asking the backend which models it runs.
