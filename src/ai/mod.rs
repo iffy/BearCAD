@@ -367,7 +367,7 @@ mod setup_tests {
             id: "openrouter".into(),
             model: "anthropic/claude-opus-5".into(),
         });
-        assert!(state.ai.borrow().config.selected().unwrap().is_usable());
+        assert!(state.ai.borrow().config.selected().unwrap().unusable_reason().is_none());
         assert!(state.ai.borrow().config_dirty, "the choice is persisted");
     }
 

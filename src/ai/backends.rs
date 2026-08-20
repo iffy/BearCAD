@@ -282,12 +282,6 @@ impl Backend {
         matches!(self.key, KeySource::None) || self.resolve_key().is_some()
     }
 
-    /// Whether this backend can actually be used: a key is present (or none is needed), and
-    /// a model has been chosen (#1617).
-    pub fn is_usable(&self) -> bool {
-        self.has_key() && !self.model.trim().is_empty()
-    }
-
     /// Why this backend cannot be used, for the UI to show next to it.
     pub fn unusable_reason(&self) -> Option<String> {
         if !self.has_key() {
@@ -537,11 +531,10 @@ mod tests {
         assert_eq!(backend.model, "");
         // With the key in hand, the only thing still missing is the model.
         std::env::set_var("OPENROUTER_API_KEY", "sk-or-from-the-environment");
-        assert!(!backend.is_usable(), "nothing can be sent until a model is chosen");
         assert_eq!(backend.unusable_reason().as_deref(), Some("no model chosen"));
 
         let chosen = Backend { model: "anthropic/claude-opus-5".into(), ..backend };
-        assert!(chosen.is_usable());
+        assert!(chosen.unusable_reason().is_none());
         assert!(chosen.unusable_reason().is_none());
         std::env::remove_var("OPENROUTER_API_KEY");
     }
@@ -572,7 +565,7 @@ mod tests {
             ..Backend::preset(Provider::OpenRouter)
         };
         assert_eq!(backend.key_description(), "connected");
-        assert!(backend.is_usable());
+        assert!(backend.unusable_reason().is_none());
         let debugged = format!("{backend:?}");
         assert!(!debugged.contains(SECRET), "Debug leaked the key: {debugged}");
         assert_eq!(backend.resolve_key().as_deref(), Some(SECRET));
@@ -658,15 +651,11 @@ mod tests {
 
         std::env::remove_var(var);
         assert!(backend.resolve_key().is_none());
-        assert!(!backend.is_usable());
-        assert_eq!(
-            backend.unusable_reason().as_deref(),
-            Some("$BEARCAD_TEST_AI_KEY is not set")
-        );
+        assert_eq!(backend.unusable_reason().as_deref(), Some("$BEARCAD_TEST_AI_KEY is not set"));
 
         std::env::set_var(var, "key-from-the-environment");
         assert_eq!(backend.resolve_key().as_deref(), Some("key-from-the-environment"));
-        assert!(backend.is_usable());
+        assert!(backend.unusable_reason().is_none());
         std::env::remove_var(var);
     }
 
@@ -701,7 +690,6 @@ mod tests {
         let backend = Backend::preset(Provider::OpenAiCompatible);
         assert_eq!(backend.key_description(), "none");
         assert!(backend.has_key());
-        assert!(backend.is_usable());
         assert!(backend.unusable_reason().is_none());
     }
 
