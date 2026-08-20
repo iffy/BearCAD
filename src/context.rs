@@ -1031,12 +1031,6 @@ pub fn repeat_value_field_focused(ctx: &egui::Context) -> bool {
     })
 }
 
-/// The sketch-entity drawing tools (#636). Their context sections are identical in 3D and
-/// inside a sketch — in 3D the first click just opens the sketch they draw into.
-pub fn is_draw_tool(tool: Tool) -> bool {
-    matches!(tool, Tool::Line | Tool::Rectangle | Tool::Circle)
-}
-
 /// Tri-state value for a property shared by multiple targets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TriState {
@@ -3130,13 +3124,13 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         }
         _ => None,
     };
-    // Snapping shows for the drawing tools in 3D as well as in a sketch (#636): the
-    // Rectangle/Line/Circle sections read identically either way, and the toggle is sticky,
-    // so setting it in 3D carries into the sketch the first click opens. The Select tool
-    // keeps its sketch-only toggle — there's nothing to snap while picking in 3D.
-    let snapping = (tool_uses_snapping(input.tool)
-        && (input.in_sketch || is_draw_tool(input.tool) || input.tool == Tool::Shape))
-    .then_some(input.snapping_enabled);
+    // Snapping shows for any tool that snaps, in 3D and in a sketch alike (#636): the
+    // toggle is sticky, so setting it in 3D carries into the sketch the first click
+    // opens. The row stays mounted for every snapping tool so opening a sketch never
+    // inserts a fresh row above the Default-units block and shifts its comboboxes onto
+    // a rect another row occupied the pass before — egui flags that as a widget-id
+    // change (#1625).
+    let snapping = tool_uses_snapping(input.tool).then_some(input.snapping_enabled);
     // #505: always show New/Add/Cut while extruding (Add/Cut need a host body candidate).
     let extrude_body = input.extrude_body_mode.map(|mode| {
         let merge_body = input.extrude_merge_candidate;
@@ -4024,10 +4018,15 @@ fn show_calibrate_length(
         .width(90.0)
         .show(ui, &mut draft, doc);
         pane_state.calibrate_length_draft = draft;
+        let id = calibrate_length_field_id();
+        // Memory focus, not `Response::has_focus` alone — that also demands the OS
+        // window be focused, and a scripted run may leave it unfocused (the window can
+        // still lose OS focus on a desktop), so typing and Enter must route via the field
+        // egui thinks holds the keyboard (#1628 / #1201).
+        let memory_focused = ui.ctx().memory(|m| m.focused()) == Some(id);
         if pane_state.focus_calibrate_length {
             resp.request_focus();
-            if resp.has_focus() {
-                let id = calibrate_length_field_id();
+            if memory_focused || resp.has_focus() {
                 let len = pane_state.calibrate_length_draft.chars().count();
                 let mut state =
                     egui::text_edit::TextEditState::load(ui.ctx(), id).unwrap_or_default();
@@ -4040,7 +4039,9 @@ fn show_calibrate_length(
             }
         }
         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-        field_enter = value_field_enter_commit(enter, resp.has_focus(), resp.lost_focus());
+        let has_keyboard =
+            ui.ctx().memory(|m| m.focused()) == Some(id) || resp.has_focus();
+        field_enter = value_field_enter_commit(enter, has_keyboard, resp.lost_focus());
         if field_enter {
             ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
         }
@@ -12669,7 +12670,7 @@ mod tests {
                 visibility: None,
                 constraints: None,
                 constraint_axis_dirs: None,
-                snapping: None,
+                snapping: Some(true),
                 extrude_body: None,
                 extrude: None,
                 selection_picker: Some(ElementPicker::select_everything()),
@@ -12824,7 +12825,7 @@ mod tests {
                 visibility: None,
                 constraints: None,
                 constraint_axis_dirs: None,
-                snapping: None,
+                snapping: Some(true),
                 extrude_body: None,
                 extrude: None,
                 // A draw tool outside a sketch picks the face to sketch on, so it has a
@@ -13034,7 +13035,7 @@ mod tests {
                 }),
                 constraints: None,
                 constraint_axis_dirs: None,
-                snapping: None,
+                snapping: Some(true),
                 extrude_body: None,
                 extrude: None,
                 // #213: the Select tool surfaces the selection through the unified element picker.
@@ -13330,7 +13331,7 @@ mod tests {
                 visibility: None,
                 constraints: None,
                 constraint_axis_dirs: None,
-                snapping: None,
+                snapping: Some(true),
                 extrude_body: None,
                 extrude: None,
                 // A draw tool outside a sketch picks the face to sketch on, so it has a
