@@ -4747,6 +4747,11 @@ pub fn move_point_lua(point: &crate::model::MovePointRef) -> String {
         }
         // The world origin (#946): no body, so it spells itself.
         crate::model::MovePointRef::Origin => "{ origin = true }".to_string(),
+        crate::model::MovePointRef::ImageAnchor { image, anchor } => format!(
+            "{{ image = {}, anchor = {:?} }}",
+            image.index(),
+            anchor.lua_name()
+        ),
     }
 }
 

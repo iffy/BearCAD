@@ -1382,6 +1382,27 @@ fn parse_move_point(
     if t.get::<Option<bool>>("origin")?.unwrap_or(false) {
         return Ok(Some(crate::model::MovePointRef::Origin));
     }
+    // A tracing image box point (#1601): `{ image = i, anchor = "center" }`.
+    if let Some(idx) = t.get::<Option<usize>>("image")? {
+        let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+        let doc = &unsafe { tick.state() }.doc;
+        let image = doc
+            .tracing_images
+            .keys()
+            .nth(idx)
+            .ok_or_else(|| mlua::Error::external(format!("move `{what}`: no image {idx}")))?;
+        let name: String = t.get("anchor").map_err(|_| {
+            mlua::Error::external(format!("move `{what}` image point needs an `anchor`"))
+        })?;
+        let anchor = crate::model::TextAnchor::ALL
+            .iter()
+            .copied()
+            .find(|a| a.lua_name() == name)
+            .ok_or_else(|| {
+                mlua::Error::external(format!("move `{what}`: unknown image anchor '{name}'"))
+            })?;
+        return Ok(Some(crate::model::MovePointRef::ImageAnchor { image, anchor }));
+    }
     let body = body_key_from_ordinal(lua, t.get("body")?)?;
     let mm = |v: Vec<f32>| -> mlua::Result<[i32; 3]> {
         if v.len() != 3 {
@@ -3609,6 +3630,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     };
                     t.set("origin_x", img.origin.0)?;
                     t.set("origin_y", img.origin.1)?;
+                    t.set("rotation", img.rotation.to_degrees())?;
                     t.set("width", img.width_mm)?;
                     t.set("height", img.height_mm)?;
                     if let Some(name) = &img.name {
@@ -5401,6 +5423,41 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     Ok(None)
                 }
             }
+        })?,
+    )?;
+
+    // World corners of a tracing image (including an in-progress Move preview, #1611).
+    api.set(
+        "image_corners",
+        lua.create_function(|lua, index: usize| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            let image = state
+                .doc
+                .tracing_images
+                .keys()
+                .nth(index)
+                .ok_or_else(|| mlua::Error::external(format!("no image {index}")))?;
+            let pose = crate::actions::live_image_pose(
+                &state.doc,
+                image,
+                state.creating_move.as_ref(),
+            );
+            let corners = crate::construction::tracing_image_live_corners(
+                &state.doc,
+                image,
+                pose,
+            )
+            .ok_or_else(|| mlua::Error::external(format!("image {index} has no corners")))?;
+            let table = lua.create_table()?;
+            for (i, p) in corners.iter().enumerate() {
+                let row = lua.create_table()?;
+                row.set(1, p.x)?;
+                row.set(2, p.y)?;
+                row.set(3, p.z)?;
+                table.set(i + 1, row)?;
+            }
+            Ok(table)
         })?,
     )?;
 
@@ -8134,6 +8191,67 @@ mod tests {
         );
     }
 
+    /// #1601/#1611: an image-only move turns about the host plane's normal, reports the
+    /// turn back, and `image_corners` reads the live quad — the preview a drag shows.
+    #[test]
+    fn lua_move_bodies_turns_a_tracing_image_in_its_plane() {
+        let path = write_test_png("turn.png", 20, 10);
+        let state = run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.import_image({path:?})
+            local rest = bearcad.image_corners(0)
+            bearcad.move_bodies{{ images = {{0}}, rz = 90 }}
+            local img = bearcad.get{{ kind = "image", index = 0 }}
+            assert(math.abs(img.rotation - 90) < 1e-3, "rotation=" .. img.rotation)
+            local turned = bearcad.image_corners(0)
+            for i = 1, 4 do
+              assert(math.abs(turned[i][3]) < 1e-3, "the quad stays in its plane")
+            end
+            -- 20x10 mm centred on the origin: the lower-left corner orbits to (5, -10).
+            assert(math.abs(turned[4][1] - 5) < 1e-3 and math.abs(turned[4][2] + 10) < 1e-3,
+              string.format("lower-left {{%.3f}}, {{%.3f}}", turned[4][1], turned[4][2]))
+            assert(math.abs(rest[4][1] + 10) < 1e-3, "before the turn it was at -10")
+            "#
+        ));
+        let img = state.doc.tracing_images.values().next().unwrap();
+        assert!((img.rotation - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
+        assert_eq!(img.base_rotation, Some(0.0), "the authored turn is locked in");
+    }
+
+    /// #1601: the 2D Point Snap — an image box point (`{ image = 0, anchor = … }`) as the
+    /// start of a Move — lands the image on the target, and re-editing the op recomputes the
+    /// same answer instead of feeding the moved pose back into its own input.
+    #[test]
+    fn lua_image_point_snap_is_stable_under_re_edit() {
+        let path = write_test_png("snap.png", 20, 10);
+        let state = run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.import_image({path:?})
+            bearcad.move_bodies{{
+              images = {{0}},
+              from = {{ image = 0, anchor = "bottom_left" }},
+              to = {{ origin = true }},
+            }}
+            local a = bearcad.get{{ kind = "image", index = 0 }}
+            assert(math.abs(a.origin_x) < 1e-3 and math.abs(a.origin_y) < 1e-3,
+              string.format("snapped to {{%.3f}}, {{%.3f}}", a.origin_x, a.origin_y))
+            bearcad.edit_move{{
+              index = 0,
+              images = {{0}},
+              from = {{ image = 0, anchor = "bottom_left" }},
+              to = {{ origin = true }},
+            }}
+            local b = bearcad.get{{ kind = "image", index = 0 }}
+            assert(math.abs(b.origin_x) < 1e-3 and math.abs(b.origin_y) < 1e-3,
+              string.format("re-edit drifted to {{%.3f}}, {{%.3f}}", b.origin_x, b.origin_y))
+            "#
+        ));
+        let img = state.doc.tracing_images.values().next().unwrap();
+        assert_eq!(img.base_origin, Some((-10.0, -5.0)), "the authored corner is kept");
+    }
+
     /// #1588: `begin_sketch{ kind = "image" }` opens a sketch on the image's host plane.
     #[test]
     fn lua_begin_sketch_on_an_image_hosts_on_its_plane() {
@@ -8436,6 +8554,8 @@ mod tests {
             opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: None,
+            rotation: 0.0,
+            base_rotation: None,
         };
         let mut doc = crate::model::Document::default();
         let first = doc.tracing_images.insert(image("first"));

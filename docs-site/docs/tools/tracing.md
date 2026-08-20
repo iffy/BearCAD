@@ -43,7 +43,9 @@ image and the line measures that length.
 ## Moving and constraining
 
 The [Move](/docs/tools/move) tool moves an image: click its quad in the viewport (or its
-Elements pane row) to pick it, then set the translation.
+Elements pane row) to pick it, then set the translation. The move stays in the image's
+plane — the two in-plane axes and a turn about the plane's normal — and the quad previews
+it as you go.
 
 The image's corners, edge midpoints, centre, calibration points, and edges are regular
 sketch geometry: with the [Constraint](/docs/tools/constraint) tool in a sketch on the

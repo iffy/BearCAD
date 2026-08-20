@@ -351,7 +351,13 @@ pub enum PickRule {
     /// Only geometry **not** sitting on one of these bodies — the Move tool's end points, which
     /// land on stationary geometry (#650). Geometry belonging to no body at all (the origin, a
     /// world axis) counts as stationary.
-    OffBodies(Vec<crate::model::BodyKey>),
+OffBodies(Vec<crate::model::BodyKey>),
+    /// A 2D Move point (#1601): an image box point slides in its plane, so the Move tool's
+    /// point pickers answer it as well as a body corner. `moving` picks the side the way the
+    /// body list Gates a body — a start point lands on a **moving** image (or, while none is
+    /// picked yet, any image — the click declares the mover), an end point on a stationary
+    /// one or the world origin.
+    MovePoint2D(bool, Vec<crate::model::BodyKey>, Vec<crate::model::TracingImageKey>),
     /// Only straight references: a sketch line with no bezier, a body edge, or a world axis.
     /// The Revolve axis and Repeat path pickers.
     Straight,
@@ -431,6 +437,19 @@ impl PickRule {
             PickRule::OffBodies(bodies) => {
                 element_body(doc, element).is_none_or(|b| !bodies.contains(&b))
             }
+            PickRule::MovePoint2D(moving, bodies, images) => match element {
+                SceneElement::Point(crate::model::ConstraintPoint::ImageAnchor { image, .. }) => {
+                    if *moving {
+                        images.is_empty() || images.contains(image)
+                    } else {
+                        !images.contains(image)
+                    }
+                }
+                SceneElement::Origin => !*moving,
+                _ => element_body(doc, element).is_some_and(|b| {
+                    if *moving { bodies.contains(&b) } else { !bodies.contains(&b) }
+                }),
+            },
             PickRule::Straight => match element {
                 SceneElement::Line(index) => {
                     doc.lines.get(*index).is_some_and(|l| l.bezier.is_none())
@@ -1887,6 +1906,44 @@ mod tests {
         // The origin belongs to no body, so it is stationary but never "on" a moving one.
         assert!(off_moving.accepts(&doc, &SceneElement::Origin));
         assert!(!on_moving.accepts(&doc, &SceneElement::Origin));
+    }
+
+    /// #1601: the 2D point-snap rule answers an image box point by which image is moving,
+    /// alongside the body corpus `OnBodies`/`OffBodies` already split.
+    #[test]
+    fn move_point_2d_admits_an_image_box_point_by_its_moving_side() {
+        let mut doc = doc_with_two_bodies();
+        let image = doc.tracing_images.insert(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "trace".to_string(),
+            plane: crate::model::plane_key_for_slot(0),
+            origin: (0.0, 0.0),
+            width_mm: 100.0,
+            height_mm: 60.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
+            name: None,
+            calibration: None,
+            base_origin: None,
+            rotation: 0.0,
+            base_rotation: None,
+        });
+        let anchor = SceneElement::Point(crate::model::ConstraintPoint::ImageAnchor {
+            image,
+            anchor: crate::model::TextAnchor::BottomLeft,
+        });
+        let start = ElementFilter::kind(ElementKind::Vertex)
+            .rule(PickRule::MovePoint2D(true, vec![bkey(0)], vec![image]));
+        let fixed = ElementFilter::kind(ElementKind::Vertex)
+            .rule(PickRule::MovePoint2D(false, vec![bkey(0)], vec![image]));
+        // A moving image answers the start pick; that same image is off-limits as a fixed point.
+        assert!(start.accepts(&doc, &anchor));
+        assert!(!fixed.accepts(&doc, &anchor));
+        // The moving body still gates the body corner, and the origin stays stationary-only.
+        let corner = SceneElement::BodyVertex { body: bkey(0), p: [0; 3] };
+        assert!(start.accepts(&doc, &corner));
+        assert!(!fixed.accepts(&doc, &corner));
+        assert!(!start.accepts(&doc, &SceneElement::Origin));
+        assert!(fixed.accepts(&doc, &SceneElement::Origin));
     }
 
     #[test]

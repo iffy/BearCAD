@@ -882,11 +882,35 @@ pub fn tracing_image_corners(
     image: crate::model::TracingImageKey,
 ) -> Option<[Vec3; 4]> {
     let img = doc.tracing_images.get(image)?;
-    let frame = crate::face::sketch_frame(doc, FaceId::ConstructionPlane(img.plane))?;
-    let at = |x: f32, y: f32| frame.origin + frame.u_axis * x + frame.v_axis * y;
-    let (x0, y0) = img.origin;
-    let (x1, y1) = (x0 + img.width_mm, y0 + img.height_mm);
-    Some([at(x0, y1), at(x1, y1), at(x1, y0), at(x0, y0)])
+    tracing_image_corners_at(doc, img.plane, img.origin, img.rotation, img.width_mm, img.height_mm)
+}
+
+/// Displayed-quad corners at an explicit origin/rotation, falling back to the stored pose.
+pub fn tracing_image_live_corners(
+    doc: &Document,
+    image: crate::model::TracingImageKey,
+    pose: Option<((f32, f32), f32)>,
+) -> Option<[Vec3; 4]> {
+    let img = doc.tracing_images.get(image)?;
+    let (origin, rotation) = pose.unwrap_or((img.origin, img.rotation));
+    tracing_image_corners_at(doc, img.plane, origin, rotation, img.width_mm, img.height_mm)
+}
+
+/// Displayed-quad corners for an explicit origin/rotation (#1601/#1611).
+pub fn tracing_image_corners_at(
+    doc: &Document,
+    plane: crate::model::ConstructionPlaneKey,
+    origin: (f32, f32),
+    rotation: f32,
+    width_mm: f32,
+    height_mm: f32,
+) -> Option<[Vec3; 4]> {
+    let frame = crate::face::sketch_frame(doc, FaceId::ConstructionPlane(plane))?;
+    let at = |u_frac: f32, v_frac: f32| {
+        let (x, y) = crate::model::image_local_mm_at(origin, rotation, width_mm, height_mm, u_frac, v_frac);
+        frame.origin + frame.u_axis * x + frame.v_axis * y
+    };
+    Some([at(0.0, 1.0), at(1.0, 1.0), at(1.0, 0.0), at(0.0, 0.0)])
 }
 
 /// The tracing image whose displayed quad contains `screen` (#1588). When several
@@ -6381,6 +6405,8 @@ mod tests {
             opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: None,
+            rotation: 0.0,
+            base_rotation: None,
         }
     }
 

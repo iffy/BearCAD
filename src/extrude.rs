@@ -1190,6 +1190,28 @@ pub fn move_point_world(doc: &Document, point: &crate::model::MovePointRef) -> O
         }
         // The world origin (#946) is fixed and always resolves — no body to outlive.
         crate::model::MovePointRef::Origin => Some(Vec3::ZERO),
+        // An image box point (#1601) names a spot on the image **as authored** — its base
+        // pose, before any Move op moved it. Reading the moved pose instead would feed a
+        // move's own result back into its inputs, so re-editing the op would compute a
+        // second, different answer; the authored pose is the fixed point that keeps the
+        // recompute idempotent. An image no Move touches has no base, so it reads live.
+        crate::model::MovePointRef::ImageAnchor { image, anchor } => {
+            let img = doc.tracing_images.get(*image)?;
+            let (fx, fy) = anchor.fractions();
+            let (u, v) = crate::model::image_local_mm_at(
+                img.base_origin.unwrap_or(img.origin),
+                img.base_rotation.unwrap_or(img.rotation),
+                img.width_mm,
+                img.height_mm,
+                fx,
+                fy,
+            );
+            let frame = crate::face::sketch_frame(
+                doc,
+                crate::model::FaceId::ConstructionPlane(img.plane),
+            )?;
+            Some(frame.origin + frame.u_axis * u + frame.v_axis * v)
+        }
     }
 }
 
@@ -2068,6 +2090,52 @@ pub fn free_move_targets_bounds(
         }
     }
     any.then_some((lo, hi))
+}
+
+/// World-axis index (0/1/2) most aligned with `normal` — the axis an image-only move
+/// skips for translation and keeps for rotation (#1601).
+pub fn planar_skip_axis(normal: Vec3) -> usize {
+    let n = normal.abs();
+    if n.x >= n.y && n.x >= n.z {
+        0
+    } else if n.y >= n.z {
+        1
+    } else {
+        2
+    }
+}
+
+/// Plane normal for an image-only Move (#1601): images, no bodies/planes/instances, and
+/// every image on the same (or parallel) host plane. `None` otherwise.
+pub fn image_planar_move_normal(
+    doc: &Document,
+    images: &[crate::model::TracingImageKey],
+    bodies: &[crate::model::BodyKey],
+    planes: &[crate::model::ConstructionPlaneKey],
+    instances: &[crate::model::UnitInstanceKey],
+) -> Option<Vec3> {
+    if images.is_empty()
+        || !bodies.is_empty()
+        || !planes.is_empty()
+        || !instances.is_empty()
+    {
+        return None;
+    }
+    let mut normal: Option<Vec3> = None;
+    for &image in images {
+        let img = doc.tracing_images.get(image)?;
+        let frame = crate::face::sketch_frame(doc, crate::model::FaceId::ConstructionPlane(img.plane))?;
+        let n = frame.normal.normalize_or_zero();
+        if n.length_squared() < 1e-8 {
+            return None;
+        }
+        match normal {
+            None => normal = Some(n),
+            Some(prev) if prev.dot(n).abs() > 0.99 => {}
+            Some(_) => return None,
+        }
+    }
+    normal
 }
 
 /// One Free-mode translation handle (#1233): sits on a face of the selection's tight AABB.
@@ -12587,6 +12655,8 @@ mod tests {
             name: None,
             calibration: None,
             base_origin: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
         let mut selection = crate::selection::SceneSelection::default();
         selection.insert(crate::hierarchy::SceneElement::Image(image));
@@ -12620,6 +12690,8 @@ mod tests {
             opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
         let (min, max) = free_move_targets_bounds(&doc, &[], &[], &[image]).unwrap();
         assert!((min.x + 20.0).abs() < 1e-3 && (max.x - 20.0).abs() < 1e-3);

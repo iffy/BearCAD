@@ -378,6 +378,8 @@ mod tests {
             name: None,
             base_origin: None,
             calibration: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
 
         for suffix in [".bearcad", ".bearcad.json"] {
@@ -1388,6 +1390,8 @@ mod tests {
             opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: None,
+            rotation: 0.0,
+            base_rotation: None,
         };
         let mut doc = Document::default();
         let doomed = doc.tracing_images.insert(image("doomed"));
@@ -1430,6 +1434,8 @@ mod tests {
             opacity: 0.35,
             name: None,
             calibration: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
         for suffix in [".bearcad", ".bearcad.json"] {
             let path = std::env::temp_dir().join(format!("bearcad_image_opacity_test{suffix}"));
@@ -1442,6 +1448,42 @@ mod tests {
                 Some(0.35),
                 "{suffix}"
             );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// #1601: an image's in-plane turn (and the authored turn it was moved from) survive
+    /// a save and reload in both codecs.
+    #[test]
+    fn tracing_image_rotation_survives_save_and_reload() {
+        let mut doc = Document::default();
+        let image = doc.tracing_images.insert(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "trace".to_string(),
+            plane: pkey(0),
+            origin: (3.0, 4.0),
+            base_origin: Some((0.0, 0.0)),
+            width_mm: 10.0,
+            height_mm: 10.0,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
+            name: None,
+            calibration: None,
+            rotation: std::f32::consts::FRAC_PI_4,
+            base_rotation: Some(0.0),
+        });
+        for suffix in [".bearcad", ".bearcad.json"] {
+            let path = std::env::temp_dir().join(format!("bearcad_image_rotation_test{suffix}"));
+            let path = path.to_string_lossy().to_string();
+            let _ = std::fs::remove_file(&path);
+            save(&path, &doc).unwrap();
+            let loaded = open(&path).unwrap();
+            let img = loaded.tracing_images.get(image).expect(suffix);
+            assert!(
+                (img.rotation - std::f32::consts::FRAC_PI_4).abs() < 1e-6,
+                "{suffix}: rotation came back {}",
+                img.rotation
+            );
+            assert_eq!(img.base_rotation, Some(0.0), "{suffix}");
             let _ = std::fs::remove_file(&path);
         }
     }

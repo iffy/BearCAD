@@ -7349,12 +7349,17 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 } else {
                     // Already on the Move tool: repeated M cycles the translate mode (#665),
                     // the same way R and O cycle the rect/circle anchors.
-                    let cm = self
+                    if self.state.creating_move.is_none() {
+                        self.state.creating_move = Some(actions::CreatingMove::default());
+                    }
+                    // Cycle through the modes this tool offers, in pane order (#1076/#1601).
+                    let planar = self
                         .state
                         .creating_move
-                        .get_or_insert_with(actions::CreatingMove::default);
-                    // Cycle through the modes this tool offers, in pane order (#1076).
-                    let modes = model::MoveTranslateMode::for_tool(false);
+                        .as_ref()
+                        .is_some_and(|cm| cm.planar_normal(&self.state.doc).is_some());
+                    let modes = model::MoveTranslateMode::for_targets(false, planar);
+                    let cm = self.state.creating_move.as_mut().unwrap();
                     let at = modes.iter().position(|m| *m == cm.translate_mode).unwrap_or(0);
                     cm.translate_mode = modes[(at + 1) % modes.len()];
                     self.state.move_translate_mode = cm.translate_mode; // #1086
@@ -8783,6 +8788,9 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
         let mut shown_axis = [false; 3];
         for &(handle, id_source, _translation) in &handles {
             let axis = handle.axis;
+            if self.planar_skip_axis() == Some(axis) {
+                continue;
+            }
             if shown_axis[axis] {
                 continue;
             }
@@ -9519,6 +9527,14 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
         );
     }
 
+    /// World-axis an image-only Move skips for translation and keeps for rotation (#1601).
+    fn planar_skip_axis(&self) -> Option<usize> {
+        self.state
+            .creating_move
+            .as_ref()
+            .and_then(|cm| cm.planar_skip_axis(&self.state.doc))
+    }
+
     /// Whether Free Move's rotation/translation handles are on screen (#1423): Free
     /// mode with at least one body, plane, or tracing image to move (#1587).
     fn free_move_gizmos_live(&self) -> bool {
@@ -9612,7 +9628,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
         if cm.translate_mode != crate::model::MoveTranslateMode::Free {
             return None;
         }
-        if cm.targets.is_empty() && cm.plane_targets.is_empty() {
+        if cm.targets.is_empty() && cm.plane_targets.is_empty() && cm.image_targets.is_empty() {
             return None;
         }
         let (min, max) =
@@ -10097,7 +10113,11 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     let rings = self.free_move_rotation_rings();
                     let mut best: Option<(usize, f32)> = None;
                     if let Some(rings) = rings {
+                        let keep_rot = self.planar_skip_axis();
                         for (axis, ring) in rings.iter().enumerate() {
+                            if keep_rot.is_some_and(|k| k != axis) {
+                                continue;
+                            }
                             if !rotation_handle_hit(pp, project, ring.handle) {
                                 continue;
                             }
@@ -10170,7 +10190,11 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             }
             if ui.input(|i| i.pointer.primary_pressed()) {
                 if let Some(pp) = pointer_screen {
+                    let skip = self.planar_skip_axis();
                     for &(handle, name, translation) in &handles {
+                        if skip == Some(handle.axis) {
+                            continue;
+                        }
                         if construction::offset_gizmo_hit(
                             pp,
                             project,
@@ -10327,6 +10351,17 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 Some(point) => {
                     let label = self.move_point_label(&point);
                     if let Some(cm) = self.state.creating_move.as_mut() {
+                        // 2D Point Snap (#1601): picking one of a tracing image's box points
+                        // as a *start* means the image is the thing being moved — register it
+                        // as a moving target there and then, so the corner can answer without
+                        // a separate click on the quad first.
+                        if let crate::model::MovePointRef::ImageAnchor { image, .. } = point {
+                            if side == Some(true) && !cm.image_targets.contains(&image) {
+                                cm.image_targets.push(image);
+                                cm.translate_mode =
+                                    crate::model::MoveTranslateMode::PointSnap;
+                            }
+                        }
                         match focus {
                             MoveFocus::StartPointA => cm.start_point_a = Some(point),
                             MoveFocus::EndPointA => cm.end_point_a = Some(point),
@@ -11954,7 +11989,56 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             .map(|cm| cm.targets.clone())
             .unwrap_or_default();
         let allowed = |body: crate::model::BodyKey| moving.is_none_or(|m| targets.contains(&body) == m);
+        // Body geometry and the world origin come first; an image's box points are the
+        // 2D Point Snap's own picks (#1601) and only answer where nothing solid does.
         self.pick_body_point(pp, project, pick_occlusion, &allowed, moving != Some(true))
+            .or_else(|| self.pick_image_move_point(pp, project, moving))
+    }
+
+    /// 2D Point Snap's image box points (#1601): the nine box points of a tracing image —
+    /// start points on a moving image, end points on a stationary one.
+    fn pick_image_move_point(
+        &self,
+        pp: egui::Pos2,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        moving: Option<bool>,
+    ) -> Option<model::MovePointRef> {
+        let cm = self.state.creating_move.as_ref()?;
+        let mut best: Option<(model::MovePointRef, f32)> = None;
+        for (ii, img) in self.state.doc.tracing_images.iter() {
+            let on_moving = cm.image_targets.contains(&ii);
+            // A start point calls for the moving image — but picking its corner *is* how an
+            // image-only 2D Point Snap declares the moving side, so any image answers the
+            // start pick; it becomes the target when the pick lands (#1601). End points
+            // stay on stationary images.
+            match moving {
+                Some(false) if on_moving => continue,
+                _ => {}
+            }
+            let Some(frame) = crate::face::sketch_frame(
+                &self.state.doc,
+                model::FaceId::ConstructionPlane(img.plane),
+            ) else {
+                continue;
+            };
+            for anchor in model::TextAnchor::ALL {
+                let (u, v) = model::image_anchor_uv(img, anchor);
+                let world = frame.origin + frame.u_axis * u + frame.v_axis * v;
+                let Some(sp) = project(world) else {
+                    continue;
+                };
+                let dist = (sp - pp).length();
+                if dist <= touch::hit(construction::POINT_PICK_RADIUS_PX)
+                    && best.as_ref().is_none_or(|(_, d)| dist < *d)
+                {
+                    best = Some((
+                        model::MovePointRef::ImageAnchor { image: ii, anchor },
+                        dist,
+                    ));
+                }
+            }
+        }
+        best.map(|(p, _)| p)
     }
 
     /// The origin/corner/edge-midpoint/face-middle pick [`Self::pick_move_point`] runs, with the
@@ -15794,6 +15878,8 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     can_commit: cm
                         .map(|c| !c.targets.is_empty() || !c.plane_targets.is_empty() || !c.image_targets.is_empty() || !c.instance_targets.is_empty())
                         .unwrap_or(false),
+                    planar: cm.is_some_and(|c| c.planar_normal(&self.state.doc).is_some()),
+                    skip_axis: cm.and_then(|c| c.planar_skip_axis(&self.state.doc)),
                 }
             }),
             move_edit_start: None,
@@ -20072,9 +20158,9 @@ fn move_ghost_target_transform(
         end_point_b: cm.end_point_b,
         start_point_c: cm.start_point_c,
         end_point_c: cm.end_point_c,
-        plane_targets: Vec::new(),
-        image_targets: Vec::new(),
-        instance_targets: Vec::new(),
+        plane_targets: cm.plane_targets.clone(),
+        image_targets: cm.image_targets.clone(),
+        instance_targets: cm.instance_targets.clone(),
         tx: cm.tx.clone(),
         ty: cm.ty.clone(),
         tz: cm.tz.clone(),
@@ -20510,7 +20596,11 @@ fn focus_chain_satisfied<F: Copy + PartialEq>(chain: &FocusChain<F>, focus: F) -
 /// so in Free mode the chain is just the bodies and start A.
 fn move_focus_chain(cm: &actions::CreatingMove) -> FocusChain<MoveFocus> {
     let mut chain = vec![
-        (MoveFocus::Bodies, !cm.targets.is_empty()),
+        // The "Bodies" step counts the whole moving set — bodies, planes, images, and unit
+        // instances (#1587/#1601) — or a 2D image move would re-focus the Bodies picker (an
+        // empty `targets`) right after its start point was picked.
+        (MoveFocus::Bodies, !cm.targets.is_empty() || !cm.plane_targets.is_empty()
+            || !cm.image_targets.is_empty() || !cm.instance_targets.is_empty()),
         (MoveFocus::StartPointA, cm.start_point_a.is_some()),
     ];
     // Face Snap needs only the pair (#1077); Point Snap goes on to the B and C pairs.
@@ -21271,7 +21361,7 @@ fn build_viewport_scene_input<'a>(
     creating_loft: Option<&actions::CreatingLoft>,
     creating_repeat: Option<&actions::CreatingRepeat>,
     creating_mirror: Option<&actions::CreatingMirror>,
-    creating_move: Option<&actions::CreatingMove>,
+    creating_move: Option<&'a actions::CreatingMove>,
     creating_joint: Option<&actions::CreatingJoint>,
     creating_shape: Option<&actions::CreatingShape>,
     // The eased ghost pose while it glides between destinations; `None` draws the live one.
@@ -21777,6 +21867,7 @@ fn build_viewport_scene_input<'a>(
 
     gpu_viewport::ViewportSceneInput {
         doc,
+        creating_move,
         cam,
         viewport,
         palette: gpu_viewport::ViewportPalette {
@@ -31020,8 +31111,10 @@ impl App {
         let mut arrow_gizmos = if self.state.tool == Tool::Move {
             self.move_gizmo_arrows()
                 .map(|handles| {
+                    let skip = self.planar_skip_axis();
                     handles
                         .iter()
+                        .filter(|&&(handle, _, _)| skip != Some(handle.axis))
                         .map(|&(handle, _, _)| {
                             let hovered = self
                                 .move_gizmo_drag
@@ -31071,7 +31164,11 @@ impl App {
         // The Face Snap turn gizmo's live angle, painted just above its handle (#1360).
         let mut move_turn_labels: Vec<(egui::Pos2, String, egui::Color32)> = Vec::new();
         if let Some(rings) = self.free_move_rotation_rings() {
+            let keep_rot = self.planar_skip_axis();
             for (axis, ring) in rings.iter().enumerate() {
+                if keep_rot.is_some_and(|k| k != axis) {
+                    continue;
+                }
                 let hovered = self.free_move_rotation_drag.is_some_and(|d| d.axis == axis)
                     || (self.free_move_rotation_drag.is_none()
                         && pointer_screen.is_some_and(|pp| {
@@ -37524,6 +37621,8 @@ mod tests {
             opacity: model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
         let solid = extrude::body_solid_mesh(&doc, bkey(0)).expect("body mesh");
         let tri = solid.triangles[0];

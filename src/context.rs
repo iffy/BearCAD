@@ -348,6 +348,10 @@ pub struct MoveControl {
     pub tz: String,
     pub editing: bool,
     pub can_commit: bool,
+    /// Image-only planar move (#1601): hide Face Snap and the C pair.
+    pub planar: bool,
+    /// World-axis index to skip for translation / keep for rotation (#1601).
+    pub skip_axis: Option<usize>,
 }
 
 /// One edit from the Move context section.
@@ -2629,6 +2633,12 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         // what focus, hover, the exploder and `bearcad.pickers()` all read.
         let point_rows: &[(&'static str, PickerTarget, Option<crate::model::MovePointRef>, bool, bool)] =
             match m.translate_mode {
+                crate::model::MoveTranslateMode::PointSnap if m.planar => &[
+                    ("Start point A", PickerTarget::MoveStartA, m.start_a, true, m.start_a_focused),
+                    ("End point A", PickerTarget::MoveEndA, m.end_a, false, m.end_a_focused),
+                    ("Start point B", PickerTarget::MoveStartB, m.start_b, true, m.start_b_focused),
+                    ("End point B", PickerTarget::MoveEndB, m.end_b, false, m.end_b_focused),
+                ],
                 crate::model::MoveTranslateMode::PointSnap => &[
                     ("Start point A", PickerTarget::MoveStartA, m.start_a, true, m.start_a_focused),
                     ("End point A", PickerTarget::MoveEndA, m.end_a, false, m.end_a_focused),
@@ -2651,11 +2661,10 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
                 | crate::model::MoveTranslateMode::InPlace => &[],
             };
         for &(heading, target, point, on_moving, focused) in point_rows {
-            let rule = if on_moving {
-                PickRule::OnBodies(moving.clone())
-            } else {
-                PickRule::OffBodies(moving.clone())
-            };
+            // Start/end points are 2D-aware (#1601): a body corner or an image box point, on
+            // the moving (or stationary) side. Images carry no body, so the body list gates
+            // body points and the image list gates the image's.
+            let rule = PickRule::MovePoint2D(on_moving, moving.clone(), m.image_targets.clone());
             let mut picker = ElementPicker::new(
                 ElementFilter::kind(ElementKind::Vertex).rule(rule),
                 PickLimit::Finite(1),
@@ -5115,17 +5124,25 @@ pub(crate) fn move_value_slots() -> &'static [&'static str] {
 
 /// Which Move ValueInput rows the given translate mode shows.
 /// `end_c_picked` hides Point Snap's Roll once a third target point answers (#1078).
+/// `skip_axis` is the world axis an image-only planar move drops (#1601): that axis loses
+/// its slide, and it is the *only* axis left to turn about.
 pub(crate) fn move_value_slot_visible(
     mode: crate::model::MoveTranslateMode,
     salt: &str,
     end_c_picked: bool,
+    skip_axis: Option<usize>,
 ) -> bool {
     use crate::model::MoveTranslateMode as M;
     match (mode, salt) {
         (M::FaceSnap, "face_spin") => true,
         (M::PointSnap, "angle_snap") => true,
-        (M::PointSnap, "roll") => !end_c_picked,
-        (M::Free, "tx" | "ty" | "tz" | "rx" | "ry" | "rz") => true,
+        (M::PointSnap, "roll") => !end_c_picked && skip_axis.is_none(),
+        (M::Free, "tx") => skip_axis != Some(0),
+        (M::Free, "ty") => skip_axis != Some(1),
+        (M::Free, "tz") => skip_axis != Some(2),
+        (M::Free, "rx") => skip_axis.map(|a| a == 0).unwrap_or(true),
+        (M::Free, "ry") => skip_axis.map(|a| a == 1).unwrap_or(true),
+        (M::Free, "rz") => skip_axis.map(|a| a == 2).unwrap_or(true),
         _ => false,
     }
 }
@@ -5247,24 +5264,25 @@ fn show_combine_picker_row(
     action
 }
 
-/// Which Move picker rows the given translate mode shows.
+/// Which Move picker rows the given translate mode shows. `planar` is an image-only
+/// move (#1601): no Face Snap rows, and Point Snap stops at the B pair.
 pub(crate) fn move_picker_slot_visible(
     mode: crate::model::MoveTranslateMode,
     id: &str,
+    planar: bool,
 ) -> bool {
     use crate::model::MoveTranslateMode as M;
     match (mode, id) {
-        (M::FaceSnap, "move_face_moving" | "move_face_fixed") => true,
+        (M::FaceSnap, "move_face_moving" | "move_face_fixed") if !planar => true,
         (M::Free, "move_reference_point") => true,
         (
             M::PointSnap,
             "move_start_point_a"
             | "move_end_point_a"
             | "move_start_point_b"
-            | "move_end_point_b"
-            | "move_start_point_c"
-            | "move_end_point_c",
+            | "move_end_point_b",
         ) => true,
+        (M::PointSnap, "move_start_point_c" | "move_end_point_c") if !planar => true,
         _ => false,
     }
 }
@@ -5276,13 +5294,14 @@ fn show_move_picker_row(
     tool_pickers: &[ToolPickerView],
     dummy: &ElementPicker,
     mode: crate::model::MoveTranslateMode,
+    planar: bool,
     label: &'static str,
     id: &'static str,
     target: PickerTarget,
     on_focus: MoveEdit,
     on_clear: MoveEdit,
 ) -> Option<MoveEdit> {
-    let visible = move_picker_slot_visible(mode, id);
+    let visible = move_picker_slot_visible(mode, id, planar);
     let picker = if visible {
         tool_pickers
             .iter()
@@ -5314,6 +5333,7 @@ fn show_move_value_row(
     ui: &mut egui::Ui,
     doc: &Document,
     mode: crate::model::MoveTranslateMode,
+    skip_axis: Option<usize>,
     label: &str,
     salt: &str,
     value: &str,
@@ -5321,7 +5341,7 @@ fn show_move_value_row(
     end_c_picked: bool,
     make: impl FnOnce(String) -> MoveEdit,
 ) -> Option<MoveEdit> {
-    let visible = move_value_slot_visible(mode, salt, end_c_picked);
+    let visible = move_value_slot_visible(mode, salt, end_c_picked, skip_axis);
     let id = move_field_id(salt);
     let mut edit = None;
     with_optional_slot(ui, ("move_slot", salt), visible, Some(id), |ui| {
@@ -6502,7 +6522,7 @@ pub fn show_pane(
                     .selected_text(mode.label())
                     .width(110.0)
                     .show_ui(ui, |ui| {
-                        for m in M::for_tool(control.allow_in_place) {
+                        for m in M::for_targets(control.allow_in_place, control.planar) {
                             ui.selectable_value(&mut mode, m, m.label());
                         }
                     });
@@ -6524,7 +6544,9 @@ pub fn show_pane(
             PickLimit::Finite(1),
         );
         let mode = control.translate_mode;
-        let is_face = mode == crate::model::MoveTranslateMode::FaceSnap;
+        let planar = control.planar;
+        let skip_axis = control.skip_axis;
+        let is_face = mode == crate::model::MoveTranslateMode::FaceSnap && !planar;
         let is_point = mode == crate::model::MoveTranslateMode::PointSnap;
         let is_free = mode == crate::model::MoveTranslateMode::Free;
         let end_c_picked = control.end_c.is_some();
@@ -6539,6 +6561,7 @@ pub fn show_pane(
             tool_pickers,
             &dummy_picker,
             mode,
+            planar,
             "Moving face",
             "move_face_moving",
             PickerTarget::MoveFaceMoving,
@@ -6551,6 +6574,7 @@ pub fn show_pane(
             tool_pickers,
             &dummy_picker,
             mode,
+            planar,
             "Fixed face",
             "move_face_fixed",
             PickerTarget::MoveFaceFixed,
@@ -6567,6 +6591,7 @@ pub fn show_pane(
             ui,
             doc,
             mode,
+            skip_axis,
             "Turn",
             "face_spin",
             &control.face_spin,
@@ -6582,6 +6607,7 @@ pub fn show_pane(
             tool_pickers,
             &dummy_picker,
             mode,
+            planar,
             "Reference Point",
             "move_reference_point",
             PickerTarget::MoveStartA,
@@ -6594,6 +6620,7 @@ pub fn show_pane(
             tool_pickers,
             &dummy_picker,
             mode,
+            planar,
             "Start point A",
             "move_start_point_a",
             PickerTarget::MoveStartA,
@@ -6606,6 +6633,7 @@ pub fn show_pane(
             tool_pickers,
             &dummy_picker,
             mode,
+            planar,
             "End point A",
             "move_end_point_a",
             PickerTarget::MoveEndA,
@@ -6616,13 +6644,13 @@ pub fn show_pane(
         // Free's typed slide sits above Rotation so the heading still groups the
         // turns, not the translation.
         take(show_move_value_row(
-            ui, doc, mode, "X", "tx", &control.tx, ValueKind::Length, end_c_picked, MoveEdit::Tx,
+            ui, doc, mode, skip_axis, "X", "tx", &control.tx, ValueKind::Length, end_c_picked, MoveEdit::Tx,
         ));
         take(show_move_value_row(
-            ui, doc, mode, "Y", "ty", &control.ty, ValueKind::Length, end_c_picked, MoveEdit::Ty,
+            ui, doc, mode, skip_axis, "Y", "ty", &control.ty, ValueKind::Length, end_c_picked, MoveEdit::Ty,
         ));
         take(show_move_value_row(
-            ui, doc, mode, "Z", "tz", &control.tz, ValueKind::Length, end_c_picked, MoveEdit::Tz,
+            ui, doc, mode, skip_axis, "Z", "tz", &control.tz, ValueKind::Length, end_c_picked, MoveEdit::Tz,
         ));
         with_optional_slot(ui, ("move_slot", "rotation"), is_point || is_free, None, |ui| {
             section_label(ui, "Rotation");
@@ -6665,6 +6693,7 @@ pub fn show_pane(
             tool_pickers,
             &dummy_picker,
             mode,
+            planar,
             "Start point B",
             "move_start_point_b",
             PickerTarget::MoveStartB,
@@ -6677,6 +6706,7 @@ pub fn show_pane(
             tool_pickers,
             &dummy_picker,
             mode,
+            planar,
             "End point B",
             "move_end_point_b",
             PickerTarget::MoveEndB,
@@ -6689,6 +6719,7 @@ pub fn show_pane(
             tool_pickers,
             &dummy_picker,
             mode,
+            planar,
             "Start point C",
             "move_start_point_c",
             PickerTarget::MoveStartC,
@@ -6701,6 +6732,7 @@ pub fn show_pane(
             tool_pickers,
             &dummy_picker,
             mode,
+            planar,
             "End point C",
             "move_end_point_c",
             PickerTarget::MoveEndC,
@@ -6714,6 +6746,7 @@ pub fn show_pane(
             ui,
             doc,
             mode,
+            skip_axis,
             "Roll",
             "roll",
             &control.roll_angle,
@@ -6722,13 +6755,13 @@ pub fn show_pane(
             MoveEdit::RollAngle,
         ));
         take(show_move_value_row(
-            ui, doc, mode, "X", "rx", &control.rx, ValueKind::Angle, end_c_picked, MoveEdit::Rx,
+            ui, doc, mode, skip_axis, "X", "rx", &control.rx, ValueKind::Angle, end_c_picked, MoveEdit::Rx,
         ));
         take(show_move_value_row(
-            ui, doc, mode, "Y", "ry", &control.ry, ValueKind::Angle, end_c_picked, MoveEdit::Ry,
+            ui, doc, mode, skip_axis, "Y", "ry", &control.ry, ValueKind::Angle, end_c_picked, MoveEdit::Ry,
         ));
         take(show_move_value_row(
-            ui, doc, mode, "Z", "rz", &control.rz, ValueKind::Angle, end_c_picked, MoveEdit::Rz,
+            ui, doc, mode, skip_axis, "Z", "rz", &control.rz, ValueKind::Angle, end_c_picked, MoveEdit::Rz,
         ));
         if let Some(edit) = pending.or(face_edit) {
             on_move_edit(edit);
@@ -9547,7 +9580,7 @@ mod tests {
                                 with_optional_slot(
                                     ui,
                                     ("move_slot", *salt),
-                                    move_value_slot_visible(mode, salt, false),
+                                    move_value_slot_visible(mode, salt, false, None),
                                     Some(id),
                                     |ui| {
                                         labeled_row(ui, *salt, |ui| {
@@ -9595,7 +9628,7 @@ mod tests {
         let mut painted = Vec::new();
         let _ = ctx.run_ui(Default::default(), |ui| {
             for salt in move_value_slots() {
-                if !move_value_slot_visible(M::FaceSnap, salt, false) {
+                if !move_value_slot_visible(M::FaceSnap, salt, false, None) {
                     continue;
                 }
                 let mut text = "0".to_string();
@@ -9655,7 +9688,7 @@ mod tests {
                                 with_optional_slot(
                                     ui,
                                     ("move_slot", *id),
-                                    move_picker_slot_visible(mode, id),
+                                    move_picker_slot_visible(mode, id, false),
                                     Some(egui::Id::new(*id)),
                                     |ui| {
                                         labeled_row_top(ui, *label, |ui| {
@@ -9704,7 +9737,7 @@ mod tests {
         let mut painted = Vec::new();
         let _ = ctx.run_ui(Default::default(), |ui| {
             for (id, _, label) in move_picker_slots() {
-                if !move_picker_slot_visible(M::FaceSnap, id) {
+                if !move_picker_slot_visible(M::FaceSnap, id, false) {
                     continue;
                 }
                 labeled_row_top(ui, *label, |ui| {
@@ -9824,7 +9857,7 @@ mod tests {
                     with_optional_slot(
                         ui,
                         ("move_slot", *salt),
-                        move_value_slot_visible(M::Free, salt, false),
+                        move_value_slot_visible(M::Free, salt, false, None),
                         Some(id),
                         |ui| {
                             labeled_row(ui, *salt, |ui| {
@@ -9852,22 +9885,33 @@ mod tests {
     #[test]
     fn move_slot_visible_matches_mode() {
         use crate::model::MoveTranslateMode as M;
-        assert!(move_value_slot_visible(M::FaceSnap, "face_spin", false));
-        assert!(!move_value_slot_visible(M::FaceSnap, "tx", false));
-        assert!(move_value_slot_visible(M::PointSnap, "angle_snap", false));
-        assert!(move_value_slot_visible(M::PointSnap, "roll", false));
-        assert!(!move_value_slot_visible(M::PointSnap, "roll", true));
-        assert!(!move_value_slot_visible(M::PointSnap, "face_spin", false));
-        assert!(move_value_slot_visible(M::Free, "tx", false));
-        assert!(move_value_slot_visible(M::Free, "rz", false));
-        assert!(!move_value_slot_visible(M::InPlace, "tx", false));
-        assert!(move_picker_slot_visible(M::FaceSnap, "move_face_moving"));
-        assert!(!move_picker_slot_visible(M::FaceSnap, "move_start_point_a"));
-        assert!(move_picker_slot_visible(M::PointSnap, "move_start_point_a"));
-        assert!(!move_picker_slot_visible(M::PointSnap, "move_reference_point"));
-        assert!(move_picker_slot_visible(M::Free, "move_reference_point"));
-        assert!(!move_picker_slot_visible(M::Free, "move_end_point_a"));
-        assert!(!move_picker_slot_visible(M::InPlace, "move_face_moving"));
+        assert!(move_value_slot_visible(M::FaceSnap, "face_spin", false, None));
+        assert!(!move_value_slot_visible(M::FaceSnap, "tx", false, None));
+        assert!(move_value_slot_visible(M::PointSnap, "angle_snap", false, None));
+        assert!(move_value_slot_visible(M::PointSnap, "roll", false, None));
+        assert!(!move_value_slot_visible(M::PointSnap, "roll", true, None));
+        assert!(!move_value_slot_visible(M::PointSnap, "face_spin", false, None));
+        assert!(move_value_slot_visible(M::Free, "tx", false, None));
+        assert!(move_value_slot_visible(M::Free, "rz", false, None));
+        assert!(!move_value_slot_visible(M::InPlace, "tx", false, None));
+        assert!(move_picker_slot_visible(M::FaceSnap, "move_face_moving", false));
+        assert!(!move_picker_slot_visible(M::FaceSnap, "move_start_point_a", false));
+        assert!(move_picker_slot_visible(M::PointSnap, "move_start_point_a", false));
+        assert!(!move_picker_slot_visible(M::PointSnap, "move_reference_point", false));
+        assert!(move_picker_slot_visible(M::Free, "move_reference_point", false));
+        assert!(!move_picker_slot_visible(M::Free, "move_end_point_a", false));
+        assert!(!move_picker_slot_visible(M::InPlace, "move_face_moving", false));
+        // #1601: an image-only move is planar — the out-of-plane axis loses its slide and
+        // is the only axis left to turn about, Face Snap's rows go, and Point Snap stops
+        // at the B pair (no Roll, no C).
+        assert!(!move_value_slot_visible(M::Free, "tz", false, Some(2)));
+        assert!(move_value_slot_visible(M::Free, "tx", false, Some(2)));
+        assert!(move_value_slot_visible(M::Free, "rz", false, Some(2)));
+        assert!(!move_value_slot_visible(M::Free, "rx", false, Some(2)));
+        assert!(!move_value_slot_visible(M::PointSnap, "roll", false, Some(2)));
+        assert!(!move_picker_slot_visible(M::FaceSnap, "move_face_moving", true));
+        assert!(move_picker_slot_visible(M::PointSnap, "move_end_point_b", true));
+        assert!(!move_picker_slot_visible(M::PointSnap, "move_end_point_c", true));
     }
 
     fn move_slot_auto_id_key(salt: &str) -> egui::Id {
@@ -9887,7 +9931,7 @@ mod tests {
             with_optional_slot(
                 ui,
                 ("move_slot", *id),
-                move_picker_slot_visible(mode, id),
+                move_picker_slot_visible(mode, id, false),
                 Some(egui::Id::new(*id)),
                 |ui| {
                     ui.ctx().data_mut(|d| {
@@ -9917,7 +9961,7 @@ mod tests {
             with_optional_slot(
                 ui,
                 ("move_slot", *salt),
-                move_value_slot_visible(mode, salt, false),
+                move_value_slot_visible(mode, salt, false, None),
                 Some(id),
                 |ui| {
                     ui.ctx().data_mut(|d| {
@@ -11315,6 +11359,8 @@ mod tests {
                 face_b: None,
                 editing: false,
                 can_commit: true,
+                planar: false,
+                skip_axis: None,
             };
             let input = ContextInput {
                 tool: Tool::Move,
@@ -11411,6 +11457,8 @@ mod tests {
                 face_b: None,
                 editing: false,
                 can_commit: true,
+                planar: false,
+                skip_axis: None,
             };
             let input = ContextInput {
                 tool: Tool::Move,
@@ -11485,6 +11533,8 @@ mod tests {
                 face_b: None,
                 editing: false,
                 can_commit: true,
+                planar: false,
+                skip_axis: None,
             }),
             ..input(&doc, &selection)
         };
@@ -11616,6 +11666,8 @@ mod tests {
             face_b: None,
             editing: false,
             can_commit: false,
+            planar: false,
+            skip_axis: None,
         };
         let pickers = |mode, bodies_focused, start_a_focused| {
             context_pane_content(&ContextInput {
@@ -12438,6 +12490,8 @@ mod tests {
             opacity: 0.4,
             name: None,
             calibration: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
         let img = doc.tracing_images.get(image).unwrap();
         let (a, b) = crate::model::image_calibration_endpoints(img).unwrap();

@@ -1060,14 +1060,50 @@ pub enum ConstraintPoint {
     ImageAnchor { image: TracingImageKey, anchor: TextAnchor },
 }
 
+/// A tracing image box-point in host-plane mm: unrotated box coordinates, then rotated
+/// about the image centre (#1601). `u_frac`/`v_frac` are 0..1 across the displayed quad.
+pub fn image_local_mm(img: &TracingImage, u_frac: f32, v_frac: f32) -> (f32, f32) {
+    image_local_mm_at(img.origin, img.rotation, img.width_mm, img.height_mm, u_frac, v_frac)
+}
+
+/// [`image_local_mm`] with an explicit origin/rotation — used for a live Move preview (#1611).
+pub fn image_local_mm_at(
+    origin: (f32, f32),
+    rotation: f32,
+    width_mm: f32,
+    height_mm: f32,
+    u_frac: f32,
+    v_frac: f32,
+) -> (f32, f32) {
+    let (ox, oy) = origin;
+    let cx = ox + width_mm * 0.5;
+    let cy = oy + height_mm * 0.5;
+    let x = ox + u_frac * width_mm - cx;
+    let y = oy + v_frac * height_mm - cy;
+    let (c, s) = (rotation.cos(), rotation.sin());
+    (cx + c * x - s * y, cy + s * x + c * y)
+}
+
+/// Inverse of [`image_local_mm`]: host-plane mm → image-UV fractions (#1601).
+pub fn image_plane_to_uv(img: &TracingImage, x: f32, y: f32) -> (f32, f32) {
+    let (ox, oy) = img.origin;
+    let (w, h) = (img.width_mm.max(1e-6), img.height_mm.max(1e-6));
+    let cx = ox + w * 0.5;
+    let cy = oy + h * 0.5;
+    let (c, s) = (img.rotation.cos(), img.rotation.sin());
+    let dx = x - cx;
+    let dy = y - cy;
+    let lx = c * dx + s * dy;
+    let ly = -s * dx + c * dy;
+    ((cx + lx - ox) / w, (cy + ly - oy) / h)
+}
+
 /// A calibration reference point's host-plane-local position (#425).
 pub fn image_calibration_point_uv(img: &TracingImage, index: usize) -> Option<(f32, f32)> {
     let cal = img.calibration.as_ref()?;
-    let (ox, oy) = img.origin;
-    let (w, h) = (img.width_mm.max(1e-6), img.height_mm.max(1e-6));
     match index {
-        0 => Some((ox + cal.u0 * w, oy + cal.v0 * h)),
-        1 => Some((ox + cal.u1 * w, oy + cal.v1 * h)),
+        0 => Some(image_local_mm(img, cal.u0, cal.v0)),
+        1 => Some(image_local_mm(img, cal.u1, cal.v1)),
         _ => None,
     }
 }
@@ -1103,11 +1139,7 @@ pub fn image_calibration_span_mm(img: &TracingImage) -> Option<f32> {
 pub fn image_calibration_endpoints(img: &TracingImage) -> Option<((f32, f32), (f32, f32))> {
     match (image_calibration_point_uv(img, 0), image_calibration_point_uv(img, 1)) {
         (Some(a), Some(b)) => Some((a, b)),
-        _ => {
-            let (ox, oy) = img.origin;
-            let (w, h) = (img.width_mm, img.height_mm);
-            Some(((ox + w * 0.5, oy + h), (ox + w * 0.5, oy)))
-        }
+        _ => Some((image_local_mm(img, 0.5, 1.0), image_local_mm(img, 0.5, 0.0))),
     }
 }
 
@@ -1152,13 +1184,10 @@ impl ImageEdge {
     }
 }
 
-/// A tracing image box-anchor's host-plane-local position (#1589).
+/// A tracing image box-anchor's host-plane-local position (#1589/#1601).
 pub fn image_anchor_uv(img: &TracingImage, anchor: TextAnchor) -> (f32, f32) {
     let (fx, fy) = anchor.fractions();
-    (
-        img.origin.0 + fx * img.width_mm,
-        img.origin.1 + fy * img.height_mm,
-    )
+    image_local_mm(img, fx, fy)
 }
 
 /// A tracing image edge's host-plane-local endpoints (#1589).
@@ -3245,7 +3274,12 @@ impl MoveTranslateMode {
 
     /// The modes a tool offers, in pane order (#1076). Only the Joint tool offers
     /// [`InPlace`](Self::InPlace) — a Move that moves nothing is a no-op, not a mode.
-    pub fn for_tool(joint: bool) -> Vec<Self> {
+    /// An image-only move (#1601) is `planar`: Face Snap is off the table, and Point Snap
+    /// is the 2D (in-plane) version.
+    pub fn for_targets(joint: bool, planar: bool) -> Vec<Self> {
+        if planar {
+            return vec![Self::PointSnap, Self::Free];
+        }
         let mut modes = vec![Self::PointSnap, Self::FaceSnap, Self::Free];
         if joint {
             modes.push(Self::InPlace);
@@ -3308,6 +3342,12 @@ pub enum MovePointRef {
     /// The **world origin** (#946): a fixed stationary point every document has, so a body can
     /// be snapped onto (0, 0, 0) or turned about it without a body having a corner there.
     Origin,
+    /// A tracing image's displayed-quad box point (#1601): 2D Point Snap's start (on a moving
+    /// image) or end (on a stationary one). `anchor` reuses the nine-point names.
+    ImageAnchor {
+        image: TracingImageKey,
+        anchor: TextAnchor,
+    },
 }
 
 /// The face a mating point sits on as a [`MateRef`] (#1079) — how the joint pane shows the
@@ -3368,7 +3408,8 @@ impl MovePointRef {
             | MovePointRef::EdgeMidpoint { body, .. }
             | MovePointRef::OnEdge { body, .. }
             | MovePointRef::OnFace { body, .. } => Some(*body),
-            MovePointRef::Origin => None,
+            // Neither the world origin (#946) nor an image box point (#1601) has a body.
+            MovePointRef::Origin | MovePointRef::ImageAnchor { .. } => None,
         }
     }
 }
@@ -4532,6 +4573,14 @@ pub struct TracingImage {
     /// image-UV space (0..1 across the displayed quad) and the real length it was assigned.
     #[serde(default)]
     pub calibration: Option<ImageCalibration>,
+    /// In-plane rotation about the image centre, radians, CCW from the host plane's u axis
+    /// (#1601). Move applies this from the 3D transform's in-plane part; the image never
+    /// leaves its plane.
+    #[serde(default)]
+    pub rotation: f32,
+    /// Authored rotation before any Move op, matching [`Self::base_origin`].
+    #[serde(default)]
+    pub base_rotation: Option<f32>,
 }
 
 /// Freshly imported tracing images are slightly translucent so sketch lines read on top (#1548).
@@ -5955,15 +6004,20 @@ mod tests {
         use MoveTranslateMode as M;
         assert_eq!(M::default(), M::PointSnap, "the Move tool's default");
         assert_eq!(
-            M::for_tool(false),
+            M::for_targets(false, false),
             vec![M::PointSnap, M::FaceSnap, M::Free],
             "no In place outside the Joint tool"
         );
-        assert_eq!(M::for_tool(true).last(), Some(&M::InPlace));
+        assert_eq!(
+            M::for_targets(false, true),
+            vec![M::PointSnap, M::Free],
+            "an image-only move is planar: Free and 2D Point Snap, no Face Snap (#1601)"
+        );
+        assert_eq!(M::for_targets(true, false).last(), Some(&M::InPlace));
         assert!(M::PointSnap.is_snap() && M::FaceSnap.is_snap());
         assert!(!M::Free.is_snap() && !M::InPlace.is_snap());
         // Every mode round-trips through its scripted name, and the old spellings still read.
-        for m in M::for_tool(true) {
+        for m in M::for_targets(true, false) {
             assert_eq!(M::from_name(m.name()), Some(m), "{m:?}");
         }
         assert_eq!(M::from_name("snap"), Some(M::PointSnap));
@@ -6254,6 +6308,8 @@ mod tests {
             opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
             name: None,
             calibration: None,
+            rotation: 0.0,
+            base_rotation: None,
         });
         assert!(doc.tracing_images.contains(image));
         assert_eq!(
