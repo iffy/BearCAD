@@ -19,20 +19,47 @@ pub const SKILL_URL: &str = "https://iffy.github.io/BearCAD/bearcad-skill.md";
 /// The skill's YAML front matter (`name:` / `description:`), which Anthropic-style skills
 /// require and every other tool ignores.
 pub fn front_matter() -> Option<&'static str> {
-    let rest = SKILL.strip_prefix("---\n")?;
-    let end = rest.find("\n---\n")?;
-    Some(&rest[..end])
+    parts().map(|(front, _)| front)
 }
 
 /// The skill with its front matter removed — the form for tools that take a plain
 /// instructions file (`AGENTS.md`, Copilot instructions) rather than a skill bundle.
 pub fn body() -> &'static str {
-    match SKILL.strip_prefix("---\n").and_then(|rest| {
-        rest.find("\n---\n")
-            .map(|end| &rest[end + "\n---\n".len()..])
-    }) {
-        Some(body) => body.trim_start(),
+    match parts() {
+        Some((_, body)) => body.trim_start(),
         None => SKILL,
+    }
+}
+
+/// `(front matter, body)` with the skill's enclosing `---` lines removed. Tolerates LF or
+/// CRLF line endings so the embedded copy parses identically whatever platform checked the
+/// source out (a Windows checkout writes `\r\n`; the parser must not care).
+fn parts() -> Option<(&'static str, &'static str)> {
+    let Some(rest) = SKILL.strip_prefix("---") else {
+        return None;
+    };
+    let Some(after_open) = strip_eol(rest) else {
+        return None;
+    };
+    let Some(close) = after_open.find("\n---") else {
+        return None;
+    };
+    let front_end = if after_open[..close].ends_with('\r') { close - 1 } else { close };
+    let tail = &after_open[close + "\n---".len()..];
+    let Some(after_close) = strip_eol(tail) else {
+        return None;
+    };
+    Some((&after_open[..front_end], after_close))
+}
+
+/// `s` with one leading line ending removed, LF or CRLF.
+fn strip_eol(s: &'static str) -> Option<&'static str> {
+    if s.starts_with("\r\n") {
+        Some(&s[2..])
+    } else if s.starts_with("\n") {
+        Some(&s[1..])
+    } else {
+        None
     }
 }
 

@@ -41,25 +41,33 @@ jobs:
           cache-on-failure: true
           shared-key: occt-linux
 
+      # Time-boxed with retries: `apt-get update` is known to stall on the hosted
+      # runners (DNS/network flake), and an unbounded hang eats the whole 6h workflow
+      # budget and aborts the run. A bounded step retries and moves on instead.
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            cmake \
-            libx11-dev \
-            libxcb-render0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev \
-            libxkbcommon-dev \
-            libxkbcommon-x11-0 \
-            libwayland-dev \
-            libssl-dev \
-            libvulkan-dev \
-            mesa-vulkan-drivers \
-            libgtk-3-dev \
-            libwebkit2gtk-4.1-dev \
-            xvfb
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update && timeout 600 sudo apt-get install -y \
+              build-essential \
+              cmake \
+              libx11-dev \
+              libxcb-render0-dev \
+              libxcb-shape0-dev \
+              libxcb-xfixes0-dev \
+              libxkbcommon-dev \
+              libxkbcommon-x11-0 \
+              libwayland-dev \
+              libssl-dev \
+              libvulkan-dev \
+              mesa-vulkan-drivers \
+              libgtk-3-dev \
+              libwebkit2gtk-4.1-dev \
+              xvfb; then
+              break
+            fi
+            echo "apt attempt $attempt failed; retrying"
+            sleep 10
+          done
 
       - name: Cache OCCT static build
         id: occt-cache
@@ -295,23 +303,31 @@ jobs:
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
+        # Time-boxed with retries: `apt-get update` is known to stall on the hosted
+        # runners (DNS/network flake), and an unbounded hang eats the whole 6h
+        # workflow budget and aborts the run (same hardening as the `occt` job).
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            cmake \
-            libx11-dev \
-            libxcb-render0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev \
-            libxkbcommon-dev \
-            libxkbcommon-x11-0 \
-            libwayland-dev \
-            libssl-dev \
-            libvulkan-dev \
-            mesa-vulkan-drivers \
-            libgtk-3-dev \
-            libwebkit2gtk-4.1-dev
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update && timeout 600 sudo apt-get install -y \
+              build-essential \
+              cmake \
+              libx11-dev \
+              libxcb-render0-dev \
+              libxcb-shape0-dev \
+              libxcb-xfixes0-dev \
+              libxkbcommon-dev \
+              libxkbcommon-x11-0 \
+              libwayland-dev \
+              libssl-dev \
+              libvulkan-dev \
+              mesa-vulkan-drivers \
+              libgtk-3-dev \
+              libwebkit2gtk-4.1-dev; then
+              break
+            fi
+            echo "apt attempt $attempt failed; retrying"
+            sleep 10
+          done
 
       # OCCT kernel, cached on the pinned submodule + per-OS build script,
       # matching the `occt`/`windows-occt` CI jobs' keys so each platform reuses

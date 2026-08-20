@@ -1,0 +1,5 @@
+# Normalize line endings so text checks out as LF on every platform (Windows git converts
+# to CRLF by default). The repo stores LF; a CRLF checkout breaks the parsers that embed
+# and slice these files at compile time (see src/ai/skill.rs front-matter parsing).
+* text=auto
+*.md text eol=lf
