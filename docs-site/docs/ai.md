@@ -34,7 +34,9 @@ was sent.
 
 Costs sit under each reply — tokens, and money when the model's rate is known. An unknown
 model shows tokens only; it never invents a price. **Manage backends** keeps a running
-all-time total per backend, with **Reset**.
+all-time total per backend, with **Reset**, and an **Edit** button that changes a backend's
+name, URL, model or key in place — the all-time spend survives an edit, so it only resets
+when you ask.
 
 Lua in a reply gets a **Run** button. Nothing runs on its own: one click runs one block
 against the active document, and **⌘/Ctrl+Z** takes it back.

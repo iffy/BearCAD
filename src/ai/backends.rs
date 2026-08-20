@@ -391,6 +391,28 @@ impl AiConfig {
         Ok(())
     }
 
+    /// Edit a backend in place (#1627): name, base URL, model and key change; the id,
+    /// per-model rate override, all-time spend and consent all survive. The old
+    /// remove-and-re-add flow threw the spend away — an edit is an edit of one entry,
+    /// and keeps the backend the conversation is already consented to.
+    pub fn edit(
+        &mut self,
+        id: &str,
+        name: String,
+        base_url: String,
+        model: String,
+        key: KeySource,
+    ) -> Result<(), String> {
+        let Some(existing) = self.backends.iter_mut().find(|b| b.id == id) else {
+            return Err(format!("no AI backend '{id}'"));
+        };
+        existing.name = name;
+        existing.base_url = base_url;
+        existing.model = model;
+        existing.key = key;
+        Ok(())
+    }
+
     /// A slug not already taken: `claude`, then `claude-2`, `claude-3`, …
     fn unique_id(&self, from: &str) -> String {
         let base = slug(from);
@@ -604,6 +626,68 @@ mod tests {
         config.select(&second).expect("select the second");
         assert_eq!(config.selected().map(|b| b.id.as_str()), Some(second.as_str()));
         assert!(config.select("nope").is_err());
+    }
+
+    #[test]
+    fn editing_a_backend_changes_fields_in_place_and_keeps_its_all_time_spend() {
+        // #1627: before this, changing a model or a key meant remove-and-re-add, which
+        // discarded the all-time spend. An edit must change the one entry — same id,
+        // spend, consent, unnamed rates — and only the fields the user edited.
+        let mut config = AiConfig::default();
+        let id = config.add(Backend {
+            key: KeySource::Stored("sk-old".into()),
+            model: "gpt-5".into(),
+            ..Backend::preset(Provider::OpenAi)
+        });
+        let backend = config.get_mut(&id).unwrap();
+        backend.consented = true;
+        backend.price = Some(super::super::pricing::Price::new(2.0, 8.0));
+        backend.spend = super::super::pricing::Spend {
+            input_tokens: 1_000,
+            output_tokens: 300,
+            cost: 0.42,
+            exchanges: 5,
+            ..super::super::pricing::Spend::default()
+        };
+
+        config
+            .edit(
+                &id,
+                "My Company Models".into(),
+                "https://gateway.example.com/v1".into(),
+                "gpt-5-mini".into(),
+                KeySource::Stored("sk-new".into()),
+            )
+            .expect("editing an existing backend edits it");
+
+        assert_eq!(config.backends.len(), 1, "an edit is an edit, not a new entry");
+        assert_eq!(config.selected().map(|b| b.id.as_str()), Some(id.as_str()));
+        let edited = config.get(&id).expect("the same entry comes back");
+        assert_eq!(edited.name, "My Company Models");
+        assert_eq!(edited.model, "gpt-5-mini");
+        assert_eq!(edited.base_url, "https://gateway.example.com/v1");
+        assert_eq!(edited.key, KeySource::Stored("sk-new".into()));
+        assert_eq!(edited.provider, Provider::OpenAi, "the provider does not change");
+        assert_eq!(edited.spend.cost, 0.42, "the all-time spend survives");
+        assert_eq!(edited.spend.exchanges, 5);
+        assert_eq!(edited.spend.tokens(), 1_300);
+        assert!(edited.consented, "consent survives too");
+        assert_eq!(edited.price.map(|p| p.input), Some(2.0), "the rate override survives");
+
+        // The id is preserved, so a script or a saved config can still find the backend.
+        assert!(!edited.id.is_empty());
+    }
+
+    #[test]
+    fn editing_an_unknown_backend_fails() {
+        let mut config = AiConfig::default();
+        assert!(
+            config
+                .edit("ghost", "Nope".into(), String::new(), String::new(), KeySource::None)
+                .is_err(),
+            "editing a backend that does not exist must fail"
+        );
+        assert!(config.backends.is_empty());
     }
 
     #[test]
