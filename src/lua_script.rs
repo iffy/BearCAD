@@ -4622,6 +4622,20 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1621: the AI config pane's section titles, in draw order — a read-only mirror of
+    // the headers, so a script can prove the pane split without a screenshot.
+    api.set(
+        "ai_pane_sections",
+        lua.create_function(|lua, ()| {
+            let titles = crate::ai::panel::section_titles();
+            let t = lua.create_table()?;
+            for (index, title) in titles.iter().enumerate() {
+                t.set(index + 1, title.to_string())?;
+            }
+            Ok(Value::Table(t))
+        })?,
+    )?;
+
     // egui multipass id-instability count (#1614). Zero on a healthy layout.
     api.set(
         "widget_id_warnings",
@@ -7971,7 +7985,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         -- `bearcad.ui.*` sub-namespace so scripts can focus on modeling (#46).
         bearcad.ui = {}
         local ui_funcs = {
-"tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_calibrate", "focus_dim", "pane", "pane_rect", "pane_scroll", "scroll_pane", "ai_sections", "widget_id_warnings", "palette", "settings",
+"tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_calibrate", "focus_dim", "pane", "pane_rect", "pane_scroll", "scroll_pane", "ai_sections", "ai_pane_sections", "widget_id_warnings", "palette", "settings",
             "changelog",
             "mcmaster",
             "report_issue", "windows", "focused_window",
@@ -9836,6 +9850,11 @@ mod tests {
                 assert(type(bearcad.ui[name]) == "function", "bearcad.ui." .. name .. " missing")
                 assert(bearcad[name] == nil, "bearcad." .. name .. " should move to bearcad.ui")
             end
+            -- #1621: the AI config pane splits into two sections, reported by name.
+            local sections = bearcad.ui.ai_pane_sections()
+            assert(#sections == 2, "the AI config pane has two sections, got " .. #sections)
+            assert(sections[1] == "Use AI inside BearCAD")
+            assert(sections[2] == "Have AI use BearCAD")
             -- drag_vertex/drag_line take sketch-local coordinates, so they live in the
             -- modeling namespace (#114) with back-compat aliases under bearcad.ui.
             for _, name in ipairs({ "drag_vertex", "drag_line" }) do

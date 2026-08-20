@@ -4113,9 +4113,10 @@ impl App {
         }
     }
 
-    /// The AI pane (#1594): one place for the chat, the agent skill installer and the local
-    /// MCP server. Docks beside the other right-hand panes and closes from its own X, like
-    /// every pane in `show_pane_shell`.
+    /// The AI config pane (#1594/#1621): chat-backend configuration, the agent skill
+    /// installer, and the local MCP server. Docks beside the other right-hand panes and
+    /// closes from its own X, like every pane in `show_pane_shell`. The conversation
+    /// itself lives in the separate **AI Chat** bottom pane (`show_ai_chat_panel`).
     fn show_ai_pane(&mut self, ui: &mut egui::Ui) {
         // Always allocate the docked slot, even while hidden (#1614 / #1211). Inserting
         // this right panel only once it opens shifts auto-id salts for every later panel
@@ -15009,6 +15010,13 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 self.dispatch_palette_outcome(chosen);
             }
         }
+
+        // AI Chat pane (#1620): a full-width bottom console, always allotted (height 0
+        // when closed) so it cannot shift the panels that follow, the way the command
+        // palette's slot stays put (#1211).
+        show_ai_chat_panel(ui, self.state.panes.is_visible(Pane::AiChat), |ui| {
+            ai::panel::chat_contents(ui, &mut self.state);
+        });
         egui::Panel::bottom("status")
             .frame(theme::panel_frame())
             .show(ui, |ui| {
@@ -19684,6 +19692,48 @@ fn show_command_palette_panel(
                 add_contents(ui);
             }
         });
+}
+
+/// Bottom-panel height of the open AI Chat pane (#1620).
+const AI_CHAT_PANEL_HEIGHT: f32 = 300.0;
+
+/// Always-on bottom panel slot for the AI Chat pane (#1620).
+///
+/// A full-width console like [`show_command_palette_panel`]: a bottom `Panel` whose slot
+/// is always allocated (height 0 when closed), so opening it cannot shift auto-id salts
+/// for later panels (status bar, Elements, Context). Records its rect so a script can
+/// read `bearcad.ui.pane_rect("ai_chat")`, and forgets it when hidden.
+pub fn show_ai_chat_panel(
+    ui: &mut egui::Ui,
+    open: bool,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    let ctx = &ui.ctx().clone();
+    let height = if open {
+        AI_CHAT_PANEL_HEIGHT
+    } else {
+        0.0
+    };
+    let frame = if open {
+        theme::panel_frame()
+    } else {
+        egui::Frame::NONE
+    };
+    let response = egui::Panel::bottom(ai::panel::CHAT_SHELL_ID)
+        .resizable(false)
+        .exact_size(height)
+        .show_separator_line(open)
+        .frame(frame)
+        .show(ui, |ui| {
+            if open {
+                add_contents(ui);
+            }
+        });
+    remember_pane_rect(
+        ctx,
+        ai::panel::CHAT_SHELL_ID,
+        if open { Some(response.response.rect) } else { None },
+    );
 }
 
 /// Container for a side pane: a docked side `Panel` normally, a closable floating
@@ -39259,6 +39309,45 @@ mod tests {
             probe(false),
             probe(true),
             "toggling the command palette must not renumber Elements-pane widget ids"
+        );
+    }
+
+    /// #1620: opening the AI Chat pane must not renumber side-pane widget ids.
+    ///
+    /// The AI Chat pane is a bottom `Panel` allocated *before* the status bar and the
+    /// side panes. Inserting it only while open shifts the root auto-id salt for every
+    /// later panel. [`show_ai_chat_panel`] always allocates the slot (height 0 when
+    /// closed) so those salts stay put.
+    #[test]
+    fn ai_chat_panel_slot_keeps_side_pane_widget_ids_stable() {
+        fn probe(open: bool) -> egui::Id {
+            let ctx = egui::Context::default();
+            let mut captured = None;
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                super::show_command_palette_panel(ui, false, |ui| {
+                    ui.label("palette");
+                });
+                super::show_ai_chat_panel(ui, open, |ui| {
+                    ui.label("chat");
+                });
+                egui::Panel::bottom("status").show(ui, |ui| {
+                    ui.label("status");
+                });
+                egui::Panel::left("hierarchy").show(ui, |ui| {
+                    ui.scope_builder(
+                        egui::UiBuilder::new().id(egui::Id::new(("pane_contents", "hierarchy"))),
+                        |ui| {
+                            captured = Some(ui.button("Elements").id);
+                        },
+                    );
+                });
+            });
+            captured.expect("side-pane button id")
+        }
+        assert_eq!(
+            probe(false),
+            probe(true),
+            "toggling the AI Chat pane must not renumber Elements-pane widget ids"
         );
     }
 

@@ -1,7 +1,15 @@
-//! The AI pane's contents (#1594).
+//! The AI panes' contents (#1594, #1620/#1621).
 //!
-//! Three sections, in a fixed order, each collapsible. The pane is hidden by default and is
-//! opened from View ▸ Panes or the command palette ("AI pane").
+//! Two panes, split apart in #1620:
+//!
+//! - **AI** ([`SHELL_ID`]) holds the configuration. Its two sections (#1621) are
+//!   *Use AI inside BearCAD* (the chat backend configuration) and *Have AI use
+//!   BearCAD* (the agent skill and the local MCP server). It opens from View ▸ Panes or
+//!   a command palette (`"AI pane"`), docks right, and is hidden by default.
+//! - **AI Chat** ([`CHAT_SHELL_ID`]) holds the conversation. It opens at the bottom of
+//!   the app and spans it, the way the command palette does.
+//!
+//! Both are silent until the user configures a backend and presses send.
 
 use eframe::egui;
 
@@ -9,20 +17,34 @@ use crate::actions::{Action, AppState};
 use crate::ai::backends::{Backend, KeySource, Provider};
 use crate::ai::pricing;
 
-/// The pane's title, shown in its heading and (on phones) its window bar.
+/// The configuration pane's title, shown in its heading and (on phones) its window bar.
 pub const PANE_TITLE: &str = "AI";
 
-/// The panel id the pane docks under — also the key a scripted
-/// `bearcad.ui.screenshot("ai")` crops to.
+/// The config pane's panel id — also the key a scripted `bearcad.ui.screenshot("ai")`
+/// crops to.
 pub const SHELL_ID: &str = "ai";
 
-/// The pane's sections, in the order they are drawn. Also the ids their collapsing
-/// headers remember their open/closed state under, and what
-/// `bearcad.ui.ai_sections(...)` drives (#1619).
-const SECTIONS: [&str; 3] = ["Chat", "Agents & Skill", "MCP Server"];
+/// The chat pane's title (its bottom console has no window bar to repeat it, but a
+/// distinct name keeps it straight in scripts and screenshots).
+pub const CHAT_PANE_TITLE: &str = "AI Chat";
 
-/// Draw the pane body. `state` is the live app state; the pane reads the open documents
-/// and writes back through actions like any other pane.
+/// The chat pane's panel id — a bottom console spanning the app, like the command
+/// palette. Also the key `bearcad.ui.screenshot("ai_chat")` crops to.
+pub const CHAT_SHELL_ID: &str = "ai_chat";
+
+/// The configuration pane's sections, in the order they are drawn. Also the ids their
+/// collapsing headers remember their open/closed state under, and what
+/// `bearcad.ui.ai_sections(...)` drives (#1619).
+const SECTIONS: [&str; 2] = ["Use AI inside BearCAD", "Have AI use BearCAD"];
+
+/// The configuration pane's section titles (#1621), in draw order — what
+/// `bearcad.ui.ai_pane_sections()` reports so a script can prove the split.
+pub fn section_titles() -> &'static [&'static str; 2] {
+    &SECTIONS
+}
+
+/// Draw the configuration pane body (#1621). `state` is the live app state; the pane
+/// reads the open documents and writes back through actions like any other pane.
 pub fn contents(ui: &mut egui::Ui, state: &mut AppState) {
     ui.heading(PANE_TITLE);
     ui.add_space(8.0);
@@ -34,7 +56,7 @@ pub fn contents(ui: &mut egui::Ui, state: &mut AppState) {
         return;
     }
 
-    // #1619: the three sections together outgrow the pane once they are all open, so the
+    // #1619: the two sections together outgrow the pane once they are all open, so the
     // pane scrolls rather than clipping whatever does not fit.
     let out = egui::ScrollArea::vertical()
         .id_salt("ai_pane_scroll")
@@ -51,11 +73,11 @@ pub fn contents(ui: &mut egui::Ui, state: &mut AppState) {
     );
 }
 
-/// The pane's three sections, in a fixed order.
+/// The configuration pane's two sections, in a fixed order (#1621).
 fn sections(ui: &mut egui::Ui, state: &mut AppState) {
     // Help ▸ Install AI Agent Skill… opens the pane at that section, so it wins over the
-    // usual default of Chat for one frame.
-    // `bearcad.ui.ai_sections(...)` opens or collapses all three at once (#1619); like the
+    // usual default (chat config) for one frame.
+    // `bearcad.ui.ai_sections(...)` opens or collapses both at once (#1619); like the
     // skill request it applies for one frame, and the headers remember it from there.
     let (open_skill, open_all) = {
         let mut ai = state.ai.borrow_mut();
@@ -65,15 +87,11 @@ fn sections(ui: &mut egui::Ui, state: &mut AppState) {
         )
     };
 
-    section_open(ui, SECTIONS[0], true, open_all, |ui| chat_section(ui, state));
-    section_open(
-        ui,
-        SECTIONS[1],
-        false,
-        open_all.or(open_skill.then_some(true)),
-        |ui| skill_section(ui, state),
-    );
-    section_open(ui, SECTIONS[2], false, open_all, |ui| mcp_section(ui, state));
+    section_open(ui, SECTIONS[0], true, open_all, |ui| backend_picker(ui, state));
+    section_open(ui, SECTIONS[1], false, open_all.or(open_skill.then_some(true)), |ui| {
+        skill_section(ui, state);
+        mcp_section(ui, state);
+    });
 }
 
 /// A collapsible pane section. `default_open` decides the state before the user touches it;
@@ -98,21 +116,26 @@ fn section_open(
         });
 }
 
+/// The AI Chat pane's body (#1620): the conversation itself. The chat backend
+/// configuration lives in the AI config pane, under "Use AI inside BearCAD" (#1621), so
+/// the input here only reports when there is still no backend to talk to.
 #[cfg(target_arch = "wasm32")]
-fn chat_section(ui: &mut egui::Ui, state: &mut AppState) {
-    backend_picker(ui, state);
+pub fn chat_contents(ui: &mut egui::Ui, _state: &mut AppState) {
+    ui.heading(CHAT_PANE_TITLE);
+    ui.add_space(8.0);
     ui.label(
-        egui::RichText::new("Chat runs in the desktop app.")
+        egui::RichText::new("The AI chat needs the desktop app.")
             .size(12.0)
             .weak(),
     );
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn chat_section(ui: &mut egui::Ui, state: &mut AppState) {
+pub fn chat_contents(ui: &mut egui::Ui, state: &mut AppState) {
     use crate::ai::context::ContextScope;
 
-    backend_picker(ui, state);
+    ui.heading(CHAT_PANE_TITLE);
+    ui.add_space(6.0);
 
     let mut action: Option<Action> = None;
     let (has_backend, streaming, scope) = {
@@ -267,7 +290,7 @@ fn chat_section(ui: &mut egui::Ui, state: &mut AppState) {
 
     if !has_backend {
         ui.label(
-            egui::RichText::new("Add a backend above to start a conversation.")
+            egui::RichText::new("Add a backend in the AI pane to start a conversation.")
                 .size(11.0)
                 .weak(),
         );

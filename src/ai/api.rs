@@ -157,7 +157,9 @@ bearcad.ui.view("front"|"top"|"iso"|…)
 bearcad.ui.zoom_fit()
 bearcad.ui.screenshot("shot.png")            -- viewport; "window" / a pane name for others
 bearcad.ui.camera{ yaw?, pitch?, distance?, target? }
-bearcad.ui.pane("ai"|"hierarchy"|…, "show"|"hide"|"toggle")
+bearcad.ui.pane("ai"|"ai_chat"|"hierarchy"|…, "show"|"hide"|"toggle")
+bearcad.ui.ai_sections("open"|"close")      -- the AI config pane's two sections
+bearcad.ui.ai_pane_sections()               -- their names, in draw order
 ```
 "#;
 

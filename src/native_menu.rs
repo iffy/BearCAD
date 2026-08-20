@@ -402,7 +402,7 @@ impl NativeMenu {
             true,
             None,
         );
-        // #1604: the same idea for AI tools — opens the AI pane at Agents & Skill.
+        // #1604: the same idea for AI tools — opens the AI pane at Have AI use BearCAD.
         let install_ai_skill = MenuItem::with_id(
             "install_ai_skill",
             "Install AI Agent Skill…",
