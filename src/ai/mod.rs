@@ -59,6 +59,9 @@ pub struct AiState {
     /// Set when something asks for the Agents & Skill section specifically (Help ▸ Install
     /// AI Agent Skill…), so the pane opens showing it rather than the chat (#1604).
     pub open_skill_section: bool,
+    /// Set for one frame when something asks for the MCP Server section specifically
+    /// (Integration ▸ AI MCP Server…), so the pane opens showing it rather than the chat.
+    pub open_mcp_section: bool,
     /// Set for one frame when something asks every section to open (or collapse) at once —
     /// `bearcad.ui.ai_sections(...)` (#1619). The headers remember it from there.
     pub sections_open: Option<bool>,

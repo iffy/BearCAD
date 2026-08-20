@@ -54,13 +54,15 @@ pub fn contents(ui: &mut egui::Ui, state: &mut AppState) {
 /// The pane's three sections, in a fixed order.
 fn sections(ui: &mut egui::Ui, state: &mut AppState) {
     // Help ▸ Install AI Agent Skill… opens the pane at that section, so it wins over the
-    // usual default of Chat for one frame.
+    // usual default of Chat for one frame. Integration ▸ AI MCP Server… does the same for
+    // the MCP section.
     // `bearcad.ui.ai_sections(...)` opens or collapses all three at once (#1619); like the
     // skill request it applies for one frame, and the headers remember it from there.
-    let (open_skill, open_all) = {
+    let (open_skill, open_mcp, open_all) = {
         let mut ai = state.ai.borrow_mut();
         (
             std::mem::take(&mut ai.open_skill_section),
+            std::mem::take(&mut ai.open_mcp_section),
             std::mem::take(&mut ai.sections_open),
         )
     };
@@ -73,7 +75,7 @@ fn sections(ui: &mut egui::Ui, state: &mut AppState) {
         open_all.or(open_skill.then_some(true)),
         |ui| skill_section(ui, state),
     );
-    section_open(ui, SECTIONS[2], false, open_all, |ui| mcp_section(ui, state));
+    section_open(ui, SECTIONS[2], false, open_all.or(open_mcp.then_some(true)), |ui| mcp_section(ui, state));
 }
 
 /// A collapsible pane section. `default_open` decides the state before the user touches it;
