@@ -7784,6 +7784,35 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1640: what is on a drawing's page — one entry per view, in page order, so a script can
+    // check a drawing the way it checks geometry. `bearcad.drawing_views(drawing)`.
+    api.set(
+        "drawing_views",
+        lua.create_function(|lua, index: usize| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let doc = unsafe { &tick.state().doc };
+            let out = lua.create_table()?;
+            let Some(key) = doc.drawings.keys().nth(index) else {
+                return Ok(Value::Table(out));
+            };
+            for (i, view) in doc.drawings[key].views.iter().enumerate() {
+                let t = lua.create_table()?;
+                t.set("orientation", view.orientation.label())?;
+                t.set("style", view.style.label())?;
+                t.set("dimensions", view.dimensioned_edges.len())?;
+                t.set("point_dimensions", view.point_dims.len())?;
+                t.set("align_lines", view.align_lines)?;
+                if let Some(parent) = view.aligned_parent {
+                    t.set("aligned_to", parent)?;
+                }
+                out.set(i + 1, t)?;
+            }
+            Ok(Value::Table(out))
+        })?,
+    )?;
+
     // #1645: a free point-to-point dimension on a drawing view. `a`/`b` are the view's own
     // projected millimetres (what the page shows), and `axis` picks what is measured:
     // "direct" (default), "horizontal", or "vertical".
@@ -8903,7 +8932,7 @@ mod tests {
         run_lua_expect_ok(
             r#"
             local list = bearcad.ui.tutorials()
-            assert(#list == 9, "catalog size, got " .. #list)
+            assert(#list == 10, "catalog size, got " .. #list)
             local names = {}
             for i, t in ipairs(list) do
               assert(t.number == i, t.name .. " should be #" .. i .. ", got " .. tostring(t.number))
@@ -8913,6 +8942,30 @@ mod tests {
             assert(names.constraints == "Constraints")
             assert(names.combine == "Combine")
             assert(names.raised_text == "Raised text")
+            assert(names.drawing == "Technical drawing")
+            "#,
+        );
+    }
+
+    /// #1640: the technical-drawing tutorial walks with assists and leaves a real page —
+    /// a front view with two aligned to it, a shaded three-quarter view, and a dimension.
+    #[test]
+    fn drawing_tutorial_lua_walks_and_leaves_a_page() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.ui.tutorial("drawing")
+            assert(bearcad.ui.tutorial_step() == 0)
+            local guard = 0
+            while bearcad.ui.tutorial_step() ~= nil do
+              guard = guard + 1
+              assert(guard < 60, "drawing tutorial should finish")
+              bearcad.ui.tutorial_assist()
+              if bearcad.ui.tutorial_step() ~= nil then
+                bearcad.ui.tutorial_next()
+              end
+            end
+            assert(bearcad.count("drawing") == 1, "one drawing")
+            assert(bearcad.count("body") >= 1, "the bracket is there")
             "#,
         );
     }

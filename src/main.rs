@@ -4698,6 +4698,9 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 tutorial::UiAnchor::CombineKind(kind) => context::combine_kind_rect(ctx, kind),
                 // Text tool string field in the Context pane (#1557).
                 tutorial::UiAnchor::TextContent => context::text_content_rect(ctx),
+                // A selected drawing view's orientation bear and Style row (#1640).
+                tutorial::UiAnchor::DrawingViewBear => context::drawing_view_bear_rect(ctx),
+                tutorial::UiAnchor::DrawingViewStyle => context::drawing_view_style_rect(ctx),
                 // Elements-pane sketch row (#1279).
                 tutorial::UiAnchor::ElementsSketch => hierarchy::elements_sketch_row_rect(ctx),
                 // View-cube bear + home button live in the viewport's top-right (#1269).
@@ -27489,6 +27492,12 @@ impl App {
         if ui.input(|i| i.pointer.any_released()) {
             self.drawing_exploder_owns_click = false;
         }
+
+        // The tutorial follows the user onto the drawing workbench (#1640): its orb and
+        // Bear's bubble draw over the sheet. Nothing here has a world position, so the
+        // projection is empty and only UI anchors resolve.
+        let no_world = |_p: Vec3| -> Option<egui::Pos2> { None };
+        self.draw_tutorial_overlay(ui, area, &no_world);
 
         if let Some((view, a, b)) = add_point_dim {
             self.state.apply(Action::AddDrawingPointDim {

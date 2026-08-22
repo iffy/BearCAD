@@ -5392,6 +5392,26 @@ pub fn shape_field_rect(
     ctx.data(|d| d.get_temp::<egui::Rect>(shape_field_rect_id(field)))
 }
 
+/// Egui-memory key for the drawing-view orientation bear (#1640).
+fn drawing_view_bear_rect_id() -> egui::Id {
+    egui::Id::new("drawing_view_bear_rect")
+}
+
+/// Where the Context pane drew a selected drawing view's navigation bear this frame (#1640).
+pub fn drawing_view_bear_rect(ctx: &egui::Context) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<egui::Rect>(drawing_view_bear_rect_id()))
+}
+
+/// Egui-memory key for a selected drawing view's Style combo (#1640).
+fn drawing_view_style_rect_id() -> egui::Id {
+    egui::Id::new("drawing_view_style_rect")
+}
+
+/// Where the Context pane drew a selected drawing view's Style row this frame (#1640).
+pub fn drawing_view_style_rect(ctx: &egui::Context) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<egui::Rect>(drawing_view_style_rect_id()))
+}
+
 /// Egui-memory key for a Create Shape kind button (Cuboid / Cylinder / Sphere) this frame.
 fn shape_kind_rect_id(kind: crate::model::PrimitiveKind) -> egui::Id {
     egui::Id::new(("shape_kind_rect", kind.script_name()))
@@ -8429,6 +8449,8 @@ pub fn show_pane(
                 .filter_map(|o| drawing_orientation_to_cube_pick(*o))
                 .collect();
             let allowed = control.aligned.then_some(ring.as_slice());
+            // #1640: the tutorial's orb points at this bear.
+            let bear_top = ui.cursor().min;
             if let Some(pick) = crate::view_cube::show_orientation_picker(
                 ui,
                 "drawing_view_bear",
@@ -8441,6 +8463,11 @@ pub fn show_pane(
                 allowed,
             ) {
                 on_drawing_view_edit(DrawingViewEdit::Orientation(orientation_pick_to_drawing(pick)));
+            }
+            let bear_rect = egui::Rect::from_min_max(bear_top, ui.cursor().min);
+            if bear_rect.height() > 1.0 {
+                let ctx = ui.ctx().clone();
+                ctx.data_mut(|d| d.insert_temp(drawing_view_bear_rect_id(), bear_rect));
             }
             if control.aligned {
                 ui.label(
@@ -8455,6 +8482,7 @@ pub fn show_pane(
                 }
             }
         }
+        let style_top = ui.cursor().min;
         labeled_row(ui, "Style", |ui| {
             egui::ComboBox::from_id_salt("drawing_view_style")
                 .selected_text(control.style.label())
@@ -8466,6 +8494,14 @@ pub fn show_pane(
                     }
                 });
         });
+        // #1640: the tutorial's orb points at this row.
+        {
+            let row = egui::Rect::from_min_max(style_top, ui.cursor().min);
+            if row.height() > 1.0 {
+                let ctx = ui.ctx().clone();
+                ctx.data_mut(|d| d.insert_temp(drawing_view_style_rect_id(), row));
+            }
+        }
         labeled_row(ui, "Scale", |ui| {
             if control.aligned {
                 // An aligned child inherits the parent's scale and can't change it (#296/#300).

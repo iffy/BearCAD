@@ -63,6 +63,11 @@ pub enum UiAnchor {
     CombineKind(crate::model::BooleanOpKind),
     /// The Text tool's string field in the Context pane (#1557).
     TextContent,
+    /// The navigation bear in a selected drawing view's Context pane (#1640): where the
+    /// view's orientation is picked.
+    DrawingViewBear,
+    /// The **Style** combo of a selected drawing view (#1640).
+    DrawingViewStyle,
 }
 
 /// What a step's glowing orb points at, once resolved against the live state.
@@ -340,6 +345,12 @@ pub static TUTORIALS: &[Tutorial] = &[
         name: "raised_text",
         title: "Raised text",
         steps: RAISED_TEXT_STEPS,
+    },
+    // #1640: a page of views — front, two aligned to it, a three-quarter view, dimensions.
+    Tutorial {
+        name: "drawing",
+        title: "Technical drawing",
+        steps: DRAWING_STEPS,
     },
 ];
 
@@ -3416,6 +3427,400 @@ fn shape_tool_active_or_past_cylinder(app: &AppState) -> bool {
     shape_tool_active(app) || has_sphere(app) || sphere_kind_ready(app)
 }
 
+// --- Technical drawing tutorial (#1640) --------------------------------------------
+
+/// Seed an L-shaped bracket: a 60x20x20 base with a 20x20x50 upright at one end. Every
+/// straight-on view of it is different, so the walkthrough's three aligned views each say
+/// something — and the three-quarter view has a corner worth looking at.
+fn seed_drawing_bracket(app: &mut AppState) {
+    if !app.doc.bodies.is_empty() {
+        return;
+    }
+    let planes: Vec<_> = app.doc.construction_planes.keys().collect();
+    for index in planes {
+        app.apply(Action::DeleteElement {
+            element: crate::hierarchy::SceneElement::ConstructionPlane(index),
+        });
+    }
+    for (origin, w, d, h) in [
+        ([0.0, 0.0, 0.0], "60", "20", "20"),
+        ([0.0, 0.0, 20.0], "20", "20", "50"),
+    ] {
+        let mut shape = crate::model::Primitive::new(crate::model::PrimitiveKind::Cuboid);
+        shape.origin = origin;
+        shape.width = w.into();
+        shape.depth = d.into();
+        shape.height = h.into();
+        app.apply(Action::CreateShape { shape });
+    }
+    let bodies: Vec<_> = app.doc.bodies.keys().collect();
+    if bodies.len() == 2 {
+        app.apply(Action::CreateBooleanOperation {
+            kind: crate::model::BooleanOpKind::Combine,
+            a: vec![bodies[0], bodies[1]],
+            b: Vec::new(),
+            keep_b: false,
+            solid_count: None,
+        });
+    }
+}
+
+/// The drawing the walkthrough is building, if it exists yet.
+fn tutorial_drawing(app: &AppState) -> Option<crate::model::DrawingKey> {
+    app.doc.drawings.keys().next()
+}
+
+fn drawing_views(app: &AppState) -> usize {
+    tutorial_drawing(app)
+        .and_then(|d| app.doc.drawings.get(d))
+        .map(|d| d.views.len())
+        .unwrap_or(0)
+}
+
+fn has_drawing(app: &AppState) -> bool {
+    tutorial_drawing(app).is_some()
+}
+
+fn drawing_add_ready(app: &AppState) -> bool {
+    app.tool == Tool::DrawingAdd || drawing_views(app) >= 1
+}
+
+fn drawing_has_a_view(app: &AppState) -> bool {
+    drawing_views(app) >= 1
+}
+
+fn aligned_children(app: &AppState) -> usize {
+    tutorial_drawing(app)
+        .and_then(|d| app.doc.drawings.get(d))
+        .map(|d| d.views.iter().filter(|v| v.aligned_parent.is_some()).count())
+        .unwrap_or(0)
+}
+
+fn drawing_align_ready(app: &AppState) -> bool {
+    app.tool == Tool::DrawingAlign || aligned_children(app) >= 1
+}
+
+fn drawing_has_one_aligned(app: &AppState) -> bool {
+    aligned_children(app) >= 1
+}
+
+fn drawing_has_two_aligned(app: &AppState) -> bool {
+    aligned_children(app) >= 2
+}
+
+/// A fourth view, not aligned to anything — the one that becomes the three-quarter look.
+fn free_extra_view(app: &AppState) -> Option<usize> {
+    let d = app.doc.drawings.get(tutorial_drawing(app)?)?;
+    d.views
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find(|(_, v)| v.aligned_parent.is_none())
+        .map(|(i, _)| i)
+}
+
+fn drawing_has_extra_view(app: &AppState) -> bool {
+    free_extra_view(app).is_some()
+}
+
+fn extra_view_is_angled(app: &AppState) -> bool {
+    let Some(key) = tutorial_drawing(app) else {
+        return false;
+    };
+    let Some(index) = free_extra_view(app) else {
+        return false;
+    };
+    app.doc.drawings.get(key).and_then(|d| d.views.get(index)).is_some_and(|v| {
+        matches!(
+            v.orientation,
+            crate::model::DrawingOrientation::Corner(_)
+                | crate::model::DrawingOrientation::Isometric
+                | crate::model::DrawingOrientation::Edge(_)
+        )
+    })
+}
+
+fn extra_view_is_shaded(app: &AppState) -> bool {
+    let Some(key) = tutorial_drawing(app) else {
+        return false;
+    };
+    let Some(index) = free_extra_view(app) else {
+        return false;
+    };
+    app.doc
+        .drawings
+        .get(key)
+        .and_then(|d| d.views.get(index))
+        .is_some_and(|v| v.style == crate::model::DrawingViewStyle::Shaded)
+}
+
+fn drawing_dimension_ready(app: &AppState) -> bool {
+    app.tool == Tool::Dimension || drawing_has_a_dimension(app)
+}
+
+fn drawing_has_a_dimension(app: &AppState) -> bool {
+    tutorial_drawing(app)
+        .and_then(|d| app.doc.drawings.get(d))
+        .is_some_and(|d| {
+            d.views
+                .iter()
+                .any(|v| !v.dimensioned_edges.is_empty() || !v.point_dims.is_empty())
+        })
+}
+
+fn assist_make_drawing(app: &mut AppState) {
+    if has_drawing(app) {
+        return;
+    }
+    app.apply(Action::CreateDrawing { name: None });
+}
+
+fn assist_add_front_view(app: &mut AppState) {
+    assist_make_drawing(app);
+    if drawing_has_a_view(app) {
+        return;
+    }
+    let (Some(drawing), Some(body)) = (tutorial_drawing(app), app.doc.bodies.keys().last()) else {
+        return;
+    };
+    app.apply(Action::AddDrawingView {
+        drawing,
+        bodies: vec![body],
+        orientation: crate::model::DrawingOrientation::Front,
+    });
+    // Bottom-left of the page, so the aligned views have room above and to the right.
+    app.apply(Action::MoveDrawingView { drawing, view: 0, pos_x: 0.3, pos_y: 0.62 });
+}
+
+fn assist_align(app: &mut AppState, dir: crate::model::AlignDir, pos: f32) {
+    assist_add_front_view(app);
+    let Some(drawing) = tutorial_drawing(app) else {
+        return;
+    };
+    app.apply(Action::AddAlignedDrawingView { drawing, parent: 0, dir, pos });
+}
+
+fn assist_align_top(app: &mut AppState) {
+    if drawing_has_one_aligned(app) {
+        return;
+    }
+    assist_align(app, crate::model::AlignDir::Above, 0.25);
+}
+
+fn assist_align_side(app: &mut AppState) {
+    if drawing_has_two_aligned(app) {
+        return;
+    }
+    assist_align_top(app);
+    assist_align(app, crate::model::AlignDir::Right, 0.72);
+}
+
+fn assist_add_extra_view(app: &mut AppState) {
+    assist_align_side(app);
+    if drawing_has_extra_view(app) {
+        return;
+    }
+    let (Some(drawing), Some(body)) = (tutorial_drawing(app), app.doc.bodies.keys().last()) else {
+        return;
+    };
+    app.apply(Action::AddDrawingView {
+        drawing,
+        bodies: vec![body],
+        orientation: crate::model::DrawingOrientation::Front,
+    });
+    let view = drawing_views(app) - 1;
+    app.apply(Action::MoveDrawingView { drawing, view, pos_x: 0.72, pos_y: 0.68 });
+}
+
+fn assist_angle_extra_view(app: &mut AppState) {
+    assist_add_extra_view(app);
+    let (Some(drawing), Some(view)) = (tutorial_drawing(app), free_extra_view(app)) else {
+        return;
+    };
+    app.apply(Action::SetDrawingViewOrientation {
+        drawing,
+        view,
+        orientation: crate::model::DrawingOrientation::Corner(
+            crate::model::CornerView::FrontRightTop,
+        ),
+    });
+}
+
+fn assist_shade_extra_view(app: &mut AppState) {
+    assist_angle_extra_view(app);
+    let (Some(drawing), Some(view)) = (tutorial_drawing(app), free_extra_view(app)) else {
+        return;
+    };
+    app.apply(Action::SetDrawingViewStyle {
+        drawing,
+        view,
+        style: crate::model::DrawingViewStyle::Shaded,
+    });
+}
+
+/// Dimension the base's long bottom edge on the front view — the one anyone would reach for.
+fn assist_dimension_front(app: &mut AppState) {
+    assist_add_front_view(app);
+    if drawing_has_a_dimension(app) {
+        return;
+    }
+    let Some(drawing) = tutorial_drawing(app) else {
+        return;
+    };
+    let Some(view) = app.doc.drawings.get(drawing).and_then(|d| d.views.first()).cloned() else {
+        return;
+    };
+    let views = app.doc.drawings[drawing].views.clone();
+    let edges = crate::drawing::drawing_view_dimensionable_edges(&app.doc, &views, &view);
+    let (right, up) = crate::drawing::resolved_view_axes(&views, &view);
+    // The longest edge that isn't edge-on in this view: the one the drawing shows off.
+    let best = edges
+        .iter()
+        .filter(|(a, b)| {
+            let (pa, pb) = (
+                glam::Vec2::new(a.dot(right), a.dot(up)),
+                glam::Vec2::new(b.dot(right), b.dot(up)),
+            );
+            (pb - pa).length() > 1e-3
+        })
+        .max_by(|x, y| {
+            (x.1 - x.0)
+                .length()
+                .partial_cmp(&(y.1 - y.0).length())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .copied();
+    let Some((a, b)) = best else {
+        return;
+    };
+    let q = crate::hierarchy::quantize_body_point;
+    app.apply(Action::ToggleDrawingDimension {
+        drawing,
+        view: 0,
+        a: q(a),
+        b: q(b),
+    });
+}
+
+/// #1640: a page of views. Add the first, align two more to it, add a three-quarter view and
+/// shade it, then dimension something. One action per step; every drawing action has a
+/// "do it for me" button, because the page is a workbench of its own and the orb can only
+/// point at the tools and the Context pane from here.
+static DRAWING_STEPS: &[Step] = &[
+    plain_step_enter(
+        "Here's a bracket. Let's put it on a technical drawing.",
+        StepAnchor::None,
+        None,
+        seed_drawing_bracket,
+    ),
+    assisted_step(
+        "A drawing is a page of views. Make one from the Insert menu's `New Drawing`.",
+        StepAnchor::None,
+        Some(has_drawing),
+        StepAssist {
+            label: "Make the drawing",
+            run: assist_make_drawing,
+        },
+        None,
+    ),
+    plain_step(
+        "Click the Add view tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::DrawingAdd)),
+        Some(drawing_add_ready),
+    ),
+    assisted_step(
+        "Click the lower left of the page to drop a front view.",
+        StepAnchor::None,
+        Some(drawing_has_a_view),
+        StepAssist {
+            label: "Place it for me",
+            run: assist_add_front_view,
+        },
+        None,
+    ),
+    plain_step(
+        "Click the Aligned view tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::DrawingAlign)),
+        Some(drawing_align_ready),
+    ),
+    assisted_step(
+        "Click above the front view: that's the top view, lined up with it.",
+        StepAnchor::None,
+        Some(drawing_has_one_aligned),
+        StepAssist {
+            label: "Add the top view",
+            run: assist_align_top,
+        },
+        None,
+    ),
+    assisted_step(
+        "Now click to the right of the front view for the side view.",
+        StepAnchor::None,
+        Some(drawing_has_two_aligned),
+        StepAssist {
+            label: "Add the side view",
+            run: assist_align_side,
+        },
+        None,
+    ),
+    plain_step(
+        "Three views, lined up and sharing a scale. Dashed projection lines join them.",
+        StepAnchor::None,
+        None,
+    ),
+    assisted_step(
+        "Back to the Add view tool: drop one more view in the empty corner.",
+        StepAnchor::None,
+        Some(drawing_has_extra_view),
+        StepAssist {
+            label: "Add the view",
+            run: assist_add_extra_view,
+        },
+        None,
+    ),
+    assisted_step(
+        "In the Context pane, click a corner dot on the bear: the view turns to that angle.",
+        StepAnchor::Ui(UiAnchor::DrawingViewBear),
+        Some(extra_view_is_angled),
+        StepAssist {
+            label: "Turn it for me",
+            run: assist_angle_extra_view,
+        },
+        None,
+    ),
+    assisted_step(
+        "Set that view's Style to Shaded, so the three-quarter view reads as a solid.",
+        StepAnchor::Ui(UiAnchor::DrawingViewStyle),
+        Some(extra_view_is_shaded),
+        StepAssist {
+            label: "Shade it for me",
+            run: assist_shade_extra_view,
+        },
+        None,
+    ),
+    plain_step(
+        "Click the Dimension tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Dimension)),
+        Some(drawing_dimension_ready),
+    ),
+    assisted_step(
+        "Click a line on the front view to dimension it.",
+        StepAnchor::None,
+        Some(drawing_has_a_dimension),
+        StepAssist {
+            label: "Dimension one for me",
+            run: assist_dimension_front,
+        },
+        None,
+    ),
+    plain_step(
+        "That's a drawing: three aligned views, a three-quarter view, and a dimension. \
+         File \u{25b8} Export sends it to SVG or PDF.",
+        StepAnchor::None,
+        None,
+    ),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3539,10 +3944,11 @@ mod tests {
         assert_eq!(tutorial_index("constraints"), Some(6), "#1591: constraints is seventh");
         assert_eq!(tutorial_index("combine"), Some(7), "#1556: combine is eighth");
         assert_eq!(tutorial_index("raised_text"), Some(8), "#1557: raised text is ninth");
+        assert_eq!(tutorial_index("drawing"), Some(9), "#1640: technical drawing is tenth");
         assert_eq!(tutorial_index("bracket"), None, "#1334: build-a-bracket tutorial is gone");
         assert_eq!(tutorial_index("nope"), None);
-        assert_eq!(TUTORIALS.last().unwrap().name, "raised_text");
-        assert_eq!(TUTORIALS.len(), 9, "pane lists every remaining walkthrough");
+        assert_eq!(TUTORIALS.last().unwrap().name, "drawing");
+        assert_eq!(TUTORIALS.len(), 10, "pane lists every remaining walkthrough");
         for tut in TUTORIALS {
             assert_ne!(tut.name, "bracket");
             assert_ne!(tut.title, "Build an angle bracket");
@@ -5228,7 +5634,52 @@ mod tests {
                 "numbering must keep the skill title: {shown}"
             );
         }
-        assert_eq!(TUTORIALS.len(), 9);
+        assert_eq!(TUTORIALS.len(), 10);
+    }
+
+    /// #1640: walking the technical-drawing tutorial with its assists leaves the page the
+    /// narration describes — a front view, a top and a side aligned to it, a shaded
+    /// three-quarter view, and a dimension.
+    #[test]
+    fn the_drawing_tutorial_builds_the_page_it_describes() {
+        let mut app = AppState::default();
+        finish_tutorial_via_next(&mut app, "drawing");
+        let drawing = app.doc.drawings.values().next().expect("the drawing");
+        assert_eq!(drawing.views.len(), 4, "front + top + side + three-quarter");
+        assert_eq!(drawing.views[0].orientation, crate::model::DrawingOrientation::Front);
+        let aligned: Vec<_> = drawing
+            .views
+            .iter()
+            .filter(|v| v.aligned_parent == Some(0))
+            .map(|v| (v.orientation, v.aligned_dir))
+            .collect();
+        assert_eq!(aligned.len(), 2, "two views aligned to the front, got {aligned:?}");
+        assert!(
+            aligned.iter().any(|(o, _)| *o == crate::model::DrawingOrientation::Top),
+            "one of them is the top view: {aligned:?}"
+        );
+        assert!(
+            aligned.iter().any(|(o, _)| *o == crate::model::DrawingOrientation::Right),
+            "and one the side view: {aligned:?}"
+        );
+        // Every aligned view shows its projection lines (#1642).
+        assert!(drawing.views.iter().filter(|v| v.aligned_parent.is_some()).all(|v| v.align_lines));
+
+        let angled = drawing
+            .views
+            .iter()
+            .find(|v| matches!(v.orientation, crate::model::DrawingOrientation::Corner(_)))
+            .expect("a three-quarter view");
+        assert!(angled.aligned_parent.is_none(), "the angled view stands on its own");
+        assert_eq!(
+            angled.style,
+            crate::model::DrawingViewStyle::Shaded,
+            "an at-an-angle view reads as a solid, not wireframe"
+        );
+        assert!(
+            drawing.views.iter().any(|v| !v.dimensioned_edges.is_empty()),
+            "and something is dimensioned"
+        );
     }
 
     fn chamfer_tut() -> &'static Tutorial {

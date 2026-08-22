@@ -313,6 +313,7 @@ assert(s.bbox.max[3] - s.bbox.min[3] == 10)
 
 -- A body's faces and edges, spelled the way a joint's mate takes them.
 local f = bearcad.body_faces(0)[1]             -- { body, face = {x,y,z}, normal = {x,y,z} }
+local v = bearcad.drawing_views(0)[1]          -- { orientation, style, dimensions, aligned_to? }
 local e2 = bearcad.body_edges(0)[1]            -- { body, edge = { {x,y,z}, {x,y,z} } }
 local c = bearcad.body_cylinders(0)[1]         -- a hole/boss: radius, length, and its axis
 
