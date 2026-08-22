@@ -49,6 +49,8 @@ pub enum UiAnchor {
     ShapeKind(crate::model::PrimitiveKind),
     /// The sketch row in the Elements pane (#1279) — double-click to reopen for edit.
     ElementsSketch,
+    /// A body row in the Elements pane (#1647) — where the Add-view tool takes its click.
+    ElementsBody,
     /// The view-cube bear HUD (#1269).
     ViewCube,
     /// The house (Home view) button under the view cube (#1269).
@@ -3485,6 +3487,39 @@ fn drawing_add_ready(app: &AppState) -> bool {
     app.tool == Tool::DrawingAdd || drawing_views(app) >= 1
 }
 
+/// The Add-view tool a second time round (#1649), for the three-quarter view.
+fn drawing_add_ready_again(app: &AppState) -> bool {
+    app.tool == Tool::DrawingAdd || drawing_has_extra_view(app)
+}
+
+/// Where the walkthrough wants each view. The Add-view tool drops a projection at the page
+/// centre and leaves it to be dragged, so the tutorial parks it itself (#1648) — the steps
+/// that follow ask for views *above* and *right* of the base one, which needs the room.
+const FRONT_VIEW_SPOT: (f32, f32) = (0.3, 0.62);
+const EXTRA_VIEW_SPOT: (f32, f32) = (0.72, 0.68);
+
+fn park_view(app: &mut AppState, view: usize, (pos_x, pos_y): (f32, f32)) {
+    let Some(drawing) = tutorial_drawing(app) else {
+        return;
+    };
+    if app.doc.drawings.get(drawing).is_none_or(|d| d.views.len() <= view) {
+        return;
+    }
+    app.apply(Action::MoveDrawingView { drawing, view, pos_x, pos_y });
+}
+
+/// Park the base view lower-left before asking for the views that line up with it (#1648).
+fn park_front_view(app: &mut AppState) {
+    park_view(app, 0, FRONT_VIEW_SPOT);
+}
+
+/// Park the fourth view in the empty corner before turning it (#1648).
+fn park_extra_view(app: &mut AppState) {
+    if let Some(view) = free_extra_view(app) {
+        park_view(app, view, EXTRA_VIEW_SPOT);
+    }
+}
+
 fn drawing_has_a_view(app: &AppState) -> bool {
     drawing_views(app) >= 1
 }
@@ -3589,7 +3624,7 @@ fn assist_add_front_view(app: &mut AppState) {
         orientation: crate::model::DrawingOrientation::Front,
     });
     // Bottom-left of the page, so the aligned views have room above and to the right.
-    app.apply(Action::MoveDrawingView { drawing, view: 0, pos_x: 0.3, pos_y: 0.62 });
+    park_view(app, 0, FRONT_VIEW_SPOT);
 }
 
 fn assist_align(app: &mut AppState, dir: crate::model::AlignDir, pos: f32) {
@@ -3629,7 +3664,7 @@ fn assist_add_extra_view(app: &mut AppState) {
         orientation: crate::model::DrawingOrientation::Front,
     });
     let view = drawing_views(app) - 1;
-    app.apply(Action::MoveDrawingView { drawing, view, pos_x: 0.72, pos_y: 0.68 });
+    park_view(app, view, EXTRA_VIEW_SPOT);
 }
 
 fn assist_angle_extra_view(app: &mut AppState) {
@@ -3714,7 +3749,7 @@ static DRAWING_STEPS: &[Step] = &[
         seed_drawing_bracket,
     ),
     assisted_step(
-        "A drawing is a page of views. Make one from the Insert menu's `New Drawing`.",
+        "A drawing is a page of views. Make one from the CAD menu's `New Drawing`.",
         StepAnchor::None,
         Some(has_drawing),
         StepAssist {
@@ -3729,8 +3764,8 @@ static DRAWING_STEPS: &[Step] = &[
         Some(drawing_add_ready),
     ),
     assisted_step(
-        "Click the lower left of the page to drop a front view.",
-        StepAnchor::None,
+        "Now click the bracket in the Elements pane: a front view lands on the page.",
+        StepAnchor::Ui(UiAnchor::ElementsBody),
         Some(drawing_has_a_view),
         StepAssist {
             label: "Place it for me",
@@ -3738,10 +3773,12 @@ static DRAWING_STEPS: &[Step] = &[
         },
         None,
     ),
-    plain_step(
+    plain_step_enter(
         "Click the Aligned view tool.",
         StepAnchor::Ui(UiAnchor::Tool(Tool::DrawingAlign)),
         Some(drawing_align_ready),
+        // The view is parked lower-left first, so "above" and "to the right" have room.
+        park_front_view,
     ),
     assisted_step(
         "Click above the front view: that's the top view, lined up with it.",
@@ -3768,9 +3805,14 @@ static DRAWING_STEPS: &[Step] = &[
         StepAnchor::None,
         None,
     ),
+    plain_step(
+        "Back to the Add view tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::DrawingAdd)),
+        Some(drawing_add_ready_again),
+    ),
     assisted_step(
-        "Back to the Add view tool: drop one more view in the empty corner.",
-        StepAnchor::None,
+        "Click the bracket in the Elements pane again: that's a fourth view.",
+        StepAnchor::Ui(UiAnchor::ElementsBody),
         Some(drawing_has_extra_view),
         StepAssist {
             label: "Add the view",
@@ -3778,7 +3820,7 @@ static DRAWING_STEPS: &[Step] = &[
         },
         None,
     ),
-    assisted_step(
+    assisted_step_enter(
         "In the Context pane, click a corner dot on the bear: the view turns to that angle.",
         StepAnchor::Ui(UiAnchor::DrawingViewBear),
         Some(extra_view_is_angled),
@@ -3787,6 +3829,8 @@ static DRAWING_STEPS: &[Step] = &[
             run: assist_angle_extra_view,
         },
         None,
+        // Parked in the empty corner first, so the three-quarter view has the page to itself.
+        park_extra_view,
     ),
     assisted_step(
         "Set that view's Style to Shaded, so the three-quarter view reads as a solid.",
@@ -3825,6 +3869,44 @@ static DRAWING_STEPS: &[Step] = &[
 mod tests {
     use super::*;
     use crate::actions::{Action, Pane};
+
+    /// #1646/#1647/#1649: the drawing walkthrough names the CAD menu, and each of its two
+    /// Add-view rounds is two steps — pick the tool, then click the body in the Elements
+    /// pane, which is where that tool actually takes its click.
+    #[test]
+    fn drawing_walkthrough_splits_picking_the_add_view_tool_from_placing_the_view() {
+        let make = DRAWING_STEPS
+            .iter()
+            .find(|s| s.narration.contains("New Drawing"))
+            .expect("a step makes the drawing");
+        assert!(make.narration.contains("CAD menu"), "{}", make.narration);
+        assert!(!make.narration.contains("Insert"), "{}", make.narration);
+
+        let add_tool: Vec<usize> = DRAWING_STEPS
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                matches!(s.anchor, StepAnchor::Ui(UiAnchor::Tool(Tool::DrawingAdd)))
+            })
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(add_tool.len(), 2, "the Add-view tool is picked twice, one step each");
+        for i in add_tool {
+            let place = &DRAWING_STEPS[i + 1];
+            assert!(
+                matches!(place.anchor, StepAnchor::Ui(UiAnchor::ElementsBody)),
+                "the step after picking the tool should ring the Elements-pane body row, \
+                 got {:?} for {:?}",
+                place.anchor,
+                place.narration
+            );
+            assert!(
+                place.narration.contains("Elements pane"),
+                "and say so: {:?}",
+                place.narration
+            );
+        }
+    }
 
     /// Back reviews earlier steps without auto-advance re-firing on their already-
     /// satisfied predicates; Next resumes auto mode once it reaches unfinished work.

@@ -7804,6 +7804,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 t.set("dimensions", view.dimensioned_edges.len())?;
                 t.set("point_dimensions", view.point_dims.len())?;
                 t.set("align_lines", view.align_lines)?;
+                // Where the card sits on the page, and how big it is (page fractions, #1648).
+                t.set("pos_x", view.pos_x)?;
+                t.set("pos_y", view.pos_y)?;
+                t.set("size_x", view.size_x)?;
+                t.set("size_y", view.size_y)?;
                 if let Some(parent) = view.aligned_parent {
                     t.set("aligned_to", parent)?;
                 }

@@ -8449,23 +8449,26 @@ pub fn show_pane(
                 .filter_map(|o| drawing_orientation_to_cube_pick(*o))
                 .collect();
             let allowed = control.aligned.then_some(ring.as_slice());
-            // #1640: the tutorial's orb points at this bear.
-            let bear_top = ui.cursor().min;
-            if let Some(pick) = crate::view_cube::show_orientation_picker(
-                ui,
-                "drawing_view_bear",
-                seed,
-                selected,
-                false,
-                None,
-                None,
-                false,
-                allowed,
-            ) {
+            // #1640/#1650: the tutorial's orb points at this bear — scoped so the stored rect
+            // is the bear itself, not a zero-width slice of the pane's cursor column.
+            let picker = ui.scope(|ui| {
+                crate::view_cube::show_orientation_picker(
+                    ui,
+                    "drawing_view_bear",
+                    seed,
+                    selected,
+                    false,
+                    None,
+                    None,
+                    false,
+                    allowed,
+                )
+            });
+            if let Some(pick) = picker.inner {
                 on_drawing_view_edit(DrawingViewEdit::Orientation(orientation_pick_to_drawing(pick)));
             }
-            let bear_rect = egui::Rect::from_min_max(bear_top, ui.cursor().min);
-            if bear_rect.height() > 1.0 {
+            let bear_rect = picker.response.rect;
+            if bear_rect.height() > 1.0 && bear_rect.width() > 1.0 {
                 let ctx = ui.ctx().clone();
                 ctx.data_mut(|d| d.insert_temp(drawing_view_bear_rect_id(), bear_rect));
             }
@@ -8482,8 +8485,7 @@ pub fn show_pane(
                 }
             }
         }
-        let style_top = ui.cursor().min;
-        labeled_row(ui, "Style", |ui| {
+        let style_combo = labeled_row(ui, "Style", |ui| {
             egui::ComboBox::from_id_salt("drawing_view_style")
                 .selected_text(control.style.label())
                 .show_ui(ui, |ui| {
@@ -8492,15 +8494,15 @@ pub fn show_pane(
                             on_drawing_view_edit(DrawingViewEdit::Style(style));
                         }
                     }
-                });
+                })
+                .response
+                .rect
         });
-        // #1640: the tutorial's orb points at this row.
-        {
-            let row = egui::Rect::from_min_max(style_top, ui.cursor().min);
-            if row.height() > 1.0 {
-                let ctx = ui.ctx().clone();
-                ctx.data_mut(|d| d.insert_temp(drawing_view_style_rect_id(), row));
-            }
+        // #1640/#1650: the tutorial's orb points at the dropdown itself — a row rect spanning
+        // to the next row's cursor is zero-width, which parked the ring on the "Style" label.
+        if style_combo.width() > 1.0 {
+            let ctx = ui.ctx().clone();
+            ctx.data_mut(|d| d.insert_temp(drawing_view_style_rect_id(), style_combo));
         }
         labeled_row(ui, "Scale", |ui| {
             if control.aligned {

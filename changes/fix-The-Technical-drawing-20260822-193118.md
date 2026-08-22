@@ -1,0 +1,1 @@
+The Technical drawing tutorial now points at the CAD menu, walks you through picking the Add view tool and then clicking the body in the Elements pane, and parks each view where the next step expects it.

@@ -13,6 +13,17 @@ pub fn elements_sketch_row_rect(ctx: &egui::Context) -> Option<egui::Rect> {
     ctx.data(|d| d.get_temp::<egui::Rect>(elements_sketch_row_rect_id()))
 }
 
+/// Egui-memory key for the first body row drawn in Elements this frame (#1647).
+fn elements_body_row_rect_id() -> egui::Id {
+    egui::Id::new("elements_body_row_rect")
+}
+
+/// Where the Elements pane drew a body row this frame (#1647) — the Add-view tool takes its
+/// click there, so the drawing walkthrough's orb points at it.
+pub fn elements_body_row_rect(ctx: &egui::Context) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<egui::Rect>(elements_body_row_rect_id()))
+}
+
 use crate::actions::SketchSession;
 use crate::icons::{
     icon_button, icon_for_constraint_kind, icon_for_visibility, selectable_icon_button,
@@ -5971,10 +5982,14 @@ fn show_row(
             Some(icon) => icon.rect.union(response.rect),
             None => response.rect,
         };
-        // Tutorial orb: first sketch row in Elements (#1279).
-        if matches!(node, HierarchyNode::Sketch(_)) {
+        // Tutorial orb: first sketch row (#1279) / first body row (#1647) in Elements.
+        let orb_row = match node {
+            HierarchyNode::Sketch(_) => Some(elements_sketch_row_rect_id()),
+            HierarchyNode::Body(_) => Some(elements_body_row_rect_id()),
+            _ => None,
+        };
+        if let Some(id) = orb_row {
             ui.ctx().data_mut(|d| {
-                let id = elements_sketch_row_rect_id();
                 if d.get_temp::<egui::Rect>(id).is_none() {
                     d.insert_temp(id, row_rect);
                 }
