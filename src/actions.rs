@@ -2583,60 +2583,14 @@ pub enum Action {
     SetElementsViewMode { mode: crate::hierarchy::HierarchyViewMode },
     SetPaneVisible { pane: Pane, visible: bool },
     TogglePane(Pane),
-    /// Add an AI backend (#1595). The id is derived from the name and returned in the
-    /// status line; a colliding name gets a suffix rather than overwriting.
-    AddAiBackend { backend: crate::ai::backends::Backend },
-    /// Remove an AI backend. Removing the selected one moves the selection.
-    RemoveAiBackend { id: String },
-    /// Point the conversation at a configured backend.
-    SelectAiBackend { id: String },
-    /// Send a chat message (#1598). The frame loop supplies the document context and starts
-    /// the request; this only records the turn.
-    SendAiMessage { text: String },
-    /// Stop a reply in progress. What already arrived stays in the thread.
-    CancelAiMessage,
-    /// Empty the conversation (and stop anything running).
-    ClearAiConversation,
-    /// Choose how much of the workspace a message carries (#1597).
-    SetAiContextScope { scope: crate::ai::context::ContextScope },
-    /// Answer the first-send confirmation (#1609): agree and send, or decline and keep the
-    /// message in the box.
-    ResolveAiConsent { agreed: bool },
-    /// Start a backend's running cost total from zero (#1599).
-    ResetAiBackendSpend { id: String },
-    /// Connect a backend through its provider's PKCE OAuth flow (#1624). Starts the flow and
-    /// hands the frame loop a URL to open; the key arrives later, without the user ever
-    /// seeing one. Refused for a provider that offers no such flow.
-    ConnectAiBackend { id: String },
-    /// Abandon a connection attempt: the browser tab is forgotten and the callback closes.
-    CancelAiConnect,
-    /// Ask a backend which models it has (#1617), filling its **Model** dropdown. Only ever
-    /// from an explicit request — the app asks nothing on its own.
-    RefreshAiModels { id: String },
-    /// Choose the model a backend runs. Takes the published rate with it when the backend's
-    /// own list carried one (#1599).
-    SetAiBackendModel { id: String, model: String },
-    /// Edit an existing backend in place (#1627): name, base URL, model and key all change;
-    /// the id, rates, all-time spend and consent survive. The old remove-and-re-add flow
-    /// threw the spend away; this does not recreate the backend.
-    EditAiBackend {
-        id: String,
-        name: String,
-        base_url: String,
-        model: String,
-        key: crate::ai::backends::KeySource,
-    },
-    /// Run one Lua block from the latest reply (#1600). Never automatic: this is only ever
-    /// the user clicking **Run** on that block, or a script asking for it by index.
-    RunAiBlock { index: usize },
     /// Install the AI agent skill for one target (#1604). `dir` is the project directory
     /// for project-scoped targets.
     InstallAiSkill { target: String, dir: Option<std::path::PathBuf> },
     /// Remove the AI agent skill from one target.
     UninstallAiSkill { target: String, dir: Option<std::path::PathBuf> },
-    /// Open the AI pane at its Have AI use BearCAD section (Help ▸ Install AI Agent Skill…).
+    /// Open the AI pane at its Agent Skill section (Integration ▸ AI ▸ Install AI Agent Skill…).
     ShowAiSkillSection,
-    /// Open the AI pane at its MCP Server section (Integration ▸ AI MCP Server…).
+    /// Open the AI pane at its MCP Server section (Integration ▸ AI ▸ MCP Server…).
     ShowMcpServerSection,
     /// Open or collapse every AI pane section at once (`bearcad.ui.ai_sections`, #1619).
     SetAiSectionsOpen { open: bool },
@@ -3621,20 +3575,6 @@ impl Action {
                     | Action::SetCommandPaletteOpen { .. }
                     | Action::SetPaneVisible { .. }
                     // App configuration, not document content — never undoable.
-                    | Action::AddAiBackend { .. }
-                    | Action::RemoveAiBackend { .. }
-                    | Action::SelectAiBackend { .. }
-                    | Action::SendAiMessage { .. }
-                    | Action::CancelAiMessage
-                    | Action::ClearAiConversation
-                    | Action::SetAiContextScope { .. }
-                    | Action::ResolveAiConsent { .. }
-                    | Action::ResetAiBackendSpend { .. }
-                    | Action::ConnectAiBackend { .. }
-                    | Action::CancelAiConnect
-                    | Action::RefreshAiModels { .. }
-                    | Action::SetAiBackendModel { .. }
-                    | Action::EditAiBackend { .. }
                     | Action::InstallAiSkill { .. }
                     | Action::UninstallAiSkill { .. }
                     | Action::ShowAiSkillSection
@@ -3688,14 +3628,10 @@ pub enum Pane {
     Context,
     /// Interactive walkthrough list (#1241 / #1291). Closed by default.
     Tutorials,
-    /// Everything AI-related in one place (#1593/#1594): chat, the agent skill, the local
-    /// MCP server. Opt-in — closed by default, and nothing in it reaches the network until
-    /// the user configures a backend.
+    /// The two ways an agent drives BearCAD (#1593/#1594/#1633): the local MCP server and
+    /// the agent skill. Opt-in — closed by default, and nothing in it listens until the
+    /// user switches the server on.
     Ai,
-    /// The conversation itself (#1620), reassigned its own pane so the config above can be
-    /// reached without leaving it. A full-width bottom console, like the command palette;
-    /// also closed by default.
-    AiChat,
 }
 
 impl Pane {
@@ -3706,7 +3642,6 @@ impl Pane {
         Pane::Parameters,
         Pane::Tutorials,
         Pane::Ai,
-        Pane::AiChat,
         Pane::ViewCube,
     ];
 
@@ -3719,7 +3654,6 @@ impl Pane {
             Pane::Context => "Context",
             Pane::Tutorials => "Tutorials",
             Pane::Ai => "AI",
-            Pane::AiChat => "AI Chat",
         }
     }
 
@@ -3732,7 +3666,6 @@ impl Pane {
             Pane::Context => "context",
             Pane::Tutorials => "tutorials",
             Pane::Ai => "ai",
-            Pane::AiChat => "ai_chat",
         }
     }
 
@@ -3746,7 +3679,6 @@ impl Pane {
             "context" | "properties" | "props" => Some(Pane::Context),
             "tutorials" | "tutorial" => Some(Pane::Tutorials),
             "ai" | "assistant" | "configuration" | "config" => Some(Pane::Ai),
-            "ai_chat" | "aichat" | "chat" => Some(Pane::AiChat),
             _ => None,
         }
     }
@@ -3764,8 +3696,6 @@ pub struct PaneVisibility {
     pub tutorials: bool,
     /// AI pane (#1594); off until the user opens it.
     pub ai: bool,
-    /// AI Chat pane (#1620); off until the user opens it.
-    pub ai_chat: bool,
 }
 
 impl Default for PaneVisibility {
@@ -3777,7 +3707,6 @@ impl Default for PaneVisibility {
             context: true,
             tutorials: false,
             ai: false,
-            ai_chat: false,
         }
     }
 }
@@ -3791,7 +3720,6 @@ impl PaneVisibility {
             Pane::Context => self.context,
             Pane::Tutorials => self.tutorials,
             Pane::Ai => self.ai,
-            Pane::AiChat => self.ai_chat,
         }
     }
 
@@ -3803,7 +3731,6 @@ impl PaneVisibility {
             Pane::Context => self.context = visible,
             Pane::Tutorials => self.tutorials = visible,
             Pane::Ai => self.ai = visible,
-            Pane::AiChat => self.ai_chat = visible,
         }
     }
 
@@ -4321,7 +4248,7 @@ pub struct AppState {
     pub completed_tutorials: Vec<String>,
     /// Set when [`Self::completed_tutorials`] changes so the host can persist it.
     pub completed_tutorials_dirty: bool,
-    /// AI backends and the conversation (#1593), shared with every other tab — see
+    /// The MCP server's configuration and handle (#1593), shared with every other tab — see
     /// [`crate::ai::SharedAi`]. Mirrored from `ai.json`; the host writes it back when
     /// [`crate::ai::AiState::config_dirty`] is set.
     pub ai: crate::ai::SharedAi,
@@ -11982,128 +11909,6 @@ impl AppState {
                 self.status = pane_status(pane, self.panes.is_visible(pane));
                 ActionResult::Ok
             }
-            Action::AddAiBackend { backend } => {
-                let name = backend.name.clone();
-                let mut ai = self.ai.borrow_mut();
-                let id = ai.config.add(backend);
-                ai.config_dirty = true;
-                drop(ai);
-                self.status = format!("Added AI backend {name} ({id})");
-                ActionResult::Ok
-            }
-            Action::RemoveAiBackend { id } => {
-                let mut ai = self.ai.borrow_mut();
-                if !ai.config.remove(&id) {
-                    return ActionResult::Err(format!("no AI backend '{id}'"));
-                }
-                ai.config_dirty = true;
-                drop(ai);
-                self.status = format!("Removed AI backend {id}");
-                ActionResult::Ok
-            }
-            Action::SelectAiBackend { id } => {
-                let mut ai = self.ai.borrow_mut();
-                if let Err(e) = ai.config.select(&id) {
-                    return ActionResult::Err(e);
-                }
-                ai.config_dirty = true;
-                drop(ai);
-                self.status = format!("AI backend: {id}");
-                ActionResult::Ok
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Action::SendAiMessage { text } => {
-                let text = text.trim().to_string();
-                if text.is_empty() {
-                    return ActionResult::Err("Nothing to send".to_string());
-                }
-                let mut ai = self.ai.borrow_mut();
-                if ai.chat.is_streaming() || ai.chat.awaiting_context {
-                    return ActionResult::Err("A reply is already on its way".to_string());
-                }
-                // Refuse before recording anything: an unusable backend is a setup problem,
-                // not a failed message.
-                let Some(backend) = ai.config.selected().cloned() else {
-                    return ActionResult::Err("No AI backend configured".to_string());
-                };
-                if let Some(reason) = backend.unusable_reason() {
-                    return ActionResult::Err(format!("AI backend {}: {reason}", backend.name));
-                }
-                // #1609: the first message to a backend asks first, in the pane, naming
-                // what is about to go and where. A script that calls `ask` has already said
-                // so explicitly, so it consents on the user's behalf.
-                if !backend.consented {
-                    ai.chat.pending_consent = Some(text);
-                    ai.chat.input.clear();
-                    drop(ai);
-                    self.status = format!("Send to {}? Confirm in the AI pane", backend.name);
-                    return ActionResult::Ok;
-                }
-                ai.chat.begin(text, backend.id.clone());
-                ai.chat.input.clear();
-                drop(ai);
-                self.status = format!("Asking {}…", backend.name);
-                ActionResult::Ok
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Action::ResolveAiConsent { agreed } => {
-                let mut ai = self.ai.borrow_mut();
-                let Some(text) = ai.chat.pending_consent.take() else {
-                    return ActionResult::Err("Nothing is waiting to be sent".to_string());
-                };
-                if !agreed {
-                    // Put the message back in the box: refusing should not lose what was
-                    // typed.
-                    ai.chat.input = text;
-                    drop(ai);
-                    self.status = "Not sent".to_string();
-                    return ActionResult::Ok;
-                }
-                let Some(id) = ai.config.selected().map(|b| b.id.clone()) else {
-                    return ActionResult::Err("No AI backend configured".to_string());
-                };
-                if let Some(backend) = ai.config.get_mut(&id) {
-                    backend.consented = true;
-                }
-                ai.config_dirty = true;
-                ai.chat.begin(text, id);
-                drop(ai);
-                self.status = "Sending…".to_string();
-                ActionResult::Ok
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Action::CancelAiMessage => {
-                let mut ai = self.ai.borrow_mut();
-                if !ai.chat.is_streaming() {
-                    return ActionResult::Err("Nothing to stop".to_string());
-                }
-                ai.chat.cancel();
-                drop(ai);
-                self.status = "Stopped".to_string();
-                ActionResult::Ok
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Action::ClearAiConversation => {
-                self.ai.borrow_mut().chat.clear();
-                self.status = "Conversation cleared".to_string();
-                ActionResult::Ok
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Action::RunAiBlock { index } => {
-                let mut ai = self.ai.borrow_mut();
-                let Some(block) = ai.chat.blocks().into_iter().nth(index) else {
-                    return ActionResult::Err(format!("no code block {index} in the last reply"));
-                };
-                // The frame loop runs it: Lua needs the live app, not just the document.
-                ai.chat.pending_run = Some((block.entry, block.index, block.source));
-                drop(ai);
-                self.status = format!("Running block {}…", index + 1);
-                ActionResult::Ok
-            }
-            #[cfg(target_arch = "wasm32")]
-            Action::RunAiBlock { .. } => {
-                ActionResult::Err("AI chat is only available in the desktop app".to_string())
-            }
             #[cfg(not(target_arch = "wasm32"))]
             Action::InstallAiSkill { target, dir } => {
                 let Some(spec) = crate::ai::skill::target(&target) else {
@@ -12203,7 +12008,7 @@ impl AppState {
             Action::ShowAiSkillSection => {
                 self.panes.set(Pane::Ai, true);
                 self.ai.borrow_mut().open_skill_section = true;
-                self.status = "AI ▸ Have AI use BearCAD".to_string();
+                self.status = "AI ▸ Agent Skill".to_string();
                 ActionResult::Ok
             }
             Action::ShowMcpServerSection => {
@@ -12216,154 +12021,7 @@ impl AppState {
                 self.ai.borrow_mut().sections_open = Some(open);
                 ActionResult::Ok
             }
-            Action::ResetAiBackendSpend { id } => {
-                let mut ai = self.ai.borrow_mut();
-                let Some(backend) = ai.config.get_mut(&id) else {
-                    return ActionResult::Err(format!("no AI backend '{id}'"));
-                };
-                backend.spend = crate::ai::pricing::Spend::default();
-                ai.config_dirty = true;
-                drop(ai);
-                self.status = format!("Reset the running total for {id}");
-                ActionResult::Ok
-            }
             #[cfg(not(target_arch = "wasm32"))]
-            #[cfg(not(target_arch = "wasm32"))]
-            Action::ConnectAiBackend { id } => {
-                let mut ai = self.ai.borrow_mut();
-                let Some(backend) = ai.config.get(&id).cloned() else {
-                    return ActionResult::Err(format!("no AI backend '{id}'"));
-                };
-                // Starting a second flow would leave the first listener bound with nobody
-                // waiting for it; dropping the old one closes it.
-                ai.connect = None;
-                match crate::ai::oauth::start(
-                    &id,
-                    backend.provider,
-                    backend.effective_base_url(),
-                    None,
-                ) {
-                    Ok(flow) => {
-                        ai.connect = Some(flow);
-                        drop(ai);
-                        self.status = format!("Connecting to {}…", backend.name);
-                        ActionResult::Ok
-                    }
-                    Err(message) => ActionResult::Err(message),
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Action::CancelAiConnect => {
-                let mut ai = self.ai.borrow_mut();
-                if ai.connect.take().is_none() {
-                    return ActionResult::Err("Nothing is connecting".to_string());
-                }
-                drop(ai);
-                self.status = "Connection cancelled".to_string();
-                ActionResult::Ok
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Action::RefreshAiModels { id } => {
-                let mut ai = self.ai.borrow_mut();
-                let Some(backend) = ai.config.get(&id).cloned() else {
-                    return ActionResult::Err(format!("no AI backend '{id}'"));
-                };
-                if !backend.has_key() {
-                    return ActionResult::Err(format!(
-                        "AI backend {}: {}",
-                        backend.name,
-                        backend.unusable_reason().unwrap_or_default()
-                    ));
-                }
-                let catalog = crate::ai::models::fetch(&backend, None);
-                ai.models.insert(id, catalog);
-                drop(ai);
-                self.status = format!("Asking {} for its models…", backend.name);
-                ActionResult::Ok
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Action::SetAiBackendModel { id, model } => {
-                let model = model.trim().to_string();
-                let mut ai = self.ai.borrow_mut();
-                // The rate the backend itself published for this model, when it published
-                // one — better than the shipped table, which cannot know a gateway's prices.
-                let price = ai.models.get(&id).and_then(|catalog| {
-                    match &*catalog.lock().expect("catalog lock") {
-                        crate::ai::models::Catalog::Ready(models) => models
-                            .iter()
-                            .find(|candidate| candidate.id == model)
-                            .and_then(|candidate| candidate.price),
-                        _ => None,
-                    }
-                });
-                let Some(backend) = ai.config.get_mut(&id) else {
-                    return ActionResult::Err(format!("no AI backend '{id}'"));
-                };
-                backend.model = model.clone();
-                if price.is_some() {
-                    backend.price = price;
-                }
-                let name = backend.name.clone();
-                ai.config_dirty = true;
-                drop(ai);
-                self.status = if model.is_empty() {
-                    format!("{name}: no model chosen")
-                } else {
-                    format!("{name}: {model}")
-                };
-                ActionResult::Ok
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Action::EditAiBackend { id, name, base_url, model, key } => {
-                let model = model.trim().to_string();
-                let mut ai = self.ai.borrow_mut();
-                // Same rate-carry as SetAiBackendModel: a model the backend itself listed
-                // with a price brings its published rate along (#1599).
-                let price = ai.models.get(&id).and_then(|catalog| {
-                    match &*catalog.lock().expect("catalog lock") {
-                        crate::ai::models::Catalog::Ready(models) => models
-                            .iter()
-                            .find(|candidate| candidate.id == model)
-                            .and_then(|candidate| candidate.price),
-                        _ => None,
-                    }
-                });
-                if ai.config.edit(&id, name, base_url, model.clone(), key).is_err() {
-                    return ActionResult::Err(format!("no AI backend '{id}'"));
-                }
-                if let Some(price) = price {
-                    if let Some(backend) = ai.config.get_mut(&id) {
-                        backend.price = Some(price);
-                    }
-                }
-                let name = ai.config.get(&id).map(|b| b.name.clone()).unwrap_or(id.clone());
-                ai.config_dirty = true;
-                drop(ai);
-                self.status = format!("Edited AI backend {name}");
-                ActionResult::Ok
-            }
-            #[cfg(target_arch = "wasm32")]
-            Action::ConnectAiBackend { .. }
-            | Action::CancelAiConnect
-            | Action::RefreshAiModels { .. }
-            | Action::SetAiBackendModel { .. }
-            | Action::EditAiBackend { .. } => {
-                ActionResult::Err("AI backends are only available in the desktop app".to_string())
-            }
-            Action::SetAiContextScope { scope } => {
-                self.ai.borrow_mut().chat.scope = scope;
-                self.status = format!("AI sees: {}", scope.label());
-                ActionResult::Ok
-            }
-            // The browser build has no transport, so chat actions are inert there.
-            #[cfg(target_arch = "wasm32")]
-            Action::SendAiMessage { .. }
-            | Action::ResolveAiConsent { .. }
-            | Action::CancelAiMessage
-            | Action::ClearAiConversation
-            | Action::SetAiContextScope { .. } => {
-                ActionResult::Err("AI chat is only available in the desktop app".to_string())
-            }
             Action::DragVertex { point, u, v } => {
                 let Some(sketch) = self.sketch_session.map(|s| s.sketch) else {
                     return ActionResult::Err("Not in sketch mode".to_string());
@@ -38636,15 +38294,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert_eq!(Pane::Ai.script_name(), "ai");
         assert_eq!(Pane::from_name("ai"), Some(Pane::Ai));
         assert_eq!(Pane::from_name("assistant"), Some(Pane::Ai));
-        assert_eq!(Pane::from_name("chat"), Some(Pane::AiChat));
-        assert_eq!(Pane::from_name("ai_chat"), Some(Pane::AiChat));
         assert!(Pane::ALL.contains(&Pane::Ai), "AI belongs in View ▸ Panes");
-        assert!(
-            Pane::ALL.contains(&Pane::AiChat),
-            "AI Chat belongs in View ▸ Panes"
-        );
-        // #1620: the chat is its own pane, and both are closed until asked.
-        assert!(!state.panes.is_visible(Pane::AiChat));
     }
 
     #[test]

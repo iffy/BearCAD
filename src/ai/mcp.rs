@@ -471,7 +471,7 @@ pub fn client_configs(url: &str, token: &str) -> Vec<ClientConfig> {
 /// Read from `ai.json`, not from the running process — the bridge is a separate
 /// invocation of the same binary and has no other way to learn them.
 pub fn saved_connection() -> Option<(String, String)> {
-    let config = super::backends::AiConfig::load();
+    let config = super::config::AiConfig::load();
     if !config.mcp_enabled || config.mcp_token.is_empty() || config.mcp_port == 0 {
         return None;
     }

@@ -4133,10 +4133,9 @@ impl App {
         }
     }
 
-    /// The AI config pane (#1594/#1621): chat-backend configuration, the agent skill
-    /// installer, and the local MCP server. Docks beside the other right-hand panes and
-    /// closes from its own X, like every pane in `show_pane_shell`. The conversation
-    /// itself lives in the separate **AI Chat** bottom pane (`show_ai_chat_panel`).
+    /// The AI pane (#1594/#1633): the local MCP server and the agent-skill installer —
+    /// the two ways an outside agent drives BearCAD. Docks beside the other right-hand
+    /// panes and closes from its own X, like every pane in `show_pane_shell`.
     fn show_ai_pane(&mut self, ui: &mut egui::Ui) {
         // Always allocate the docked slot, even while hidden (#1614 / #1211). Inserting
         // this right panel only once it opens shifts auto-id salts for every later panel
@@ -4157,87 +4156,12 @@ impl App {
         }
     }
 
-    /// Start any waiting AI message and pull in the streamed reply (#1598).
-    ///
-    /// The context spans every open document, which only `App` can see — the action layer
-    /// records the turn and leaves the sending to here.
+    /// Serve the MCP server (#1605) once a frame.
     #[cfg(not(target_arch = "wasm32"))]
-    fn pump_ai_chat(&mut self, ctx: &egui::Context) {
-        let awaiting = self.state.ai.borrow().chat.awaiting_context;
-        if awaiting {
-            match self.build_ai_request() {
-                Ok((request, context)) => {
-                    let exchange = ai::transport::send(request, Some(ctx.clone()));
-                    self.state.ai.borrow_mut().chat.start(exchange, context);
-                }
-                Err(message) => {
-                    self.state.status = message.clone();
-                    self.state.ai.borrow_mut().chat.fail_pending(message);
-                }
-            }
-        }
-        // A connection attempt (#1624) runs on its own thread; the key it produced is stored
-        // here, and the browser page is opened here too — the action layer only starts the
-        // flow, so a test never opens a browser.
-        {
-            let url = {
-                let mut ai = self.state.ai.borrow_mut();
-                ai.connect
-                    .as_mut()
-                    .filter(|flow| !flow.opened)
-                    .map(|flow| {
-                        flow.opened = true;
-                        flow.authorize_url.clone()
-                    })
-            };
-            if let Some(url) = url {
-                if let Err(e) = crate::open_in_browser(&url) {
-                    self.state.status = format!("Could not open your browser: {e}");
-                }
-            }
-            let finished = self.state.ai.borrow_mut().poll_connect(Some(ctx.clone()));
-            if let Some(status) = finished {
-                self.state.status = status;
-            }
-            if self.state.ai.borrow().connect.is_some() {
-                // Nothing else is driving repaints while the user is in the browser.
-                ctx.request_repaint_after(std::time::Duration::from_millis(200));
-            }
-        }
-
-        // A running reply repaints on every chunk, but ask anyway: the spinner should keep
-        // spinning between chunks.
-        let poll = self.state.ai.borrow_mut().chat.poll();
-        if poll.running {
-            ctx.request_repaint();
-        }
-        // Bill a finished reply to the backend that answered (#1599), at the rate in force
-        // now — so a later price edit does not rewrite what was already spent.
-        if let Some((backend_id, usage)) = poll.completed {
-            let mut ai = self.state.ai.borrow_mut();
-            if let Some(backend) = ai.config.get_mut(&backend_id) {
-                let price = ai::pricing::price_for(backend);
-                backend.spend.add(usage, price);
-                ai.config_dirty = true;
-            }
-        }
-
+    fn pump_ai(&mut self, ctx: &egui::Context) {
         // Tool calls from a connected agent (#1605). The listener thread never touches the
         // document; this is where its work is actually done.
-        #[cfg(not(target_arch = "wasm32"))]
         self.pump_mcp(ctx);
-
-        // A block the user clicked **Run** on (#1600). Never automatic — the action is only
-        // ever raised by that click.
-        let pending_run = self.state.ai.borrow_mut().chat.pending_run.take();
-        if let Some((entry, index, source)) = pending_run {
-            let outcome = self.run_lua_source(&source, ctx);
-            self.state
-                .ai
-                .borrow_mut()
-                .chat
-                .record_block_outcome(entry, index, outcome);
-        }
     }
 
     /// Serve the MCP server's queued tool calls (#1605).
@@ -4287,6 +4211,25 @@ impl App {
         }
     }
 
+    /// Every document open in the app — title and whether it is the active one. What the
+    /// MCP `document_summary` tool lists (#1605).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_document_titles(&self) -> Vec<(String, bool)> {
+        let mut docs = vec![(tabs::Workspace::tab_title(&self.state), true)];
+        let active_window = tabs::WindowId::MAIN;
+        let active_tab = self.workspace.main().active;
+        for window in &self.workspace.windows {
+            for (index, tab) in window.tabs.iter().enumerate() {
+                // The live state *is* the active tab; its parked slot holds a placeholder.
+                if window.id == active_window && index == active_tab {
+                    continue;
+                }
+                docs.push((tabs::Workspace::tab_title(&tab.state), false));
+            }
+        }
+        docs
+    }
+
     /// Answer a tool call, either now or by starting a script that answers it over the next
     /// frames.
     #[cfg(not(target_arch = "wasm32"))]
@@ -4300,12 +4243,12 @@ impl App {
         match job.tool.as_str() {
             "document_summary" => {
                 let mut out = String::new();
-                for doc in self.open_documents() {
+                for (title, active) in self.open_document_titles() {
                     out.push_str(&format!(
                         "{}{}
 ",
-                        doc.title,
-                        if doc.active { "  (active)" } else { "" }
+                        title,
+                        if active { "  (active)" } else { "" }
                     ));
                 }
                 out.push_str(&format!(
@@ -4386,91 +4329,6 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 Err(())
             }
         }
-    }
-
-    /// Run a Lua snippet against the live app, to completion, and report what happened
-    /// (#1600).
-    ///
-    /// A nested runner, the same way `import_lua` replays an exported document — so the
-    /// snippet goes through the ordinary Instruction/Action path and Undo takes it back.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn run_lua_source(&mut self, source: &str, ctx: &egui::Context) -> Result<String, String> {
-        let mut runner = match ScriptRunner::from_lua_source(source) {
-            Ok(runner) => runner,
-            Err(e) => return Err(e.message),
-        };
-        runner.verbose = false;
-        // Bound the loop: a snippet that waits forever must not take the UI with it.
-        const MAX_TICKS: usize = 10_000;
-        let mut ticks = 0;
-        while !runner.done && ticks < MAX_TICKS {
-            runner.tick(&mut self.state, &mut self.synthetic, self.last_viewport, ctx);
-            ticks += 1;
-        }
-        self.rebind_active_document();
-        if !runner.done {
-            return Err("the block did not finish — it may be waiting on something".to_string());
-        }
-        match runner.error {
-            Some(error) => Err(error),
-            None => Ok(self.state.status.clone()),
-        }
-    }
-
-    /// Assemble the request for the message waiting to go out: the selected backend, the
-    /// document context for the chosen scope, and the conversation so far.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn build_ai_request(
-        &mut self,
-    ) -> Result<(ai::transport::Request, ai::context::Context), String> {
-        let (backend, scope, messages) = {
-            let ai = self.state.ai.borrow();
-            let backend = ai
-                .config
-                .selected()
-                .cloned()
-                .ok_or_else(|| "No AI backend configured".to_string())?;
-            (backend, ai.chat.scope, ai.chat.wire_messages())
-        };
-        if let Some(reason) = backend.unusable_reason() {
-            return Err(format!("AI backend {}: {reason}", backend.name));
-        }
-        let context = ai::context::build(scope, &self.open_documents());
-        Ok((
-            ai::transport::Request {
-                backend,
-                system: context.text.clone(),
-                messages,
-            },
-            context,
-        ))
-    }
-
-    /// Every document open in the app, active one flagged. Borrows straight out of the
-    /// workspace — building a context never clones a document.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn open_documents(&self) -> Vec<ai::context::DocumentInput<'_>> {
-        let mut docs = vec![ai::context::DocumentInput {
-            title: tabs::Workspace::tab_title(&self.state),
-            active: true,
-            doc: &self.state.doc,
-        }];
-        let active_window = tabs::WindowId::MAIN;
-        let active_tab = self.workspace.main().active;
-        for window in &self.workspace.windows {
-            for (index, tab) in window.tabs.iter().enumerate() {
-                // The live state *is* the active tab; its parked slot holds a placeholder.
-                if window.id == active_window && index == active_tab {
-                    continue;
-                }
-                docs.push(ai::context::DocumentInput {
-                    title: tabs::Workspace::tab_title(&tab.state),
-                    active: false,
-                    doc: &tab.state.doc,
-                });
-            }
-        }
-        docs
     }
 
     /// First-launch tooltip pointing at the Tutorials button (#1434).
@@ -5341,7 +5199,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             state.installed_at_unix = settings.installed_at_unix;
             state.animate_zoom_to_fit = settings.animate_zoom_to_fit;
             state.update_channel = settings.update_channel;
-            // AI backends live in their own 0600 file, not settings.json (#1595). Every tab
+            // The MCP token lives in its own 0600 file, not settings.json (#1595). Every tab
             // shares this one handle (`Workspace::ai`), so load into it rather than
             // replacing it.
             *state.ai.borrow_mut() = ai::AiState::load();
@@ -15031,12 +14889,6 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             }
         }
 
-        // AI Chat pane (#1620): a full-width bottom console, always allotted (height 0
-        // when closed) so it cannot shift the panels that follow, the way the command
-        // palette's slot stays put (#1211).
-        show_ai_chat_panel(ui, self.state.panes.is_visible(Pane::AiChat), |ui| {
-            ai::panel::chat_contents(ui, &mut self.state);
-        });
         egui::Panel::bottom("status")
             .frame(theme::panel_frame())
             .show(ui, |ui| {
@@ -15125,7 +14977,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
         // Tutorials pane (#1241): same dock side as Settings; lists every walkthrough.
         self.show_tutorial_pane(ui, ctx);
 
-        // AI pane (#1594): chat, agent skill, MCP server. Same dock side; hidden by default.
+        // AI pane (#1594): MCP server, agent skill. Same dock side; hidden by default.
         self.show_ai_pane(ui);
 
         if self.state.tutorial_prompt().is_some() {
@@ -15136,7 +14988,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
 
         // Persist newly completed tutorials (#1241) without waiting for another
         // settings change — the pane reads from AppState, the file is the long-term copy.
-        // Persist AI backends the moment they change (#1595), the same way finished
+        // Persist the AI config the moment it changes (#1595), the same way finished
         // tutorials are written back — `ai.json` is the long-term copy, `state.ai` the live
         // one. Written 0600 by `AiConfig::save`.
         #[cfg(not(target_arch = "wasm32"))]
@@ -15145,7 +14997,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             if dirty {
                 let result = self.state.ai.borrow().config.save();
                 if let Err(err) = result {
-                    self.state.status = format!("Could not save AI backends: {err}");
+                    self.state.status = format!("Could not save AI settings: {err}");
                 }
                 self.state.ai.borrow_mut().config_dirty = false;
             }
@@ -15154,7 +15006,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
         // Drive the conversation (#1598): start a waiting message now that the workspace is
         // reachable, and copy in whatever of the reply has arrived.
         #[cfg(not(target_arch = "wasm32"))]
-        self.pump_ai_chat(ctx);
+        self.pump_ai(ctx);
 
         #[cfg(not(target_arch = "wasm32"))]
         if self.state.completed_tutorials_dirty {
@@ -19714,47 +19566,6 @@ fn show_command_palette_panel(
         });
 }
 
-/// Bottom-panel height of the open AI Chat pane (#1620).
-const AI_CHAT_PANEL_HEIGHT: f32 = 300.0;
-
-/// Always-on bottom panel slot for the AI Chat pane (#1620).
-///
-/// A full-width console like [`show_command_palette_panel`]: a bottom `Panel` whose slot
-/// is always allocated (height 0 when closed), so opening it cannot shift auto-id salts
-/// for later panels (status bar, Elements, Context). Records its rect so a script can
-/// read `bearcad.ui.pane_rect("ai_chat")`, and forgets it when hidden.
-pub fn show_ai_chat_panel(
-    ui: &mut egui::Ui,
-    open: bool,
-    add_contents: impl FnOnce(&mut egui::Ui),
-) {
-    let ctx = &ui.ctx().clone();
-    let height = if open {
-        AI_CHAT_PANEL_HEIGHT
-    } else {
-        0.0
-    };
-    let frame = if open {
-        theme::panel_frame()
-    } else {
-        egui::Frame::NONE
-    };
-    let response = egui::Panel::bottom(ai::panel::CHAT_SHELL_ID)
-        .resizable(false)
-        .exact_size(height)
-        .show_separator_line(open)
-        .frame(frame)
-        .show(ui, |ui| {
-            if open {
-                add_contents(ui);
-            }
-        });
-    remember_pane_rect(
-        ctx,
-        ai::panel::CHAT_SHELL_ID,
-        if open { Some(response.response.rect) } else { None },
-    );
-}
 
 /// Container for a side pane: a docked side `Panel` normally, a closable floating
 /// window over the viewport in the compact (phone) layout. Returns false when the
@@ -39348,45 +39159,6 @@ mod tests {
             probe(false),
             probe(true),
             "toggling the command palette must not renumber Elements-pane widget ids"
-        );
-    }
-
-    /// #1620: opening the AI Chat pane must not renumber side-pane widget ids.
-    ///
-    /// The AI Chat pane is a bottom `Panel` allocated *before* the status bar and the
-    /// side panes. Inserting it only while open shifts the root auto-id salt for every
-    /// later panel. [`show_ai_chat_panel`] always allocates the slot (height 0 when
-    /// closed) so those salts stay put.
-    #[test]
-    fn ai_chat_panel_slot_keeps_side_pane_widget_ids_stable() {
-        fn probe(open: bool) -> egui::Id {
-            let ctx = egui::Context::default();
-            let mut captured = None;
-            let _ = ctx.run_ui(Default::default(), |ui| {
-                super::show_command_palette_panel(ui, false, |ui| {
-                    ui.label("palette");
-                });
-                super::show_ai_chat_panel(ui, open, |ui| {
-                    ui.label("chat");
-                });
-                egui::Panel::bottom("status").show(ui, |ui| {
-                    ui.label("status");
-                });
-                egui::Panel::left("hierarchy").show(ui, |ui| {
-                    ui.scope_builder(
-                        egui::UiBuilder::new().id(egui::Id::new(("pane_contents", "hierarchy"))),
-                        |ui| {
-                            captured = Some(ui.button("Elements").id);
-                        },
-                    );
-                });
-            });
-            captured.expect("side-pane button id")
-        }
-        assert_eq!(
-            probe(false),
-            probe(true),
-            "toggling the AI Chat pane must not renumber Elements-pane widget ids"
         );
     }
 

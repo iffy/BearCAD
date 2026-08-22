@@ -69,7 +69,7 @@ pub enum CloseOutcome {
 /// All windows and id counters for the session.
 pub struct Workspace {
     pub windows: Vec<TabWindow>,
-    /// The one AI state every tab shares (#1598). Backends and the conversation belong to
+    /// The one AI state every tab shares (#1598). The MCP server belongs to
     /// the app, so a tab created here adopts this handle rather than starting its own.
     pub ai: crate::ai::SharedAi,
     next_tab_id: u64,

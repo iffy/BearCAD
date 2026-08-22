@@ -61,9 +61,9 @@ pub enum MenuCommand {
     ShowShortcuts,
     /// Open the Changelog window (Help menu, #1328).
     ShowChangelog,
-    /// Help ▸ Install AI Agent Skill… (#1604): open the AI pane at Have AI use BearCAD.
+    /// Integration ▸ AI ▸ Install AI Agent Skill… (#1604): opens the AI pane at Agent Skill.
     InstallAiSkill,
-    /// Integration ▸ AI MCP Server…: open the AI pane at its MCP Server section.
+    /// Integration ▸ AI ▸ MCP Server…: open the AI pane at its MCP Server section.
     McpServer,
     /// Open the Settings window (#720): app-level preferences (Cmd/Ctrl+comma).
     ShowSettings,

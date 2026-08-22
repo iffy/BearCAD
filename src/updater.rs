@@ -6,7 +6,7 @@
 //! relaunches into the new version. Falls back to a browser auto-download (dev builds,
 //! failures), then the releases page.
 //!
-//! Network access is ureq with rustls (the same stack AI chat uses, #1596/#1610). Failures
+//! Network access is ureq with rustls (#1596/#1610). Failures
 //! are silent for the version check and reported in the badge for a download. Native builds
 //! only — the web app is always current.
 

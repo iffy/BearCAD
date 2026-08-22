@@ -56,9 +56,9 @@ pub struct MenuIds {
     pub shortcuts_help: MenuId,
     /// Help ▸ Changelog (#1328).
     pub changelog: MenuId,
-    /// Help ▸ Install AI Agent Skill… (#1604).
+    /// Integration ▸ AI ▸ Install AI Agent Skill… (#1604).
     pub install_ai_skill: MenuId,
-    /// Integration ▸ AI MCP Server… (#1622): open the AI pane at its MCP Server section.
+    /// Integration ▸ AI ▸ MCP Server… (#1622): open the AI pane at its MCP Server section.
     pub mcp_server: MenuId,
     /// Help ▸ Report Problem… (#1372): open the browser at a new-issue form on the repo.
     pub report_problem: MenuId,
@@ -320,7 +320,9 @@ impl NativeMenu {
         let help_menu = Submenu::new("Help", true);
         // #1622: the developer-facing integration items (CLI symlink, AI agent skill, AI
         // MCP server) group into their own top-level menu instead of sprawling through Help.
+        // #1632: the AI ones sit in their own submenu under it.
         let integration_menu = Submenu::new("Integration", true);
+        let integration_ai_menu = Submenu::new("AI", true);
 
         let new_document = MenuItem::with_id(
             "new_document",
@@ -420,7 +422,7 @@ impl NativeMenu {
             true,
             None,
         );
-        // #1604: the same idea for AI tools — opens the AI pane at Have AI use BearCAD.
+        // #1604: the same idea for AI tools — opens the AI pane at its Agent Skill section.
         let install_ai_skill = MenuItem::with_id(
             "install_ai_skill",
             "Install AI Agent Skill…",
@@ -428,7 +430,7 @@ impl NativeMenu {
             None,
         );
         // #1622: open the AI pane at its MCP Server section.
-        let mcp_server = MenuItem::with_id("mcp_server", "AI MCP Server…", true, None);
+        let mcp_server = MenuItem::with_id("mcp_server", "MCP Server…", true, None);
         let mut pane_checks = Vec::new();
         let mut pane_ids = Vec::new();
         for &pane in Pane::ALL {
@@ -504,8 +506,11 @@ impl NativeMenu {
         help_menu.append(&changelog)?;
         help_menu.append(&report_problem)?;
         integration_menu.append(&install_cli)?;
-        integration_menu.append(&install_ai_skill)?;
-        integration_menu.append(&mcp_server)?;
+        // #1632: MCP Server first — it is what an agent connects to; the skill install is
+        // the one-off step below it.
+        integration_ai_menu.append(&mcp_server)?;
+        integration_ai_menu.append(&install_ai_skill)?;
+        integration_menu.append(&integration_ai_menu)?;
         help_menu.append(&PredefinedMenuItem::separator())?;
         help_menu.append(&licenses)?;
         help_menu.append(&about)?;
@@ -639,14 +644,25 @@ fn summarize_items(items: Vec<muda::MenuItemKind>) -> Vec<String> {
     labels
 }
 
-/// The top-level menu titles and the labels of their direct items, as built (#1622).
+/// Every menu title and the labels of its direct items, as built (#1622). A nested
+/// submenu (#1632) appears twice: as an item of its parent, and again under its own
+/// `Parent \u{25b8} Child` path, so a script can assert what is inside it.
 fn summarize_menu(menu: &Menu) -> Vec<(String, Vec<String>)> {
-    let mut sections = Vec::new();
-    for item in menu.items() {
-        if let Some(sub) = item.as_submenu() {
-            sections.push((sub.text(), summarize_items(sub.items())));
+    fn walk(prefix: &str, items: Vec<muda::MenuItemKind>, out: &mut Vec<(String, Vec<String>)>) {
+        for item in items {
+            if let muda::MenuItemKind::Submenu(sub) = item {
+                let path = if prefix.is_empty() {
+                    sub.text()
+                } else {
+                    format!("{prefix} \u{25b8} {}", sub.text())
+                };
+                out.push((path.clone(), summarize_items(sub.items())));
+                walk(&path, sub.items(), out);
+            }
         }
     }
+    let mut sections = Vec::new();
+    walk("", menu.items(), &mut sections);
     sections
 }
 
@@ -796,7 +812,7 @@ mod tests {
 
     #[test]
     fn maps_mcp_server_menu_item() {
-        // #1622: Integration ▸ AI MCP Server… opens the AI pane at its MCP Server section.
+        // #1622: Integration ▸ AI ▸ MCP Server… opens the AI pane at its MCP Server section.
         let ids = ids_with_pane("view_cube").0;
         assert_eq!(
             command_for_id(&ids.mcp_server, &ids, |_| true),

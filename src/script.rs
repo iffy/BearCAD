@@ -881,7 +881,7 @@ pub enum Instruction {
     ScrollPane { pane: Pane, dy: f32 },
     /// Open or collapse every section of the AI pane at once (#1619).
     SetAiSectionsOpen { open: bool },
-    /// Open the AI pane at its MCP Server section (Integration ▸ AI MCP Server…, #1622).
+    /// Open the AI pane at its MCP Server section (Integration ▸ AI ▸ MCP Server…, #1622).
     ShowMcpServerSection,
     AddParameter { name: String, expression: String },
     CreateParameterFromLineLength { line_index: usize, name: Option<String> },
@@ -5267,7 +5267,6 @@ fn pane_shell_id(pane: crate::actions::Pane) -> Option<&'static str> {
         Pane::Context => Some("context"),
         Pane::Tutorials => Some("tutorials"),
         Pane::Ai => Some("ai"),
-        Pane::AiChat => Some("ai_chat"),
         Pane::ViewCube => None,
     }
 }
@@ -5276,38 +5275,6 @@ fn pane_shell_id(pane: crate::actions::Pane) -> Option<&'static str> {
 pub fn pane_rect(ctx: &egui::Context, pane: crate::actions::Pane) -> Option<egui::Rect> {
     let id = pane_rect_id(pane_shell_id(pane)?);
     ctx.data(|data| data.get_temp::<egui::Rect>(id))
-}
-
-/// egui data key under which a pane records a single widget's rect for scripts (#1627).
-pub fn widget_rect_id(name: &str) -> egui::Id {
-    egui::Id::new(("bearcad_widget_rect", name))
-}
-
-/// A widget rect recorded for scripts, held as its own type so a whole-frame clear
-/// (`[`Self::clear_widget_rects`]`) cannot touch the `egui::Rect` temps that keep
-/// `pane_rect` (#1627).
-#[derive(Clone, Copy)]
-struct WidgetRect(egui::Rect);
-
-/// Record where a named pane widget landed this frame, for `bearcad.ui.ai_backend_widget`
-/// (#1627). The same policy as [`Self::pane_rect`]:
-/// read-only UI geometry for interaction tests — nothing about the AI state, and no key.
-pub fn remember_widget_rect(ctx: &egui::Context, name: &str, rect: egui::Rect) {
-    let key = widget_rect_id(name);
-    ctx.data_mut(|data| data.insert_temp(key, WidgetRect(rect)));
-}
-
-/// Forget every widget rect recorded last frame. The AI pane calls this before drawing,
-/// so `bearcad.ui.ai_backend_widget` never aims at a control that is no longer drawn
-/// (#1627).
-pub fn clear_widget_rects(ctx: &egui::Context) {
-    ctx.data_mut(|data| data.remove_by_type::<WidgetRect>());
-}
-
-/// Where a named pane widget landed last frame, in logical points. `None` while hidden.
-pub fn widget_rect(ctx: &egui::Context, name: &str) -> Option<egui::Rect> {
-    let key = widget_rect_id(name);
-    ctx.data(|data| data.get_temp::<WidgetRect>(key).map(|WidgetRect(rect)| rect))
 }
 
 /// A pane's vertical scroll, as of last frame (#1619). Heights are logical points.

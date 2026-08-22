@@ -4636,28 +4636,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // Where one AI-pane backend-management widget landed this frame (#1627): a rect an
-    // interaction test clicks (real pointer input). Pane UI geometry only, on the same
-    // policy as `pane_rect`/`pane_scroll`; nil while the widget is not on screen.
-    api.set(
-        "ai_backend_widget",
-        lua.create_function(|lua, name: String| {
-            let tick = lua
-                .app_data_ref::<ScriptTickData>()
-                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
-            let Some(rect) = crate::script::widget_rect(unsafe { tick.egui_ctx() }, &name) else {
-                return Ok(Value::Nil);
-            };
-            let t = lua.create_table()?;
-            t.set("x", rect.min.x)?;
-            t.set("y", rect.min.y)?;
-            t.set("w", rect.width())?;
-            t.set("h", rect.height())?;
-            Ok(Value::Table(t))
-        })?,
-    )?;
-
-// Open the AI pane at its MCP Server section (#1622): mirrors the Integration ▸
+    // Open the AI pane at its MCP Server section (#1622): mirrors the Integration ▸
     // AI MCP Server… menu item, so the deep-link stays scriptable.
     api.set(
         "ai_mcp",
@@ -8072,7 +8051,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         -- `bearcad.ui.*` sub-namespace so scripts can focus on modeling (#46).
         bearcad.ui = {}
         local ui_funcs = {
-            "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_calibrate", "focus_dim", "pane", "pane_rect", "pane_scroll", "scroll_pane", "ai_sections", "ai_pane_sections", "ai_mcp", "menu_structure", "ai_backend_widget",
+            "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_calibrate", "focus_dim", "pane", "pane_rect", "pane_scroll", "scroll_pane", "ai_sections", "ai_pane_sections", "ai_mcp", "menu_structure",
             "widget_id_warnings", "palette", "settings",
             "changelog",
             "mcmaster",
@@ -9932,7 +9911,6 @@ mod tests {
             for _, name in ipairs({ "move", "click", "tool", "view", "orbit", "pan",
                                     "key", "type", "pane", "pane_rect", "pane_scroll",
                                     "scroll_pane", "ai_sections", "ai_mcp", "menu_structure",
-                                    "ai_backend_widget",
                                     "palette", "wait", "help",
                                     "toolbar_shortcuts", "toolbar_tools", "changelog",
                                     "mcmaster", "report_issue", "windows", "focused_window",
@@ -9941,11 +9919,11 @@ mod tests {
                 assert(type(bearcad.ui[name]) == "function", "bearcad.ui." .. name .. " missing")
                 assert(bearcad[name] == nil, "bearcad." .. name .. " should move to bearcad.ui")
             end
-            -- #1621: the AI config pane splits into two sections, reported by name.
+            -- #1633: the AI pane's two sections, in draw order.
             local sections = bearcad.ui.ai_pane_sections()
-            assert(#sections == 2, "the AI config pane has two sections, got " .. #sections)
-            assert(sections[1] == "Use AI inside BearCAD")
-            assert(sections[2] == "Have AI use BearCAD")
+            assert(#sections == 2, "the AI pane has two sections, got " .. #sections)
+            assert(sections[1] == "MCP Server")
+            assert(sections[2] == "Agent Skill")
             -- drag_vertex/drag_line take sketch-local coordinates, so they live in the
             -- modeling namespace (#114) with back-compat aliases under bearcad.ui.
             for _, name in ipairs({ "drag_vertex", "drag_line" }) do
