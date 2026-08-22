@@ -16,8 +16,11 @@ pub fn view_axes(orientation: DrawingOrientation) -> (Vec3, Vec3) {
         O::Back => (-Vec3::X, Vec3::Z),
         O::Right => (Vec3::Y, Vec3::Z),
         O::Left => (-Vec3::Y, Vec3::Z),
-        O::Top => (Vec3::X, -Vec3::Y),
-        O::Bottom => (Vec3::X, Vec3::Y),
+        // Looking down from above, world +Y (the back) runs up the page; from below it runs
+        // down it (#1643). `right × up` is the direction out of the page toward the eye, so
+        // these must be +Z for Top and −Z for Bottom — the same directions the bear reports.
+        O::Top => (Vec3::X, Vec3::Y),
+        O::Bottom => (Vec3::X, -Vec3::Y),
         O::Isometric => {
             let out = Vec3::new(1.0, 1.0, 1.0).normalize();
             let right = Vec3::Z.cross(out).normalize();
@@ -80,10 +83,12 @@ pub fn aligned_child_orientation(
         return None;
     }
     let (r, u) = view_axes(parent);
-    let o = r.cross(u); // "into the page" for this view basis
+    let o = r.cross(u); // out of the page, toward the eye, for this view basis
+    // Third-angle unfolding: roll the glass box about the shared screen axis. The view placed
+    // above shows what the eye sees after climbing over the top (up becomes the eye direction).
     let (cr, cu) = match dir {
-        AlignDir::Below => (r, -o),
-        AlignDir::Above => (r, o),
+        AlignDir::Below => (r, o),
+        AlignDir::Above => (r, -o),
         AlignDir::Right => (-o, u),
         AlignDir::Left => (o, u),
     };
@@ -169,10 +174,11 @@ pub fn resolved_view_axes(views: &[DrawingView], view: &DrawingView) -> (Vec3, V
         if let Some(parent) = views.get(p) {
             if !std::ptr::eq(parent, view) {
                 let (pr, pu) = resolved_view_axes(views, parent);
-                let po = pr.cross(pu); // parent's "into the page"
+                let po = pr.cross(pu); // out of the parent's page, toward the eye
+                // Same third-angle roll as `aligned_child_orientation` (#1643).
                 let (r0, u0) = match dir {
-                    AlignDir::Below => (pr, -po),
-                    AlignDir::Above => (pr, po),
+                    AlignDir::Below => (pr, po),
+                    AlignDir::Above => (pr, -po),
                     AlignDir::Right => (-po, pu),
                     AlignDir::Left => (po, pu),
                 };
@@ -2203,6 +2209,93 @@ mod tests {
         assert!(r.dot(u).abs() < 1e-4, "re-orthonormalised");
     }
 
+    /// #1643: a drawing view and the navigation bear must agree on where the eye is. A view's
+    /// `right × up` is the direction *out of the page toward the viewer*, which is exactly the
+    /// bear's outward view direction for that pick. Top and Bottom were swapped, so picking the
+    /// bear's bottom corner drew the view from above.
+    #[test]
+    fn face_views_look_from_where_the_bear_says() {
+        use crate::camera::StandardView as S;
+        use crate::model::DrawingOrientation as O;
+        for (o, v) in [
+            (O::Front, S::Front),
+            (O::Back, S::Back),
+            (O::Left, S::Left),
+            (O::Right, S::Right),
+            (O::Top, S::Top),
+            (O::Bottom, S::Bottom),
+        ] {
+            let (r, u) = view_axes(o);
+            let eye = r.cross(u);
+            let bear = crate::view_cube::face_view_direction(v);
+            assert!(
+                (eye - bear).length() < 1e-4,
+                "{o:?} looks from {eye:?}, the bear says {bear:?}"
+            );
+        }
+    }
+
+    /// #1643: and the same for every edge and corner view the bear offers — each is built from
+    /// its faces, so a swapped Top/Bottom tilted half of them the wrong way.
+    #[test]
+    fn edge_and_corner_views_look_from_where_the_bear_says() {
+        use crate::model::{CornerView, DrawingOrientation as O, EdgeView};
+        use crate::view_cube::{CubeCornerId as CC, CubeEdgeId as CE};
+        let corner_id = |c| match c {
+            CornerView::FrontLeftBottom => CC::FrontLeftBottom,
+            CornerView::FrontRightBottom => CC::FrontRightBottom,
+            CornerView::BackRightBottom => CC::BackRightBottom,
+            CornerView::BackLeftBottom => CC::BackLeftBottom,
+            CornerView::FrontLeftTop => CC::FrontLeftTop,
+            CornerView::FrontRightTop => CC::FrontRightTop,
+            CornerView::BackRightTop => CC::BackRightTop,
+            CornerView::BackLeftTop => CC::BackLeftTop,
+        };
+        for &c in CornerView::ALL {
+            let (r, u) = view_axes(O::Corner(c));
+            let eye = r.cross(u);
+            let bear = crate::view_cube::corner_view_direction(corner_id(c));
+            assert!(
+                (eye - bear).length() < 1e-4,
+                "corner {c:?} looks from {eye:?}, the bear says {bear:?}"
+            );
+        }
+        let edge_id = |e| match e {
+            EdgeView::FrontRight => CE::FrontRight,
+            EdgeView::BackRight => CE::BackRight,
+            EdgeView::BackLeft => CE::BackLeft,
+            EdgeView::FrontLeft => CE::FrontLeft,
+            EdgeView::FrontTop => CE::FrontTop,
+            EdgeView::RightTop => CE::RightTop,
+            EdgeView::BackTop => CE::BackTop,
+            EdgeView::LeftTop => CE::LeftTop,
+            EdgeView::FrontBottom => CE::FrontBottom,
+            EdgeView::RightBottom => CE::RightBottom,
+            EdgeView::BackBottom => CE::BackBottom,
+            EdgeView::LeftBottom => CE::LeftBottom,
+        };
+        for &e in EdgeView::ALL {
+            let (r, u) = view_axes(O::Edge(e));
+            let eye = r.cross(u);
+            let bear = crate::view_cube::edge_view_direction(edge_id(e));
+            assert!(
+                (eye - bear).length() < 1e-4,
+                "edge {e:?} looks from {eye:?}, the bear says {bear:?}"
+            );
+        }
+    }
+
+    /// #1643: third-angle placement is what the unfolding must keep — the Top view goes *above*
+    /// a Front base and the Bottom view below it, whichever way the axes are spelled.
+    #[test]
+    fn aligned_children_of_a_front_base_land_third_angle() {
+        use crate::model::{AlignDir, DrawingOrientation as O};
+        assert_eq!(aligned_child_orientation(O::Front, AlignDir::Above), Some(O::Top));
+        assert_eq!(aligned_child_orientation(O::Front, AlignDir::Below), Some(O::Bottom));
+        assert_eq!(aligned_child_orientation(O::Front, AlignDir::Right), Some(O::Right));
+        assert_eq!(aligned_child_orientation(O::Front, AlignDir::Left), Some(O::Left));
+    }
+
     /// #351: an aligned child unfolds from its parent's basis for *any* base orientation, so a Top
     /// base yields Front below, Back above, and rotated Left/Right to the sides — all four
     /// directions offerable, and each rendered with the correct (possibly rotated) basis.
@@ -2215,7 +2308,7 @@ mod tests {
         }
         assert_eq!(aligned_child_orientation(O::Top, AlignDir::Below), Some(O::Front));
 
-        // The rendered bases come from resolved_view_axes unfolding the Top parent (X, -Y).
+        // The rendered bases come from resolved_view_axes unfolding the Top parent (X, Y).
         let parent = DrawingView {
             bodies: vec![bkey(0)], sketch: None, orientation: O::Top,
             dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
@@ -2233,15 +2326,17 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
             ..parent.clone()
         };
         let views = |dir| vec![parent.clone(), child(dir)];
-        // Top parent basis = (X, -Y), into-page = X×(-Y) = -Z.
+        // Top parent basis = (X, Y), eye direction = X×Y = +Z (#1643).
         let vb = views(AlignDir::Below);
         assert_eq!(resolved_view_axes(&vb, &vb[1]), (Vec3::X, Vec3::Z), "below → Front basis");
         let va = views(AlignDir::Above);
         assert_eq!(resolved_view_axes(&va, &va[1]), (Vec3::X, -Vec3::Z), "above → rotated Back");
+        // The side children keep the parent's page up (world +Y), so they are the Left/Right
+        // views rolled a quarter turn — not the half turn the swapped Top used to give (#1643).
         let vr = views(AlignDir::Right);
-        assert_eq!(resolved_view_axes(&vr, &vr[1]), (Vec3::Z, -Vec3::Y), "right → rotated Right");
+        assert_eq!(resolved_view_axes(&vr, &vr[1]), (-Vec3::Z, Vec3::Y), "right → rotated Right");
         let vl = views(AlignDir::Left);
-        assert_eq!(resolved_view_axes(&vl, &vl[1]), (-Vec3::Z, -Vec3::Y), "left → rotated Left");
+        assert_eq!(resolved_view_axes(&vl, &vl[1]), (Vec3::Z, Vec3::Y), "left → rotated Left");
     }
 
     /// #332: an aligned child dragged to the side of a Front parent can be re-oriented to any of

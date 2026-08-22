@@ -9105,7 +9105,9 @@ fn drawing_orientation_to_cube_pick(
         O::Front | O::Back | O::Left | O::Right | O::Top | O::Bottom => {
             Some(CubePick::Face(drawing_orientation_to_standard(o)))
         }
-        O::Isometric => Some(CubePick::Corner(CubeCornerId::FrontRightTop)),
+        // The legacy isometric (#180) looks along (1, 1, 1) — the back-right-top corner, not
+        // the front-right one it used to highlight (#1643).
+        O::Isometric => Some(CubePick::Corner(CubeCornerId::BackRightTop)),
         O::Corner(c) => {
             use crate::model::CornerView as CV;
             let id = match c {
@@ -10459,10 +10461,26 @@ mod tests {
             drawing_orientation_to_cube_pick(O::Front),
             Some(CubePick::Face(crate::camera::StandardView::Front))
         );
+        // #1643: the highlight must be the corner the projection actually looks from —
+        // Isometric looks along (1, 1, 1), which is the back-right-top corner.
         assert_eq!(
             drawing_orientation_to_cube_pick(O::Isometric),
-            Some(CubePick::Corner(CubeCornerId::FrontRightTop))
+            Some(CubePick::Corner(CubeCornerId::BackRightTop))
         );
+        // And in general: every orientation the bear highlights must agree with where the
+        // projection puts the eye.
+        for o in O::ALL {
+            let Some(pick) = drawing_orientation_to_cube_pick(*o) else {
+                continue;
+            };
+            let (r, u) = crate::drawing::view_axes(*o);
+            let bear = crate::view_cube::cube_pick_view_direction(pick);
+            assert!(
+                (r.cross(u) - bear).length() < 1e-4,
+                "{o:?} looks from {:?}, the bear highlights {bear:?}",
+                r.cross(u)
+            );
+        }
         assert_eq!(
             drawing_orientation_to_cube_pick(O::Edge(EdgeView::FrontRight)),
             Some(CubePick::Edge(CubeEdgeId::FrontRight))
