@@ -2056,6 +2056,12 @@ fn move_targets_center(doc: &Document, op: &crate::model::MoveOperation) -> Opti
 
 /// Axis-aligned bounds of Free-move targets (#1233): body solid meshes, plane origins,
 /// and tracing-image quads (#1587). `None` when nothing contributes world extent.
+///
+/// Every target contributes its **pristine** pose — the un-posed body mesh, the plane its
+/// definition builds, the image's authored origin/rotation — never the pose a Move op has
+/// already given it (#1631). A Free turn pivots about this centre, so a pivot read from the
+/// moved pose would move with its own move: the commit would land off the preview, and each
+/// later recompute would walk the target further away.
 pub fn free_move_targets_bounds(
     doc: &Document,
     bodies: &[crate::model::BodyKey],
@@ -2075,13 +2081,15 @@ pub fn free_move_targets_bounds(
     }
     for &plane in planes {
         if let Some(p) = doc.construction_planes.get(plane) {
-            lo = lo.min(p.origin);
-            hi = hi.max(p.origin);
+            let origin =
+                crate::construction::plane_from_definition(&p.definition, p.parent).origin;
+            lo = lo.min(origin);
+            hi = hi.max(origin);
             any = true;
         }
     }
     for &image in images {
-        if let Some(corners) = crate::construction::tracing_image_corners(doc, image) {
+        if let Some(corners) = crate::construction::tracing_image_base_corners(doc, image) {
             for p in corners {
                 lo = lo.min(p);
                 hi = hi.max(p);

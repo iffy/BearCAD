@@ -885,6 +885,24 @@ pub fn tracing_image_corners(
     tracing_image_corners_at(doc, img.plane, img.origin, img.rotation, img.width_mm, img.height_mm)
 }
 
+/// The quad an image would occupy at its *pristine* pose — before any Move op touched it
+/// (#1631). This is what a Free move's turn pivots about, so the pivot doesn't shift as the
+/// move it belongs to is applied, and recomputing the document is idempotent.
+pub fn tracing_image_base_corners(
+    doc: &Document,
+    image: crate::model::TracingImageKey,
+) -> Option<[Vec3; 4]> {
+    let img = doc.tracing_images.get(image)?;
+    tracing_image_corners_at(
+        doc,
+        img.plane,
+        img.base_origin.unwrap_or(img.origin),
+        img.base_rotation.unwrap_or(img.rotation),
+        img.width_mm,
+        img.height_mm,
+    )
+}
+
 /// Displayed-quad corners at an explicit origin/rotation, falling back to the stored pose.
 pub fn tracing_image_live_corners(
     doc: &Document,

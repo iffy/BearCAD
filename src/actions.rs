@@ -23412,6 +23412,87 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         );
     }
 
+    /// #1631: a Free move that *turns* an image must land where the preview drew it, and
+    /// stay there. The turn's pivot is the target's pristine pose, so recomputing the
+    /// document (which happens after every later edit) can't walk the image away from the
+    /// spot the preview promised.
+    #[test]
+    fn a_turned_image_lands_where_the_preview_drew_it() {
+        let mut state = AppState::default();
+        let image = state.doc.tracing_images.insert(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "trace".to_string(),
+            plane: pkey(0),
+            origin: (-3.5, -14.7),
+            width_mm: 31.6,
+            height_mm: 31.6,
+            opacity: crate::model::DEFAULT_TRACING_IMAGE_OPACITY,
+            name: None,
+            calibration: None,
+            base_origin: None,
+            rotation: 0.0,
+            base_rotation: None,
+        });
+        // What the viewport previews while the Move is still in progress.
+        let mut creating = CreatingMove::default();
+        creating.translate_mode = crate::model::MoveTranslateMode::Free;
+        creating.image_targets = vec![image];
+        creating.tx = "-56.6mm".to_string();
+        creating.ty = "73.9mm".to_string();
+        creating.rz = "-90deg".to_string();
+        let previewed =
+            live_image_pose(&state.doc, image, Some(&creating)).expect("a previewed pose");
+
+        let result = state.apply(Action::CreateMoveOperation {
+            keep_inputs: false,
+            translate_mode: crate::model::MoveTranslateMode::Free,
+            start_point_a: None,
+            end_point_a: None,
+            start_point_b: None,
+            end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
+            targets: vec![],
+            plane_targets: vec![],
+            image_targets: vec![image],
+            instance_targets: Vec::new(),
+            tx: "-56.6mm".to_string(),
+            ty: "73.9mm".to_string(),
+            tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: "-90deg".to_string(),
+            face_flip: false,
+            face_spin: String::new(),
+            roll_angle: String::new(),
+            face_offset: String::new(),
+        });
+        assert!(matches!(result, ActionResult::Ok), "{}", state.status);
+        let committed = {
+            let img = &state.doc.tracing_images[image];
+            (img.origin, img.rotation)
+        };
+        assert!(
+            (committed.0 .0 - previewed.0 .0).abs() < 1e-3
+                && (committed.0 .1 - previewed.0 .1).abs() < 1e-3
+                && (committed.1 - previewed.1).abs() < 1e-4,
+            "commit should land on the previewed pose, previewed {previewed:?} got {committed:?}"
+        );
+
+        // Every later edit recomputes the document; the image must not drift a second time.
+        recompute_moved_images(&mut state.doc);
+        let settled = {
+            let img = &state.doc.tracing_images[image];
+            (img.origin, img.rotation)
+        };
+        assert!(
+            (settled.0 .0 - committed.0 .0).abs() < 1e-3
+                && (settled.0 .1 - committed.0 .1).abs() < 1e-3
+                && (settled.1 - committed.1).abs() < 1e-4,
+            "recomputing must be idempotent, was {committed:?} became {settled:?}"
+        );
+    }
+
     /// #217: a Move op can target a tracing image, translating its plane-local origin in place
     /// on its host plane. In-plane translation shifts the origin; editing the op back to zero and
     /// then dropping the image from the op returns it to its authored base.
