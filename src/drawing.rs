@@ -987,7 +987,74 @@ pub fn drawing_view_dimensionable_edges(
             edges.push((a, b));
         }
     }
-    edges
+    // One straight line, one dimension (#1644).
+    merge_collinear_runs(&edges)
+}
+
+/// Join every run of touching, collinear edges into one (#1644). A straight line on a body is
+/// broken into a segment per face that meets it, and dimensioning one 20 mm piece of an 80 mm
+/// edge is not what anyone is after — so the dimension surface sees the whole run.
+///
+/// Edges are grouped by the infinite 3D line they lie on and merged along it; a gap between two
+/// stretches of the same line keeps them apart, and the merged endpoints are the original mesh
+/// points, so the length stays exact.
+pub fn merge_collinear_runs(edges: &[(Vec3, Vec3)]) -> Vec<(Vec3, Vec3)> {
+    // Quantized line identity: canonical direction plus the foot of the perpendicular from the
+    // origin, so every edge of one line lands in the same bucket whichever way it is drawn.
+    type LineKey = ([i32; 3], [i32; 3]);
+    let quant_dir = |d: Vec3| {
+        [
+            (d.x * 10_000.0).round() as i32,
+            (d.y * 10_000.0).round() as i32,
+            (d.z * 10_000.0).round() as i32,
+        ]
+    };
+    // Each entry: the line, and its edges as intervals `(t_min, p_min, t_max, p_max)` along it.
+    let mut groups: Vec<(LineKey, Vec<(f32, Vec3, f32, Vec3)>)> = Vec::new();
+    let mut out: Vec<(Vec3, Vec3)> = Vec::new();
+    for &(a, b) in edges {
+        let d = b - a;
+        if d.length_squared() < 1e-12 {
+            out.push((a, b));
+            continue;
+        }
+        let dir = d.normalize();
+        // Canonical direction: flip so the first significant component is positive.
+        let flip = if dir.x.abs() > 1e-6 {
+            dir.x < 0.0
+        } else if dir.y.abs() > 1e-6 {
+            dir.y < 0.0
+        } else {
+            dir.z < 0.0
+        };
+        let dir = if flip { -dir } else { dir };
+        let foot = a - dir * a.dot(dir);
+        let key: LineKey = (quant_dir(dir), crate::hierarchy::quantize_body_point(foot));
+        let (ta, tb) = (a.dot(dir), b.dot(dir));
+        let interval = if ta <= tb { (ta, a, tb, b) } else { (tb, b, ta, a) };
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, list)) => list.push(interval),
+            None => groups.push((key, vec![interval])),
+        }
+    }
+    for (_, mut intervals) in groups {
+        intervals.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut run = intervals[0];
+        for &(t0, p0, t1, p1) in &intervals[1..] {
+            // Touching (or overlapping) segments continue the run; a gap ends it.
+            if t0 <= run.2 + 1e-3 {
+                if t1 > run.2 {
+                    run.2 = t1;
+                    run.3 = p1;
+                }
+            } else {
+                out.push((run.1, run.3));
+                run = (t0, p0, t1, p1);
+            }
+        }
+        out.push((run.1, run.3));
+    }
+    out
 }
 
 /// The architectural dimension-line geometry for one edge (#294), all in the view's projected
@@ -2209,6 +2276,75 @@ mod tests {
         assert!(r.dot(u).abs() < 1e-4, "re-orthonormalised");
     }
 
+    /// #1644: dimensioning "the line" must mean the whole line. A straight edge broken into a
+    /// segment per face that lands on it merges back into one run; a real gap does not.
+    #[test]
+    fn collinear_edges_merge_into_one_run() {
+        let p = |x: f32, z: f32| Vec3::new(x, 20.0, z);
+        // One 80 mm vertical line, cut into three by the faces meeting it at z = 30 and 50.
+        let run = merge_collinear_runs(&[
+            (p(20.0, 0.0), p(20.0, 30.0)),
+            (p(20.0, 30.0), p(20.0, 50.0)),
+            (p(20.0, 50.0), p(20.0, 80.0)),
+        ]);
+        assert_eq!(run.len(), 1, "the three pieces are one line, got {run:?}");
+        let (a, b) = run[0];
+        assert!(((b - a).length() - 80.0).abs() < 1e-3, "run is 80 mm, got {}", (b - a).length());
+
+        // Direction doesn't matter: the same line drawn every which way still merges.
+        let mixed = merge_collinear_runs(&[
+            (p(20.0, 30.0), p(20.0, 0.0)),
+            (p(20.0, 50.0), p(20.0, 30.0)),
+            (p(20.0, 50.0), p(20.0, 80.0)),
+        ]);
+        assert_eq!(mixed.len(), 1, "got {mixed:?}");
+
+        // A gap in the middle is two lines, not one.
+        let gapped = merge_collinear_runs(&[
+            (p(20.0, 0.0), p(20.0, 30.0)),
+            (p(20.0, 50.0), p(20.0, 80.0)),
+        ]);
+        assert_eq!(gapped.len(), 2, "a gap keeps them apart, got {gapped:?}");
+
+        // Parallel lines a millimetre apart stay separate, and so do crossing edges.
+        let others = merge_collinear_runs(&[
+            (p(20.0, 0.0), p(20.0, 30.0)),
+            (p(21.0, 0.0), p(21.0, 30.0)),
+            (p(20.0, 30.0), p(40.0, 30.0)),
+        ]);
+        assert_eq!(others.len(), 3, "got {others:?}");
+    }
+
+    /// #1644: end to end on the reporter's drawing — the front view's 80 mm vertical line is
+    /// one dimensionable edge, not three 20/30 mm pieces.
+    #[test]
+    fn a_drawing_view_dimensions_a_whole_line() {
+        let bytes = std::fs::read("tests/fixtures/issue_1644.json").expect("fixture");
+        let doc = crate::storage::from_json_bytes(&bytes).expect("load");
+        let d = doc.drawings.values().next().expect("the drawing");
+        let front = &d.views[0];
+        assert_eq!(front.orientation, DrawingOrientation::Front);
+        let edges = drawing_view_dimensionable_edges(&doc, &d.views, front);
+        let full = edges.iter().any(|(a, b)| {
+            let (lo, hi) = if a.z <= b.z { (a, b) } else { (b, a) };
+            (lo.x - 20.0).abs() < 1e-3
+                && (lo.y - 20.0).abs() < 1e-3
+                && lo.z.abs() < 1e-3
+                && (hi.z - 80.0).abs() < 1e-3
+        });
+        assert!(full, "the x = 20 line should be dimensionable over its whole 80 mm");
+        assert!(
+            !edges.iter().any(|(a, b)| {
+                (a.x - 20.0).abs() < 1e-3
+                    && (a.y - 20.0).abs() < 1e-3
+                    && (b.x - 20.0).abs() < 1e-3
+                    && (b.y - 20.0).abs() < 1e-3
+                    && ((*b - *a).length() - 20.0).abs() < 1e-3
+            }),
+            "and its 20 mm middle piece should no longer be separately dimensionable"
+        );
+    }
+
     /// #1643: a drawing view and the navigation bear must agree on where the eye is. A view's
     /// `right × up` is the direction *out of the page toward the viewer*, which is exactly the
     /// bear's outward view direction for that pick. Top and Bottom were swapped, so picking the
@@ -2908,3 +3044,5 @@ label_hidden: false,
         );
     }
 }
+
+
