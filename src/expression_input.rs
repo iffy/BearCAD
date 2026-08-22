@@ -37,6 +37,58 @@ pub struct AutocompleteMatch {
 struct AutocompleteUiState {
     highlight: usize,
     last_query: String,
+    /// Tab closed the dropdown for this query (#1638), so the next Tab walks to the next
+    /// input. Cleared as soon as the token under the caret changes.
+    dismissed: bool,
+}
+
+/// A key the autocomplete dropdown claims while it is up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AutocompleteKey {
+    Up,
+    Down,
+    /// Accepts the highlighted name and keeps the dropdown up for more typing.
+    Space,
+    /// Accepts the highlighted name and closes the dropdown (#1638).
+    Tab,
+    /// Accepts the highlighted name; the field's own Enter handling then commits it.
+    Enter,
+}
+
+/// Apply `key` to a field's dropdown. Returns whether `text` changed.
+fn apply_autocomplete_key(
+    key: AutocompleteKey,
+    text: &mut String,
+    token: (usize, usize),
+    candidates: &[AutocompleteMatch],
+    ui_state: &mut AutocompleteUiState,
+    text_state: &mut TextEditState,
+) -> bool {
+    if candidates.is_empty() {
+        return false;
+    }
+    ui_state.highlight = ui_state.highlight.min(candidates.len() - 1);
+    match key {
+        AutocompleteKey::Up => {
+            ui_state.highlight = ui_state.highlight.saturating_sub(1);
+            false
+        }
+        AutocompleteKey::Down => {
+            ui_state.highlight = (ui_state.highlight + 1).min(candidates.len() - 1);
+            false
+        }
+        AutocompleteKey::Space | AutocompleteKey::Tab | AutocompleteKey::Enter => {
+            let name = candidates[ui_state.highlight].name.clone();
+            apply_parameter_completion(text, token, &name, text_state);
+            if key == AutocompleteKey::Tab {
+                // The name is accepted and the dropdown is done; the caret keeps the field
+                // so a second Tab is the one that walks onward (#1638).
+                ui_state.last_query = name;
+                ui_state.dismissed = true;
+            }
+            true
+        }
+    }
 }
 
 /// Live validation errors for an angle expression field.
@@ -462,6 +514,38 @@ fn store_autocomplete_state(ctx: &egui::Context, id: Id, state: AutocompleteUiSt
     ctx.data_mut(|d| d.insert_temp(autocomplete_state_id(id), state));
 }
 
+/// Test hook: record that Tab already closed this field's dropdown for `query` (#1638).
+#[cfg(test)]
+pub fn mark_autocomplete_dismissed_for_test(ctx: &egui::Context, id: Id, query: &str) {
+    store_autocomplete_state(
+        ctx,
+        id,
+        AutocompleteUiState {
+            highlight: 0,
+            last_query: query.to_string(),
+            dismissed: true,
+        },
+    );
+}
+
+/// The field's dropdown state for `query`, with the highlight (and any Tab dismissal)
+/// reset when the token under the caret has changed since last frame.
+fn refreshed_autocomplete_state(
+    ctx: &egui::Context,
+    id: Id,
+    query: &str,
+    candidate_count: usize,
+) -> AutocompleteUiState {
+    let mut state = load_autocomplete_state(ctx, id);
+    if state.last_query != query {
+        state.highlight = 0;
+        state.last_query = query.to_string();
+        state.dismissed = false;
+    }
+    state.highlight = state.highlight.min(candidate_count.saturating_sub(1));
+    state
+}
+
 fn apply_parameter_completion(
     text: &mut String,
     token: (usize, usize),
@@ -522,12 +606,10 @@ pub fn interp_autocomplete_handle_keys(
     )
 }
 
-/// Whether Tab on this field should accept the highlighted autocomplete name (#937/#1573).
-///
-/// True only while accepting would *change* the token. A fully-typed name (or a number,
-/// empty field, or unmatched prefix) leaves Tab free to walk to the next input — including
-/// the other live dimension while drawing a rectangle.
-pub fn autocomplete_has_candidates(
+/// Whether this field's autocomplete dropdown is up — which is also whether Tab belongs to
+/// it (#937/#1573/#1638). Tab accepts the highlighted name and closes the dropdown; only
+/// once it's closed does Tab walk to the next input, such as a rectangle's other dimension.
+pub fn autocomplete_dropdown_visible(
     ctx: &egui::Context,
     id: Id,
     text: &str,
@@ -544,9 +626,7 @@ pub fn autocomplete_has_candidates(
     if candidates.is_empty() {
         return false;
     }
-    let ui_state = load_autocomplete_state(ctx, id);
-    let highlight = ui_state.highlight.min(candidates.len().saturating_sub(1));
-    candidates[highlight].name != query
+    !refreshed_autocomplete_state(ctx, id, &query, candidates.len()).dismissed
 }
 
 fn autocomplete_handle_keys_with(
@@ -571,44 +651,66 @@ fn autocomplete_handle_keys_with(
         return false;
     }
 
-    let mut ui_state = load_autocomplete_state(ctx, id);
-    if ui_state.last_query != query {
-        ui_state.highlight = 0;
-        ui_state.last_query = query;
+    let mut ui_state = refreshed_autocomplete_state(ctx, id, &query, candidates.len());
+    if ui_state.dismissed {
+        // Tab already closed this dropdown (#1638): every key is the field's again until
+        // the caret's token changes.
+        store_autocomplete_state(ctx, id, ui_state);
+        return false;
     }
-    ui_state.highlight = ui_state.highlight.min(candidates.len().saturating_sub(1));
 
-    let up = ui.input(|i| i.key_pressed(Key::ArrowUp));
-    let down = ui.input(|i| i.key_pressed(Key::ArrowDown));
-    let space = ui.input(|i| i.key_pressed(Key::Space));
-    let tab = ui.input(|i| i.key_pressed(Key::Tab));
-    let enter = ui.input(|i| i.key_pressed(Key::Enter));
+    let pressed = if ui.input(|i| i.key_pressed(Key::ArrowUp)) {
+        Some(AutocompleteKey::Up)
+    } else if ui.input(|i| i.key_pressed(Key::ArrowDown)) {
+        Some(AutocompleteKey::Down)
+    } else if ui.input(|i| i.key_pressed(Key::Space)) {
+        Some(AutocompleteKey::Space)
+    } else if ui.input(|i| i.key_pressed(Key::Tab)) {
+        Some(AutocompleteKey::Tab)
+    } else if ui.input(|i| i.key_pressed(Key::Enter)) {
+        Some(AutocompleteKey::Enter)
+    } else {
+        None
+    };
+
     let mut changed = false;
-
-    if up {
-        ui_state.highlight = ui_state.highlight.saturating_sub(1);
-        ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::ArrowUp));
-    } else if down {
-        ui_state.highlight = (ui_state.highlight + 1).min(candidates.len() - 1);
-        ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::ArrowDown));
-    } else if space || tab {
+    if let Some(key) = pressed {
         // Space or Tab accepts the highlighted (top by default) candidate and keeps editing
-        // with the caret at the end of the completed name (#50/#507).
-        let name = candidates[ui_state.highlight].name.clone();
-        apply_parameter_completion(text, token, &name, &mut text_state);
-        text_state.store(ctx, id);
-        let key = if space { Key::Space } else { Key::Tab };
-        ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key));
-        // Keep focus on this field even if Tab's focus-navigation already fired this frame.
-        ctx.memory_mut(|m| m.request_focus(id));
-        changed = true;
-    } else if enter {
-        // Enter accepts the highlighted candidate too, but is left unconsumed so the field's
-        // own Enter handling still commits the (now completed) expression in one keystroke (#50).
-        let name = candidates[ui_state.highlight].name.clone();
-        apply_parameter_completion(text, token, &name, &mut text_state);
-        text_state.store(ctx, id);
-        changed = true;
+        // with the caret at the end of the completed name (#50/#507). Enter accepts too, but
+        // is left unconsumed so the field's own Enter handling still commits the (now
+        // completed) expression in one keystroke (#50).
+        changed = apply_autocomplete_key(
+            key,
+            text,
+            token,
+            &candidates,
+            &mut ui_state,
+            &mut text_state,
+        );
+        if changed {
+            text_state.store(ctx, id);
+        }
+        match key {
+            AutocompleteKey::Up => {
+                ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::ArrowUp))
+            }
+            AutocompleteKey::Down => {
+                ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::ArrowDown))
+            }
+            AutocompleteKey::Space | AutocompleteKey::Tab => {
+                let raw = if key == AutocompleteKey::Space {
+                    Key::Space
+                } else {
+                    Key::Tab
+                };
+                let consumed = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, raw));
+                // Keep focus on this field even if Tab's focus-navigation already fired
+                // this frame.
+                ctx.memory_mut(|m| m.request_focus(id));
+                consumed
+            }
+            AutocompleteKey::Enter => false,
+        };
     }
 
     store_autocomplete_state(ctx, id, ui_state);
@@ -680,13 +782,12 @@ fn autocomplete_show_dropdown_with(
         return false;
     }
 
-    let mut ui_state = load_autocomplete_state(ctx, id);
-    if ui_state.last_query != query {
-        ui_state.highlight = 0;
-        ui_state.last_query = query;
-    }
-    ui_state.highlight = ui_state.highlight.min(candidates.len().saturating_sub(1));
+    let ui_state = refreshed_autocomplete_state(ctx, id, &query, candidates.len());
     store_autocomplete_state(ctx, id, ui_state.clone());
+    if ui_state.dismissed {
+        // Tab accepted a name and closed the dropdown (#1638).
+        return false;
+    }
 
     let highlight = ui_state.highlight;
     let mut changed = false;
@@ -820,7 +921,7 @@ pub mod boxed {
         };
         // Tab belongs to the autocomplete only while accepting would change the token
         // (#507/#937/#1573); a completed name walks to the next input.
-        let lock_tab = autocomplete_has_candidates(&ctx, id, text, doc, exclude_names);
+        let lock_tab = autocomplete_dropdown_visible(&ctx, id, text, doc, exclude_names);
         // #501: the computed value sits *below* the typed expression, inside the box.
         let frame_output = frame.show(ui, |ui| {
             ui.set_width(width);
@@ -1248,8 +1349,8 @@ pub(crate) fn canonical_value_text(s: &str) -> String {
 mod tests {
     use crate::model::unit_key_for_slot as ukey;
 
-    /// #937: Tab belongs to the autocomplete only while there's a name to complete — with
-    /// nothing to complete the field lets it walk to the next input.
+    /// #937/#1638: Tab belongs to the autocomplete while its dropdown is up — with no
+    /// dropdown (nothing matches, a number, an empty field) it walks to the next input.
     #[test]
     fn autocomplete_candidates_gate_the_tab_key() {
         let ctx = egui::Context::default();
@@ -1258,24 +1359,24 @@ mod tests {
         let id = Id::new("tab_gate_test");
         // No text-edit state stored, so the caret is taken to be at the end.
         assert!(
-            autocomplete_has_candidates(&ctx, id, "thi", &doc, &[]),
+            autocomplete_dropdown_visible(&ctx, id, "thi", &doc, &[]),
             "a half-typed parameter name has something to complete"
         );
         assert!(
-            !autocomplete_has_candidates(&ctx, id, "12", &doc, &[]),
+            !autocomplete_dropdown_visible(&ctx, id, "12", &doc, &[]),
             "a plain number has nothing to complete"
         );
         assert!(
-            !autocomplete_has_candidates(&ctx, id, "", &doc, &[]),
+            !autocomplete_dropdown_visible(&ctx, id, "", &doc, &[]),
             "and neither has an empty field"
         );
         assert!(
-            !autocomplete_has_candidates(&ctx, id, "zzz", &doc, &[]),
+            !autocomplete_dropdown_visible(&ctx, id, "zzz", &doc, &[]),
             "nor a name nothing matches"
         );
         assert!(
-            !autocomplete_has_candidates(&ctx, id, "thickness", &doc, &[]),
-            "a fully-typed name has nothing left to complete — Tab should walk to the next input"
+            autocomplete_dropdown_visible(&ctx, id, "thickness", &doc, &[]),
+            "a fully-typed name still has a dropdown up for Tab to dismiss (#1638)"
         );
     }
 
@@ -1288,21 +1389,112 @@ mod tests {
         add_parameter(&mut doc, "foo".to_string(), "10mm".to_string()).unwrap();
         add_parameter(&mut doc, "foobar".to_string(), "20mm".to_string()).unwrap();
         let id = Id::new("tab_longer_highlight");
-        assert!(
-            !autocomplete_has_candidates(&ctx, id, "foo", &doc, &[]),
-            "exact `foo` is already complete"
-        );
         store_autocomplete_state(
             &ctx,
             id,
             AutocompleteUiState {
                 highlight: 1,
                 last_query: "foo".to_string(),
+                dismissed: false,
             },
         );
         assert!(
-            autocomplete_has_candidates(&ctx, id, "foo", &doc, &[]),
+            autocomplete_dropdown_visible(&ctx, id, "foo", &doc, &[]),
             "arrowing onto `foobar` should still let Tab complete"
+        );
+    }
+
+    /// #1638: with a variable named `foo` fully typed, the first Tab accepts it and closes
+    /// the dropdown; only the next Tab walks to the rectangle's other value input.
+    #[test]
+    fn tab_dismisses_the_dropdown_before_walking_to_the_next_field() {
+        let ctx = egui::Context::default();
+        let mut doc = Document::default();
+        add_parameter(&mut doc, "foo".to_string(), "10mm".to_string()).unwrap();
+        let id = Id::new("tab_dismiss");
+        let mut text = "foo".to_string();
+        assert!(
+            autocomplete_dropdown_visible(&ctx, id, &text, &doc, &[]),
+            "the dropdown is up, so Tab is the autocomplete's"
+        );
+
+        let mut ui_state = AutocompleteUiState {
+            highlight: 0,
+            last_query: "foo".to_string(),
+            dismissed: false,
+        };
+        let mut text_state = TextEditState::default();
+        let candidates = parameter_autocomplete_candidates(&doc, "foo", &[]);
+        apply_autocomplete_key(
+            AutocompleteKey::Tab,
+            &mut text,
+            (0, 3),
+            &candidates,
+            &mut ui_state,
+            &mut text_state,
+        );
+        assert_eq!(text, "foo", "Tab accepts the highlighted name");
+        assert!(ui_state.dismissed, "and closes the dropdown");
+        store_autocomplete_state(&ctx, id, ui_state);
+        assert!(
+            !autocomplete_dropdown_visible(&ctx, id, &text, &doc, &[]),
+            "the next Tab walks to the other value input"
+        );
+        assert!(
+            !autocomplete_dropdown_visible(&ctx, id, &text, &doc, &[]),
+            "and the dropdown stays closed"
+        );
+    }
+
+    /// #1638: a half-typed name completes *and* dismisses in one Tab.
+    #[test]
+    fn tab_completes_and_dismisses_in_one_press() {
+        let mut doc = Document::default();
+        add_parameter(&mut doc, "foo".to_string(), "10mm".to_string()).unwrap();
+        let mut text = "fo".to_string();
+        let mut ui_state = AutocompleteUiState {
+            highlight: 0,
+            last_query: "fo".to_string(),
+            dismissed: false,
+        };
+        let mut text_state = TextEditState::default();
+        let candidates = parameter_autocomplete_candidates(&doc, "fo", &[]);
+        apply_autocomplete_key(
+            AutocompleteKey::Tab,
+            &mut text,
+            (0, 2),
+            &candidates,
+            &mut ui_state,
+            &mut text_state,
+        );
+        assert_eq!(text, "foo");
+        assert!(ui_state.dismissed);
+        assert_eq!(
+            ui_state.last_query, "foo",
+            "the completed name is the query now, so it isn't re-opened next frame"
+        );
+    }
+
+    /// #1638: editing the text again re-opens the dismissed dropdown.
+    #[test]
+    fn typing_after_a_dismiss_reopens_the_dropdown() {
+        let ctx = egui::Context::default();
+        let mut doc = Document::default();
+        add_parameter(&mut doc, "foo".to_string(), "10mm".to_string()).unwrap();
+        add_parameter(&mut doc, "fob".to_string(), "10mm".to_string()).unwrap();
+        let id = Id::new("tab_reopen");
+        store_autocomplete_state(
+            &ctx,
+            id,
+            AutocompleteUiState {
+                highlight: 0,
+                last_query: "foo".to_string(),
+                dismissed: true,
+            },
+        );
+        assert!(
+            autocomplete_dropdown_visible(&ctx, id, "fo", &doc, &[]),
+            "a different query means a fresh dropdown"
         );
     }
     use super::*;

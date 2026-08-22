@@ -25155,7 +25155,7 @@ fn in_progress_tab_claimed_by_autocomplete(state: &AppState, ctx: &egui::Context
     let Some((id, text)) = in_progress_focused_expression(state) else {
         return false;
     };
-    expression_input::autocomplete_has_candidates(ctx, id, text, &state.doc, &[])
+    expression_input::autocomplete_dropdown_visible(ctx, id, text, &state.doc, &[])
 }
 
 impl App {
@@ -34996,7 +34996,8 @@ mod tests {
         assert_eq!(text, "10");
     }
 
-    /// #1573: a half-typed variable keeps Tab on the field; the completed name lets it switch.
+    /// #1573/#1638: a variable's dropdown keeps Tab on the field; once Tab has closed the
+    /// dropdown, the next Tab switches fields.
     #[test]
     fn in_progress_rect_tab_claimed_while_completing_a_variable() {
         use super::in_progress_tab_claimed_by_autocomplete;
@@ -35020,8 +35021,17 @@ mod tests {
         );
         state.creating_rect.as_mut().unwrap().texts[0] = "foo".into();
         assert!(
+            in_progress_tab_claimed_by_autocomplete(&state, &ctx),
+            "completed `foo` still has a dropdown up for Tab to close"
+        );
+        crate::expression_input::mark_autocomplete_dismissed_for_test(
+            &ctx,
+            egui::Id::new("cr_width"),
+            "foo",
+        );
+        assert!(
             !in_progress_tab_claimed_by_autocomplete(&state, &ctx),
-            "completed `foo` should let Tab switch fields"
+            "with the dropdown closed, Tab switches fields"
         );
     }
 
