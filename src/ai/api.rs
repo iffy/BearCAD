@@ -167,6 +167,7 @@ bearcad.ui.screenshot("shot.png")            -- viewport; "window" / a pane name
 bearcad.ui.camera{ yaw?, pitch?, distance?, target? }
 bearcad.ui.pane("ai"|"hierarchy"|"context"|"parameters"|…, "show"|"hide"|"toggle")
 bearcad.ui.click_ground(x, y)               -- sketch-plane millimetres
+bearcad.ui.click_world(x, y, z)             -- any world point: a body's side wall, say
 bearcad.ui.right_click_ground(x, y)         -- opens a context menu
 bearcad.ui.context_menu()                   -- { kind, index } of the open menu, or nil
 bearcad.ui.key("enter")

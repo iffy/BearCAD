@@ -954,6 +954,10 @@ pub enum Instruction {
     MoveGround { x: f32, y: f32 },
     /// A click at ground coordinates, optionally with modifiers held (#835/#984).
     ClickGround { x: f32, y: f32, mods: ClickMods },
+    /// Move/click at a point in world space (millimetres) — how a script reaches a face that
+    /// isn't on the ground plane, such as a body's side wall (#1639).
+    MoveWorld { x: f32, y: f32, z: f32 },
+    ClickWorld { x: f32, y: f32, z: f32, mods: ClickMods },
     /// Primary-drag between two ground-plane points (world mm), like [`Self::Drag`].
     DragGround { x0: f32, y0: f32, x1: f32, y1: f32 },
     Drag {
@@ -2240,6 +2244,12 @@ impl Instruction {
             Instruction::MoveGround { x, y } => format!("bearcad.ui.move_ground({x}, {y})"),
             Instruction::ClickGround { x, y, mods } => {
                 format!("bearcad.ui.click_ground({x}, {y}{})", mods.lua_opts())
+            }
+            Instruction::MoveWorld { x, y, z } => {
+                format!("bearcad.ui.move_world({x}, {y}, {z})")
+            }
+            Instruction::ClickWorld { x, y, z, mods } => {
+                format!("bearcad.ui.click_world({x}, {y}, {z}{})", mods.lua_opts())
             }
             Instruction::DragGround { x0, y0, x1, y1 } => {
                 format!("bearcad.ui.drag_ground({x0}, {y0}, {x1}, {y1})")
@@ -5968,8 +5978,19 @@ impl ScriptRunner {
         // `Some(mods)` clicks (holding those modifiers); `None` only moves the pointer.
         click: Option<ClickMods>,
     ) {
+        Self::world_pointer(synthetic, state, viewport, Vec3::new(x, y, 0.0), click);
+    }
+
+    /// Point the mouse at where `world` (mm) lands on screen — the ground-plane path with the
+    /// z the caller wants, so a script can reach a body's side wall too (#1639).
+    fn world_pointer(
+        synthetic: &mut SyntheticInput,
+        state: &AppState,
+        viewport: Option<egui::Rect>,
+        world: Vec3,
+        click: Option<ClickMods>,
+    ) {
         let Some(vp) = viewport else { return };
-        let world = Vec3::new(x, y, 0.0);
         let mat = state.cam.view_proj(vp);
         let Some(screen) = state.cam.project(world, vp, &mat) else {
             return;
@@ -8158,6 +8179,20 @@ impl ScriptRunner {
                     return StepResult::Wait;
                 }
                 Self::ground_pointer(synthetic, state, viewport, x, y, Some(mods));
+                StepResult::Continue
+            }
+            Instruction::MoveWorld { x, y, z } => {
+                if viewport.is_none() || state.cam.is_transitioning() {
+                    return StepResult::Wait;
+                }
+                Self::world_pointer(synthetic, state, viewport, Vec3::new(x, y, z), None);
+                StepResult::Continue
+            }
+            Instruction::ClickWorld { x, y, z, mods } => {
+                if viewport.is_none() || state.cam.is_transitioning() {
+                    return StepResult::Wait;
+                }
+                Self::world_pointer(synthetic, state, viewport, Vec3::new(x, y, z), Some(mods));
                 StepResult::Continue
             }
             Instruction::DragGround { x0, y0, x1, y1 } => {

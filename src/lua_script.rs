@@ -5746,6 +5746,24 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1639: the same pointer, aimed at any point in world space — how a script clicks a
+    // body's side wall (the ground helpers can only reach z = 0).
+    api.set(
+        "move_world",
+        lua.create_function(|lua, (x, y, z): (f32, f32, f32)| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::MoveWorld { x, y, z }) }
+        })?,
+    )?;
+    api.set(
+        "click_world",
+        lua.create_function(|lua, (x, y, z, opts): (f32, f32, f32, Option<Table>)| {
+            let mods = click_mods(opts)?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::ClickWorld { x, y, z, mods }) }
+        })?,
+    )?;
+
     api.set(
         "drag",
         lua.create_function(|lua, (x0, y0, x1, y1): (f32, f32, f32, f32)| {
@@ -8073,6 +8091,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "touch",
             "os_open",
             "move", "click", "move_ground", "click_ground",
+            "move_world", "click_world",
             "drag", "drag_ground", "right_drag", "right_drag_pan",
             "right_click", "right_click_ground", "context_menu",
             "key", "keydown", "keyup", "type",

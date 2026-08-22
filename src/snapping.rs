@@ -770,3 +770,4 @@ mod tests {
         assert!(find_normal_at_midpoint_snap(&doc, sketch, anchor, (5.0, 0.0), 0.0, &[]).is_none());
     }
 }
+

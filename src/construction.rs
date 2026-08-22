@@ -3719,12 +3719,22 @@ pub fn coplanar_face_boundary_loop(triangles: &[[Vec3; 3]]) -> Vec<Vec3> {
         adj.entry(ka).or_default().push(b);
         adj.entry(kb).or_default().push(a);
     }
+    // The walk below must not depend on hash order (#1639): `ConstraintLine::FaceEdge`
+    // stores an *index* into this loop, so starting at a different corner (or heading the
+    // other way round) each call re-points every face-edge constraint at some other edge —
+    // a snapped point jumps to a different edge on the next solve. Fixed corner order in,
+    // same loop out.
+    let mut starts: Vec<Q> = world.keys().copied().collect();
+    starts.sort();
+    for neighbours in adj.values_mut() {
+        neighbours.sort_by_key(|&n| quant(n));
+    }
     // Walk every unused edge; keep the longest **closed** walk (outer loop). An open
     // chain must not be treated as a loop — closing it invents a diagonal.
     let mut used: std::collections::HashSet<(Q, Q)> = std::collections::HashSet::new();
     let edge_key = |a: Q, b: Q| if a <= b { (a, b) } else { (b, a) };
     let mut best: Vec<Vec3> = Vec::new();
-    for &start_q in world.keys() {
+    for start_q in starts {
         let Some(neighbours) = adj.get(&start_q) else {
             continue;
         };
@@ -5034,6 +5044,39 @@ mod tests {
             let (ka, kb) = (quant(a), quant(b));
             let key = if ka <= kb { (ka, kb) } else { (kb, ka) };
             assert!(bset.contains(&key), "loop edge missing from boundary");
+        }
+    }
+
+    /// #1639: the loop is a document-facing *index* — `ConstraintLine::FaceEdge { index }`
+    /// names `loop[index]`..`loop[index + 1]`. Walking it from a `HashMap`'s iteration order
+    /// started it at a different corner on every call, so a point snapped onto one edge was
+    /// re-solved onto another, and the line jumped somewhere else entirely.
+    #[test]
+    fn coplanar_face_boundary_loop_is_the_same_every_call() {
+        // An L-shaped face (the reporter's column + arm), triangulated as a fan.
+        let corners = [
+            (0.0f32, 0.0f32),
+            (20.0, 0.0),
+            (20.0, 30.0),
+            (80.0, 30.0),
+            (80.0, 50.0),
+            (20.0, 50.0),
+            (20.0, 80.0),
+            (0.0, 80.0),
+        ];
+        let pt = |(y, z): (f32, f32)| Vec3::new(20.0, y, z);
+        let mut triangles = Vec::new();
+        for i in 1..corners.len() - 1 {
+            triangles.push([pt(corners[0]), pt(corners[i]), pt(corners[i + 1])]);
+        }
+        let first = coplanar_face_boundary_loop(&triangles);
+        assert_eq!(first.len(), 8, "the L outline has 8 corners, got {first:?}");
+        for round in 0..8 {
+            let again = coplanar_face_boundary_loop(&triangles);
+            assert_eq!(
+                again, first,
+                "round {round} walked the loop differently — face-edge indices must be stable"
+            );
         }
     }
 
