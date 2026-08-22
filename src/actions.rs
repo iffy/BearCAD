@@ -13595,6 +13595,9 @@ impl AppState {
                 view.style = pv.style;
                 view.aligned_parent = Some(parent);
                 view.aligned_dir = Some(dir);
+                // Showing the alignment is the point of an aligned view, so its dashed
+                // projection lines are on from the start (#1642).
+                view.align_lines = true;
                 self.doc.drawings[drawing].views.push(view);
                 let vi = self.doc.drawings[drawing].views.len() - 1;
                 self.select_drawing_only(drawing, crate::context::DrawingElementRef::Projection(vi));
@@ -29976,6 +29979,35 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         state.apply(Action::UndoLast);
         let v = &state.doc.drawings[dkey(0)].views[0];
         assert!((v.size_x - 0.3).abs() < 1e-4 && (v.size_y - 0.55).abs() < 1e-4);
+    }
+
+    /// #1642: an aligned child is *for* showing how it lines up with its base, so it draws the
+    /// dashed projection lines from the start.
+    #[test]
+    fn an_aligned_view_starts_with_projection_lines() {
+        use crate::model::{AlignDir, DrawingOrientation};
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::AddDrawingView {
+            drawing: dkey(0),
+            bodies: vec![bkey(0)],
+            orientation: DrawingOrientation::Front,
+        });
+        assert!(
+            !state.doc.drawings[dkey(0)].views[0].align_lines,
+            "a base view has nothing to line up with"
+        );
+        for dir in [AlignDir::Right, AlignDir::Below] {
+            state.apply(Action::AddAlignedDrawingView {
+                drawing: dkey(0),
+                parent: 0,
+                dir,
+                pos: 0.75,
+            });
+            let child = state.doc.drawings[dkey(0)].views.last().expect("the child");
+            assert!(child.align_lines, "{dir:?} child should show projection lines");
+        }
     }
 
     /// #1207: resizing one view of an aligned group updates the shared axis on its partners.
