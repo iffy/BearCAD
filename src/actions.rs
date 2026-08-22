@@ -3043,6 +3043,24 @@ pub enum Action {
     RemoveDrawingAnnotation { drawing: crate::model::DrawingKey, annotation: crate::model::AnnotationKey },
     /// Remove a body view from a drawing by its index.
     RemoveDrawingView { drawing: crate::model::DrawingKey, view: usize },
+    /// Add a free point-to-point dimension to a drawing view (#1645). `a`/`b` are in the
+    /// view's projected millimetres.
+    AddDrawingPointDim {
+        drawing: crate::model::DrawingKey,
+        view: usize,
+        a: (f32, f32),
+        b: (f32, f32),
+        axis: crate::model::PointDimAxis,
+    },
+    /// Change what a free point-to-point dimension measures (#1645).
+    SetDrawingPointDimAxis {
+        drawing: crate::model::DrawingKey,
+        view: usize,
+        index: usize,
+        axis: crate::model::PointDimAxis,
+    },
+    /// Remove a free point-to-point dimension (#1645).
+    RemoveDrawingPointDim { drawing: crate::model::DrawingKey, view: usize, index: usize },
     /// Toggle the length dimension of one edge (by quantized world endpoints) in a drawing view.
     ToggleDrawingDimension {
         drawing: crate::model::DrawingKey,
@@ -4780,7 +4798,7 @@ impl AppState {
             !(*d == drawing
                 && match e {
                     R::Projection(v) => *v == view,
-                    R::Dimension { view: v, .. } => *v == view,
+                    R::Dimension { view: v, .. } | R::PointDim { view: v, .. } => *v == view,
                     R::Text(_) => false,
                 })
         });
@@ -4790,7 +4808,7 @@ impl AppState {
             }
             match e {
                 R::Projection(v) if *v > view => *v -= 1,
-                R::Dimension { view: v, .. } if *v > view => *v -= 1,
+                R::Dimension { view: v, .. } | R::PointDim { view: v, .. } if *v > view => *v -= 1,
                 _ => {}
             }
         }
@@ -13738,6 +13756,77 @@ impl AppState {
                 };
                 a.pos_x = pos_x.clamp(0.0, 1.0);
                 a.pos_y = pos_y.clamp(0.0, 1.0);
+                ActionResult::Ok
+            }
+            Action::AddDrawingPointDim { drawing, view, a, b, axis } => {
+                let Some(v) = self
+                    .doc
+                    .drawings
+                    .get_mut(drawing)
+                    .and_then(|d| d.views.get_mut(view))
+                else {
+                    return ActionResult::Err(format!(
+                        "No view {view} in drawing {}",
+                        drawing.index()
+                    ));
+                };
+                v.point_dims.push(crate::model::DrawingPointDim {
+                    a,
+                    b,
+                    axis,
+                    offset: 0.0,
+                });
+                let index = self.doc.drawings[drawing].views[view].point_dims.len() - 1;
+                // Select it, so the context pane's Measure control is right there (#1645).
+                self.select_drawing_only(
+                    drawing,
+                    crate::context::DrawingElementRef::PointDim { view, index },
+                );
+                self.status = format!("Added {} dimension", axis.label().to_lowercase());
+                ActionResult::Ok
+            }
+            Action::SetDrawingPointDimAxis { drawing, view, index, axis } => {
+                let Some(dim) = self
+                    .doc
+                    .drawings
+                    .get_mut(drawing)
+                    .and_then(|d| d.views.get_mut(view))
+                    .and_then(|v| v.point_dims.get_mut(index))
+                else {
+                    return ActionResult::Err(format!("No point dimension {index}"));
+                };
+                dim.axis = axis;
+                self.status = format!("Measuring the {} distance", axis.label().to_lowercase());
+                ActionResult::Ok
+            }
+            Action::RemoveDrawingPointDim { drawing, view, index } => {
+                let Some(v) = self
+                    .doc
+                    .drawings
+                    .get_mut(drawing)
+                    .and_then(|d| d.views.get_mut(view))
+                    .filter(|v| index < v.point_dims.len())
+                else {
+                    return ActionResult::Err(format!("No point dimension {index}"));
+                };
+                v.point_dims.remove(index);
+                self.deselect_drawing_element(
+                    drawing,
+                    crate::context::DrawingElementRef::PointDim { view, index },
+                );
+                // Later dimensions shift down; keep any selection of them pointing at the
+                // same dimension.
+                for (d, e) in self.selected_drawing_elements.iter_mut() {
+                    if *d != drawing {
+                        continue;
+                    }
+                    if let crate::context::DrawingElementRef::PointDim { view: v, index: i } = e {
+                        if *v == view && *i > index {
+                            *i -= 1;
+                        }
+                    }
+                }
+                self.status = "Removed dimension".to_string();
                 ActionResult::Ok
             }
             Action::RemoveDrawingAnnotation { drawing, annotation } => {
@@ -29979,6 +30068,62 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         state.apply(Action::UndoLast);
         let v = &state.doc.drawings[dkey(0)].views[0];
         assert!((v.size_x - 0.3).abs() < 1e-4 && (v.size_y - 0.55).abs() < 1e-4);
+    }
+
+    /// #1645: free point-to-point dimensions are added to a view, re-measured, and removed —
+    /// and removing one keeps a later one's selection pointing at the same dimension.
+    #[test]
+    fn point_dimensions_are_added_remeasured_and_removed() {
+        use crate::model::{DrawingOrientation, PointDimAxis};
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::AddDrawingView {
+            drawing: dkey(0),
+            bodies: vec![bkey(0)],
+            orientation: DrawingOrientation::Front,
+        });
+        for (a, b) in [((0.0, 0.0), (30.0, 40.0)), ((5.0, 5.0), (5.0, 25.0))] {
+            assert!(matches!(
+                state.apply(Action::AddDrawingPointDim {
+                    drawing: dkey(0),
+                    view: 0,
+                    a,
+                    b,
+                    axis: PointDimAxis::Direct,
+                }),
+                ActionResult::Ok
+            ));
+        }
+        let dims = |state: &AppState| state.doc.drawings[dkey(0)].views[0].point_dims.clone();
+        assert_eq!(dims(&state).len(), 2);
+        // Adding one selects it, so its Measure control is right there.
+        assert!(state.selected_drawing_elements.contains(&(
+            dkey(0),
+            crate::context::DrawingElementRef::PointDim { view: 0, index: 1 }
+        )));
+
+        state.apply(Action::SetDrawingPointDimAxis {
+            drawing: dkey(0),
+            view: 0,
+            index: 0,
+            axis: PointDimAxis::Horizontal,
+        });
+        assert_eq!(dims(&state)[0].axis, PointDimAxis::Horizontal);
+        assert_eq!(
+            crate::drawing::point_dim_value(&dims(&state)[0]),
+            30.0,
+            "a horizontal dimension measures only the horizontal separation"
+        );
+
+        // Removing the first shifts the second down — and the selection follows it.
+        state.apply(Action::RemoveDrawingPointDim { drawing: dkey(0), view: 0, index: 0 });
+        assert_eq!(dims(&state).len(), 1);
+        assert_eq!(dims(&state)[0].a, (5.0, 5.0));
+        assert!(state.selected_drawing_elements.contains(&(
+            dkey(0),
+            crate::context::DrawingElementRef::PointDim { view: 0, index: 0 }
+        )));
     }
 
     /// #1642: an aligned child is *for* showing how it lines up with its base, so it draws the

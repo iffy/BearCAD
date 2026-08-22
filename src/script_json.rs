@@ -168,7 +168,7 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
             match element {
                 D::Projection(_) => "projection",
                 D::Text(_) => "annotation",
-                D::Dimension { .. } => "drawing_dimension",
+                D::Dimension { .. } | D::PointDim { .. } => "drawing_dimension",
             }
         }
     }
@@ -241,7 +241,7 @@ pub fn scene_element_selection_index(
                     .drawings
                     .get(*drawing)
                     .and_then(|d| d.annotations.keys().position(|k| k == *key))?,
-                D::Dimension { view, .. } => *view,
+                D::Dimension { view, .. } | D::PointDim { view, .. } => *view,
             })
         }
         // X/Y/Z report as 0/1/2 (#952), matching `lua_script::element_index`.

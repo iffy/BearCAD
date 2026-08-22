@@ -131,6 +131,8 @@ pub struct ContextInput<'a> {
     pub drawing_view: Option<DrawingViewControl>,
     /// Selected drawing text annotation editor (#312).
     pub drawing_annotation: Option<DrawingAnnotationControl>,
+    /// Selected free point-to-point dimension (#1645): which way it measures.
+    pub drawing_point_dim: Option<crate::model::PointDimAxis>,
     /// The Select tool's drawing element picker rows (#346): one `(drawing, element, label)` per
     /// selected projection/text/dimension, in selection order. Populated only in the drawing
     /// workbench with the Select tool active; drives the always-visible combo-box picker.
@@ -881,6 +883,8 @@ pub enum DrawingElementRef {
     Projection(usize),
     Text(crate::model::AnnotationKey),
     Dimension { view: usize, a: [i32; 3], b: [i32; 3] },
+    /// A free point-to-point dimension (#1645), by its place in the view's `point_dims`.
+    PointDim { view: usize, index: usize },
 }
 
 /// One edit from the drawing-annotation context section (#312).
@@ -902,6 +906,9 @@ pub enum DrawingSelectionEdit {
 /// One edit from the drawing-view context section (#289).
 #[derive(Clone, Debug, PartialEq)]
 pub enum DrawingViewEdit {
+    /// What a selected free point-to-point dimension measures (#1645). Carried on this
+    /// channel because it is edited in the same drawing section of the pane.
+    PointDimAxis(crate::model::PointDimAxis),
     Orientation(crate::model::DrawingOrientation),
     /// Display style (#301): visible edges / wireframe / shaded.
     Style(crate::model::DrawingViewStyle),
@@ -1141,6 +1148,8 @@ pub struct ContextPaneContent {
     pub drawing_view: Option<DrawingViewControl>,
     /// Selected drawing text annotation editor (#312).
     pub drawing_annotation: Option<DrawingAnnotationControl>,
+    /// Selected free point-to-point dimension (#1645): which way it measures.
+    pub drawing_point_dim: Option<crate::model::PointDimAxis>,
     /// The Select tool's always-visible drawing element picker (#346): `(drawing, element, label)`
     /// per selected projection/text/dimension. `Some` (possibly empty) whenever the Select tool is
     /// active in the drawing workbench.
@@ -3313,6 +3322,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             sketch_text: sketch_text.clone(),
             drawing_view: drawing_view.clone(),
             drawing_annotation: drawing_annotation.clone(),
+            drawing_point_dim: input.drawing_point_dim,
             drawing_selection: None,
             drawing_align: None,
             drawing_add_active,
@@ -3378,6 +3388,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             sketch_text: sketch_text.clone(),
             drawing_view: drawing_view.clone(),
             drawing_annotation: drawing_annotation.clone(),
+            drawing_point_dim: input.drawing_point_dim,
             drawing_selection: None,
             drawing_align: None,
             drawing_add_active,
@@ -3445,6 +3456,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             sketch_text: sketch_text.clone(),
             drawing_view: drawing_view.clone(),
             drawing_annotation: drawing_annotation.clone(),
+            drawing_point_dim: input.drawing_point_dim,
             drawing_selection: None,
             drawing_align: None,
             drawing_add_active,
@@ -3528,6 +3540,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         sketch_text,
         drawing_view,
         drawing_annotation,
+        drawing_point_dim: input.drawing_point_dim,
         drawing_selection,
         drawing_align,
         drawing_add_active,
@@ -8569,6 +8582,24 @@ pub fn show_pane(
     }
 
     // Drawing text annotation editor (#312): a multiline textarea + remove button.
+    // A selected free point-to-point dimension (#1645): what it measures.
+    if let Some(axis) = content.drawing_point_dim {
+        any_control = true;
+        ui.separator();
+        section_label(ui, "Dimension");
+        labeled_row(ui, "Measure", |ui| {
+            egui::ComboBox::from_id_salt("drawing_point_dim_axis")
+                .selected_text(axis.label())
+                .show_ui(ui, |ui| {
+                    for option in crate::model::PointDimAxis::ALL {
+                        if ui.selectable_label(axis == *option, option.label()).clicked() {
+                            on_drawing_view_edit(DrawingViewEdit::PointDimAxis(*option));
+                        }
+                    }
+                });
+        });
+    }
+
     if let Some(control) = &content.drawing_annotation {
         any_control = true;
         ui.separator();
@@ -10578,6 +10609,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_point_dim: None,
             drawing_selection: Vec::new(),
             drawing_align_active: false,
             drawing_align_base: None,
@@ -10999,6 +11031,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_point_dim: None,
             drawing_selection: Vec::new(),
             drawing_align_active: false,
             drawing_align_base: None,
@@ -12726,6 +12759,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_point_dim: None,
             drawing_selection: None,
             drawing_align: None,
             drawing_add_active: false,
@@ -12808,6 +12842,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_point_dim: None,
             drawing_selection: Vec::new(),
             drawing_align_active: false,
             drawing_align_base: None,
@@ -12883,6 +12918,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_point_dim: None,
             drawing_selection: None,
             drawing_align: None,
             drawing_add_active: false,
@@ -12965,6 +13001,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_point_dim: None,
             drawing_selection: Vec::new(),
             drawing_align_active: false,
             drawing_align_base: None,
@@ -13100,6 +13137,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_point_dim: None,
             drawing_selection: None,
             drawing_align: None,
             drawing_add_active: false,
@@ -13230,6 +13268,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_point_dim: None,
             drawing_selection: Vec::new(),
             drawing_align_active: false,
             drawing_align_base: None,
@@ -13312,6 +13351,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_point_dim: None,
             drawing_selection: Vec::new(),
             drawing_align_active: false,
             drawing_align_base: None,
@@ -13397,6 +13437,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_point_dim: None,
             drawing_selection: None,
             drawing_align: None,
             drawing_add_active: false,
@@ -13470,6 +13511,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_point_dim: None,
             drawing_selection: Vec::new(),
             drawing_align_active: false,
             drawing_align_base: None,

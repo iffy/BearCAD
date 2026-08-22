@@ -5011,6 +5011,12 @@ pub struct DrawingView {
     /// pushes the linear dimension further out, like `dimension_offsets`. Projected mm.
     #[serde(default)]
     pub circle_dim_offsets: Vec<([i32; 3], f32)>,
+    /// Free point-to-point dimensions on this view (#1645): two points picked anywhere on the
+    /// page, measured straight between them or along one axis. Stored in the view's own
+    /// **projected** millimetres — the same `(right, up)` space the geometry projects into —
+    /// so they stay put on the card whatever the page scale.
+    #[serde(default)]
+    pub point_dims: Vec<DrawingPointDim>,
     /// Print scale as `"page:model"` text, e.g. `"1:20"` (#300). Always stored validated
     /// (see [`parse_drawing_scale`]); `None` auto-fits the projection to its card.
     #[serde(default)]
@@ -5044,6 +5050,62 @@ pub struct DrawingView {
     pub label_text: Option<String>,
 }
 
+/// What a free point-to-point dimension measures (#1645).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PointDimAxis {
+    /// The straight distance between the two points.
+    #[default]
+    Direct,
+    /// Only the horizontal separation, drawn as a horizontal dimension line.
+    Horizontal,
+    /// Only the vertical separation.
+    Vertical,
+}
+
+impl PointDimAxis {
+    pub const ALL: &'static [PointDimAxis] =
+        &[PointDimAxis::Direct, PointDimAxis::Horizontal, PointDimAxis::Vertical];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PointDimAxis::Direct => "Direct",
+            PointDimAxis::Horizontal => "Horizontal",
+            PointDimAxis::Vertical => "Vertical",
+        }
+    }
+
+    /// The script/serialised spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            PointDimAxis::Direct => "direct",
+            PointDimAxis::Horizontal => "horizontal",
+            PointDimAxis::Vertical => "vertical",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<PointDimAxis> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "direct" | "aligned" => Some(PointDimAxis::Direct),
+            "horizontal" | "h" | "x" => Some(PointDimAxis::Horizontal),
+            "vertical" | "v" | "y" => Some(PointDimAxis::Vertical),
+            _ => None,
+        }
+    }
+}
+
+/// A free point-to-point dimension on a drawing view (#1645). `a`/`b` are in the view's
+/// projected millimetres; `offset` pushes the dimension line further out, like an edge
+/// dimension's label offset.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DrawingPointDim {
+    pub a: (f32, f32),
+    pub b: (f32, f32),
+    #[serde(default)]
+    pub axis: PointDimAxis,
+    #[serde(default)]
+    pub offset: f32,
+}
+
 impl DrawingView {
     /// A body (or multi-body) projection with default card placement and no dimensions shown.
     pub fn from_bodies(bodies: Vec<BodyKey>, orientation: DrawingOrientation) -> Self {
@@ -5056,6 +5118,7 @@ impl DrawingView {
             dimension_offsets: Vec::new(),
             dimensioned_circles: Vec::new(),
             circle_dim_offsets: Vec::new(),
+            point_dims: Vec::new(),
             aligned_parent: None,
             aligned_dir: None,
             align_lines: false,
@@ -5082,6 +5145,7 @@ impl DrawingView {
             dimension_offsets: Vec::new(),
             dimensioned_circles: Vec::new(),
             circle_dim_offsets: Vec::new(),
+            point_dims: Vec::new(),
             aligned_parent: None,
             aligned_dir: None,
             align_lines: false,

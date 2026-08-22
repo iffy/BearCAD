@@ -198,6 +198,8 @@ A name that is not in this list is not a function:
 - `bearcad.drawing_dimension`
 - `bearcad.drawing_move_view`
 - `bearcad.drawing_page`
+- `bearcad.drawing_point_dimension`
+- `bearcad.drawing_point_dimension_axis`
 - `bearcad.drawing_text`
 - `bearcad.drawing_view`
 - `bearcad.drawing_view_add`

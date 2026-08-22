@@ -365,6 +365,21 @@ pub enum Instruction {
         a: (f32, f32, f32),
         b: (f32, f32, f32),
     },
+    /// Add a free point-to-point dimension to a view (#1645), in projected view millimetres.
+    AddDrawingPointDimension {
+        drawing: usize,
+        view: usize,
+        a: (f32, f32),
+        b: (f32, f32),
+        axis: crate::model::PointDimAxis,
+    },
+    /// Change what a free point-to-point dimension measures (#1645).
+    SetDrawingPointDimensionAxis {
+        drawing: usize,
+        view: usize,
+        index: usize,
+        axis: crate::model::PointDimAxis,
+    },
     /// Toggle a detected circle's diameter dimension, named by its world centre (#373).
     ToggleDrawingCircleDimension {
         drawing: usize,
@@ -1417,6 +1432,16 @@ impl Instruction {
                  a = {{ {}, {}, {} }}, b = {{ {}, {}, {} }} }}",
                 a.0, a.1, a.2, b.0, b.1, b.2
             ),
+            Instruction::AddDrawingPointDimension { drawing, view, a, b, axis } => format!(
+                "bearcad.drawing_point_dimension{{ drawing = {drawing}, view = {view}, \
+                 a = {{ {}, {} }}, b = {{ {}, {} }}, axis = {:?} }}",
+                a.0, a.1, b.0, b.1, axis.name()
+            ),
+            Instruction::SetDrawingPointDimensionAxis { drawing, view, index, axis } => format!(
+                "bearcad.drawing_point_dimension_axis{{ drawing = {drawing}, view = {view}, \
+                 index = {index}, axis = {:?} }}",
+                axis.name()
+            ),
             Instruction::ToggleDrawingCircleDimension { drawing, view, center } => format!(
                 "bearcad.drawing_circle_dimension{{ drawing = {drawing}, view = {view}, \
                  center = {{ {}, {}, {} }} }}",
@@ -2428,7 +2453,7 @@ fn element_script_tokens(
                         key.index(),
                     ),
                 ),
-                D::Dimension { view, .. } => ("drawing_dimension", view),
+                D::Dimension { view, .. } | D::PointDim { view, .. } => ("drawing_dimension", view),
             };
             ElementScriptTokens {
                 kind,
@@ -6737,6 +6762,25 @@ impl ScriptRunner {
                     a: q(a),
                     b: q(b),
                 });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::AddDrawingPointDimension { drawing, view, a, b, axis } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
+                let result = state.apply(Action::AddDrawingPointDim { drawing, view, a, b, axis });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::SetDrawingPointDimensionAxis { drawing, view, index, axis } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
+                let result =
+                    state.apply(Action::SetDrawingPointDimAxis { drawing, view, index, axis });
                 self.record_action_error(result);
                 StepResult::Continue
             }

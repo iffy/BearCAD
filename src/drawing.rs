@@ -1057,6 +1057,56 @@ pub fn merge_collinear_runs(edges: &[(Vec3, Vec3)]) -> Vec<(Vec3, Vec3)> {
     out
 }
 
+/// How close (screen px) a click has to be to a projected corner for a free dimension's point
+/// to snap onto it (#1645), so "corner to corner" measures exactly.
+pub const POINT_DIM_SNAP_PX: f32 = 10.0;
+
+/// What a free point-to-point dimension measures (#1645), in the view's projected millimetres:
+/// the straight distance, or the separation along one page axis.
+pub fn point_dim_value(dim: &crate::model::DrawingPointDim) -> f32 {
+    use crate::model::PointDimAxis as A;
+    let (dx, dy) = (dim.b.0 - dim.a.0, dim.b.1 - dim.a.1);
+    match dim.axis {
+        A::Direct => (dx * dx + dy * dy).sqrt(),
+        A::Horizontal => dx.abs(),
+        A::Vertical => dy.abs(),
+    }
+}
+
+/// Where a free point-to-point dimension's line runs, and which way its extension lines
+/// leave the picked points (#1645).
+///
+/// The dimension line sits `gap` beyond whichever point is further out along the outward
+/// normal, so both extension lines are visible whatever the two points' offsets. For a Direct
+/// dimension the two are level with each other and this is the ordinary parallel dimension;
+/// for Horizontal/Vertical it is the axis line with a longer extension from the nearer point.
+pub fn point_dim_line(
+    dim: &crate::model::DrawingPointDim,
+    gap: f32,
+) -> (glam::Vec2, glam::Vec2, glam::Vec2) {
+    use crate::model::PointDimAxis as A;
+    let a = glam::Vec2::new(dim.a.0, dim.a.1);
+    let b = glam::Vec2::new(dim.b.0, dim.b.1);
+    let axis = match dim.axis {
+        A::Direct => (b - a).normalize_or(glam::Vec2::X),
+        A::Horizontal => glam::Vec2::X,
+        A::Vertical => glam::Vec2::Y,
+    };
+    // Outward normal: away from the pair's own midpoint side, biased down/left so a fresh
+    // dimension lands clear of the geometry between the points.
+    let mut out = glam::Vec2::new(-axis.y, axis.x);
+    if out.dot(b - a) < 0.0 {
+        out = -out;
+    }
+    if (dim.axis == A::Horizontal && out.y > 0.0) || (dim.axis == A::Vertical && out.x > 0.0) {
+        out = -out;
+    }
+    let reach = a.dot(out).max(b.dot(out)) + gap + dim.offset;
+    let pa = a + out * (reach - a.dot(out));
+    let pb = b + out * (reach - b.dot(out));
+    (pa, pb, out)
+}
+
 /// The architectural dimension-line geometry for one edge (#294), all in the view's projected
 /// 2D mm space. `a`/`b` are the edge endpoints; `outward` is the unit perpendicular pointing
 /// away from the geometry centroid; `offset` is how far out along `outward` the dimension line
@@ -1820,6 +1870,38 @@ fn render_view_geometry<C: Canvas>(
         canvas.text_rot(lp.x, lp.y, 11.0, Anchor::Middle, &label, ang);
     }
 
+    // Free point-to-point dimensions (#1645): two picked points, measured straight between
+    // them or along one page axis.
+    for dim in &view.point_dims {
+        let (pa, pb, out) = point_dim_line(dim, default_gap);
+        if (pb - pa).length() < 1e-3 {
+            continue;
+        }
+        let a = glam::Vec2::new(dim.a.0, dim.a.1);
+        let b = glam::Vec2::new(dim.b.0, dim.b.1);
+        let stroke_line = |canvas: &mut C, p: glam::Vec2, q: glam::Vec2| {
+            let (sp, sq) = (to_screen(p), to_screen(q));
+            canvas.line(sp.x, sp.y, sq.x, sq.y, BLACK, DIM_STROKE);
+        };
+        // Extension lines run from each picked point out past the dimension line.
+        for (p, q) in [(a, pa), (b, pb)] {
+            stroke_line(canvas, p, q + (q - p).normalize_or_zero() * (arrow * 0.5));
+        }
+        stroke_line(canvas, pa, pb);
+        let geom = dimension_line_geometry(pa, pb, out, 0.0, arrow);
+        for tri in geom.arrows {
+            let pts: Vec<(f32, f32)> =
+                tri.iter().map(|p| { let s = to_screen(*p); (s.x, s.y) }).collect();
+            canvas.poly(&pts, BLACK);
+        }
+        let label = crate::value::format_length_display_in(point_dim_value(dim), unit);
+        let (sa, sb) = (to_screen(pa), to_screen(pb));
+        let out_screen = (to_screen(pa + out) - to_screen(pa)).normalize_or_zero();
+        let (lp, ang) =
+            dimension_label_layout(sa, sb, out_screen, text_device_width(11.0, &label), 5.0);
+        canvas.text_rot(lp.x, lp.y, 11.0, Anchor::Middle, &label, ang);
+    }
+
     // Angle dimensions: the degree value at (or near) the two edges' corner.
     for (k1, k2) in &view.angle_dims {
         let (a0, a1) = (dequant(k1.0), dequant(k1.1));
@@ -2345,6 +2427,44 @@ mod tests {
         );
     }
 
+    /// #1645: a free point-to-point dimension measures the straight distance, or the
+    /// separation along one page axis.
+    #[test]
+    fn a_point_dimension_measures_what_its_axis_says() {
+        use crate::model::{DrawingPointDim, PointDimAxis as A};
+        let dim = |axis| DrawingPointDim { a: (0.0, 0.0), b: (30.0, 40.0), axis, offset: 0.0 };
+        assert!((point_dim_value(&dim(A::Direct)) - 50.0).abs() < 1e-4);
+        assert!((point_dim_value(&dim(A::Horizontal)) - 30.0).abs() < 1e-4);
+        assert!((point_dim_value(&dim(A::Vertical)) - 40.0).abs() < 1e-4);
+        // Direction doesn't matter.
+        let back = DrawingPointDim { a: (30.0, 40.0), b: (0.0, 0.0), axis: A::Horizontal, offset: 0.0 };
+        assert!((point_dim_value(&back) - 30.0).abs() < 1e-4);
+    }
+
+    /// #1645: the dimension line runs along the measured axis and clears *both* picked points,
+    /// so each extension line is visible however the two are offset.
+    #[test]
+    fn a_point_dimension_line_clears_both_points() {
+        use crate::model::{DrawingPointDim, PointDimAxis as A};
+        let gap = 6.0;
+        let h = DrawingPointDim { a: (0.0, 0.0), b: (30.0, 40.0), axis: A::Horizontal, offset: 0.0 };
+        let (pa, pb, _) = point_dim_line(&h, gap);
+        assert!((pa.y - pb.y).abs() < 1e-4, "a horizontal dimension line is horizontal");
+        assert!((pa.x - h.a.0).abs() < 1e-4 && (pb.x - h.b.0).abs() < 1e-4, "spans the two points");
+        assert!(pa.y <= -gap + 1e-4, "and sits clear of the lower point, at {}", pa.y);
+
+        let v = DrawingPointDim { a: (0.0, 0.0), b: (30.0, 40.0), axis: A::Vertical, offset: 0.0 };
+        let (va, vb, _) = point_dim_line(&v, gap);
+        assert!((va.x - vb.x).abs() < 1e-4, "a vertical dimension line is vertical");
+        assert!((va.y - v.a.1).abs() < 1e-4 && (vb.y - v.b.1).abs() < 1e-4);
+
+        // Direct: the two points are level with the line, which is parallel to a→b.
+        let d = DrawingPointDim { a: (0.0, 0.0), b: (30.0, 40.0), axis: A::Direct, offset: 0.0 };
+        let (da, db, out) = point_dim_line(&d, gap);
+        assert!(((db - da).length() - 50.0).abs() < 1e-3, "spans the full 50 mm");
+        assert!(out.dot(db - da).abs() < 1e-3, "outward is perpendicular to the line");
+    }
+
     /// #1643: a drawing view and the navigation bear must agree on where the eye is. A view's
     /// `right × up` is the direction *out of the page toward the viewer*, which is exactly the
     /// bear's outward view direction for that pick. Top and Bottom were swapped, so picking the
@@ -2449,7 +2569,7 @@ mod tests {
             bodies: vec![bkey(0)], sketch: None, orientation: O::Top,
             dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
             dimensioned_circles: Vec::new(),
-circle_dim_offsets: Vec::new(), aligned_parent: None, aligned_dir: None,
+circle_dim_offsets: Vec::new(), point_dims: Vec::new(), aligned_parent: None, aligned_dir: None,
             scale: None, style: Default::default(), pos_x: 0.5, pos_y: 0.5,
             size_x: CELL_FRAC, size_y: CELL_FRAC,
             align_lines: false,
@@ -2515,7 +2635,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
             bodies: vec![bkey(0)], sketch: None, orientation: O::Front,
             dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
             dimensioned_circles: Vec::new(),
-circle_dim_offsets: Vec::new(), aligned_parent: None, aligned_dir: None,
+circle_dim_offsets: Vec::new(), point_dims: Vec::new(), aligned_parent: None, aligned_dir: None,
             scale: None, style: Default::default(), pos_x: 0.5, pos_y: 0.5,
             size_x: CELL_FRAC, size_y: CELL_FRAC,
             align_lines: false,
@@ -2817,7 +2937,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
                 angle_dims: Vec::new(),
                 dimension_offsets: Vec::new(),
                 dimensioned_circles: Vec::new(),
-circle_dim_offsets: Vec::new(),
+circle_dim_offsets: Vec::new(), point_dims: Vec::new(),
                 aligned_parent: None,
                 aligned_dir: None,
                 scale: None,

@@ -143,7 +143,7 @@ impl ElementKind {
                 match element {
                     D::Projection(_) => ElementKind::Projection,
                     D::Text(_) => ElementKind::Annotation,
-                    D::Dimension { .. } => ElementKind::Dimension,
+                    D::Dimension { .. } | D::PointDim { .. } => ElementKind::Dimension,
                 }
             }
             // A flat body face (#555/#566) is its own kind, so a "planes or faces" picker can

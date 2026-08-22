@@ -668,6 +668,26 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
             let _ = (drawing, view);
             format!("Dim: {}", crate::value::format_length_display_in(len, unit))
         }
+        // A free point-to-point dimension (#1645) reads out its measured value and which way
+        // it measures, so several on one view are told apart.
+        HierarchyNode::DrawingPointDim { drawing, view, index } => {
+            let dim = doc
+                .drawings
+                .get(drawing)
+                .and_then(|d| d.views.get(view))
+                .and_then(|v| v.point_dims.get(index));
+            match dim {
+                Some(dim) => format!(
+                    "{}: {}",
+                    dim.axis.label(),
+                    crate::value::format_length_display_in(
+                        crate::drawing::point_dim_value(dim),
+                        doc.default_length_unit,
+                    )
+                ),
+                None => "Dim".to_string(),
+            }
+        }
     }
 }
 
@@ -779,6 +799,11 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
                         view: *view,
                         a: *a,
                         b: *b,
+                    },
+                    D::PointDim { view, index } => HierarchyNode::DrawingPointDim {
+                        drawing: *drawing,
+                        view: *view,
+                        index: *index,
                     },
                 },
             )

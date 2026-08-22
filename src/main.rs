@@ -2068,7 +2068,8 @@ fn crowd_type_rank(kind: &construction::PickTargetKind) -> u8 {
         // notes — the same coarse-to-fine order the 3D crowd uses.
         K::DrawingElement { element, .. } => match element {
             crate::context::DrawingElementRef::Projection(_) => 9,
-            crate::context::DrawingElementRef::Dimension { .. } => 10,
+            crate::context::DrawingElementRef::Dimension { .. }
+            | crate::context::DrawingElementRef::PointDim { .. } => 10,
             crate::context::DrawingElementRef::Text(_) => 11,
         },
     }
@@ -3885,6 +3886,13 @@ struct App {
     /// Ephemeral view state; reset (fit) by the Zoom tool / `Z`.
     drawing_zoom: f32,
     drawing_pan: egui::Vec2,
+    /// The first point of a half-made free dimension (#1645): the view it is on and the point
+    /// in that view's projected millimetres. Esc or a tool change clears it.
+    drawing_point_dim_pick: Option<(usize, egui::Vec2)>,
+    /// The page Exploder took a press (#1641) and the release is still to come — egui reports
+    /// a click on release, a frame after the fan already acted and closed, so the page must
+    /// keep ignoring that click.
+    drawing_exploder_owns_click: bool,
     /// The view card currently being dragged on the drawing page `(drawing, view)`, tracked
     /// across frames so the grab survives the card moving out from under the finger — and so a
     /// press that began on a card is resolved touch-safely, without egui's hover-based overlap
@@ -5373,6 +5381,8 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             element_filter_drawing_workbench: false,
             drawing_zoom: 1.0,
             drawing_pan: egui::Vec2::ZERO,
+            drawing_point_dim_pick: None,
+            drawing_exploder_owns_click: false,
             drawing_view_drag: None,
             drawing_view_resize_drag: None,
             params_visible_before_drawing: false,
@@ -7129,6 +7139,9 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 // Esc exits the Selection Exploder first (#551), else cancels the operation.
                 if self.exploder.is_some() {
                     self.exploder = None;
+                } else if self.drawing_point_dim_pick.take().is_some() {
+                    // A half-made free dimension (#1645) drops its first point.
+                    self.state.status = "Cancelled".to_string();
                 } else {
                     self.state.apply(Action::CancelOperation);
                 }
@@ -7396,6 +7409,14 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                             // A selected dimension deletes by hiding it (toggling it off).
                             self.state
                                 .apply(Action::ToggleDrawingDimension { drawing, view, a, b });
+                        }
+                        // A free point-to-point dimension (#1645) is its own thing: delete it.
+                        context::DrawingElementRef::PointDim { view, index } => {
+                            self.state.apply(Action::RemoveDrawingPointDim {
+                                drawing,
+                                view,
+                                index,
+                            });
                         }
                     }
                 }
@@ -16236,6 +16257,23 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                         .and_then(|dr| dr.annotations.get(a))
                         .map(|ann| context::DrawingAnnotationControl { text: ann.text.clone() })
                 }),
+            // The selected free point-to-point dimension's measure mode (#1645).
+            drawing_point_dim: self.state.selected_drawing_elements.iter().find_map(
+                |(d, e)| match e {
+                    context::DrawingElementRef::PointDim { view, index }
+                        if self.state.editing_drawing == Some(*d) =>
+                    {
+                        self.state
+                            .doc
+                            .drawings
+                            .get(*d)
+                            .and_then(|dr| dr.views.get(*view))
+                            .and_then(|v| v.point_dims.get(*index))
+                            .map(|dim| dim.axis)
+                    }
+                    _ => None,
+                },
+            ),
             drawing_selection: self
                 .state
                 .selected_drawing_elements
@@ -16257,6 +16295,13 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                                 view: *view,
                                 a: *a,
                                 b: *b,
+                            }
+                        }
+                        context::DrawingElementRef::PointDim { view, index } => {
+                            hierarchy::HierarchyNode::DrawingPointDim {
+                                drawing: *d,
+                                view: *view,
+                                index: *index,
                             }
                         }
                     };
@@ -17472,9 +17517,32 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     }
                 }
             }
+            // A free point-to-point dimension's mode (#1645) is keyed to the selected
+            // dimension, not to a selected projection.
+            if let Some(context::DrawingViewEdit::PointDimAxis(axis)) = drawing_view_edit {
+                let target = self.state.selected_drawing_elements.iter().find_map(|(d, e)| {
+                    match e {
+                        context::DrawingElementRef::PointDim { view, index } => {
+                            Some((*d, *view, *index))
+                        }
+                        _ => None,
+                    }
+                });
+                if let Some((drawing, view, index)) = target {
+                    self.state.apply(Action::SetDrawingPointDimAxis {
+                        drawing,
+                        view,
+                        index,
+                        axis,
+                    });
+                }
+                drawing_view_edit = None;
+            }
             if let Some(edit) = drawing_view_edit {
                 if let Some((drawing, view)) = self.state.selected_drawing_view() {
                     match edit {
+                        // Handled above, against the selected dimension (#1645).
+                        context::DrawingViewEdit::PointDimAxis(_) => {}
                         context::DrawingViewEdit::Orientation(orientation) => {
                             self.state.apply(Action::SetDrawingViewOrientation {
                                 drawing,
@@ -18729,6 +18797,10 @@ impl eframe::App for App {
             }
         } else {
             self.drawing_align_parent = None;
+        }
+        // A half-made free dimension (#1645) belongs to the Dimension tool.
+        if self.state.tool != Tool::Dimension {
+            self.drawing_point_dim_pick = None;
         }
         self.prev_tool = self.state.tool;
 
@@ -25338,6 +25410,7 @@ impl App {
             let (_, _, close_after) =
                 self.tick_open_exploder(ui, &project, pointer_screen, area, space);
             if pressed {
+                self.drawing_exploder_owns_click = true;
                 if let Some(construction::PickTargetKind::DrawingElement { element, .. }) = picked {
                     self.act_on_drawing_element(ui, drawing, element);
                 }
@@ -25494,7 +25567,7 @@ impl App {
         // drill-in grouping and the leader lines all come along unchanged. While the fan is
         // open it owns the pointer — clicks belong to its loupes, not to whatever sits under
         // them on the page.
-        let exploder_open = self.exploder.is_some();
+        let exploder_open = self.exploder.is_some() || self.drawing_exploder_owns_click;
         let mut fan_candidates: Vec<construction::CrowdCandidate> = Vec::new();
 
         // Where the current press began and how far the pointer moved this frame. On touch a
@@ -25661,6 +25734,9 @@ impl App {
         // card as the base (instead of dumping every orientation into the menu).
         let mut create_aligned_from: Option<usize> = None;
         let mut toggle_dim: Option<(usize, [i32; 3], [i32; 3])> = None;
+        // A finished free point-to-point dimension (#1645): (view, first point, second point)
+        // in the view's projected millimetres.
+        let mut add_point_dim: Option<(usize, egui::Vec2, egui::Vec2)> = None;
         let mut toggle_circle_dim: Option<(usize, [i32; 3])> = None;
         let mut toggle_angle: Option<(usize, model::DrawingEdgeKey, model::DrawingEdgeKey)> = None;
         // First edge of an in-progress angle pick (Shift+click), kept across frames per drawing.
@@ -26355,6 +26431,58 @@ impl App {
                             vi,
                             hierarchy::quantize_body_point(world_circles[ci].center),
                         ));
+                    } else if let Some(pp) = pointer_screen {
+                        // Nothing pickable under the cursor: this is a free point-to-point
+                        // dimension (#1645). The first click sets a point, the second finishes
+                        // it. Both snap to a nearby projected corner so "corner to corner"
+                        // measures exactly.
+                        let from_screen = |sp: egui::Pos2| {
+                            let d = sp - draw_area.center();
+                            bbox_center + egui::vec2(d.x, -d.y) / scale
+                        };
+                        let mut point = from_screen(pp);
+                        let mut best = crate::drawing::POINT_DIM_SNAP_PX;
+                        for (a, b) in proj.iter() {
+                            for corner in [*a, *b] {
+                                let d = (to_screen(corner) - pp).length();
+                                if d < best {
+                                    best = d;
+                                    point = corner;
+                                }
+                            }
+                        }
+                        match self.drawing_point_dim_pick {
+                            Some((v, first)) if v == vi => {
+                                add_point_dim = Some((vi, first, point));
+                                self.drawing_point_dim_pick = None;
+                            }
+                            _ => {
+                                self.drawing_point_dim_pick = Some((vi, point));
+                                self.state.status =
+                                    "Click the second point to measure to • Esc cancels"
+                                        .to_string();
+                            }
+                        }
+                    }
+                }
+                // The armed first point of a free dimension (#1645), so it is clear one is
+                // half-made.
+                if let Some((v, first)) = self.drawing_point_dim_pick.filter(|(v, _)| *v == vi) {
+                    let _ = v;
+                    let sp = to_screen(first);
+                    painter.circle_stroke(
+                        sp,
+                        4.0,
+                        egui::Stroke::new(1.5, egui::Color32::from_rgb(90, 150, 230)),
+                    );
+                    if let Some(pp) = pointer_screen.filter(|p| draw_area.contains(*p)) {
+                        painter.line_segment(
+                            [sp, pp],
+                            egui::Stroke::new(
+                                1.0,
+                                egui::Color32::from_rgba_unmultiplied(90, 150, 230, 120),
+                            ),
+                        );
                     }
                 }
 
@@ -26801,6 +26929,71 @@ impl App {
                         }
                     }
                 }
+                // Free point-to-point dimensions (#1645): the pair of picked points, measured
+                // straight between them or along one page axis. Their label is the click target
+                // that selects one, so its Measure control (and Delete) can reach it.
+                for (pi, dim) in view.point_dims.iter().enumerate() {
+                    let (pa, pb, out) = crate::drawing::point_dim_line(dim, default_gap);
+                    if (pb - pa).length() < 1e-3 {
+                        continue;
+                    }
+                    let sp = |p: glam::Vec2| to_screen(egui::vec2(p.x, p.y));
+                    let element = context::DrawingElementRef::PointDim { view: vi, index: pi };
+                    let selected = self.state.is_drawing_element_selected(drawing, element);
+                    let stroke = egui::Stroke::new(
+                        crate::drawing::DIM_STROKE,
+                        if selected {
+                            egui::Color32::from_rgb(90, 150, 230)
+                        } else {
+                            INK
+                        },
+                    );
+                    let a = glam::Vec2::new(dim.a.0, dim.a.1);
+                    let b = glam::Vec2::new(dim.b.0, dim.b.1);
+                    for (p, q) in [(a, pa), (b, pb)] {
+                        let ext = q + (q - p).normalize_or_zero() * (arrow * 0.5);
+                        painter.line_segment([sp(p), sp(ext)], stroke);
+                    }
+                    painter.line_segment([sp(pa), sp(pb)], stroke);
+                    let g = crate::drawing::dimension_line_geometry(pa, pb, out, 0.0, arrow);
+                    for tri in g.arrows {
+                        painter.add(egui::Shape::convex_polygon(
+                            tri.iter().map(|p| sp(*p)).collect(),
+                            stroke.color,
+                            egui::Stroke::NONE,
+                        ));
+                    }
+                    let label = crate::value::format_length_display_in(
+                        crate::drawing::point_dim_value(dim),
+                        unit,
+                    );
+                    let (sla, slb) = (sp(pa), sp(pb));
+                    let out_screen = (sp(pa + out) - sp(pa)).normalized();
+                    let (lp, ang) = crate::drawing::dimension_label_layout(
+                        glam::Vec2::new(sla.x, sla.y),
+                        glam::Vec2::new(slb.x, slb.y),
+                        glam::Vec2::new(out_screen.x, out_screen.y),
+                        crate::drawing::text_device_width(dim_font, &label),
+                        5.0 * px_per_pt,
+                    );
+                    let label_screen = egui::pos2(lp.x, lp.y);
+                    draw_rot_label(&painter, label, label_screen, ang);
+                    if self.state.tool == Tool::Select {
+                        let lr = ui.interact(
+                            egui::Rect::from_center_size(label_screen, egui::vec2(46.0, 18.0)),
+                            ui.make_persistent_id(("drawing_point_dim", drawing, vi, pi)),
+                            egui::Sense::click(),
+                        );
+                        if lr.clicked() && !exploder_open {
+                            if ui.input(|i| selection::additive_click_modifiers(&i.modifiers)) {
+                                self.state.toggle_drawing_element(drawing, element);
+                            } else {
+                                self.state.select_drawing_only(drawing, element);
+                            }
+                        }
+                    }
+                }
+
                 // Angle dimensions between edge pairs: the degree value at (or near) the corner.
                 let dequant = |q: [i32; 3]| Vec3::new(q[0] as f32, q[1] as f32, q[2] as f32) / 100.0;
                 for (k1, k2) in &view.angle_dims {
@@ -27291,7 +27484,21 @@ impl App {
         // gathered: Space fans them out, and a click on a loupe does what clicking that thing
         // would have done.
         self.tick_drawing_exploder(ui, area, drawing, fan_candidates);
+        // The fan's press is followed by a release a frame later, which is when egui reports
+        // the click the page must not act on (#1641).
+        if ui.input(|i| i.pointer.any_released()) {
+            self.drawing_exploder_owns_click = false;
+        }
 
+        if let Some((view, a, b)) = add_point_dim {
+            self.state.apply(Action::AddDrawingPointDim {
+                drawing,
+                view,
+                a: (a.x, a.y),
+                b: (b.x, b.y),
+                axis: model::PointDimAxis::Direct,
+            });
+        }
         if let Some((view, a, b)) = toggle_dim {
             self.state
                 .apply(Action::ToggleDrawingDimension { drawing, view, a, b });

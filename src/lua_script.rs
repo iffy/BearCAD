@@ -155,7 +155,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
             match element {
                 D::Projection(_) => "projection",
                 D::Text(_) => "annotation",
-                D::Dimension { .. } => "drawing_dimension",
+                D::Dimension { .. } | D::PointDim { .. } => "drawing_dimension",
             }
         }
     }
@@ -266,7 +266,7 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
                     .get(drawing)
                     .and_then(|d| d.annotations.keys().position(|k| k == key))
                     .unwrap_or(0),
-                D::Dimension { view, .. } => view,
+                D::Dimension { view, .. } | D::PointDim { view, .. } => view,
             }
         }
     }
@@ -7779,6 +7779,77 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     a,
                     b,
                     offset,
+                })
+            }
+        })?,
+    )?;
+
+    // #1645: a free point-to-point dimension on a drawing view. `a`/`b` are the view's own
+    // projected millimetres (what the page shows), and `axis` picks what is measured:
+    // "direct" (default), "horizontal", or "vertical".
+    // `bearcad.drawing_point_dimension{ drawing, view, a = {u, v}, b = {u, v}, axis? }`.
+    api.set(
+        "drawing_point_dimension",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "drawing_point_dimension",
+                &["drawing", "view", "a", "b", "axis"],
+            )?;
+            let drawing: usize = opts.get("drawing")?;
+            let view: usize = opts.get("view")?;
+            let point = |key: &str| -> mlua::Result<(f32, f32)> {
+                let v: Vec<f32> = opts.get(key)?;
+                if v.len() != 2 {
+                    return Err(mlua::Error::external(format!(
+                        "drawing_point_dimension `{key}` must be a {{u, v}} point in the view's \
+                         projected millimetres"
+                    )));
+                }
+                Ok((v[0], v[1]))
+            };
+            let a = point("a")?;
+            let b = point("b")?;
+            let axis = match opts.get::<Option<String>>("axis")? {
+                Some(name) => crate::model::PointDimAxis::from_name(&name).ok_or_else(|| {
+                    mlua::Error::external(format!(
+                        "unknown axis '{name}' (direct, horizontal, vertical)"
+                    ))
+                })?,
+                None => crate::model::PointDimAxis::Direct,
+            };
+            unsafe {
+                tick.exec(Instruction::AddDrawingPointDimension { drawing, view, a, b, axis })
+            }
+        })?,
+    )?;
+
+    // #1645: change what an existing point-to-point dimension measures.
+    api.set(
+        "drawing_point_dimension_axis",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "drawing_point_dimension_axis",
+                &["drawing", "view", "index", "axis"],
+            )?;
+            let drawing: usize = opts.get("drawing")?;
+            let view: usize = opts.get("view")?;
+            let index: usize = opts.get("index")?;
+            let name: String = opts.get("axis")?;
+            let axis = crate::model::PointDimAxis::from_name(&name).ok_or_else(|| {
+                mlua::Error::external(format!(
+                    "unknown axis '{name}' (direct, horizontal, vertical)"
+                ))
+            })?;
+            unsafe {
+                tick.exec(Instruction::SetDrawingPointDimensionAxis {
+                    drawing,
+                    view,
+                    index,
+                    axis,
                 })
             }
         })?,
