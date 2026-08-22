@@ -435,6 +435,12 @@ fn main() -> eframe::Result<()> {
             run_skill_command(command);
             return Ok(());
         }
+        // The whole Lua API on stdout (#1635) — `cargo run -- api` regenerates the page the
+        // website serves, and an agent can pipe it straight into its context.
+        script::CliOutcome::ApiReference => {
+            println!("{}", ai::api::document().trim_end());
+            return Ok(());
+        }
         // Bridge stdio to a running BearCAD (#1607), for clients that speak only stdio.
         script::CliOutcome::McpBridge => {
             let Some((url, token)) = ai::mcp::saved_connection() else {

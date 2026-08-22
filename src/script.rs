@@ -8425,6 +8425,9 @@ pub enum CliOutcome {
     McpBridge,
     /// Print MCP client configuration (`bearcad mcp-install [--target id]`).
     McpInstall { target: Option<String> },
+    /// Print the whole Lua API reference (`bearcad api`, #1635) — what the website serves
+    /// at `/bearcad-api.md`.
+    ApiReference,
     Run(ScriptOptions),
 }
 
@@ -8508,6 +8511,8 @@ Commands:
   mcp-install [--target <id>]
                         Print the MCP client configuration for the running server
                         (claude, json, vscode, codex, stdio)
+  api                   Print the whole Lua API reference (every function) on stdout —
+                        the page the website serves at /bearcad-api.md
   skill [targets|print|install|uninstall] [--target <id>] [--dir <path>]
                         The AI agent skill: `targets` lists where it can go and
                         what is installed, `print` writes it to stdout, `install`
@@ -8541,6 +8546,7 @@ Examples:
   bearcad testplan
   bearcad skill install
   bearcad skill install --target agents --dir .
+  bearcad api
   bearcad mcp-install
 
 Diagnostics:
@@ -8577,6 +8583,7 @@ pub fn parse_cli(args: impl IntoIterator<Item = impl AsRef<str>>) -> CliOutcome 
         Some("testplan") => return CliOutcome::Testplan,
         Some("skill") => return CliOutcome::Skill(parse_skill_args(&args[2..])),
         Some("mcp") => return CliOutcome::McpBridge,
+        Some("api") => return CliOutcome::ApiReference,
         Some("mcp-install") => {
             let mut target = None;
             let rest = &args[2..];

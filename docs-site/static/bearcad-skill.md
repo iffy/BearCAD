@@ -11,6 +11,13 @@ the GUI can do, a script can do. You drive the Lua API.
 Model in millimetres. Angles are degrees in the GUI's fields and **radians** in the API
 unless a call names a unit (`"45deg"`, `"5in"` work anywhere an expression is accepted).
 
+## The complete API
+
+This page is the working subset. **Every** function BearCAD exposes, with signatures, is one
+plaintext page: <https://bearcad.com/bearcad-api.md> — or `bearcad api` locally. Fetch it
+before reaching for a call that is not shown here; a name that is not on that page is not a
+function.
+
 ## Running a script
 
 ```sh

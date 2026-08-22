@@ -69,6 +69,29 @@ const config = {
     locales: ['en'],
   },
 
+  // #1634: an AI agent that lands here is pointed at the plaintext pages written for it —
+  // /llms.txt by convention, and the skill itself as a markdown alternate of every page.
+  headTags: [
+    {
+      tagName: 'link',
+      attributes: {
+        rel: 'alternate',
+        type: 'text/markdown',
+        href: '/bearcad-skill.md',
+        title: 'BearCAD agent skill (plaintext, for AI agents)',
+      },
+    },
+    {
+      tagName: 'link',
+      attributes: {
+        rel: 'alternate',
+        type: 'text/plain',
+        href: '/llms.txt',
+        title: 'llms.txt — where AI agents should start',
+      },
+    },
+  ],
+
   stylesheets: [
     {
       href: 'https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Outfit:wght@100&display=swap',
@@ -171,6 +194,7 @@ const config = {
               {label: 'Quickstart', to: '/docs/quickstart'},
               {label: 'Tools & Navigation', to: '/docs/tools'},
               {label: 'Scripting', to: '/docs/scripting'},
+              {label: 'For AI agents', to: 'pathname:///llms.txt'},
             ],
           },
           {

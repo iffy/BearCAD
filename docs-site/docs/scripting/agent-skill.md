@@ -16,7 +16,16 @@ bearcad skill install --target claude
 bearcad skill print > SKILL.md     # the markdown, for anything not listed
 ```
 
-The AI pane's **Agents & Skill** section does the same from inside the app.
+The AI pane's **Agent Skill** section does the same from inside the app.
+
+## The complete API
+
+The skill is the working subset. Every function, with signatures, is one plaintext page:
+[**bearcad-api.md**](pathname:///bearcad-api.md), or `bearcad api` locally. It is generated
+from the live Lua API, so a name that is not on it is not a function.
+
+An agent landing on this site is pointed at both by
+[llms.txt](pathname:///llms.txt).
 
 Installing writes into a shared file (`AGENTS.md`, Copilot instructions) between
 `BEGIN/END BearCAD skill` markers, so the rest of that file is left alone; `bearcad skill

@@ -12,6 +12,7 @@
 //! - **Secrets stay put.** The MCP token never appears in a scripting return value, a Lua
 //!   export, `--show-commands`, the diagnostics file, or a screenshot.
 
+pub mod api;
 pub mod config;
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(dead_code)] // Started from the pane in #1606.

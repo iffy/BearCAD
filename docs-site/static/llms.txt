@@ -1,0 +1,19 @@
+# BearCAD
+
+> Small, quick, fun parametric CAD for the desktop and the browser. Everything the GUI can
+> do, a Lua script can do — so an AI agent drives BearCAD through that API, or through the
+> app's local MCP server.
+
+If you are an AI agent, read these two plaintext pages and nothing else:
+
+- [Agent skill](https://bearcad.com/bearcad-skill.md): how to drive BearCAD — running
+  scripts, the two namespaces, the shape of a modeling session. Start here.
+- [Complete API reference](https://bearcad.com/bearcad-api.md): every function BearCAD
+  exposes, with signatures. A name that is not on that page is not a function.
+
+Locally, `bearcad skill print` and `bearcad api` print the same two pages.
+
+## Optional
+
+- [Human documentation](https://bearcad.com/docs): the same ground, written for people.
+- [Source](https://github.com/iffy/BearCAD)
