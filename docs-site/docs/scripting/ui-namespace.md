@@ -18,6 +18,7 @@ bearcad.ui.move_ground(80, 50)
 bearcad.ui.click(x, y)                  -- viewport pixel coordinates instead
 bearcad.ui.click_world(20, 10, 50)      -- a point in world space: a body's side wall, say
 bearcad.ui.move_world(20, 10, 50)
+bearcad.ui.viewport()                   -- { width, height } of the area clicks address
 bearcad.ui.click_ground(20, -10, { shift = true })   -- Shift+click
 bearcad.ui.click_ground(20, -10, { ctrl = true })    -- Ctrl+click: one edge, not its run
 bearcad.ui.move(x, y)

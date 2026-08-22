@@ -5359,6 +5359,20 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1641: the size of the area `bearcad.ui.click`/`move` address, so a script can aim at
+    // the middle of the viewport (or the drawing sheet) without hard-coding a window size.
+    api.set(
+        "viewport",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            let t = lua.create_table()?;
+            t.set("height", state.viewport_height)?;
+            t.set("width", state.viewport_height * state.viewport_aspect)?;
+            Ok(t)
+        })?,
+    )?;
+
     api.set(
         "palette",
         lua.create_function(|lua, args: MultiValue| {
@@ -8073,7 +8087,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "widget_id_warnings", "palette", "settings",
             "changelog",
             "mcmaster",
-            "report_issue", "windows", "focused_window",
+            "report_issue", "windows", "focused_window", "viewport",
             "new_tab", "close_tab", "tab", "tab_count", "window_count", "tabs", "reorder_tab", "detach_tab",
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading", "ground",
             "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance", "fps_scale",

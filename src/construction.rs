@@ -124,9 +124,12 @@ pub fn plane_anchor_source_from_pick(kind: &PickTargetKind) -> PlaneAnchorSource
         | PickTargetKind::SketchFace(_) => PlaneAnchorSource::Face,
         // A round wall is no plane to anchor against; classify it as a point so this is total.
         PickTargetKind::BodyCylinder { .. } => PlaneAnchorSource::Point,
-        // Neither a constraint badge (#568) nor a whole body (#902) is a plane anchor — both only
-        // reach the exploder; classify them as a point so the arm is total.
-        PickTargetKind::Constraint(_) | PickTargetKind::Body(_) => PlaneAnchorSource::Point,
+        // Neither a constraint badge (#568), a whole body (#902), nor a drawing-page item
+        // (#1641) is a plane anchor — all three only reach the exploder; classify them as a
+        // point so the arm is total.
+        PickTargetKind::Constraint(_)
+        | PickTargetKind::Body(_)
+        | PickTargetKind::DrawingElement { .. } => PlaneAnchorSource::Point,
     }
 }
 
@@ -799,6 +802,7 @@ pub fn sketch_from_pick_target(doc: &Document, kind: PickTargetKind) -> Option<S
         | PickTargetKind::GlobalAxis(_)
         | PickTargetKind::OriginAxis(_)
         | PickTargetKind::TracingImage(_)
+        | PickTargetKind::DrawingElement { .. }
         | PickTargetKind::Ground(_) => None,
     }
 }
@@ -1558,6 +1562,17 @@ pub enum PickTargetKind {
     /// that pick faces (e.g. Extrude) fan out the same faces their own pick path accepts,
     /// rather than raw mesh facet groups.
     SketchFace(crate::model::FaceId),
+    /// A thing on a drawing page (#1641): a projected view, a text note, or one view's edge
+    /// dimension. Produced only for the Selection Exploder crowd on the drawing workbench,
+    /// where the fan works in **page space** — the `anchor` of such a candidate is a page-mm
+    /// point (z = 0) and `project` is the page-to-screen transform, so the same loupes, the
+    /// same packing, and the same leader lines all apply.
+    DrawingElement {
+        drawing: crate::model::DrawingKey,
+        element: crate::context::DrawingElementRef,
+        /// The element's page-space outline (mm, z = 0), drawn inside its loupe.
+        outline: Vec<Vec3>,
+    },
 }
 
 /// A resolved pick target with its plane reference and screen-space distance.
@@ -1694,6 +1709,8 @@ impl PickOcclusion {
             }
             PickTargetKind::GlobalAxis(_)
             | PickTargetKind::OriginAxis(_)
+            // A drawing-page item's visibility is the page's own (#1641).
+            | PickTargetKind::DrawingElement { .. }
             | PickTargetKind::Ground(_) => true,
         }
     }
@@ -2194,6 +2211,10 @@ pub fn scene_element_from_pick(kind: &PickTargetKind) -> Option<SceneElement> {
         PickTargetKind::SketchFace(face) => Some(SceneElement::from_face_id(face.clone())),
         PickTargetKind::ConstructionPlane(index) => Some(SceneElement::ConstructionPlane(*index)),
         PickTargetKind::TracingImage(index) => Some(SceneElement::Image(*index)),
+        // A drawing-page item (#1641): the fan reports it like any other element.
+        PickTargetKind::DrawingElement { drawing, element, .. } => {
+            Some(SceneElement::DrawingElement { drawing: *drawing, element: element.clone() })
+        }
         _ => None,
     }
 }
@@ -2382,6 +2403,13 @@ pub fn draw_pick_highlight(
                 for i in 0..pts.len() {
                     draw_segment_highlight(painter, project, pts[i], pts[(i + 1) % pts.len()], color);
                 }
+            }
+        }
+        // A drawing-page item (#1641): its page-space outline, drawn through the page's own
+        // transform (which is what `project` is on the drawing workbench).
+        PickTargetKind::DrawingElement { outline, .. } => {
+            for w in outline.windows(2) {
+                draw_segment_highlight(painter, project, w[0], w[1], color);
             }
         }
     }

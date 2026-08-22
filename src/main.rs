@@ -2064,6 +2064,13 @@ fn crowd_type_rank(kind: &construction::PickTargetKind) -> u8 {
         K::GlobalAxis(_) | K::OriginAxis(_) | K::BodyAxis { .. } => 6,
         K::Ground(_) => 7,
         K::Constraint(_) => 8, // annotation badges, grouped after the geometry they govern
+        // Drawing-page items (#1641), grouped by what they are: views, then dimensions, then
+        // notes — the same coarse-to-fine order the 3D crowd uses.
+        K::DrawingElement { element, .. } => match element {
+            crate::context::DrawingElementRef::Projection(_) => 9,
+            crate::context::DrawingElementRef::Dimension { .. } => 10,
+            crate::context::DrawingElementRef::Text(_) => 11,
+        },
     }
 }
 
@@ -2604,6 +2611,8 @@ fn pick_target_loupe_wireframe(
                 .unwrap_or_default(),
             Vec::new(),
         ),
+        // A drawing-page item (#1641) carries its own page-space outline.
+        PK::DrawingElement { outline, .. } => (polyline(outline.clone()), Vec::new()),
         PK::Ground(_) | PK::Constraint(_) => (Vec::new(), vec![anchor]),
     }
 }
@@ -2962,6 +2971,16 @@ fn draw_pick_target_loupe(
                 let sz = radius * 1.15;
                 let rect = egui::Rect::from_center_size(center, egui::vec2(sz, sz));
                 crate::icons::paint_icon(painter, painter.ctx(), icon, rect, color);
+            }
+        }
+        // A drawing-page item (#1641): its own page-space outline, magnified like any other
+        // geometry — an edge's line, a dimension's line, a view card's rectangle.
+        PK::DrawingElement { outline, .. } => {
+            for w in outline.windows(2) {
+                seg(w[0], w[1]);
+            }
+            if outline.len() == 1 {
+                dot(outline[0], 3.0);
             }
         }
     }
@@ -22141,12 +22160,18 @@ fn aabb_half_extent_along(dir: egui::Vec2, size: egui::Vec2) -> f32 {
 }
 
 fn dist_point_to_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
+    (p - closest_point_on_segment(p, a, b)).length()
+}
+
+/// The point of segment `a`–`b` nearest `p`, in screen space — where an Exploder loupe's
+/// leader line attaches to an edge (#1641).
+fn closest_point_on_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> egui::Pos2 {
     let ab = b - a;
     if ab.length_sq() < 1e-8 {
-        return (p - a).length();
+        return a;
     }
     let t = ((p - a).dot(ab) / ab.length_sq()).clamp(0.0, 1.0);
-    (p - (a + ab * t)).length()
+    a + ab * t
 }
 
 #[cfg(test)]
@@ -25265,6 +25290,187 @@ impl App {
     /// The technical-drawing pane (#180): a black-on-white sheet for the open drawing. Each
     /// view renders its body as an orthographic/isometric wireframe (feature edges), laid out
     /// in a grid; views are added and removed from the controls at the top.
+    /// Whether the open fan holds drawing-page items (#1641) — the two workbenches share one
+    /// `exploder` slot, and neither can hover-test the other's anchors, so a fan left open by
+    /// one is dropped when the other takes over.
+    fn exploder_is_page_fan(&self) -> bool {
+        self.exploder.as_ref().is_some_and(|ex| {
+            ex.items.iter().any(|i| {
+                matches!(i.target, construction::PickTargetKind::DrawingElement { .. })
+            })
+        })
+    }
+
+    /// The Selection Exploder on the drawing workbench (#1641). Space fans the crowd under the
+    /// cursor — a card's edges, the card itself, a note — into the same loupes the 3D viewport
+    /// uses, and a click on a leaf does what clicking that thing would have done: select it, or,
+    /// on the Dimension tool, toggle its dimension.
+    ///
+    /// Two differences from the 3D fan. It works in the pane's own **screen pixels** (a
+    /// candidate's anchor is a screen point and `project` is the identity), because the page is
+    /// already a 2D projection and there is no camera to re-project through. And it acts on the
+    /// chosen leaf directly instead of redirecting the pointer: two of a body's edges can land
+    /// exactly on top of each other in an orthographic view, which is precisely the crowd the
+    /// fan is there to sort out, and no redirected pointer could tell them apart.
+    fn tick_drawing_exploder(
+        &mut self,
+        ui: &mut egui::Ui,
+        area: egui::Rect,
+        drawing: model::DrawingKey,
+        candidates: Vec<construction::CrowdCandidate>,
+    ) {
+        let project = |v: Vec3| Some(egui::pos2(v.x, v.y));
+        let pointer_screen = ui.input(|i| i.pointer.hover_pos());
+        let space = !ui.ctx().egui_wants_keyboard_input()
+            && ui.input(|i| i.key_pressed(egui::Key::Space));
+        if self.exploder.is_some() && !self.exploder_is_page_fan() {
+            self.exploder = None;
+        }
+
+        if self.exploder.is_some() {
+            // Read the leaf before the frame closes the fan, so the click can act on it.
+            let picked = pointer_screen.and_then(|_| {
+                let ex = self.exploder.as_ref()?;
+                let (target, _) = ex.hovered_leaf(area, &project)?;
+                Some(target)
+            });
+            let pressed = ui.input(|i| i.pointer.primary_pressed());
+            let (_, _, close_after) =
+                self.tick_open_exploder(ui, &project, pointer_screen, area, space);
+            if pressed {
+                if let Some(construction::PickTargetKind::DrawingElement { element, .. }) = picked {
+                    self.act_on_drawing_element(ui, drawing, element);
+                }
+            }
+            if close_after {
+                self.exploder = None;
+            }
+            self.draw_exploder(ui.painter(), &project, None, area);
+            self.publish_drawing_exploder_leaves(area, &project);
+            return;
+        }
+
+        if space {
+            if let Some(pp) = pointer_screen.filter(|p| area.contains(*p)) {
+                let mut items: Vec<ExploderHandle> = Vec::new();
+                let mut seen: Vec<construction::PickTargetKind> = Vec::new();
+                let mut sorted = candidates;
+                sorted.sort_by(|a, b| {
+                    a.dist_px.partial_cmp(&b.dist_px).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                for c in sorted {
+                    if seen.contains(&c.kind) {
+                        continue;
+                    }
+                    seen.push(c.kind.clone());
+                    // The fan direction falls back to a point further along the element when
+                    // the anchors all collapse onto the cursor — for a page item that is the
+                    // far end of its own outline.
+                    let reach = match &c.kind {
+                        construction::PickTargetKind::DrawingElement { outline, .. } => outline
+                            .iter()
+                            .copied()
+                            .max_by(|a, b| {
+                                (*a - c.anchor)
+                                    .length()
+                                    .partial_cmp(&(*b - c.anchor).length())
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                            .unwrap_or(c.anchor),
+                        _ => c.anchor,
+                    };
+                    items.push(ExploderHandle {
+                        target: c.kind,
+                        anchor: c.anchor,
+                        reach,
+                    });
+                }
+                let anchors: Vec<egui::Pos2> =
+                    items.iter().map(|h| egui::pos2(h.anchor.x, h.anchor.y)).collect();
+                let kinds: Vec<construction::PickTargetKind> =
+                    items.iter().map(|h| h.target.clone()).collect();
+                let idxs: Vec<usize> = (0..items.len()).collect();
+                let tree = build_exploder_tree(&idxs, &anchors, &kinds);
+                self.exploder = Some(ExploderState {
+                    origin: pp,
+                    items,
+                    tree,
+                    path: Vec::new(),
+                    hovered: None,
+                    zoom_mul: 1.0,
+                    drill_anim: None,
+                    opened_with_shift: ui.input(|i| i.modifiers.shift),
+                });
+                self.draw_exploder(ui.painter(), &project, None, area);
+                self.publish_drawing_exploder_leaves(area, &project);
+                return;
+            }
+        }
+        // Idle: the same faint hint the viewport shows when a crowd is stacked under the cursor.
+        let hint = (candidates.len() >= 2).then(|| ()).and(pointer_screen);
+        self.draw_exploder(ui.painter(), &project, hint, area);
+        self.state.exploder_leaves = Vec::new();
+        self.state.exploder_loupe_positions = Vec::new();
+    }
+
+    /// What a click on a fanned-out page item does (#1641): the Dimension tool toggles an
+    /// edge's dimension; anything else selects the item (Shift/Cmd adds to the selection).
+    fn act_on_drawing_element(
+        &mut self,
+        ui: &egui::Ui,
+        drawing: model::DrawingKey,
+        element: context::DrawingElementRef,
+    ) {
+        if let (Tool::Dimension, context::DrawingElementRef::Dimension { view, a, b }) =
+            (self.state.tool, &element)
+        {
+            self.state.apply(Action::ToggleDrawingDimension {
+                drawing,
+                view: *view,
+                a: *a,
+                b: *b,
+            });
+            return;
+        }
+        if ui.input(|i| selection::additive_click_modifiers(&i.modifiers)) {
+            self.state.toggle_drawing_element(drawing, element);
+        } else {
+            self.state.select_drawing_only(drawing, element);
+        }
+    }
+
+    /// Publish the page fan for scripts (#968/#1641), the same way the viewport does.
+    fn publish_drawing_exploder_leaves(
+        &mut self,
+        area: egui::Rect,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    ) {
+        let Some(ex) = self.exploder.as_ref() else {
+            self.state.exploder_leaves = Vec::new();
+            self.state.exploder_loupe_positions = Vec::new();
+            return;
+        };
+        self.state.exploder_leaves = ex
+            .items
+            .iter()
+            .filter_map(|item| construction::scene_element_from_pick(&item.target))
+            .collect();
+        let items = ex.display_items();
+        let centers = ex.display_centers(area, project);
+        let mut out = vec![None; ex.items.len()];
+        for (item, center) in items.iter().zip(centers) {
+            if !matches!(item.kind, DisplayKind::Leaf) {
+                continue;
+            }
+            if let Some(&leaf) = item.leaves.first() {
+                if let Some(slot) = out.get_mut(leaf) {
+                    *slot = Some((center.x - area.min.x, center.y - area.min.y));
+                }
+            }
+        }
+        self.state.exploder_loupe_positions = out;
+    }
+
     fn draw_drawing_pane(&mut self, ui: &mut egui::Ui, drawing: model::DrawingKey) {
         // The editor is white-on-black to match the app's dark-mode aesthetic (#254); export
         // (see `drawing.rs`) stays the opposite — black ink on a white sheet.
@@ -25273,9 +25479,23 @@ impl App {
 
         // Dark sheet across the whole central area.
         let area = ui.available_rect_before_wrap();
+        // Scripted pointer coordinates are viewport-local (#1641): on this workbench the sheet
+        // *is* the viewport, so `bearcad.ui.click` lands where the page is and
+        // `bearcad.ui.viewport()` reports the sheet's size.
+        self.last_viewport = Some(area);
+        self.state.viewport_height = area.height();
+        self.state.viewport_aspect = (area.width() / area.height().max(1.0)).max(0.01);
         ui.painter().rect_filled(area, 0.0, SHEET);
         // Pointer position for edge hover / label drag (#294).
         let pointer_screen = ui.input(|i| i.pointer.hover_pos());
+        // Selection Exploder on the page (#1641). It fans out the crowd under the cursor the
+        // same way the 3D viewport's does, working in the pane's own pixels: a candidate's
+        // "world" anchor is a screen point and `project` is the identity, so the packing, the
+        // drill-in grouping and the leader lines all come along unchanged. While the fan is
+        // open it owns the pointer — clicks belong to its loupes, not to whatever sits under
+        // them on the page.
+        let exploder_open = self.exploder.is_some();
+        let mut fan_candidates: Vec<construction::CrowdCandidate> = Vec::new();
 
         // Where the current press began and how far the pointer moved this frame. On touch a
         // press arrives with no prior hover, so egui can't lean on hover to decide whether the
@@ -25658,7 +25878,7 @@ impl App {
                 // Clicking a card selects it (#289): the context pane opens its view editor.
                 // With the Aligned-view tool (#296), a click instead chooses this as the
                 // parent to align a child to (handled after the loop).
-                if drag.clicked() {
+                if drag.clicked() && !exploder_open {
                     if self.state.tool == Tool::DrawingAlign {
                         self.drawing_align_parent = Some(vi);
                         align_parent_set_this_frame = true;
@@ -26031,6 +26251,69 @@ impl App {
                     .flatten()
                     .unwrap_or((None, None));
 
+                // Everything on this card the cursor is over joins the Exploder's crowd (#1641):
+                // each dimensionable edge (what the Dimension tool toggles) and the card itself.
+                // Coincident projected edges are exactly what the fan is for — two lines of a
+                // body can land on top of each other in an orthographic view.
+                if let Some(pp) = pointer_screen.filter(|p| area.contains(*p)) {
+                    let reach = exploder::hitbox_radius();
+                    let screen_pt = |p: egui::Pos2| Vec3::new(p.x, p.y, 0.0);
+                    for (i, (a, b)) in proj.iter().enumerate() {
+                        let (sa, sb) = (to_screen(*a), to_screen(*b));
+                        // An edge-on edge projects to a point: nothing to dimension (#294).
+                        if (sb - sa).length() < 1.0 || on_circle(*a, *b) {
+                            continue;
+                        }
+                        let d = dist_point_to_segment(pp, sa, sb);
+                        if d > reach {
+                            continue;
+                        }
+                        let (wa, wb) = world_edges[i];
+                        let (qa, qb) = edge_key(wa, wb);
+                        fan_candidates.push(construction::CrowdCandidate {
+                            kind: construction::PickTargetKind::DrawingElement {
+                                drawing,
+                                element: context::DrawingElementRef::Dimension {
+                                    view: vi,
+                                    a: qa,
+                                    b: qb,
+                                },
+                                outline: vec![screen_pt(sa), screen_pt(sb)],
+                            },
+                            anchor: screen_pt(closest_point_on_segment(pp, sa, sb)),
+                            dist_px: d,
+                        });
+                    }
+                    if cell.contains(pp) {
+                        let corners = [
+                            cell.left_top(),
+                            cell.right_top(),
+                            cell.right_bottom(),
+                            cell.left_bottom(),
+                            cell.left_top(),
+                        ];
+                        let nearest = corners
+                            .windows(2)
+                            .map(|w| closest_point_on_segment(pp, w[0], w[1]))
+                            .min_by(|a, b| {
+                                (*a - pp)
+                                    .length()
+                                    .partial_cmp(&(*b - pp).length())
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                            .unwrap_or(cell.center());
+                        fan_candidates.push(construction::CrowdCandidate {
+                            kind: construction::PickTargetKind::DrawingElement {
+                                drawing,
+                                element: context::DrawingElementRef::Projection(vi),
+                                outline: corners.iter().copied().map(screen_pt).collect(),
+                            },
+                            anchor: screen_pt(nearest),
+                            dist_px: (nearest - pp).length(),
+                        });
+                    }
+                }
+
                 // Click near an edge to toggle its length dimension; Shift+click two edges to
                 // toggle the angle between them (#180). Only the Dimension tool picks edges
                 // (#277), and the pick interact is created ONLY on that tool (#316) — otherwise
@@ -26046,6 +26329,7 @@ impl App {
                 });
                 if resp.as_ref().is_some_and(|r| r.clicked())
                     && self.drawing_dim_label_drag.is_none()
+                    && !exploder_open
                 {
                     if let Some(i) = hovered_edge {
                         let (wa, wb) = world_edges[i];
@@ -26428,7 +26712,7 @@ impl App {
                             );
                             // Clicking a dimension with the Select tool selects it (#336), so
                             // Delete/Backspace can remove it; clears any card/note selection.
-                            if lr.clicked() && self.state.tool == Tool::Select {
+                            if lr.clicked() && self.state.tool == Tool::Select && !exploder_open {
                                 let element = context::DrawingElementRef::Dimension {
                                     view: vi,
                                     a: key.0,
@@ -26593,6 +26877,25 @@ impl App {
                     );
                 }
                 ui.painter().galley(pos, galley, INK);
+                // A note under the cursor joins the Exploder crowd (#1641).
+                if let Some(pp) = pointer_screen.filter(|p| rect.expand(4.0).contains(*p)) {
+                    let screen_pt = |p: egui::Pos2| Vec3::new(p.x, p.y, 0.0);
+                    fan_candidates.push(construction::CrowdCandidate {
+                        kind: construction::PickTargetKind::DrawingElement {
+                            drawing,
+                            element: context::DrawingElementRef::Text(ai),
+                            outline: vec![
+                                screen_pt(rect.left_top()),
+                                screen_pt(rect.right_top()),
+                                screen_pt(rect.right_bottom()),
+                                screen_pt(rect.left_bottom()),
+                                screen_pt(rect.left_top()),
+                            ],
+                        },
+                        anchor: screen_pt(rect.center()),
+                        dist_px: (rect.center() - pp).length(),
+                    });
+                }
                 // Select-tool drag/select (#312).
                 if self.state.tool == Tool::Select {
                     let resp = ui.interact(
@@ -26603,7 +26906,7 @@ impl App {
                     if resp.hovered() {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                     }
-                    if resp.clicked() {
+                    if resp.clicked() && !exploder_open {
                         select_ann = Some(ai);
                     }
                     // Double-clicking a textbox jumps to its context-pane editor (#379):
@@ -26664,7 +26967,7 @@ impl App {
             // Clicking blank page space with the Select tool deselects everything (#346). `bg` is
             // the page-background interact created before the cards/notes, so it only reports a
             // click when nothing on top consumed it.
-            else if self.state.tool == Tool::Select && bg.clicked() {
+            else if self.state.tool == Tool::Select && bg.clicked() && !exploder_open {
                 self.state.clear_drawing_selection();
             }
             if let Some((px, py, wrap)) = place {
@@ -26984,6 +27287,11 @@ impl App {
                 self.drawing_pan += delta;
             }
         }
+        // The Selection Exploder over the page (#1641), after every candidate has been
+        // gathered: Space fans them out, and a click on a loupe does what clicking that thing
+        // would have done.
+        self.tick_drawing_exploder(ui, area, drawing, fan_candidates);
+
         if let Some((view, a, b)) = toggle_dim {
             self.state
                 .apply(Action::ToggleDrawingDimension { drawing, view, a, b });
@@ -27081,41 +27389,20 @@ impl App {
     /// is the faint "press-Space" hint under a crowd; `close_after` asks the caller to collapse
     /// the fan after this frame's pick lands. Space explodes on demand (a crowd, a single thing,
     /// or nothing — a frozen hitbox circle); Space again, or an empty click, dismisses it.
-    fn tick_exploder(
+    /// The open Selection Exploder's own frame (#551/#559): hover its loupes, and on a press
+    /// navigate (Back / drill into a group / swap siblings) or hand the hovered leaf to the
+    /// caller. Returns `(fan owns this frame, redirected pointer, close afterwards)`. Shared by
+    /// the 3D viewport and the drawing workbench (#1641), which differ only in what opens it.
+    fn tick_open_exploder(
         &mut self,
         ui: &egui::Ui,
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         pointer_screen: Option<egui::Pos2>,
-        occlusion: Option<&construction::PickOcclusion>,
         viewport: egui::Rect,
-        // The constraint annotation icons currently drawn (#568), so their badges can join the fan.
-        constraint_hits: &[crate::constraint_viewport::ConstraintIconHit],
-        suppress: bool,
-        // The active tool's pickers (#957): the fan offers what the focused one can take, and
-        // with none armed it does not open at all.
-        tool_pickers: &[context::ToolPickerView],
+        space: bool,
     ) -> (bool, Option<egui::Pos2>, bool) {
-        // Consume any pending palette request every frame so it never lingers (#576).
-        let palette_request = std::mem::take(&mut self.exploder_palette_request);
-        // `suppress` says the fan shouldn't **open** — a drag is running, a value is being
-        // typed, a shape is half-drawn. It no longer closes an open one (#871): several of
-        // those conditions are hover states (the cursor crossing a dimension label, say), and
-        // an open fan vanishing because the mouse moved is never what anyone meant. Space,
-        // Esc and a click are what close it.
-        if suppress && self.exploder.is_none() {
-            return (false, None, false);
-        }
-        // The palette's "Explode Selection Under Cursor" entry behaves exactly like a Space press.
-        // Not while a field has the keyboard, though — a space belongs in the expression being
-        // typed, not to the exploder (#794).
-        let space = (!ui.ctx().egui_wants_keyboard_input()
-            && ui.input(|i| i.key_pressed(egui::Key::Space)))
-            || palette_request;
         let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
         let shift = ui.input(|i| i.modifiers.shift);
-
-        // Active: own the hover; the pick itself is done by the tool at the redirected pointer.
-        if self.exploder.is_some() {
             if space {
                 self.exploder = None;
                 return (false, None, false);
@@ -27287,7 +27574,49 @@ impl App {
                     Act::Dismiss => return (true, None, true),
                 }
             }
-            return (true, None, close_after);
+        (true, None, close_after)
+    }
+
+    fn tick_exploder(
+        &mut self,
+        ui: &egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+        occlusion: Option<&construction::PickOcclusion>,
+        viewport: egui::Rect,
+        // The constraint annotation icons currently drawn (#568), so their badges can join the fan.
+        constraint_hits: &[crate::constraint_viewport::ConstraintIconHit],
+        suppress: bool,
+        // The active tool's pickers (#957): the fan offers what the focused one can take, and
+        // with none armed it does not open at all.
+        tool_pickers: &[context::ToolPickerView],
+    ) -> (bool, Option<egui::Pos2>, bool) {
+        // Consume any pending palette request every frame so it never lingers (#576).
+        let palette_request = std::mem::take(&mut self.exploder_palette_request);
+        // `suppress` says the fan shouldn't **open** — a drag is running, a value is being
+        // typed, a shape is half-drawn. It no longer closes an open one (#871): several of
+        // those conditions are hover states (the cursor crossing a dimension label, say), and
+        // an open fan vanishing because the mouse moved is never what anyone meant. Space,
+        // Esc and a click are what close it.
+        // A page fan (#1641) belongs to the drawing workbench; drop it rather than hover-test
+        // its screen anchors as if they were world points.
+        if self.exploder_is_page_fan() {
+            self.exploder = None;
+        }
+        if suppress && self.exploder.is_none() {
+            return (false, None, false);
+        }
+        // The palette's "Explode Selection Under Cursor" entry behaves exactly like a Space press.
+        // Not while a field has the keyboard, though — a space belongs in the expression being
+        // typed, not to the exploder (#794).
+        let space = (!ui.ctx().egui_wants_keyboard_input()
+            && ui.input(|i| i.key_pressed(egui::Key::Space)))
+            || palette_request;
+        let shift = ui.input(|i| i.modifiers.shift);
+
+        // Active: own the hover; the pick itself is done by the tool at the redirected pointer.
+        if self.exploder.is_some() {
+            return self.tick_open_exploder(ui, project, pointer_screen, viewport, space);
         }
 
         // Inactive: Space explodes whatever sits under the cursor — even nothing (the hitbox

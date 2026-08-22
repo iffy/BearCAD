@@ -39,6 +39,10 @@ edges and faces, whole bodies, even constraint badges. The camera holds still wh
 open. It's how you pick one **face** of a body with the Select tool, which otherwise selects
 the whole body.
 
+It works on a [drawing](/docs/drawing-tools) page too, where it fans out the view's edges, the
+card and any note under the cursor. Two of a body's edges can project to exactly the same line
+in an orthographic view; the fan is how you dimension the one you meant.
+
 ## See also
 
 - [Select](/docs/tools/select) — the default tool for looking and picking.

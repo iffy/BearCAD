@@ -4425,6 +4425,9 @@ impl<'a> SceneMesh<'a> {
             PickTargetKind::Constraint(_) => {}
             // A whole body (#902) recolors in the main pass, like a hovered body row.
             PickTargetKind::Body(_) => {}
+            // A drawing-page item (#1641) lives on the drawing workbench, which paints with
+            // egui rather than this 3D scene.
+            PickTargetKind::DrawingElement { .. } => {}
             // An analytic sketchable face (#625): same fill + border a face-picking tool's own
             // hover uses. Body-coplanar fills + borders are depth-disabled (#1139); the
             // PickTarget arm already sets Wireframe for all kinds, but ConstructionPlane

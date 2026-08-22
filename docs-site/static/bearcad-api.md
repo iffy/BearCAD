@@ -142,6 +142,7 @@ bearcad.ui.camera{ yaw?, pitch?, distance?, target? }
 bearcad.ui.pane("ai"|"hierarchy"|"context"|"parameters"|…, "show"|"hide"|"toggle")
 bearcad.ui.click_ground(x, y)               -- sketch-plane millimetres
 bearcad.ui.click_world(x, y, z)             -- any world point: a body's side wall, say
+bearcad.ui.viewport()                       -- { width, height } of the area clicks address
 bearcad.ui.right_click_ground(x, y)         -- opens a context menu
 bearcad.ui.context_menu()                   -- { kind, index } of the open menu, or nil
 bearcad.ui.key("enter")
@@ -396,6 +397,7 @@ A name that is not in this list is not a function:
 - `bearcad.ui.update_channel`
 - `bearcad.ui.view`
 - `bearcad.ui.view_home`
+- `bearcad.ui.viewport`
 - `bearcad.ui.wait`
 - `bearcad.ui.wait_ms`
 - `bearcad.ui.wheel`
