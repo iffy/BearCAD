@@ -7909,6 +7909,45 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Set a placed view's display style (#1651): `bearcad.drawing_view_style{ drawing,
+    // view, style }` — "visible" / "wireframe" / "shaded".
+    api.set(
+        "drawing_view_style",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let drawing: usize = opts.get("drawing")?;
+            let view: usize = opts.get("view")?;
+            let style: String = opts.get("style")?;
+            if crate::model::DrawingViewStyle::from_name(&style).is_none() {
+                return Err(mlua::Error::external(format!(
+                    "drawing_view_style: unknown style {style:?} \
+                     (visible / wireframe / shaded)"
+                )));
+            }
+            unsafe { tick.exec(Instruction::SetDrawingViewStyle { drawing, view, style }) }
+        })?,
+    )?;
+
+    // Turn a placed view to face another way (#1651) — the Context pane's navigation bear.
+    // `bearcad.drawing_view_orientation{ drawing, view, orientation }`.
+    api.set(
+        "drawing_view_orientation",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let drawing: usize = opts.get("drawing")?;
+            let view: usize = opts.get("view")?;
+            let orientation: String = opts.get("orientation")?;
+            if crate::model::DrawingOrientation::from_name(&orientation).is_none() {
+                return Err(mlua::Error::external(format!(
+                    "drawing_view_orientation: unknown orientation {orientation:?}"
+                )));
+            }
+            unsafe {
+                tick.exec(Instruction::SetDrawingViewOrientation { drawing, view, orientation })
+            }
+        })?,
+    )?;
+
     // Show/hide an aligned child's dashed projection lines to its base view (#377):
     // `bearcad.drawing_view_align_lines{ drawing, view, show }`.
     api.set(
@@ -16798,6 +16837,33 @@ mod tests {
         assert_eq!(shown.doc.drawings[dkey(0)].views[0].angle_dims.len(), 1);
         let hidden = run_lua(&script(2));
         assert_eq!(hidden.doc.drawings[dkey(0)].views[0].angle_dims.len(), 0);
+    }
+
+    /// #1651: `bearcad.drawing_view_style{}` and `drawing_view_orientation{}` reach the two
+    /// Context-pane controls a placed view has — the display style and which way it faces.
+    #[test]
+    fn lua_drawing_view_style_and_orientation_set_a_placed_view() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 40, height = 25 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
+            bearcad.drawing_view_style{ drawing = d, view = 0, style = "shaded" }
+            bearcad.drawing_view_orientation{ drawing = d, view = 0, orientation = "front-right-top" }
+            assert(bearcad.drawing_views(d)[1].style == "Shaded")
+            local ok = pcall(bearcad.drawing_view_style, { drawing = d, view = 0, style = "sparkly" })
+            assert(not ok, "an unknown style should error")
+        "#,
+        );
+        use crate::model::{CornerView, DrawingOrientation, DrawingViewStyle};
+        let view = &state.doc.drawings[dkey(0)].views[0];
+        assert_eq!(view.style, DrawingViewStyle::Shaded);
+        assert_eq!(
+            view.orientation,
+            DrawingOrientation::Corner(CornerView::FrontRightTop)
+        );
     }
 
     /// #180: an angle needs two *different* edges.

@@ -1150,6 +1150,114 @@ pub fn dimension_line_geometry(
     }
 }
 
+/// The drawn form of an angle dimension (#1652): an arc centred on the corner the two edges
+/// make, sweeping from one edge to the other, with an arrowhead at each end and the degree
+/// label just outside it. Everything is in the view's projected 2D mm space — the angle is
+/// the one the arc actually spans on the page, so label and drawing always agree.
+pub struct AngleDimGeometry {
+    /// Where the two edges meet, produced if they don't touch.
+    pub center: glam::Vec2,
+    pub radius: f32,
+    /// Arc bounds in radians, swept counter-clockwise from `start` to `end`.
+    pub start: f32,
+    pub end: f32,
+    pub degrees: f32,
+    /// Where the `NN°` label sits, just outside the arc's midpoint.
+    pub label: glam::Vec2,
+    /// Extension lines producing an edge back to the corner, for edges that stop short.
+    pub extensions: Vec<(glam::Vec2, glam::Vec2)>,
+    /// Two arrowhead triangles (three points each), one at each end of the arc.
+    pub arrows: [[glam::Vec2; 3]; 2],
+}
+
+impl AngleDimGeometry {
+    fn at(&self, angle: f32) -> glam::Vec2 {
+        self.center + glam::Vec2::new(angle.cos(), angle.sin()) * self.radius
+    }
+
+    /// The arc as a polyline, fine enough to read as a curve at any drawing scale.
+    pub fn arc_points(&self) -> Vec<glam::Vec2> {
+        let steps = (((self.end - self.start).abs() / 0.15).ceil() as usize).clamp(8, 96);
+        (0..=steps)
+            .map(|i| self.at(self.start + (self.end - self.start) * (i as f32 / steps as f32)))
+            .collect()
+    }
+}
+
+/// Build [`AngleDimGeometry`] for the angle between two projected edges. `arrow` is the
+/// arrowhead length in the same units. `None` when either edge is degenerate or the two are
+/// parallel, since parallel edges never make a corner to measure.
+pub fn angle_dim_geometry(
+    e1: (glam::Vec2, glam::Vec2),
+    e2: (glam::Vec2, glam::Vec2),
+    arrow: f32,
+) -> Option<AngleDimGeometry> {
+    let (v1, v2) = (e1.1 - e1.0, e2.1 - e2.0);
+    let (l1, l2) = (v1.length(), v2.length());
+    if l1 < 1e-4 || l2 < 1e-4 {
+        return None;
+    }
+    let (u1, u2) = (v1 / l1, v2 / l2);
+    let cross = u1.perp_dot(u2);
+    if cross.abs() < 1e-4 {
+        return None; // parallel: no corner
+    }
+    let center = e1.0 + u1 * ((e2.0 - e1.0).perp_dot(u2) / cross);
+    // The arc opens toward the ends that are actually drawn, so it lands on the edges rather
+    // than on the empty produced side of the corner.
+    let ends = |e: (glam::Vec2, glam::Vec2)| {
+        if (e.0 - center).length_squared() <= (e.1 - center).length_squared() {
+            (e.0, e.1)
+        } else {
+            (e.1, e.0)
+        }
+    };
+    let ((near1, far1), (near2, far2)) = (ends(e1), ends(e2));
+    let (d1, d2) = (
+        (far1 - center).normalize_or_zero(),
+        (far2 - center).normalize_or_zero(),
+    );
+    if d1 == glam::Vec2::ZERO || d2 == glam::Vec2::ZERO {
+        return None;
+    }
+    // Small enough to stay well inside the shorter edge, but never smaller than its arrowheads.
+    let reach = (far1 - center).length().min((far2 - center).length());
+    let radius = (reach * 0.45).max(arrow * 2.0);
+    let (a1, a2) = (d1.y.atan2(d1.x), d2.y.atan2(d2.x));
+    let mut sweep = a2 - a1;
+    while sweep <= -std::f32::consts::PI {
+        sweep += std::f32::consts::TAU;
+    }
+    while sweep > std::f32::consts::PI {
+        sweep -= std::f32::consts::TAU;
+    }
+    let (start, end) = if sweep >= 0.0 { (a1, a1 + sweep) } else { (a1 + sweep, a1) };
+    // An edge that stops short of the corner is produced back to it, as on a drawing board.
+    let extensions = [(near1, d1), (near2, d2)]
+        .into_iter()
+        .filter(|(n, _)| (*n - center).length() > 1e-3)
+        .map(|(n, _)| (n, center))
+        .collect();
+    let head = |angle: f32, dir: f32| {
+        let tip = center + glam::Vec2::new(angle.cos(), angle.sin()) * radius;
+        let tangent = glam::Vec2::new(-angle.sin(), angle.cos()) * dir;
+        let base = tip - tangent * arrow;
+        let side = glam::Vec2::new(-tangent.y, tangent.x) * (arrow * 0.4);
+        [tip, base + side, base - side]
+    };
+    let mid = (start + end) * 0.5;
+    Some(AngleDimGeometry {
+        center,
+        radius,
+        start,
+        end,
+        degrees: sweep.abs().to_degrees(),
+        label: center + glam::Vec2::new(mid.cos(), mid.sin()) * (radius + arrow * 1.6),
+        extensions,
+        arrows: [head(start, -1.0), head(end, 1.0)],
+    })
+}
+
 /// Plan per-dimension **extra offsets** (beyond the default gap) so dimension lines and their
 /// number labels don't overlap each other (#321): parallel dimensions whose lines would land at
 /// the same distance and whose spans overlap are pushed out onto successive "tiers", the way CAD
@@ -1248,11 +1356,21 @@ pub fn dimension_outward(a: glam::Vec2, b: glam::Vec2, center: glam::Vec2) -> gl
 /// Projected 2D geometry for a drawing view under its display style (#301), shared by the
 /// editor pane and the SVG/PDF export.
 pub struct StyledViewGeometry {
-    /// Back-to-front shaded triangles (projected 2D + a 0..1 grey, 1 = white) — `Shaded` only.
-    pub tris: Vec<([glam::Vec2; 3], f32)>,
+    /// Back-to-front shaded faces — `Shaded` only. Each is one coplanar run of triangles so
+    /// a renderer can paint it as a single seamless surface (#1651); painting the triangles
+    /// one at a time leaves the tessellation's diagonals showing as hairline seams.
+    pub faces: Vec<ShadedFace>,
     /// The edge segments to stroke: every feature edge for `Wireframe`; only the visible
     /// runs (hidden lines removed) for `Visible`/`Shaded`.
     pub segments: Vec<(glam::Vec2, glam::Vec2)>,
+}
+
+/// One coplanar run of a shaded view's front faces, with the grey it's painted in
+/// (0..1, 1 = white).
+pub struct ShadedFace {
+    /// Projected 2D triangles, all sharing one plane of the solid.
+    pub tris: Vec<[glam::Vec2; 3]>,
+    pub shade: f32,
 }
 
 /// Project a view's geometry under its display style (#301). Sketch views have no solid to
@@ -1271,7 +1389,7 @@ pub fn styled_view_geometry(
     let mut edges = drawing_view_world_edges(doc, view);
     edges.extend(drawing_view_silhouette_edges(doc, views, view));
     let wireframe = || StyledViewGeometry {
-        tris: Vec::new(),
+        faces: Vec::new(),
         segments: edges.iter().map(|(a, b)| (project(*a), project(*b))).collect(),
     };
     if view.sketch.is_some() || view.style == DrawingViewStyle::Wireframe {
@@ -1347,28 +1465,43 @@ pub fn styled_view_geometry(
     }
 
     // Shaded fills: front faces painted back-to-front, greyed by how squarely they face a
-    // fixed key light up-and-left of the viewer.
+    // fixed key light up-and-left of the viewer. Coplanar triangles are gathered into one
+    // face (#1651) so a renderer paints each flat as a single surface — drawn one by one
+    // they leave the tessellation's diagonals showing between them.
     let mut fills = Vec::new();
     if view.style == DrawingViewStyle::Shaded {
         let light = (toward * 1.2 - right * 0.35 + up * 0.55).normalize();
-        let mut shaded: Vec<(f32, [glam::Vec2; 3], f32)> = mesh
-            .triangles
-            .iter()
-            .filter_map(|t| {
-                let n = (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero();
-                if n == Vec3::ZERO || n.dot(toward) <= 0.0 {
-                    return None; // back or degenerate face
+        // Plane key: the outward normal and the plane's distance from the origin, both
+        // quantized so a tessellator's per-triangle rounding still lands on one flat.
+        let mut planes: Vec<([i32; 4], f32, f32, Vec<[glam::Vec2; 3]>)> = Vec::new();
+        for t in &mesh.triangles {
+            let n = (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero();
+            if n == Vec3::ZERO || n.dot(toward) <= 0.0 {
+                continue; // back or degenerate face
+            }
+            let q = |v: f32| (v * 1000.0).round() as i32;
+            let key = [q(n.x), q(n.y), q(n.z), q(n.dot(t[0]) * 0.1)];
+            let shade = 0.62 + 0.33 * n.dot(light).max(0.0);
+            let depth = (t[0] + t[1] + t[2]).dot(toward) / 3.0;
+            let tri = [project(t[0]), project(t[1]), project(t[2])];
+            match planes.iter_mut().find(|(k, ..)| *k == key) {
+                Some((_, d, _, tris)) => {
+                    *d = d.min(depth);
+                    tris.push(tri);
                 }
-                let shade = 0.62 + 0.33 * n.dot(light).max(0.0);
-                let depth = (t[0] + t[1] + t[2]).dot(toward) / 3.0;
-                Some((depth, [project(t[0]), project(t[1]), project(t[2])], shade))
-            })
+                None => planes.push((key, depth, shade, vec![tri])),
+            }
+        }
+        // Farthest flat first: coplanar triangles never occlude each other, so one depth
+        // per face is enough to order the painting.
+        planes.sort_by(|a, b| a.1.total_cmp(&b.1));
+        fills = planes
+            .into_iter()
+            .map(|(_, _, shade, tris)| ShadedFace { tris, shade })
             .collect();
-        shaded.sort_by(|a, b| a.0.total_cmp(&b.0));
-        fills = shaded.into_iter().map(|(_, p, s)| (p, s)).collect();
     }
 
-    StyledViewGeometry { tris: fills, segments }
+    StyledViewGeometry { faces: fills, segments }
 }
 
 /// An 8-bit RGB paint.
@@ -1724,17 +1857,19 @@ fn render_view_geometry<C: Canvas>(
     // Strokes (and shaded fills) come from the view's display style (#301); the fit above
     // always uses the full wireframe bbox so switching styles never re-scales the view.
     let styled = styled_view_geometry(doc, views, view);
-    for (pts, shade) in &styled.tris {
-        let level = (shade.clamp(0.0, 1.0) * 255.0) as u8;
+    for face in &styled.faces {
+        let level = (face.shade.clamp(0.0, 1.0) * 255.0) as u8;
         let fill = Rgb(level, level, level);
-        let s: Vec<(f32, f32)> = pts
-            .iter()
-            .map(|p| {
-                let sp = to_screen(*p);
-                (sp.x, sp.y)
-            })
-            .collect();
-        canvas.poly(&s, fill);
+        for pts in &face.tris {
+            let s: Vec<(f32, f32)> = pts
+                .iter()
+                .map(|p| {
+                    let sp = to_screen(*p);
+                    (sp.x, sp.y)
+                })
+                .collect();
+            canvas.poly(&s, fill);
+        }
     }
     for (a, b) in &styled.segments {
         // A segment lying on a detected circle is drawn as part of the smooth circle instead.
@@ -1902,23 +2037,31 @@ fn render_view_geometry<C: Canvas>(
         canvas.text_rot(lp.x, lp.y, 11.0, Anchor::Middle, &label, ang);
     }
 
-    // Angle dimensions: the degree value at (or near) the two edges' corner.
+    // Angle dimensions (#1652): an arc at the two edges' corner, spanning between them, with
+    // arrowheads and the degree value just outside it.
     for (k1, k2) in &view.angle_dims {
-        let (a0, a1) = (dequant(k1.0), dequant(k1.1));
-        let (b0, b1) = (dequant(k2.0), dequant(k2.1));
-        let d1 = (a1 - a0).normalize_or_zero();
-        let d2 = (b1 - b0).normalize_or_zero();
-        if d1.length_squared() < 0.5 || d2.length_squared() < 0.5 {
+        let edge = |k: &([i32; 3], [i32; 3])| (project(dequant(k.0)), project(dequant(k.1)));
+        let Some(g) = angle_dim_geometry(edge(k1), edge(k2), arrow) else {
             continue;
+        };
+        let stroke_line = |canvas: &mut C, p: glam::Vec2, q: glam::Vec2| {
+            let (sp, sq) = (to_screen(p), to_screen(q));
+            canvas.line(sp.x, sp.y, sq.x, sq.y, BLACK, DIM_STROKE);
+        };
+        for (p, q) in &g.extensions {
+            stroke_line(canvas, *p, *q);
         }
-        let angle = d1.angle_between(d2).to_degrees();
-        let shared = [k1.0, k1.1]
-            .into_iter()
-            .find(|e| *e == k2.0 || *e == k2.1)
-            .map(dequant);
-        let anchor = shared.unwrap_or_else(|| ((a0 + a1) * 0.5 + (b0 + b1) * 0.5) * 0.5);
-        let sp = to_screen(project(anchor));
-        canvas.text(sp.x, sp.y - 12.0, 12.0, Anchor::Middle, &format!("{angle:.0}°"));
+        let arc = g.arc_points();
+        for pair in arc.windows(2) {
+            stroke_line(canvas, pair[0], pair[1]);
+        }
+        for tri in g.arrows {
+            let pts: Vec<(f32, f32)> =
+                tri.iter().map(|p| { let s = to_screen(*p); (s.x, s.y) }).collect();
+            canvas.poly(&pts, BLACK);
+        }
+        let sp = to_screen(g.label);
+        canvas.text(sp.x, sp.y, 11.0, Anchor::Middle, &format!("{:.0}°", g.degrees));
     }
 }
 
@@ -2256,6 +2399,68 @@ mod tests {
     use crate::model::body_key_for_slot as bkey;
     use super::*;
     use crate::model::{Drawing, DrawingView};
+
+    /// #1652: an angle dimension draws as an arc between the two edges, centred on the corner
+    /// they share, with an arrowhead at each end and the degree label just outside the arc.
+    #[test]
+    fn angle_dimension_arcs_between_the_two_edges() {
+        let corner = glam::Vec2::new(2.0, 3.0);
+        let g = angle_dim_geometry(
+            (corner, corner + glam::Vec2::new(0.0, 10.0)),
+            (corner, corner + glam::Vec2::new(6.0, 0.0)),
+            0.5,
+        )
+        .expect("two edges meeting at a corner have an angle");
+        assert!((g.degrees - 90.0).abs() < 1e-3, "square corner reads 90 degrees");
+        assert!((g.center - corner).length() < 1e-4, "the arc sits on the shared corner");
+        // The arc stays inside the shorter edge, and both of its ends land on the edges.
+        assert!(g.radius > 0.0 && g.radius < 6.0);
+        let pts = g.arc_points();
+        let ends = [pts[0], *pts.last().unwrap()];
+        assert!(
+            (ends[0] - (corner + glam::Vec2::new(g.radius, 0.0))).length() < 1e-3
+                || (ends[1] - (corner + glam::Vec2::new(g.radius, 0.0))).length() < 1e-3,
+            "one arc end runs along the horizontal edge: {ends:?}"
+        );
+        assert!(
+            (ends[0] - (corner + glam::Vec2::new(0.0, g.radius))).length() < 1e-3
+                || (ends[1] - (corner + glam::Vec2::new(0.0, g.radius))).length() < 1e-3,
+            "the other runs along the vertical edge: {ends:?}"
+        );
+        // Sampling the arc walks the sweep, every point at the radius from the corner.
+        assert!(pts.len() >= 8);
+        assert!(pts.iter().all(|p| ((*p - corner).length() - g.radius).abs() < 1e-3));
+        // The label sits outside the arc, in the wedge between the two edges.
+        let off = g.label - corner;
+        assert!(off.length() > g.radius, "the label clears the arc");
+        assert!(off.x > 0.0 && off.y > 0.0, "and stays in the measured wedge");
+    }
+
+    /// #1652: edges that only meet when produced still get an arc — at the crossing point of
+    /// the two lines, opening toward the ends that are actually drawn.
+    #[test]
+    fn angle_dimension_uses_the_crossing_of_edges_that_do_not_touch() {
+        let g = angle_dim_geometry(
+            (glam::Vec2::new(4.0, 0.0), glam::Vec2::new(10.0, 0.0)),
+            (glam::Vec2::new(0.0, 4.0), glam::Vec2::new(0.0, 10.0)),
+            0.5,
+        )
+        .expect("the produced lines cross at the origin");
+        assert!((g.center - glam::Vec2::ZERO).length() < 1e-3);
+        assert!((g.degrees - 90.0).abs() < 1e-3);
+        assert_eq!(g.extensions.len(), 2, "each edge is produced back to the corner");
+    }
+
+    /// #1652: parallel edges never meet, so there is nothing to arc between.
+    #[test]
+    fn angle_dimension_declines_parallel_edges() {
+        assert!(angle_dim_geometry(
+            (glam::Vec2::ZERO, glam::Vec2::new(10.0, 0.0)),
+            (glam::Vec2::new(0.0, 5.0), glam::Vec2::new(10.0, 5.0)),
+            0.5,
+        )
+        .is_none());
+    }
 
     /// #1206: facing endpoints use the silhouette at each shared-axis extreme, not AABB corners.
     /// An L-shape's top-left AABB corner floats; the left extreme's top is the bar height.

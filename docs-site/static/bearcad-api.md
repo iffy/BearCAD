@@ -206,7 +206,9 @@ A name that is not in this list is not a function:
 - `bearcad.drawing_view_add`
 - `bearcad.drawing_view_align_lines`
 - `bearcad.drawing_view_label`
+- `bearcad.drawing_view_orientation`
 - `bearcad.drawing_view_size`
+- `bearcad.drawing_view_style`
 - `bearcad.drawing_views`
 - `bearcad.edit_boolean`
 - `bearcad.edit_dim`

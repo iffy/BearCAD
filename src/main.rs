@@ -26495,17 +26495,23 @@ impl App {
                 let styled = (view.sketch.is_none())
                     .then(|| crate::drawing::styled_view_geometry(&self.state.doc, &views, view));
                 if let Some(sty) = &styled {
-                    for (pts, shade) in &sty.tris {
+                    for face in &sty.faces {
                         // The editor sheet is dark; map the print greys down so shading reads
                         // without blowing out (exports keep the light print greys).
-                        let level = (shade.clamp(0.0, 1.0) * 110.0) as u8 + 30;
-                        painter.add(egui::Shape::convex_polygon(
-                            pts.iter()
-                                .map(|p| to_screen(egui::vec2(p.x, p.y)))
-                                .collect(),
-                            egui::Color32::from_gray(level),
-                            egui::Stroke::NONE,
-                        ));
+                        let level = (face.shade.clamp(0.0, 1.0) * 110.0) as u8 + 30;
+                        // One raw mesh per coplanar face (#1651): its triangles meet without
+                        // the feathered edges a per-triangle fill would leave, so the
+                        // tessellation's diagonals don't show as faint seams.
+                        let color = egui::Color32::from_gray(level);
+                        let mut mesh = egui::epaint::Mesh::default();
+                        for pts in &face.tris {
+                            let base = mesh.vertices.len() as u32;
+                            for p in pts {
+                                mesh.colored_vertex(to_screen(egui::vec2(p.x, p.y)), color);
+                            }
+                            mesh.add_triangle(base, base + 1, base + 2);
+                        }
+                        painter.add(egui::Shape::mesh(mesh));
                     }
                     for (a, b) in &sty.segments {
                         if on_circle(egui::vec2(a.x, a.y), egui::vec2(b.x, b.y)) {
@@ -26997,31 +27003,37 @@ impl App {
                     }
                 }
 
-                // Angle dimensions between edge pairs: the degree value at (or near) the corner.
+                // Angle dimensions between edge pairs (#1652): an arc at the corner the two
+                // edges make, spanning between them, with arrowheads and the degree value.
                 let dequant = |q: [i32; 3]| Vec3::new(q[0] as f32, q[1] as f32, q[2] as f32) / 100.0;
                 for (k1, k2) in &view.angle_dims {
-                    let (a0, a1) = (dequant(k1.0), dequant(k1.1));
-                    let (b0, b1) = (dequant(k2.0), dequant(k2.1));
-                    let d1 = (a1 - a0).normalize_or_zero();
-                    let d2 = (b1 - b0).normalize_or_zero();
-                    if d1.length_squared() < 0.5 || d2.length_squared() < 0.5 {
+                    let flat = |p: Vec3| glam::Vec2::new(p.dot(right), p.dot(up));
+                    let edge = |k: &([i32; 3], [i32; 3])| (flat(dequant(k.0)), flat(dequant(k.1)));
+                    let Some(g) = crate::drawing::angle_dim_geometry(edge(k1), edge(k2), arrow)
+                    else {
                         continue;
+                    };
+                    let sp = |p: glam::Vec2| to_screen(egui::vec2(p.x, p.y));
+                    let stroke = egui::Stroke::new(crate::drawing::DIM_STROKE, INK);
+                    for (p, q) in &g.extensions {
+                        painter.line_segment([sp(*p), sp(*q)], stroke);
                     }
-                    let angle = d1.angle_between(d2).to_degrees();
-                    // Anchor at a shared corner if the edges touch, else between their midpoints.
-                    let shared = [k1.0, k1.1]
-                        .into_iter()
-                        .find(|e| *e == k2.0 || *e == k2.1)
-                        .map(dequant);
-                    let anchor = shared.unwrap_or_else(|| {
-                        ((a0 + a1) * 0.5 + (b0 + b1) * 0.5) * 0.5
-                    });
-                    let sp = to_screen(project(anchor));
+                    painter.add(egui::Shape::line(
+                        g.arc_points().iter().map(|p| sp(*p)).collect(),
+                        stroke,
+                    ));
+                    for tri in g.arrows {
+                        painter.add(egui::Shape::convex_polygon(
+                            tri.iter().map(|p| sp(*p)).collect(),
+                            INK,
+                            egui::Stroke::NONE,
+                        ));
+                    }
                     painter.text(
-                        sp + egui::vec2(0.0, -12.0 * px_per_pt),
+                        sp(g.label),
                         egui::Align2::CENTER_CENTER,
-                        format!("{angle:.0}°"),
-                        egui::FontId::proportional(12.0 * px_per_pt),
+                        format!("{:.0}°", g.degrees),
+                        egui::FontId::proportional(dim_font),
                         INK,
                     );
                 }

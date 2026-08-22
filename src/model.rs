@@ -5258,6 +5258,16 @@ impl DrawingViewStyle {
             Self::Shaded => "Shaded",
         }
     }
+
+    /// Script spelling, e.g. `"visible"` / `"wireframe"` / `"shaded"`.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "visible" | "visible edges" | "visible-edges" => Some(Self::Visible),
+            "wireframe" | "wire" => Some(Self::Wireframe),
+            "shaded" | "solid" => Some(Self::Shaded),
+            _ => None,
+        }
+    }
 }
 
 /// Parse a drawing-view scale like `"1:20"` or `"2:3"` into page-mm per model-mm (#300):

@@ -30281,7 +30281,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             &state.doc.drawings[dkey(0)].views,
             &state.doc.drawings[dkey(0)].views[0],
         );
-        assert!(wire.tris.is_empty() && !wire.segments.is_empty());
+        assert!(wire.faces.is_empty() && !wire.segments.is_empty());
 
         let result = state.apply(Action::SetDrawingViewStyle {
             drawing: dkey(0),
@@ -30295,7 +30295,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             &state.doc.drawings[dkey(0)].views,
             &state.doc.drawings[dkey(0)].views[0],
         );
-        assert!(visible.tris.is_empty());
+        assert!(visible.faces.is_empty());
         let (wire_len, visible_len) = (total_len(&wire), total_len(&visible));
         assert!(
             visible_len > 0.0 && visible_len < wire_len * 0.95,
@@ -30312,11 +30312,41 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             &state.doc.drawings[dkey(0)].views,
             &state.doc.drawings[dkey(0)].views[0],
         );
-        assert!(!shaded.tris.is_empty(), "shaded style fills front faces");
+        assert!(!shaded.faces.is_empty(), "shaded style fills front faces");
         assert!(
             (total_len(&shaded) - visible_len).abs() < 1e-3,
             "shaded strokes the same visible edges"
         );
+    }
+
+    /// #1651: shaded fills come back grouped into coplanar faces, not loose triangles — an
+    /// isometric cuboid is three faces of two triangles each, so each face paints as one
+    /// seamless surface instead of showing the tessellation's diagonals as hairline seams.
+    #[test]
+    fn shaded_drawing_view_groups_triangles_into_coplanar_faces() {
+        use crate::model::{DrawingOrientation, DrawingViewStyle};
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::AddDrawingView {
+            drawing: dkey(0),
+            bodies: vec![bkey(0)],
+            orientation: DrawingOrientation::Isometric,
+        });
+        state.apply(Action::SetDrawingViewStyle {
+            drawing: dkey(0),
+            view: 0,
+            style: DrawingViewStyle::Shaded,
+        });
+        let shaded = crate::drawing::styled_view_geometry(
+            &state.doc,
+            &state.doc.drawings[dkey(0)].views,
+            &state.doc.drawings[dkey(0)].views[0],
+        );
+        assert_eq!(shaded.faces.len(), 3, "a box shows three faces from an isometric corner");
+        for face in &shaded.faces {
+            assert_eq!(face.tris.len(), 2, "each box face is one coplanar run of two triangles");
+        }
     }
 
     /// #296: an aligned child projection shares its parent's axis (stays lined up) and follows

@@ -402,6 +402,18 @@ pub enum Instruction {
         center: (f32, f32, f32),
         offset: Option<f32>,
     },
+    /// Set a placed view's display style (#1651): `"visible"` / `"wireframe"` / `"shaded"`.
+    SetDrawingViewStyle {
+        drawing: usize,
+        view: usize,
+        style: String,
+    },
+    /// Turn a placed view to face another way (#1651), by orientation name.
+    SetDrawingViewOrientation {
+        drawing: usize,
+        view: usize,
+        orientation: String,
+    },
     /// Show/hide an aligned child's dashed projection lines to its base view (#377).
     SetDrawingViewAlignLines {
         drawing: usize,
@@ -1480,6 +1492,14 @@ impl Instruction {
                     center.0, center.1, center.2
                 )
             }
+            Instruction::SetDrawingViewStyle { drawing, view, style } => format!(
+                "bearcad.drawing_view_style{{ drawing = {drawing}, view = {view}, \
+                 style = {style:?} }}"
+            ),
+            Instruction::SetDrawingViewOrientation { drawing, view, orientation } => format!(
+                "bearcad.drawing_view_orientation{{ drawing = {drawing}, view = {view}, \
+                 orientation = {orientation:?} }}"
+            ),
             Instruction::SetDrawingViewAlignLines { drawing, view, show } => format!(
                 "bearcad.drawing_view_align_lines{{ drawing = {drawing}, view = {view}, \
                  show = {show} }}"
@@ -6842,6 +6862,36 @@ impl ScriptRunner {
                         center.0, center.1, center.2,
                     )),
                 });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::SetDrawingViewStyle { drawing, view, style } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
+                let Some(style) = crate::model::DrawingViewStyle::from_name(&style) else {
+                    self.last_action_error = Some(format!("Unknown view style {style:?}"));
+                    return StepResult::Continue;
+                };
+                let result = state.apply(Action::SetDrawingViewStyle { drawing, view, style });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::SetDrawingViewOrientation { drawing, view, orientation } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
+                let Some(orientation) =
+                    crate::model::DrawingOrientation::from_name(&orientation)
+                else {
+                    self.last_action_error =
+                        Some(format!("Unknown view orientation {orientation:?}"));
+                    return StepResult::Continue;
+                };
+                let result =
+                    state.apply(Action::SetDrawingViewOrientation { drawing, view, orientation });
                 self.record_action_error(result);
                 StepResult::Continue
             }

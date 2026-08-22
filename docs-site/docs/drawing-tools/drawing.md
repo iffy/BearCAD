@@ -60,6 +60,10 @@ bearcad.drawing_dimension{ drawing = d, view = 0, a = {0, 0, 0}, b = {40, 0, 0} 
 -- Toggle a circle's diameter dimension by its world centre.
 bearcad.drawing_circle_dimension{ drawing = d, view = 0, center = {20, 10, 10} }
 
+-- Display style and which way a placed view faces.
+bearcad.drawing_view_style{ drawing = d, view = 0, style = "shaded" }  -- visible/wireframe/shaded
+bearcad.drawing_view_orientation{ drawing = d, view = 0, orientation = "front-right-top" }
+
 -- Edit a view's caption label: hide it, move it, or set custom text ("" = automatic).
 bearcad.drawing_view_label{ drawing = d, view = 0, pos = "bottom-center", text = "Plate {w}" }
 
