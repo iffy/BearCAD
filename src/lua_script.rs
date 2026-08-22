@@ -5775,6 +5775,40 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1630: a right-click in the viewport — what opens a context menu.
+    api.set(
+        "right_click",
+        lua.create_function(|lua, (x, y): (f32, f32)| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::RightClick { x, y }) }
+        })?,
+    )?;
+
+    api.set(
+        "right_click_ground",
+        lua.create_function(|lua, (x, y): (f32, f32)| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::RightClickGround { x, y }) }
+        })?,
+    )?;
+
+    // #1630: the element the open viewport context menu acts on, or nil when no menu is up.
+    // egui draws the popup itself, so this is how a script sees which menu opened.
+    api.set(
+        "context_menu",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            let Some(element) = crate::open_viewport_context_menu() else {
+                return Ok(Value::Nil);
+            };
+            let entry = lua.create_table()?;
+            entry.set("kind", element_kind_name(element.clone()))?;
+            entry.set("index", element_index(&state.doc, element))?;
+            Ok(Value::Table(entry))
+        })?,
+    )?;
+
     api.set(
         "right_drag",
         lua.create_function(|lua, (dx, dy): (f32, f32)| {
@@ -8061,6 +8095,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "os_open",
             "move", "click", "move_ground", "click_ground",
             "drag", "drag_ground", "right_drag", "right_drag_pan",
+            "right_click", "right_click_ground", "context_menu",
             "key", "keydown", "keyup", "type",
             "_view", "_view_home", "_zoom_fit", "_wait", "_wait_ms", "_screenshot",
         }

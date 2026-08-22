@@ -19,6 +19,9 @@ bearcad.ui.click(x, y)                  -- viewport pixel coordinates instead
 bearcad.ui.click_ground(20, -10, { shift = true })   -- Shift+click
 bearcad.ui.click_ground(20, -10, { ctrl = true })    -- Ctrl+click: one edge, not its run
 bearcad.ui.move(x, y)
+bearcad.ui.right_click_ground(55, 55)   -- right-click: opens a context menu
+bearcad.ui.right_click(x, y)
+local menu = bearcad.ui.context_menu()  -- { kind, index } of the open menu's target, or nil
 bearcad.ui.key("enter")
 bearcad.ui.key("space", { shift = true })   -- Shift+Space (e.g. one-shot additive exploder)
 bearcad.ui.type("12.5")

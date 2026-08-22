@@ -964,6 +964,10 @@ pub enum Instruction {
     },
     RightDrag { dx: f32, dy: f32 },
     RightDragShift { dx: f32, dy: f32 },
+    /// A secondary-button click in the viewport (#1630) — what opens a context menu.
+    RightClick { x: f32, y: f32 },
+    /// The same click, aimed at a ground-plane world point (mm, z = 0).
+    RightClickGround { x: f32, y: f32 },
     /// A key tap, optionally with modifiers held for that press (#1198: Shift+Space opens
     /// the Selection Exploder in one-shot additive mode).
     Key { key: Key, mods: ClickMods },
@@ -2242,6 +2246,10 @@ impl Instruction {
             }
             Instruction::Drag { x0, y0, x1, y1 } => {
                 format!("bearcad.ui.drag({x0}, {y0}, {x1}, {y1})")
+            }
+            Instruction::RightClick { x, y } => format!("bearcad.ui.right_click({x}, {y})"),
+            Instruction::RightClickGround { x, y } => {
+                format!("bearcad.ui.right_click_ground({x}, {y})")
             }
             Instruction::RightDrag { dx, dy } => format!("bearcad.ui.right_drag({dx}, {dy})"),
             Instruction::RightDragShift { dx, dy } => {
@@ -5044,6 +5052,27 @@ impl SyntheticInput {
         self.push_event(egui::Event::PointerButton {
             pos: p1,
             button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        });
+    }
+
+    /// A secondary-button click — the gesture that opens a context menu (#1630). Unlike
+    /// [`Self::right_drag`] it queues no pan/orbit delta: press and release land on the same
+    /// point, which is exactly what egui reads as a secondary *click*.
+    pub fn right_click(&mut self, viewport: egui::Rect, x: f32, y: f32) {
+        let pos = Self::viewport_pos(viewport, x, y);
+        self.pointer_pos = Some(pos);
+        self.push_event(egui::Event::PointerMoved(pos));
+        self.push_event(egui::Event::PointerButton {
+            pos,
+            button: PointerButton::Secondary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        });
+        self.push_event(egui::Event::PointerButton {
+            pos,
+            button: PointerButton::Secondary,
             pressed: false,
             modifiers: Modifiers::NONE,
         });
@@ -8186,6 +8215,27 @@ impl ScriptRunner {
                     return StepResult::Wait;
                 };
                 synthetic.drag(vp, x0, y0, x1, y1);
+                StepResult::Continue
+            }
+            Instruction::RightClick { x, y } => {
+                let Some(vp) = viewport else {
+                    return StepResult::Wait;
+                };
+                synthetic.right_click(vp, x, y);
+                StepResult::Continue
+            }
+            Instruction::RightClickGround { x, y } => {
+                if state.cam.is_transitioning() {
+                    return StepResult::Wait;
+                }
+                let Some(vp) = viewport else {
+                    return StepResult::Wait;
+                };
+                let mat = state.cam.view_proj(vp);
+                let Some(screen) = state.cam.project(Vec3::new(x, y, 0.0), vp, &mat) else {
+                    return StepResult::Continue;
+                };
+                synthetic.right_click(vp, screen.x - vp.min.x, screen.y - vp.min.y);
                 StepResult::Continue
             }
             Instruction::RightDrag { dx, dy } => {

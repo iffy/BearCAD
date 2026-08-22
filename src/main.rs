@@ -3583,6 +3583,26 @@ enum ViewportContextMenu {
     Element(SceneElement),
 }
 
+/// The element whose viewport context menu is open right now, published for
+/// `bearcad.ui.context_menu()` (#1630). The OS-drawn popup can't be driven by scripted
+/// pointer input, so this is how a script asserts that a right-click opened the right menu.
+static OPEN_VIEWPORT_CONTEXT_MENU: std::sync::Mutex<Option<SceneElement>> =
+    std::sync::Mutex::new(None);
+
+/// The element whose viewport context menu is open, or `None` when no menu is up.
+pub fn open_viewport_context_menu() -> Option<SceneElement> {
+    OPEN_VIEWPORT_CONTEXT_MENU
+        .lock()
+        .expect("viewport context menu")
+        .clone()
+}
+
+fn publish_viewport_context_menu(element: Option<SceneElement>) {
+    *OPEN_VIEWPORT_CONTEXT_MENU
+        .lock()
+        .expect("viewport context menu") = element;
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct CommittedDimLayout {
     target: DimLabelTarget,
@@ -28713,10 +28733,18 @@ impl App {
                         }
                     };
                     if let Some(picked) = picked {
-                        if let Some(element) = hierarchy::selected_context_menu_element(
+                        // A construction plane opens its menu from a plain right-click,
+                        // selected or not (#1630): the plane is what you point at to put a
+                        // tracing image on it, and it is rarely the current selection.
+                        let element = hierarchy::selected_context_menu_element(
                             &picked,
                             &self.state.scene_selection,
-                        ) {
+                        )
+                        .or_else(|| {
+                            matches!(picked, SceneElement::ConstructionPlane(_))
+                                .then(|| picked.clone())
+                        });
+                        if let Some(element) = element {
                             self.viewport_context_menu =
                                 Some(ViewportContextMenu::Element(element));
                         }
@@ -28753,6 +28781,9 @@ impl App {
         ) {
             self.viewport_context_menu = None;
         }
+        if self.viewport_context_menu.is_none() {
+            publish_viewport_context_menu(None);
+        }
         if self.viewport_context_menu.is_some() {
             // Queue menu actions so the shared `element_context_menu` doesn't need `&mut self`
             // while painting (same pattern as the Elements pane).
@@ -28777,7 +28808,7 @@ impl App {
             let mut do_paste: Option<bool> = None;
             let mut bezier_acted = false;
 
-            response.context_menu(|ui| match self.viewport_context_menu.clone() {
+            let menu_response = response.context_menu(|ui| match self.viewport_context_menu.clone() {
                 Some(ViewportContextMenu::ConvertVertexToBezier(point)) => {
                     if ui.button("Convert to bezier curve").clicked() {
                         self.state.apply(Action::ConvertVertexToBezier { point });
@@ -28839,6 +28870,14 @@ impl App {
                 }
                 None => {}
             });
+            // Publish what the open menu acts on so scripts can see it (#1630): the popup
+            // itself is drawn by egui and can't be inspected from a script.
+            publish_viewport_context_menu(menu_response.is_some().then(|| {
+                match self.viewport_context_menu.clone() {
+                    Some(ViewportContextMenu::Element(element)) => Some(element),
+                    _ => None,
+                }
+            }).flatten());
             if do_copy {
                 self.state.apply(Action::CopySelection);
             }

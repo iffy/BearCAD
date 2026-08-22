@@ -6485,6 +6485,70 @@ mod tests {
     /// #1224: right-clicking already-selected geometry in the viewport opens the same
     /// context menu as that element's Elements-pane row. Body sub-picks count as the body
     /// when the body is selected; unselected picks never open the menu.
+    /// #1630: the construction plane's context menu — the one a viewport right-click on a
+    /// plane now opens — offers importing a tracing image onto that plane.
+    #[test]
+    fn construction_plane_context_menu_offers_importing_an_image() {
+        let doc = Document::default();
+        let index = doc.construction_planes.keys().next().expect("a datum plane");
+        let element = SceneElement::ConstructionPlane(index);
+        let mut imported_on = None;
+        let mut texts: Vec<String> = Vec::new();
+        let output = egui::Context::default().run_ui(Default::default(), |ui| {
+            {
+                element_context_menu(
+                    ui,
+                    &doc,
+                    HierarchyNode::ConstructionPlane(index),
+                    &element,
+                    None,
+                    &mut |_| {},
+                    &mut |_| {},
+                    &mut |plane| imported_on = Some(plane),
+                    &mut |_| {},
+                    &mut |_| {},
+                    &mut |_| {},
+                    &mut |_| {},
+                    &mut |_| {},
+                    &mut |_| {},
+                    &mut |_, _| {},
+                    &mut |_| {},
+                    &mut |_| {},
+                    &mut |_| {},
+                    &mut |_, _| {},
+                    &mut |_| {},
+                    &mut |_| {},
+                    &mut |_| {},
+                    false,
+                    false,
+                    false,
+                    &mut || {},
+                    &mut |_| {},
+                );
+            }
+        });
+        collect_shape_text(&output.shapes, &mut texts);
+        assert!(
+            texts.iter().any(|t| t == "Import image on this plane…"),
+            "a plane's menu should offer importing an image onto it, got {texts:?}"
+        );
+        assert!(imported_on.is_none(), "nothing was clicked, so nothing imported");
+    }
+
+    /// Every string painted by a rendered frame, so a menu's items can be asserted on.
+    fn collect_shape_text(shapes: &[egui::epaint::ClippedShape], out: &mut Vec<String>) {
+        fn walk(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => out.push(text.galley.text().to_string()),
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        for clipped in shapes {
+            walk(&clipped.shape, out);
+        }
+    }
+
     #[test]
     fn selected_context_menu_element_matches_elements_pane_target() {
         let body = SceneElement::Body(bkey(0));
