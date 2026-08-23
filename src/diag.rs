@@ -23,6 +23,7 @@
 //! BEARCAD_LOG=1 cargo run   # the full trace on stderr too
 //! ```
 
+use std::collections::VecDeque;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -108,17 +109,55 @@ pub fn init(path: PathBuf, header: impl std::fmt::Display) {
     }
 }
 
-/// Append one line to the log file, if there is one.
+/// How much of the run to keep in memory (#1654). Enough that a long working session still
+/// reaches back past whatever went wrong, and small enough to carry without thinking about it.
+const RECENT_LINES: usize = 5000;
+
+/// The run's own log, in memory: what a bug report attaches, and what
+/// `bearcad.session_log()` reads back. Kept separately from the file because the file is
+/// optional — a run that couldn't open one still has a session worth describing.
+static RECENT: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
+/// Lines pushed out of [`RECENT`] by newer ones, so the read-back can say so.
+static DROPPED: AtomicU64 = AtomicU64::new(0);
+
+/// Append one line to the run's log — in memory always, and to the file if there is one.
 fn write_line(level: &str, message: impl std::fmt::Display) {
-    let Some(file) = FILE.get() else { return };
     let elapsed = STARTED
         .get()
         .map(|t| t.elapsed().as_secs_f32())
         .unwrap_or(0.0);
+    let line = format!("[{elapsed:8.3}] {level:<5} {message}");
+    if let Ok(mut recent) = RECENT.lock() {
+        recent.push_back(line.clone());
+        while recent.len() > RECENT_LINES {
+            recent.pop_front();
+            DROPPED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    let Some(file) = FILE.get() else { return };
     if let Ok(mut file) = file.lock() {
-        let _ = writeln!(file, "[{elapsed:8.3}] {level:<5} {message}");
+        let _ = writeln!(file, "{line}");
         let _ = file.flush();
     }
+}
+
+/// What this run has done so far, newest last (#1654) — the log without going to disk.
+///
+/// This is what a DEV bug report attaches: a report that says "it went wrong" is worth far
+/// more with the sequence that led there underneath it.
+pub fn session_log() -> String {
+    let mut out = String::new();
+    let dropped = DROPPED.load(Ordering::Relaxed);
+    if dropped > 0 {
+        out.push_str(&format!("… earlier lines dropped ({dropped})\n"));
+    }
+    if let Ok(recent) = RECENT.lock() {
+        for line in recent.iter() {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// Trace a step in detail. On stderr only under `BEARCAD_LOG`; always in the file.
@@ -155,16 +194,44 @@ pub fn widget_id_change_warnings() -> u64 {
     WIDGET_ID_CHANGE_WARNINGS.load(Ordering::Relaxed)
 }
 
-/// A short name for an action, for the log (#1023): its variant, without the payload.
-///
-/// `{:?}` on the whole action would be unreadable — some carry entire meshes — and the
-/// variant is what a trace is actually read for: the sequence of what was done.
-pub fn action_label(action: &impl std::fmt::Debug) -> String {
-    let text = format!("{action:?}");
-    let end = text
-        .find(|c: char| c == '(' || c == '{' || c == ' ')
-        .unwrap_or(text.len());
-    text[..end].to_string()
+/// How much of an action's payload a log line carries (#1654).
+const ACTION_DETAIL_MAX: usize = 160;
+
+/// An action and what it acted on, for the log (#1023/#1654): `SetTool(Dimension)`, not a
+/// bare `SetTool`. Someone reading a session back to describe a bug has to be able to tell
+/// one of a kind from another, which the variant alone can't do. Cut short at
+/// [`ACTION_DETAIL_MAX`] so the actions that carry whole meshes still cost one line.
+pub fn action_detail(action: &impl std::fmt::Debug) -> String {
+    use std::fmt::Write as _;
+    // A sink that gives up once it has enough. An action carrying an imported mesh would
+    // otherwise format millions of vertices only to throw all but the first line away.
+    struct Clip {
+        out: String,
+        chars: usize,
+    }
+    impl std::fmt::Write for Clip {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            for c in s.chars() {
+                // Debug of a nested struct can run over several lines; a log line is one line.
+                let c = if c == '\n' || c == '\t' { ' ' } else { c };
+                if self.out.ends_with(' ') && c == ' ' {
+                    continue;
+                }
+                if self.chars == ACTION_DETAIL_MAX {
+                    // Stops the Debug impl mid-write: the caller adds the ellipsis.
+                    return Err(std::fmt::Error);
+                }
+                self.out.push(c);
+                self.chars += 1;
+            }
+            Ok(())
+        }
+    }
+    let mut clip = Clip { out: String::new(), chars: 0 };
+    if write!(clip, "{action:?}").is_err() {
+        clip.out.push('…');
+    }
+    clip.out
 }
 
 /// Send panics to the log as well as to stderr (#1023). A panic is exactly the failure you
@@ -456,23 +523,64 @@ mod tests {
         assert!(!enabled(), "unset is off");
     }
 
-    /// #1023: a log line names the action, not its payload — some actions carry whole
-    /// meshes, and what a trace is read for is the *sequence* of what was done.
+    /// #1654: the run keeps its own log in memory, so what the user did can be read back
+    /// (and attached to a bug report) whether or not a log file was ever opened.
     #[test]
-    fn an_action_logs_its_name_without_its_payload() {
+    fn the_session_log_reads_back_what_the_run_did() {
+        let marker = format!("marker-{}", std::process::id());
+        log(&marker);
+        info(format!("{marker} refused: nope"));
+        let session = session_log();
+        assert!(session.contains(&marker), "the session log keeps what was logged");
+        assert!(
+            session.contains("trace") && session.contains("info"),
+            "with the level of each line: {session}"
+        );
+    }
+
+    /// #1654: the buffer is bounded — a long session drops its oldest lines and says so,
+    /// rather than growing without limit.
+    #[test]
+    fn the_session_log_drops_its_oldest_lines() {
+        for i in 0..(RECENT_LINES + 50) {
+            log(format!("filler-{i}"));
+        }
+        let session = session_log();
+        assert!(
+            session.lines().count() <= RECENT_LINES + 1,
+            "bounded, got {} lines",
+            session.lines().count()
+        );
+        assert!(session.starts_with("… earlier lines dropped"), "{session:.80}");
+        assert!(session.contains(&format!("filler-{}", RECENT_LINES + 49)), "keeps the newest");
+    }
+
+    /// #1654: a log line has to say *which* thing was done — "SetTool" alone can't tell a
+    /// report reader whether the user picked the Dimension tool or the Rectangle one.
+    #[test]
+    fn an_action_line_names_what_it_acted_on() {
         #[derive(Debug)]
         #[allow(dead_code)]
         enum Sample {
             Plain,
-            Tuple(u32, Vec<u8>),
+            Tuple(u32),
             Struct { path: String },
         }
-        assert_eq!(action_label(&Sample::Plain), "Plain");
-        assert_eq!(action_label(&Sample::Tuple(7, vec![1, 2, 3])), "Tuple");
+        assert_eq!(action_detail(&Sample::Plain), "Plain");
+        assert_eq!(action_detail(&Sample::Tuple(7)), "Tuple(7)");
         assert_eq!(
-            action_label(&Sample::Struct { path: "/tmp/x".into() }),
-            "Struct"
+            action_detail(&Sample::Struct { path: "a.bearcad".into() }),
+            "Struct { path: \"a.bearcad\" }"
         );
+        // Actions carrying whole meshes are cut short rather than flooding the log.
+        let long = Sample::Struct { path: "x".repeat(1000) };
+        let line = action_detail(&long);
+        assert!(
+            line.chars().count() <= ACTION_DETAIL_MAX + 1,
+            "cut to length, got {}",
+            line.chars().count()
+        );
+        assert!(line.ends_with('…'), "and says it was cut: {line:.40}");
     }
 
     /// #1023: the log goes somewhere predictable, and `BEARCAD_LOG_FILE` moves it — a run

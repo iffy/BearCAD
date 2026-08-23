@@ -3914,6 +3914,10 @@ struct App {
     /// Last window title pushed to the OS (#522), so the `*`-dirty title is only re-sent
     /// when it actually changes rather than every frame.
     last_window_title: Option<String>,
+    /// The status line as last written to the log (#1654), so a change is logged once
+    /// rather than every frame. The status bar is the app's own account of what just
+    /// happened, and the next message overwrites it — the log is where it survives.
+    last_logged_status: String,
     /// The unsaved-changes quit prompt is open (#522): a close was requested with a dirty
     /// document, so the modal is asking Save / Don't Save / Cancel.
     showing_quit_prompt: bool,
@@ -5391,6 +5395,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             drawing_view_resize_drag: None,
             params_visible_before_drawing: false,
             report_issue: None,
+            last_logged_status: String::new(),
             script_failed,
             last_window_title: None,
             showing_quit_prompt: false,
@@ -7514,6 +7519,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                             self.finish_issue_report(
                                 pending.text,
                                 pending.include_json,
+                                pending.include_session,
                                 Some(image),
                             );
                         }
@@ -7582,6 +7588,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
         &mut self,
         text: String,
         include_json: bool,
+        include_session: bool,
         screenshot: Option<egui::ColorImage>,
     ) {
         let dir = std::env::temp_dir();
@@ -7613,7 +7620,21 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 }
             }
         }
-        let result = file_todoer_issue(&text, png_path.as_deref(), json_path.as_deref());
+        // What the session did, so the report reads as a sequence and not just an ending (#1654).
+        let mut session_path = None;
+        if include_session {
+            match write_session_log(&dir) {
+                Ok(path) => session_path = Some(path),
+                Err(e) => {
+                    return fail(&mut self.report_issue, format!("Session log failed: {e}"));
+                }
+            }
+        }
+        let attachments: Vec<&std::path::Path> = [&png_path, &json_path, &session_path]
+            .into_iter()
+            .filter_map(|p| p.as_deref())
+            .collect();
+        let result = file_todoer_issue(&text, &attachments);
         if let Some(w) = &mut self.report_issue {
             match result {
                 Ok(msg) => {
@@ -18769,6 +18790,12 @@ impl eframe::App for App {
                 .on_transition_complete(&self.state.cam);
         }
 
+        // The status bar narrates what just happened and is then overwritten; the log is
+        // where each message survives to be read back afterwards (#1654).
+        if status_worth_logging(&self.last_logged_status, &self.state.status) {
+            self.last_logged_status = self.state.status.clone();
+            diag::log(format!("status: {}", self.state.status));
+        }
         self.process_screenshots(ctx);
         self.tick_script(ctx);
         self.sync_report_issue_window();
@@ -18914,7 +18941,7 @@ impl eframe::App for App {
                 .with_title("Report issue")
                 .with_inner_size([480.0, 380.0]);
             let mut close = false;
-            let mut submit: Option<(String, bool, bool)> = None;
+            let mut submit: Option<(String, bool, bool, bool)> = None;
             let mut report_focused = false;
             {
                 let window = self.report_issue.as_mut().expect("checked above");
@@ -18940,6 +18967,10 @@ impl eframe::App for App {
                                 "Include a screenshot of the current window",
                             );
                             ui.checkbox(&mut window.include_json, "Include the document JSON");
+                            ui.checkbox(
+                                &mut window.include_session,
+                                "Include what I did this session",
+                            );
                             ui.add_space(4.0);
                             let can_submit =
                                 !window.text.trim().is_empty() && window.pending.is_none();
@@ -18955,6 +18986,7 @@ impl eframe::App for App {
                                     window.text.trim().to_string(),
                                     window.include_screenshot,
                                     window.include_json,
+                                    window.include_session,
                                 ));
                             }
                             if window.pending.is_some() {
@@ -18969,12 +19001,13 @@ impl eframe::App for App {
                     },
                 );
             }
-            if let Some((text, with_screenshot, include_json)) = submit {
+            if let Some((text, with_screenshot, include_json, include_session)) = submit {
                 if with_screenshot {
                     if let Some(window) = &mut self.report_issue {
                         window.pending = Some(PendingIssueReport {
                             text,
                             include_json,
+                            include_session,
                             frames_waited: 0,
                             attempts: 1,
                         });
@@ -18987,7 +19020,7 @@ impl eframe::App for App {
                     );
                     ctx.request_repaint();
                 } else {
-                    self.finish_issue_report(text, include_json, None);
+                    self.finish_issue_report(text, include_json, include_session, None);
                 }
             }
             self.observe_cycle_focus(mcmaster::CycleWindow::ReportIssue, report_focused);
@@ -19080,6 +19113,8 @@ struct ReportIssueWindow {
     text: String,
     include_screenshot: bool,
     include_json: bool,
+    /// Attach what the session did (#1654) — the log leading up to the report.
+    include_session: bool,
     /// Focus the textarea on the next frame (initial open and after each submit).
     focus: bool,
     /// A submitted report waiting for the main window's screenshot to arrive.
@@ -19097,6 +19132,7 @@ impl ReportIssueWindow {
             text: String::new(),
             include_screenshot: true,
             include_json: true,
+            include_session: true,
             focus: true,
             pending: None,
             last_result: None,
@@ -19110,6 +19146,7 @@ impl ReportIssueWindow {
 struct PendingIssueReport {
     text: String,
     include_json: bool,
+    include_session: bool,
     /// Frames waited since the capture command was last sent (#1177 / #872).
     frames_waited: u32,
     /// How many times the command has been sent, the first included.
@@ -19170,17 +19207,13 @@ fn tick_report_screenshot_wait(frames_waited: &mut u32, attempts: &mut u32) -> R
 /// attachments. Returns todoer's own confirmation line.
 fn file_todoer_issue(
     text: &str,
-    screenshot_png: Option<&std::path::Path>,
-    document_json: Option<&std::path::Path>,
+    attachments: &[&std::path::Path],
 ) -> Result<String, String> {
     let title: String = text.lines().next().unwrap_or("(no title)").chars().take(120).collect();
     let mut cmd = std::process::Command::new("todoer");
     cmd.arg("add").arg(&title).arg("-b").arg(text);
-    if let Some(png) = screenshot_png {
-        cmd.arg("--attachment").arg(png);
-    }
-    if let Some(json) = document_json {
-        cmd.arg("--attachment").arg(json);
+    for path in attachments {
+        cmd.arg("--attachment").arg(path);
     }
     let output = cmd.output().map_err(|e| format!("could not run todoer: {e}"))?;
     if output.status.success() {
@@ -19189,6 +19222,67 @@ fn file_todoer_issue(
     } else {
         Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
     }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod report_session_log_tests {
+    use super::*;
+
+    /// #1654: a DEV report carries what the session did, so "it went wrong" arrives with the
+    /// sequence that led there underneath it.
+    #[test]
+    fn a_report_attaches_what_the_session_did() {
+        let marker = format!("session-marker-{}", std::process::id());
+        crate::diag::log(&marker);
+        let dir = std::env::temp_dir().join(format!("bearcad_report_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = write_session_log(&dir).expect("session log written");
+        let written = std::fs::read_to_string(&path).expect("read it back");
+        assert!(written.contains(&marker), "the attachment carries the session");
+        assert!(
+            path.file_name().is_some_and(|n| n.to_string_lossy().contains("session")),
+            "and is named for what it is: {}",
+            path.display()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #1654: the status bar is the app's own account of what just happened, and the next
+    /// message wipes it. The log keeps each one, once — not once a frame.
+    #[test]
+    fn a_new_status_line_is_logged_once() {
+        assert!(status_worth_logging("", "Added drawing 0"));
+        assert!(!status_worth_logging("Added drawing 0", "Added drawing 0"));
+        assert!(status_worth_logging("Added drawing 0", "Hid edge dimension"));
+        assert!(!status_worth_logging("Added drawing 0", "   "));
+    }
+
+    /// #1654: the box is ticked by default — a report without the session is the one that
+    /// has to be chased up afterwards.
+    #[test]
+    fn the_session_log_is_included_by_default() {
+        assert!(ReportIssueWindow::open().include_session);
+    }
+}
+
+/// Whether a status line is worth a log entry (#1654): only when it says something new.
+fn status_worth_logging(last: &str, status: &str) -> bool {
+    !status.trim().is_empty() && status != last
+}
+
+/// Write this run's session log into `dir` for attaching to a report (#1654).
+#[cfg(not(target_arch = "wasm32"))]
+fn write_session_log(dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let path = dir.join("bearcad_report_session.log");
+    let mut text = String::new();
+    if let Some(file) = diag::log_path() {
+        // The file has the whole run; the buffer is what survived in memory. Say which is
+        // which so a report reader knows whether they are looking at the start of the run.
+        text.push_str(&format!("-- BearCAD session log — full log file: {}\n", file.display()));
+    }
+    text.push_str(&diag::session_log());
+    std::fs::write(&path, text).map_err(|e| e.to_string())?;
+    Ok(path)
 }
 
 /// What to do once a script/REPL run has finished, decided independent of the live `egui`

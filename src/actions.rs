@@ -9013,7 +9013,9 @@ impl AppState {
         // The one funnel every action goes through, so it is the one place worth logging
         // from (#1023). A refusal only ever reached the status bar, where the next action
         // overwrote it — which is exactly the failure nobody could explain afterwards.
-        let label = crate::diag::action_label(&action);
+        // The session log is read back by a human describing a bug (#1654), so a line has to
+        // say *which* thing was done — a bare `SetTool` can't tell Dimension from Rectangle.
+        let label = crate::diag::action_detail(&action);
         let dirty_before = self.dirty;
         let dismiss_prompt = matches!(
             action,

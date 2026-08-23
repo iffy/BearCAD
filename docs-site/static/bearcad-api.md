@@ -284,6 +284,7 @@ A name that is not in this list is not a function:
 - `bearcad.save`
 - `bearcad.select`
 - `bearcad.selection`
+- `bearcad.session_log`
 - `bearcad.session_writes`
 - `bearcad.set_body_shadow`
 - `bearcad.set_construction`

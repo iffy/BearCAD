@@ -320,6 +320,7 @@ local c = bearcad.body_cylinders(0)[1]         -- a hole/boss: radius, length, a
 bearcad.select{ kind = "line", index = 0 }
 assert(bearcad.selection()[1].kind == "line")  -- current scene selection
 print(bearcad.status())                        -- the status-bar text
+print(bearcad.session_log())                   -- what this run has done, timestamped
 print(bearcad.version())                       -- Help → About identity
 
 bearcad.parameter("add", "A", "5mm")

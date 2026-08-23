@@ -3828,6 +3828,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, ()| Ok(crate::full_version()))?,
     )?;
 
+    // #1654: what this run has done so far — the timestamped log of every action, refusal
+    // and warning, and the same text a DEV bug report attaches.
+    api.set(
+        "session_log",
+        lua.create_function(|_, ()| Ok(crate::diag::session_log()))?,
+    )?;
+
     api.set(
         "selection",
         lua.create_function(|lua, ()| {
@@ -16869,6 +16876,27 @@ mod tests {
             view.orientation,
             DrawingOrientation::Corner(CornerView::FrontRightTop)
         );
+    }
+
+    /// #1654: `bearcad.session_log()` reads back what the run has done — the same text a DEV
+    /// bug report attaches — so a script (or a person) can see the sequence that led to a bug.
+    #[test]
+    fn lua_session_log_reads_back_what_the_run_did() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.ui.tool("rectangle")
+            bearcad.rect{ x = 0, y = 0, width = 40, height = 25 }
+            local log = bearcad.session_log()
+            assert(log:find("SetTool%(Rectangle%)"), "the log says which tool: " .. log:sub(-400))
+            assert(log:find("CreateRectangle"), "and what was drawn")
+            assert(log:find("width: 40"), "with the sizes it was drawn at")
+            local rows = 0
+            for _ in log:gmatch("\n") do rows = rows + 1 end
+            assert(rows > 3, "a session is more than a line or two, got " .. rows)
+        "#,
+        );
+        assert_eq!(state.doc.lines.len(), 4);
     }
 
     /// #180: an angle needs two *different* edges.
