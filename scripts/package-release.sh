@@ -43,9 +43,26 @@ EOF
   echo "Created $out"
 }
 
+# The app bundle's two version fields (#1653). CFBundleShortVersionString is the version
+# people quote and CFBundleVersion the build behind it — and macOS falls back to them for the
+# About panel's parentheses, so shipping the bare crate version there read as a mystery
+# `(0.1.0)`. A release build knows its real identity from BEARCAD_RELEASE_TAG
+# (`v0.5.1-build.260818-002`); anything else has only the crate version to go on.
+bundle_versions() {
+  local tag="${BEARCAD_RELEASE_TAG:-}"
+  if [[ "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-build\.([0-9]+)-([0-9]+)$ ]]; then
+    # CFBundleVersion has to be integers separated by periods, so the build number's dash
+    # becomes one and its leading zeros go.
+    echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}.$((10#${BASH_REMATCH[3]}))"
+  else
+    echo "$(version) $(version)"
+  fi
+}
+
 package_macos() {
-  local version app_name app_dir dmg
+  local version short_version bundle_version app_name app_dir dmg
   version="$(version)"
+  read -r short_version bundle_version <<<"$(bundle_versions)"
   app_name="BearCAD"
   app_dir="dist/${app_name}.app"
   dmg="bearcad.dmg"
@@ -75,9 +92,9 @@ package_macos() {
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>${version}</string>
+  <string>${short_version}</string>
   <key>CFBundleVersion</key>
-  <string>${version}</string>
+  <string>${bundle_version}</string>
   <key>LSMinimumSystemVersion</key>
   <string>11.0</string>
   <key>NSHighResolutionCapable</key>

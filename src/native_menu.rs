@@ -283,13 +283,18 @@ impl NativeMenu {
 
         #[cfg(target_os = "macos")]
         {
+            let (version, build) = crate::version_parts();
             let app_menu = Submenu::new("BearCAD", true);
             app_menu.append_items(&[
                 &PredefinedMenuItem::about(
                     Some("About BearCAD"),
                     Some(AboutMetadata {
                         name: Some("BearCAD".to_string()),
-                        version: Some(crate::full_version()),
+                        // Both halves of the version line are set explicitly (#1653): left
+                        // unset, AppKit fills the parentheses from the app bundle's
+                        // Info.plist, which carried the bare crate version.
+                        version: Some(version.clone()),
+                        short_version: Some(build.clone()),
                         copyright: Some("On-device parametric CAD (prototype)".to_string()),
                         // The BearCAD icon, so the About panel shows it instead of the
                         // generic (folder-like) placeholder macOS uses otherwise (#529).
@@ -714,6 +719,21 @@ fn attach_to_platform(menu: &Menu, cc: &CreationContext<'_>) -> Result<(), muda:
 mod tests {
     use super::*;
     use crate::actions::Action;
+
+    /// #1653: the macOS About panel prints the version, then whatever it finds for the build
+    /// in parentheses — falling back to Info.plist's bare crate version when we leave it
+    /// unset, which is what `(0.1.0)` was. Fill both halves ourselves.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn about_panel_names_its_own_build() {
+        let (version, build) = crate::version_parts();
+        assert!(!version.is_empty(), "the About panel states a version");
+        assert!(
+            !build.is_empty(),
+            "and its build, so macOS never falls back to Info.plist"
+        );
+        assert_ne!(version, build, "the two halves say different things");
+    }
 
     fn ids_with_pane(pane_id: &str) -> (MenuIds, MenuId) {
         let pane_menu_id = MenuId::new(pane_id);

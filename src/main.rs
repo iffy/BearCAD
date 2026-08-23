@@ -19841,6 +19841,31 @@ pub fn full_version() -> String {
     }
 }
 
+/// Split a build identity into the version people quote and the build detail that goes
+/// after it in parentheses (#1653). `describe` is the baked `git describe` / release tag.
+fn split_version(describe: &str, sha: &str, crate_version: &str) -> (String, String) {
+    // A release build is tagged exactly: `v0.5.1-build.260818-002`.
+    if let Some(rest) = describe.strip_prefix('v') {
+        if !describe.contains("-g") {
+            return match rest.split_once("-build.") {
+                Some((version, build)) => (version.to_string(), format!("build {build}")),
+                None => (rest.to_string(), String::new()),
+            };
+        }
+    }
+    // Anything else is a working build: the crate version, identified by its commit.
+    (crate_version.to_string(), sha.to_string())
+}
+
+/// This build's version and its build detail, for the platform About panels (#1653).
+pub fn version_parts() -> (String, String) {
+    split_version(
+        env!("BEARCAD_GIT_DESCRIBE"),
+        env!("BEARCAD_GIT_SHA"),
+        env!("CARGO_PKG_VERSION"),
+    )
+}
+
 #[cfg(test)]
 mod full_version_tests {
     use super::*;
@@ -19856,6 +19881,35 @@ mod full_version_tests {
             format!("v{}", env!("CARGO_PKG_VERSION")),
             "full_version should include a release tag or git SHA, got {v}"
         );
+    }
+
+    /// #1653: the About panel's parenthesised half has to say something. macOS fills it
+    /// from the app bundle when we don't, which is where the mystery `(0.1.0)` came from —
+    /// the crate version, baked into Info.plist and years behind the release.
+    #[test]
+    fn version_parts_name_the_release_and_its_build() {
+        assert_eq!(
+            split_version("v0.5.1-build.260818-002", "abc123456", "0.1.0"),
+            ("0.5.1".to_string(), "build 260818-002".to_string()),
+            "a release build quotes its version and names its build"
+        );
+        assert_eq!(
+            split_version("v0.5.1", "abc123456", "0.1.0"),
+            ("0.5.1".to_string(), String::new()),
+            "a plainly tagged build has no build number to add"
+        );
+        assert_eq!(
+            split_version("v0.5.1-3-gabc1234", "abc123456", "0.1.0"),
+            ("0.1.0".to_string(), "abc123456".to_string()),
+            "a build past the tag is the crate version at a commit"
+        );
+        assert_eq!(
+            split_version("", "", "0.1.0"),
+            ("0.1.0".to_string(), String::new()),
+            "and a build with no git identity is just the crate version"
+        );
+        // This build has git identity, so it always fills the parentheses itself.
+        assert!(!version_parts().1.is_empty(), "{:?}", version_parts());
     }
 }
 
