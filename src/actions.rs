@@ -12046,7 +12046,6 @@ impl AppState {
                 self.ai.borrow_mut().sections_open = Some(open);
                 ActionResult::Ok
             }
-            #[cfg(not(target_arch = "wasm32"))]
             Action::DragVertex { point, u, v } => {
                 let Some(sketch) = self.sketch_session.map(|s| s.sketch) else {
                     return ActionResult::Err("Not in sketch mode".to_string());

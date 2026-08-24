@@ -181,6 +181,9 @@ bearcad.ui.palette("Export STEP")
 "#;
 
 fn build() -> String {
+    // The function list is built by registering the API into a throwaway Lua state, which
+    // the web build does not do — there `out` is the guide alone.
+    #[allow(unused_mut)]
     let mut out = String::from(GUIDE);
     #[cfg(not(target_arch = "wasm32"))]
     {

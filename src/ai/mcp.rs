@@ -59,6 +59,9 @@ pub struct Server {
     /// Shared with the listener thread so a new token takes effect without rebinding the
     /// socket — restarting to change a token would race the old listener for the port.
     token: Arc<Mutex<String>>,
+    /// The address the listener is actually bound to — loopback by construction, and the
+    /// only honest way to check that from a test on any platform (#1666).
+    local_addr: SocketAddr,
     /// Tool calls waiting for the UI thread.
     jobs: Receiver<Job>,
     shutdown: Arc<AtomicBool>,
@@ -99,10 +102,10 @@ impl Server {
                 Err(e) => return Err(format!("cannot listen on 127.0.0.1:{port}: {e}")),
             }
         };
-        let port = listener
+        let local_addr = listener
             .local_addr()
-            .map_err(|e| format!("cannot read the port: {e}"))?
-            .port();
+            .map_err(|e| format!("cannot read the port: {e}"))?;
+        let port = local_addr.port();
         // A short accept timeout so the thread notices `shutdown` without a connection.
         listener
             .set_nonblocking(true)
@@ -143,11 +146,17 @@ impl Server {
             }
         });
 
-        Ok(Self { port, token, jobs, shutdown, log })
+        Ok(Self { port, local_addr, token, jobs, shutdown, log })
     }
 
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// The address the listener is bound to. Loopback, always — this is a local tool, not
+    /// a network service.
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
     }
 
     /// The bearer token clients must send. Not returned by status queries — it goes to the
@@ -703,13 +712,15 @@ mod tests {
         let server = Server::start(0, "token".into()).expect("start");
         assert!(server.port() > 0);
         assert!(server.url().starts_with("http://127.0.0.1:"));
-        // Nothing is reachable on an external interface: the bind was loopback, so binding
-        // the same port on 0.0.0.0 still succeeds.
-        let external = TcpListener::bind((Ipv4Addr::UNSPECIFIED, server.port()));
+        // The socket itself is bound to loopback, so nothing outside this machine can
+        // reach it. Checked on the bound address rather than by re-binding the port on
+        // 0.0.0.0: that only succeeds on BSD/macOS, and failed the suite on Linux (#1666).
+        let addr = server.local_addr();
         assert!(
-            external.is_ok(),
-            "the server should not have taken the port on every interface"
+            addr.ip().is_loopback(),
+            "the server must bind loopback, not {addr}"
         );
+        assert_eq!(addr.port(), server.port());
     }
 
     #[test]

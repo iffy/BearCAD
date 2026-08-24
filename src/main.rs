@@ -19271,7 +19271,6 @@ fn status_worth_logging(last: &str, status: &str) -> bool {
 }
 
 /// Write this run's session log into `dir` for attaching to a report (#1654).
-#[cfg(not(target_arch = "wasm32"))]
 fn write_session_log(dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
     let path = dir.join("bearcad_report_session.log");
     let mut text = String::new();
