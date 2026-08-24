@@ -5,8 +5,8 @@ title: AI
 
 # AI
 
-BearCAD doesn't talk to AI services. Agents talk to *it*, two ways —
-**Integration ▸ AI**, or **View ▸ Panes ▸ AI**. Both are off until you switch them on.
+Agents drive BearCAD from the outside, two ways — **Integration ▸ AI**, or
+**View ▸ Panes ▸ AI**. Both are off until you switch them on.
 
 ## MCP server
 
@@ -31,7 +31,7 @@ One page that teaches an AI agent to drive BearCAD: see [AI agent
 skill](/docs/scripting/agent-skill). The **Agent Skill** section installs it for the tools
 on this machine.
 
-## Not scriptable
+## Security
 
-Nothing here has a scripting API. A script cannot start the MCP server or install the
-skill — so a `.lua` file off the internet cannot open your document to anything.
+Starting the server and installing the skill are hand-only, with no scripting API behind
+them: a `.lua` file off the internet cannot open your document to anything.

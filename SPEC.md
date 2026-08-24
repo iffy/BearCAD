@@ -2974,8 +2974,12 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   table field from an explicit `nil`). Any other selection hides the picker. **Scope note
   (#85):** dimension labels and the Elements pane now format geometry in the effective unit
   (document default, or the owning sketch's override) instead of always showing mm/degrees.
-  This does **not** change the bare-number parsing fallback, which is still hardcoded to
-  mm/degrees (per above) — internal storage stays mm/radians regardless of display unit.
+  A bare number **inside an expression** is read in the effective default unit (#1394), so
+  `1.5` in an inches document is 1.5 in — internal storage stays mm/radians regardless.
+  **Scripting (#1668):** every dimensional option of the Lua API is a ValueInput too — a
+  number, or an expression string naming parameters/units — so a script can be as parametric
+  as a hand-built model. A bare *Lua number* is the canonical mm/degrees the read-back calls
+  (`line_endpoints`, `body_stats`) report; the string form follows the document default above.
 
 ---
 

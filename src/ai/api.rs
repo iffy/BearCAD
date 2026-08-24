@@ -29,11 +29,16 @@ const GUIDE: &str = r#"# BearCAD Lua API
 Use only the functions listed here. Unknown option keys fail the call and name the
 accepted ones. Prefer `bearcad.*` (declarative modeling) over `bearcad.ui.*`.
 
-Lengths are millimetres and angles are degrees — everywhere, `bearcad.ui.camera`
-included. An expression string may name its own unit (`"45deg"`, `"1.2rad"`, `"5in"`
-work anywhere an expression is accepted). Indices are creation-order ordinals
-and shift when things are deleted — prefer names (`bearcad.find`) for anything you will
-refer to twice. One operation per call (especially fillets, chamfers, booleans).
+Every dimension is a ValueInput, the same field the app gives you: pass a number, or an
+expression string that may name parameters, units and arithmetic — `"leg"`, `"leg / 2 + 3mm"`,
+`"45deg"`, `"1.2rad"`, `"5in"`. An expression stays live, so editing the parameter moves the
+geometry. A bare number is millimetres (degrees for an angle) — the canonical units every
+read-back reports; a bare number *inside* a string follows the document's default unit, so
+`"1.5"` is 1.5 in when `bearcad.set_units{ length = "in" }` is in force.
+
+Indices are creation-order ordinals and shift when things are deleted — prefer names
+(`bearcad.find`) for anything you will refer to twice. One operation per call
+(especially fillets, chamfers, booleans).
 
 A rectangle is four lines (bottom, right, top, left). Drawing verbs open a ground-plane
 sketch when none is active. An operation that consumes a body produces a new one, so

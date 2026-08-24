@@ -1627,24 +1627,57 @@ fn parse_shape_args(
     kind: crate::model::PrimitiveKind,
     call: &str,
 ) -> mlua::Result<crate::model::Primitive> {
+    use mlua::FromLua;
     check_shape_keys(opts, call)?;
     let mut shape = crate::model::Primitive::new(kind);
-    let point = |key: &str| -> mlua::Result<Option<[f32; 3]>> {
-        match opts.get::<Option<Vec<f32>>>(key)? {
-            Some(v) if v.len() == 3 => Ok(Some([v[0], v[1], v[2]])),
-            Some(_) => Err(mlua::Error::external(format!(
-                "`{key}` must be {{x, y, z}} in mm"
-            ))),
-            None => Ok(None),
+    // Each component is its own ValueInput (#1668): a number, or an expression string that
+    // may name a parameter or its own unit (`at = { "leg", 0, "1in" }`). A direction's
+    // components are ratios, so they evaluate unitless.
+    let point = |key: &str, length: bool| -> mlua::Result<Option<[f32; 3]>> {
+        let Some(table) = opts.get::<Option<Table>>(key)? else {
+            return Ok(None);
+        };
+        if table.raw_len() != 3 {
+            return Err(mlua::Error::external(format!(
+                "`{key}` must be {{x, y, z}}"
+            )));
         }
+        let tick = lua
+            .app_data_ref::<ScriptTickData>()
+            .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+        let doc = unsafe { &tick.state().doc };
+        let mut out = [0.0f32; 3];
+        for (i, slot) in out.iter_mut().enumerate() {
+            *slot = match table.get::<Value>(i + 1)? {
+                Value::String(text) => {
+                    let text = text.to_str()?.to_string();
+                    let value = if length {
+                        crate::value::eval_length_mm_in_doc(&text, doc)
+                    } else {
+                        crate::value::eval_length_mm_with_params_in_unit(
+                            &text,
+                            &[],
+                            LengthUnit::Mm,
+                        )
+                    };
+                    value.ok_or_else(|| {
+                        mlua::Error::external(format!(
+                            "{call} `{key}`: cannot read \"{text}\" as a number"
+                        ))
+                    })?
+                }
+                value => f32::from_lua(value, lua)?,
+            };
+        }
+        Ok(Some(out))
     };
-    if let Some(p) = point("at")? {
+    if let Some(p) = point("at", true)? {
         shape.origin = p;
     }
-    if let Some(p) = point("normal")? {
+    if let Some(p) = point("normal", false)? {
         shape.normal = p;
     }
-    if let Some(p) = point("u_axis")? {
+    if let Some(p) = point("u_axis", false)? {
         shape.u_axis = p;
     }
     let expression = |key: &str| -> mlua::Result<String> {
@@ -6316,8 +6349,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let bold: bool = opts.get::<Option<bool>>("bold")?.unwrap_or(false);
             let italic: bool = opts.get::<Option<bool>>("italic")?.unwrap_or(false);
             let underline: bool = opts.get::<Option<bool>>("underline")?.unwrap_or(false);
-            let rotation_deg: f32 = opts.get::<Option<f32>>("rotation")?.unwrap_or(0.0);
-            let wrap: Option<f32> = opts.get("wrap")?;
+            let rotation_deg =
+                angle_deg_or(lua, unsafe { &tick.state().doc }, &opts, "text", "rotation", 0.0)?;
+            let wrap = length_mm_opt(lua, unsafe { &tick.state().doc }, &opts, "text", "wrap")?;
             let flip: bool = opts.get::<Option<bool>>("flip")?.unwrap_or(false);
             unsafe {
                 if tick.state().sketch_session.is_none() {
@@ -6360,7 +6394,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "plane",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let offset: f32 = opts.get::<Option<f32>>("offset")?.unwrap_or(0.0);
+            let offset =
+                length_mm_or(lua, unsafe { &tick.state().doc }, &opts, "plane", "offset", 0.0)?;
             let from: usize = opts.get::<Option<usize>>("from")?.unwrap_or(0);
             let origin: Option<Table> = opts.get("origin")?;
             let normal: Option<Table> = opts.get("normal")?;
@@ -6554,7 +6589,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 Some(t) => Some(parse_extrude_target_table(lua, &t)?),
                 None => None,
             };
-            let distance: f32 = match opts.get::<Option<f32>>("distance")? {
+            let distance: f32 = match length_mm_opt(
+                lua,
+                unsafe { &tick.state().doc },
+                &opts,
+                "extrude_face",
+                "distance",
+            )? {
                 Some(d) => d,
                 None if target.is_some() => 0.0,
                 None => {
@@ -7809,14 +7850,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             check_keys(&opts, "drawing_page", &["drawing", "width", "height", "margin"])?;
             let drawing: usize = opts.get("drawing")?;
-            unsafe {
-                tick.exec(Instruction::SetDrawingPage {
-                    drawing,
-                    width_mm: opts.get::<Option<f32>>("width")?,
-                    height_mm: opts.get::<Option<f32>>("height")?,
-                    margin_mm: opts.get::<Option<f32>>("margin")?,
-                })
-            }
+            let doc = unsafe { &tick.state().doc };
+            let page = Instruction::SetDrawingPage {
+                drawing,
+                width_mm: length_mm_opt(lua, doc, &opts, "drawing_page", "width")?,
+                height_mm: length_mm_opt(lua, doc, &opts, "drawing_page", "height")?,
+                margin_mm: length_mm_opt(lua, doc, &opts, "drawing_page", "margin")?,
+            };
+            unsafe { tick.exec(page) }
         })?,
     )?;
 
@@ -8288,7 +8329,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 Some((d, None)) => (Some(d), None),
                 None => (None, None),
             };
-            let by: Option<f32> = opts.get("by")?;
+            let by = length_mm_opt(lua, unsafe { &tick.state().doc }, &opts, "edit_extrusion", "by")?;
             let target = match opts.get::<Option<Table>>("to")? {
                 Some(t) => Some(parse_extrude_target_table(lua, &t)?),
                 None => None,
@@ -15691,6 +15732,96 @@ pub mod tests {
             (d.page_width_mm, d.page_height_mm, d.margin_mm),
             (297.0, 210.0, 8.0)
         );
+    }
+
+    /// #1668: every dimensional option takes an expression string, not just a number —
+    /// the API's value slots are ValueInputs, so parameters and units work in all of them.
+    #[test]
+    fn lua_plane_offset_accepts_expression() {
+        let state = run_lua(
+            r#"
+            bearcad.parameter("add", "gap", "12")
+            bearcad.plane{ offset = "gap * 2" }
+            "#,
+        );
+        let p = state.doc.construction_planes.values().last().unwrap();
+        assert!(
+            (p.origin.z - 24.0).abs() < 1e-3,
+            "plane offset expression, got {}",
+            p.origin.z
+        );
+    }
+
+    /// #1668: sketch text's rotation is an angle ValueInput and its wrap width a length one.
+    #[test]
+    fn lua_text_rotation_and_wrap_accept_expressions() {
+        let state = run_lua(
+            r#"
+            bearcad.parameter("add", "turn", "30deg")
+            bearcad.parameter("add", "col", "20")
+            bearcad.text{ text = "hi", x = 0, y = 0, size = 5, rotation = "turn", wrap = "col * 2" }
+            "#,
+        );
+        let t = state.doc.sketch_texts.values().last().unwrap();
+        assert!(
+            (t.rotation - std::f32::consts::FRAC_PI_6).abs() < 1e-3,
+            "rotation expression, got {}",
+            t.rotation
+        );
+        assert!(
+            (t.wrap_width.unwrap() - 40.0).abs() < 1e-3,
+            "wrap expression, got {:?}",
+            t.wrap_width
+        );
+    }
+
+    /// #1668: `extrude_face` and `edit_extrusion{ by }` are ValueInputs too.
+    #[test]
+    fn lua_extrude_face_and_edit_by_accept_expressions() {
+        let state = run_lua(
+            r#"
+            bearcad.parameter("add", "up", "4")
+            bearcad.rect{ width = 20, height = 20 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.edit_extrusion{ extrusion = 0, by = "up" }
+            "#,
+        );
+        assert!(
+            (state.doc.extrusions[xkey(0)].distance - 9.0).abs() < 1e-3,
+            "edit_extrusion by-expression, got {}",
+            state.doc.extrusions[xkey(0)].distance
+        );
+    }
+
+    /// #1668: a shape's placement point takes expressions per component, like the app's
+    /// X/Y/Z ValueInputs.
+    #[test]
+    fn lua_shape_at_accepts_expressions() {
+        let state = run_lua(
+            r#"
+            bearcad.parameter("add", "off", "15")
+            bearcad.cuboid{ width = 10, depth = 10, height = 10, at = { "off", 0, "1in" } }
+            "#,
+        );
+        let s = state.doc.primitives.values().last().unwrap();
+        assert!((s.origin[0] - 15.0).abs() < 1e-3, "at.x expression, got {}", s.origin[0]);
+        assert!((s.origin[2] - 25.4).abs() < 1e-3, "at.z unit string, got {}", s.origin[2]);
+    }
+
+    /// #1668: a drawing page's sizes are lengths, so `"11in"` works where `279.4` did.
+    #[test]
+    fn lua_drawing_page_accepts_expressions() {
+        let state = run_lua(
+            r#"
+            bearcad.parameter("add", "edge", "8")
+            local d = bearcad.drawing{}
+            bearcad.drawing_page{ drawing = d, width = "11in", height = "8.5in", margin = "edge" }
+            "#,
+        );
+        let d = state.doc.drawings.values().last().unwrap();
+        assert!((d.page_width_mm - 279.4).abs() < 1e-2, "page width, got {}", d.page_width_mm);
+        assert!((d.page_height_mm - 215.9).abs() < 1e-2, "page height, got {}", d.page_height_mm);
+        assert!((d.margin_mm - 8.0).abs() < 1e-3, "margin, got {}", d.margin_mm);
     }
 
     /// #402: an expression that doesn't evaluate is a script error, not silence.

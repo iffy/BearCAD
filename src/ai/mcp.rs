@@ -273,7 +273,8 @@ fn handle_message(
             "serverInfo": { "name": "bearcad", "version": env!("CARGO_PKG_VERSION") },
             "instructions": "BearCAD is a parametric CAD app. `run_lua` drives its whole \
                              scripting API; `document_lua` reads the open document back as \
-                             the script that recreates it. Lengths are millimetres."
+                             the script that recreates it. Every dimension takes a number (millimetres, \
+                             degrees) or an expression string (\"leg / 2\", \"5in\", \"45deg\")."
         })),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": tool_definitions() })),
@@ -368,7 +369,9 @@ static TOOLS: &[Tool] = &[
         name: "run_lua",
         description: "Run BearCAD Lua against the active document and return what it did. \
                       This is the whole scripting API: bearcad.rect, bearcad.extrude, \
-                      bearcad.parameter, bearcad.get, and so on. Lengths are millimetres. \
+                      bearcad.parameter, bearcad.get, and so on. Every dimension takes a \
+                      number (millimetres, degrees) or an expression string \
+                      (\"leg / 2\", \"5in\", \"45deg\"). \
                       Changes are undoable.",
         schema: || {
             json!({

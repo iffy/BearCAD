@@ -1,0 +1,1 @@
+Every dimensional option in the Lua scripting API — a shape's placement point, a plane offset, text rotation and wrap width, extrude_face distance, edit_extrusion by, and a drawing page size and margin — now accepts a parameter or unit expression string ("leg / 2", "5in", "45deg") wherever it previously took only a plain millimetre number.

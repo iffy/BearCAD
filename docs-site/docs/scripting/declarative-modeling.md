@@ -66,8 +66,9 @@ bearcad.line{ x = 0, y = 0, x1 = 50, y1 = 0, dimension = 50 }    -- plain number
 bearcad.line{ x = 0, y = 0, x1 = 50, y1 = 0, dimension = true }  -- lock at the as-drawn length
 ```
 
-Sizes accept **parameter expressions** anywhere the GUI's dimension fields do — pass a
-string and the model rebuilds when the parameter changes:
+Every dimension is the same ValueInput the GUI's fields are — a number, or a string with
+parameters, arithmetic and units (`"w / 3"`, `"5in"`, `"45deg"`). A string stays live, so
+the model rebuilds when the parameter changes:
 
 ```lua
 bearcad.parameter("add", "w", "24")
@@ -118,7 +119,7 @@ Create construction planes — offset from an existing plane, or anchored on any
 by its origin and normal:
 
 ```lua
-bearcad.plane{ offset = 12 }                                       -- 12 mm above Ground
+bearcad.plane{ offset = 12 }                                       -- 12 mm above Ground ("0.5in" works too)
 bearcad.plane{ offset = 5, from = 1 }                              -- offset from plane 1
 bearcad.plane{ offset = 5, origin = {0, 0, 20}, normal = {0, 0, 1} } -- on a body face
 ```
