@@ -199,10 +199,56 @@ Always run the tests.
         assert!(target("agents").unwrap().detected(Some(&home), Some(&project)));
     }
 
+    /// #1665: opencode reads a skills directory of its own
+    /// (`~/.config/opencode/skills/<name>/SKILL.md`), so it gets a file rather than a
+    /// region in the shared AGENTS.md — and its presence is `~/.config/opencode`, not the
+    /// `~/.config` every machine already has.
+    #[test]
+    fn opencode_installs_its_own_skill_file_and_is_detected_by_its_own_directory() {
+        let (home, project) = temp_dirs("opencode");
+        let target = target("opencode").expect("the opencode target");
+        assert_eq!(target.scope, Scope::User);
+        assert_eq!(target.format, Format::Own);
+
+        std::fs::create_dir_all(home.join(".config")).unwrap();
+        assert!(
+            !target.detected(Some(&home), Some(&project)),
+            "~/.config alone is not opencode"
+        );
+        std::fs::create_dir_all(home.join(".config/opencode")).unwrap();
+        assert!(target.detected(Some(&home), Some(&project)), "~/.config/opencode exists");
+
+        let path = install(target, Some(&home), Some(&project)).expect("install");
+        assert!(
+            path.ends_with(".config/opencode/skills/bearcad/SKILL.md"),
+            "got {}",
+            path.display()
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), SKILL);
+        assert!(target.installed(Some(&home), Some(&project)));
+        uninstall(target, Some(&home), Some(&project)).expect("uninstall");
+        assert!(!target.installed(Some(&home), Some(&project)));
+    }
+
     #[test]
     fn every_target_is_uniquely_named_and_points_somewhere_sensible() {
         for target in TARGETS {
             assert!(!target.id.is_empty() && !target.label.is_empty());
+            // A user-scope target must say which directory means "this tool is here" —
+            // guessing it from the path mis-detected a nested one (#1665).
+            assert_eq!(
+                target.detect_dir.is_some(),
+                target.scope == Scope::User,
+                "{} needs a detect_dir exactly when it is user-scope",
+                target.id
+            );
+            if let Some(dir) = target.detect_dir {
+                assert!(
+                    target.relative_path.starts_with(dir),
+                    "{}'s file must live under its own tool directory",
+                    target.id
+                );
+            }
             assert!(!target.note.is_empty(), "{} needs a note saying who reads it", target.id);
             assert!(
                 !target.relative_path.starts_with('/'),
@@ -355,6 +401,11 @@ pub struct Target {
     pub format: Format,
     /// Path relative to the home (User) or project (Project) directory.
     pub relative_path: &'static str,
+    /// The tool's own directory, relative to home — its existence is what says the tool is
+    /// installed (#1665). Stated per target rather than guessed from `relative_path`: a
+    /// nested one like `.config/opencode` would otherwise be read as `.config`, which every
+    /// machine has. `None` for a project target, which needs no detection.
+    pub detect_dir: Option<&'static str>,
     /// One line on who reads this file.
     pub note: &'static str,
 }
@@ -372,6 +423,7 @@ pub const TARGETS: &[Target] = &[
         scope: Scope::User,
         format: Format::Own,
         relative_path: ".claude/skills/bearcad/SKILL.md",
+        detect_dir: Some(".claude"),
         // Grok Build reads `.claude/` natively, so this one file serves both.
         note: "~/.claude/skills — also read by Grok Build",
     },
@@ -381,7 +433,19 @@ pub const TARGETS: &[Target] = &[
         scope: Scope::User,
         format: Format::Region,
         relative_path: ".codex/AGENTS.md",
+        detect_dir: Some(".codex"),
         note: "~/.codex/AGENTS.md, Codex's global instructions",
+    },
+    Target {
+        // opencode looks in a skills directory of its own, so it gets a file rather than a
+        // region in the shared AGENTS.md (#1665).
+        id: "opencode",
+        label: "opencode",
+        scope: Scope::User,
+        format: Format::Own,
+        relative_path: ".config/opencode/skills/bearcad/SKILL.md",
+        detect_dir: Some(".config/opencode"),
+        note: "~/.config/opencode/skills — opencode's global skills",
     },
     Target {
         id: "claude-project",
@@ -389,6 +453,7 @@ pub const TARGETS: &[Target] = &[
         scope: Scope::Project,
         format: Format::Own,
         relative_path: ".claude/skills/bearcad/SKILL.md",
+        detect_dir: None,
         note: "project-local skill, checked in with the repo",
     },
     Target {
@@ -397,7 +462,8 @@ pub const TARGETS: &[Target] = &[
         scope: Scope::Project,
         format: Format::Region,
         relative_path: "AGENTS.md",
-        note: "the shared convention — Codex, Grok, Cursor and others read it",
+        detect_dir: None,
+        note: "the shared convention — Codex, opencode, Grok, Cursor and others read it",
     },
     Target {
         id: "copilot",
@@ -405,6 +471,7 @@ pub const TARGETS: &[Target] = &[
         scope: Scope::Project,
         format: Format::Region,
         relative_path: ".github/copilot-instructions.md",
+        detect_dir: None,
         note: "VS Code and the Copilot CLI",
     },
     Target {
@@ -413,6 +480,7 @@ pub const TARGETS: &[Target] = &[
         scope: Scope::Project,
         format: Format::Own,
         relative_path: ".cursor/rules/bearcad.mdc",
+        detect_dir: None,
         note: "project rule file",
     },
 ];
@@ -440,11 +508,12 @@ impl Target {
         -> bool
     {
         match self.scope {
-            // The tool's own directory (~/.claude, ~/.codex) existing is the signal.
-            Scope::User => self
-                .path(home, project)
-                .and_then(|p| p.parent().map(|d| top_tool_dir(d, home)))
-                .is_some_and(|dir| dir.exists()),
+            // The tool's own directory (~/.claude, ~/.codex, ~/.config/opencode) existing
+            // is the signal (#1665).
+            Scope::User => match (home, self.detect_dir) {
+                (Some(home), Some(dir)) => home.join(dir).exists(),
+                _ => false,
+            },
             Scope::Project => project.is_some(),
         }
     }
@@ -471,17 +540,6 @@ impl Target {
             Format::Own => SKILL,
             _ => body(),
         }
-    }
-}
-
-/// The tool directory immediately under `home` — `~/.claude` for `~/.claude/skills/bearcad`.
-fn top_tool_dir(dir: &std::path::Path, home: Option<&std::path::Path>) -> std::path::PathBuf {
-    let Some(home) = home else {
-        return dir.to_path_buf();
-    };
-    match dir.strip_prefix(home).ok().and_then(|rest| rest.iter().next()) {
-        Some(first) => home.join(first),
-        None => dir.to_path_buf(),
     }
 }
 
