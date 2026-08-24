@@ -1,3 +1,112 @@
+# v0.6.0 - 2026-08-24
+
+- **BREAKING CHANGE:** Every angle in the script API is now degrees, including bearcad.ui.camera, rotation gizmos and angle parameters read back with bearcad.parameter("get", …).
+- **BREAKING CHANGE:** Scripts can no longer reach the AI: the bearcad.ai namespace and every function under it are gone, so a Lua file from the internet cannot add a backend, send a chat message, start the MCP server or install the agent skill.
+- **BREAKING CHANGE:** Removed BearCAD's built-in AI chat: BearCAD no longer talks to AI services, and the AI pane now holds just the MCP server and the agent-skill installer.
+- **NEW:** The first message to each AI backend now asks for confirmation, naming what would be sent and where it would go.
+- **NEW:** Scripts can drive the pointer anywhere in world space with bearcad.ui.move_world and bearcad.ui.click_world, reaching faces off the ground plane.
+- **NEW:** OpenRouter is now a first-class AI backend: add it like any other, connect it through a browser (PKCE OAuth, no key to paste) or an API key, and pick a model from the dropdown it learns by asking the backend which models it runs.
+- **NEW:** A Constraints tutorial walks through drawing a polygon and pinning it with horizontal, vertical, and equal constraints.
+- **NEW:** Scripts can read the running session's log with bearcad.session_log().
+- **NEW:** The AI pane splits into two: an AI configuration pane (with Use AI inside BearCAD and Have AI use BearCAD sections) and an AI Chat pane that opens at the bottom of the app and spans it like the command palette.
+- **NEW:** Scripts can read a drawing's page with bearcad.drawing_views(i).
+- **NEW:** Added AI backends (Anthropic, OpenAI, xAI Grok, or any OpenAI-compatible server) that you add, pick and remove in the AI pane, with keys kept in an owner-only ai.json or read from an environment variable.
+- **NEW:** bearcad.get reads primitive shapes, drawings, joints and components, so every kind bearcad.count counts can be read back.
+- **NEW:** bearcad.line accepts expression strings for x, y, x1, y1, length and angle, like every other shape call.
+- **NEW:** Added an AI chat in the AI pane: ask about the current document (or every open document), with the exact context that was sent visible under each exchange.
+- **NEW:** Selecting a tracing image shows an opacity slider and value field; freshly imported images default to 0.9 opacity.
+- **NEW:** The AI pane's Agents & Skill section installs the BearCAD agent skill for the AI tools on your machine, and Help ▸ Install AI Agent Skill… opens it.
+- **NEW:** The Text tool shows a rotation gizmo while creating and editing text.
+- **NEW:** Importing an image selects it as the only thing so you can immediately calibrate its scale.
+- **NEW:** Aligned drawing views now draw their dashed projection lines from the start.
+- **NEW:** bearcad.drawing_views() now reports each view's page position and card size.
+- **NEW:** The Integration menu now nests its AI items in an AI submenu — MCP Server… first, Install AI Agent Skill… last.
+- **NEW:** Scripts can set a drawing view's display style and orientation with bearcad.drawing_view_style{} and bearcad.drawing_view_orientation{}.
+- **NEW:** Manage backends can now edit a backend's name, URL, model and key in place, so its all-time spend survives instead of being lost to a remove-and-re-add.
+- **NEW:** The command palette offers Import image on this plane when a construction plane is selected.
+- **NEW:** BearCAD can host a local MCP server (loopback only, token-protected, off by default) so an AI agent can read and edit the document you have open.
+- **NEW:** Tracing images expose corners, edge midpoints, the centre, calibration points, and edges as constrainable sketch geometry so you can pin an image to the origin or pin sketch geometry to the picture.
+- **NEW:** The bearcad CLI prints an exhaustive [ ] test checklist with bearcad testplan.
+- **NEW:** Parameters with a min and max now show a slider on the row below that spans the name and value columns, and imported parameters use the same layout.
+- **NEW:** AI chat requests now stream from Anthropic, OpenAI, xAI Grok and OpenAI-compatible servers, reporting token usage as they arrive.
+- **NEW:** Tutorials now walk through chamfering a box, cutting a sphere from a cube, and raising text on a cube, and the list is numbered.
+- **NEW:** In a drawing, the Dimension tool can measure between two points you pick anywhere on a view — direct, horizontal or vertical, chosen in the context pane.
+- **NEW:** The AI pane's MCP Server section starts and stops the server, copies its URL, token and ready-made client configurations, and shows what a connected agent has been doing.
+- **NEW:** Lua that the AI suggests now gets Run and Copy buttons in the AI pane; running one applies it to the active document and Undo takes it back.
+- **NEW:** Sketch text has a Flip checkbox that mirrors the letters about the box centre.
+- **NEW:** An image-only Move stays in its host plane — the two in-plane axes slide and only the plane-normal turn is offered — and the 2D Point Snap moves an image by its nine box points, with the quad previewing the live move before Enter commits it.
+- **NEW:** The Tutorials pane can mark every walkthrough complete or unstarted.
+- **NEW:** New tutorial: Technical drawing — add a view, align a top and a side to it, add a shaded three-quarter view, and dimension a line.
+- **NEW:** The complete Lua API — every function with its signature — is now one plaintext page, printed by `bearcad api` and served at bearcad.com/bearcad-api.md, which the agent skill points at.
+- **NEW:** The AI pane now shows what chat costs: tokens and money per reply, a conversation total, and a per-backend all-time total you can reset.
+- **NEW:** Developer and AI integration items (Install "bearcad" Command in PATH, Install AI Agent Skill…, AI MCP Server…) now group under their own Integration menu, and AI MCP Server… opens the AI pane at its MCP Server section.
+- **NEW:** The published API reference now gives the call shape for every function, not just the 72 covered by its prose.
+- **NEW:** The Agent Skill installer offers an opencode target, writing the skill into ~/.config/opencode/skills.
+- **NEW:** Scripts can read the clickable area's size with bearcad.ui.viewport().
+- **NEW:** bearcad testplan lists a walk-through item for every registered tutorial.
+- **NEW:** Added 'bearcad mcp', a stdio bridge to a running BearCAD's MCP server, and 'bearcad mcp-install', which prints the client configuration.
+- **NEW:** The Selection Exploder now works on drawing pages: Space fans out the view edges, cards and notes under the cursor so you can pick the one you meant.
+- **NEW:** Added 'bearcad skill install', which installs the BearCAD agent skill for Claude Code, OpenAI Codex, Grok, GitHub Copilot, Cursor, or any AGENTS.md project.
+- **NEW:** Right-clicking a construction plane in the 3D viewport now opens its context menu, so an image can be imported onto that plane without selecting it first.
+- **NEW:** DEV bug reports now attach the session log — every action with what it acted on, every refusal and every status message since the app opened.
+- **NEW:** AI chat includes the Lua API with each message, so the model writes scripts the app can actually run.
+- **NEW:** You can sketch right on an imported image, just like a plane or a face.
+- **NEW:** Added an AI pane (View ▸ Panes ▸ AI) that gathers chat, agent-skill install and the local MCP server in one place.
+- **FIX:** Sketching on a body's mesh face no longer snaps points onto the wrong edge: the face's boundary loop is now walked the same way every time, so a snapped point stays on the edge it was snapped to.
+- **FIX:** Tab in a parameter Min field now focuses Max so you can type a max, and Tab from Max focuses Step.
+- **FIX:** The navigate tutorial makes you orbit, pan, zoom, and go home yourself, with a Good job click between orbit and pan and after pan.
+- **FIX:** Zoom to Fit frames a selected imported image.
+- **FIX:** Switching Combine mode no longer flashes the first Context field red.
+- **FIX:** Tutorials that start with a cuboid now point at Cuboid in the Context pane if the Shape tool was last used as a cylinder or sphere.
+- **FIX:** Selecting a face with Chamfer or Fillet now treats every adjacent edge of that side, including the cutoff on a chamfered profile.
+- **FIX:** The web app Help → About dialog now shows the real release version instead of v0.1.0.
+- **FIX:** Drawing views now look from where the navigation bear says: Top and Bottom were swapped, which also tilted every edge and corner view that involved them.
+- **FIX:** On the Combine tool, the first Side A pick in Cut, Intersect, or Difference focuses the Side B picker.
+- **FIX:** The Technical drawing tutorial now points at the CAD menu, walks you through picking the Add view tool and then clicking the body in the Elements pane, and parks each view where the next step expects it.
+- **FIX:** bearcad.combine with op "union" now uses the bodies on both sides instead of dropping side B and reporting too few bodies.
+- **FIX:** A shaded drawing view now paints each flat as one surface, so the tessellation's diagonals no longer show as faint lines inside it.
+- **FIX:** STEP exports of a single body now carry the part's name instead of OpenCASCADE's default translator name.
+- **FIX:** The Select tool now picks a tracing image by clicking it, construction planes in front of an image stay visible, and selecting an image shows its calibration line on top of the picture.
+- **FIX:** The first tutorial step's speech bubble comes out of the bear HUD instead of the middle of the viewport.
+- **FIX:** Script calls now fail loudly on a value they cannot read instead of silently substituting 0.
+- **FIX:** Code the AI suggests now renders as code in the chat thread instead of showing raw fence markers.
+- **FIX:** An angle dimension on a drawing now draws as an arc between the two measured edges, with arrowheads and the degree value beside it.
+- **FIX:** In a value field, Tab now accepts the highlighted variable and closes the fuzzy-search dropdown, so only the next Tab moves to the other dimension.
+- **FIX:** A sphere is now selectable by clicking anywhere on it, including the middle of its silhouette when it overlaps another body.
+- **FIX:** A negative dimension on a cuboid, cylinder or sphere is now rejected instead of quietly building the shape at its absolute size.
+- **FIX:** A script naming an AI backend that does not exist now fails loudly instead of quietly leaving the selection unchanged, and a named backend takes its id from that name.
+- **FIX:** The Move tool picks imported tracing images and Free-mode gizmos slide them on their plane.
+- **FIX:** Selecting a tracing image now draws its calibration line bright and bold, like a selected line, so it stays visible on top of the picture.
+- **FIX:** Long names in the Elements pane clip with an ellipsis instead of stretching the pane.
+- **FIX:** The Elements pane shows a picture icon for tracing images, distinct from construction planes.
+- **FIX:** Tab in a live rectangle or other in-progress shape value input first accepts the highlighted variable name, then a second Tab moves to the other field.
+- **FIX:** The agent skill's front-matter parser now handles CRLF line endings, which a Windows checkout produces (the skill file is LF in the repo, so the parse used to fail there and break the agent skill install).
+- **FIX:** The Context pane no longer logs an egui widget-id warning when a sketch opens with the AI pane visible: the Snapping row now stays mounted for every snapping tool, so opening a sketch never shifts the Default-units comboboxes onto a sibling row's rect (#1625).
+- **FIX:** Calibration-line endpoints no longer hover or take a click when the tracing image is not selected.
+- **FIX:** The AI pane now scrolls vertically when its sections are taller than the pane.
+- **FIX:** The Combine tutorial's overlap-sphere step points the blue orb at a cuboid bottom corner instead of following the cursor.
+- **FIX:** The API reference no longer tells agents that angles are radians.
+- **FIX:** A Free move that turns a tracing image or construction plane now lands exactly where the preview showed it, instead of drifting because the turn's pivot moved with it.
+- **FIX:** PDF drawing export keeps accented letters, curly quotes, dashes and the micro sign instead of replacing them with question marks.
+- **FIX:** Pressing Enter in the Real length field applies image calibration, and Apply is the same blue checkmark other tools use.
+- **FIX:** The Context pane's Real length field now takes typing and Enter even when the app window is not the OS-focus target, so scripted calibration applies regardless of window focus (#1628).
+- **FIX:** Selecting an extrusion no longer remeshes its solid every idle frame.
+- **FIX:** A drawing dimension now covers a whole straight line instead of only the segment between the faces that meet it.
+- **FIX:** A drawing view's tutorial orb now rings the Style dropdown and the orientation bear themselves instead of the pane edge beside them.
+- **FIX:** Recalibrating an image keeps existing constraints, so a corner pinned to the origin stays there.
+- **FIX:** The macOS About panel now reads 'Version 0.5.1 (build 260818-002)' instead of tacking the app bundle's stale 0.1.0 crate version onto the end, and the bundle itself carries the real release version.
+- **FIX:** STEP and ASCII STL exports now escape names, so a body called "Bob's Block" no longer produces a malformed file.
+- Auto-zoom now waits 300 ms after you stop interacting before re-framing the view.
+- The Combine tool's leftover checkbox is labeled Keep cutting shape, Keep trimmed parts, or Keep hole, and Intersect and Difference with it on keep every leftover piece.
+- Auto-update talks to GitHub over HTTPS itself, without calling system curl.
+- The Combine tool's boolean-operation icons are now two corner-overlapping outlined squares that fill in what the operation keeps and leave what it removes blank.
+- The Output-row New, Join, and Cut icons match Combine Mode size, and the field shows the Y shortcut.
+- The Combine tool's Mode row now shows the Y shortcut next to the field name.
+- The Combine tool's Mode icons are slightly larger.
+- Selecting a tracing image with the Select tool immediately shows a calibration line (top-middle to bottom-middle by default) with a permanent dimension; editing that dimension rescales the image so the endpoints stay put.
+- The Pan, orbit and zoom tutorial now teaches Zoom to Fit — the toolbar button and the Z shortcut.
+- The AI pane no longer shows the explanatory note under its heading.
+
 # v0.5.1 - 2026-08-19
 
 - **FIX:** Shape Enter now advances through each dimension instead of creating a body on the first press, Extrude's Up to picker disarms after a pick, and a line-and-point construction plane stays through the point.

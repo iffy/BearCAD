@@ -1,1 +1,0 @@
-Scripts can no longer reach the AI: the bearcad.ai namespace and every function under it are gone, so a Lua file from the internet cannot add a backend, send a chat message, start the MCP server or install the agent skill.

@@ -1,1 +1,0 @@
-Selecting a tracing image with the Select tool immediately shows a calibration line (top-middle to bottom-middle by default) with a permanent dimension; editing that dimension rescales the image so the endpoints stay put.

@@ -1,1 +1,0 @@
-The Context pane no longer logs an egui widget-id warning when a sketch opens with the AI pane visible: the Snapping row now stays mounted for every snapping tool, so opening a sketch never shifts the Default-units comboboxes onto a sibling row's rect (#1625).

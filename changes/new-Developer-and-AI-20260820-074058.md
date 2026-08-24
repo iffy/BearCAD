@@ -1,1 +1,0 @@
-Developer and AI integration items (Install "bearcad" Command in PATH, Install AI Agent Skill…, AI MCP Server…) now group under their own Integration menu, and AI MCP Server… opens the AI pane at its MCP Server section.
