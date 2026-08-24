@@ -2055,7 +2055,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   around the text's baseline origin, sized to the glyph outlines; dragging the handle
   turns the text about its origin, live. The handle and the context **Rotation°** field
   read the same model value, so they stay in sync. Scriptable as the `"text_rotation"`
-  gizmo (radians).
+  gizmo (degrees, like every angle in the API — #1657).
 - **Constrainable anchors (#408, replacing #356/#359's bespoke pin):** each of a text's nine
   bounding-box anchors (`model::TextAnchor` — four corners, four edge midpoints, centre) is a
   first-class sketch point: `ConstraintPoint::TextAnchor { text, anchor }`. Anchors are
@@ -3831,11 +3831,11 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   each a single scalar — are enumerable and drivable from a script, so gizmo-driven tools are
   automatable/testable without a mouse. `bearcad.gizmos()` returns the gizmos available in the
   current tool/creation state (`{ kind, name, value }` per handle; `kind` is `"push_pull"`,
-  `"rotate"`, or `"offset"`; push/pull and offset in mm, rotate in radians). `bearcad.set_gizmo{
-  name, value }` sets the scalar; `bearcad.drag_gizmo{ name, by }` nudges it by a delta. The
-  value is applied the same way a drag does (the semantic path). Current coverage: the extrude
+  `"rotate"`, or `"offset"`; push/pull and offset in mm, rotate in degrees — #1657).
+  `bearcad.set_gizmo{ name, value }` sets the scalar; `bearcad.drag_gizmo{ name, by }`
+  nudges it by a delta. The value is applied the same way a drag does (the semantic path). Current coverage: the extrude
   push/pull depth (`"extrude"`), the chamfer/fillet amount (2D sketch-vertex and 3D body-edge,
-  named `"chamfer"`/`"fillet"` by kind), the revolve sweep angle (`"revolve"`, radians), the
+  named `"chamfer"`/`"fillet"` by kind), the revolve sweep angle (`"revolve"`, degrees), the
   construction-plane offset (`"offset"`), and the Move tool's translation
   (`"move_x"`/`"move_y"`/`"move_z"`, mm). The Move values are exposed ahead of the viewport
   drag handles (#185/#215); the Move rotation gizmo went with the tool's rotation half (#663).
