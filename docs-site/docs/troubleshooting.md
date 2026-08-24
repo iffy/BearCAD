@@ -20,8 +20,8 @@ The log holds everything: what was launched, the GPU in use, every action and ev
 one, imports, and any panic. Warnings and notable events also print to the terminal, so
 running BearCAD from a shell narrates the session as it goes.
 
-Each action is logged with what it acted on — `SetTool(Dimension)`, `CreateRectangle
-{ x: 0.0, … }` — so the log reads back as what you did.
+Each action is logged with what it acted on — `SetTool(Dimension)`,
+`CreateRectangle { x: 0.0, … }` — so the log reads back as what you did.
 
 ```bash
 BEARCAD_LOG=1 bearcad            # the full trace in the terminal too

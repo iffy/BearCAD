@@ -190,16 +190,32 @@ fn build() -> String {
         let names = registered_names();
         if !names.is_empty() {
             out.push_str(
-                "\n## Every function\n\nA name that is not in this list is not a function:\n\n",
+                "\n## Every function\n\nEvery function BearCAD exposes, with the arguments it \
+                 takes — a name that is\nnot in this list is not a function. `{ … }` is one \
+                 options table; `?` marks an\noptional argument or key. The sections above \
+                 carry the detail for the calls they\ncover.\n\n```\n",
             );
             for name in names {
-                out.push_str("- `");
-                out.push_str(&name);
-                out.push_str("`\n");
+                // Every name must have a signature — the test below fails the build if one
+                // is added without (#1664).
+                match signature(&name) {
+                    Some(sig) => out.push_str(sig),
+                    None => out.push_str(&name),
+                }
+                out.push('\n');
             }
+            out.push_str("```\n");
         }
     }
     out
+}
+
+/// The call shape published for `name` (`bearcad.line`, `bearcad.ui.camera`, …).
+pub fn signature(name: &str) -> Option<&'static str> {
+    crate::ai::signatures::SIGNATURES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, sig)| *sig)
 }
 
 /// Every public `bearcad.*` / `bearcad.ui.*` function, by walking the
@@ -259,6 +275,70 @@ mod tests {
             document().trim_end(),
             "docs-site/static/bearcad-api.md is stale — regenerate it with \
              `cargo run -- api > docs-site/static/bearcad-api.md`"
+        );
+    }
+
+    /// #1664: the page is only "the complete API" if every name on it says how to call
+    /// it. A function added without a signature fails here, not silently in an agent's
+    /// hands.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn every_registered_function_has_a_signature() {
+        let names = registered_names();
+        assert!(!names.is_empty(), "the API registered nothing");
+        let missing: Vec<&String> = names.iter().filter(|n| signature(n).is_none()).collect();
+        assert!(
+            missing.is_empty(),
+            "no signature for {missing:?} — add them to src/ai/signatures.rs"
+        );
+        let stale: Vec<&str> = crate::ai::signatures::SIGNATURES
+            .iter()
+            .map(|(n, _)| *n)
+            .filter(|n| !names.iter().any(|r| r == n))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "src/ai/signatures.rs lists {stale:?}, which is not a function"
+        );
+    }
+
+    /// #1664: a signature must be a call of the name it belongs to — a copy/paste that
+    /// keeps the wrong name would send an agent to a function that does not exist.
+    #[test]
+    fn every_signature_starts_with_its_own_name() {
+        for (name, sig) in crate::ai::signatures::SIGNATURES {
+            let next = sig[name.len()..].chars().next();
+            assert!(
+                sig.starts_with(name) && matches!(next, Some('(') | Some('{')),
+                "{name}'s signature is {sig:?}"
+            );
+        }
+    }
+
+    /// #1664: the traps that made the page unusable — a call whose table shape the prose
+    /// never showed, and one whose x/y are page fractions rather than millimetres.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_page_shows_the_calls_agents_could_not_reach() {
+        let doc = document();
+        for call in [
+            "bearcad.drawing_text{",
+            "bearcad.drawing_view_add{",
+            "bearcad.drawing_dimension{",
+            "bearcad.export_drawing_svg{",
+            "bearcad.joint{",
+            "bearcad.material{",
+            "bearcad.component{",
+            "bearcad.set_units{",
+            "bearcad.offset_sketch{",
+            "bearcad.hovered(",
+            "bearcad.pickers(",
+        ] {
+            assert!(doc.contains(call), "the page never shows how to call {call}…");
+        }
+        assert!(
+            doc.contains("page fractions"),
+            "drawing_text's x/y are not millimetres; the page must say so"
         );
     }
 
