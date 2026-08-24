@@ -3735,6 +3735,21 @@ impl JointKind {
         }
     }
 
+    /// The name `bearcad.joint{ kind = … }` takes and `bearcad.get{ kind = "joint" }`
+    /// reports (#1662) — the round trip through [`JointKind::from_name`].
+    pub fn script_name(&self) -> &'static str {
+        match self {
+            Self::Rigid => "rigid",
+            Self::Slider => "slider",
+            Self::Revolute => "revolute",
+            Self::Cylindrical => "cylindrical",
+            Self::Planar => "planar",
+            Self::Ball => "ball",
+            Self::PinSlot => "pin_slot",
+            Self::Screw { .. } => "screw",
+        }
+    }
+
     /// The next kind in the Joint tool's cycle (#921), in the order the dropdown lists
     /// them. A screw keeps no lead — it's a fresh pick each time round.
     pub fn next(&self) -> Self {

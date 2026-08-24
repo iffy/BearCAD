@@ -2229,6 +2229,26 @@ fn scalar_arg(lua: &Lua, opts: &Table, key: &str) -> mlua::Result<Option<(f32, O
     }
 }
 
+/// Every entity kind `bearcad.count` and `bearcad.get` accept (#1662). One list, so the two
+/// inspection calls cannot drift apart the way they had — each also takes the aliases its
+/// match arm names (`plane`, `primitive`, `text`, `tracing_image`).
+const INSPECT_KINDS: &[&str] = &[
+    "line",
+    "circle",
+    "sketch",
+    "constraint",
+    "construction_plane",
+    "extrusion",
+    "shape",
+    "body",
+    "drawing",
+    "parameter",
+    "sketch_text",
+    "component",
+    "image",
+    "joint",
+];
+
 /// A length option in millimetres, read the way every other primitive reads its sizes
 /// (#1659): a number, or an expression string ("1in", "leg * 2") evaluated against the
 /// document's parameters. Anything that is neither — a table, a misspelled parameter,
@@ -3486,6 +3506,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
             let doc = unsafe { &tick.state().doc };
             let count = match kind.to_ascii_lowercase().as_str() {
+                "shape" | "primitive" => doc.primitives.len(),
                 "line" => doc.lines.len(),
                 "circle" => doc.circles.len(),
                 "sketch" => doc.sketches.len(),
@@ -3505,9 +3526,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "joint" => doc.joints.len(),
                 other => {
                     return Err(mlua::Error::external(format!(
-                        "unknown count kind '{other}' (valid kinds: line, circle, sketch, \
-                         constraint, construction_plane, extrusion, body, drawing, parameter, \
-                         sketch_text, image, joint)"
+                        "unknown count kind '{other}' (valid kinds: {})",
+                        INSPECT_KINDS.join(", ")
                     )))
                 }
             };
@@ -3740,11 +3760,109 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         let _ = cal;
                     }
                 }
+                "shape" | "primitive" => {
+                    // A primitive's own ordinal (#1055). Dimensions come back evaluated, so
+                    // a script can check what `edit_shape` actually did (#1662).
+                    let Some(shape) = doc.primitives.keys().nth(index).map(|k| &doc.primitives[k])
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    let Some(r) = crate::primitives::resolve(doc, shape) else {
+                        return Ok(Value::Nil);
+                    };
+                    use crate::model::PrimitiveKind as K;
+                    t.set(
+                        "kind",
+                        match shape.kind {
+                            K::Cuboid => "cuboid",
+                            K::Cylinder => "cylinder",
+                            K::Sphere => "sphere",
+                        },
+                    )?;
+                    match shape.kind {
+                        K::Cuboid => {
+                            t.set("width", r.width)?;
+                            t.set("depth", r.depth)?;
+                            t.set("height", r.height)?;
+                        }
+                        K::Cylinder => {
+                            t.set("radius", r.radius)?;
+                            t.set("height", r.height)?;
+                        }
+                        K::Sphere => t.set("radius", r.radius)?,
+                    }
+                    t.set("at", vec3_lua(lua, r.origin)?)?;
+                    t.set("normal", vec3_lua(lua, r.normal)?)?;
+                    t.set("u_axis", vec3_lua(lua, r.u)?)?;
+                    if let Some(name) = &shape.name {
+                        t.set("name", name.as_str())?;
+                    }
+                }
+                "drawing" => {
+                    let Some(drawing) = doc.drawings.keys().nth(index).map(|k| &doc.drawings[k])
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("page_width", drawing.page_width_mm)?;
+                    t.set("page_height", drawing.page_height_mm)?;
+                    t.set("margin", drawing.margin_mm)?;
+                    t.set("views", drawing.views.len())?;
+                    t.set("annotations", drawing.annotations.len())?;
+                    if let Some(name) = &drawing.name {
+                        t.set("name", name.as_str())?;
+                    }
+                }
+                "joint" => {
+                    let Some(joint) = doc.joints.keys().nth(index).map(|k| &doc.joints[k]) else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("kind", joint.kind.script_name())?;
+                    let members = lua.create_table()?;
+                    for (i, m) in joint.members.iter().enumerate() {
+                        let entry = lua.create_table()?;
+                        let (kind, ordinal) = match m {
+                            crate::model::JointRef::Body(k) => {
+                                ("body", doc.bodies.keys().position(|x| x == *k))
+                            }
+                            crate::model::JointRef::Component(k) => {
+                                ("component", doc.components.keys().position(|x| x == *k))
+                            }
+                            crate::model::JointRef::UnitInstance(k) => {
+                                ("unit_instance", doc.unit_instances.keys().position(|x| x == *k))
+                            }
+                        };
+                        entry.set("kind", kind)?;
+                        entry.set("index", ordinal)?;
+                        members.set(i + 1, entry)?;
+                    }
+                    t.set("members", members)?;
+                    t.set("base", joint.base)?;
+                    t.set("position", joint.position.as_str())?;
+                    t.set("position2", joint.position2.as_str())?;
+                    t.set("position3", joint.position3.as_str())?;
+                    if let Some(name) = &joint.name {
+                        t.set("name", name.as_str())?;
+                    }
+                }
+                "component" => {
+                    let Some(key) = doc.components.keys().nth(index) else {
+                        return Ok(Value::Nil);
+                    };
+                    let component = &doc.components[key];
+                    if let Some(name) = &component.name {
+                        t.set("name", name.as_str())?;
+                    }
+                    t.set(
+                        "parent",
+                        component
+                            .parent
+                            .and_then(|p| doc.components.keys().position(|k| k == p)),
+                    )?;
+                }
                 other => {
                     return Err(mlua::Error::external(format!(
-                        "unknown get kind '{other}' (valid kinds: line, circle, sketch, \
-                         constraint, construction_plane, extrusion, body, parameter, \
-                         sketch_text, image)"
+                        "unknown get kind '{other}' (valid kinds: {})",
+                        INSPECT_KINDS.join(", ")
                     )))
                 }
             }
@@ -8417,6 +8535,73 @@ mod tests {
             .save(&path)
             .unwrap();
         path.to_string_lossy().to_string()
+    }
+
+    /// #1662: `get` reads every kind `count` counts, and both know about primitive
+    /// shapes — a script has to be able to read back what `edit_shape` did.
+    #[test]
+    fn lua_get_and_count_cover_the_same_kinds() {
+        run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 10, depth = 8, height = 6, name = "Block" }
+            assert(bearcad.count("shape") == 1, "shapes are countable")
+
+            local s = bearcad.get{ kind = "shape", index = 0 }
+            assert(s.kind == "cuboid", tostring(s.kind))
+            assert(math.abs(s.width - 10) < 1e-3 and math.abs(s.depth - 8) < 1e-3
+                   and math.abs(s.height - 6) < 1e-3, "dimensions read back")
+            assert(s.name == "Block", tostring(s.name))
+            assert(#s.at == 3 and #s.normal == 3 and #s.u_axis == 3)
+
+            -- The point of reading one back: check that an edit landed.
+            bearcad.edit_shape{ index = 0, width = "2in" }
+            s = bearcad.get{ kind = "shape", index = 0 }
+            assert(math.abs(s.width - 50.8) < 1e-3, "edited width " .. s.width)
+
+            bearcad.cylinder{ radius = 4, height = 9 }
+            local c = bearcad.get{ kind = "shape", index = 1 }
+            assert(c.kind == "cylinder" and math.abs(c.radius - 4) < 1e-3)
+
+            -- Drawings and joints are countable, so they must be readable.
+            bearcad.drawing()
+            local d = bearcad.get{ kind = "drawing", index = 0 }
+            assert(d.page_width > 0 and d.page_height > 0, "page size")
+            assert(type(d.views) == "number" and type(d.annotations) == "number")
+
+            bearcad.joint{ kind = "rigid", parts = {0, 1} }
+            local j = bearcad.get{ kind = "joint", index = 0 }
+            assert(j.kind == "rigid", tostring(j.kind))
+            assert(#j.members == 2, "members")
+
+            -- Components too (count has always known them).
+            bearcad.component{ name = "Sub" }
+            local comp = bearcad.get{ kind = "component", index = 0 }
+            assert(comp.name == "Sub", tostring(comp.name))
+
+            -- Out of range still reads nil, not an error.
+            assert(bearcad.get{ kind = "shape", index = 99 } == nil)
+            assert(bearcad.get{ kind = "drawing", index = 99 } == nil)
+            assert(bearcad.get{ kind = "joint", index = 99 } == nil)
+            "#,
+        );
+    }
+
+    /// #1662: the two inspection calls take the same kind names — the lists used to be
+    /// written out twice and had drifted apart (`drawing` and `joint` counted but did not
+    /// read, and neither knew about primitive shapes).
+    #[test]
+    fn lua_get_takes_every_kind_count_takes() {
+        let checks: String = INSPECT_KINDS
+            .iter()
+            .map(|k| {
+                format!(
+                    "assert(pcall(function() return bearcad.count({k:?}) end), \"count rejects {k}\")\n\
+                     assert(pcall(function() return bearcad.get{{ kind = {k:?}, index = 0 }} end), \"get rejects {k}\")\n"
+                )
+            })
+            .collect();
+        run_lua(&format!("bearcad.new()\n{checks}"));
     }
 
     /// #1660: the documented `{ op, a, b }` shape works for a union too — `b` used to be

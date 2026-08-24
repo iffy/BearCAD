@@ -298,8 +298,9 @@ bearcad.rect{ width = 40, height = 30 }
 bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
 
 assert(bearcad.count("line") == 4)             -- non-deleted entities per kind
--- kinds: line, circle, sketch, constraint, construction_plane, extrusion,
---        body, drawing, parameter, sketch_text, image
+-- kinds (`count` and `get` take the same set): line, circle, sketch, constraint,
+--        construction_plane, extrusion, shape, body, drawing, parameter,
+--        sketch_text, component, image, joint
 local l = bearcad.get{ kind = "line", index = 0 }
 assert(l.x0 == 0 and math.abs(l.length - 40) < 1e-3)
 

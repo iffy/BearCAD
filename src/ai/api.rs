@@ -123,8 +123,10 @@ Anywhere a size is accepted, an expression string is too.
 ## Inspect
 
 ```
-bearcad.count("body"|"line"|"circle"|"sketch"|"constraint"|"parameter"|…)
-bearcad.get{ kind, index }
+bearcad.count(kind)                -- kind: line, circle, sketch, constraint,
+bearcad.get{ kind, index }         --   construction_plane, extrusion, shape, body,
+                                   --   drawing, parameter, sketch_text, component,
+                                   --   image, joint. `count` and `get` take the same set.
 bearcad.find("name")
 bearcad.set_name(el, "name")
 bearcad.element("line", i)

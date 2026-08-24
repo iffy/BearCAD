@@ -148,7 +148,8 @@ Never assume a call did what you meant. Read it back and assert.
 
 ```lua
 assert(bearcad.count("body") == 1)          -- line, circle, sketch, constraint, body,
-                                            -- extrusion, parameter, drawing, image…
+                                            -- shape, extrusion, parameter, drawing,
+                                            -- image, joint… (`get` takes the same set)
 local l = bearcad.get{ kind = "line", index = 0 }         -- x0,y0,x1,y1,length…
 local x0, y0, x1, y1 = bearcad.line_endpoints(0)
 local s = bearcad.body_stats(0)                           -- volume, triangles, bbox
