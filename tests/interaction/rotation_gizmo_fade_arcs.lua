@@ -29,7 +29,7 @@ end
 assert(seen_r == 3, "Free Move arms three rotation gizmos, got " .. seen_r)
 
 -- Set a -30° turn about z and let the fade arcs, sweep and handle render a few frames.
-bearcad.set_gizmo{ name = "move_rz", value = math.rad(-30) }
+bearcad.set_gizmo{ name = "move_rz", value = -30 }   -- degrees (#1657)
 bearcad.ui.wait(8)
 bearcad.ui.screenshot("/tmp/rotation_gizmo_fade_arcs.png", true)
 bearcad.ui.wait(4)

@@ -47,13 +47,13 @@ assert(math.abs(dx) < 1.0 or math.abs(dy) < 1.0,
   "0° handle sits on a world axis, offset=(" .. dx .. "," .. dy .. "," .. dz .. ")")
 
 -- The gizmo is scriptable: a 20° turn writes through.
-bearcad.set_gizmo{ name = "move_spin", value = math.rad(20) }
+bearcad.set_gizmo{ name = "move_spin", value = 20 }   -- degrees (#1657)
 bearcad.ui.wait(6)
 local after
 for _, g in ipairs(bearcad.gizmos()) do
   if g.name == "move_spin" then after = g.value end
 end
-assert(type(after) == "number" and math.abs(after - math.rad(20)) < 1e-3,
+assert(type(after) == "number" and math.abs(after - 20) < 1e-3,
   "set_gizmo writes the Face Snap turn, got " .. tostring(after))
 
 bearcad.ui.screenshot("/tmp/face_snap_spin_gizmo_axis.png", true)

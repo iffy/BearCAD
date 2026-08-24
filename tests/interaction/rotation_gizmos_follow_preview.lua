@@ -44,7 +44,7 @@ assert(dist(rot.move_ry, rot.move_rz) > 0.1, "move_ry and move_rz handles overla
 -- #1414: turning one ring (here -30° about Z) swings the other handles with the preview, so
 -- the X-ring and Y-ring handles change where they sit.
 local rx_before = rot.move_rx
-bearcad.set_gizmo{ name = "move_rz", value = math.rad(-30) }
+bearcad.set_gizmo{ name = "move_rz", value = -30 }   -- degrees (#1657)
 bearcad.ui.wait(8)
 for _, g in ipairs(bearcad.gizmos()) do if g.name == "move_rx" then rot.move_rx = g.position end end
 assert(dist(rot.move_rx, rx_before) > 0.1,

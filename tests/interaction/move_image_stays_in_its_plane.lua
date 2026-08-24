@@ -84,8 +84,9 @@ bearcad.ui.wait(8)
 bearcad.ui.key("Enter")
 bearcad.ui.wait(10)
 local after = bearcad.get{ kind = "image", index = 0 }
-assert(math.abs(after.rotation - math.deg(turned)) < 1.0,
-  string.format("the committed image should carry the %.3f rad turn, got %.3f deg",
+-- Both are degrees (#1657): the gizmo's value and the image's stored rotation.
+assert(math.abs(after.rotation - turned) < 1.0,
+  string.format("the committed image should carry the %.3f deg turn, got %.3f deg",
     turned, after.rotation))
 local committed = bearcad.image_corners(0)
 for i = 1, 4 do

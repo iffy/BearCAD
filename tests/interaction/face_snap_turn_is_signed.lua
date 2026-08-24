@@ -48,7 +48,7 @@ bearcad.ui.wait(8)
 
 local after = spin()
 assert(after, "move_spin still live after the drag")
-local deg = math.deg(after.value)
+local deg = after.value   -- rotation gizmos read back in degrees (#1657)
 assert(deg < 0,
   "clockwise Turn drag should be a negative angle, got " .. deg)
 assert(math.abs(deg) < 180,
