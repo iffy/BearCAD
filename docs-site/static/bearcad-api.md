@@ -168,7 +168,7 @@ bearcad.add_unit_instance{ unit, name }
 bearcad.apply_construction(construction)
 bearcad.apply_visibility(visible)
 bearcad.begin_combine{ op, a, b, keep_b, keep_leftovers }
-bearcad.begin_joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin, frame_axis, frame_axis2, position, position2, position3, slide_min, slide_max, slide_min_to, slide_max_to, turn_min, turn_max, name, moving, fixed, flip, offset, spin }
+bearcad.begin_joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin, frame_axis, frame_axis2, position, position2, position3, slide_min, slide_max, slide_min_to, slide_max_to, turn_min, turn_max, name }   -- face = { moving, fixed, flip?, offset?, spin? }
 bearcad.begin_move{ bodies, images, flip, from, to, from_b, to_b, from_c, to_c, origin, image, anchor, body, vertex, on_edge, on_face, face_center, normal, uv, edge }
 bearcad.begin_sketch(…)
 bearcad.body_cylinders(index)
@@ -220,7 +220,7 @@ bearcad.drawing_views(index)
 bearcad.edit_boolean{ index, op, a, b, keep_b, keep_leftovers }
 bearcad.edit_dim(axis)
 bearcad.edit_extrusion{ extrusion, distance, by, to }
-bearcad.edit_joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin, frame_axis, frame_axis2, position, position2, position3, slide_min, slide_max, slide_min_to, slide_max_to, turn_min, turn_max, name, moving, fixed, flip, offset, spin }
+bearcad.edit_joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin, frame_axis, frame_axis2, position, position2, position3, slide_min, slide_max, slide_min_to, slide_max_to, turn_min, turn_max, name }   -- face = { moving, fixed, flip?, offset?, spin? }
 bearcad.edit_mirror{ index, plane, bodies, output }
 bearcad.edit_move{ index, bodies, images, flip, from, to, from_b, to_b, from_c, to_c, origin, image, anchor, body, vertex, on_edge, on_face, face_center, normal, uv, edge }
 bearcad.edit_plane(index)
@@ -257,7 +257,7 @@ bearcad.import_lua(value)
 bearcad.import_step(path)
 bearcad.import_stl(path)
 bearcad.import_unit(value)
-bearcad.joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin, frame_axis, frame_axis2, position, position2, position3, slide_min, slide_max, slide_min_to, slide_max_to, turn_min, turn_max, name, moving, fixed, flip, offset, spin }
+bearcad.joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin, frame_axis, frame_axis2, position, position2, position3, slide_min, slide_max, slide_min_to, slide_max_to, turn_min, turn_max, name }   -- face = { moving, fixed, flip?, offset?, spin? }
 bearcad.line{ x, y, x1, y1, length, angle, bezier, dimension, name }
 bearcad.line_endpoints(index)
 bearcad.loft{ circle, circles, polygon, polygons, bodies, body, name }

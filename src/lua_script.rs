@@ -8511,7 +8511,7 @@ pub fn load_script(lua: &Lua, path: &Path) -> mlua::Result<mlua::Thread> {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::circle_key_for_slot as rkey;
@@ -9254,7 +9254,7 @@ mod tests {
         );
     }
 
-    fn run_lua(source: &str) -> AppState {
+    pub fn run_lua(source: &str) -> AppState {
         let mut runner = ScriptRunner::from_lua_source(source).unwrap();
         runner.verbose = false;
         let mut state = AppState::default();

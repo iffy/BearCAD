@@ -315,6 +315,45 @@ mod tests {
         }
     }
 
+    /// #1664: a published key must be one the call actually accepts. Every key of every
+    /// documented options table is offered to its own function; a call that validates its
+    /// keys must not answer "unknown key" for one the page told an agent to pass.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn every_published_option_key_is_accepted_by_its_call() {
+        let mut checks = String::from("local bad = {}\n");
+        checks.push_str(
+            "local function check(name, key)\n\
+             local f = _G\n\
+             for part in string.gmatch(name, \"[^.]+\") do f = f[part] end\n\
+             if type(f) ~= \"function\" then return end\n\
+             local ok, err = pcall(function() f({ [key] = 0 }) end)\n\
+             if not ok and tostring(err):find(\"unknown key `\" .. key .. \"`\", 1, true) then\n\
+             bad[#bad+1] = name .. \" : \" .. key\n\
+             end\n\
+             end\n",
+        );
+        let mut keys = 0;
+        for (name, sig) in crate::ai::signatures::SIGNATURES {
+            // A trailing `-- note` may itself mention a nested table; the call's own keys
+            // are what comes before it.
+            let sig = sig.split("  --").next().unwrap_or(sig).trim_end();
+            let Some(open) = sig.find("{ ") else { continue };
+            let Some(close) = sig.rfind(" }") else { continue };
+            for key in sig[open + 2..close].split(',') {
+                let key = key.trim().trim_end_matches('?');
+                if key.is_empty() || key == "…" {
+                    continue;
+                }
+                checks.push_str(&format!("check({name:?}, {key:?})\n"));
+                keys += 1;
+            }
+        }
+        assert!(keys > 300, "only {keys} option keys published?");
+        checks.push_str("assert(#bad == 0, table.concat(bad, \"; \"))\n");
+        crate::lua_script::tests::run_lua(&checks);
+    }
+
     /// #1664: the traps that made the page unusable — a call whose table shape the prose
     /// never showed, and one whose x/y are page fractions rather than millimetres.
     #[cfg(not(target_arch = "wasm32"))]
