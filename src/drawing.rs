@@ -2206,14 +2206,56 @@ fn pdf_text_bytes(s: &str) -> Vec<u8> {
                 out.push(b'\\');
                 out.push(ch as u8);
             }
-            '°' => out.push(0xB0),  // WinAnsi degree sign
-            '—' | '–' => out.push(0x97), // em/en dash → WinAnsi em dash
-            'Ø' | '⌀' => out.push(0xD8), // diameter → WinAnsi Ø (Latin O with stroke)
+            '⌀' => out.push(0xD8), // diameter → WinAnsi Ø (Latin O with stroke)
+            'μ' => out.push(0xB5), // Greek mu → WinAnsi micro sign
             c if (c as u32) < 128 => out.push(c as u8),
-            _ => out.push(b'?'),
+            // WinAnsi is Latin-1 from U+00A0 up, so an accented letter, a degree sign or a
+            // micro sign is simply its own byte — writing '?' there mangled every
+            // non-English label (#1661).
+            c if ('\u{a0}'..='\u{ff}').contains(&c) => out.push(c as u8),
+            // The 0x80–0x9F slots WinAnsi fills with punctuation Latin-1 does not have.
+            c => match winansi_special(c) {
+                Some(b) => out.push(b),
+                None => out.push(b'?'),
+            },
         }
     }
     out
+}
+
+/// The WinAnsiEncoding characters in the 0x80–0x9F range, which Latin-1 leaves as control
+/// codes — smart quotes, dashes, the ellipsis and friends (#1661).
+fn winansi_special(c: char) -> Option<u8> {
+    Some(match c {
+        '\u{20ac}' => 0x80, // €
+        '\u{201a}' => 0x82, // ‚
+        '\u{0192}' => 0x83, // ƒ
+        '\u{201e}' => 0x84, // „
+        '\u{2026}' => 0x85, // …
+        '\u{2020}' => 0x86, // †
+        '\u{2021}' => 0x87, // ‡
+        '\u{02c6}' => 0x88, // ˆ
+        '\u{2030}' => 0x89, // ‰
+        '\u{0160}' => 0x8a, // Š
+        '\u{2039}' => 0x8b, // ‹
+        '\u{0152}' => 0x8c, // Œ
+        '\u{017d}' => 0x8e, // Ž
+        '\u{2018}' => 0x91, // '
+        '\u{2019}' => 0x92, // '
+        '\u{201c}' => 0x93, // "
+        '\u{201d}' => 0x94, // "
+        '\u{2022}' => 0x95, // •
+        '\u{2013}' => 0x96, // –
+        '\u{2014}' => 0x97, // —
+        '\u{02dc}' => 0x98, // ˜
+        '\u{2122}' => 0x99, // ™
+        '\u{0161}' => 0x9a, // š
+        '\u{203a}' => 0x9b, // ›
+        '\u{0153}' => 0x9c, // œ
+        '\u{017e}' => 0x9e, // ž
+        '\u{0178}' => 0x9f, // Ÿ
+        _ => return None,
+    })
 }
 
 impl Canvas for PdfCanvas {
@@ -3176,6 +3218,27 @@ label_hidden: false,
         assert!(svg.starts_with("<svg"));
         assert!(svg.contains("Plate"));
         assert!(svg.trim_end().ends_with("</svg>"));
+    }
+
+    /// #1661: WinAnsi covers Latin-1 and the 0x80–0x9F specials, so an accented name or a
+    /// µ must land as its own byte rather than a '?'. Only what WinAnsi genuinely cannot
+    /// represent falls back.
+    #[test]
+    fn pdf_text_keeps_what_winansi_can_represent() {
+        assert_eq!(pdf_text_bytes("Caf\u{e9}"), b"Caf\xe9".to_vec());
+        assert_eq!(pdf_text_bytes("na\u{ef}ve"), b"na\xefve".to_vec());
+        assert_eq!(pdf_text_bytes("\u{fc}\u{f1}"), vec![0xFC, 0xF1]);
+        assert_eq!(pdf_text_bytes("20\u{b5}m"), b"20\xb5m".to_vec());
+        assert_eq!(pdf_text_bytes("90\u{b0}"), vec![b'9', b'0', 0xB0]);
+        // 0x80–0x9F WinAnsi specials.
+        assert_eq!(pdf_text_bytes("\u{2026}"), vec![0x85]);
+        assert_eq!(pdf_text_bytes("\u{201c}x\u{201d}"), vec![0x93, b'x', 0x94]);
+        assert_eq!(pdf_text_bytes("\u{2019}"), vec![0x92]);
+        assert_eq!(pdf_text_bytes("\u{20ac}"), vec![0x80]);
+        assert_eq!(pdf_text_bytes("\u{2014}\u{2013}"), vec![0x97, 0x96]);
+        // Escapes still apply, and what WinAnsi cannot show still degrades to '?'.
+        assert_eq!(pdf_text_bytes("(a)\\"), b"\\(a\\)\\\\".to_vec());
+        assert_eq!(pdf_text_bytes("\u{4e2d}"), b"?".to_vec());
     }
 
     #[test]

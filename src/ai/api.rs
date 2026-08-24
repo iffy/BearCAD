@@ -84,7 +84,7 @@ bearcad.extrude_face{ face = {…}, distance, body? }
 bearcad.revolve{ polygon = {…} | circle = i | circles = {i, …}, axis = "x"|"y"|"z"|{ line = i }, angle? | revolutions?, pitch?, body = "new"|"add"|"cut"?, bodies?, symmetric?, name? }
 bearcad.sweep{ polygon = {…} | circle = i | circles = {i, …}, path = {line, …}, body = "add"|"cut"?, bodies? }
 bearcad.loft{ circles = {i, …}?, polygons = { {line, …}, … }?, body? }
-bearcad.combine{ op = "union"|"difference"|"intersect"|"cut"|"join", a = {i, …}, b = {i, …}, keep_b?, keep_leftovers?, name? }
+bearcad.combine{ op = "combine"|"union"|"cut"|"intersect"|"difference", a = {i, …}, b = {i, …}, keep_b?, keep_leftovers?, name? }
 bearcad.slice{ bodies = {i, …}, cutters = {…}, extend?, name? }
 bearcad.shell{ bodies = {i, …}, faces = {…}?, thickness, name? }
 bearcad.move_bodies{ bodies = {i, …}, x?, y?, z?, rx?, ry?, rz?, name? }

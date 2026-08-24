@@ -63,10 +63,12 @@ pub fn resolve(doc: &Document, shape: &Primitive) -> Option<Resolved> {
         normal,
         u,
         v,
-        width: length(doc, &shape.width).abs(),
-        depth: length(doc, &shape.depth).abs(),
-        height: length(doc, &shape.height).abs(),
-        radius: length(doc, &shape.radius).abs(),
+        // Not `.abs()`: a negative dimension is a mistake, and taking its magnitude
+        // built a shape whose geometry disagreed with its own stored expression (#1663).
+        width: length(doc, &shape.width),
+        depth: length(doc, &shape.depth),
+        height: length(doc, &shape.height),
+        radius: length(doc, &shape.radius),
     };
     let sized = match shape.kind {
         PrimitiveKind::Cuboid => {
@@ -76,6 +78,24 @@ pub fn resolve(doc: &Document, shape: &Primitive) -> Option<Resolved> {
         PrimitiveKind::Sphere => resolved.radius > 1e-4,
     };
     sized.then_some(resolved)
+}
+
+/// The name of the first dimension of `shape` that evaluates negative (#1663), for an
+/// error that says what is actually wrong rather than "needs a size".
+pub fn negative_dimension(doc: &Document, shape: &Primitive) -> Option<&'static str> {
+    let fields: &[(&'static str, &String)] = match shape.kind {
+        PrimitiveKind::Cuboid => &[
+            ("width", &shape.width),
+            ("depth", &shape.depth),
+            ("height", &shape.height),
+        ],
+        PrimitiveKind::Cylinder => &[("radius", &shape.radius), ("height", &shape.height)],
+        PrimitiveKind::Sphere => &[("radius", &shape.radius)],
+    };
+    fields
+        .iter()
+        .find(|(_, expr)| length(doc, expr) < 0.0)
+        .map(|(name, _)| *name)
 }
 
 impl Resolved {

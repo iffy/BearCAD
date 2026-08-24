@@ -86,7 +86,7 @@ bearcad.plane{ offset = 5, origin = {0, 0, 20}, normal = {0, 0, 1} }  -- on a fa
 ```lua
 bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20, name = "Block" }
 bearcad.revolve{ polygon = {0, 1, 2, 3}, axis = "y", angle = 180 }   -- axis is required
-bearcad.combine{ op = "difference", a = {0}, b = {1} }               -- union | difference | intersect
+bearcad.combine{ op = "difference", a = {0}, b = {1} }  -- combine|union | cut | intersect | difference
 bearcad.shell{ bodies = {0}, thickness = 2 }
 bearcad.move_bodies{ bodies = {0}, x = 40 }
 bearcad.mirror_bodies{ bodies = {0}, plane = 0 }

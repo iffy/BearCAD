@@ -6471,8 +6471,7 @@ impl AppState {
     /// `ShapeKind::Primitive` undo marker covering both. A shape that resolves to no
     /// geometry (a missing or zero dimension) is refused, like a degenerate revolve.
     fn create_shape(&mut self, shape: crate::model::Primitive) -> ActionResult {
-        if crate::primitives::mesh(&self.doc, &shape).is_none() {
-            let e = "Shape failed: every dimension needs a size".to_string();
+        if let Some(e) = shape_dimension_error(&self.doc, &shape) {
             self.status = e.clone();
             return ActionResult::Err(e);
         }
@@ -6504,8 +6503,7 @@ impl AppState {
             self.status = e.clone();
             return ActionResult::Err(e);
         }
-        if crate::primitives::mesh(&self.doc, &shape).is_none() {
-            let e = "Shape failed: every dimension needs a size".to_string();
+        if let Some(e) = shape_dimension_error(&self.doc, &shape) {
             self.status = e.clone();
             return ActionResult::Err(e);
         }
@@ -8152,6 +8150,10 @@ fn validate_boolean_inputs(
     editing: Option<crate::model::BooleanOpKey>,
 ) -> Result<(), String> {
     use crate::model::BooleanOpKind;
+    if kind == BooleanOpKind::Combine && !b.is_empty() {
+        // Say what is actually wrong before counting side A (#1660).
+        return Err("Combine uses a single picker; side B must be empty".to_string());
+    }
     if a.is_empty() {
         return Err(match kind {
             BooleanOpKind::Combine => "Pick at least two bodies to combine".to_string(),
@@ -8161,9 +8163,6 @@ fn validate_boolean_inputs(
     if kind == BooleanOpKind::Combine {
         if a.len() < 2 {
             return Err("Pick at least two bodies to combine".to_string());
-        }
-        if !b.is_empty() {
-            return Err("Combine uses a single picker; side B must be empty".to_string());
         }
     } else if b.is_empty() {
         return Err(format!("{} needs at least one body on side B", kind.label()));
@@ -20986,6 +20985,20 @@ pub fn gizmo_value(state: &AppState, name: &str) -> Option<f32> {
         .find(|g| g.name == name)
         .map(|g| g.value)
 }
+/// Why a shape's dimensions won't build, or `None` when they will (#1663): a negative
+/// dimension is an error in its own right, not a size to take the magnitude of.
+fn shape_dimension_error(
+    doc: &crate::model::Document,
+    shape: &crate::model::Primitive,
+) -> Option<String> {
+    if let Some(field) = crate::primitives::negative_dimension(doc, shape) {
+        return Some(format!("Shape failed: `{field}` cannot be negative"));
+    }
+    crate::primitives::mesh(doc, shape)
+        .is_none()
+        .then(|| "Shape failed: every dimension needs a size".to_string())
+}
+
 /// Is `name` an angle gizmo? Its value is radians inside the app (the model's own unit)
 /// and degrees over the script API, which has one angle unit everywhere (#1657).
 pub fn gizmo_is_angle(state: &AppState, name: &str) -> bool {

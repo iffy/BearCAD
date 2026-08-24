@@ -1225,8 +1225,14 @@ fn parse_boolean_op_args(
             "unknown boolean op '{op_name}' (combine|cut|intersect|difference)"
         ))
     })?;
-    let a: Vec<usize> = opts.get::<Option<Vec<usize>>>("a")?.unwrap_or_default();
-    let b: Vec<usize> = opts.get::<Option<Vec<usize>>>("b")?.unwrap_or_default();
+    let mut a: Vec<usize> = opts.get::<Option<Vec<usize>>>("a")?.unwrap_or_default();
+    let mut b: Vec<usize> = opts.get::<Option<Vec<usize>>>("b")?.unwrap_or_default();
+    // A union has one picker, but the documented call shape is `{ a, b }` for every op —
+    // so fold B into A rather than dropping it and then complaining that A is short (#1660).
+    // Union is commutative, so a ∪ b is exactly what was asked for.
+    if kind == crate::model::BooleanOpKind::Combine && !b.is_empty() {
+        a.append(&mut b);
+    }
     let keep_leftovers: Option<bool> = opts.get("keep_leftovers")?;
     let keep_b: Option<bool> = opts.get("keep_b")?;
     Ok((kind, a, b, keep_leftovers.or(keep_b).unwrap_or(false)))
@@ -8411,6 +8417,72 @@ mod tests {
             .save(&path)
             .unwrap();
         path.to_string_lossy().to_string()
+    }
+
+    /// #1660: the documented `{ op, a, b }` shape works for a union too — `b` used to be
+    /// dropped, and the call then failed saying there were not two bodies.
+    #[test]
+    fn lua_combine_union_takes_both_sides() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            bearcad.cuboid{ width = 10, depth = 10, height = 10, at = {5, 0, 0} }
+            bearcad.combine{ op = "union", a = {0}, b = {1} }
+            local v = bearcad.body_stats(bearcad.count("body") - 1).volume
+            assert(math.abs(v - 1500) < 1, "the union spans both cuboids, got " .. v)
+
+            -- The op names really are the ones the reference lists.
+            for _, op in ipairs({"union", "combine", "difference", "intersect", "cut"}) do
+              bearcad.new()
+              bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+              bearcad.cuboid{ width = 10, depth = 10, height = 10, at = {5, 0, 0} }
+              bearcad.combine{ op = op, a = {0}, b = {1} }
+            end
+            local ok, err = pcall(function()
+              bearcad.combine{ op = "join", a = {0}, b = {1} }
+            end)
+            assert(not ok and tostring(err):find("combine"), tostring(err))
+            "#,
+        );
+        assert_eq!(state.doc.boolean_ops.len(), 1);
+    }
+
+    /// #1663: a zero dimension is rejected, so a negative one must be too — it used to
+    /// build silently as its absolute value, leaving the shape's editor showing -5 for a
+    /// body 5 wide.
+    #[test]
+    fn lua_negative_shape_dimensions_are_rejected() {
+        run_lua(
+            r#"
+            bearcad.new()
+            local bad = {
+              function() bearcad.cuboid{ width = -5, depth = 5, height = 5 } end,
+              function() bearcad.cuboid{ width = 5, depth = -5, height = 5 } end,
+              function() bearcad.cuboid{ width = 5, depth = 5, height = -5 } end,
+              function() bearcad.cylinder{ radius = -3, height = 5 } end,
+              function() bearcad.cylinder{ radius = 3, height = -5 } end,
+              function() bearcad.sphere{ radius = -3 } end,
+            }
+            for i, f in ipairs(bad) do
+              local ok, err = pcall(f)
+              assert(not ok, "negative dimension " .. i .. " must be rejected")
+              assert(tostring(err):find("negative"), tostring(err))
+            end
+            assert(bearcad.count("body") == 0, "nothing was built")
+
+            -- Zero is still rejected, and a positive one still builds.
+            assert(not pcall(function() bearcad.cuboid{ width = 0, depth = 5, height = 5 } end))
+            bearcad.cuboid{ width = 5, depth = 5, height = 5 }
+            assert(bearcad.count("body") == 1)
+
+            -- Editing one negative is rejected too, and leaves the shape alone.
+            local ok = pcall(function() bearcad.edit_shape{ index = 0, width = -20 } end)
+            assert(not ok, "edit to a negative width must be rejected")
+            local stats = bearcad.body_stats(0)
+            assert(math.abs((stats.bbox.max[1] - stats.bbox.min[1]) - 5) < 1e-3)
+            "#,
+        );
     }
 
     /// #1658/#1659: `line` reads its placement through the same expression path as every
