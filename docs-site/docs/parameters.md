@@ -129,7 +129,7 @@ bearcad.parameter("slider", 0)               -- {min=, max=, value=, step?} or n
 bearcad.parameter("slider", 0, 15)           -- set via the slider (mm / rad, snapped)
 bearcad.parameter("min", 0)                  -- clear a bound
 bearcad.parameter("delete", 0)
-assert(bearcad.parameter("get", "A") == 5)   -- evaluated (mm / radians)
+assert(bearcad.parameter("get", "A") == 5)   -- evaluated (mm / degrees)
 bearcad.parameter("get_expression", "A")     -- "5mm", as typed
 
 bearcad.set_units{ length = "in", angle = "deg" }          -- document defaults

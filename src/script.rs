@@ -891,7 +891,8 @@ pub enum Instruction {
     ToggleProjectionMode,
     ShadingMode(ShadingMode),
     /// Set any subset of the camera pose instantly — no transition animation, for
-    /// deterministic scripted screenshots (`bearcad.ui.camera{...}`, #108).
+    /// deterministic scripted screenshots (`bearcad.ui.camera{...}`, #108). `yaw` and
+    /// `pitch` are **degrees**, the API's one angle unit (#1657).
     SetCamera {
         yaw: Option<f32>,
         pitch: Option<f32>,
@@ -7998,8 +7999,8 @@ impl ScriptRunner {
                 target,
             } => {
                 state.cam.set_pose_instant(
-                    yaw,
-                    pitch,
+                    yaw.map(f32::to_radians),
+                    pitch.map(f32::to_radians),
                     distance,
                     target.map(|(x, y, z)| Vec3::new(x, y, z)),
                 );
@@ -8431,6 +8432,13 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::SetGizmo { name, value, relative } => {
+                // A rotate gizmo's value is radians in the model and degrees over the
+                // API, which has one angle unit (#1657).
+                let value = if crate::actions::gizmo_is_angle(state, &name) {
+                    value.to_radians()
+                } else {
+                    value
+                };
                 let target = if relative {
                     match crate::actions::gizmo_value(state, &name) {
                         Some(current) => current + value,

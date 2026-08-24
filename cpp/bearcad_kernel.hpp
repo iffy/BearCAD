@@ -124,7 +124,7 @@ BearcadShape* bearcad_shape_clone(const BearcadShape* shape);
 
 // Write `s` to `path` as an AP214 STEP file. Returns 0 on success, nonzero on
 // failure (OCCT error, write failure).
-int bearcad_shape_write_step(const BearcadShape* s, const char* path);
+int bearcad_shape_write_step(const BearcadShape* s, const char* path, const char* name);
 
 // Read the first/combined shape from a STEP file at `path` (curved surfaces
 // included). Returns a new owned shape, or NULL on failure / an empty file.

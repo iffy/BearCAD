@@ -94,6 +94,12 @@ fn read_vec3_le(bytes: &[u8]) -> Option<Vec3> {
 /// normal. The output round-trips through [`parse_ascii_stl`].
 pub fn write_ascii_stl(name: &str, mesh: &SolidMesh) -> String {
     use std::fmt::Write;
+    // A control character in the name (a newline especially) would split the header
+    // line and make the file unparseable (#1655).
+    let name: String = name
+        .chars()
+        .map(|c| if (c as u32) < 0x20 || c as u32 == 0x7f { ' ' } else { c })
+        .collect();
     let mut out = String::new();
     let _ = writeln!(out, "solid {name}");
     for tri in &mesh.triangles {
@@ -325,6 +331,23 @@ mod tests {
     fn parse_stl_falls_back_to_ascii() {
         let parsed = parse_stl(BEAR_STL.as_bytes()).expect("ascii stl");
         assert!(parsed.len() >= 100);
+    }
+
+    /// #1655: a newline in a body name would otherwise split the `solid` header
+    /// line and make the file unparseable.
+    #[test]
+    fn write_ascii_stl_sanitizes_the_solid_name() {
+        let mesh = SolidMesh {
+            triangles: vec![[
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+            ]],
+        };
+        let text = write_ascii_stl("two\nlines\ttabbed", &mesh);
+        assert!(text.starts_with("solid two lines tabbed\n"), "{text}");
+        assert!(text.trim_end().ends_with("endsolid two lines tabbed"), "{text}");
+        assert_eq!(parse_ascii_stl(&text).expect("round-trip parse").len(), 1);
     }
 
     #[test]

@@ -4,8 +4,48 @@ use crate::extrude::SolidMesh;
 use glam::Vec3;
 use std::fmt::Write;
 
+/// Escape `text` for a Part 21 (ISO 10303-21) string literal.
+///
+/// Apostrophes double, backslashes double, control characters become spaces (a
+/// newline would otherwise split the entity across lines), and anything above
+/// ASCII is written as a `\X2\` UTF-16 run — the encoding Part 21 defines for
+/// characters outside the base alphabet.
+pub fn step_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' => out.push_str("''"),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => out.push(' '),
+            c if c.is_ascii() => out.push(c),
+            c => {
+                // Group consecutive non-ASCII characters into a single \X2\ run.
+                out.push_str("\\X2\\");
+                let mut buf = [0u16; 2];
+                for unit in c.encode_utf16(&mut buf) {
+                    let _ = write!(out, "{unit:04X}");
+                }
+                while let Some(next) = chars.peek().copied() {
+                    if next.is_ascii() {
+                        break;
+                    }
+                    chars.next();
+                    let mut buf = [0u16; 2];
+                    for unit in next.encode_utf16(&mut buf) {
+                        let _ = write!(out, "{unit:04X}");
+                    }
+                }
+                out.push_str("\\X0\\");
+            }
+        }
+    }
+    out
+}
+
 /// Serialize a solid mesh as an AP203 FACETED_BREP STEP document named `name`.
 pub fn write_step(name: &str, mesh: &SolidMesh) -> String {
+    let name = step_string(name);
     let mut out = String::new();
     let _ = writeln!(out, "ISO-10303-21;");
     out.push_str("HEADER;\n");
@@ -507,6 +547,36 @@ mod tests {
             shape.is_some(),
             "OCCT must parse BearCAD's own faceted STEP output"
         );
+    }
+
+    /// #1655: a name with an apostrophe must not break out of the Part 21 string
+    /// literal — the standard escapes it by doubling.
+    #[test]
+    fn write_step_escapes_apostrophes_in_names() {
+        let text = write_step("Bob's Block", &box_mesh());
+        assert!(
+            !text.contains("'Bob's Block'"),
+            "raw apostrophe leaks out of the string literal:\n{text}"
+        );
+        assert!(text.contains("FILE_NAME('Bob''s Block'"), "{text}");
+        assert!(text.contains("FACETED_BREP('Bob''s Block'"), "{text}");
+        assert!(text.contains("PRODUCT('Bob''s Block','Bob''s Block'"), "{text}");
+        assert!(text.contains("REPRESENTATION_CONTEXT('Bob''s Block'"), "{text}");
+    }
+
+    /// #1655: control characters (a newline especially) would otherwise split an
+    /// entity across lines; non-ASCII needs Part 21's \X2\ encoding.
+    #[test]
+    fn write_step_encodes_control_and_non_ascii_names() {
+        let text = write_step("Caf\u{e9}\nline\tend\\x", &box_mesh());
+        for line in text.lines() {
+            assert!(line.ends_with(';'), "a name's newline split an entity: {line:?}");
+        }
+        assert!(!text.contains("Caf\u{e9}"), "non-ASCII must be encoded:\n{text}");
+        assert_eq!(step_string("Caf\u{e9}"), "Caf\\X2\\00E9\\X0\\");
+        assert_eq!(step_string("a\nb"), "a b");
+        assert_eq!(step_string("a\\b"), "a\\\\b");
+        assert_eq!(step_string("\u{1f600}"), "\\X2\\D83DDE00\\X0\\");
     }
 
     #[test]

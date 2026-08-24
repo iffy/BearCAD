@@ -50,7 +50,7 @@ extern "C" {
     fn kernel_split_solids(h: u32) -> Vec<f64>;
     fn kernel_shape_transform(h: u32, m: &[f64]) -> u32;
     fn kernel_face_boolean_loop(a: &[f64], b: &[f64], op: i32) -> Option<Vec<f64>>;
-    fn kernel_write_step(h: u32) -> Option<Vec<u8>>;
+    fn kernel_write_step(h: u32, name: &str) -> Option<Vec<u8>>;
     fn kernel_slvs_solve(
         params: &[f64],
         entities: &[f64],
@@ -310,7 +310,7 @@ impl Shape {
     }
 
     /// Path-based STEP IO doesn't exist in the browser; use the byte variants.
-    pub fn write_step(&self, _path: &std::path::Path) -> bool {
+    pub fn write_step_named(&self, _path: &std::path::Path, _name: &str) -> bool {
         false
     }
 
@@ -318,9 +318,11 @@ impl Shape {
         None
     }
 
-    /// STEP file contents for this shape (real BREP via the kernel's writer).
-    pub fn write_step_bytes(&self) -> Option<Vec<u8>> {
-        kernel_write_step(self.handle)
+    /// STEP file contents for this shape (real BREP via the kernel's writer), with
+    /// the part named `name` (#1656).
+    pub fn write_step_bytes(&self, name: &str) -> Option<Vec<u8>> {
+        let cleaned: String = name.chars().filter(|c| !c.is_control()).collect();
+        kernel_write_step(self.handle, &cleaned)
     }
 
     /// Read a STEP file's contents into a shape (real BREP via the kernel's reader).

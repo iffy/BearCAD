@@ -29,8 +29,9 @@ const GUIDE: &str = r#"# BearCAD Lua API
 Use only the functions listed here. Unknown option keys fail the call and name the
 accepted ones. Prefer `bearcad.*` (declarative modeling) over `bearcad.ui.*`.
 
-Lengths are millimetres. API angles are radians unless a call names a unit (`"45deg"`,
-`"5in"` work anywhere an expression is accepted). Indices are creation-order ordinals
+Lengths are millimetres and angles are degrees — everywhere, `bearcad.ui.camera`
+included. An expression string may name its own unit (`"45deg"`, `"1.2rad"`, `"5in"`
+work anywhere an expression is accepted). Indices are creation-order ordinals
 and shift when things are deleted — prefer names (`bearcad.find`) for anything you will
 refer to twice. One operation per call (especially fillets, chamfers, booleans).
 

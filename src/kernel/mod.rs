@@ -127,7 +127,11 @@ mod ffi {
             m: *const f64,
         ) -> *mut BearcadShape;
 
-        pub fn bearcad_shape_write_step(s: *const BearcadShape, path: *const c_char) -> c_int;
+        pub fn bearcad_shape_write_step(
+            s: *const BearcadShape,
+            path: *const c_char,
+            name: *const c_char,
+        ) -> c_int;
         pub fn bearcad_read_step(path: *const c_char) -> *mut BearcadShape;
     }
 }
@@ -593,17 +597,31 @@ impl Shape {
     }
 
     /// Write this shape to `path` as a real BREP AP214 STEP file (planar + curved
-    /// surfaces), via OCCT's `STEPControl_Writer` (#65). `true` on success; `false`
+    /// surfaces), via OCCT's `STEPControl_Writer` (#65), naming the part `name` so it
+    /// arrives titled in the recipient's CAD tool (#1656). `true` on success; `false`
     /// on a kernel/write error or a path that isn't valid UTF-8 or contains a NUL.
-    pub fn write_step(&self, path: &std::path::Path) -> bool {
+    pub fn write_step_named(&self, path: &std::path::Path, name: &str) -> bool {
         let Some(s) = path.to_str() else {
             return false;
         };
         let Ok(c) = std::ffi::CString::new(s) else {
             return false;
         };
-        let rc = unsafe { ffi::bearcad_shape_write_step(self.raw, c.as_ptr()) };
+        // A NUL or a control character in a body name is not worth failing the export
+        // over — drop what can't ride along and keep the rest.
+        let cleaned: String = name
+            .chars()
+            .filter(|c| *c != '\0' && !c.is_control())
+            .collect();
+        let label = std::ffi::CString::new(cleaned).unwrap_or_default();
+        let rc = unsafe { ffi::bearcad_shape_write_step(self.raw, c.as_ptr(), label.as_ptr()) };
         rc == 0
+    }
+
+    /// [`Shape::write_step_named`] with no part name (OCCT's own defaults).
+    #[cfg(test)]
+    pub fn write_step(&self, path: &std::path::Path) -> bool {
+        self.write_step_named(path, "")
     }
 
     /// Read the first/combined shape from a STEP file at `path` via OCCT's

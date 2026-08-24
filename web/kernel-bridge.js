@@ -246,13 +246,16 @@ export function kernel_slvs_solve(params, entities, constraints, dragged) {
   return out;
 }
 
-export function kernel_write_step(h) {
+export function kernel_write_step(h, name) {
   const m = M();
   if (!m) return null;
   const path = "/bearcad_out.step";
   const pathPtr = m.stringToNewUTF8(path);
-  const ret = m._bearcad_shape_write_step(h, pathPtr);
+  // The part name lands on the STEP product so it arrives titled elsewhere (#1656).
+  const namePtr = m.stringToNewUTF8(name || "");
+  const ret = m._bearcad_shape_write_step(h, pathPtr, namePtr);
   m._free(pathPtr);
+  m._free(namePtr);
   if (ret !== 0) return null;
   try {
     const bytes = m.FS.readFile(path);

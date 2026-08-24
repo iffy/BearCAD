@@ -18,8 +18,8 @@ bearcad.ui.wait(5)
 bearcad.ui.camera{
   target = {55, 55, 20},
   distance = 380,
-  yaw = 0.9,
-  pitch = -0.55,
+  yaw = 51.6,   -- degrees (#1657)
+  pitch = -31.5,
 }
 bearcad.ui.wait(8)
 

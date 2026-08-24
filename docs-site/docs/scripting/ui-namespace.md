@@ -50,8 +50,8 @@ scripted screenshots deterministic; with no pose fields, `camera{}` is a pure re
 ```lua
 local c = bearcad.ui.camera{}           -- { yaw, pitch, distance, target = {x, y, z},
                                         --   projection = "perspective" | "orthographic" }
-bearcad.ui.camera{ yaw = 1.0, distance = 200 }        -- set any subset of the pose
-bearcad.ui.camera{ target = {20, 15, 5}, pitch = 0.6 }
+bearcad.ui.camera{ yaw = 45, distance = 200 }         -- angles are degrees
+bearcad.ui.camera{ target = {20, 15, 5}, pitch = -35 }
 bearcad.ui.zoom_fit()                   -- frame selection or document (short glide)
 bearcad.ui.animate_zoom_to_fit(false)   -- off = snap zoom_fit instantly
 bearcad.ui.snapping(false)              -- snapping while drawing and placing shapes

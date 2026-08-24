@@ -689,14 +689,14 @@ fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
             let extrusion = extrusion_key_from_ordinal(lua, table.get("extrusion")?)?;
             let profile = parse_extrude_profile(lua, &table)?;
             if kind.eq_ignore_ascii_case("extrude_cap") {
-                let top: bool = table.get("top").unwrap_or(true);
+                let top: bool = table.get::<Option<bool>>("top")?.unwrap_or(true);
                 Ok(FaceId::ExtrudeCap {
                     extrusion,
                     profile,
                     top,
                 })
             } else {
-                let edge: u8 = table.get("edge").unwrap_or(0);
+                let edge: u8 = table.get::<Option<u8>>("edge")?.unwrap_or(0);
                 Ok(FaceId::ExtrudeSide {
                     extrusion,
                     profile,
@@ -722,14 +722,14 @@ fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
             drop(tick);
             let profile = parse_extrude_profile(lua, &table)?;
             if kind.eq_ignore_ascii_case("revolve_cap") {
-                let end: bool = table.get("end").unwrap_or(false);
+                let end: bool = table.get::<Option<bool>>("end")?.unwrap_or(false);
                 Ok(FaceId::RevolveCap {
                     revolution,
                     profile,
                     end,
                 })
             } else {
-                let edge: u8 = table.get("edge").unwrap_or(0);
+                let edge: u8 = table.get::<Option<u8>>("edge")?.unwrap_or(0);
                 Ok(FaceId::RevolveSide {
                     revolution,
                     profile,
@@ -794,7 +794,7 @@ fn parse_primitive_face_field(table: &Table) -> mlua::Result<crate::model::Primi
                 "top" | "cuboid_top" => Ok(F::CuboidTop),
                 "bottom" | "cuboid_bottom" => Ok(F::CuboidBottom),
                 "side" | "cuboid_side" => {
-                    let edge: u8 = table.get("edge").unwrap_or(0);
+                    let edge: u8 = table.get::<Option<u8>>("edge")?.unwrap_or(0);
                     Ok(F::CuboidSide { edge })
                 }
                 "cylinder_top" => Ok(F::CylinderTop),
@@ -808,7 +808,7 @@ fn parse_primitive_face_field(table: &Table) -> mlua::Result<crate::model::Primi
             // Serde-ish: `{ cuboid_side = { edge = 2 } }` or `{ edge = 2 }` with face="side"
             // already handled via string path; accept `{ kind = "side", edge = n }` too.
             if let Ok(kind) = t.get::<String>("kind").or_else(|_| t.get("type")) {
-                let edge: u8 = t.get("edge").unwrap_or(0);
+                let edge: u8 = t.get::<Option<u8>>("edge")?.unwrap_or(0);
                 return match kind.to_ascii_lowercase().as_str() {
                     "top" | "cuboid_top" => Ok(F::CuboidTop),
                     "bottom" | "cuboid_bottom" => Ok(F::CuboidBottom),
@@ -1125,12 +1125,12 @@ fn parse_constraint_point_table(lua: &Lua, table: Table) -> mlua::Result<Constra
 /// for the edge where side wall 2 meets the top (or, with `top = false`/omitted, base) cap.
 fn parse_extrusion_edge_table(table: Table) -> mlua::Result<ExtrusionEdgeRef> {
     let kind: String = table.get("kind").or_else(|_| table.get("type"))?;
-    let face: usize = table.get("face").unwrap_or(0);
+    let face: usize = table.get::<Option<usize>>("face")?.unwrap_or(0);
     let edge: usize = table.get("edge")?;
     match kind.to_ascii_lowercase().as_str() {
         "vertical" => Ok(ExtrusionEdgeRef::Vertical { face, edge }),
         "cap" => {
-            let top: bool = table.get("top").unwrap_or(false);
+            let top: bool = table.get::<Option<bool>>("top")?.unwrap_or(false);
             Ok(ExtrusionEdgeRef::Cap { face, edge, top })
         }
         other => Err(mlua::Error::external(format!(
@@ -2223,6 +2223,72 @@ fn scalar_arg(lua: &Lua, opts: &Table, key: &str) -> mlua::Result<Option<(f32, O
     }
 }
 
+/// A length option in millimetres, read the way every other primitive reads its sizes
+/// (#1659): a number, or an expression string ("1in", "leg * 2") evaluated against the
+/// document's parameters. Anything that is neither — a table, a misspelled parameter,
+/// nonsense — fails the call rather than silently reading as 0 (#1658).
+fn length_mm_opt(
+    lua: &Lua,
+    doc: &crate::model::Document,
+    opts: &Table,
+    call: &str,
+    key: &str,
+) -> mlua::Result<Option<f32>> {
+    match scalar_arg(lua, opts, key)? {
+        None => Ok(None),
+        Some((v, None)) => Ok(Some(v)),
+        Some((_, Some(expr))) => crate::value::eval_length_mm_in_doc(&expr, doc)
+            .map(Some)
+            .ok_or_else(|| {
+                mlua::Error::external(format!("{call} `{key}`: cannot read \"{expr}\" as a length"))
+            }),
+    }
+}
+
+/// [`length_mm_opt`] with a default for the missing case.
+fn length_mm_or(
+    lua: &Lua,
+    doc: &crate::model::Document,
+    opts: &Table,
+    call: &str,
+    key: &str,
+    default: f32,
+) -> mlua::Result<f32> {
+    Ok(length_mm_opt(lua, doc, opts, call, key)?.unwrap_or(default))
+}
+
+/// An angle option in degrees: a number (degrees, the API's convention) or an expression
+/// string, which may name its own unit ("90deg", "1.2rad"). Unreadable input errors.
+fn angle_deg_opt(
+    lua: &Lua,
+    doc: &crate::model::Document,
+    opts: &Table,
+    call: &str,
+    key: &str,
+) -> mlua::Result<Option<f32>> {
+    match scalar_arg(lua, opts, key)? {
+        None => Ok(None),
+        Some((v, None)) => Ok(Some(v)),
+        Some((_, Some(expr))) => crate::value::eval_angle_rad_in_doc(&expr, doc)
+            .map(|r| Some(r.to_degrees()))
+            .ok_or_else(|| {
+                mlua::Error::external(format!("{call} `{key}`: cannot read \"{expr}\" as an angle"))
+            }),
+    }
+}
+
+/// [`angle_deg_opt`] with a default for the missing case.
+fn angle_deg_or(
+    lua: &Lua,
+    doc: &crate::model::Document,
+    opts: &Table,
+    call: &str,
+    key: &str,
+    default: f32,
+) -> mlua::Result<f32> {
+    Ok(angle_deg_opt(lua, doc, opts, call, key)?.unwrap_or(default))
+}
+
 /// One joint member (#894): a bare body index, an element table/name, or anything
 /// `resolve_element` takes — as long as it lands on a body, component, or unit instance.
 fn parse_joint_member(lua: &Lua, value: Value) -> mlua::Result<crate::model::JointRef> {
@@ -2834,10 +2900,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Option<Table>| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let (linked, x, y, z) = if let Some(opts) = opts {
-                let linked: bool = opts.get("linked").unwrap_or(false);
-                let x: f32 = opts.get("x").unwrap_or(0.0);
-                let y: f32 = opts.get("y").unwrap_or(0.0);
-                let z: f32 = opts.get("z").unwrap_or(0.0);
+                let linked: bool = opts.get::<Option<bool>>("linked")?.unwrap_or(false);
+                let doc = unsafe { &tick.state().doc };
+                let x = length_mm_or(lua, doc, &opts, "paste", "x", 0.0)?;
+                let y = length_mm_or(lua, doc, &opts, "paste", "y", 0.0)?;
+                let z = length_mm_or(lua, doc, &opts, "paste", "z", 0.0)?;
                 (linked, x, y, z)
             } else {
                 (false, 0.0, 0.0, 0.0)
@@ -2866,7 +2933,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 let entry = lua.create_table()?;
                 entry.set("kind", g.kind)?;
                 entry.set("name", g.name)?;
-                entry.set("value", g.value)?;
+                // A rotate gizmo's value is radians in the model, degrees over the API (#1657).
+                entry.set(
+                    "value",
+                    if g.kind == "rotate" { g.value.to_degrees() } else { g.value },
+                )?;
                 if let Some(p) = g.position {
                     let pos = lua.create_table()?;
                     pos.set("x", p.x)?;
@@ -4483,23 +4554,28 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let tick = lua
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            // Angles are degrees here like everywhere else in the API (#1657); an
+            // expression string may name its own unit ("1.2rad").
             let (yaw, pitch, distance, target) = match &opts {
-                Some(t) => (
-                    t.get::<Option<f32>>("yaw")?,
-                    t.get::<Option<f32>>("pitch")?,
-                    t.get::<Option<f32>>("distance")?,
-                    match t.get::<Option<Table>>("target")? {
-                        Some(v) => Some((v.get(1)?, v.get(2)?, v.get(3)?)),
-                        None => None,
-                    },
-                ),
+                Some(t) => {
+                    let doc = unsafe { &tick.state().doc };
+                    (
+                        angle_deg_opt(lua, doc, t, "camera", "yaw")?,
+                        angle_deg_opt(lua, doc, t, "camera", "pitch")?,
+                        length_mm_opt(lua, doc, t, "camera", "distance")?,
+                        match t.get::<Option<Table>>("target")? {
+                            Some(v) => Some((v.get(1)?, v.get(2)?, v.get(3)?)),
+                            None => None,
+                        },
+                    )
+                }
                 None => (None, None, None, None),
             };
             if yaw.is_none() && pitch.is_none() && distance.is_none() && target.is_none() {
                 let cam = unsafe { &tick.state().cam };
                 let t = lua.create_table()?;
-                t.set("yaw", cam.yaw)?;
-                t.set("pitch", cam.pitch)?;
+                t.set("yaw", cam.yaw.to_degrees())?;
+                t.set("pitch", cam.pitch.to_degrees())?;
                 t.set("distance", cam.distance)?;
                 t.set("target", vec3_lua(lua, cam.target)?)?;
                 t.set(
@@ -4710,8 +4786,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     Ok(Value::Nil)
                 }
                 // Pure reads (#107): `parameter("get", name)` evaluates the named parameter
-                // to its canonical numeric value (mm for lengths, radians for angles) or nil;
-                // `parameter("get_expression", name)` returns the raw expression string.
+                // to its numeric value in the API's units — mm for lengths, degrees for
+                // angles (#1657) — or nil; `parameter("get_expression", name)` returns the
+                // raw expression string.
                 "get" | "get_expression" => {
                     let name = match args.get(1) {
                         Some(Value::String(s)) => s.to_str()?.to_string(),
@@ -4729,9 +4806,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         return Ok(Value::String(lua.create_string(&param.expression)?));
                     }
                     match crate::value::eval_parameter_in_doc(&param.expression, doc) {
-                        Some(crate::value::EvaluatedParameter::LengthMm(v))
-                        | Some(crate::value::EvaluatedParameter::AngleRad(v)) => {
+                        Some(crate::value::EvaluatedParameter::LengthMm(v)) => {
                             Ok(Value::Number(v as f64))
+                        }
+                        Some(crate::value::EvaluatedParameter::AngleRad(v)) => {
+                            Ok(Value::Number(v.to_degrees() as f64))
                         }
                         None => Ok(Value::Nil),
                     }
@@ -5937,8 +6016,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 .ok_or_else(|| mlua::Error::external("rect requires a `width`"))?;
             let (height, height_expr) = scalar_arg(lua, &opts, "height")?
                 .ok_or_else(|| mlua::Error::external("rect requires a `height`"))?;
-            let x: f32 = opts.get("x").unwrap_or(0.0);
-            let y: f32 = opts.get("y").unwrap_or(0.0);
+            let x = length_mm_or(lua, unsafe { &tick.state().doc }, &opts, "rect", "x", 0.0)?;
+            let y = length_mm_or(lua, unsafe { &tick.state().doc }, &opts, "rect", "y", 0.0)?;
             unsafe {
                 // Make sure we're sketching; default to the ground (XY) construction plane.
                 if tick.state().sketch_session.is_none() {
@@ -5981,14 +6060,21 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "line",
                 &["x", "y", "x1", "y1", "length", "angle", "bezier", "dimension", "name"],
             )?;
-            // Either give explicit endpoints (x,y)-(x1,y1), or origin + length + optional angle.
-            let x0: f32 = opts.get("x").unwrap_or(0.0);
-            let y0: f32 = opts.get("y").unwrap_or(0.0);
-            let (x1, y1) = match (opts.get::<Option<f32>>("x1")?, opts.get::<Option<f32>>("y1")?) {
+            // Either give explicit endpoints (x,y)-(x1,y1), or origin + length + optional
+            // angle. Every one of them takes an expression string, like the other
+            // primitives (#1659), and refuses what it cannot read (#1658).
+            let doc = unsafe { &tick.state().doc };
+            let x0 = length_mm_or(lua, doc, &opts, "line", "x", 0.0)?;
+            let y0 = length_mm_or(lua, doc, &opts, "line", "y", 0.0)?;
+            let (x1, y1) = match (
+                length_mm_opt(lua, doc, &opts, "line", "x1")?,
+                length_mm_opt(lua, doc, &opts, "line", "y1")?,
+            ) {
                 (Some(x1), Some(y1)) => (x1, y1),
                 _ => {
-                    let length: f32 = opts.get("length")?;
-                    let angle_deg: f32 = opts.get("angle").unwrap_or(0.0);
+                    let length = length_mm_opt(lua, doc, &opts, "line", "length")?
+                        .ok_or_else(|| mlua::Error::external("line requires a `length`"))?;
+                    let angle_deg = angle_deg_or(lua, doc, &opts, "line", "angle", 0.0)?;
                     let a = angle_deg.to_radians();
                     (x0 + length * a.cos(), y0 + length * a.sin())
                 }
@@ -6045,8 +6131,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             check_keys(&opts, "circle", &["x", "y", "r", "radius", "diameter", "name"])?;
-            let cx: f32 = opts.get("x").unwrap_or(0.0);
-            let cy: f32 = opts.get("y").unwrap_or(0.0);
+            let cx = length_mm_or(lua, unsafe { &tick.state().doc }, &opts, "circle", "x", 0.0)?;
+            let cy = length_mm_or(lua, unsafe { &tick.state().doc }, &opts, "circle", "y", 0.0)?;
             // Accept a radius (`r` or its `radius` alias, #108) or a `diameter`, in that
             // precedence order; none at all is a clear error rather than a nil-conversion one.
             // Each accepts a parameter expression too (#402); a radius expression doubles
@@ -6089,8 +6175,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let text: String = opts.get("text")?;
-            let x: f32 = opts.get("x").unwrap_or(0.0);
-            let y: f32 = opts.get("y").unwrap_or(0.0);
+            let x = length_mm_or(lua, unsafe { &tick.state().doc }, &opts, "text", "x", 0.0)?;
+            let y = length_mm_or(lua, unsafe { &tick.state().doc }, &opts, "text", "y", 0.0)?;
             let size: String = match opts.get::<Value>("size")? {
                 Value::Nil => "10".to_string(),
                 Value::Integer(n) => n.to_string(),
@@ -8327,6 +8413,69 @@ mod tests {
         path.to_string_lossy().to_string()
     }
 
+    /// #1658/#1659: `line` reads its placement through the same expression path as every
+    /// other primitive — "1in" and a parameter work — and a value it cannot convert fails
+    /// the call instead of silently reading as 0.
+    #[test]
+    fn lua_line_takes_expressions_and_rejects_junk() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.parameter("add", "leg", "30")
+
+            -- Expression strings work for placement and length, like rect/circle/cuboid.
+            bearcad.line{ x = "1in", y = 0, length = "1in", angle = 0 }
+            local x0, y0, x1, y1 = bearcad.line_endpoints(0)
+            assert(math.abs(x0 - 25.4) < 1e-3, "start x " .. x0)
+            assert(math.abs(x1 - 50.8) < 1e-3, "end x " .. x1)
+
+            bearcad.line{ x = 0, y = 0, length = "leg", angle = "90deg" }
+            x0, y0, x1, y1 = bearcad.line_endpoints(1)
+            assert(math.abs(x1) < 1e-3, "end x " .. x1)
+            assert(math.abs(y1 - 30) < 1e-3, "end y " .. y1)
+
+            bearcad.line{ x = 0, y = 0, x1 = "1in", y1 = "leg" }
+            x0, y0, x1, y1 = bearcad.line_endpoints(2)
+            assert(math.abs(x1 - 25.4) < 1e-3, "end x " .. x1)
+            assert(math.abs(y1 - 30) < 1e-3, "end y " .. y1)
+
+            -- A value that cannot be read is an error, not a silent zero.
+            for _, opts in ipairs({
+                { x = "bogus", y = 0, x1 = 10, y1 = 0 },
+                { x = 0, y = 0, length = "bogus", angle = 0 },
+                { x = 0, y = 0, length = 10, angle = "bogus" },
+                { x = {}, y = 0, x1 = 10, y1 = 0 },
+            }) do
+              local ok, err = pcall(function() bearcad.line(opts) end)
+              assert(not ok, "a value that cannot be read must fail the call")
+            end
+            assert(bearcad.count("line") == 3, "no junk line was created")
+            "#,
+        );
+        assert_eq!(state.doc.lines.len(), 3);
+    }
+
+    /// #1658: every option read that swallowed a conversion error now propagates it —
+    /// a wrong-typed `paste`, `text`, or `circle` placement fails instead of reading 0.
+    #[test]
+    fn lua_option_reads_propagate_conversion_errors() {
+        run_lua(
+            r#"
+            bearcad.new()
+            local cases = {
+              function() bearcad.circle{ x = "bogus", y = 0, r = 5 } end,
+              function() bearcad.text{ text = "hi", x = {}, y = 0 } end,
+              function() bearcad.rect{ x = "bogus", y = 0, width = 5, height = 5 } end,
+              function() bearcad.paste{ x = "bogus" } end,
+            }
+            for _, f in ipairs(cases) do
+              local ok = pcall(f)
+              assert(not ok, "a value that cannot be read must fail the call")
+            end
+            "#,
+        );
+    }
+
     /// #1547: import seeds a top-middle → bottom-middle calibration line; `get` exposes it;
     /// `calibrate_image` with an expression rescales while keeping the points on the image;
     /// `from`/`to` can be omitted to use the current line.
@@ -9137,7 +9286,7 @@ mod tests {
             for _, g in ipairs(bearcad.gizmos()) do names[g.name] = g end
             assert(names.text_rotation, "selected text exposes text_rotation")
             assert(math.abs(names.text_rotation.value) < 1e-5)
-            bearcad.set_gizmo{ name = "text_rotation", value = math.rad(45) }
+            bearcad.set_gizmo{ name = "text_rotation", value = 45 }  -- degrees (#1657)
             local t = bearcad.get{ kind = "sketch_text", index = 0 }
             assert(math.abs(t.rotation - 45) < 0.05, "rotation should be 45°, got " .. tostring(t.rotation))
             assert(t.flip == false, "starts unflipped")
@@ -9300,7 +9449,7 @@ mod tests {
             local orbit_step = bearcad.ui.tutorial_step()
             bearcad.ui.tutorial_assist()
             assert(bearcad.ui.tutorial_step() == orbit_step, "orbit has no assist")
-            bearcad.ui.camera{ yaw = home.yaw + 0.6 }
+            bearcad.ui.camera{ yaw = home.yaw + 40 }
             assert(bearcad.ui.tutorial_narration() == "Good job orbiting!")
             bearcad.ui.tutorial_next()
             assert(bearcad.ui.tutorial_narration():find("pan", 1, true),
@@ -14569,12 +14718,12 @@ mod tests {
             assert(names.move_x ~= nil, "translation gizmos present")
             assert(names.move_rx ~= nil and names.move_ry ~= nil and names.move_rz ~= nil,
                    "rotation gizmos present")
-            bearcad.set_gizmo{ name = "move_rz", value = math.pi / 2 }
+            bearcad.set_gizmo{ name = "move_rz", value = 90 }   -- degrees (#1657)
             local rz
             for _, g in ipairs(bearcad.gizmos()) do
                 if g.name == "move_rz" then rz = g.value end
             end
-            assert(math.abs(rz - math.pi / 2) < 1e-3)
+            assert(math.abs(rz - 90) < 1e-3, "rotation gizmos read back in degrees, got " .. rz)
             "#,
         );
         let cm = state.creating_move.as_ref().expect("move armed");
@@ -15482,7 +15631,7 @@ mod tests {
     }
 
     /// #108: `bearcad.ui.camera{...}` sets the pose instantly and `bearcad.ui.camera{}`
-    /// reads it back.
+    /// reads it back. Angles are degrees, like every other angle in the API (#1657).
     #[test]
     fn lua_camera_set_and_get_round_trips() {
         run_lua_expect_ok(
@@ -15503,6 +15652,56 @@ mod tests {
             assert(math.abs(c2.pitch - 0.5) < 1e-4)
             assert(math.abs(c2.yaw - 1.0) < 1e-4)
             assert(math.abs(c2.distance - 200) < 1e-3)
+        "#,
+        );
+    }
+
+    /// #1657: every API angle is degrees — the reference used to say radians, so
+    /// agent-written models came out rotated. One rule, pinned per call so it can't
+    /// drift: a unit-bearing expression string is the only way to mean anything else.
+    #[test]
+    fn lua_api_angles_are_degrees_everywhere() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            -- line: 90 is a quarter turn, not 90 radians.
+            bearcad.line{ x = 0, y = 0, length = 10, angle = 90 }
+            local _, _, x1, y1 = bearcad.line_endpoints(0)
+            assert(math.abs(x1) < 1e-3 and math.abs(y1 - 10) < 1e-3, x1 .. "," .. y1)
+
+            -- camera: degrees in, degrees out, and "rad" still available explicitly.
+            bearcad.ui.camera{ yaw = 90, pitch = 30 }
+            local c = bearcad.ui.camera{}
+            assert(math.abs(c.yaw - 90) < 1e-3, "yaw " .. c.yaw)
+            assert(math.abs(c.pitch - 30) < 1e-3, "pitch " .. c.pitch)
+            bearcad.ui.camera{ yaw = "1.5708rad" }
+            c = bearcad.ui.camera{}
+            assert(math.abs(c.yaw - 90) < 1e-2, "yaw from radians " .. c.yaw)
+
+            -- revolve: 180 is half a revolution.
+            bearcad.new()
+            bearcad.circle{ x = 20, y = 0, r = 3 }
+            bearcad.revolve{ circle = 0, axis = "y", angle = 180 }
+            local half = bearcad.body_stats(0).volume
+            bearcad.new()
+            bearcad.circle{ x = 20, y = 0, r = 3 }
+            bearcad.revolve{ circle = 0, axis = "y", angle = 360 }
+            local full = bearcad.body_stats(0).volume
+            assert(math.abs(half / full - 0.5) < 0.02, "half turn " .. half .. " of " .. full)
+
+            -- an angle parameter reads back in degrees too.
+            bearcad.parameter("add", "turn", "45deg")
+            assert(math.abs(bearcad.parameter("get", "turn") - 45) < 1e-3,
+                   "angle parameter " .. bearcad.parameter("get", "turn"))
+
+            -- move_bodies: rz = 90 is a quarter turn.
+            bearcad.new()
+            bearcad.cuboid{ width = 20, depth = 4, height = 4 }
+            bearcad.move_bodies{ bodies = {0}, rz = 90 }
+            local bb = bearcad.body_stats(bearcad.count("body") - 1).bbox
+            local size = { bb.max[1] - bb.min[1], bb.max[2] - bb.min[2] }
+            assert(math.abs(size[1] - 4) < 0.1 and math.abs(size[2] - 20) < 0.1,
+                   "quarter turn gives " .. size[1] .. " x " .. size[2])
         "#,
         );
     }

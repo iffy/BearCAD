@@ -5734,7 +5734,7 @@ impl AppState {
         {
             // The posed shape (#893): a jointed part exports where the assembly holds it.
             if let Some(shape) = crate::extrude::posed_body_shape(&self.doc, body) {
-                if shape.write_step(std::path::Path::new(path)) {
+                if shape.write_step_named(std::path::Path::new(path), name) {
                     self.status = format!("Exported body '{name}' to {path} (STEP BREP)");
                     return ActionResult::Ok;
                 }
@@ -6147,7 +6147,13 @@ impl AppState {
             });
             if let Some(bi) = single {
                 if let Some(shape) = crate::extrude::occt_body_shape(&self.doc, bi) {
-                    if let Some(bytes) = shape.write_step_bytes() {
+                    let name = self
+                        .doc
+                        .bodies
+                        .get(bi)
+                        .and_then(|b| b.name.clone())
+                        .unwrap_or_else(|| format!("body-{}", bi.index()));
+                    if let Some(bytes) = shape.write_step_bytes(&name) {
                         return Ok(bytes);
                     }
                 }
@@ -20980,6 +20986,13 @@ pub fn gizmo_value(state: &AppState, name: &str) -> Option<f32> {
         .find(|g| g.name == name)
         .map(|g| g.value)
 }
+/// Is `name` an angle gizmo? Its value is radians inside the app (the model's own unit)
+/// and degrees over the script API, which has one angle unit everywhere (#1657).
+pub fn gizmo_is_angle(state: &AppState, name: &str) -> bool {
+    available_gizmos(state)
+        .iter()
+        .any(|g| g.name == name && g.kind == "rotate")
+}
 
 /// Drive a named gizmo's scalar to `value` the way a drag would (#214), returning whether that
 /// gizmo was available. Push/pull and offset take millimetres; rotate takes radians. The change
@@ -26116,6 +26129,84 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert!(matches!(result, ActionResult::Err(_)));
         assert!(state.doc.bodies.is_empty());
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// #1656: the kernel (BREP) STEP path must carry the part name into the file —
+    /// it used to leave OCCT's own defaults ('Open CASCADE STEP translator ...'), so
+    /// the part arrived in the recipient's CAD tool nameless.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn step_brep_export_names_the_product() {
+        let mut state = AppState::default();
+        state.apply(Action::CreateShape {
+            shape: crate::model::Primitive {
+                kind: crate::model::PrimitiveKind::Cuboid,
+                origin: [0.0, 0.0, 0.0],
+                normal: [0.0, 0.0, 1.0],
+                u_axis: [1.0, 0.0, 0.0],
+                width: "10".into(),
+                depth: "10".into(),
+                height: "10".into(),
+                radius: String::new(),
+                name: Some("Bracket".into()),
+            },
+        });
+        let body = state.doc.bodies.keys().next().expect("the cuboid body");
+        crate::names::set_element_name(
+            &mut state.doc,
+            crate::hierarchy::SceneElement::Body(body),
+            "Bracket".to_string(),
+        )
+        .expect("name the body");
+        assert!(
+            crate::extrude::posed_body_shape(&state.doc, body).is_some(),
+            "this test needs the kernel BREP path"
+        );
+        let path = std::env::temp_dir().join(format!(
+            "bearcad_step_name_{}.step",
+            std::process::id()
+        ));
+        let p = path.to_string_lossy().to_string();
+        assert!(matches!(
+            state.apply(Action::ExportStepBody { path: p, body }),
+            ActionResult::Ok
+        ));
+        let text = std::fs::read_to_string(&path).expect("read exported step");
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            text.contains("PRODUCT('Bracket'"),
+            "product must be named: {}",
+            text.lines().filter(|l| l.contains("PRODUCT(")).collect::<Vec<_>>().join("\n")
+        );
+        assert!(
+            text.contains("FILE_NAME('Bracket'"),
+            "header must be named: {}",
+            text.lines().filter(|l| l.contains("FILE_NAME")).collect::<Vec<_>>().join("\n")
+        );
+        assert!(
+            !text.contains("Open CASCADE STEP translator"),
+            "OCCT's default product name must be replaced"
+        );
+
+        // The name rides through OCCT's own writer, which escapes Part 21 strings —
+        // pin that so an apostrophe can't produce a malformed file (#1655).
+        crate::names::set_element_name(
+            &mut state.doc,
+            crate::hierarchy::SceneElement::Body(body),
+            "Bob's Block".to_string(),
+        )
+        .expect("rename the body");
+        let p = path.to_string_lossy().to_string();
+        assert!(matches!(
+            state.apply(Action::ExportStepBody { path: p, body }),
+            ActionResult::Ok
+        ));
+        let text = std::fs::read_to_string(&path).expect("read exported step");
+        let reread = crate::kernel::Shape::read_step(&path);
+        let _ = std::fs::remove_file(&path);
+        assert!(text.contains("PRODUCT('Bob''s Block'"), "{}",
+            text.lines().filter(|l| l.contains("PRODUCT(")).collect::<Vec<_>>().join("\n"));
+        assert!(reread.is_some(), "an apostrophe must not break the file");
     }
 
     /// #1029: combining a STEP import with an extruded cube must leave a solid body.

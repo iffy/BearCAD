@@ -43,6 +43,12 @@
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepTools_WireExplorer.hxx>
 #include <STEPControl_Writer.hxx>
+#include <APIHeaderSection_MakeHeader.hxx>
+#include <StepBasic_Product.hxx>
+#include <StepBasic_ProductDefinitionFormation.hxx>
+#include <StepData_StepModel.hxx>
+#include <StepRepr_Representation.hxx>
+#include <TCollection_HAsciiString.hxx>
 #include <STEPControl_Reader.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <BRep_Tool.hxx>
@@ -1264,7 +1270,41 @@ extern "C" BearcadShape* bearcad_shape_clone(const BearcadShape* shape) {
     }
 }
 
-extern "C" int bearcad_shape_write_step(const BearcadShape* s, const char* path) {
+// Stamp `name` on everything a receiving CAD tool shows as the part name: the
+// FILE_NAME header, each PRODUCT (name and id), its formation, and the shape
+// representations. Without this OCCT leaves its own defaults ("Open CASCADE STEP
+// translator ...") and the part arrives nameless (#1656). OCCT's writer escapes
+// the string itself (apostrophes double), so `name` is passed through as given.
+static void bearcad_step_set_name(STEPControl_Writer& writer, const char* name) {
+    if (name == nullptr || *name == '\0') {
+        return;
+    }
+    Handle(TCollection_HAsciiString) label = new TCollection_HAsciiString(name);
+    Handle(StepData_StepModel) model = writer.Model();
+    if (model.IsNull()) {
+        return;
+    }
+    APIHeaderSection_MakeHeader header(model);
+    header.SetName(label);
+    for (int i = 1; i <= model->NbEntities(); i++) {
+        Handle(Standard_Transient) ent = model->Value(i);
+        if (ent.IsNull()) {
+            continue;
+        }
+        if (Handle(StepBasic_Product) product = Handle(StepBasic_Product)::DownCast(ent)) {
+            product->SetId(label);
+            product->SetName(label);
+        } else if (Handle(StepBasic_ProductDefinitionFormation) formation =
+                       Handle(StepBasic_ProductDefinitionFormation)::DownCast(ent)) {
+            formation->SetId(label);
+        } else if (Handle(StepRepr_Representation) repr =
+                       Handle(StepRepr_Representation)::DownCast(ent)) {
+            repr->SetName(label);
+        }
+    }
+}
+
+extern "C" int bearcad_shape_write_step(const BearcadShape* s, const char* path, const char* name) {
     if (s == nullptr || path == nullptr) {
         return 1;
     }
@@ -1273,6 +1313,7 @@ extern "C" int bearcad_shape_write_step(const BearcadShape* s, const char* path)
         if (writer.Transfer(s->shape, STEPControl_AsIs) != IFSelect_RetDone) {
             return 1;
         }
+        bearcad_step_set_name(writer, name);
         IFSelect_ReturnStatus status = writer.Write(path);
         return status == IFSelect_RetDone ? 0 : 1;
     } catch (const Standard_Failure&) {

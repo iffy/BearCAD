@@ -324,7 +324,7 @@ print(bearcad.session_log())                   -- what this run has done, timest
 print(bearcad.version())                       -- Help → About identity
 
 bearcad.parameter("add", "A", "5mm")
-assert(bearcad.parameter("get", "A") == 5)     -- evaluated value (mm / radians)
+assert(bearcad.parameter("get", "A") == 5)     -- evaluated value (mm / degrees)
 assert(bearcad.parameter("get_expression", "A") == "5mm")
 ```
 

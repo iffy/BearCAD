@@ -8,8 +8,9 @@ description: Drive BearCAD, a parametric CAD app, from its Lua scripting API —
 BearCAD is a parametric CAD app with two equal front ends: the GUI, and a Lua API. Anything
 the GUI can do, a script can do. You drive the Lua API.
 
-Model in millimetres. Angles are degrees in the GUI's fields and **radians** in the API
-unless a call names a unit (`"45deg"`, `"5in"` work anywhere an expression is accepted).
+Model in millimetres, angles in **degrees** — in the GUI's fields and in the API alike.
+An expression string may name its own unit (`"45deg"`, `"1.2rad"`, `"5in"` work anywhere
+an expression is accepted).
 
 ## The complete API
 
@@ -188,7 +189,7 @@ document through this API — the fastest way to see how an existing document is
 
 ```lua
 bearcad.ui.view("front")                       -- top, bottom, left, right, back, iso
-bearcad.ui.camera{ yaw = 1.0, distance = 200 } -- instant, so screenshots are deterministic
+bearcad.ui.camera{ yaw = 45, distance = 200 }  -- degrees; instant, so screenshots are deterministic
 bearcad.ui.zoom_fit()
 bearcad.ui.screenshot("shot.png")              -- the 3D viewport
 bearcad.ui.screenshot("shot.png", "window")    -- the whole window
