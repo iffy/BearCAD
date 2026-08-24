@@ -36,7 +36,7 @@ Every dimension takes a number or an expression string.
 
 ```
 bearcad.rect{ width, height, x = 0?, y = 0?, name? }
-bearcad.line{ x, y, x1, y1, name?, dimension? }          -- or length + angle
+bearcad.line{ x, y, x1, y1, name?, dimension? }          -- or length + angle (degrees)
 bearcad.circle{ x, y, r | radius | diameter, name? }
 bearcad.text{ text, x, y, size?, font?, bold?, italic?, underline?, rotation?, wrap?, flip?, name? }
 bearcad.begin_sketch("construction_plane", i)
