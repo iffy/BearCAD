@@ -408,36 +408,31 @@ jobs:
         run: pwsh scripts/package-windows.ps1
 
       # Windows code signing (Azure Trusted Signing): an unsigned .exe trips
-      # SmartScreen's "unknown publisher" block on download. The service
-      # coordinates are not credentials, but they live in secrets alongside the
-      # service-principal ones. Checked up front so a missing one fails with a
-      # name instead of an opaque error from inside the signing action.
-      - name: Check Windows signing configuration
+      # SmartScreen's "unknown publisher" block on download. Only the service
+      # principal is secret -- the endpoint/account/profile name the same Azure
+      # resources Buckets signs with, and are checked in there too.
+      - name: Check Windows signing credentials
         if: matrix.os_slug == 'windows-x86_64'
         shell: pwsh
         env:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_ENDPOINT: ${{ secrets.AZURE_ENDPOINT }}
-          AZURE_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
-          AZURE_CERT_PROFILE_NAME: ${{ secrets.AZURE_CERT_PROFILE_NAME }}
         run: |
           $missing = @(
             'AZURE_TENANT_ID',
             'AZURE_CLIENT_ID',
-            'AZURE_CLIENT_SECRET',
-            'AZURE_ENDPOINT',
-            'AZURE_SIGNING_ACCOUNT_NAME',
-            'AZURE_CERT_PROFILE_NAME'
+            'AZURE_CLIENT_SECRET'
           ) | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
           if ($missing) {
             throw "Missing Windows signing secrets: $($missing -join ', ')"
           }
-          Write-Host "Windows signing configuration present."
+          Write-Host "Windows signing credentials present."
 
       # Signs the packaged root-level bearcad.exe -- the exact file the release
-      # job uploads -- rather than the target\release copy.
+      # job uploads -- rather than the target\release copy. Every credential
+      # source but the environment (the secrets above) is excluded, so a hosted
+      # runner's ambient identity can't be tried first and stall the sign.
       - name: Sign Windows release
         if: matrix.os_slug == 'windows-x86_64'
         uses: azure/trusted-signing-action@v2
@@ -445,13 +440,22 @@ jobs:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
           azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
-          endpoint: ${{ secrets.AZURE_ENDPOINT }}
-          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
-          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_NAME }}
+          endpoint: https://eus.codesigning.azure.net
+          signing-account-name: com-onepartrain
+          certificate-profile-name: com-onepartrain
           files: ${{ github.workspace }}\bearcad.exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
+          exclude-managed-identity-credential: true
+          exclude-workload-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: true
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
 
       # Gate the upload on a real Authenticode check: a signing step that
       # silently no-ops would otherwise ship an unsigned binary.
