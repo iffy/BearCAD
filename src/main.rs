@@ -4702,6 +4702,8 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 tutorial::UiAnchor::ElementsSketch => hierarchy::elements_sketch_row_rect(ctx),
                 tutorial::UiAnchor::ElementsBody => hierarchy::elements_body_row_rect(ctx),
                 tutorial::UiAnchor::ElementsPlane => hierarchy::elements_plane_row_rect(ctx),
+                // A Context-pane tick box, named by its label (#1677).
+                tutorial::UiAnchor::CheckboxRow(label) => context::checkbox_row_rect(ctx, label),
                 // View-cube bear + home button live in the viewport's top-right (#1269).
                 tutorial::UiAnchor::ViewCube => Some(view_cube::cube_rect_in_viewport(viewport)),
                 tutorial::UiAnchor::ViewHome => {

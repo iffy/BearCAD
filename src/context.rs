@@ -4956,7 +4956,19 @@ fn checkbox_row(
         })
         .inner;
     note_help(ui, label, row.response.rect);
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(checkbox_row_rect_id(label), row.response.rect));
     changed
+}
+
+fn checkbox_row_rect_id(label: &str) -> egui::Id {
+    egui::Id::new(("checkbox_row_rect", label))
+}
+
+/// Where the Context pane drew a checkbox row this frame (#1677) — a tutorial orb points
+/// at the tick it wants turned on, by the row's label.
+pub fn checkbox_row_rect(ctx: &egui::Context, label: &str) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<egui::Rect>(checkbox_row_rect_id(label)))
 }
 
 /// Colour-swatch size in the material combo list (#1460).

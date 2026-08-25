@@ -10063,6 +10063,7 @@ pub mod tests {
             assert(names.offset == "Offset")
             assert(names.shell == "Shell")
             assert(names.derived_parameter == "Derived parameters")
+            assert(names.curves == "Curves")
             "#
             .replace("__COUNT__", &crate::tutorial::TUTORIALS.len().to_string()),
         );
@@ -10235,6 +10236,34 @@ pub mod tests {
             -- The rectangle really is 100 x 25 now.
             bearcad.parameter("value", 0, "80mm")
             assert(bearcad.parameter("get", "hole") == 20, "hole tracks plate again")
+            "#,
+        );
+    }
+
+    /// #1677: the curves tutorial walks with assists and leaves a closed outline whose far
+    /// side really is bezier, extruded into a solid.
+    #[test]
+    fn curves_tutorial_lua_walks_and_bends_two_sides() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.ui.tutorial("curves")
+            local guard = 0
+            while bearcad.ui.tutorial_step() ~= nil do
+              guard = guard + 1
+              assert(guard < 60, "curves tutorial should finish")
+              local at = bearcad.ui.tutorial_step()
+              bearcad.ui.tutorial_assist()
+              if bearcad.ui.tutorial_step() == at then
+                bearcad.ui.tutorial_next()
+              end
+            end
+            local curved = 0
+            for i = 0, bearcad.count("line") - 1 do
+              if bearcad.get{ kind = "line", index = i }.curved then curved = curved + 1 end
+            end
+            assert(curved >= 2, "two sides bend, got " .. curved)
+            assert(bearcad.count("extrusion") == 1, "and the outline extrudes")
+            assert(bearcad.body_stats(0).volume > 0, "a real solid came out")
             "#,
         );
     }

@@ -58,6 +58,8 @@ pub enum UiAnchor {
     /// The newest construction-plane row in the Elements pane (#1673) — double-click to
     /// reopen the plane and move it.
     ElementsPlane,
+    /// A Context-pane checkbox row, by its label (#1677) — e.g. the Line tool's **Curve**.
+    CheckboxRow(&'static str),
     /// The toolbar Zoom to Fit (magnifying glass) button (#1583).
     ZoomToFit,
     /// A status-bar pane toggle (phone layout only, #828): Elements / Context / Params.
@@ -386,6 +388,12 @@ pub static TUTORIALS: &[Tutorial] = &[
         name: "derived_parameter",
         title: "Derived parameters",
         steps: DERIVED_PARAMETER_STEPS,
+    },
+    // #1677: draw an outline with curved sides.
+    Tutorial {
+        name: "curves",
+        title: "Curves",
+        steps: CURVES_STEPS,
     },
 ];
 
@@ -5248,6 +5256,222 @@ static DERIVED_PARAMETER_STEPS: &[Step] = &[
     ),
 ];
 
+// --- Curves tutorial (#1677) -----------------------------------------------------------
+
+/// A four-cornered outline whose top two corners the walkthrough bends into curves.
+const CURVE_UV: [(f32, f32); 4] = [
+    (10.0, 10.0),
+    (60.0, 10.0),
+    (60.0, 50.0),
+    (10.0, 50.0),
+];
+
+fn curve_vertex_guide(app: &AppState, nth: usize) -> Option<glam::Vec3> {
+    let (u, v) = CURVE_UV[nth % CURVE_UV.len()];
+    ground_local(app, u, v)
+}
+
+fn curve_vertex_0(app: &AppState) -> Option<glam::Vec3> {
+    curve_vertex_guide(app, 0)
+}
+
+fn curve_vertex_1(app: &AppState) -> Option<glam::Vec3> {
+    curve_vertex_guide(app, 1)
+}
+
+fn curve_vertex_2(app: &AppState) -> Option<glam::Vec3> {
+    curve_vertex_guide(app, 2)
+}
+
+fn curve_vertex_3(app: &AppState) -> Option<glam::Vec3> {
+    curve_vertex_guide(app, 3)
+}
+
+fn curved_line_count(app: &AppState) -> usize {
+    app.doc
+        .lines
+        .values()
+        .filter(|l| !l.construction && l.is_curved())
+        .count()
+}
+
+/// Curve mode is armed, or the curves it makes are already drawn.
+fn curve_mode_on(app: &AppState) -> bool {
+    app.draw_curve_mode || curved_line_count(app) > 0
+}
+
+fn has_one_curve(app: &AppState) -> bool {
+    curved_line_count(app) >= 1
+}
+
+fn has_two_curves(app: &AppState) -> bool {
+    curved_line_count(app) >= 2
+}
+
+/// Draw the outline, then bend the two corners that Curve mode would have rounded.
+fn assist_draw_curved_outline(app: &mut AppState) {
+    if has_closed_polygon(app) && has_two_curves(app) {
+        return;
+    }
+    if !has_closed_polygon(app) {
+        ensure_poly_sketch_open(app);
+        let Some(session) = app.sketch_session else {
+            return;
+        };
+        crate::construction::add_line_polygon(&mut app.doc, session.sketch, &CURVE_UV);
+        app.refresh_document_health();
+    }
+    let lines = first_sketch_rect_lines(app);
+    // Corners 1 and 2 of the outline — the far side, where the two curves land.
+    for nth in [1usize, 2] {
+        if curved_line_count(app) > nth - 1 {
+            continue;
+        }
+        let Some(&line) = lines.get(nth) else {
+            continue;
+        };
+        app.apply(Action::ConvertVertexToBezier {
+            point: crate::model::ConstraintPoint::LineEndpoint {
+                line,
+                end: crate::model::LineEnd::End,
+            },
+        });
+    }
+}
+
+fn assist_curve_mode_on(app: &mut AppState) {
+    if curve_mode_on(app) {
+        return;
+    }
+    app.apply(Action::ApplyCurveMode { curve_mode: true });
+}
+
+fn assist_extrude_curved_outline(app: &mut AppState) {
+    if has_extrusion(app) {
+        return;
+    }
+    assist_draw_curved_outline(app);
+    let Some(sketch) = app.doc.lines.values().find(|l| !l.construction).map(|l| l.sketch) else {
+        return;
+    };
+    let Some(lines) = crate::polygon::closed_line_loops(&app.doc, sketch)
+        .into_iter()
+        .max_by_key(|l| l.len())
+    else {
+        return;
+    };
+    if lines.len() < 4 {
+        return;
+    }
+    if app.sketch_session.is_some() {
+        app.apply(Action::ExitSketch);
+    }
+    app.apply(Action::CreateExtrusion {
+        sketch,
+        faces: vec![crate::model::ExtrudeFace::Polygon(lines)],
+        distance: 10.0,
+        body: crate::actions::ExtrudeBodyChoice::New,
+        target: None,
+        expression: Some("10".into()),
+        symmetric: false,
+        taper: 0.0,
+        taper_mode: crate::model::ExtrudeTaperMode::Distance,
+        taper_expression: None,
+    });
+}
+
+/// #1677: draw an outline whose far side bends, using the Line tool's Curve mode, then
+/// extrude it like any other profile.
+static CURVES_STEPS: &[Step] = &[
+    plain_step(
+        "Curves come from the Line tool: tick Curve and the next point arrives smooth \
+         instead of sharp.",
+        StepAnchor::None,
+        None,
+    ),
+    plain_step(
+        "Click the Line tool \u{2014} glowing button, or `L`.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Line)),
+        Some(line_tool_active),
+    ),
+    plain_step_enter(
+        "Click a first point on the ground.",
+        StepAnchor::World(curve_vertex_0),
+        Some(first_poly_vertex_placed),
+        ensure_line_sketch_for_tutorial,
+    ),
+    plain_step(
+        "Click a second point. That segment is straight.",
+        StepAnchor::World(curve_vertex_1),
+        Some(poly_has_one_side),
+    ),
+    assisted_step(
+        "Now tick `Curve` in the Context pane \u{2014} or press `Ctrl`/`Cmd` + `B`.",
+        StepAnchor::Ui(UiAnchor::CheckboxRow("Curve")),
+        Some(curve_mode_on),
+        StepAssist {
+            label: "Turn it on for me",
+            run: assist_curve_mode_on,
+        },
+        None,
+    ),
+    assisted_step(
+        "Click the next point. It bends in instead of turning a corner.",
+        StepAnchor::World(curve_vertex_2),
+        Some(has_one_curve),
+        StepAssist {
+            label: "Draw it for me",
+            run: assist_draw_curved_outline,
+        },
+        None,
+    ),
+    assisted_step(
+        "Click another point \u{2014} another curve.",
+        StepAnchor::World(curve_vertex_3),
+        Some(has_two_curves),
+        StepAssist {
+            label: "Draw it for me",
+            run: assist_draw_curved_outline,
+        },
+        None,
+    ),
+    assisted_step(
+        "Click back on the first point to close the outline.",
+        StepAnchor::World(curve_vertex_0),
+        Some(has_closed_polygon),
+        StepAssist {
+            label: "Close it for me",
+            run: assist_draw_curved_outline,
+        },
+        None,
+    ),
+    plain_step(
+        "Click the Extrude tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude)),
+        Some(extrude_tool_active),
+    ),
+    plain_step(
+        "Click inside the outline.",
+        StepAnchor::World(rectangle_face_guide),
+        Some(extrude_face_picked),
+    ),
+    assisted_step(
+        "Type `10`, then Enter. Curved sides extrude like straight ones.",
+        StepAnchor::Ui(UiAnchor::ExtrudeDistance),
+        Some(has_extrusion),
+        StepAssist {
+            label: "Extrude it for me",
+            run: assist_extrude_curved_outline,
+        },
+        Some(TypeHint::Fixed("10")),
+    ),
+    plain_step(
+        "Reopen the sketch any time and drag a curve's round handles to reshape it. Nice!",
+        StepAnchor::None,
+        None,
+    ),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5419,10 +5643,11 @@ mod tests {
             Some(14),
             "#1676: derived parameters is fifteenth"
         );
+        assert_eq!(tutorial_index("curves"), Some(15), "#1677: curves is sixteenth");
         assert_eq!(tutorial_index("bracket"), None, "#1334: build-a-bracket tutorial is gone");
         assert_eq!(tutorial_index("nope"), None);
-        assert_eq!(TUTORIALS.last().unwrap().name, "derived_parameter");
-        assert_eq!(TUTORIALS.len(), 15, "pane lists every remaining walkthrough");
+        assert_eq!(TUTORIALS.last().unwrap().name, "curves");
+        assert_eq!(TUTORIALS.len(), 16, "pane lists every remaining walkthrough");
         for tut in TUTORIALS {
             assert_ne!(tut.name, "bracket");
             assert_ne!(tut.title, "Build an angle bracket");
@@ -7584,6 +7809,57 @@ mod tests {
             "two sides should be equal, status={}",
             app.status
         );
+    }
+
+    fn curves_tut() -> &'static Tutorial {
+        &TUTORIALS[tutorial_index("curves").expect("curves tutorial is registered")]
+    }
+
+    /// #1677: draw a shape whose sides bend, using the Line tool's Curve mode.
+    #[test]
+    fn curves_tutorial_is_registered_and_turns_curve_mode_on() {
+        let tut = curves_tut();
+        assert_eq!(tut.name, "curves");
+        assert_eq!(tut.title, "Curves");
+        let joined: String = tut
+            .steps
+            .iter()
+            .map(|s| s.narration.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("curve"), "{joined}");
+        assert!(
+            tut.steps
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::CheckboxRow("Curve")))),
+            "a step points at the Curve tick in the Context pane"
+        );
+        assert!(
+            tut.steps
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::Tool(Tool::Line)))),
+            "curves are drawn with the Line tool"
+        );
+    }
+
+    /// #1677: the assists leave a closed outline with curved sides, extruded into a solid.
+    #[test]
+    fn curves_tutorial_assists_draw_a_curved_outline_and_extrude_it() {
+        let mut app = AppState::default();
+        finish_tutorial_via_next(&mut app, "curves");
+        assert!(
+            has_closed_polygon(&app),
+            "the outline closes, status={}",
+            app.status
+        );
+        let curved = app
+            .doc
+            .lines
+            .values()
+            .filter(|l| !l.construction && l.is_curved())
+            .count();
+        assert!(curved >= 2, "at least two sides are curves, got {curved}");
+        assert!(has_extrusion(&app), "and it extrudes, status={}", app.status);
     }
 
     fn derived_tut() -> &'static Tutorial {
