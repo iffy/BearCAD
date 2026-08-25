@@ -8,9 +8,11 @@ title: Projection
 Adds a **view** — a body, several bodies, a whole component, or a sketch projected from a
 chosen direction — to the page.
 
-With the tool active, click a body, component, or sketch in the Elements pane, or drag its
-row onto the page. **Shift+click** more bodies (or a component) to add them to the
-selected projection. Click a placed view to reopen its editor. Options:
+With the tool active, click a body, component, or sketch in the Elements pane: the view
+picks up the cursor. Move it where you want it and click (or press **Enter**) to drop it;
+**Esc** takes it back off the page. Dragging the row onto the page places it directly.
+**Shift+click** more bodies (or a component) to add them to the selected projection. Click
+a placed view to reopen its editor. Options:
 
 - **Direction:** drag the navigation bear (smooth spin; the view snaps to the nearest
   face/edge/corner), click a face or corner, or use the numpad (4 left, 5 front, 6 right,

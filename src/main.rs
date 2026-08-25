@@ -27695,6 +27695,33 @@ impl App {
                     self.drawing_view_drag = Some((drawing, vi));
                 }
             }
+
+            // A projection the Projection tool just dropped rides the cursor until it is
+            // placed (#1706): the *real* view follows the pointer, so what you see is what
+            // lands. A click or Enter drops it; Escape takes it back off the sheet.
+            if let Some((pd, pv)) = self.state.placing_drawing_view {
+                if pd != drawing || self.state.doc.drawings.get(drawing)
+                    .is_none_or(|d| d.views.len() <= pv)
+                {
+                    self.state.placing_drawing_view = None;
+                } else {
+                    if let Some(pp) = pointer_screen.filter(|p| page.contains(*p)) {
+                        let pos_x = ((pp.x - page.min.x) / page.width()).clamp(0.0, 1.0);
+                        let pos_y = ((pp.y - page.min.y) / page.height()).clamp(0.0, 1.0);
+                        move_view = Some((pv, pos_x, pos_y));
+                    }
+                    // The press that drops it must not also grab the card for a drag.
+                    if ui.input(|i| i.pointer.any_pressed()) {
+                        self.state.apply(Action::PlaceDrawingView);
+                        self.drawing_view_drag = None;
+                        pan_suppressed_by_card = true;
+                    } else if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        self.state.apply(Action::PlaceDrawingView);
+                    } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        self.state.apply(Action::CancelPlacingDrawingView);
+                    }
+                }
+            }
         }
 
         // Free text annotations on the page (#312): render them, let the Select tool drag
@@ -34527,8 +34554,11 @@ impl App {
                     "Text — click a face or plane to sketch text on"
                 }
             }
+            Tool::DrawingAdd if self.state.placing_drawing_view.is_some() => {
+                "Projection — move it into place • click or Enter: drop • Esc: cancel"
+            }
             Tool::DrawingAdd => {
-                "Projection — click a body or sketch in the Elements pane, then drag it into place"
+                "Projection — click a body or sketch in the Elements pane, then place it"
             }
             Tool::SectionPlane => {
                 if self.state.creating_section.as_ref().is_some_and(|c| c.anchor.is_some()) {

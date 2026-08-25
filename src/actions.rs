@@ -2901,6 +2901,10 @@ pub enum Action {
     DragSelection { u: f32, v: f32 },
     /// Finish the in-sketch Move gizmo drag (#306).
     EndSelectionDrag,
+    /// Drop the projection that is riding the cursor where it stands (#1706).
+    PlaceDrawingView,
+    /// Take it back off the sheet — Escape while placing (#1706).
+    CancelPlacingDrawingView,
     /// Nudge whatever is selected by `(dx, dy)` mm (#1708) — the Select tool's arrow keys.
     /// On a drawing page that moves the picked views and notes across the sheet; in a sketch
     /// it slides the picked geometry, constraints and all.
@@ -4619,6 +4623,10 @@ pub struct AppState {
     /// (never persisted): while `Some`, the central area shows that drawing instead of the
     /// 3D viewport.
     pub editing_drawing: Option<crate::model::DrawingKey>,
+    /// A projection just added with the Projection tool and not yet parked (#1706): it rides
+    /// the cursor across the page until a click (or Enter) drops it, and Escape takes it back
+    /// off the sheet. `(drawing, view)`.
+    pub placing_drawing_view: Option<(crate::model::DrawingKey, usize)>,
     /// The cross-section view being set up (#1671): the View workbench, when it is `Some`.
     pub editing_cross_section: Option<crate::model::CrossSectionKey>,
     /// The elements selected on the open drawing page (#346): projections, text notes, and shown
@@ -4878,6 +4886,7 @@ impl Default for AppState {
             creating_shell: None,
             creating_sketch_slice: None,
             editing_drawing: None,
+            placing_drawing_view: None,
             editing_cross_section: None,
             selected_drawing_elements: Vec::new(),
             hovered_drawing_element: None,
@@ -9402,6 +9411,24 @@ impl AppState {
         self.creating_section = None;
     }
 
+    /// A projection the Projection tool just dropped rides the cursor until it is placed
+    /// (#1706). Only the newest view, and only when it really was just added.
+    fn arm_drawing_view_placement(&mut self, drawing: crate::model::DrawingKey) {
+        let Some(view) = self
+            .doc
+            .drawings
+            .get(drawing)
+            .map(|d| d.views.len())
+            .filter(|n| *n > 0)
+            .map(|n| n - 1)
+        else {
+            return;
+        };
+        self.placing_drawing_view = Some((drawing, view));
+        self.status = "Move the projection into place — click or Enter to drop it, Esc to cancel"
+            .to_string();
+    }
+
     /// Advance the running tutorial past every step whose predicate is now satisfied
     /// (a user who worked ahead skips ahead), stopping at manual steps or the end.
     pub fn advance_tutorial(&mut self) {
@@ -10626,7 +10653,8 @@ impl AppState {
                     }
                     Tool::Text => "Text tool — click a face".to_string(),
                     Tool::DrawingAdd => {
-                        "Projection — click a body or sketch in the Elements pane".to_string()
+                        "Projection — click a body or sketch in the Elements pane, then place it"
+                            .to_string()
                     }
                     Tool::DrawingAlign => {
                         "Aligned view — click a projection, then move the mouse and click to place a lined-up view".to_string()
@@ -12545,6 +12573,19 @@ impl AppState {
             Action::EndSelectionDrag => {
                 self.selection_drag_session = None;
                 ActionResult::Ok
+            }
+            Action::PlaceDrawingView => {
+                self.placing_drawing_view = None;
+                self.status = "Projection placed".to_string();
+                ActionResult::Ok
+            }
+            Action::CancelPlacingDrawingView => {
+                let Some((drawing, view)) = self.placing_drawing_view.take() else {
+                    return ActionResult::Ok;
+                };
+                let result = self.apply(Action::RemoveDrawingView { drawing, view });
+                self.status = "Projection cancelled".to_string();
+                result
             }
             // #1708: the Select tool's arrow keys. Both spaces are millimetres, so a nudge
             // means the same thing whichever you are looking at; the drawing page stores
@@ -17083,6 +17124,7 @@ op,
                                 orientation,
                             });
                         }
+                        self.arm_drawing_view_placement(drawing);
                         true
                     }
                     // A cross-section view clicked with the Add-view tool imports the whole
@@ -17096,6 +17138,7 @@ op,
                             view: *view,
                             orientation: crate::model::DrawingOrientation::default(),
                         });
+                        self.arm_drawing_view_placement(drawing);
                         true
                     }
                     SceneElement::Component(ci)
@@ -17140,6 +17183,7 @@ op,
                                 });
                             }
                         }
+                        self.arm_drawing_view_placement(drawing);
                         true
                     }
                     SceneElement::Sketch(si)
@@ -17155,6 +17199,7 @@ op,
                         if matches!(result, ActionResult::Ok) {
                             let vi = self.doc.drawings[drawing].views.len() - 1;
                             self.select_drawing_only(drawing, crate::context::DrawingElementRef::Projection(vi));
+                            self.arm_drawing_view_placement(drawing);
                         }
                         true
                     }

@@ -3701,6 +3701,27 @@ fn park_extra_view(app: &mut AppState) {
     }
 }
 
+/// #1706: the front view has been dropped — it is no longer riding the cursor.
+fn front_view_placed(app: &AppState) -> bool {
+    drawing_has_a_view(app) && app.placing_drawing_view.is_none()
+}
+
+/// The fourth view, likewise.
+fn extra_view_placed(app: &AppState) -> bool {
+    drawing_has_extra_view(app) && app.placing_drawing_view.is_none()
+}
+
+fn assist_place_front_view(app: &mut AppState) {
+    assist_add_front_view(app);
+    app.apply(Action::PlaceDrawingView);
+    park_front_view(app);
+}
+
+fn assist_place_extra_view(app: &mut AppState) {
+    assist_add_extra_view(app);
+    app.apply(Action::PlaceDrawingView);
+}
+
 fn drawing_has_a_view(app: &AppState) -> bool {
     drawing_views(app) >= 1
 }
@@ -3951,12 +3972,22 @@ static DRAWING_STEPS: &[Step] = &[
         Some(drawing_add_ready),
     ),
     assisted_step(
-        "Now click the bracket in the Elements pane: a front view lands on the page.",
+        "Now click the bracket in the Elements pane: a front view picks up the cursor.",
         StepAnchor::Ui(UiAnchor::ElementsBody),
         Some(drawing_has_a_view),
         StepAssist {
             label: "Place it for me",
             run: assist_add_front_view,
+        },
+        None,
+    ),
+    assisted_step(
+        "Move it to the lower left of the page and click to drop it.",
+        StepAnchor::Ui(UiAnchor::DrawingSpot { view: 0, right: 0, up: 0 }),
+        Some(front_view_placed),
+        StepAssist {
+            label: "Drop it for me",
+            run: assist_place_front_view,
         },
         None,
     ),
@@ -4009,6 +4040,16 @@ static DRAWING_STEPS: &[Step] = &[
         StepAssist {
             label: "Add the view",
             run: assist_add_extra_view,
+        },
+        None,
+    ),
+    assisted_step(
+        "Drop it in the empty corner.",
+        StepAnchor::Ui(UiAnchor::DrawingSpot { view: 0, right: 1, up: 1 }),
+        Some(extra_view_placed),
+        StepAssist {
+            label: "Drop it for me",
+            run: assist_place_extra_view,
         },
         None,
     ),
