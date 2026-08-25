@@ -28182,6 +28182,22 @@ impl App {
         // The Selection Exploder over the page (#1641), after every candidate has been
         // gathered: Space fans them out, and a click on a loupe does what clicking that thing
         // would have done.
+        // Half of a point-to-point dimension is armed (#1645/#1714): both of its points have
+        // to come off the same view, so the fan only offers that view's geometry — clicking a
+        // loupe from another card would toggle a dimension there instead of finishing this one.
+        if let Some((pending, _)) = self.drawing_point_dim_pick {
+            fan_candidates.retain(|c| match &c.kind {
+                construction::PickTargetKind::DrawingElement { element, .. } => {
+                    match element {
+                        context::DrawingElementRef::Projection(v)
+                        | context::DrawingElementRef::Dimension { view: v, .. }
+                        | context::DrawingElementRef::PointDim { view: v, .. } => *v == pending,
+                        context::DrawingElementRef::Text(_) => false,
+                    }
+                }
+                _ => true,
+            });
+        }
         self.tick_drawing_exploder(ui, area, drawing, fan_candidates);
         // The fan's press is followed by a release a frame later, which is when egui reports
         // the click the page must not act on (#1641).
