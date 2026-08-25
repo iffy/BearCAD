@@ -10064,6 +10064,7 @@ pub mod tests {
             assert(names.shell == "Shell")
             assert(names.derived_parameter == "Derived parameters")
             assert(names.curves == "Curves")
+            assert(names.slice == "Slice")
             "#
             .replace("__COUNT__", &crate::tutorial::TUTORIALS.len().to_string()),
         );
@@ -10264,6 +10265,38 @@ pub mod tests {
             assert(curved >= 2, "two sides bend, got " .. curved)
             assert(bearcad.count("extrusion") == 1, "and the outline extrudes")
             assert(bearcad.body_stats(0).volume > 0, "a real solid came out")
+            "#,
+        );
+    }
+
+    /// #1678: the slice tutorial walks with assists and really halves the block — two
+    /// fragments whose volumes add back up to the original.
+    #[test]
+    fn slice_tutorial_lua_walks_and_halves_a_block() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.ui.tutorial("slice")
+            local guard = 0
+            while bearcad.ui.tutorial_step() ~= nil do
+              guard = guard + 1
+              assert(guard < 60, "slice tutorial should finish")
+              local at = bearcad.ui.tutorial_step()
+              bearcad.ui.tutorial_assist()
+              if bearcad.ui.tutorial_step() == at then
+                bearcad.ui.tutorial_next()
+              end
+            end
+            assert(bearcad.count("slice") == 1, "one slice op")
+            local op = bearcad.get{ kind = "slice", index = 0 }
+            assert(op.outputs >= 2, "two pieces, got " .. tostring(op.outputs))
+            local total = 0
+            for i = 0, bearcad.count("body") - 1 do
+              local s = bearcad.body_stats(i)
+              if s ~= nil then total = total + s.volume end
+            end
+            -- The two wedges plus the shadowed original: 2 x 8000.
+            assert(math.abs(total - 16000) / 16000 < 0.02,
+              "pieces should add back up to the block, got " .. total)
             "#,
         );
     }

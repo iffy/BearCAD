@@ -395,6 +395,12 @@ pub static TUTORIALS: &[Tutorial] = &[
         title: "Curves",
         steps: CURVES_STEPS,
     },
+    // #1678: cut a block in two with a slanted sketch line.
+    Tutorial {
+        name: "slice",
+        title: "Slice",
+        steps: SLICE_STEPS,
+    },
 ];
 
 pub fn tutorial_index(name: &str) -> Option<usize> {
@@ -5472,6 +5478,280 @@ static CURVES_STEPS: &[Step] = &[
     ),
 ];
 
+// --- Slice tutorial (#1678) ------------------------------------------------------------
+
+fn slice_tool_active(app: &AppState) -> bool {
+    app.tool == Tool::Slice
+}
+
+fn has_slice(app: &AppState) -> bool {
+    !app.doc.slice_ops.is_empty()
+}
+
+/// The block's top face — where the cutting line is drawn.
+fn slice_top_face(app: &AppState) -> Option<crate::model::FaceId> {
+    let prim = app
+        .doc
+        .primitives
+        .iter()
+        .find(|(_, p)| p.kind == crate::model::PrimitiveKind::Cuboid)
+        .map(|(k, _)| k)?;
+    Some(crate::model::FaceId::PrimitiveFace {
+        primitive: prim,
+        face: crate::model::PrimitiveFace::CuboidTop,
+    })
+}
+
+fn sketch_on_block_top(app: &AppState) -> bool {
+    let Some(face) = slice_top_face(app) else {
+        return false;
+    };
+    app.doc.sketches.values().any(|s| s.face == face)
+}
+
+/// The slanted line's two ends, in the top-face sketch's local millimetres: a diagonal
+/// run from one corner of the top to the opposite one.
+fn slice_line_local(app: &AppState) -> Option<[(f32, f32); 2]> {
+    let sketch = app
+        .doc
+        .sketches
+        .iter()
+        .find(|(_, s)| Some(s.face.clone()) == slice_top_face(app))
+        .map(|(k, _)| k)?;
+    let frame = crate::face::sketch_geometry_frame(&app.doc, sketch)?;
+    let prim = app
+        .doc
+        .primitives
+        .values()
+        .find(|p| p.kind == crate::model::PrimitiveKind::Cuboid)?;
+    let r = crate::primitives::resolve(&app.doc, prim)?;
+    let base = r.cuboid_base();
+    let lift = r.normal * r.height;
+    let a = crate::face::world_to_local(&frame, base[0] + lift);
+    let c = crate::face::world_to_local(&frame, base[2] + lift);
+    // Push each end a little past the corner so the laser clears the block.
+    let (du, dv) = (c.0 - a.0, c.1 - a.1);
+    Some([
+        (a.0 - du * 0.15, a.1 - dv * 0.15),
+        (c.0 + du * 0.15, c.1 + dv * 0.15),
+    ])
+}
+
+/// A world point at each end of the slanted line, for the two drawing orbs.
+fn slice_line_guide(app: &AppState, end: usize) -> Option<glam::Vec3> {
+    let sketch = app.sketch_session.map(|s| s.sketch).or_else(|| {
+        app.doc
+            .sketches
+            .iter()
+            .find(|(_, s)| Some(s.face.clone()) == slice_top_face(app))
+            .map(|(k, _)| k)
+    })?;
+    let frame = crate::face::sketch_geometry_frame(&app.doc, sketch)?;
+    let ends = slice_line_local(app)?;
+    let (u, v) = ends[end];
+    Some(crate::face::local_to_world(&frame, u, v))
+}
+
+fn slice_line_start_guide(app: &AppState) -> Option<glam::Vec3> {
+    slice_line_guide(app, 0)
+}
+
+fn slice_line_end_guide(app: &AppState) -> Option<glam::Vec3> {
+    slice_line_guide(app, 1)
+}
+
+/// The line drawn across the block's top — the one Slice uses as its cutter.
+fn slice_cutter_line(app: &AppState) -> Option<crate::model::LineKey> {
+    let face = slice_top_face(app)?;
+    let sketch = app
+        .doc
+        .sketches
+        .iter()
+        .find(|(_, s)| s.face == face)
+        .map(|(k, _)| k)?;
+    app.doc
+        .lines
+        .iter()
+        .find(|(_, l)| l.sketch == sketch && !l.construction)
+        .map(|(k, _)| k)
+}
+
+fn slice_line_drawn(app: &AppState) -> bool {
+    slice_cutter_line(app).is_some()
+}
+
+fn slice_body_picked(app: &AppState) -> bool {
+    has_slice(app)
+        || app
+            .creating_slice
+            .as_ref()
+            .is_some_and(|c| !c.targets.is_empty())
+}
+
+fn slice_cutter_picked(app: &AppState) -> bool {
+    has_slice(app)
+        || app
+            .creating_slice
+            .as_ref()
+            .is_some_and(|c| !c.cutters.is_empty())
+}
+
+fn assist_sketch_on_block_top(app: &mut AppState) {
+    if sketch_on_block_top(app) {
+        return;
+    }
+    assist_place_cuboid(app);
+    let Some(face) = slice_top_face(app) else {
+        return;
+    };
+    app.apply(Action::BeginSketch { face, viewport: None });
+}
+
+fn assist_draw_slice_line(app: &mut AppState) {
+    if slice_line_drawn(app) {
+        return;
+    }
+    assist_sketch_on_block_top(app);
+    let Some([(x0, y0), (x1, y1)]) = slice_line_local(app) else {
+        return;
+    };
+    app.apply(Action::CreateLineSegment {
+        x0,
+        y0,
+        x1,
+        y1,
+        bezier: None,
+        dimension: None,
+    });
+}
+
+fn assist_slice_the_block(app: &mut AppState) {
+    if has_slice(app) {
+        return;
+    }
+    assist_draw_slice_line(app);
+    let Some(line) = slice_cutter_line(app) else {
+        return;
+    };
+    let Some(body) = live_body_for_primitive(app, crate::model::PrimitiveKind::Cuboid) else {
+        return;
+    };
+    if app.sketch_session.is_some() {
+        app.apply(Action::ExitSketch);
+    }
+    app.apply(Action::CreateSliceOperation {
+        targets: vec![body],
+        cutters: vec![crate::model::SliceCutter::Line { line }],
+        extend_infinite: true,
+    });
+}
+
+/// #1678: draw a slanted line across a block's top face and use it as a laser cutter.
+static SLICE_STEPS: &[Step] = &[
+    plain_step(
+        "Slice cuts a solid into pieces. A sketch line works like a laser \u{2014} it cuts \
+         straight down through whatever is under it.",
+        StepAnchor::None,
+        None,
+    ),
+    plain_step(
+        "Grab the Shape tool \u{2014} the glowing button, or press `B`.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        Some(shape_tool_active_or_has_cuboid),
+    ),
+    plain_step(
+        "Click Cuboid in the Context pane (or press `B`).",
+        StepAnchor::Ui(UiAnchor::ShapeKind(crate::model::PrimitiveKind::Cuboid)),
+        Some(cuboid_kind_ready),
+    ),
+    plain_step(
+        "Click a ground corner to anchor the block.",
+        StepAnchor::World(ground_anchor_a),
+        Some(cuboid_anchored),
+    ),
+    plain_step(
+        "Click the opposite corner of the base.",
+        StepAnchor::World(ground_anchor_b),
+        Some(cuboid_base_set),
+    ),
+    assisted_step_enter(
+        "Type the height: `20`, then Enter.",
+        StepAnchor::Ui(UiAnchor::ShapeHeight),
+        Some(has_cuboid),
+        StepAssist {
+            label: "Place it for me",
+            run: assist_place_cuboid,
+        },
+        Some(TypeHint::Fixed("20")),
+        ensure_shape_height_focus,
+    ),
+    plain_step(
+        "Click the Sketch tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Sketch)),
+        Some(sketch_tool_active),
+    ),
+    assisted_step(
+        "Click the top of the block to draw on it.",
+        StepAnchor::World(cuboid_top_guide),
+        Some(sketch_on_block_top),
+        StepAssist {
+            label: "Open it for me",
+            run: assist_sketch_on_block_top,
+        },
+        None,
+    ),
+    plain_step(
+        "Click the Line tool \u{2014} glowing button, or `L`.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Line)),
+        Some(line_tool_active),
+    ),
+    plain_step(
+        "Click just past one corner of the top.",
+        StepAnchor::World(slice_line_start_guide),
+        Some(first_poly_vertex_placed),
+    ),
+    assisted_step(
+        "Click just past the opposite corner \u{2014} a slanted line right across the block.",
+        StepAnchor::World(slice_line_end_guide),
+        Some(slice_line_drawn),
+        StepAssist {
+            label: "Draw it for me",
+            run: assist_draw_slice_line,
+        },
+        None,
+    ),
+    plain_step(
+        "Click the Slice tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Slice)),
+        Some(slice_tool_active),
+    ),
+    plain_step(
+        "Click the block \u{2014} that's what gets cut.",
+        StepAnchor::World(cuboid_body_guide),
+        Some(slice_body_picked),
+    ),
+    plain_step(
+        "Click the slanted line \u{2014} that's the cutter.",
+        StepAnchor::World(slice_line_end_guide),
+        Some(slice_cutter_picked),
+    ),
+    assisted_step(
+        "Press Enter. The block falls into two wedges.",
+        StepAnchor::None,
+        Some(has_slice),
+        StepAssist {
+            label: "Slice it for me",
+            run: assist_slice_the_block,
+        },
+        None,
+    ),
+    plain_step(
+        "Each piece is its own body now \u{2014} move them apart, or cut again. Nice!",
+        StepAnchor::None,
+        None,
+    ),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5644,10 +5924,11 @@ mod tests {
             "#1676: derived parameters is fifteenth"
         );
         assert_eq!(tutorial_index("curves"), Some(15), "#1677: curves is sixteenth");
+        assert_eq!(tutorial_index("slice"), Some(16), "#1678: slice is seventeenth");
         assert_eq!(tutorial_index("bracket"), None, "#1334: build-a-bracket tutorial is gone");
         assert_eq!(tutorial_index("nope"), None);
-        assert_eq!(TUTORIALS.last().unwrap().name, "curves");
-        assert_eq!(TUTORIALS.len(), 16, "pane lists every remaining walkthrough");
+        assert_eq!(TUTORIALS.last().unwrap().name, "slice");
+        assert_eq!(TUTORIALS.len(), 17, "pane lists every remaining walkthrough");
         for tut in TUTORIALS {
             assert_ne!(tut.name, "bracket");
             assert_ne!(tut.title, "Build an angle bracket");
@@ -7808,6 +8089,57 @@ mod tests {
             has_equal_constraint(&app),
             "two sides should be equal, status={}",
             app.status
+        );
+    }
+
+    fn slice_tut() -> &'static Tutorial {
+        &TUTORIALS[tutorial_index("slice").expect("slice tutorial is registered")]
+    }
+
+    /// #1678: cut a block in two along a slanted sketch line.
+    #[test]
+    fn slice_tutorial_is_registered_and_cuts_with_a_slanted_line() {
+        let tut = slice_tut();
+        assert_eq!(tut.name, "slice");
+        assert_eq!(tut.title, "Slice");
+        let joined: String = tut
+            .steps
+            .iter()
+            .map(|s| s.narration.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("slant") || joined.contains("diagonal"), "{joined}");
+        for tool in [Tool::Line, Tool::Slice] {
+            assert!(
+                tut.steps
+                    .iter()
+                    .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::Tool(t)) if t == tool)),
+                "the walkthrough picks {tool:?}"
+            );
+        }
+    }
+
+    /// #1678: the assists leave the block split into two fragments by a line cutter.
+    #[test]
+    fn slice_tutorial_assists_split_a_block_in_two() {
+        let mut app = AppState::default();
+        finish_tutorial_via_next(&mut app, "slice");
+        assert_eq!(
+            app.doc.slice_ops.len(),
+            1,
+            "one slice operation, status={}",
+            app.status
+        );
+        let op = app.doc.slice_ops.values().next().unwrap();
+        assert!(
+            matches!(op.cutters.first(), Some(crate::model::SliceCutter::Line { .. })),
+            "the cutter is the sketch line, got {:?}",
+            op.cutters
+        );
+        assert!(
+            op.outputs.len() >= 2,
+            "the block falls into at least two pieces, got {}",
+            op.outputs.len()
         );
     }
 
