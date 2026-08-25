@@ -1018,6 +1018,19 @@ pub enum Instruction {
     /// Two primary clicks in quick succession at one spot (#1692) — what opens a sketch,
     /// a plane, or a dimension label for editing from a pane row.
     DoubleClick { x: f32, y: f32 },
+    /// The Repeat tool's Count / Gap / Distance section (#1693): typed values, the two
+    /// measure toggles, and which of the three the app works out.
+    RepeatTool {
+        axis: Option<crate::model::RevolveAxis>,
+        count: Option<String>,
+        gap: Option<String>,
+        distance: Option<String>,
+        gap_is_offset: Option<bool>,
+        distance_is_end: Option<bool>,
+        computed: Option<crate::model::RepeatVar>,
+        around_axis: Option<bool>,
+        flip: Option<bool>,
+    },
     /// Move/click at ground-plane world coordinates (millimetres, z = 0).
     MoveGround { x: f32, y: f32 },
     /// A click at ground coordinates, optionally with modifiers held (#835/#984).
@@ -2395,6 +2408,41 @@ impl Instruction {
             }
             Instruction::DoubleClick { x, y } => {
                 format!("bearcad.ui.double_click({x}, {y})")
+            }
+            Instruction::RepeatTool {
+                axis,
+                count,
+                gap,
+                distance,
+                gap_is_offset,
+                distance_is_end,
+                computed,
+                around_axis,
+                flip,
+            } => {
+                let mut parts: Vec<String> = Vec::new();
+                if let Some(axis) = axis {
+                    parts.push(format!("axis = {}", revolve_axis_lua(*axis)));
+                }
+                for (key, value) in [("count", count), ("gap", gap), ("distance", distance)] {
+                    if let Some(v) = value {
+                        parts.push(format!("{key} = {v:?}"));
+                    }
+                }
+                if let Some(v) = computed {
+                    parts.push(format!("computed = {:?}", v.script_name()));
+                }
+                for (key, value) in [
+                    ("offset", gap_is_offset),
+                    ("to_end", distance_is_end),
+                    ("around", around_axis),
+                    ("flip", flip),
+                ] {
+                    if let Some(v) = value {
+                        parts.push(format!("{key} = {v}"));
+                    }
+                }
+                format!("bearcad.ui.repeat_tool{{ {} }}", parts.join(", "))
             }
             Instruction::MoveGround { x, y } => format!("bearcad.ui.move_ground({x}, {y})"),
             Instruction::ClickGround { x, y, mods } => {
@@ -8578,6 +8626,30 @@ impl ScriptRunner {
                     return StepResult::Wait;
                 };
                 synthetic.double_click(vp, x, y);
+                StepResult::Continue
+            }
+            Instruction::RepeatTool {
+                axis,
+                count,
+                gap,
+                distance,
+                gap_is_offset,
+                distance_is_end,
+                computed,
+                around_axis,
+                flip,
+            } => {
+                state.apply(Action::EditRepeatTool(crate::actions::RepeatToolEdit {
+                    axis,
+                    count,
+                    gap,
+                    distance,
+                    gap_is_offset,
+                    distance_is_end,
+                    computed,
+                    around_axis,
+                    flip,
+                }));
                 StepResult::Continue
             }
             Instruction::MoveGround { x, y } => {

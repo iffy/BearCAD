@@ -190,6 +190,7 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.ui.click_ground"             , "bearcad.ui.click_ground(x, y, { shift?, ctrl?, cmd? }?)"),
     ("bearcad.ui.click_world"              , "bearcad.ui.click_world(x, y, z, { shift?, ctrl?, cmd? }?)"),
     ("bearcad.ui.double_click"             , "bearcad.ui.double_click(x, y)"),
+    ("bearcad.ui.repeat_tool"              , "bearcad.ui.repeat_tool{ axis?, count?, gap?, distance?, offset?, to_end?, computed?, around?, flip? }"),
     ("bearcad.ui.close_tab"                , "bearcad.ui.close_tab(index?)"),
     ("bearcad.ui.complete_all_tutorials"   , "bearcad.ui.complete_all_tutorials()"),
     ("bearcad.ui.complete_tutorial"        , "bearcad.ui.complete_tutorial(name)"),

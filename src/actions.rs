@@ -1109,6 +1109,27 @@ pub struct CreatingRepeat {
     pub pending_focus: bool,
 }
 
+/// One edit of the Repeat tool's Count / Gap / Distance section (#1693). Set only what
+/// changes; `None` leaves that part alone.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RepeatToolEdit {
+    /// The path the copies march along — the pick the pane's Path row takes.
+    pub axis: Option<crate::model::RevolveAxis>,
+    pub count: Option<String>,
+    pub gap: Option<String>,
+    pub distance: Option<String>,
+    /// Gap row measures start-to-start (**Offset**) rather than the clear gap.
+    pub gap_is_offset: Option<bool>,
+    /// Distance row measures to the last copy's far **end** rather than its start.
+    pub distance_is_end: Option<bool>,
+    /// Which of the three the app works out from the other two.
+    pub computed: Option<crate::model::RepeatVar>,
+    /// Turn about the path instead of sliding along it.
+    pub around_axis: Option<bool>,
+    /// Run the pattern the other way along the path.
+    pub flip: Option<bool>,
+}
+
 impl Default for CreatingRepeat {
     fn default() -> Self {
         Self {
@@ -3364,6 +3385,10 @@ pub enum Action {
         line_targets: Vec<crate::model::LineKey>,
         circle_targets: Vec<crate::model::CircleKey>,
     },
+    /// Change the in-progress Repeat tool's fields and measure toggles (#1693) — what the
+    /// Context pane's Count / Gap / Distance rows, their icons and their locks do. Every
+    /// field is optional; the ones that are set are applied in the pane's own order.
+    EditRepeatTool(RepeatToolEdit),
     /// Commit the in-progress Repeat-tool operation.
     CommitRepeat,
     /// Scripted/replayed linear repeat with an explicit payload.
@@ -14346,6 +14371,59 @@ impl AppState {
                     self.editing_cross_section = None;
                 }
                 self.editing_drawing = drawing;
+                ActionResult::Ok
+            }
+            Action::EditRepeatTool(edit) => {
+                use crate::model::RepeatVar;
+                let cr = self
+                    .creating_repeat
+                    .get_or_insert_with(CreatingRepeat::default);
+                if let Some(axis) = edit.axis {
+                    cr.axis = Some(axis);
+                    cr.path_circle = None;
+                }
+                // Typed values first, each touching its own variable — the same order the
+                // pane's rows fire in, so the computed one lands where the user expects.
+                for (value, var) in [
+                    (edit.count, RepeatVar::Count),
+                    (edit.gap, RepeatVar::Gap),
+                    (edit.distance, RepeatVar::Distance),
+                ] {
+                    let Some(value) = value else { continue };
+                    match var {
+                        RepeatVar::Count => cr.count = value,
+                        RepeatVar::Gap => cr.spacing = value,
+                        RepeatVar::Distance => {
+                            cr.length = value;
+                            cr.user_edited = true;
+                            cr.pending_focus = false;
+                        }
+                    }
+                    cr.touch_var(var);
+                }
+                if let Some(around) = edit.around_axis {
+                    cr.around_axis = around;
+                    if around {
+                        cr.length_target = None;
+                        if cr.length.trim().is_empty() {
+                            cr.length = "360".to_string();
+                        }
+                    }
+                }
+                if let Some(flip) = edit.flip {
+                    cr.flip = flip;
+                }
+                if let Some(offset) = edit.gap_is_offset {
+                    cr.gap_is_offset = offset;
+                }
+                if let Some(end) = edit.distance_is_end {
+                    cr.distance_is_end = end;
+                }
+                // An explicit lock wins over whatever the typing above shuffled.
+                match edit.computed {
+                    Some(var) => cr.set_computed(var),
+                    None => cr.recompute_mode(),
+                }
                 ActionResult::Ok
             }
             Action::CommitRepeat => {

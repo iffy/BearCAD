@@ -18,6 +18,8 @@ bearcad.ui.click_ground(0, 0)           -- click on the active sketch plane, in 
 bearcad.ui.move_ground(80, 50)
 bearcad.ui.click(x, y)                  -- viewport pixel coordinates instead
 bearcad.ui.double_click(x, y)           -- opens a sketch / plane / dimension for editing
+bearcad.ui.repeat_tool{ axis = "x", count = 5, gap = 40 }   -- the Repeat tool's fields
+bearcad.ui.repeat_tool{ offset = true, to_end = false, computed = "gap" }  -- and its toggles
 bearcad.ui.click_world(20, 10, 50)      -- a point in world space: a body's side wall, say
 bearcad.ui.move_world(20, 10, 50)
 bearcad.ui.viewport()                   -- { width, height, x, y } of the area clicks address

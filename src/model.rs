@@ -4004,6 +4004,25 @@ impl RepeatMode {
 }
 
 impl RepeatVar {
+    /// The script name (#1693), so a script can name which of the three the app computes.
+    pub fn script_name(self) -> &'static str {
+        match self {
+            Self::Count => "count",
+            Self::Gap => "gap",
+            Self::Distance => "distance",
+        }
+    }
+
+    /// Inverse of [`Self::script_name`]; `"offset"` is the Gap row's other face.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "count" => Some(Self::Count),
+            "gap" | "offset" | "spacing" => Some(Self::Gap),
+            "distance" | "length" | "angle" => Some(Self::Distance),
+            _ => None,
+        }
+    }
+
     /// The MRU array (`[set, set, computed]`) placing `self` as the computed variable (#257).
     pub fn as_mru(self) -> [RepeatVar; 3] {
         let others: Vec<RepeatVar> = [RepeatVar::Count, RepeatVar::Gap, RepeatVar::Distance]

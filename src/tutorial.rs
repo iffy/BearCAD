@@ -5863,15 +5863,23 @@ fn ensure_repeat_in_progress(app: &mut AppState) {
     }
 }
 
+/// Every one of these goes through the same action the Context pane's rows fire (#1693).
+fn edit_repeat(app: &mut AppState, edit: crate::actions::RepeatToolEdit) {
+    app.apply(Action::EditRepeatTool(edit));
+}
+
 fn assist_repeat_count(app: &mut AppState) {
     if repeat_count_typed(app) {
         return;
     }
     ensure_repeat_in_progress(app);
-    if let Some(cr) = app.creating_repeat.as_mut() {
-        cr.count = REPEAT_COUNT.into();
-        cr.touch_var(crate::model::RepeatVar::Count);
-    }
+    edit_repeat(
+        app,
+        crate::actions::RepeatToolEdit {
+            count: Some(REPEAT_COUNT.into()),
+            ..Default::default()
+        },
+    );
 }
 
 fn assist_repeat_gap(app: &mut AppState) {
@@ -5879,10 +5887,13 @@ fn assist_repeat_gap(app: &mut AppState) {
         return;
     }
     assist_repeat_count(app);
-    if let Some(cr) = app.creating_repeat.as_mut() {
-        cr.spacing = REPEAT_GAP.into();
-        cr.touch_var(crate::model::RepeatVar::Gap);
-    }
+    edit_repeat(
+        app,
+        crate::actions::RepeatToolEdit {
+            gap: Some(REPEAT_GAP.into()),
+            ..Default::default()
+        },
+    );
 }
 
 fn assist_repeat_offset_toggle(app: &mut AppState) {
@@ -5890,10 +5901,13 @@ fn assist_repeat_offset_toggle(app: &mut AppState) {
         return;
     }
     assist_repeat_gap(app);
-    if let Some(cr) = app.creating_repeat.as_mut() {
-        cr.gap_is_offset = true;
-        cr.recompute_mode();
-    }
+    edit_repeat(
+        app,
+        crate::actions::RepeatToolEdit {
+            gap_is_offset: Some(true),
+            ..Default::default()
+        },
+    );
 }
 
 fn assist_repeat_lock_gap(app: &mut AppState) {
@@ -5901,9 +5915,13 @@ fn assist_repeat_lock_gap(app: &mut AppState) {
         return;
     }
     assist_repeat_offset_toggle(app);
-    if let Some(cr) = app.creating_repeat.as_mut() {
-        cr.set_computed(crate::model::RepeatVar::Gap);
-    }
+    edit_repeat(
+        app,
+        crate::actions::RepeatToolEdit {
+            computed: Some(crate::model::RepeatVar::Gap),
+            ..Default::default()
+        },
+    );
 }
 
 fn assist_repeat_distance(app: &mut AppState) {
@@ -5911,12 +5929,15 @@ fn assist_repeat_distance(app: &mut AppState) {
         return;
     }
     assist_repeat_lock_gap(app);
-    if let Some(cr) = app.creating_repeat.as_mut() {
-        cr.length = REPEAT_DISTANCE.into();
-        cr.touch_var(crate::model::RepeatVar::Distance);
-        // Distance must stay one of the two the user sets: re-lock Gap.
-        cr.set_computed(crate::model::RepeatVar::Gap);
-    }
+    // Typing Distance would hand it the lock; Gap keeps it, so Count + Distance drive.
+    edit_repeat(
+        app,
+        crate::actions::RepeatToolEdit {
+            distance: Some(REPEAT_DISTANCE.into()),
+            computed: Some(crate::model::RepeatVar::Gap),
+            ..Default::default()
+        },
+    );
 }
 
 fn assist_repeat_distance_toggle(app: &mut AppState) {
@@ -5924,10 +5945,13 @@ fn assist_repeat_distance_toggle(app: &mut AppState) {
         return;
     }
     assist_repeat_distance(app);
-    if let Some(cr) = app.creating_repeat.as_mut() {
-        cr.distance_is_end = false;
-        cr.recompute_mode();
-    }
+    edit_repeat(
+        app,
+        crate::actions::RepeatToolEdit {
+            distance_is_end: Some(false),
+            ..Default::default()
+        },
+    );
 }
 
 fn assist_commit_repeat(app: &mut AppState) {

@@ -6339,6 +6339,79 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1693: the Repeat tool's Count / Gap / Distance section — the two typed values, the
+    // measure toggles, and which of the three the app works out from the other two.
+    api.set(
+        "repeat_tool",
+        lua.create_function(|lua, opts: Table| {
+            check_keys(
+                &opts,
+                "repeat_tool",
+                &[
+                    "axis",
+                    "count",
+                    "gap",
+                    "spacing",
+                    "distance",
+                    "length",
+                    "offset",
+                    "to_end",
+                    "computed",
+                    "around",
+                    "flip",
+                ],
+            )?;
+            let text = |key: &str| -> mlua::Result<Option<String>> {
+                Ok(match opts.get::<Value>(key)? {
+                    Value::Nil => None,
+                    Value::String(s) => Some(s.to_str()?.to_string()),
+                    Value::Integer(i) => Some(i.to_string()),
+                    Value::Number(n) => Some(n.to_string()),
+                    _ => {
+                        return Err(mlua::Error::external(format!(
+                            "repeat_tool `{key}` must be a number or an expression string"
+                        )))
+                    }
+                })
+            };
+            let count = text("count")?;
+            let gap = match text("gap")? {
+                Some(v) => Some(v),
+                None => text("spacing")?,
+            };
+            let distance = match text("distance")? {
+                Some(v) => Some(v),
+                None => text("length")?,
+            };
+            let computed = match opts.get::<Option<String>>("computed")? {
+                None => None,
+                Some(name) => Some(crate::model::RepeatVar::from_name(&name).ok_or_else(|| {
+                    mlua::Error::external(format!(
+                        "unknown repeat variable '{name}' (count | gap | distance)"
+                    ))
+                })?),
+            };
+            let axis = match opts.get::<Value>("axis")? {
+                Value::Nil => None,
+                value => Some(parse_revolve_axis(lua, value, "repeat_tool")?),
+            };
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe {
+                tick.exec(Instruction::RepeatTool {
+                    axis,
+                    count,
+                    gap,
+                    distance,
+                    gap_is_offset: opts.get::<Option<bool>>("offset")?,
+                    distance_is_end: opts.get::<Option<bool>>("to_end")?,
+                    computed,
+                    around_axis: opts.get::<Option<bool>>("around")?,
+                    flip: opts.get::<Option<bool>>("flip")?,
+                })
+            }
+        })?,
+    )?;
+
     // #1692: a double-click, for the pane rows and labels that open on one.
     api.set(
         "double_click",
@@ -9121,7 +9194,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "complete_tutorial",
             "touch",
             "os_open",
-            "move", "click", "double_click", "move_ground", "click_ground",
+            "move", "click", "double_click", "repeat_tool", "move_ground", "click_ground",
             "move_world", "click_world",
             "drag", "drag_ground", "right_drag", "right_drag_pan",
             "right_click", "right_click_ground", "context_menu",
@@ -10383,6 +10456,55 @@ pub mod tests {
               local got = bearcad.body_stats(i).volume
               assert(math.abs(got - v) / v < 0.02, "post " .. i .. " volume " .. got)
             end
+            "#,
+        );
+    }
+
+    /// #1693: the Repeat tool's fields, measure toggles and computed-variable lock are all
+    /// drivable from a script — they used to live only in the pane's UI layer.
+    #[test]
+    fn lua_drives_the_repeat_tool_fields_and_toggles() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 20, depth = 20, height = 20 }
+            bearcad.select{ kind = "body", index = 0 }
+            bearcad.ui.tool("repeat")
+            bearcad.ui.repeat_tool{ axis = "x", count = 5, gap = 40 }
+            bearcad.ui.repeat_tool{ offset = true }
+            bearcad.ui.repeat_tool{ computed = "gap", distance = 300 }
+            bearcad.ui.repeat_tool{ to_end = false }
+            "#,
+        );
+        let cr = state
+            .creating_repeat
+            .as_ref()
+            .unwrap_or_else(|| panic!("a repeat in progress, status={}", state.status));
+        assert_eq!(cr.axis, Some(crate::model::RevolveAxis::X));
+        assert_eq!(cr.count, "5");
+        assert_eq!(cr.spacing, "40");
+        assert_eq!(cr.length, "300");
+        assert!(cr.gap_is_offset, "the Gap row was flipped to Offset");
+        assert!(!cr.distance_is_end, "Distance measures to the last copy's start");
+        assert_eq!(
+            cr.mode,
+            crate::model::RepeatMode::CountFitCenters,
+            "gap computed, distance measured to the last copy's start"
+        );
+    }
+
+    /// #1693: a nonsense variable name is refused, and names the three that work.
+    #[test]
+    fn lua_repeat_tool_rejects_an_unknown_variable() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            local ok, err = pcall(function()
+              bearcad.ui.repeat_tool{ computed = "sideways" }
+            end)
+            assert(not ok, "an unknown variable should be refused")
+            err = tostring(err)
+            assert(err:find("sideways") and err:find("count"), err)
             "#,
         );
     }

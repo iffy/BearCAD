@@ -391,6 +391,7 @@ bearcad.ui.pane_rect(pane)
 bearcad.ui.pane_scroll(pane)
 bearcad.ui.picker_focus(name)
 bearcad.ui.reorder_tab(from, to)
+bearcad.ui.repeat_tool{ axis?, count?, gap?, distance?, offset?, to_end?, computed?, around?, flip? }
 bearcad.ui.report_issue(verb?)
 bearcad.ui.right_click(x, y, { shift?, ctrl?, cmd? }?)
 bearcad.ui.right_click_ground(x, y, { shift?, ctrl?, cmd? }?)

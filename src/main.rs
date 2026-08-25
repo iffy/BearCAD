@@ -17360,55 +17360,38 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                         self.state.apply(Action::CommitRepeat);
                     }
                     edit => {
+                        // Everything the Count / Gap / Distance section can change goes
+                        // through one action (#1693), so a script can drive it too. The
+                        // picker bits are pane-only state and stay here.
                         let cr = self
                             .state
                             .creating_repeat
                             .get_or_insert_with(actions::CreatingRepeat::default);
-                        use model::RepeatVar;
+                        let mut change = actions::RepeatToolEdit::default();
                         match edit {
                             context::RepeatEdit::ClearAxis => cr.axis = None,
                             // #645: arming the picker is UI state, handled after this block.
                             context::RepeatEdit::LengthTargetFocus => {}
                             context::RepeatEdit::ClearLengthTarget => cr.length_target = None,
-                            context::RepeatEdit::SetComputed(v) => cr.set_computed(v),
-                            context::RepeatEdit::Count(v) => {
-                                cr.count = v;
-                                cr.touch_var(RepeatVar::Count);
-                            }
-                            context::RepeatEdit::Gap(v) => {
-                                cr.spacing = v;
-                                cr.touch_var(RepeatVar::Gap);
-                            }
-                            context::RepeatEdit::Distance(v) => {
-                                cr.length = v;
-                                cr.user_edited = true;
-                                cr.pending_focus = false;
-                                cr.touch_var(RepeatVar::Distance);
-                            }
-                            context::RepeatEdit::FocusConsumed => {
-                                cr.pending_focus = false;
-                            }
+                            context::RepeatEdit::FocusConsumed => cr.pending_focus = false,
+                            context::RepeatEdit::SetComputed(v) => change.computed = Some(v),
+                            context::RepeatEdit::Count(v) => change.count = Some(v),
+                            context::RepeatEdit::Gap(v) => change.gap = Some(v),
+                            context::RepeatEdit::Distance(v) => change.distance = Some(v),
                             context::RepeatEdit::ToggleGapOffset => {
-                                cr.gap_is_offset = !cr.gap_is_offset;
-                                cr.recompute_mode();
+                                change.gap_is_offset = Some(!cr.gap_is_offset)
                             }
                             context::RepeatEdit::ToggleDistanceEnd => {
-                                cr.distance_is_end = !cr.distance_is_end;
-                                cr.recompute_mode();
+                                change.distance_is_end = Some(!cr.distance_is_end)
                             }
-                            context::RepeatEdit::SetFlip(flip) => cr.flip = flip,
+                            context::RepeatEdit::SetFlip(flip) => change.flip = Some(flip),
                             context::RepeatEdit::SetAroundAxis(around) => {
-                                cr.around_axis = around;
-                                // A sweep has no target to measure to (#839), and the angle
-                                // starts at a full turn.
-                                if around {
-                                    cr.length_target = None;
-                                    if cr.length.trim().is_empty() {
-                                        cr.length = "360".to_string();
-                                    }
-                                }
+                                change.around_axis = Some(around)
                             }
                             context::RepeatEdit::Commit => unreachable!(),
+                        }
+                        if change != actions::RepeatToolEdit::default() {
+                            self.state.apply(Action::EditRepeatTool(change));
                         }
                     }
                 }
