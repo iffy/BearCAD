@@ -1013,6 +1013,12 @@ impl ViewportScene {
                     .collect(),
                 _ => Default::default(),
             };
+        // The open cross-section view's planes, if any (#1688).
+        let section_cuts: Option<&[crate::model::CrossSectionCut]> = input
+            .open_cross_section
+            .and_then(|key| input.doc.cross_sections.get(key))
+            .map(|view| view.cuts.as_slice());
+        let cut_away = section_cuts.is_some_and(|cuts| !cuts.is_empty());
         let body_meshes: std::collections::HashMap<crate::model::BodyKey, Option<crate::extrude::SolidMesh>> = input
             .doc
             .bodies
@@ -1029,10 +1035,15 @@ impl ViewportScene {
                             .element_visibility
                             .effective_visible(input.doc, SceneElement::UnitInstance(instance));
                 }
-                let mesh = if visible {
-                    crate::extrude::body_solid_mesh(input.doc, bi)
-                } else {
-                    None
+                // In the View workbench the bodies draw cut (#1688): each of the open view's
+                // planes hides what is on its far side, and the kernel closes the opening so
+                // the cut face is real geometry to hatch.
+                let mesh = match (visible, section_cuts) {
+                    (false, _) => None,
+                    (true, Some(cuts)) if !cuts.is_empty() => {
+                        crate::extrude::cross_section_body_mesh(input.doc, bi, cuts)
+                    }
+                    (true, _) => crate::extrude::body_solid_mesh(input.doc, bi),
                 };
                 (bi, mesh)
             })
@@ -1040,7 +1051,7 @@ impl ViewportScene {
         // Smooth per-vertex normals for the shaded modes (#1037), shared out of the same
         // kind of per-document cache the meshes use, so this is a refcount bump per frame
         // rather than a rebuild.
-        let shaded = matches!(
+        let shaded = !cut_away && matches!(
             input.cam.shading_mode(),
             crate::camera::ShadingMode::Solid
                 | crate::camera::ShadingMode::SolidWireframe
@@ -1919,6 +1930,21 @@ impl ViewportScene {
                     input.viewport,
                     &vp,
                 );
+            }
+        }
+        // The lined pattern on the faces the planes opened (#1688).
+        if let Some(cuts) = section_cuts {
+            for cut in cuts {
+                for solid in body_meshes.values().flatten() {
+                    mesh.push_section_hatch(
+                        solid,
+                        cut,
+                        input.palette.dim_edge_highlight,
+                        input.cam,
+                        input.viewport,
+                        &vp,
+                    );
+                }
             }
         }
         if let Some(preview) = input.plane_preview.as_ref() {
@@ -3029,6 +3055,73 @@ impl<'a> SceneMesh<'a> {
     ) {
         let corners = plane_corners(plane);
         self.push_quad_outline(corners, color, stroke_width, cam, viewport, view_proj);
+    }
+
+    /// Hatch the faces a cutting plane opened (#1688): the lined pattern that says "you are
+    /// looking at cut material". Every triangle lying in the plane is hatched from one shared
+    /// world-space phase, so the lines run unbroken across the whole cut face rather than
+    /// restarting per triangle.
+    #[allow(clippy::too_many_arguments)]
+    fn push_section_hatch(
+        &mut self,
+        solid: &crate::extrude::SolidMesh,
+        cut: &crate::model::CrossSectionCut,
+        color: Color32,
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+    ) {
+        const SPACING_MM: f32 = 3.0;
+        const ON_PLANE_EPS: f32 = 1e-3;
+        let plane = crate::construction::cross_section_cut_plane(cut);
+        let (o, n, u, v) = (plane.origin, plane.normal, plane.u_axis, plane.v_axis);
+        for tri in &solid.triangles {
+            if tri.iter().any(|p| (*p - o).dot(n).abs() > ON_PLANE_EPS) {
+                continue;
+            }
+            // 2D in the plane's own basis; hatch lines are the diagonals u + v = k·spacing,
+            // measured from the plane's origin so neighbouring triangles line up.
+            let pts: [(f32, f32); 3] = [
+                ((tri[0] - o).dot(u), (tri[0] - o).dot(v)),
+                ((tri[1] - o).dot(u), (tri[1] - o).dot(v)),
+                ((tri[2] - o).dot(u), (tri[2] - o).dot(v)),
+            ];
+            let key = |p: (f32, f32)| p.0 + p.1;
+            let (lo, hi) = pts.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+                let k = key(*p);
+                (lo.min(k), hi.max(k))
+            });
+            let first = (lo / SPACING_MM).ceil() as i32;
+            let last = (hi / SPACING_MM).floor() as i32;
+            // A pathological triangle (a whole cut face at once) would ask for thousands of
+            // lines; cap the run so one bad frame can't stall the viewport.
+            for step in first..=last.min(first + 512) {
+                let level = step as f32 * SPACING_MM;
+                // Where the line crosses each edge of the triangle.
+                let mut hits: Vec<(f32, f32)> = Vec::new();
+                for (a, b) in [(pts[0], pts[1]), (pts[1], pts[2]), (pts[2], pts[0])] {
+                    let (ka, kb) = (key(a) - level, key(b) - level);
+                    if (ka > 0.0) == (kb > 0.0) || (ka - kb).abs() < 1e-9 {
+                        continue;
+                    }
+                    let t = ka / (ka - kb);
+                    hits.push((a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t));
+                }
+                if hits.len() < 2 {
+                    continue;
+                }
+                let world = |p: (f32, f32)| o + u * p.0 + v * p.1;
+                self.push_line_segment(
+                    world(hits[0]),
+                    world(hits[1]),
+                    color,
+                    1.0,
+                    cam,
+                    viewport,
+                    view_proj,
+                );
+            }
+        }
     }
 
     fn push_quad_outline(
@@ -9344,10 +9437,18 @@ mod tests {
     }
 
     fn build_scene_for_doc(state: &AppState) -> ViewportScene {
+        build_scene_for_doc_in_view(state, None)
+    }
+
+    /// The same scene, built as the View workbench draws it (#1688).
+    fn build_scene_for_doc_in_view(
+        state: &AppState,
+        open_cross_section: Option<crate::model::CrossSectionKey>,
+    ) -> ViewportScene {
         let cam = state.cam.clone();
         ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
-            open_cross_section: None,
+            open_cross_section,
             creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
@@ -9765,6 +9866,63 @@ mod tests {
         assert!(
             on_yz,
             "body_over_plane vertices for a YZ-resting cuboid should sit on x = 0"
+        );
+    }
+
+    /// #1688: with a cross-section view open, the bodies draw cut — nothing survives on the
+    /// far side of a plane — and the faces it opened are hatched.
+    #[test]
+    fn cross_section_view_cuts_the_body_and_hatches_the_face() {
+        use crate::model::{Primitive, PrimitiveKind};
+        let mut state = AppState::default();
+        // Only the ground plane, so the datum planes' own quads don't show up in the counts.
+        retain_ground_plane_only(&mut state.doc);
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.origin = [0.0, 0.0, 0.0];
+        shape.width = "40".into();
+        shape.depth = "40".into();
+        shape.height = "40".into();
+        state.apply(crate::actions::Action::CreateShape { shape });
+        state.apply(crate::actions::Action::CreateCrossSection { name: None });
+        let view = state.doc.cross_sections.keys().next().expect("the view");
+
+        let whole = build_scene_for_doc_in_view(&state, Some(view));
+        let body_max_z = |scene: &ViewportScene| {
+            scene
+                .vertices
+                .iter()
+                .map(|v| v.position[2])
+                .fold(f32::MIN, f32::max)
+        };
+        let tall = body_max_z(&whole);
+        assert!(tall > 30.0, "the whole cuboid is 40 tall, got {tall}");
+
+        // Cut across the middle, keeping the lower half (normal pointing down).
+        state.apply(crate::actions::Action::AddCrossSectionCut {
+            view: Some(view),
+            cut: crate::model::CrossSectionCut {
+                origin: glam::Vec3::new(0.0, 0.0, 20.0),
+                normal: -glam::Vec3::Z,
+                ..Default::default()
+            },
+        });
+        let cut_scene = build_scene_for_doc_in_view(&state, Some(view));
+        let cut_top = cut_scene
+            .vertices
+            .iter()
+            .filter(|v| v.position[2] > 20.5)
+            .count();
+        assert_eq!(cut_top, 0, "nothing is drawn above the cutting plane");
+
+        // The hatch: line vertices lying in the plane, well inside the cut face.
+        let hatched = cut_scene
+            .vertices
+            .iter()
+            .filter(|v| (v.position[2] - 20.0).abs() < 0.05)
+            .count();
+        assert!(
+            hatched > 12,
+            "the cut face is hatched with lines in its plane, got {hatched} vertices there"
         );
     }
 

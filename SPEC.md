@@ -2361,6 +2361,13 @@ outside the shape/undo DAG.
 - **Creating one:** the Elements pane's **+ → New cross section**, or **View → Create Cross
   Section**. Scriptable as `bearcad.cross_section{ name? }` (#1671), and readable back with
   `bearcad.count("cross_section")` / `bearcad.get{ kind = "cross_section", index }`.
+- **Drawing a section (#1688):** while a view is open, every visible body draws **cut**: its
+  kernel solid minus a half-space per plane (`extrude::cross_section_body_mesh`, memoized on
+  the document's mesh fingerprint plus the cuts, since a boolean per body per frame is not
+  free). The kernel closes each opening, so the exposed face is real geometry rather than an
+  open shell — and it is **hatched**: parallel lines at 3 mm, phased from the plane's own
+  origin so they run unbroken across the whole face rather than restarting per triangle.
+  The kept side is the one the plane's normal points toward; **Flip** keeps the other.
 - **The cutting-plane tool (#1687):** the View workbench's own tool. A click resolves the
   same pick the Plane tool does — a face, a construction plane, an edge, an axis — and hangs a
   cutting plane on that frame straight away: nothing is drafted and nothing is committed.

@@ -7211,6 +7211,103 @@ pub fn body_solid_mesh(doc: &Document, body_index: crate::model::BodyKey) -> Opt
     })
 }
 
+thread_local! {
+    /// Per-thread memo for [`cross_section_body_mesh`] (#1688): the View workbench cuts every
+    /// visible body against the open view's planes on every frame, and each cut is a kernel
+    /// boolean. Keyed by `(document fingerprint, body + cuts)`, so an idle view is free and a
+    /// dragged offset misses only for the plane that moved.
+    static CROSS_SECTION_MESH_CACHE: std::cell::RefCell<(u64, HashMap<u64, Option<SolidMesh>>)> =
+        std::cell::RefCell::new((0, HashMap::new()));
+}
+
+/// The half-space a cutting plane takes **away** (#1688): everything behind the plane, or in
+/// front of it when the cut is flipped. Sized to swallow the whole body it is cutting.
+fn cross_section_halfspace(
+    doc: &Document,
+    body: crate::model::BodyKey,
+    cut: &crate::model::CrossSectionCut,
+) -> Option<crate::kernel::Shape> {
+    let plane = crate::construction::cross_section_cut_plane(cut);
+    let n = plane.normal;
+    let (min, max) = body_solid_mesh(doc, body)?.bounds()?;
+    let reach = (max - min).length().max(1.0) * 4.0;
+    let centroid = (min + max) * 0.5;
+    // A square in the plane, centred on the body, big enough to overhang it entirely.
+    let center = centroid - n * (centroid - plane.origin).dot(n);
+    let (u, v) = (plane.u_axis, plane.v_axis);
+    let profile = vec![
+        center - u * reach - v * reach,
+        center + u * reach - v * reach,
+        center + u * reach + v * reach,
+        center - u * reach + v * reach,
+    ];
+    // The kept side is the one the normal points toward, so the prism runs the other way.
+    let away = if cut.flip { n } else { -n };
+    crate::kernel::Shape::prism(&profile, away * reach)
+}
+
+/// A body's mesh with a cross-section view's planes taken out of it (#1688): what the View
+/// workbench draws instead of the whole body. Each plane hides what is on its far side, and
+/// the openings come back as real cut faces — the kernel closes them — which is what the
+/// hatch pattern is drawn on. `None` when the body has no kernel solid, or when every plane
+/// cuts it away entirely.
+pub fn cross_section_body_mesh(
+    doc: &Document,
+    body: crate::model::BodyKey,
+    cuts: &[crate::model::CrossSectionCut],
+) -> Option<SolidMesh> {
+    if cuts.is_empty() {
+        return body_solid_mesh(doc, body);
+    }
+    let fingerprint = document_mesh_fingerprint(doc);
+    let hash = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        format!("{body:?}{cuts:?}").hash(&mut h);
+        h.finish()
+    };
+    let cached = CROSS_SECTION_MESH_CACHE.with(|cache| match cache.try_borrow_mut() {
+        Ok(mut cache) => {
+            if cache.0 != fingerprint {
+                cache.0 = fingerprint;
+                cache.1.clear();
+            }
+            cache.1.get(&hash).cloned()
+        }
+        Err(_) => None,
+    });
+    if let Some(hit) = cached {
+        return hit;
+    }
+    let mesh = cross_section_body_mesh_uncached(doc, body, cuts);
+    CROSS_SECTION_MESH_CACHE.with(|cache| {
+        if let Ok(mut cache) = cache.try_borrow_mut() {
+            if cache.0 != fingerprint {
+                cache.0 = fingerprint;
+                cache.1.clear();
+            }
+            cache.1.insert(hash, mesh.clone());
+        }
+    });
+    mesh
+}
+
+fn cross_section_body_mesh_uncached(
+    doc: &Document,
+    body: crate::model::BodyKey,
+    cuts: &[crate::model::CrossSectionCut],
+) -> Option<SolidMesh> {
+    let mut shape = posed_body_shape(doc, body)?;
+    for cut in cuts {
+        let Some(half) = cross_section_halfspace(doc, body, cut) else {
+            continue;
+        };
+        shape = shape.boolean(&half, crate::kernel::BoolOp::Cut)?;
+    }
+    let tris = shape.tessellate(OCCT_DEFLECTION as f64);
+    (!tris.is_empty()).then_some(SolidMesh { triangles: tris })
+}
+
 /// A body's kernel solid **with its joint pose applied** (#893) — what STEP export and
 /// anything else presenting the assembly should read, while feature inputs keep the
 /// un-jointed [`occt_body_shape`].

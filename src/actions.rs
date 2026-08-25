@@ -38924,6 +38924,65 @@ translate_mode: crate::model::MoveTranslateMode::Free,
     /// #1158: create a drawing of a body in one step (Elements-pane body context menu): a new
     /// drawing opens with a default-orientation view of that body. Named bodies seed the
     /// drawing's name; missing bodies are rejected.
+    /// #1688: a view's planes chop the bodies — half the box is gone, and the opening comes
+    /// back as a real cut face for the hatch to sit on.
+    #[test]
+    fn cross_section_planes_chop_the_body() {
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        let body = state.doc.bodies.keys().next().expect("a body");
+        let whole = crate::extrude::body_solid_mesh(&state.doc, body).expect("the body's mesh");
+        let (min, max) = whole.bounds().expect("bounds");
+        let full = crate::extrude::mesh_signed_volume(&whole).abs();
+        let mid_z = (min.z + max.z) * 0.5;
+
+        // Cut across the middle: the kept side is the one the normal points toward.
+        let cut = crate::model::CrossSectionCut {
+            origin: glam::Vec3::new(0.0, 0.0, mid_z),
+            normal: glam::Vec3::Z,
+            ..Default::default()
+        };
+        let top = crate::extrude::cross_section_body_mesh(&state.doc, body, &[cut])
+            .expect("the cut mesh");
+        let top_volume = crate::extrude::mesh_signed_volume(&top).abs();
+        assert!(
+            (top_volume - full / 2.0).abs() < full * 0.05,
+            "half the box survives: {top_volume} of {full}"
+        );
+        let (top_min, top_max) = top.bounds().expect("bounds");
+        assert!(top_min.z > mid_z - 1e-2, "nothing below the plane is left");
+        assert!(top_max.z > mid_z, "and the upper half is");
+
+        // Flipping keeps the other half instead.
+        let flipped = crate::model::CrossSectionCut { flip: true, ..cut };
+        let bottom = crate::extrude::cross_section_body_mesh(&state.doc, body, &[flipped])
+            .expect("the flipped mesh");
+        let (_, bottom_max) = bottom.bounds().expect("bounds");
+        assert!(bottom_max.z < mid_z + 1e-2, "the flip keeps what the first cut removed");
+
+        // The opening is closed: the cut mesh has triangles lying in the cutting plane.
+        let on_plane = top
+            .triangles
+            .iter()
+            .filter(|t| t.iter().all(|p| (p.z - mid_z).abs() < 1e-3))
+            .count();
+        assert!(on_plane > 0, "the cut face is real geometry, not an open shell");
+
+        // Two planes cut in two directions at once.
+        let side = crate::model::CrossSectionCut {
+            origin: glam::Vec3::new((min.x + max.x) * 0.5, 0.0, 0.0),
+            normal: glam::Vec3::X,
+            ..Default::default()
+        };
+        let quarter = crate::extrude::cross_section_body_mesh(&state.doc, body, &[cut, side])
+            .expect("the twice-cut mesh");
+        let quarter_volume = crate::extrude::mesh_signed_volume(&quarter).abs();
+        assert!(
+            (quarter_volume - full / 4.0).abs() < full * 0.05,
+            "two planes leave a quarter: {quarter_volume} of {full}"
+        );
+    }
+
     /// #1687: the cutting-plane tool hangs planes off faces, and each one slides, turns, and
     /// flips independently. Several combine to cut in several directions at once.
     #[test]

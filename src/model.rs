@@ -5364,8 +5364,9 @@ pub struct CrossSectionCut {
     /// How far the plane slides along its normal from `origin`.
     #[serde(default)]
     pub offset_mm: f32,
-    /// Which side survives: by default the material the normal points **away** from is kept,
-    /// so the normal faces the viewer through the cut. Flipping keeps the other side.
+    /// Which side survives: by default the material the normal points **toward** is kept and
+    /// everything behind the plane is hidden, so you look along the normal into the cut.
+    /// Flipping keeps the other side instead.
     #[serde(default)]
     pub flip: bool,
     /// Turn of the plane about its own normal — kept so a placed plane can be rotated
