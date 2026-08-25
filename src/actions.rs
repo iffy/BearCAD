@@ -20371,6 +20371,42 @@ pub fn apply_pick(
     use crate::context::PickerTarget as P;
     use crate::hierarchy::SceneElement;
     match (target, element) {
+        // A whole sketch text (#1701): the Extrude tool takes every glyph of the string at
+        // once, exactly as a click on the letters does, so a loupe for it does too.
+        (P::ExtrudeProfile, crate::hierarchy::SceneElement::SketchText(ti)) => {
+            let Some(sketch) = state.doc.sketch_texts.get(*ti).map(|t| t.sketch) else {
+                return false;
+            };
+            let glyphs = state
+                .doc
+                .sketch_texts
+                .get(*ti)
+                .map(|t| crate::text::group_glyphs(&t.contours).len())
+                .unwrap_or(0);
+            let faces: Vec<crate::model::ExtrudeFace> = (0..glyphs)
+                .map(|glyph| crate::model::ExtrudeFace::TextGlyph { text: *ti, glyph })
+                .collect();
+            if faces.is_empty() {
+                return false;
+            }
+            let ce = match &mut state.creating_extrusion {
+                Some(ce) if ce.sketch == Some(sketch) => ce,
+                _ => {
+                    state.creating_extrusion =
+                        Some(begin_creating_extrusion(state, sketch, faces));
+                    return true;
+                }
+            };
+            // All present → the click clears them; otherwise it adds the missing ones.
+            let all_present = faces.iter().all(|f| ce.faces.contains(f));
+            for face in faces {
+                if ce.faces.contains(&face) == all_present {
+                    crate::element_picker::toggle_picked(&mut ce.faces, face);
+                }
+            }
+            ce.pending_focus = true;
+            true
+        }
         (P::ExtrudeProfile, element) => {
             let Some(face) = extrude_face_from_element(element) else {
                 return false;

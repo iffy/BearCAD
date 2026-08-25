@@ -124,10 +124,11 @@ pub fn plane_anchor_source_from_pick(kind: &PickTargetKind) -> PlaneAnchorSource
         | PickTargetKind::SketchFace(_) => PlaneAnchorSource::Face,
         // A round wall is no plane to anchor against; classify it as a point so this is total.
         PickTargetKind::BodyCylinder { .. } => PlaneAnchorSource::Point,
-        // Neither a constraint badge (#568), a whole body (#902), nor a drawing-page item
-        // (#1641) is a plane anchor — all three only reach the exploder; classify them as a
-        // point so the arm is total.
-        PickTargetKind::Constraint(_)
+        // Neither a constraint badge (#568), a whole body (#902), a sketch text (#1701), nor
+        // a drawing-page item (#1641) is a plane anchor — they only reach the exploder;
+        // classify them as a point so the arm is total.
+        PickTargetKind::SketchText(_)
+        | PickTargetKind::Constraint(_)
         | PickTargetKind::Body(_)
         | PickTargetKind::DrawingElement { .. } => PlaneAnchorSource::Point,
     }
@@ -784,6 +785,8 @@ pub fn sketch_from_pick_target(doc: &Document, kind: PickTargetKind) -> Option<S
         // A constraint's own sketch — though a constraint is never used as a plane reference (it
         // only reaches the exploder, #568), so this is here just to keep the match total.
         PickTargetKind::Constraint(index) => doc.constraints.get(index).map(|c| c.sketch),
+        // Likewise a sketch text (#1701).
+        PickTargetKind::SketchText(index) => doc.sketch_texts.get(index).map(|t| t.sketch),
         // A profile face's own sketch; body/revolve faces belong to no sketch (like the
         // body kinds below).
         PickTargetKind::SketchFace(face) => match face {
@@ -1632,6 +1635,10 @@ pub enum PickTargetKind {
     /// crowd (never by `resolve_pick_target`), letting a constraint icon buried under overlapping
     /// geometry be fanned out and selected like anything else.
     Constraint(crate::model::ConstraintKey),
+    /// A whole sketch text (#1701): the Extrude tool takes all its glyph faces at once, so the
+    /// crowd offers the string as one leaf rather than not at all. Like `Constraint` and
+    /// `SketchFace`, produced only for the Selection Exploder.
+    SketchText(crate::model::SketchTextKey),
     /// An analytic sketchable face (#625) — exactly what `face::pick_sketch_face` picks: a
     /// sketch profile (circle/polygon), a body cap/side wall, or a revolve's flat face. Like
     /// `Constraint`, this is only ever produced for the Selection Exploder crowd, so tools
@@ -1756,6 +1763,10 @@ impl PickOcclusion {
             PickTargetKind::Circle(i) => {
                 doc.circles.get(*i).is_some_and(|c| !c.shadow)
                     && vis.effective_visible(doc, SceneElement::Circle(*i))
+            }
+            PickTargetKind::SketchText(i) => {
+                doc.sketch_texts.get(*i).is_some()
+                    && vis.effective_visible(doc, SceneElement::SketchText(*i))
             }
             PickTargetKind::BodyEdge { body, .. }
             | PickTargetKind::BodyFace { body, .. }
@@ -2230,6 +2241,8 @@ pub fn scene_element_from_pick(kind: &PickTargetKind) -> Option<SceneElement> {
         PickTargetKind::Point(point) => Some(SceneElement::Point(point.clone())),
         PickTargetKind::Line(index) => Some(SceneElement::Line(*index)),
         PickTargetKind::Circle(index) => Some(SceneElement::Circle(*index)),
+        // The whole string, exactly what the Extrude tool's hover highlights (#285/#1701).
+        PickTargetKind::SketchText(index) => Some(SceneElement::SketchText(*index)),
         // 3D body sub-elements are selectable outside sketch mode (#156). Their identity is
         // the quantized geometry, canonically ordered so either traversal direction of the
         // same edge maps to one selection key.
@@ -2477,6 +2490,9 @@ pub fn draw_pick_highlight(
         // driven separately via `draw_constraint_icons`'s hovered set — nothing to draw in the
         // world-geometry layer here.
         PickTargetKind::Constraint(_) => {}
+        // A sketch text's own highlight is its glyph outlines, drawn by the element-highlight
+        // path the Extrude tool's hover already uses (#285/#1701).
+        PickTargetKind::SketchText(_) => {}
         // The whole body (#902): every feature edge of its mesh lights up, so it reads as the
         // body rather than one of its faces.
         PickTargetKind::Body(body) => {
@@ -3708,6 +3724,23 @@ pub fn collect_pick_candidates(
         let kind = PickTargetKind::SketchFace(face);
         if pickable(&kind) {
             raw.push((kind, centroid, dist));
+        }
+    }
+
+    // A sketch text's letters (#1701): the Extrude tool picks the whole string as one profile,
+    // so the crowd carries one leaf for the text whose glyphs the cursor is inside.
+    for (ti, text) in doc.sketch_texts.iter() {
+        let regions = crate::text::group_glyphs(&text.contours).len();
+        let hit = (0..regions).find_map(|glyph| {
+            let face = crate::model::ExtrudeFace::TextGlyph { text: ti, glyph };
+            let (poly, _) = crate::extrude::face_profile_world(doc, &face)?;
+            crate::face::polygon_face_pick_distance(screen, project, &poly)
+        });
+        let kind = PickTargetKind::SketchText(ti);
+        if let Some((dist, at)) = hit {
+            if dist <= FACE_PICK_MARGIN_PX && pickable(&kind) {
+                raw.push((kind, at, dist));
+            }
         }
     }
 

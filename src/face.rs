@@ -2099,7 +2099,7 @@ fn side_face_pick_distance(
 
 /// Screen-space pick distance to a planar world-space polygon (0 inside, else
 /// nearest edge), paired with the polygon's world centroid for depth ordering.
-fn polygon_face_pick_distance(
+pub(crate) fn polygon_face_pick_distance(
     screen: eframe::egui::Pos2,
     project: &impl Fn(Vec3) -> Option<eframe::egui::Pos2>,
     poly: &[Vec3],

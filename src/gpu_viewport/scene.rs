@@ -4563,6 +4563,9 @@ impl<'a> SceneMesh<'a> {
             // A constraint's hover highlight is its badge glowing in the 2D annotation overlay
             // (#568), not a world-geometry marker — nothing to push into the 3D scene here.
             PickTargetKind::Constraint(_) => {}
+            // A sketch text (#1701) recolors through the element-highlight path the Extrude
+            // tool's own hover already drives.
+            PickTargetKind::SketchText(_) => {}
             // A whole body (#902) recolors in the main pass, like a hovered body row.
             PickTargetKind::Body(_) => {}
             // A drawing-page item (#1641) lives on the drawing workbench, which paints with

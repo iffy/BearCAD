@@ -136,6 +136,11 @@ impl ElementKind {
             // A repeat instance's face (#955) is an analytic one — it is the source face's
             // plane, translated, not any mesh in the document.
             SceneElement::RepeatedFace { .. } => ElementKind::Profile,
+            // A sketch text is a closed profile: what Extrude takes as its faces, and what
+            // its hover highlights (#285). Filing it under `Operation` — where the Elements
+            // pane groups its row — kept it out of every profile picker, and so out of the
+            // Selection Exploder's fan (#1701).
+            SceneElement::SketchText(_) => ElementKind::Profile,
             SceneElement::FaceEdge(_) | SceneElement::BodyEdge { .. } => ElementKind::Edge,
             SceneElement::Constraint(_) => ElementKind::Constraint,
             // A drawing's three item types keep their own kinds (#363/#967), so a picker can
@@ -170,7 +175,6 @@ impl ElementKind {
             | SceneElement::SketchMirrorOp(_)
             | SceneElement::SketchVertexTreatmentOp(_)
             | SceneElement::SketchSliceOp(_)
-            | SceneElement::SketchText(_)
             | SceneElement::SliceOp(_)
             | SceneElement::ShellOp(_)
             | SceneElement::EdgeTreatmentOp(_)
@@ -2360,7 +2364,7 @@ mod tests {
     fn every_element_kind_operation_has_an_operation_kind() {
         use crate::model::{
             edge_treatment_op_key_for_slot as etkey, primitive_key_for_slot as primkey,
-            sketch_op_key_for_slot as skop, sketch_text_key_for_slot as tkey,
+            sketch_op_key_for_slot as skop,
         };
         let ops = [
             SceneElement::Extrusion(xkey(0)),
@@ -2373,7 +2377,9 @@ mod tests {
             SceneElement::SketchMirrorOp(skop(0)),
             SceneElement::SketchVertexTreatmentOp(skop(0)),
             SceneElement::SketchSliceOp(skop(0)),
-            SceneElement::SketchText(tkey(0)),
+            // A sketch text is a Profile, not an Operation (#1701) — it is what the Extrude
+            // tool takes as its faces. `OperationKind::of` still names it, for the pane's
+            // operation grouping.
             SceneElement::SliceOp(slckey(0)),
             SceneElement::ShellOp(crate::model::shell_op_key_for_slot(0)),
             SceneElement::EdgeTreatmentOp(etkey(0)),

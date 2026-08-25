@@ -2054,7 +2054,8 @@ fn crowd_type_rank(kind: &construction::PickTargetKind) -> u8 {
     match kind {
         // Whole bodies first (#902): the coarsest thing under the cursor, ahead of its faces.
         K::Body(_) => 0,
-        K::BodyFace { .. } | K::SketchFace(_) | K::BodyCylinder { .. } => 1,
+        // A sketch text is a profile like any other (#1701): it groups with the faces.
+        K::BodyFace { .. } | K::SketchFace(_) | K::SketchText(_) | K::BodyCylinder { .. } => 1,
         // Edges: sketch line segments and body feature edges are one "edges" group — a sketch line
         // and a shape edge are the same kind of thing for the exploder's grouping.
         K::BodyEdge { .. } | K::Line(_) => 2,
@@ -2614,6 +2615,24 @@ fn pick_target_loupe_wireframe(
         ),
         // A drawing-page item (#1641) carries its own page-space outline.
         PK::DrawingElement { outline, .. } => (polyline(outline.clone()), Vec::new()),
+        // A sketch text's loupe draws its glyph outlines (#1701).
+        PK::SketchText(ti) => (
+            (0..doc
+                .sketch_texts
+                .get(*ti)
+                .map(|t| crate::text::group_glyphs(&t.contours).len())
+                .unwrap_or(0))
+                .filter_map(|glyph| {
+                    let face = model::ExtrudeFace::TextGlyph { text: *ti, glyph };
+                    let (poly, _) = crate::extrude::face_profile_world(doc, &face)?;
+                    let closed: Vec<Vec3> =
+                        poly.iter().copied().chain(poly.first().copied()).collect();
+                    Some(polyline(closed))
+                })
+                .flatten()
+                .collect(),
+            Vec::new(),
+        ),
         PK::Ground(_) | PK::Constraint(_) => (Vec::new(), vec![anchor]),
     }
 }
@@ -2963,6 +2982,26 @@ fn draw_pick_target_loupe(
         // A constraint has no world geometry to magnify — its visual *is* its badge (#568). Draw
         // the constraint's icon glyph centred in the loupe, tinted by `color` (grey for context,
         // blue/yellow when this loupe's own thing). Only for the highlighted loupe, like vertices.
+        // A sketch text (#1701): its glyph outlines, drawn like any other profile.
+        PK::SketchText(ti) => {
+            let glyphs = doc
+                .sketch_texts
+                .get(*ti)
+                .map(|t| crate::text::group_glyphs(&t.contours).len())
+                .unwrap_or(0);
+            for glyph in 0..glyphs {
+                let face = model::ExtrudeFace::TextGlyph { text: *ti, glyph };
+                let Some((poly, _)) = crate::extrude::face_profile_world(doc, &face) else {
+                    continue;
+                };
+                for w in poly.windows(2) {
+                    seg(w[0], w[1]);
+                }
+                if let (Some(first), Some(last)) = (poly.first(), poly.last()) {
+                    seg(*last, *first);
+                }
+            }
+        }
         PK::Constraint(ci) => {
             if !is_highlight {
                 return;
