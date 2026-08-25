@@ -2173,6 +2173,28 @@ fn vec3_lua(lua: &Lua, v: glam::Vec3) -> mlua::Result<Table> {
 }
 
 /// Short script name for the face a sketch is hosted on (`bearcad.get`, #107).
+/// Script name for a revolve/repeat axis (#1690): a global axis, a sketch line, or a body edge.
+fn revolve_axis_name(axis: &crate::model::RevolveAxis) -> &'static str {
+    use crate::model::RevolveAxis as A;
+    match axis {
+        A::X => "x",
+        A::Y => "y",
+        A::Z => "z",
+        A::Line(_) => "line",
+        A::BodyEdge { .. } => "body_edge",
+    }
+}
+
+/// Script name for how a revolution lands (#1690): its own body, fused, or cut away.
+fn revolve_mode_name(mode: &crate::model::RevolveMode) -> &'static str {
+    use crate::model::RevolveMode as M;
+    match mode {
+        M::NewBody => "new",
+        M::AddTo(_) => "merge",
+        M::Cut(_) => "cut",
+    }
+}
+
 fn face_kind_name(face: &FaceId) -> &'static str {
     match face {
         FaceId::Circle(_) => "circle",
@@ -2294,22 +2316,76 @@ fn scalar_arg(lua: &Lua, opts: &Table, key: &str) -> mlua::Result<Option<(f32, O
 /// Every entity kind `bearcad.count` and `bearcad.get` accept (#1662). One list, so the two
 /// inspection calls cannot drift apart the way they had — each also takes the aliases its
 /// match arm names (`plane`, `primitive`, `text`, `tracing_image`).
-const INSPECT_KINDS: &[&str] = &[
+pub const INSPECT_KINDS: &[&str] = &[
     "line",
     "circle",
     "sketch",
     "constraint",
     "construction_plane",
     "extrusion",
+    "revolution",
+    "sweep",
+    "loft",
+    "combine",
+    "move",
+    "mirror",
+    "repeat",
+    "slice",
+    "shell",
+    "edge_treatment",
+    "sketch_offset",
+    "sketch_mirror",
+    "sketch_repeat",
+    "sketch_chamfer",
     "shape",
     "body",
     "drawing",
+    "cross_section",
     "parameter",
     "sketch_text",
     "component",
     "image",
     "joint",
 ];
+
+/// How many of `kind` the document holds — the one table `bearcad.count` and the JSON
+/// bridge's `count` both read (#1690), so every feature a tool can build is countable
+/// from a script. `None` means the name isn't a kind.
+pub fn count_kind(doc: &crate::model::Document, kind: &str) -> Option<usize> {
+    Some(match kind.to_ascii_lowercase().as_str() {
+        "shape" | "primitive" => doc.primitives.len(),
+        "line" => doc.lines.len(),
+        "circle" => doc.circles.len(),
+        "sketch" => doc.sketches.len(),
+        "constraint" => doc.constraints.len(),
+        "construction_plane" | "plane" => doc.construction_planes.len(),
+        "extrusion" => doc.extrusions.len(),
+        "revolution" | "revolve" => doc.revolutions.len(),
+        "sweep" => doc.sweeps.len(),
+        "loft" => doc.lofts.len(),
+        "combine" | "boolean" | "boolean_op" => doc.boolean_ops.len(),
+        "move" | "move_op" => doc.move_ops.len(),
+        "mirror" | "mirror_op" => doc.mirror_ops.len(),
+        "repeat" | "repeat_op" => doc.repeat_ops.len(),
+        "slice" | "slice_op" => doc.slice_ops.len(),
+        "shell" | "shell_op" => doc.shell_ops.len(),
+        "edge_treatment" | "chamfer" | "fillet" => doc.edge_treatment_ops.len(),
+        "sketch_offset" | "offset" => doc.sketch_offset_ops.len(),
+        "sketch_mirror" => doc.sketch_mirror_ops.len(),
+        "sketch_repeat" => doc.sketch_repeat_ops.len(),
+        "sketch_slice" => doc.sketch_slice_ops.len(),
+        "sketch_chamfer" | "sketch_fillet" => doc.sketch_vertex_treatment_ops.len(),
+        "body" => doc.bodies.len(),
+        "drawing" => doc.drawings.len(),
+        "cross_section" | "section" => doc.cross_sections.len(),
+        "parameter" => doc.parameters.len(),
+        "sketch_text" | "text" => doc.sketch_texts.len(),
+        "component" => doc.components.len(),
+        "image" => doc.tracing_images.len(),
+        "joint" => doc.joints.len(),
+        _ => return None,
+    })
+}
 
 /// A length option in millimetres, read the way every other primitive reads its sizes
 /// (#1659): a number, or an expression string ("1in", "leg * 2") evaluated against the
@@ -3567,33 +3643,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
             let doc = unsafe { &tick.state().doc };
-            let count = match kind.to_ascii_lowercase().as_str() {
-                "shape" | "primitive" => doc.primitives.len(),
-                "line" => doc.lines.len(),
-                "circle" => doc.circles.len(),
-                "sketch" => doc.sketches.len(),
-                "constraint" => doc.constraints.len(),
-                "construction_plane" | "plane" => {
-                    doc.construction_planes.len()
-                }
-                "extrusion" => doc.extrusions.len(),
-                "body" => doc.bodies.len(),
-                "drawing" => doc.drawings.len(),
-                "cross_section" | "section" => doc.cross_sections.len(),
-                "parameter" => doc.parameters.len(),
-                "sketch_text" | "text" => {
-                    doc.sketch_texts.len()
-                }
-                "component" => doc.components.len(),
-                "image" => doc.tracing_images.len(),
-                "joint" => doc.joints.len(),
-                other => {
-                    return Err(mlua::Error::external(format!(
-                        "unknown count kind '{other}' (valid kinds: {})",
-                        INSPECT_KINDS.join(", ")
-                    )))
-                }
-            };
+            let count = count_kind(doc, &kind).ok_or_else(|| {
+                mlua::Error::external(format!(
+                    "unknown count kind '{kind}' (valid kinds: {})",
+                    INSPECT_KINDS.join(", ")
+                ))
+            })?;
             Ok(count)
         })?,
     )?;
@@ -3932,6 +3987,231 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                             .parent
                             .and_then(|p| doc.components.keys().position(|k| k == p)),
                     )?;
+                }
+                // Feature operations (#1690): the tools that build bodies out of other
+                // bodies each read back as a small summary — enough for a script to check
+                // what a click actually built.
+                "revolution" | "revolve" => {
+                    let Some(rev) = doc.revolutions.keys().nth(index).map(|k| &doc.revolutions[k])
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("sketch", doc.sketches.keys().position(|k| k == rev.sketch))?;
+                    t.set("faces", rev.faces.len())?;
+                    t.set("axis", revolve_axis_name(&rev.axis))?;
+                    t.set("angle", rev.angle_deg)?;
+                    t.set("pitch", rev.pitch_mm)?;
+                    t.set("mode", revolve_mode_name(&rev.mode))?;
+                    if let Some(name) = &rev.name {
+                        t.set("name", name.as_str())?;
+                    }
+                }
+                "sweep" => {
+                    let Some(sweep) = doc.sweeps.keys().nth(index).map(|k| &doc.sweeps[k]) else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("sketch", doc.sketches.keys().position(|k| k == sweep.sketch))?;
+                    t.set("faces", sweep.faces.len())?;
+                    t.set("path", sweep.path.len())?;
+                    if let Some(name) = &sweep.name {
+                        t.set("name", name.as_str())?;
+                    }
+                }
+                "loft" => {
+                    let Some(loft) = doc.lofts.keys().nth(index).map(|k| &doc.lofts[k]) else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("sections", loft.sections.len())?;
+                    if let Some(name) = &loft.name {
+                        t.set("name", name.as_str())?;
+                    }
+                }
+                "combine" | "boolean" | "boolean_op" => {
+                    let Some(op) = doc.boolean_ops.keys().nth(index).map(|k| &doc.boolean_ops[k])
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("op", op.kind.script_name())?;
+                    t.set("a", op.a.len())?;
+                    t.set("b", op.b.len())?;
+                    t.set("outputs", op.outputs.len())?;
+                    if let Some(name) = &op.name {
+                        t.set("name", name.as_str())?;
+                    }
+                }
+                "move" | "move_op" => {
+                    let Some(op) = doc.move_ops.keys().nth(index).map(|k| &doc.move_ops[k]) else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("targets", op.targets.len())?;
+                    t.set("outputs", op.outputs.len())?;
+                    if let Some(name) = &op.name {
+                        t.set("name", name.as_str())?;
+                    }
+                }
+                "mirror" | "mirror_op" => {
+                    let Some(op) = doc.mirror_ops.keys().nth(index).map(|k| &doc.mirror_ops[k])
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("targets", op.targets.len())?;
+                    t.set("outputs", op.outputs.len())?;
+                    t.set("plane", face_kind_name(&op.plane))?;
+                    if let Some(name) = &op.name {
+                        t.set("name", name.as_str())?;
+                    }
+                }
+                "repeat" | "repeat_op" => {
+                    let Some(op) = doc.repeat_ops.keys().nth(index).map(|k| &doc.repeat_ops[k])
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("targets", op.targets.len())?;
+                    t.set("outputs", op.outputs.len())?;
+                    t.set("axis", revolve_axis_name(&op.axis))?;
+                    t.set("mode", op.mode.script_name())?;
+                    t.set("count", op.count.as_str())?;
+                    t.set("spacing", op.spacing.as_str())?;
+                    t.set("length", op.length.as_str())?;
+                    t.set("around_axis", op.around_axis)?;
+                    t.set("flip", op.flip)?;
+                    if let Some(name) = &op.name {
+                        t.set("name", name.as_str())?;
+                    }
+                }
+                "slice" | "slice_op" => {
+                    let Some(op) = doc.slice_ops.keys().nth(index).map(|k| &doc.slice_ops[k])
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("targets", op.targets.len())?;
+                    t.set("cutters", op.cutters.len())?;
+                    t.set("outputs", op.outputs.len())?;
+                    if let Some(name) = &op.name {
+                        t.set("name", name.as_str())?;
+                    }
+                }
+                "shell" | "shell_op" => {
+                    let Some(op) = doc.shell_ops.keys().nth(index).map(|k| &doc.shell_ops[k])
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("targets", op.targets.len())?;
+                    t.set("open_faces", op.open_faces.len())?;
+                    t.set("thickness", op.thickness.as_str())?;
+                    t.set("outputs", op.outputs.len())?;
+                    if let Some(name) = &op.name {
+                        t.set("name", name.as_str())?;
+                    }
+                }
+                "edge_treatment" | "chamfer" | "fillet" => {
+                    let Some(op) = doc
+                        .edge_treatment_ops
+                        .keys()
+                        .nth(index)
+                        .map(|k| &doc.edge_treatment_ops[k])
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set(
+                        "kind",
+                        match op.kind {
+                            crate::model::VertexTreatmentKind::Chamfer => "chamfer",
+                            crate::model::VertexTreatmentKind::Fillet => "fillet",
+                        },
+                    )?;
+                    t.set("targets", op.targets.len())?;
+                    t.set("edges", op.edges.len())?;
+                    t.set("amount", op.amount)?;
+                    t.set("expression", op.expression.as_str())?;
+                    t.set("outputs", op.outputs.len())?;
+                    if let Some(name) = &op.name {
+                        t.set("name", name.as_str())?;
+                    }
+                }
+                "sketch_offset" | "offset" => {
+                    let Some(op) = doc
+                        .sketch_offset_ops
+                        .keys()
+                        .nth(index)
+                        .map(|k| &doc.sketch_offset_ops[k])
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("sketch", doc.sketches.keys().position(|k| k == op.sketch))?;
+                    t.set("distance", op.distance.as_str())?;
+                    t.set("targets", op.line_targets.len() + op.circle_targets.len())?;
+                    t.set("outputs", op.line_outputs.len() + op.circle_outputs.len())?;
+                    t.set("construction", op.construction)?;
+                    if let Some(name) = &op.name {
+                        t.set("name", name.as_str())?;
+                    }
+                }
+                "sketch_mirror" => {
+                    let Some(op) = doc
+                        .sketch_mirror_ops
+                        .keys()
+                        .nth(index)
+                        .map(|k| &doc.sketch_mirror_ops[k])
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("sketch", doc.sketches.keys().position(|k| k == op.sketch))?;
+                    t.set("targets", op.line_targets.len() + op.circle_targets.len())?;
+                    t.set("outputs", op.line_outputs.len() + op.circle_outputs.len())?;
+                    if let Some(name) = &op.name {
+                        t.set("name", name.as_str())?;
+                    }
+                }
+                "sketch_repeat" => {
+                    let Some(op) = doc
+                        .sketch_repeat_ops
+                        .keys()
+                        .nth(index)
+                        .map(|k| &doc.sketch_repeat_ops[k])
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("sketch", doc.sketches.keys().position(|k| k == op.sketch))?;
+                    t.set("mode", op.mode.script_name())?;
+                    t.set("count", op.count.as_str())?;
+                    t.set("spacing", op.spacing.as_str())?;
+                    t.set("length", op.length.as_str())?;
+                    if let Some(name) = &op.name {
+                        t.set("name", name.as_str())?;
+                    }
+                }
+                "sketch_slice" => {
+                    let Some(op) = doc
+                        .sketch_slice_ops
+                        .keys()
+                        .nth(index)
+                        .map(|k| &doc.sketch_slice_ops[k])
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("sketch", doc.sketches.keys().position(|k| k == op.sketch))?;
+                    t.set("targets", op.line_targets.len() + op.circle_targets.len())?;
+                    t.set("cutters", op.cutter_lines.len())?;
+                    if let Some(name) = &op.name {
+                        t.set("name", name.as_str())?;
+                    }
+                }
+                "sketch_chamfer" | "sketch_fillet" => {
+                    let Some(op) = doc
+                        .sketch_vertex_treatment_ops
+                        .keys()
+                        .nth(index)
+                        .map(|k| &doc.sketch_vertex_treatment_ops[k])
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("sketch", doc.sketches.keys().position(|k| k == op.sketch))?;
+                    t.set("corners", op.corners.len())?;
+                    t.set("outputs", op.line_outputs.len() + op.bridge_outputs.len())?;
+                    if let Some(name) = &op.name {
+                        t.set("name", name.as_str())?;
+                    }
                 }
                 other => {
                     return Err(mlua::Error::external(format!(
@@ -8957,6 +9237,31 @@ pub mod tests {
         run_lua(&format!("bearcad.new()\n{checks}"));
     }
 
+    /// #1690: every feature a tool builds is countable and readable from a script — the
+    /// list used to stop at extrusions, so a revolve or a shell was invisible.
+    #[test]
+    fn lua_counts_and_reads_feature_operations() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.rect{ x = 10, y = 10, width = 20, height = 20 }
+            bearcad.revolve{ polygon = {0, 1, 2, 3}, axis = "x", angle = 360 }
+            assert(bearcad.count("revolution") == 1, "one revolution")
+            local rev = bearcad.get{ kind = "revolution", index = 0 }
+            assert(rev.axis == "x", "axis, got " .. tostring(rev.axis))
+            assert(rev.mode == "new", "mode, got " .. tostring(rev.mode))
+            assert(math.abs(rev.angle - 360) < 0.01, "angle, got " .. tostring(rev.angle))
+
+            bearcad.new()
+            bearcad.cuboid{ width = 20, depth = 20, height = 20 }
+            bearcad.shell{ bodies = {0}, thickness = 2 }
+            assert(bearcad.count("shell") == 1, "one shell")
+            local shell = bearcad.get{ kind = "shell", index = 0 }
+            assert(shell.thickness == "2", "thickness, got " .. tostring(shell.thickness))
+            "#,
+        );
+    }
+
     /// #1660: the documented `{ op, a, b }` shape works for a union too — `b` used to be
     /// dropped, and the call then failed saying there were not two bodies.
     #[test]
@@ -9739,10 +10044,10 @@ pub mod tests {
     /// #1558: every walkthrough is numbered in catalog order.
     #[test]
     fn tutorials_lua_list_is_numbered() {
-        run_lua_expect_ok(
+        run_lua_expect_ok(&
             r#"
             local list = bearcad.ui.tutorials()
-            assert(#list == 10, "catalog size, got " .. #list)
+            assert(#list == __COUNT__, "catalog size, got " .. #list)
             local names = {}
             for i, t in ipairs(list) do
               assert(t.number == i, t.name .. " should be #" .. i .. ", got " .. tostring(t.number))
@@ -9753,7 +10058,8 @@ pub mod tests {
             assert(names.combine == "Combine")
             assert(names.raised_text == "Raised text")
             assert(names.drawing == "Technical drawing")
-            "#,
+            "#
+            .replace("__COUNT__", &crate::tutorial::TUTORIALS.len().to_string()),
         );
     }
 

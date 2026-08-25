@@ -2233,29 +2233,12 @@ pub fn query_from_json(name: &str, args: &Value, doc: &Document) -> Result<Value
     match name {
         "count" => {
             let kind = req_str(o, "kind", "count")?;
-            let n = match kind.to_ascii_lowercase().as_str() {
-                "line" => doc.lines.len(),
-                "circle" => doc.circles.len(),
-                "sketch" => doc.sketches.len(),
-                "constraint" => doc.constraints.len(),
-                "construction_plane" | "plane" => {
-                    doc.construction_planes.len()
-                }
-                "extrusion" => doc.extrusions.len(),
-                "body" => doc.bodies.len(),
-                "drawing" => doc.drawings.len(),
-                "parameter" => doc.parameters.len(),
-                "sketch_text" | "text" => {
-                    doc.sketch_texts.len()
-                }
-                other => {
-                    return Err(format!(
-                        "unknown count kind '{other}' (valid kinds: line, circle, sketch, \
-                         constraint, construction_plane, extrusion, body, drawing, parameter, \
-                         sketch_text)"
-                    ))
-                }
-            };
+            let n = crate::lua_script::count_kind(doc, &kind).ok_or_else(|| {
+                format!(
+                    "unknown count kind '{kind}' (valid kinds: {})",
+                    crate::lua_script::INSPECT_KINDS.join(", ")
+                )
+            })?;
             Ok(json!(n))
         }
         "get" => {

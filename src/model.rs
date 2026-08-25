@@ -3906,6 +3906,21 @@ impl RepeatMode {
         }
     }
 
+    /// The script name, inverse of [`Self::from_name`] (#1690).
+    pub fn script_name(self) -> &'static str {
+        match self {
+            Self::CountGap => "count_gap",
+            Self::CountFitEnds => "count_fit_ends",
+            Self::CountFitCenters => "count_fit_centers",
+            Self::FillGap => "fill_gap",
+            Self::FillPitch => "fill_pitch",
+            Self::FillMaxPitch => "fill_max_pitch",
+            Self::CountPitch => "count_pitch",
+            Self::FillGapSpan => "fill_gap_span",
+            Self::FillPitchSpan => "fill_pitch_span",
+        }
+    }
+
     pub fn from_name(name: &str) -> Option<Self> {
         match name.to_ascii_lowercase().as_str() {
             "count_gap" | "count" => Some(Self::CountGap),
