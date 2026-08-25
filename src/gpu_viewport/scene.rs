@@ -3058,9 +3058,8 @@ impl<'a> SceneMesh<'a> {
     }
 
     /// Hatch the faces a cutting plane opened (#1688): the lined pattern that says "you are
-    /// looking at cut material". Every triangle lying in the plane is hatched from one shared
-    /// world-space phase, so the lines run unbroken across the whole cut face rather than
-    /// restarting per triangle.
+    /// looking at cut material". The segments themselves come from
+    /// [`crate::extrude::section_hatch_segments`], shared with the drawing page.
     #[allow(clippy::too_many_arguments)]
     fn push_section_hatch(
         &mut self,
@@ -3071,56 +3070,12 @@ impl<'a> SceneMesh<'a> {
         viewport: UiRect,
         view_proj: &Mat4,
     ) {
-        const SPACING_MM: f32 = 3.0;
-        const ON_PLANE_EPS: f32 = 1e-3;
-        let plane = crate::construction::cross_section_cut_plane(cut);
-        let (o, n, u, v) = (plane.origin, plane.normal, plane.u_axis, plane.v_axis);
-        for tri in &solid.triangles {
-            if tri.iter().any(|p| (*p - o).dot(n).abs() > ON_PLANE_EPS) {
-                continue;
-            }
-            // 2D in the plane's own basis; hatch lines are the diagonals u + v = k·spacing,
-            // measured from the plane's origin so neighbouring triangles line up.
-            let pts: [(f32, f32); 3] = [
-                ((tri[0] - o).dot(u), (tri[0] - o).dot(v)),
-                ((tri[1] - o).dot(u), (tri[1] - o).dot(v)),
-                ((tri[2] - o).dot(u), (tri[2] - o).dot(v)),
-            ];
-            let key = |p: (f32, f32)| p.0 + p.1;
-            let (lo, hi) = pts.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
-                let k = key(*p);
-                (lo.min(k), hi.max(k))
-            });
-            let first = (lo / SPACING_MM).ceil() as i32;
-            let last = (hi / SPACING_MM).floor() as i32;
-            // A pathological triangle (a whole cut face at once) would ask for thousands of
-            // lines; cap the run so one bad frame can't stall the viewport.
-            for step in first..=last.min(first + 512) {
-                let level = step as f32 * SPACING_MM;
-                // Where the line crosses each edge of the triangle.
-                let mut hits: Vec<(f32, f32)> = Vec::new();
-                for (a, b) in [(pts[0], pts[1]), (pts[1], pts[2]), (pts[2], pts[0])] {
-                    let (ka, kb) = (key(a) - level, key(b) - level);
-                    if (ka > 0.0) == (kb > 0.0) || (ka - kb).abs() < 1e-9 {
-                        continue;
-                    }
-                    let t = ka / (ka - kb);
-                    hits.push((a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t));
-                }
-                if hits.len() < 2 {
-                    continue;
-                }
-                let world = |p: (f32, f32)| o + u * p.0 + v * p.1;
-                self.push_line_segment(
-                    world(hits[0]),
-                    world(hits[1]),
-                    color,
-                    1.0,
-                    cam,
-                    viewport,
-                    view_proj,
-                );
-            }
+        for (a, b) in crate::extrude::section_hatch_segments(
+            solid,
+            cut,
+            crate::extrude::SECTION_HATCH_SPACING_MM,
+        ) {
+            self.push_line_segment(a, b, color, 1.0, cam, viewport, view_proj);
         }
     }
 

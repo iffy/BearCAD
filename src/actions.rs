@@ -2988,6 +2988,20 @@ pub enum Action {
         bodies: Vec<crate::model::BodyKey>,
     },
     /// Add a sketch projection to a drawing (#278).
+    /// Import a whole cross-section view onto a drawing page (#1689): every body the model
+    /// has, cut by that view's planes.
+    AddDrawingCrossSectionView {
+        drawing: crate::model::DrawingKey,
+        view: crate::model::CrossSectionKey,
+        orientation: crate::model::DrawingOrientation,
+    },
+    /// Section (or un-section) a projection already on the page (#1689): the same chop the
+    /// View workbench shows, applied to whatever bodies that view projects.
+    SetDrawingViewCrossSection {
+        drawing: crate::model::DrawingKey,
+        view: usize,
+        cross_section: Option<crate::model::CrossSectionKey>,
+    },
     AddDrawingSketchView {
         drawing: crate::model::DrawingKey,
         sketch: crate::model::SketchId,
@@ -13770,6 +13784,65 @@ impl AppState {
                 );
                 ActionResult::Ok
             }
+            Action::AddDrawingCrossSectionView { drawing, view, orientation } => {
+                if self.doc.cross_sections.get(view).is_none() {
+                    return ActionResult::Err(format!("No cross section {}", view.index()));
+                }
+                if self.doc.drawings.get(drawing).is_none() {
+                    return ActionResult::Err(format!("No drawing {}", drawing.index()));
+                }
+                // A view is a way of looking at the whole model, so it brings every live body.
+                let bodies: Vec<crate::model::BodyKey> = self
+                    .doc
+                    .bodies
+                    .iter()
+                    .filter(|(_, b)| !b.shadow)
+                    .map(|(bi, _)| bi)
+                    .collect();
+                if bodies.is_empty() {
+                    let e = "This document has no bodies to project".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let step = (self.doc.drawings[drawing].views.len() % 6) as f32 * 0.06;
+                let mut page_view = crate::model::DrawingView::from_bodies(bodies, orientation);
+                page_view.cross_section = Some(view);
+                page_view.pos_x = (0.35 + step).min(0.9);
+                page_view.pos_y = (0.35 + step).min(0.9);
+                self.doc.drawings[drawing].views.push(page_view);
+                let vi = self.doc.drawings[drawing].views.len() - 1;
+                self.select_drawing_only(drawing, crate::context::DrawingElementRef::Projection(vi));
+                self.status = format!(
+                    "Added cross section {} to drawing {}",
+                    view.index(),
+                    drawing.index()
+                );
+                ActionResult::Ok
+            }
+            Action::SetDrawingViewCrossSection { drawing, view, cross_section } => {
+                if let Some(key) = cross_section {
+                    if self.doc.cross_sections.get(key).is_none() {
+                        return ActionResult::Err(format!("No cross section {}", key.index()));
+                    }
+                }
+                let Some(page_view) = self
+                    .doc
+                    .drawings
+                    .get_mut(drawing)
+                    .and_then(|d| d.views.get_mut(view))
+                else {
+                    return ActionResult::Err(format!("No view {view} on drawing {}", drawing.index()));
+                };
+                if page_view.sketch.is_some() {
+                    return ActionResult::Err("A sketch projection has nothing to section".into());
+                }
+                page_view.cross_section = cross_section;
+                self.status = match cross_section {
+                    Some(key) => format!("View {view} sectioned by cross section {}", key.index()),
+                    None => format!("View {view} shows the whole body"),
+                };
+                ActionResult::Ok
+            }
             Action::AddDrawingSketchView { drawing, sketch, orientation } => {
                 if self.doc.sketches.get(sketch).is_none() {
                     return ActionResult::Err(format!("No sketch {}", sketch.index()));
@@ -16623,6 +16696,19 @@ op,
                                 orientation,
                             });
                         }
+                        true
+                    }
+                    // A cross-section view clicked with the Add-view tool imports the whole
+                    // view onto the page — the model's bodies, cut (#1689).
+                    SceneElement::CrossSection(view)
+                        if self.tool == Tool::DrawingAdd && self.editing_drawing.is_some() =>
+                    {
+                        let drawing = self.editing_drawing.unwrap();
+                        let _ = self.apply(Action::AddDrawingCrossSectionView {
+                            drawing,
+                            view: *view,
+                            orientation: crate::model::DrawingOrientation::default(),
+                        });
                         true
                     }
                     SceneElement::Component(ci)
@@ -38924,6 +39010,62 @@ translate_mode: crate::model::MoveTranslateMode::Free,
     /// #1158: create a drawing of a body in one step (Elements-pane body context menu): a new
     /// drawing opens with a default-orientation view of that body. Named bodies seed the
     /// drawing's name; missing bodies are rejected.
+    /// #1689: a technical drawing can import a whole cross-section view — its bodies, cut the
+    /// way the View workbench shows them, with the opened faces hatched on the page.
+    #[test]
+    fn a_drawing_can_import_a_cross_section_view() {
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        let body = state.doc.bodies.keys().next().expect("a body");
+        let whole = crate::extrude::body_solid_mesh(&state.doc, body).expect("mesh");
+        let (min, max) = whole.bounds().expect("bounds");
+        let mid_z = (min.z + max.z) * 0.5;
+
+        state.apply(Action::CreateCrossSection { name: Some("Half".into()) });
+        let view = state.doc.cross_sections.keys().next().expect("the view");
+        state.apply(Action::AddCrossSectionCut {
+            view: Some(view),
+            cut: crate::model::CrossSectionCut {
+                origin: glam::Vec3::new(0.0, 0.0, mid_z),
+                normal: glam::Vec3::Z,
+                ..Default::default()
+            },
+        });
+
+        state.apply(Action::CreateDrawing { name: None });
+        let drawing = state.doc.drawings.keys().next().expect("the drawing");
+        assert_eq!(
+            state.apply(Action::AddDrawingCrossSectionView {
+                drawing,
+                view,
+                orientation: crate::model::DrawingOrientation::default(),
+            }),
+            ActionResult::Ok
+        );
+        let placed = &state.doc.drawings[drawing].views[0];
+        assert_eq!(placed.cross_section, Some(view), "the page view is sectioned");
+        assert!(!placed.bodies.is_empty(), "and it took the model's bodies");
+
+        // What it projects is the cut geometry, not the whole body.
+        let mesh = crate::drawing::drawing_view_solid_mesh(&state.doc, placed).expect("mesh");
+        let (lo, _) = mesh.bounds().expect("bounds");
+        assert!(lo.z > mid_z - 1e-2, "nothing below the cutting plane is projected");
+        assert!(
+            !crate::drawing::section_hatch_world_segments(&state.doc, placed).is_empty(),
+            "the opened face is hatched on the page"
+        );
+
+        // An ordinary projection is untouched by any of this.
+        state.apply(Action::AddDrawingView {
+            drawing,
+            bodies: vec![body],
+            orientation: crate::model::DrawingOrientation::default(),
+        });
+        let plain = &state.doc.drawings[drawing].views[1];
+        assert_eq!(plain.cross_section, None);
+        assert!(crate::drawing::section_hatch_world_segments(&state.doc, plain).is_empty());
+    }
+
     /// #1688: a view's planes chop the bodies — half the box is gone, and the opening comes
     /// back as a real cut face for the hatch to sit on.
     #[test]

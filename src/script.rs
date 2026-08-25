@@ -324,6 +324,18 @@ pub enum Instruction {
     },
     /// #1687: drop one of a view's cutting planes.
     DeleteSectionPlane { view: Option<usize>, cut: usize },
+    /// #1689: section a projection already on the page (or clear its section).
+    SetDrawingViewCrossSection {
+        drawing: usize,
+        view: usize,
+        cross_section: Option<usize>,
+    },
+    /// #1689: import a whole cross-section view onto a drawing page.
+    AddDrawingCrossSectionView {
+        drawing: usize,
+        view: usize,
+        orientation: crate::model::DrawingOrientation,
+    },
     /// Set a drawing's page size and margin, in millimetres (#273/#406). `None` keeps the
     /// drawing's current value.
     SetDrawingPage {
@@ -1449,6 +1461,20 @@ impl Instruction {
                 Some(v) => format!("bearcad.delete_section_plane{{ view = {v}, cut = {cut} }}"),
                 None => format!("bearcad.delete_section_plane{{ cut = {cut} }}"),
             },
+            Instruction::SetDrawingViewCrossSection { drawing, view, cross_section } => {
+                match cross_section {
+                    Some(cs) => format!(
+                        "bearcad.drawing_view_section{{ drawing = {drawing}, view = {view}, cross_section = {cs} }}"
+                    ),
+                    None => format!(
+                        "bearcad.drawing_view_section{{ drawing = {drawing}, view = {view}, cross_section = false }}"
+                    ),
+                }
+            }
+            Instruction::AddDrawingCrossSectionView { drawing, view, orientation } => format!(
+                "bearcad.drawing_view{{ drawing = {drawing}, cross_section = {view}, orientation = {:?} }}",
+                orientation.label().to_ascii_lowercase()
+            ),
             Instruction::ExportDrawingPdf { drawing, path } => {
                 format!("bearcad.export_drawing_pdf{{ drawing = {drawing}, path = {path:?} }}")
             }
@@ -6779,6 +6805,50 @@ impl ScriptRunner {
                     offset_mm: offset,
                     roll_deg,
                     flip,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::SetDrawingViewCrossSection { drawing, view, cross_section } => {
+                let Some(drawing_key) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
+                let cross_section = match cross_section_key(&state.doc, cross_section) {
+                    Ok(key) => key,
+                    Err(e) => {
+                        self.last_action_error = Some(e);
+                        return StepResult::Continue;
+                    }
+                };
+                let result = state.apply(Action::SetDrawingViewCrossSection {
+                    drawing: drawing_key,
+                    view,
+                    cross_section,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::AddDrawingCrossSectionView { drawing, view, orientation } => {
+                let Some(drawing_key) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
+                let view = match cross_section_key(&state.doc, Some(view)) {
+                    Ok(Some(key)) => key,
+                    Ok(None) => {
+                        self.last_action_error = Some("No cross-section view".to_string());
+                        return StepResult::Continue;
+                    }
+                    Err(e) => {
+                        self.last_action_error = Some(e);
+                        return StepResult::Continue;
+                    }
+                };
+                let result = state.apply(Action::AddDrawingCrossSectionView {
+                    drawing: drawing_key,
+                    view,
+                    orientation,
                 });
                 self.record_action_error(result);
                 StepResult::Continue

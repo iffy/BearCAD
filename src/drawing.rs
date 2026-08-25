@@ -843,6 +843,31 @@ pub const DIM_STROKE: f32 = 0.6;
 
 /// Combined solid mesh of every body a view projects (#1190/#1191). Empty/`None` for sketch
 /// views or when no body still has geometry.
+/// The cutting planes a view is sectioned by (#1689): those of the cross-section view it was
+/// imported from, or none for an ordinary projection.
+pub fn drawing_view_cuts<'a>(
+    doc: &'a Document,
+    view: &DrawingView,
+) -> &'a [crate::model::CrossSectionCut] {
+    view.cross_section
+        .and_then(|key| doc.cross_sections.get(key))
+        .map(|v| v.cuts.as_slice())
+        .unwrap_or(&[])
+}
+
+/// One body's mesh as this view shows it (#1689): cut by the view's cross-section planes when
+/// it has any, whole otherwise.
+fn drawing_view_body_mesh(
+    doc: &Document,
+    view: &DrawingView,
+    body: crate::model::BodyKey,
+) -> Option<crate::extrude::SolidMesh> {
+    match drawing_view_cuts(doc, view) {
+        [] => crate::extrude::body_solid_mesh(doc, body),
+        cuts => crate::extrude::cross_section_body_mesh(doc, body, cuts),
+    }
+}
+
 pub fn drawing_view_solid_mesh(
     doc: &Document,
     view: &DrawingView,
@@ -852,7 +877,7 @@ pub fn drawing_view_solid_mesh(
     }
     let mut mesh = crate::extrude::SolidMesh::default();
     for &bi in &view.bodies {
-        if let Some(solid) = crate::extrude::body_solid_mesh(doc, bi) {
+        if let Some(solid) = drawing_view_body_mesh(doc, view, bi) {
             mesh.triangles.extend(solid.triangles);
         }
     }
@@ -932,12 +957,33 @@ pub fn drawing_view_world_edges(doc: &Document, view: &DrawingView) -> Vec<(Vec3
         // views union each body's creases (#1190/#1191).
         let mut edges = Vec::new();
         for &bi in &view.bodies {
-            if let Some(mesh) = crate::extrude::body_solid_mesh(doc, bi) {
+            if let Some(mesh) = drawing_view_body_mesh(doc, view, bi) {
                 edges.extend(crate::gpu_viewport::solid_mesh_unique_edges(&mesh));
             }
         }
         edges
     }
+}
+
+/// The hatch lines a sectioned view draws on the faces its planes opened (#1689), in world
+/// space, ready to project with the rest of the view's edges.
+pub fn section_hatch_world_segments(doc: &Document, view: &DrawingView) -> Vec<(Vec3, Vec3)> {
+    let cuts = drawing_view_cuts(doc, view);
+    if cuts.is_empty() {
+        return Vec::new();
+    }
+    let Some(mesh) = drawing_view_solid_mesh(doc, view) else {
+        return Vec::new();
+    };
+    cuts.iter()
+        .flat_map(|cut| {
+            crate::extrude::section_hatch_segments(
+                &mesh,
+                cut,
+                crate::extrude::SECTION_HATCH_SPACING_MM,
+            )
+        })
+        .collect()
 }
 
 /// The view-dependent silhouette edges of a body view (#319): a cylinder's straight sides and
@@ -1388,6 +1434,10 @@ pub fn styled_view_geometry(
     // only, so the silhouette here doesn't affect them.
     let mut edges = drawing_view_world_edges(doc, view);
     edges.extend(drawing_view_silhouette_edges(doc, views, view));
+    // A sectioned view hatches the faces its planes opened (#1689). The lines join the
+    // stroked edges *here* rather than in `drawing_view_world_edges`, so dimensioning and
+    // circle detection still see only real geometry.
+    edges.extend(section_hatch_world_segments(doc, view));
     let wireframe = || StyledViewGeometry {
         faces: Vec::new(),
         segments: edges.iter().map(|(a, b)| (project(*a), project(*b))).collect(),
@@ -2813,6 +2863,7 @@ mod tests {
 
         // The rendered bases come from resolved_view_axes unfolding the Top parent (X, Y).
         let parent = DrawingView {
+            cross_section: None,
             bodies: vec![bkey(0)], sketch: None, orientation: O::Top,
             dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
             dimensioned_circles: Vec::new(),
@@ -2879,6 +2930,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
     fn aligned_child_ring_roll_renders_the_chosen_orientation() {
         use crate::model::{AlignDir, DrawingOrientation as O};
         let parent = DrawingView {
+            cross_section: None,
             bodies: vec![bkey(0)], sketch: None, orientation: O::Front,
             dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
             dimensioned_circles: Vec::new(),
@@ -3177,6 +3229,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
         doc.drawings.insert(Drawing {
             name: Some("Plate".to_string()),
             views: vec![DrawingView {
+                cross_section: None,
                 bodies: vec![bkey(0)],
                 sketch: None,
                 orientation: DrawingOrientation::Front,

@@ -15545,6 +15545,14 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                         self.state
                             .apply(Action::AddDrawingSketchView { drawing, sketch, orientation });
                     }
+                    // A whole cross-section view: the model's bodies, cut (#1689).
+                    SceneElement::CrossSection(view) => {
+                        self.state.apply(Action::AddDrawingCrossSectionView {
+                            drawing,
+                            view,
+                            orientation,
+                        });
+                    }
                     _ => {}
                 }
             }

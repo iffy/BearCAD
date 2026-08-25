@@ -7909,6 +7909,30 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 .unwrap_or(0))
         })?,
     )?;
+    // #1689: section a projection already on the page, or clear its section with `false`.
+    api.set(
+        "drawing_view_section",
+        lua.create_function(|lua, opts: Table| {
+            check_keys(&opts, "drawing_view_section", &["drawing", "view", "cross_section"])?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let cross_section = match opts.get::<Value>("cross_section")? {
+                Value::Nil | Value::Boolean(false) => None,
+                Value::Integer(i) if i >= 0 => Some(i as usize),
+                Value::Number(n) if n >= 0.0 => Some(n as usize),
+                other => {
+                    return Err(mlua::Error::external(format!(
+                        "cross_section expects a view index or false, got {other:?}"
+                    )))
+                }
+            };
+            let instr = Instruction::SetDrawingViewCrossSection {
+                drawing: opts.get("drawing")?,
+                view: opts.get("view")?,
+                cross_section,
+            };
+            unsafe { tick.exec(instr) }
+        })?,
+    )?;
     api.set(
         "edit_section_plane",
         lua.create_function(|lua, opts: Table| {
@@ -7974,7 +7998,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "drawing_view",
-                &["drawing", "body", "bodies", "component", "sketch", "orientation"],
+                &["drawing", "body", "bodies", "component", "sketch", "cross_section", "orientation"],
             )?;
             let drawing: usize = opts.get("drawing")?;
             let orientation = match opts.get::<Option<String>>("orientation")? {
@@ -7988,16 +8012,32 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let bodies: Option<Vec<usize>> = opts.get("bodies")?;
             let component: Option<usize> = opts.get("component")?;
             let sketch: Option<usize> = opts.get("sketch")?;
+            // A whole cross-section view can be imported too (#1689): the model's bodies, cut.
+            let cross_section: Option<usize> = opts.get("cross_section")?;
             let source_count = usize::from(body.is_some())
                 + usize::from(bodies.is_some())
                 + usize::from(component.is_some())
-                + usize::from(sketch.is_some());
-            if source_count != 1 {
+                + usize::from(sketch.is_some())
+                + usize::from(cross_section.is_some());
+            // `cross_section` alone imports the whole view; alongside a body source it
+            // sections *those* bodies instead (#1689).
+            let sections_bodies = cross_section.is_some() && source_count == 2 && sketch.is_none();
+            if source_count != 1 && !sections_bodies {
                 return Err(mlua::Error::external(
-                    "drawing_view requires exactly one of `body`, `bodies`, `component`, or `sketch`",
+                    "drawing_view requires exactly one of `body`, `bodies`, `component`, `sketch`, or `cross_section`",
                 ));
             }
             unsafe {
+                if let Some(view) = cross_section {
+                    if source_count == 1 {
+                        // The view alone: the whole model, cut.
+                        return tick.exec(Instruction::AddDrawingCrossSectionView {
+                            drawing,
+                            view,
+                            orientation,
+                        });
+                    }
+                }
                 if let Some(sketch) = sketch {
                     return tick.exec(Instruction::AddDrawingSketchView {
                         drawing,
@@ -8034,7 +8074,25 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     drawing,
                     bodies,
                     orientation,
-                })
+                })?;
+                // Bodies imported *from* a view are shown cut by it (#1689).
+                if let Some(view) = cross_section {
+                    let placed = tick
+                        .state()
+                        .doc
+                        .drawings
+                        .keys()
+                        .nth(drawing)
+                        .and_then(|k| tick.state().doc.drawings.get(k))
+                        .map(|d| d.views.len().saturating_sub(1))
+                        .unwrap_or(0);
+                    tick.exec(Instruction::SetDrawingViewCrossSection {
+                        drawing,
+                        view: placed,
+                        cross_section: Some(view),
+                    })?;
+                }
+                Ok(())
             }
         })?,
     )?;

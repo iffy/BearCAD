@@ -216,11 +216,12 @@ bearcad.drawing_page{ drawing, width, height, margin }
 bearcad.drawing_point_dimension{ drawing, view, a, b, axis }
 bearcad.drawing_point_dimension_axis{ drawing, view, index, axis }
 bearcad.drawing_text{ drawing, text, x, y, wrap? }   -- x/y are page fractions (0–1)
-bearcad.drawing_view{ drawing, body, bodies, component, sketch, orientation }
+bearcad.drawing_view{ drawing, body, bodies, component, sketch, cross_section, orientation }
 bearcad.drawing_view_add{ drawing, view, body, bodies, component }
 bearcad.drawing_view_align_lines{ drawing, view, show }
 bearcad.drawing_view_label{ drawing, view, hidden, pos, text }
 bearcad.drawing_view_orientation{ drawing, view, orientation }
+bearcad.drawing_view_section{ drawing, view, cross_section }
 bearcad.drawing_view_size{ drawing, view, width, height, size_x, size_y }
 bearcad.drawing_view_style{ drawing, view, style }
 bearcad.drawing_views(index)

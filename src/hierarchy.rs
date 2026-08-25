@@ -6243,6 +6243,13 @@ pub(crate) fn element_context_menu(
                 ui.close();
             }
         }
+        HierarchyNode::CrossSection(view) => {
+            // In the Drawing workbench, put the whole view on the open page (#1689).
+            if active_drawing.is_some() && ui.button("Add to drawing").clicked() {
+                on_add_to_drawing(SceneElement::CrossSection(view));
+                ui.close();
+            }
+        }
         HierarchyNode::Body(index) => {
             // Immediately create a new drawing of this body (#1158) — same paths as CAD →
             // New Drawing + Add to drawing, without needing a drawing open first.
@@ -7319,6 +7326,7 @@ mod tests {
         });
         doc.drawings.insert(crate::model::Drawing {
             views: vec![crate::model::DrawingView {
+                cross_section: None,
                 bodies: vec![bkey(0)],
                 sketch: None,
                 orientation: crate::model::DrawingOrientation::Front,
@@ -7373,6 +7381,7 @@ label_hidden: false,
         let b = crate::hierarchy::quantize_body_point(glam::Vec3::new(40.0, 0.0, 0.0));
         doc.drawings.insert(crate::model::Drawing {
             views: vec![crate::model::DrawingView {
+                cross_section: None,
                 bodies: vec![bkey(0)],
                 sketch: None,
                 orientation: crate::model::DrawingOrientation::Front,

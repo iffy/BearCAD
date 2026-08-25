@@ -360,6 +360,14 @@ bearcad.delete_section_plane{ cut = 1 }
 local cuts = bearcad.section_planes()              -- { origin, normal, offset, roll, flip }
 ```
 
+A technical drawing can import a view — the whole model cut, or just some bodies:
+
+```lua
+bearcad.drawing_view{ drawing = 0, cross_section = 0 }            -- the whole view
+bearcad.drawing_view{ drawing = 0, body = 0, cross_section = 0 }  -- one body, cut by it
+bearcad.drawing_view_section{ drawing = 0, view = 1, cross_section = false }  -- un-section
+```
+
 ## Materials
 
 See [Materials](/docs/materials).

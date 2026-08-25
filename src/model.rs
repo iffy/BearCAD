@@ -4983,6 +4983,11 @@ pub struct DrawingView {
     /// projection (#1191) or adding a whole component (#1190).
     #[serde(default)]
     pub bodies: Vec<BodyKey>,
+    /// When `Some`, this view shows its bodies **cut** by a cross-section view's planes
+    /// (#1689): the same chop the View workbench draws, with the opened faces hatched on the
+    /// page. `None` for an ordinary projection.
+    #[serde(default)]
+    pub cross_section: Option<CrossSectionKey>,
     /// When `Some`, this view projects a **sketch** rather than bodies (#278). Kept as an
     /// optional field (rather than replacing `bodies` with an enum) so older saved drawings —
     /// which only ever had a body — deserialize with a custom path if needed.
@@ -5132,6 +5137,7 @@ impl DrawingView {
     pub fn from_bodies(bodies: Vec<BodyKey>, orientation: DrawingOrientation) -> Self {
         Self {
             bodies,
+            cross_section: None,
             sketch: None,
             orientation,
             dimensioned_edges: Vec::new(),
@@ -5159,6 +5165,7 @@ impl DrawingView {
     pub fn from_sketch(sketch: SketchId, orientation: DrawingOrientation) -> Self {
         Self {
             bodies: Vec::new(),
+            cross_section: None,
             sketch: Some(sketch),
             orientation,
             dimensioned_edges: Vec::new(),

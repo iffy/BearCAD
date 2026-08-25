@@ -7246,6 +7246,63 @@ fn cross_section_halfspace(
     crate::kernel::Shape::prism(&profile, away * reach)
 }
 
+/// The lined pattern drawn on the faces a cutting plane opened (#1688): parallel world-space
+/// segments across every triangle of `mesh` that lies in the plane. The phase comes from the
+/// plane's own origin, so the lines run unbroken across the whole cut face rather than
+/// restarting per triangle. Shared by the viewport and the drawing page.
+pub fn section_hatch_segments(
+    mesh: &SolidMesh,
+    cut: &crate::model::CrossSectionCut,
+    spacing: f32,
+) -> Vec<(Vec3, Vec3)> {
+    const ON_PLANE_EPS: f32 = 1e-3;
+    /// A pathological face would ask for thousands of lines; cap the run per triangle.
+    const MAX_LINES: i32 = 512;
+    let spacing = spacing.max(0.05);
+    let plane = crate::construction::cross_section_cut_plane(cut);
+    let (o, n, u, v) = (plane.origin, plane.normal, plane.u_axis, plane.v_axis);
+    let mut out = Vec::new();
+    for tri in &mesh.triangles {
+        if tri.iter().any(|p| (*p - o).dot(n).abs() > ON_PLANE_EPS) {
+            continue;
+        }
+        // 2D in the plane's own basis; the hatch lines are the diagonals u + v = k·spacing.
+        let pts: [(f32, f32); 3] = [
+            ((tri[0] - o).dot(u), (tri[0] - o).dot(v)),
+            ((tri[1] - o).dot(u), (tri[1] - o).dot(v)),
+            ((tri[2] - o).dot(u), (tri[2] - o).dot(v)),
+        ];
+        let key = |p: (f32, f32)| p.0 + p.1;
+        let (lo, hi) = pts.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+            let k = key(*p);
+            (lo.min(k), hi.max(k))
+        });
+        let first = (lo / spacing).ceil() as i32;
+        let last = (hi / spacing).floor() as i32;
+        for step in first..=last.min(first.saturating_add(MAX_LINES)) {
+            let level = step as f32 * spacing;
+            let mut hits: Vec<(f32, f32)> = Vec::new();
+            for (a, b) in [(pts[0], pts[1]), (pts[1], pts[2]), (pts[2], pts[0])] {
+                let (ka, kb) = (key(a) - level, key(b) - level);
+                if (ka > 0.0) == (kb > 0.0) || (ka - kb).abs() < 1e-9 {
+                    continue;
+                }
+                let t = ka / (ka - kb);
+                hits.push((a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t));
+            }
+            if hits.len() < 2 {
+                continue;
+            }
+            let world = |p: (f32, f32)| o + u * p.0 + v * p.1;
+            out.push((world(hits[0]), world(hits[1])));
+        }
+    }
+    out
+}
+
+/// The spacing the hatch is drawn at, in millimetres (#1688).
+pub const SECTION_HATCH_SPACING_MM: f32 = 3.0;
+
 /// A body's mesh with a cross-section view's planes taken out of it (#1688): what the View
 /// workbench draws instead of the whole body. Each plane hides what is on its far side, and
 /// the openings come back as real cut faces — the kernel closes them — which is what the

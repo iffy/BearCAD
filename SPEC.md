@@ -2361,6 +2361,16 @@ outside the shape/undo DAG.
 - **Creating one:** the Elements pane's **+ → New cross section**, or **View → Create Cross
   Section**. Scriptable as `bearcad.cross_section{ name? }` (#1671), and readable back with
   `bearcad.count("cross_section")` / `bearcad.get{ kind = "cross_section", index }`.
+- **On a drawing page (#1689):** a technical drawing imports a **whole view** — every live
+  body, cut by that view's planes (`Action::AddDrawingCrossSectionView`, or the Add-view tool
+  clicking a view's row / its **Add to drawing** menu entry) — or **bodies from a view**: an
+  ordinary projection with `DrawingView::cross_section` set, so those bodies show cut. The page
+  geometry follows: `drawing_view_solid_mesh` and the crease edges come from the cut mesh, and
+  the hatch joins the stroked edges, so hidden-line removal treats it like any other line while
+  dimensioning and circle detection still see only real geometry. Scriptable:
+  `bearcad.drawing_view{ drawing, cross_section = i }` for the whole view, the same call with a
+  body source to section those bodies, and `bearcad.drawing_view_section{ drawing, view,
+  cross_section = i | false }` to section a projection already placed.
 - **Drawing a section (#1688):** while a view is open, every visible body draws **cut**: its
   kernel solid minus a half-space per plane (`extrude::cross_section_body_mesh`, memoized on
   the document's mesh fingerprint plus the cuts, since a boolean per body per frame is not
