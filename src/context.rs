@@ -2201,7 +2201,13 @@ pub fn picker_filter(target: PickerTarget) -> ElementFilter {
         PickerTarget::RevolveAxis => {
             ElementFilter::kinds(&[K::Line, K::Edge, K::Axis]).rule(PickRule::Straight)
         }
-        PickerTarget::RepeatPath => ElementFilter::kinds(&[K::Line, K::Edge, K::Axis, K::Circle]),
+        // The same straight-reference rule Revolve's axis runs (#953), plus a circle for the
+        // ride-round-it path (#840). Without the rule a sketch's origin axis — which draws
+        // through solids, so #1720 stopped burying it — outranked the body edge under the
+        // cursor, and the click landed on an element `as_revolve_axis` cannot map.
+        PickerTarget::RepeatPath => {
+            ElementFilter::kinds(&[K::Line, K::Edge, K::Axis, K::Circle]).rule(PickRule::Straight)
+        }
         PickerTarget::ExtrudeUpTo | PickerTarget::RepeatDistanceTo => {
             ElementFilter::kinds(&[K::Plane, K::Profile, K::Vertex])
         }
@@ -2968,15 +2974,10 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         // A straight reference to travel along, or a **circle** to ride round (#840). Whether
         // the copies follow the path or turn about it is the Repeat toggle right below, so the
         // row names the path itself rather than repeating "Along"/"Around" (#955).
-        let mut path = ElementPicker::new(
-            ElementFilter::kinds(&[
-                ElementKind::Line,
-                ElementKind::Edge,
-                ElementKind::Axis,
-                ElementKind::Circle,
-            ]),
-            PickLimit::Finite(1),
-        );
+        // One filter, from `picker_filter` — the hover/click path reads the picker built here,
+        // so a second copy written out inline is a copy that drifts (#1746).
+        let mut path =
+            ElementPicker::new(picker_filter(PickerTarget::RepeatPath), PickLimit::Finite(1));
         path.set_focused(axis_is_next && !r.value_field_focused);
         path.set_picked(input.doc, r.path.clone());
         tool_pickers.push(ToolPickerView {

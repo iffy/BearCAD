@@ -367,7 +367,8 @@ OffBodies(Vec<crate::model::BodyKey>),
     /// one or the world origin.
     MovePoint2D(bool, Vec<crate::model::BodyKey>, Vec<crate::model::TracingImageKey>),
     /// Only straight references: a sketch line with no bezier, a body edge, or a world axis.
-    /// The Revolve axis and Repeat path pickers.
+    /// The Revolve axis and Repeat path pickers. Whether a circle is on the menu is the
+    /// filter's kind list to say — Repeat takes one as a path (#840), Revolve does not.
     Straight,
     /// Only construction geometry (`true`) or only real geometry (`false`).
     Construction(bool),
@@ -462,7 +463,6 @@ impl PickRule {
                 SceneElement::Line(index) => {
                     doc.lines.get(*index).is_some_and(|l| l.bezier.is_none())
                 }
-                SceneElement::Circle(_) => false,
                 // Sketch-local origin axes have no `RevolveAxis` mapping — a 3D axis picker
                 // must not hover them as if a click would take them.
                 SceneElement::FaceEdge(crate::model::ConstraintLine::OriginAxis(_)) => false,
@@ -1982,6 +1982,42 @@ mod tests {
         assert!(!fixed.accepts(&doc, &corner));
         assert!(!start.accepts(&doc, &SceneElement::Origin));
         assert!(fixed.accepts(&doc, &SceneElement::Origin));
+    }
+
+    /// #1721 fallout: a sketch's origin axes draw through solids, so the occlusion gate no
+    /// longer buries them — which put one at the top of the pick list wherever it crosses a
+    /// body. `as_revolve_axis` has no mapping for it, so Repeat's Path picker must refuse it
+    /// the way Revolve's Axis picker already does, or the click lands on nothing at all. Its
+    /// circle path (#840) still has to get through.
+    #[test]
+    fn the_repeat_path_rule_refuses_a_sketch_origin_axis_but_keeps_a_circle() {
+        let mut doc = doc_with_two_bodies();
+        let circle = doc.circles.insert(crate::model::Circle::from_local_center_radius(
+            doc.sketches.keys().next().expect("the helper made a sketch"),
+            0.0,
+            0.0,
+            5.0,
+            0.0,
+        ));
+        let f = crate::context::picker_filter(crate::context::PickerTarget::RepeatPath);
+        assert!(
+            !f.accepts(
+                &doc,
+                &SceneElement::FaceEdge(crate::model::ConstraintLine::OriginAxis(
+                    crate::model::SketchAxis::X
+                ))
+            ),
+            "a sketch origin axis is not a path Repeat can follow"
+        );
+        assert!(f.accepts(&doc, &line(0)), "a straight sketch line is");
+        assert!(
+            f.accepts(&doc, &SceneElement::Circle(circle)),
+            "and so is a circle — the copies ride round it"
+        );
+        assert!(f.accepts(
+            &doc,
+            &SceneElement::BodyEdge { body: bkey(0), a: [0; 3], b: [1; 3] }
+        ));
     }
 
     #[test]

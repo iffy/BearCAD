@@ -18,6 +18,10 @@ use crate::view_cube::{CubeCornerId, CubeEdgeId};
 
 use crate::actions::AppState;
 use eframe::egui;
+/// The inspection kind table and its counter live in [`crate::script`] so the wasm build
+/// (which compiles `script_json` but not this module) can read them too.
+pub use crate::script::{count_kind, INSPECT_KINDS};
+
 use mlua::{Lua, MultiValue, Table, UserData, UserDataMethods, Value};
 use std::path::Path;
 
@@ -2319,82 +2323,6 @@ fn scalar_arg(lua: &Lua, opts: &Table, key: &str) -> mlua::Result<Option<(f32, O
         Some(Value::String(s)) => Ok(Some((0.0, Some(s.to_str()?.to_string())))),
         Some(v) => Ok(Some((f32::from_lua(v, lua)?, None))),
     }
-}
-
-/// Every entity kind `bearcad.count` and `bearcad.get` accept (#1662). One list, so the two
-/// inspection calls cannot drift apart the way they had — each also takes the aliases its
-/// match arm names (`plane`, `primitive`, `text`, `tracing_image`).
-pub const INSPECT_KINDS: &[&str] = &[
-    "line",
-    "circle",
-    "sketch",
-    "constraint",
-    "construction_plane",
-    "extrusion",
-    "revolution",
-    "sweep",
-    "loft",
-    "combine",
-    "move",
-    "mirror",
-    "repeat",
-    "slice",
-    "shell",
-    "edge_treatment",
-    "sketch_offset",
-    "sketch_mirror",
-    "sketch_repeat",
-    "sketch_chamfer",
-    "shape",
-    "body",
-    "drawing",
-    "cross_section",
-    "section_plane",
-    "parameter",
-    "sketch_text",
-    "component",
-    "image",
-    "joint",
-];
-
-/// How many of `kind` the document holds — the one table `bearcad.count` and the JSON
-/// bridge's `count` both read (#1690), so every feature a tool can build is countable
-/// from a script. `None` means the name isn't a kind.
-pub fn count_kind(doc: &crate::model::Document, kind: &str) -> Option<usize> {
-    Some(match kind.to_ascii_lowercase().as_str() {
-        "shape" | "primitive" => doc.primitives.len(),
-        "line" => doc.lines.len(),
-        "circle" => doc.circles.len(),
-        "sketch" => doc.sketches.len(),
-        "constraint" => doc.constraints.len(),
-        "construction_plane" | "plane" => doc.construction_planes.len(),
-        "extrusion" => doc.extrusions.len(),
-        "revolution" | "revolve" => doc.revolutions.len(),
-        "sweep" => doc.sweeps.len(),
-        "loft" => doc.lofts.len(),
-        "combine" | "boolean" | "boolean_op" => doc.boolean_ops.len(),
-        "move" | "move_op" => doc.move_ops.len(),
-        "mirror" | "mirror_op" => doc.mirror_ops.len(),
-        "repeat" | "repeat_op" => doc.repeat_ops.len(),
-        "slice" | "slice_op" => doc.slice_ops.len(),
-        "shell" | "shell_op" => doc.shell_ops.len(),
-        "edge_treatment" | "chamfer" | "fillet" => doc.edge_treatment_ops.len(),
-        "sketch_offset" | "offset" => doc.sketch_offset_ops.len(),
-        "sketch_mirror" => doc.sketch_mirror_ops.len(),
-        "sketch_repeat" => doc.sketch_repeat_ops.len(),
-        "sketch_slice" => doc.sketch_slice_ops.len(),
-        "sketch_chamfer" | "sketch_fillet" => doc.sketch_vertex_treatment_ops.len(),
-        "body" => doc.bodies.len(),
-        "drawing" => doc.drawings.len(),
-        "cross_section" | "section" => doc.cross_sections.len(),
-        "section_plane" | "cutting_plane" => crate::model::section_plane_count(doc),
-        "parameter" => doc.parameters.len(),
-        "sketch_text" | "text" => doc.sketch_texts.len(),
-        "component" => doc.components.len(),
-        "image" => doc.tracing_images.len(),
-        "joint" => doc.joints.len(),
-        _ => return None,
-    })
 }
 
 /// A length option in millimetres, read the way every other primitive reads its sizes

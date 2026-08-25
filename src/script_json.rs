@@ -2243,10 +2243,10 @@ pub fn query_from_json(name: &str, args: &Value, doc: &Document) -> Result<Value
     match name {
         "count" => {
             let kind = req_str(o, "kind", "count")?;
-            let n = crate::lua_script::count_kind(doc, &kind).ok_or_else(|| {
+            let n = crate::script::count_kind(doc, &kind).ok_or_else(|| {
                 format!(
                     "unknown count kind '{kind}' (valid kinds: {})",
-                    crate::lua_script::INSPECT_KINDS.join(", ")
+                    crate::script::INSPECT_KINDS.join(", ")
                 )
             })?;
             Ok(json!(n))
