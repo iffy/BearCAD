@@ -10059,6 +10059,7 @@ pub mod tests {
             assert(names.raised_text == "Raised text")
             assert(names.drawing == "Technical drawing")
             assert(names.revolve == "Revolve")
+            assert(names.tilted_plane == "Angled plane")
             "#
             .replace("__COUNT__", &crate::tutorial::TUTORIALS.len().to_string()),
         );
@@ -10108,6 +10109,31 @@ pub mod tests {
               "ring + groove, got " .. bearcad.count("revolution"))
             assert(bearcad.count("circle") == 1, "one groove profile")
             assert(bearcad.count("body") >= 1, "a solid ring survives the cut")
+            "#,
+        );
+    }
+
+    /// #1673: the angled-plane tutorial walks with assists and leaves a solid standing on a
+    /// tilted plane that has since been moved.
+    #[test]
+    fn tilted_plane_tutorial_lua_walks_and_moves_the_plane() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.ui.tutorial("tilted_plane")
+            local guard = 0
+            while bearcad.ui.tutorial_step() ~= nil do
+              guard = guard + 1
+              assert(guard < 60, "angled-plane tutorial should finish")
+              bearcad.ui.tutorial_assist()
+              if bearcad.ui.tutorial_step() ~= nil then
+                bearcad.ui.tutorial_next()
+              end
+            end
+            assert(bearcad.count("plane") == 4, "three datums plus the tilted one")
+            assert(bearcad.count("extrusion") == 1, "one solid on the plane")
+            local plane = bearcad.get{ kind = "plane", index = 3 }
+            assert(math.abs(plane.normal[3]) < 0.99,
+              "the plane is tilted off the ground, nz=" .. tostring(plane.normal[3]))
             "#,
         );
     }

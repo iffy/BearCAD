@@ -4701,6 +4701,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 // Elements-pane sketch row (#1279) and body row (#1647).
                 tutorial::UiAnchor::ElementsSketch => hierarchy::elements_sketch_row_rect(ctx),
                 tutorial::UiAnchor::ElementsBody => hierarchy::elements_body_row_rect(ctx),
+                tutorial::UiAnchor::ElementsPlane => hierarchy::elements_plane_row_rect(ctx),
                 // View-cube bear + home button live in the viewport's top-right (#1269).
                 tutorial::UiAnchor::ViewCube => Some(view_cube::cube_rect_in_viewport(viewport)),
                 tutorial::UiAnchor::ViewHome => {

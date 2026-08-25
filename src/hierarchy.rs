@@ -18,6 +18,18 @@ fn elements_body_row_rect_id() -> egui::Id {
     egui::Id::new("elements_body_row_rect")
 }
 
+/// Egui-memory key for the **newest** construction-plane row drawn in Elements this frame
+/// (#1673). The newest one is the plane the user just made — the datum planes come first.
+fn elements_plane_row_rect_id() -> egui::Id {
+    egui::Id::new("elements_plane_row_rect")
+}
+
+/// Where the Elements pane drew the newest construction-plane row this frame (#1673) —
+/// where the angled-plane walkthrough's orb points to reopen it.
+pub fn elements_plane_row_rect(ctx: &egui::Context) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<egui::Rect>(elements_plane_row_rect_id()))
+}
+
 /// Where the Elements pane drew a body row this frame (#1647) — the Add-view tool takes its
 /// click there, so the drawing walkthrough's orb points at it.
 pub fn elements_body_row_rect(ctx: &egui::Context) -> Option<egui::Rect> {
@@ -6013,6 +6025,13 @@ fn show_row(
                     d.insert_temp(id, row_rect);
                 }
             });
+        }
+        // The newest plane row (#1673): the one the user just built, not a datum.
+        if matches!(node, HierarchyNode::ConstructionPlane(i)
+            if Some(i) == doc.construction_planes.keys().last())
+        {
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(elements_plane_row_rect_id(), row_rect));
         }
         // Pane-hover → viewport highlight (#161): the 3D view shows what this row is.
         if row.hovered {

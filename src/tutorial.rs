@@ -55,6 +55,9 @@ pub enum UiAnchor {
     ViewCube,
     /// The house (Home view) button under the view cube (#1269).
     ViewHome,
+    /// The newest construction-plane row in the Elements pane (#1673) — double-click to
+    /// reopen the plane and move it.
+    ElementsPlane,
     /// The toolbar Zoom to Fit (magnifying glass) button (#1583).
     ZoomToFit,
     /// A status-bar pane toggle (phone layout only, #828): Elements / Context / Params.
@@ -359,6 +362,12 @@ pub static TUTORIALS: &[Tutorial] = &[
         name: "revolve",
         title: "Revolve",
         steps: REVOLVE_STEPS,
+    },
+    // #1673: tilt a plane off an axis, build on it, then move the plane.
+    Tutorial {
+        name: "tilted_plane",
+        title: "Angled plane",
+        steps: TILTED_PLANE_STEPS,
     },
 ];
 
@@ -4232,6 +4241,288 @@ static REVOLVE_STEPS: &[Step] = &[
 ];
 
 
+// --- Angled construction plane tutorial (#1673) ----------------------------------------
+
+/// The tilt the walkthrough builds with, and the one it moves to.
+const TILT_FIRST: &str = "30";
+const TILT_SECOND: &str = "60";
+
+fn plane_tool_active(app: &AppState) -> bool {
+    app.tool == Tool::ConstructionPlane
+}
+
+/// The plane this walkthrough makes: the only one hung off an axis. The document's three
+/// datum planes are face-anchored, so this picks out the user's.
+fn tutorial_tilted_plane(app: &AppState) -> Option<crate::model::ConstructionPlaneKey> {
+    app.doc
+        .construction_planes
+        .iter()
+        .find(|(_, p)| p.definition.is_axis())
+        .map(|(k, _)| k)
+}
+
+fn tilt_axis_picked(app: &AppState) -> bool {
+    tutorial_tilted_plane(app).is_some()
+        || app
+            .creating_plane
+            .as_ref()
+            .is_some_and(|c| c.reference.is_axis())
+}
+
+fn has_tilted_plane(app: &AppState) -> bool {
+    tutorial_tilted_plane(app).is_some()
+}
+
+/// The plane has been re-tilted by the last step.
+fn plane_moved(app: &AppState) -> bool {
+    tutorial_tilted_plane(app).is_some_and(|k| {
+        expr_eq(&app.doc.construction_planes[k].definition.angle_expression, TILT_SECOND)
+    })
+}
+
+fn plane_reopened(app: &AppState) -> bool {
+    plane_moved(app)
+        || app
+            .creating_plane
+            .as_ref()
+            .is_some_and(|c| c.edit_index.is_some())
+}
+
+/// A point out along the global Y axis, clear of the origin gizmo.
+fn tilt_axis_guide(app: &AppState) -> Option<glam::Vec3> {
+    let _ = app;
+    Some(glam::Vec3::new(0.0, 60.0, 0.0))
+}
+
+/// The middle of the tilted plane — where the Sketch tool takes its click.
+fn tilted_plane_guide(app: &AppState) -> Option<glam::Vec3> {
+    let plane = tutorial_tilted_plane(app)?;
+    let frame = crate::face::sketch_frame(
+        &app.doc,
+        crate::model::FaceId::ConstructionPlane(plane),
+    )?;
+    Some(crate::face::local_to_world(&frame, 30.0, 30.0))
+}
+
+fn sketch_on_tilted_plane(app: &AppState) -> bool {
+    let Some(plane) = tutorial_tilted_plane(app) else {
+        return false;
+    };
+    let face = crate::model::FaceId::ConstructionPlane(plane);
+    app.doc.sketches.values().any(|s| s.face == face)
+}
+
+fn tilted_rect_corner_a(app: &AppState) -> Option<glam::Vec3> {
+    ground_local(app, 10.0, 10.0)
+}
+
+fn tilted_rect_corner_b(app: &AppState) -> Option<glam::Vec3> {
+    if let (Some(cr), Some(session)) = (app.creating_rect.as_ref(), app.sketch_session) {
+        let frame = crate::face::sketch_geometry_frame(&app.doc, session.sketch)?;
+        let (ou, ov) = crate::face::world_to_local(&frame, cr.origin);
+        return Some(crate::face::local_to_world(&frame, ou + 30.0, ov + 30.0));
+    }
+    ground_local(app, 40.0, 40.0)
+}
+
+fn assist_tilt_plane(app: &mut AppState) {
+    if has_tilted_plane(app) {
+        return;
+    }
+    app.apply(Action::BeginConstructionPlane {
+        reference: crate::construction::PlaneReference::Axis {
+            origin: glam::Vec3::ZERO,
+            direction: glam::Vec3::Y,
+            label: "Y axis".to_string(),
+        },
+        parent: crate::model::ConstructionPlaneParent::Root,
+    });
+    app.apply(Action::SetPlaneAngle { value: TILT_FIRST.to_string() });
+    app.apply(Action::CommitConstructionPlane);
+}
+
+fn assist_sketch_on_tilted_plane(app: &mut AppState) {
+    if sketch_on_tilted_plane(app) {
+        return;
+    }
+    assist_tilt_plane(app);
+    let Some(plane) = tutorial_tilted_plane(app) else {
+        return;
+    };
+    app.apply(Action::BeginSketch {
+        face: crate::model::FaceId::ConstructionPlane(plane),
+        viewport: None,
+    });
+}
+
+fn assist_draw_tilted_rect(app: &mut AppState) {
+    if has_rectangle_outline(app) {
+        return;
+    }
+    assist_sketch_on_tilted_plane(app);
+    app.apply(Action::CreateRectangle {
+        x: 10.0,
+        y: 10.0,
+        width: 30.0,
+        height: 30.0,
+        width_expr: Some("30".into()),
+        height_expr: Some("30".into()),
+    });
+}
+
+fn assist_extrude_off_tilted_plane(app: &mut AppState) {
+    if has_extrusion(app) {
+        return;
+    }
+    assist_draw_tilted_rect(app);
+    let Some(sketch) = app.doc.lines.values().find(|l| !l.construction).map(|l| l.sketch) else {
+        return;
+    };
+    let Some(lines) = crate::polygon::closed_line_loops(&app.doc, sketch)
+        .into_iter()
+        .max_by_key(|l| l.len())
+    else {
+        return;
+    };
+    if lines.len() < 4 {
+        return;
+    }
+    if app.sketch_session.is_some() {
+        app.apply(Action::ExitSketch);
+    }
+    app.apply(Action::CreateExtrusion {
+        sketch,
+        faces: vec![crate::model::ExtrudeFace::Polygon(lines)],
+        distance: 10.0,
+        body: crate::actions::ExtrudeBodyChoice::New,
+        target: None,
+        expression: Some("10".into()),
+        symmetric: false,
+        taper: 0.0,
+        taper_mode: crate::model::ExtrudeTaperMode::Distance,
+        taper_expression: None,
+    });
+}
+
+fn assist_move_tilted_plane(app: &mut AppState) {
+    if plane_moved(app) {
+        return;
+    }
+    assist_extrude_off_tilted_plane(app);
+    let Some(plane) = tutorial_tilted_plane(app) else {
+        return;
+    };
+    app.apply(Action::BeginEditConstructionPlane { index: plane });
+    app.apply(Action::SetPlaneAngle { value: TILT_SECOND.to_string() });
+    app.apply(Action::CommitConstructionPlane);
+}
+
+/// #1673: tilt a plane off an axis, build a solid on it, then move the plane and watch the
+/// solid come with it.
+static TILTED_PLANE_STEPS: &[Step] = &[
+    plain_step(
+        "Sketches live on planes. Tilt the plane and everything on it tilts too.",
+        StepAnchor::None,
+        None,
+    ),
+    plain_step(
+        "Click the Construction Plane tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::ConstructionPlane)),
+        Some(plane_tool_active),
+    ),
+    plain_step(
+        "Click the green Y axis. The new plane will pivot around it.",
+        StepAnchor::World(tilt_axis_guide),
+        Some(tilt_axis_picked),
+    ),
+    assisted_step(
+        "Type `30` for the tilt, then Enter.",
+        StepAnchor::None,
+        Some(has_tilted_plane),
+        StepAssist {
+            label: "Tilt it for me",
+            run: assist_tilt_plane,
+        },
+        Some(TypeHint::Fixed(TILT_FIRST)),
+    ),
+    plain_step(
+        "Click the Sketch tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Sketch)),
+        Some(sketch_tool_active),
+    ),
+    assisted_step(
+        "Click the tilted plane to draw on it.",
+        StepAnchor::World(tilted_plane_guide),
+        Some(sketch_on_tilted_plane),
+        StepAssist {
+            label: "Open it for me",
+            run: assist_sketch_on_tilted_plane,
+        },
+        None,
+    ),
+    plain_step(
+        "Click the Rectangle tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Rectangle)),
+        Some(rectangle_tool_active),
+    ),
+    plain_step(
+        "Click a corner on the tilted plane.",
+        StepAnchor::World(tilted_rect_corner_a),
+        Some(rect_first_corner_placed),
+    ),
+    assisted_step(
+        "Click the opposite corner.",
+        StepAnchor::World(tilted_rect_corner_b),
+        Some(has_rectangle_outline),
+        StepAssist {
+            label: "Draw it for me",
+            run: assist_draw_tilted_rect,
+        },
+        None,
+    ),
+    plain_step(
+        "Click the Extrude tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude)),
+        Some(extrude_tool_active),
+    ),
+    plain_step(
+        "Click the profile.",
+        StepAnchor::World(rectangle_face_guide),
+        Some(extrude_face_picked),
+    ),
+    assisted_step(
+        "Type `10`, then Enter. The solid grows square to the tilted plane.",
+        StepAnchor::Ui(UiAnchor::ExtrudeDistance),
+        Some(has_extrusion),
+        StepAssist {
+            label: "Extrude it for me",
+            run: assist_extrude_off_tilted_plane,
+        },
+        Some(TypeHint::Fixed("10")),
+    ),
+    plain_step(
+        "Now move the plane. Double-click it in the Elements pane.",
+        StepAnchor::Ui(UiAnchor::ElementsPlane),
+        Some(plane_reopened),
+    ),
+    assisted_step(
+        "Change the tilt to `60`, then Enter. The solid swings round with the plane.",
+        StepAnchor::None,
+        Some(plane_moved),
+        StepAssist {
+            label: "Move it for me",
+            run: assist_move_tilted_plane,
+        },
+        Some(TypeHint::Fixed(TILT_SECOND)),
+    ),
+    plain_step(
+        "That's the chain: plane holds sketch, sketch drives solid. Move the plane, \
+         move the part. Nice!",
+        StepAnchor::None,
+        None,
+    ),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4395,10 +4686,11 @@ mod tests {
         assert_eq!(tutorial_index("raised_text"), Some(8), "#1557: raised text is ninth");
         assert_eq!(tutorial_index("drawing"), Some(9), "#1640: technical drawing is tenth");
         assert_eq!(tutorial_index("revolve"), Some(10), "#1672: revolve is eleventh");
+        assert_eq!(tutorial_index("tilted_plane"), Some(11), "#1673: angled plane is twelfth");
         assert_eq!(tutorial_index("bracket"), None, "#1334: build-a-bracket tutorial is gone");
         assert_eq!(tutorial_index("nope"), None);
-        assert_eq!(TUTORIALS.last().unwrap().name, "revolve");
-        assert_eq!(TUTORIALS.len(), 11, "pane lists every remaining walkthrough");
+        assert_eq!(TUTORIALS.last().unwrap().name, "tilted_plane");
+        assert_eq!(TUTORIALS.len(), 12, "pane lists every remaining walkthrough");
         for tut in TUTORIALS {
             assert_ne!(tut.name, "bracket");
             assert_ne!(tut.title, "Build an angle bracket");
@@ -6551,6 +6843,80 @@ mod tests {
             has_equal_constraint(&app),
             "two sides should be equal, status={}",
             app.status
+        );
+    }
+
+    fn tilted_plane_tut() -> &'static Tutorial {
+        &TUTORIALS[tutorial_index("tilted_plane").expect("tilted_plane tutorial is registered")]
+    }
+
+    /// #1673: tilt a construction plane off an axis, build on it, then move the plane and
+    /// watch the solid follow.
+    #[test]
+    fn tilted_plane_tutorial_is_registered_and_ends_by_moving_the_plane() {
+        let tut = tilted_plane_tut();
+        assert_eq!(tut.name, "tilted_plane");
+        assert_eq!(tut.title, "Angled plane");
+        let joined: String = tut
+            .steps
+            .iter()
+            .map(|s| s.narration.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("axis"), "{joined}");
+        assert!(joined.contains("tilt") || joined.contains("angle"), "{joined}");
+        assert!(
+            tut.steps
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::Tool(Tool::ConstructionPlane)))),
+            "the walkthrough picks the Construction Plane tool"
+        );
+        assert!(
+            tut.steps
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::ElementsPlane))),
+            "and reopens the plane from the Elements pane"
+        );
+        // Moving the plane is the point, so it comes after the solid is built.
+        let extrude = tut
+            .steps
+            .iter()
+            .position(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude))))
+            .expect("an extrude step");
+        let reopen = tut
+            .steps
+            .iter()
+            .position(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::ElementsPlane)))
+            .expect("a reopen step");
+        assert!(reopen > extrude, "move the plane after the solid exists");
+    }
+
+    /// #1673: the assists leave a tilted plane carrying a solid, and the final step
+    /// re-tilts the plane — the solid's frame moves with it.
+    #[test]
+    fn tilted_plane_tutorial_assists_build_on_a_plane_that_then_moves() {
+        let mut app = AppState::default();
+        finish_tutorial_via_next(&mut app, "tilted_plane");
+        let plane = tutorial_tilted_plane(&app).expect("an axis-anchored plane");
+        let def = &app.doc.construction_planes[plane].definition;
+        assert!(
+            (def.angle_deg - 60.0).abs() < 0.01,
+            "the last step re-tilts the plane to 60, got {}",
+            def.angle_deg
+        );
+        assert!(has_extrusion(&app), "a solid stands on the plane, status={}", app.status);
+        // The sketch really is hosted on the tilted plane, so the solid follows it.
+        assert!(
+            app.doc
+                .sketches
+                .values()
+                .any(|s| s.face == crate::model::FaceId::ConstructionPlane(plane)),
+            "the sketch is hosted on the tilted plane"
+        );
+        let normal = app.doc.construction_planes[plane].normal;
+        assert!(
+            normal.dot(glam::Vec3::Z).abs() < 0.99,
+            "the plane really is tilted off the ground, normal={normal:?}"
         );
     }
 
