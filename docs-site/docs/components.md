@@ -32,14 +32,14 @@ Component units pickers). Contents inherit through the chain: sketch override �
 
 ## Graph view
 
-In the Elements pane's graph view, components draw as smooth, lightly shaded areas
-encompassing their member nodes rather than as nodes themselves.
+The Elements pane's graph view is one element per line, with the relationships drawn
+beside them as vertical lanes — the way `gitk` draws commits. A component's contents
+string down the lane it opens, so its extent reads straight off the graph.
 
-The nodes lay themselves out with a force simulation that repels overlaps and spaces
-things apart. The **type filter** at the bottom of the pane applies to both the list and
-the graph, so hiding a category (say, sketches) thins out either view the same way.
+The **type filter** at the bottom of the pane applies to both the list and the graph, so
+hiding a category (say, sketches) thins out either view the same way.
 
-**Right-click any node** for the same context menu its list row offers — edit the
+**Right-click any row** for the same context menu its list row offers — edit the
 element, add it to a drawing, export a body, move it to a component, roll back to it, or
 delete it.
 

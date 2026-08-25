@@ -3811,9 +3811,6 @@ struct App {
     agent_inputmode_none: Option<bool>,
     gpu_viewport: bool,
     gpu_view_cube: bool,
-    /// Persistent physics state for the Elements pane's force-directed Graph view (#94).
-    /// Ephemeral view state (never persisted), like `AppState::hierarchy_view_mode`.
-    graph_layout: hierarchy::GraphLayout,
     /// Collapsed component rows in the Elements pane (#423); UI-only state.
     collapsed_components: std::collections::HashSet<model::ComponentKey>,
     /// Unit instances whose read-only contents are expanded in the Elements list (#723);
@@ -5351,7 +5348,6 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 ok
             },
             gpu_view_cube: gpu_view_cube::install(cc),
-            graph_layout: hierarchy::GraphLayout::default(),
             collapsed_components: std::collections::HashSet::new(),
             expanded_units: std::collections::HashSet::new(),
             drawings_section_collapsed: false,
@@ -15321,7 +15317,6 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                         &pane_selection,
                         &self.state.document_health,
                         &mut self.state.hierarchy_view_mode,
-                        &mut self.graph_layout,
                         &mut self.element_filter,
                         &mut self.element_filter_expanded,
                         &mut queue_edit_sketch,

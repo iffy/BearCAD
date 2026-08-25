@@ -24,6 +24,24 @@ pub fn elements_body_row_rect(ctx: &egui::Context) -> Option<egui::Rect> {
     ctx.data(|d| d.get_temp::<egui::Rect>(elements_body_row_rect_id()))
 }
 
+/// Egui-memory key for the Graph view's per-row rects this frame (#1670).
+fn elements_graph_row_rects_id() -> egui::Id {
+    egui::Id::new("elements_graph_row_rects")
+}
+
+/// Where the Graph view drew each of its rows this frame (#1670), in screen points, for the
+/// rows that were actually on screen. Scripts read these back through
+/// `bearcad.ui.elements_graph()` so a test can click a row where it really is. Empty
+/// whenever the Elements pane is showing some other view.
+pub fn elements_graph_row_rects(ctx: &egui::Context) -> Vec<(HierarchyNode, egui::Rect)> {
+    ctx.data(|d| d.get_temp::<Vec<(HierarchyNode, egui::Rect)>>(elements_graph_row_rects_id()))
+        .unwrap_or_default()
+}
+
+fn set_elements_graph_row_rects(ctx: &egui::Context, rects: Vec<(HierarchyNode, egui::Rect)>) {
+    ctx.data_mut(|d| d.insert_temp(elements_graph_row_rects_id(), rects));
+}
+
 use crate::actions::SketchSession;
 use crate::icons::{
     icon_button, icon_for_constraint_kind, icon_for_visibility, selectable_icon_button,
@@ -38,7 +56,7 @@ use crate::model::{
 use crate::names;
 use crate::selection::{additive_click_modifiers, SceneSelection};
 use eframe::egui::{self, Color32, RichText};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 /// A node in the scene hierarchy.
 ///
@@ -1042,41 +1060,6 @@ pub fn graph_node_positions(tree: &[HierarchyEntry]) -> Vec<GraphNodePosition> {
     positions
 }
 
-/// Per-component sets of graph nodes inside that component's subtree (#423), nested
-/// components included in their ancestors' sets — the areas the Graph view shades.
-pub fn component_node_sets(
-    tree: &[HierarchyEntry],
-) -> Vec<(crate::model::ComponentKey, HashSet<HierarchyNode>)> {
-    fn collect_nodes(entry: &HierarchyEntry, out: &mut HashSet<HierarchyNode>) {
-        if !matches!(entry.node, HierarchyNode::Component(_)) {
-            out.insert(entry.node);
-        }
-        for child in &entry.children {
-            collect_nodes(child, out);
-        }
-    }
-    fn walk(
-        entry: &HierarchyEntry,
-        out: &mut Vec<(crate::model::ComponentKey, HashSet<HierarchyNode>)>,
-    ) {
-        if let HierarchyNode::Component(ci) = entry.node {
-            let mut nodes = HashSet::new();
-            for child in &entry.children {
-                collect_nodes(child, &mut nodes);
-            }
-            out.push((ci, nodes));
-        }
-        for child in &entry.children {
-            walk(child, out);
-        }
-    }
-    let mut out = Vec::new();
-    for entry in tree {
-        walk(entry, &mut out);
-    }
-    out
-}
-
 /// `(input, consumer)` dependency pairs for the Graph view (#266/#281): relationships beyond the
 /// single tree parent — an operation's **input** elements feeding it, and a drawing projection's
 /// **source**. These become the input edges of the eventual full element graph (#252). Both
@@ -1369,104 +1352,337 @@ pub fn graph_shadow_skip_edges(
     edges
 }
 
-/// The dot radius, label gap, and minimum breathing room used by [`declutter_label_bands`] and
-/// mirrored by the graph render (`show_graph_view`). Kept here so the physics-free declutter is
-/// unit-testable without pulling in `egui`.
-const GRAPH_NODE_RADIUS_PX: f32 = 9.0;
-const GRAPH_LABEL_GAP_PX: f32 = 4.0;
-const GRAPH_LABEL_CLEAR_PX: f32 = 6.0;
+/// One line of the Graph view (#1670): a single node, with its dot sitting in `lane`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GraphLaneRow {
+    pub node: HierarchyNode,
+    pub lane: usize,
+}
 
-/// Guarantee that no two graph-node labels overlap (#248). The force sim positions the dots
-/// nicely but its labels — drawn rightward from each dot — can still land on a neighbour's dot
-/// or text. Different depth bands sit `LAYER_HEIGHT` apart vertically (far beyond a line of
-/// text), so only same-depth labels can collide; within each band this spreads the nodes just
-/// enough horizontally to clear every label, preserving their left-to-right order and the
-/// band's centre so the layout stays stable frame to frame. Returns an x override per node
-/// (in the same local space as `sim_x`).
-fn declutter_label_bands(
-    positions: &[GraphNodePosition],
-    sim_x: &HashMap<HierarchyNode, f32>,
-    label_widths: &HashMap<HierarchyNode, f32>,
-    available_width: f32,
-) -> HashMap<HierarchyNode, (f32, usize)> {
-    let x_of = |n: &HierarchyNode| sim_x.get(n).copied().unwrap_or(0.0);
-    let w_of = |n: &HierarchyNode| label_widths.get(n).copied().unwrap_or(0.0);
-    // A node's full right extent (dot + gap + label + clearance).
-    let extent = |n: &HierarchyNode| {
-        2.0 * GRAPH_NODE_RADIUS_PX + GRAPH_LABEL_GAP_PX + w_of(n) + GRAPH_LABEL_CLEAR_PX
-    };
+/// What a line between two rows means (#1670).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GraphLaneEdgeKind {
+    /// The upper node contains or produced the lower one — the plain parent/child trunk.
+    Parent,
+    /// The upper node is an **input** the lower one is built from (#266/#281): a second
+    /// relationship beyond the tree parent, drawn in its own accent.
+    Dependency,
+    /// A constraint's tie to the geometry it constrains: "related", not parent/child, so it
+    /// gets no lane of its own and is drawn as a soft dashed leg.
+    Related,
+}
 
-    let mut by_depth: BTreeMap<usize, Vec<HierarchyNode>> = BTreeMap::new();
-    for p in positions {
-        by_depth.entry(p.depth).or_default().push(p.node);
+impl GraphLaneEdgeKind {
+    /// Whether this line means "the upper node feeds the lower one" — everything but a
+    /// constraint's sideways tie.
+    pub fn is_input(self) -> bool {
+        matches!(self, Self::Parent | Self::Dependency)
     }
+}
 
-    let usable_right = (available_width - GRAPH_MARGIN).max(GRAPH_MARGIN + 1.0);
-    let usable = (usable_right - GRAPH_MARGIN).max(1.0);
+/// A line drawn between two rows of the Graph view (#1670).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GraphLaneEdge {
+    pub from: HierarchyNode,
+    pub to: HierarchyNode,
+    /// The lane the vertical run of this line occupies — the source's trunk. `Related` ties
+    /// take the shortest route between the two dots instead and ignore this.
+    pub lane: usize,
+    pub kind: GraphLaneEdgeKind,
+}
 
-    let mut out = HashMap::new();
-    for (_, mut band) in by_depth {
-        // Order by simulated x (identity as a deterministic tiebreak) and hold that order.
-        band.sort_by(|a, b| {
-            x_of(a)
-                .partial_cmp(&x_of(b))
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.cmp(b))
-        });
-        let n = band.len();
-        if n == 0 {
-            continue;
+/// The Graph view's layout (#1670): one node per line, top to bottom, with the relationships
+/// drawn as mostly-vertical lanes beside them — the way `gitk` draws commits.
+#[derive(Clone, Debug, Default)]
+pub struct GraphLaneLayout {
+    /// Rows top to bottom; a node's row is its index here.
+    pub rows: Vec<GraphLaneRow>,
+    pub edges: Vec<GraphLaneEdge>,
+    /// How many lanes the widest point of the graph needs.
+    pub lane_count: usize,
+}
+
+impl GraphLaneLayout {
+    pub fn row_of(&self, node: HierarchyNode) -> Option<usize> {
+        self.rows.iter().position(|r| r.node == node)
+    }
+}
+
+/// The line/circle/image node a constraint endpoint refers to, if it has one (#1670).
+fn constraint_point_node(point: &ConstraintPoint) -> Option<HierarchyNode> {
+    match *point {
+        ConstraintPoint::LineEndpoint { line, .. } => Some(HierarchyNode::Line(line)),
+        ConstraintPoint::CircleCenter(circle) => Some(HierarchyNode::Circle(circle)),
+        ConstraintPoint::ImageAnchor { image, .. }
+        | ConstraintPoint::ImageCalibrationPoint { image, .. } => Some(HierarchyNode::Image(image)),
+        _ => None,
+    }
+}
+
+fn constraint_line_node(line: &ConstraintLine) -> Option<HierarchyNode> {
+    match *line {
+        ConstraintLine::Line(li) => Some(HierarchyNode::Line(li)),
+        ConstraintLine::ImageEdge { image, .. } => Some(HierarchyNode::Image(image)),
+        ConstraintLine::FaceEdge { .. } | ConstraintLine::OriginAxis(_) => None,
+    }
+}
+
+fn constraint_entity_node(entity: &ConstraintEntity) -> Option<HierarchyNode> {
+    match entity {
+        ConstraintEntity::Point(point) => constraint_point_node(point),
+        ConstraintEntity::Line(line) => constraint_line_node(line),
+        ConstraintEntity::Circle(circle) => Some(HierarchyNode::Circle(*circle)),
+        ConstraintEntity::Origin => None,
+    }
+}
+
+/// The nodes a constraint relates (#1670) — the geometry it holds together, in no particular
+/// order. A constraint is nobody's child, so this is what it ties to in the Graph view.
+pub fn constraint_related_nodes(kind: &ConstraintKind) -> Vec<HierarchyNode> {
+    let mut out = Vec::new();
+    let mut push = |node: Option<HierarchyNode>| {
+        if let Some(node) = node {
+            if !out.contains(&node) {
+                out.push(node);
+            }
         }
-        let total_extent: f32 = band.iter().map(&extent).sum();
-        if total_extent <= usable {
-            // Fits in one row: keep the organic sweep, recentred on the band's centroid so no
-            // single label overflows the pane (#248).
-            let mut new_x = vec![0.0f32; n];
-            new_x[0] = x_of(&band[0]);
-            for i in 1..n {
-                let min_next = new_x[i - 1] + extent(&band[i - 1]);
-                new_x[i] = x_of(&band[i]).max(min_next);
+    };
+    match kind {
+        ConstraintKind::Distance { target } => match target {
+            DistanceTarget::LineLength(li) => push(Some(HierarchyNode::Line(*li))),
+            DistanceTarget::CircleDiameter(ci) => push(Some(HierarchyNode::Circle(*ci))),
+            DistanceTarget::LineLineDistance { line_a, line_b, .. } => {
+                push(constraint_line_node(line_a));
+                push(constraint_line_node(line_b));
             }
-            let sim_mean = band.iter().map(x_of).sum::<f32>() / n as f32;
-            let new_mean = new_x.iter().sum::<f32>() / n as f32;
-            let shift = sim_mean - new_mean;
-            let placed: Vec<f32> = new_x.iter().map(|x| x + shift).collect();
-            // Translate the whole band (never per-node clamp, which would collapse spacing) so it
-            // sits within [margin, usable_right]; since it fits (total_extent ≤ usable) this always
-            // succeeds without overlap.
-            let left = placed.iter().copied().fold(f32::MAX, f32::min);
-            let right = placed
-                .iter()
-                .zip(&band)
-                .map(|(x, node)| x + extent(node))
-                .fold(f32::MIN, f32::max);
-            let mut adjust = 0.0;
-            if left < GRAPH_MARGIN {
-                adjust = GRAPH_MARGIN - left;
+            DistanceTarget::PointPointDistance { anchor, mover, .. } => {
+                push(constraint_point_node(anchor));
+                push(constraint_point_node(mover));
             }
-            if right + adjust > usable_right {
-                adjust -= right + adjust - usable_right;
+            DistanceTarget::PointLineDistance { point, line, .. } => {
+                push(constraint_point_node(point));
+                push(constraint_line_node(line));
             }
-            for (node, x) in band.iter().zip(placed) {
-                out.insert(*node, (x + adjust, 0usize));
-            }
-        } else {
-            // Too wide for the pane: pack left→right and wrap into stacked sub-rows so the band
-            // grows *taller* instead of overflowing the width (#350).
-            let mut cursor = GRAPH_MARGIN;
-            let mut row = 0usize;
-            for node in &band {
-                let ext = extent(node);
-                if cursor > GRAPH_MARGIN && cursor + ext > usable_right {
-                    row += 1;
-                    cursor = GRAPH_MARGIN;
-                }
-                out.insert(*node, (cursor, row));
-                cursor += ext;
-            }
+        },
+        ConstraintKind::Parallel { line_a, line_b }
+        | ConstraintKind::Perpendicular { line_a, line_b }
+        | ConstraintKind::Equal { line_a, line_b }
+        | ConstraintKind::Angle { line_a, line_b, .. } => {
+            push(constraint_line_node(line_a));
+            push(constraint_line_node(line_b));
+        }
+        ConstraintKind::Coincident { a, b } => {
+            push(constraint_entity_node(a));
+            push(constraint_entity_node(b));
+        }
+        ConstraintKind::Midpoint { point, line } => {
+            push(constraint_point_node(point));
+            push(constraint_line_node(line));
+        }
+        ConstraintKind::Tangent { a, b } => {
+            push(constraint_point_node(a));
+            push(constraint_point_node(b));
         }
     }
     out
+}
+
+/// Lay the Elements graph out as one node per line (#1670).
+///
+/// Rows run top to bottom in a depth-first walk of the hierarchy, deferring any node whose
+/// inputs haven't been emitted yet — so a node always sits below everything that feeds it.
+/// Each node with consumers reserves **one** lane for all of them: its children string down
+/// that single vertical run rather than fanning out sideways, and a lane is reused as soon as
+/// its last consumer is passed, so a straight history chain never drifts right.
+pub fn graph_lane_layout(doc: &Document, tree: &[HierarchyEntry]) -> GraphLaneLayout {
+    let positions = graph_node_positions(tree);
+    if positions.is_empty() {
+        return GraphLaneLayout::default();
+    }
+    let present: HashSet<HierarchyNode> = positions.iter().map(|p| p.node).collect();
+    let tree_parent: HashMap<HierarchyNode, HierarchyNode> = positions
+        .iter()
+        .filter_map(|p| p.parent.map(|parent| (p.node, parent)))
+        .collect();
+
+    // Input edges: the tree's parent links (Document spokes already dropped for nodes with a
+    // real input, #1324), the dependency inputs, and the hidden-shadow skips. A constraint's
+    // sketch parent is deliberately not one — see `constraint_related_nodes`.
+    let mut inputs: Vec<(HierarchyNode, HierarchyNode, GraphLaneEdgeKind)> = Vec::new();
+    let mut seen = HashSet::new();
+    let deps = graph_dependency_edges(doc)
+        .into_iter()
+        .filter(|(from, to)| present.contains(from) && present.contains(to))
+        .chain(graph_shadow_skip_edges(doc, &present))
+        .map(|(from, to)| (from, to, GraphLaneEdgeKind::Dependency));
+    for (from, to, kind) in graph_parent_edges(&positions, doc)
+        .into_iter()
+        .map(|(from, to)| (from, to, GraphLaneEdgeKind::Parent))
+        .chain(deps)
+    {
+        if from == to || matches!(to, HierarchyNode::Constraint(_)) {
+            continue;
+        }
+        if seen.insert((from, to)) {
+            inputs.push((from, to, kind));
+        }
+    }
+
+    let order = graph_lane_order(tree, &inputs);
+    let row_of: HashMap<HierarchyNode, usize> =
+        order.iter().enumerate().map(|(row, node)| (*node, row)).collect();
+
+    let mut consumers: HashMap<HierarchyNode, Vec<HierarchyNode>> = HashMap::new();
+    let mut sources: HashMap<HierarchyNode, Vec<HierarchyNode>> = HashMap::new();
+    for (from, to, _) in &inputs {
+        consumers.entry(*from).or_default().push(*to);
+        sources.entry(*to).or_default().push(*from);
+    }
+    let last_consumer_row: HashMap<HierarchyNode, usize> = consumers
+        .iter()
+        .filter_map(|(node, list)| {
+            list.iter().filter_map(|c| row_of.get(c)).max().map(|row| (*node, *row))
+        })
+        .collect();
+
+    // Lane state: the last row each lane's trunk still runs through.
+    let mut busy_until: Vec<Option<usize>> = Vec::new();
+    let free_at = |busy: &[Option<usize>], lane: usize, row: usize| {
+        busy.get(lane).copied().flatten().is_none_or(|until| until < row)
+    };
+    let first_free = |busy: &mut Vec<Option<usize>>, row: usize, min_lane: usize| {
+        let mut lane = min_lane;
+        while !free_at(busy, lane, row) {
+            lane += 1;
+        }
+        while busy.len() <= lane {
+            busy.push(None);
+        }
+        lane
+    };
+
+    let mut trunk_of: HashMap<HierarchyNode, usize> = HashMap::new();
+    let mut rows = Vec::with_capacity(order.len());
+    for (row, node) in order.iter().enumerate() {
+        // A node sits in the leftmost trunk that feeds it; anything else (a root, a
+        // constraint) takes the leftmost free lane at or right of its parent's trunk, so it
+        // fits into whatever gap the graph already has.
+        let lane = sources
+            .get(node)
+            .and_then(|list| list.iter().filter_map(|src| trunk_of.get(src).copied()).min())
+            .unwrap_or_else(|| {
+                let min_lane = tree_parent
+                    .get(node)
+                    .and_then(|parent| trunk_of.get(parent).copied())
+                    .unwrap_or(0);
+                first_free(&mut busy_until, row, min_lane)
+            });
+        while busy_until.len() <= lane {
+            busy_until.push(None);
+        }
+        rows.push(GraphLaneRow { node: *node, lane });
+
+        // Reserve this node's one trunk for every consumer below — its own lane when that is
+        // free from here down (the chain case), otherwise the leftmost free lane.
+        if let Some(&last) = last_consumer_row.get(node) {
+            let trunk = if free_at(&busy_until, lane, row + 1) {
+                lane
+            } else {
+                first_free(&mut busy_until, row + 1, lane)
+            };
+            let until = busy_until[trunk].map_or(last, |prev| prev.max(last));
+            busy_until[trunk] = Some(until);
+            trunk_of.insert(*node, trunk);
+        }
+    }
+
+    let lane_of: HashMap<HierarchyNode, usize> =
+        rows.iter().map(|r| (r.node, r.lane)).collect();
+    let mut edges: Vec<GraphLaneEdge> = inputs
+        .iter()
+        .map(|(from, to, kind)| GraphLaneEdge {
+            from: *from,
+            to: *to,
+            lane: trunk_of.get(from).copied().unwrap_or(0),
+            kind: *kind,
+        })
+        .collect();
+    // Constraints tie sideways to what they constrain.
+    for row in &rows {
+        let HierarchyNode::Constraint(ci) = row.node else {
+            continue;
+        };
+        let Some(constraint) = doc.constraints.get(ci) else {
+            continue;
+        };
+        for related in constraint_related_nodes(&constraint.kind) {
+            if lane_of.contains_key(&related) {
+                edges.push(GraphLaneEdge {
+                    from: related,
+                    to: row.node,
+                    lane: row.lane,
+                    kind: GraphLaneEdgeKind::Related,
+                });
+            }
+        }
+    }
+
+    let lane_count = rows.iter().map(|r| r.lane + 1).max().unwrap_or(0).max(busy_until.len());
+    GraphLaneLayout { rows, edges, lane_count }
+}
+
+/// Row order for [`graph_lane_layout`]: a depth-first walk of the hierarchy that holds a node
+/// back until every input it depends on has been emitted. Depth-first keeps a node's children
+/// contiguous (so one lane serves them all); the input gate keeps consumers below their
+/// inputs even when those live in another branch.
+fn graph_lane_order(
+    tree: &[HierarchyEntry],
+    inputs: &[(HierarchyNode, HierarchyNode, GraphLaneEdgeKind)],
+) -> Vec<HierarchyNode> {
+    fn walk(entry: &HierarchyEntry, out: &mut Vec<HierarchyNode>) {
+        out.push(entry.node);
+        for child in &entry.children {
+            walk(child, out);
+        }
+    }
+    let mut preorder = Vec::new();
+    for entry in tree {
+        walk(entry, &mut preorder);
+    }
+
+    let mut sources: HashMap<HierarchyNode, Vec<HierarchyNode>> = HashMap::new();
+    for (from, to, _) in inputs {
+        sources.entry(*to).or_default().push(*from);
+    }
+
+    let mut emitted: HashSet<HierarchyNode> = HashSet::new();
+    let mut order: Vec<HierarchyNode> = Vec::with_capacity(preorder.len());
+    loop {
+        let before = order.len();
+        for node in &preorder {
+            if emitted.contains(node) {
+                continue;
+            }
+            let ready = sources
+                .get(node)
+                .is_none_or(|list| list.iter().all(|from| emitted.contains(from)));
+            if ready {
+                emitted.insert(*node);
+                order.push(*node);
+            }
+        }
+        if order.len() == before || order.len() == preorder.len() {
+            break;
+        }
+    }
+    // Defensive: a dependency cycle would strand nodes — emit them in tree order rather
+    // than dropping them from the view.
+    for node in preorder {
+        if emitted.insert(node) {
+            order.push(node);
+        }
+    }
+    order
 }
 
 /// Find `node`'s entry anywhere in `tree` (not just at the root — e.g. a sketch nests under
@@ -1518,378 +1734,6 @@ pub fn graph_related_nodes(tree: &[HierarchyEntry], selected: HierarchyNode) -> 
     }
 
     related
-}
-
-/// Persistent physics state for the Graph view's force-directed layout (#94). Held on `App`
-/// (never persisted to disk — a purely ephemeral view state, like [`HierarchyViewMode`]) and
-/// threaded into [`show_graph_view`], so node positions/velocities carry across frames and the
-/// simulation can animate ("bounce around") until it settles. Coordinates are layout-local:
-/// x is contained to the pane width, y flows top-to-bottom by tree depth.
-#[derive(Default)]
-pub struct GraphLayout {
-    nodes: HashMap<HierarchyNode, GraphNodeState>,
-    /// Persistent per-node drag offsets (#451): the user can grab any node and move it;
-    /// the offset adds to the computed layout position so physics/declutter still run.
-    drag_offsets: HashMap<HierarchyNode, egui::Vec2>,
-    /// The node currently being dragged, if any (#622): the layering enforcement treats it
-    /// as authoritative, pushing *other* nodes out of the way instead of snapping it back.
-    active_drag: Option<HierarchyNode>,
-    /// Whether the simulation has come to rest (#661). A settled layout **stops stepping**
-    /// until something actually disturbs it — a node appearing or leaving, or a drag.
-    /// Without this the sim advanced on every repaint the pane happened to get, so merely
-    /// clicking a node (which repaints for selection, hover, and the tooltip) walked the
-    /// whole graph to a new position.
-    settled: bool,
-    /// Whether physics was running last frame (`run_physics`); used to unsettle when the
-    /// sim is re-enabled after a freeze (tests / internal `sync_and_step` callers).
-    was_running: bool,
-}
-
-/// One node's live physics state in [`GraphLayout`]: current position and velocity.
-#[derive(Clone, Copy, Debug)]
-struct GraphNodeState {
-    pos: egui::Vec2,
-    vel: egui::Vec2,
-}
-
-/// Vertical spacing between successive tree depths — the "somewhat vertical" target the
-/// layering force pulls each node toward (parents above children, flow top-to-bottom, #94).
-const LAYER_HEIGHT: f32 = 64.0;
-/// Horizontal inset kept clear at each side of the pane; x is soft-restored and hard-clamped
-/// into `[MARGIN, width - MARGIN]` so the graph never exceeds the pane width (#34).
-const GRAPH_MARGIN: f32 = 18.0;
-
-/// Deterministic horizontal seed for a freshly-inserted node, derived purely from the node's
-/// identity (no `rand`, so layout is reproducible across runs and in tests). Spreads new nodes
-/// across the pane width so the simulation starts un-coincident.
-fn seed_x(node: HierarchyNode, width: f32) -> f32 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    node.hash(&mut hasher);
-    let frac = (hasher.finish() % 10_000) as f32 / 10_000.0;
-    let lo = GRAPH_MARGIN;
-    let hi = (width - GRAPH_MARGIN).max(GRAPH_MARGIN + 1.0);
-    lo + frac * (hi - lo)
-}
-
-/// Advance the force-directed layout one integration step (semi-implicit Euler) and return the
-/// total kinetic energy (Σ‖vel‖²) — a pure, `egui`-painting-free function so the physics is
-/// directly unit-testable (settle, containment, vertical ordering, determinism). `edges` are
-/// `(child, parent)` pairs; `depth_of` gives each node's tree depth; `width` is the pane width
-/// the x coordinate is contained to.
-///
-/// Forces: a vertical layering spring pulling `y` toward `depth * LAYER_HEIGHT`; pairwise
-/// inverse-square repulsion (min-distance/max-force capped) spreading siblings sideways;
-/// parent↔child edge springs toward a rest length; a soft horizontal-containment restoring
-/// force; and per-step velocity damping so it settles rather than oscillating forever.
-fn step_graph_layout(
-    nodes: &mut HashMap<HierarchyNode, GraphNodeState>,
-    edges: &[(HierarchyNode, HierarchyNode)],
-    depth_of: &HashMap<HierarchyNode, usize>,
-    width: f32,
-    dt: f32,
-) -> f32 {
-    const LAYER_STIFFNESS: f32 = 10.0;
-    // #151: repulsion must win against the edge springs at dot-diameter range or siblings
-    // pile up on their parent's x. The spring is deliberately weak *and capped* (it only
-    // keeps children loosely near their parent), its rest length sits above LAYER_HEIGHT so
-    // a child directly below its parent is in compression (pushed to fan out sideways), and
-    // the repulsion constant is sized to hold ~26 px spacing against the capped spring.
-    const REPULSION: f32 = 30_000.0;
-    const MIN_DIST: f32 = 6.0;
-    const MAX_REPULSION_FORCE: f32 = 300.0;
-    const EDGE_SPRING_K: f32 = 0.6;
-    const EDGE_SPRING_MAX_FORCE: f32 = 40.0;
-    const EDGE_REST_LENGTH: f32 = 84.0;
-    const CONTAIN_STIFFNESS: f32 = 14.0;
-    const DAMPING: f32 = 0.86;
-
-    // Iterate a sorted key list (not the HashMap's arbitrary order) so force accumulation is
-    // order-independent and thus bit-for-bit deterministic across runs.
-    let mut keys: Vec<HierarchyNode> = nodes.keys().copied().collect();
-    keys.sort();
-    let index_of: HashMap<HierarchyNode, usize> =
-        keys.iter().enumerate().map(|(i, n)| (*n, i)).collect();
-    let mut forces = vec![egui::Vec2::ZERO; keys.len()];
-
-    // Vertical layering spring: pull y toward the node's depth band.
-    for (i, node) in keys.iter().enumerate() {
-        let target_y = *depth_of.get(node).unwrap_or(&0) as f32 * LAYER_HEIGHT;
-        let y = nodes[node].pos.y;
-        forces[i].y += LAYER_STIFFNESS * (target_y - y);
-    }
-
-    // Pairwise repulsion (inverse-square, min-distance and max-force capped).
-    for a in 0..keys.len() {
-        for b in (a + 1)..keys.len() {
-            let pa = nodes[&keys[a]].pos;
-            let pb = nodes[&keys[b]].pos;
-            let mut delta = pa - pb;
-            let mut dist = delta.length();
-            if dist < MIN_DIST {
-                // Coincident (or nearly): shove apart along a deterministic axis to avoid a
-                // divide-by-zero / NaN blowup.
-                if dist < 1e-4 {
-                    delta = egui::vec2(1.0, 0.0);
-                    dist = 1.0;
-                }
-                dist = dist.max(MIN_DIST);
-            }
-            let dir = delta / dist;
-            let mag = (REPULSION / (dist * dist)).min(MAX_REPULSION_FORCE);
-            let f = dir * mag;
-            forces[a] += f;
-            forces[b] -= f;
-        }
-    }
-
-    // Edge springs (parent↔child attraction toward a rest length).
-    for (child, parent) in edges {
-        let (Some(&ci), Some(&pi)) = (index_of.get(child), index_of.get(parent)) else {
-            continue;
-        };
-        let delta = nodes[child].pos - nodes[parent].pos;
-        let dist = delta.length().max(MIN_DIST);
-        let dir = delta / dist;
-        let mag = (-EDGE_SPRING_K * (dist - EDGE_REST_LENGTH))
-            .clamp(-EDGE_SPRING_MAX_FORCE, EDGE_SPRING_MAX_FORCE);
-        let f = dir * mag;
-        forces[ci] += f;
-        forces[pi] -= f;
-    }
-
-    // Horizontal soft-containment restoring force.
-    let lo = GRAPH_MARGIN;
-    let hi = (width - GRAPH_MARGIN).max(lo);
-    for (i, node) in keys.iter().enumerate() {
-        let x = nodes[node].pos.x;
-        if x < lo {
-            forces[i].x += CONTAIN_STIFFNESS * (lo - x);
-        } else if x > hi {
-            forces[i].x += CONTAIN_STIFFNESS * (hi - x);
-        }
-    }
-
-    // Integrate: vel += force*dt; vel *= damping; pos += vel*dt; then hard-clamp x.
-    let mut kinetic = 0.0;
-    for (i, node) in keys.iter().enumerate() {
-        let state = nodes.get_mut(node).expect("key came from this map");
-        let mut force = forces[i];
-        if !force.x.is_finite() {
-            force.x = 0.0;
-        }
-        if !force.y.is_finite() {
-            force.y = 0.0;
-        }
-        state.vel += force * dt;
-        state.vel *= DAMPING;
-        // Speed cap: in an overcrowded pane the stiff close-range forces would otherwise
-        // orbit the equilibrium forever instead of settling into it.
-        const MAX_SPEED: f32 = 200.0;
-        if state.vel.length() > MAX_SPEED {
-            state.vel = state.vel.normalized() * MAX_SPEED;
-        }
-        state.pos += state.vel * dt;
-        // The hard x-clamp is a wall collision: also kill the velocity component pushing
-        // into the wall, or a crowded row pins nodes at the margin with an ever-pumping
-        // velocity (sustained kinetic energy) and the layout never registers as settled.
-        let clamped_x = state.pos.x.clamp(lo, hi);
-        if clamped_x != state.pos.x {
-            state.pos.x = clamped_x;
-            state.vel.x = 0.0;
-        }
-        if !state.pos.x.is_finite() {
-            state.pos.x = lo;
-        }
-        if !state.pos.y.is_finite() {
-            state.pos.y = 0.0;
-        }
-        kinetic += state.vel.length_sq();
-    }
-    kinetic
-}
-
-impl GraphLayout {
-    /// Sync the live node set to `positions` (seed newly-appeared nodes deterministically,
-    /// drop departed ones), then advance the simulation `substeps` times, returning the final
-    /// kinetic energy for settle detection.
-    fn sync_and_step(
-        &mut self,
-        positions: &[GraphNodePosition],
-        width: f32,
-        substeps: u32,
-        dt: f32,
-        run_physics: bool,
-    ) -> f32 {
-        let present: HashSet<HierarchyNode> = positions.iter().map(|p| p.node).collect();
-        let before = self.nodes.len();
-        self.nodes.retain(|node, _| present.contains(node));
-        let depth_of: HashMap<HierarchyNode, usize> =
-            positions.iter().map(|p| (p.node, p.depth)).collect();
-        let mut added = false;
-        for p in positions {
-            self.nodes.entry(p.node).or_insert_with(|| {
-                added = true;
-                GraphNodeState {
-                    pos: egui::vec2(seed_x(p.node, width), p.depth as f32 * LAYER_HEIGHT),
-                    vel: egui::Vec2::ZERO,
-                }
-            });
-        }
-        // A changed node set, a drag, or the force layout coming back on wakes the sim (#661).
-        if added || before != self.nodes.len() || self.active_drag.is_some() || (run_physics && !self.was_running) {
-            self.settled = false;
-        }
-        self.was_running = run_physics;
-        // Force layout off (#525): keep nodes synced (new ones seeded, gone ones dropped) but
-        // freeze them in place — no stepping — so a busy graph holds still.
-        if !run_physics {
-            return 0.0;
-        }
-        // Settled (#661): hold still until something disturbs it, so a repaint the pane gets
-        // for an unrelated reason — a click, a hover, a tooltip — can't walk the layout.
-        if self.settled {
-            return 0.0;
-        }
-        let edges: Vec<(HierarchyNode, HierarchyNode)> = positions
-            .iter()
-            .filter_map(|p| p.parent.map(|parent| (p.node, parent)))
-            .collect();
-        let mut kinetic = 0.0;
-        for _ in 0..substeps.max(1) {
-            kinetic = step_graph_layout(&mut self.nodes, &edges, &depth_of, width, dt);
-        }
-        kinetic
-    }
-
-    /// Whether the simulation has come to rest, so the caller can stop asking for repaints
-    /// and the layout holds still (#661).
-    fn mark_settled(&mut self) {
-        self.settled = true;
-    }
-
-    /// The user's drag offset for a node (#451), zero if never dragged.
-    fn drag_offset(&self, node: HierarchyNode) -> egui::Vec2 {
-        self.drag_offsets.get(&node).copied().unwrap_or(egui::Vec2::ZERO)
-    }
-
-    /// Accumulate a drag delta onto a node's offset (#451).
-    fn add_drag_offset(&mut self, node: HierarchyNode, delta: egui::Vec2) {
-        *self.drag_offsets.entry(node).or_insert(egui::Vec2::ZERO) += delta;
-    }
-
-    fn pos_of(&self, node: HierarchyNode) -> Option<egui::Vec2> {
-        self.nodes.get(&node).map(|s| s.pos)
-    }
-
-    /// Clamp a node's banked drag offset so it never encodes an upward drag the layering
-    /// rule refuses to honour (#638) — otherwise the slack has to be paid back before
-    /// dragging down moves anything.
-    fn clamp_drag_offset_y(&mut self, node: HierarchyNode, floor: f32) {
-        if let Some(offset) = self.drag_offsets.get_mut(&node) {
-            offset.y = offset.y.max(floor);
-        }
-    }
-}
-
-/// Enforce the Graph view's layering rule (#622) on proposed node ys: every
-/// `(input, consumer)` edge keeps the input at least `gap` above its consumer — inputs
-/// always render above the thing they feed, outputs always below what makes them. The
-/// node being dragged (if any) is authoritative: violations against it push the *other*
-/// node out of the way (its inputs slide up, its consumers slide down) instead of the
-/// dragged node snapping back, so the graph moves in response to the drag. Everything
-/// else resolves downward (consumers pushed below their inputs). Bounded relaxation, so
-/// even a (malformed) cyclic edge set terminates.
-///
-/// That upward shove is bounded by `top` (#638): a dragged node needs one `gap` of headroom
-/// per link in its longest input chain, so once the topmost input reaches `top` the whole
-/// chain — dragged node included — stops instead of sliding off the top of the pane.
-fn enforce_graph_layering(
-    ys: &mut HashMap<HierarchyNode, f32>,
-    edges: &[(HierarchyNode, HierarchyNode)],
-    dragging: Option<HierarchyNode>,
-    gap: f32,
-    top: f32,
-) {
-    // Authority propagates up the whole input chain, not just one edge (#638): a node shoved
-    // up to clear the dragged node must in turn shove *its* inputs up, or the two rules fight
-    // and the chain never settles.
-    let mut authoritative: HashSet<HierarchyNode> = HashSet::new();
-    if let Some(node) = dragging {
-        let floor = top + gap * input_chain_depth(node, edges) as f32;
-        if let Some(y) = ys.get_mut(&node) {
-            *y = y.max(floor);
-        }
-        authoritative.insert(node);
-        for _ in 0..ys.len().max(1) {
-            let before = authoritative.len();
-            for (input, consumer) in edges {
-                if authoritative.contains(consumer) {
-                    authoritative.insert(*input);
-                }
-            }
-            if authoritative.len() == before {
-                break;
-            }
-        }
-    }
-    let passes = ys.len().max(8);
-    for _ in 0..passes {
-        let mut changed = false;
-        for (input, consumer) in edges {
-            let (Some(&yi), Some(&yc)) = (ys.get(input), ys.get(consumer)) else {
-                continue;
-            };
-            if yc < yi + gap {
-                if authoritative.contains(consumer) {
-                    ys.insert(*input, yc - gap);
-                } else {
-                    ys.insert(*consumer, yi + gap);
-                }
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-}
-
-/// How many links long `node`'s **longest** chain of inputs is, following `(input, consumer)`
-/// edges backwards (#638). That's the headroom the node needs above it: each link occupies one
-/// layering gap, so a node this many gaps below the top edge can rise no further without
-/// pushing an ancestor off the top. A (malformed) cycle is cut by the visiting set.
-fn input_chain_depth(node: HierarchyNode, edges: &[(HierarchyNode, HierarchyNode)]) -> usize {
-    let mut inputs: HashMap<HierarchyNode, Vec<HierarchyNode>> = HashMap::new();
-    for (input, consumer) in edges {
-        inputs.entry(*consumer).or_default().push(*input);
-    }
-    fn walk(
-        node: HierarchyNode,
-        inputs: &HashMap<HierarchyNode, Vec<HierarchyNode>>,
-        memo: &mut HashMap<HierarchyNode, usize>,
-        visiting: &mut HashSet<HierarchyNode>,
-    ) -> usize {
-        if let Some(&d) = memo.get(&node) {
-            return d;
-        }
-        if !visiting.insert(node) {
-            return 0;
-        }
-        let depth = inputs
-            .get(&node)
-            .map(|ins| {
-                ins.iter()
-                    .map(|i| 1 + walk(*i, inputs, memo, visiting))
-                    .max()
-                    .unwrap_or(0)
-            })
-            .unwrap_or(0);
-        visiting.remove(&node);
-        memo.insert(node, depth);
-        depth
-    }
-    walk(node, &inputs, &mut HashMap::new(), &mut HashSet::new())
 }
 
 /// The element whose shared Elements-pane context menu should open for a viewport
@@ -2823,6 +2667,27 @@ pub fn filter_hierarchy(tree: &[HierarchyEntry], filter: &ElementFilter) -> Vec<
         }
     }
     out
+}
+
+/// The hierarchy the Graph view lays out: filtered, then pruned of the two things the graph
+/// shows differently from the List. A unit instance is one opaque node there (#723) — its
+/// contents stay out unless the "Unit contents" toggle lets them in, where the List instead
+/// hides them behind the row's collapse — and shadow bodies follow their own toggle (#1109).
+/// Shared with the script API so `bearcad.ui.elements_graph()` reads the same rows the pane
+/// draws (#1670).
+pub fn graph_view_tree(
+    doc: &Document,
+    sketch_session: Option<SketchSession>,
+    filter: &ElementFilter,
+) -> Vec<HierarchyEntry> {
+    let mut tree = filter_hierarchy(&build_hierarchy(doc, sketch_session), filter);
+    if !filter.unit_contents {
+        prune_unit_children(&mut tree);
+    }
+    if !filter.shadow_bodies {
+        prune_shadow_bodies(&mut tree, doc);
+    }
+    tree
 }
 
 fn collect_with_parents(
@@ -4356,7 +4221,6 @@ pub fn show_pane(
     selection: &SceneSelection,
     health: &DocumentHealth,
     view_mode: &mut HierarchyViewMode,
-    graph_layout: &mut GraphLayout,
     filter: &mut ElementFilter,
     filter_expanded: &mut bool,
     on_edit_sketch: &mut impl FnMut(SketchId),
@@ -4427,7 +4291,7 @@ pub fn show_pane(
                 // and the dependency-aware Graph remain. The enum variant stays for script
                 // back-compat; a lingering `Tree` mode renders as List (see the match below).
                 for (mode, icon, tooltip) in [
-                    (HierarchyViewMode::Graph, IconId::ViewGraph, "Graph-node view"),
+                    (HierarchyViewMode::Graph, IconId::ViewGraph, "Graph view"),
                     (HierarchyViewMode::List, IconId::ViewList, "List view"),
                 ] {
                     let selected = *view_mode == mode
@@ -4520,6 +4384,8 @@ pub fn show_pane(
     match view_mode {
         // `Tree` is retired (#252); a lingering script-set Tree mode falls back to List.
         HierarchyViewMode::List | HierarchyViewMode::Tree => {
+            // Row rects belong to the Graph view alone; don't leave last frame's behind (#1670).
+            set_elements_graph_row_rects(ui.ctx(), Vec::new());
             let tree = filter_hierarchy(&build_hierarchy(doc, sketch_session), filter);
             let tree = if filter.shadow_bodies {
                 tree
@@ -4669,22 +4535,11 @@ pub fn show_pane(
             });
         }
         HierarchyViewMode::Graph => {
-            let mut tree = filter_hierarchy(&build_hierarchy(doc, sketch_session), filter);
-            // The graph shows a unit instance as one opaque node (#723): its contents stay
-            // out unless the "Unit contents" filter toggle lets them in. The List keeps
-            // them (they hide behind the row's collapse instead), so this prune is the
-            // graph's own.
-            if !filter.unit_contents {
-                prune_unit_children(&mut tree);
-            }
-            if !filter.shadow_bodies {
-                prune_shadow_bodies(&mut tree, doc);
-            }
+            let tree = graph_view_tree(doc, sketch_session, filter);
             show_graph_view(
                 ui,
                 doc,
                 &tree,
-                graph_layout,
                 selection,
                 health,
                 &context,
@@ -4806,81 +4661,36 @@ fn show_elements_filter(
         });
 }
 
-/// Accent stroke for graph-view edges/nodes among the selected node's ancestors and
+/// Accent stroke for graph-view lanes/rows among the selected node's ancestors and
 /// descendants. Row styling has no direct line-drawing equivalent to reuse, so this is a
 /// dedicated bold accent, distinct from the node fill colors (which do reuse
 /// [`icon_tint_for_row_style`] for consistency with the List/Tree views).
 const GRAPH_RELATED_EDGE: Color32 = Color32::from_rgb(120, 200, 255);
-/// Dashed dependency edge (input, not parent) in the graph view — e.g. a drawing projection to
-/// its source body (#281). A warm accent so it reads apart from the neutral parent edges.
+/// A dependency lane (an input, not a parent) in the graph view — e.g. a drawing projection to
+/// its source body (#281). A warm accent so it reads apart from the neutral parent lanes.
 const GRAPH_DEPENDENCY_EDGE: Color32 = Color32::from_rgb(224, 168, 96);
 
-/// Render the graph-node view: a force-directed node-link diagram (#94). Nodes are pulled into
-/// depth-ordered horizontal layers (so the graph flows top-to-bottom, "somewhat vertical"),
-/// repelled from one another, and joined by parent↔child springs; the simulation animates each
-/// frame ("bounce around") until its kinetic energy decays below a threshold, then settles and
-/// stops requesting repaints. x is contained to the pane width; height scrolls vertically (#34).
-#[allow(clippy::too_many_arguments)]
-/// Whether a node is present in the current graph positions (#423).
-fn present_in(positions: &[GraphNodePosition], node: &HierarchyNode) -> bool {
-    positions.iter().any(|p| p.node == *node)
-}
+/// Soft dashed tie from a constraint to the geometry it constrains (#1670) — a "related"
+/// link, not a parent/child one, so it reads quieter than either input stroke.
+const GRAPH_RELATED_TIE: Color32 = Color32::from_rgb(150, 140, 190);
 
-/// A smooth convex outline around `pts`, padded by `pad` px (#423): each point is expanded
-/// into a small circle of sample points and the convex hull of the expansion is returned,
-/// which rounds the corners without a curve primitive.
-fn rounded_hull(pts: &[egui::Pos2], pad: f32) -> Vec<egui::Pos2> {
-    let mut cloud: Vec<egui::Pos2> = Vec::with_capacity(pts.len() * 8);
-    for p in pts {
-        for k in 0..8 {
-            let a = k as f32 * std::f32::consts::TAU / 8.0;
-            cloud.push(*p + egui::vec2(a.cos(), a.sin()) * pad);
-        }
-    }
-    convex_hull(&mut cloud)
-}
+/// Row pitch, lane pitch, and glyph sizes of the Graph view's one-node-per-line layout (#1670).
+const GRAPH_ROW_H: f32 = 20.0;
+const GRAPH_LANE_W: f32 = 13.0;
+const GRAPH_LEFT_PAD: f32 = 10.0;
+const GRAPH_ICON_SIZE: f32 = 13.0;
 
-/// Andrew's monotone chain convex hull.
-fn convex_hull(points: &mut Vec<egui::Pos2>) -> Vec<egui::Pos2> {
-    points.sort_by(|a, b| {
-        a.x.partial_cmp(&b.x)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))
-    });
-    points.dedup_by(|a, b| (*a - *b).length_sq() < 1e-6);
-    if points.len() < 3 {
-        return points.clone();
-    }
-    let cross = |o: egui::Pos2, a: egui::Pos2, b: egui::Pos2| {
-        (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
-    };
-    let mut lower: Vec<egui::Pos2> = Vec::new();
-    for &p in points.iter() {
-        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], p) <= 0.0 {
-            lower.pop();
-        }
-        lower.push(p);
-    }
-    let mut upper: Vec<egui::Pos2> = Vec::new();
-    for &p in points.iter().rev() {
-        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], p) <= 0.0 {
-            upper.pop();
-        }
-        upper.push(p);
-    }
-    lower.pop();
-    upper.pop();
-    lower.extend(upper);
-    lower
-}
-
-#[allow(clippy::too_many_arguments)]
+/// Render the graph-node view (#1670): one node per line, top to bottom, with the
+/// relationships drawn as mostly-vertical lanes beside them — the way `gitk` draws commits.
+/// Rows come from [`graph_lane_layout`]: a node sits below everything that feeds it, a
+/// parent's children string down one shared lane with short legs into each row, and a lane is
+/// reused the moment its last consumer passes, so the graph never spills right further than
+/// the branches actually need. Height scrolls vertically.
 #[allow(clippy::too_many_arguments)]
 fn show_graph_view(
     ui: &mut egui::Ui,
     doc: &Document,
     tree: &[HierarchyEntry],
-    graph_layout: &mut GraphLayout,
     selection: &SceneSelection,
     health: &DocumentHealth,
     context: &HashSet<SceneElement>,
@@ -4917,29 +4727,18 @@ fn show_graph_view(
     on_edit_drawing: &mut impl FnMut(crate::model::DrawingKey),
     on_rename_drawing: &mut impl FnMut(crate::model::DrawingKey, String),
 ) {
-    let positions = graph_node_positions(tree);
-    if positions.is_empty() {
+    let layout = graph_lane_layout(doc, tree);
+    if layout.rows.is_empty() {
         return;
     }
 
-    const NODE_RADIUS: f32 = 9.0;
-    const TOP_PADDING: f32 = 24.0;
-    const BOTTOM_PADDING: f32 = 24.0;
-    // Per-frame integration: a handful of small substeps keeps the sim stable while settling
-    // within a second or so of wall-clock animation.
-    const SUBSTEPS: u32 = 6;
-    const DT: f32 = 0.16;
-    // Below this total kinetic energy the layout is considered settled; stop animating so an
-    // idle pane doesn't busy-repaint.
-    const SETTLE_KE: f32 = 0.05;
-
     // Nodes matching the current selection, plus their tree ancestors/descendants (#34): the
-    // set of related nodes whose edges/fills get the bold accent.
+    // set of related nodes whose lines/labels get the bold accent.
     let mut related_nodes: HashSet<HierarchyNode> = HashSet::new();
-    for position in &positions {
-        if let Some(element) = scene_element_for_node(position.node) {
+    for row in &layout.rows {
+        if let Some(element) = scene_element_for_node(row.node) {
             if row_is_selected(&element, selection) {
-                related_nodes.extend(graph_related_nodes(tree, position.node));
+                related_nodes.extend(graph_related_nodes(tree, row.node));
             }
         }
     }
@@ -4947,211 +4746,115 @@ fn show_graph_view(
     // `selection_styles_visible_list` uses for the List/Tree rows.
     let style_selection = !selection.is_empty();
 
-    let available_width = ui.available_width().max(2.0 * GRAPH_MARGIN + 1.0);
-
-    // Advance the physics, then keep animating until it settles. Force layout always runs
-    // in the Graph view (#1189 removed the toggle that could freeze it).
-    let kinetic = graph_layout.sync_and_step(&positions, available_width, SUBSTEPS, DT, true);
-    if kinetic > SETTLE_KE {
-        ui.ctx().request_repaint();
-    } else {
-        // Come to rest: freeze here until something disturbs the graph (#661).
-        graph_layout.mark_settled();
-    }
-
-    // Measure each node's label, then spread each depth band horizontally so no two labels
-    // overlap (#248). Widths are capped at the pane width so one very long label can't demand
-    // absurd spacing; the render truncates to the pane edge regardless.
-    let label_widths: HashMap<HierarchyNode, f32> = positions
+    let row_of: HashMap<HierarchyNode, usize> = layout
+        .rows
         .iter()
-        .map(|p| {
-            let label = node_label(doc, p.node);
-            let w = ui.fonts_mut(|f| {
-                f.layout_no_wrap(label, egui::FontId::default(), Color32::WHITE)
-                    .size()
-                    .x
-            });
-            (p.node, w.min(available_width))
-        })
+        .enumerate()
+        .map(|(row, r)| (r.node, row))
         .collect();
-    let sim_x: HashMap<HierarchyNode, f32> = positions
-        .iter()
-        .filter_map(|p| graph_layout.pos_of(p.node).map(|v| (p.node, v.x)))
-        .collect();
-    // Each node gets an x within the pane and a sub-row within its depth band; wide bands wrap
-    // into stacked sub-rows so the graph fits the pane width and grows taller instead (#350).
-    let display = declutter_label_bands(&positions, &sim_x, &label_widths, available_width);
+    let lane_of: HashMap<HierarchyNode, usize> =
+        layout.rows.iter().map(|r| (r.node, r.lane)).collect();
 
-    // Vertical layout: bands stack top-to-bottom, each as tall as its wrapped sub-row count, so
-    // the whole graph fits the pane width (no horizontal scroll) and only grows downward (#350).
-    const ROW_H: f32 = 46.0;
-    let depth_of: HashMap<HierarchyNode, usize> =
-        positions.iter().map(|p| (p.node, p.depth)).collect();
-    let row_of = |n: &HierarchyNode| display.get(n).map(|(_, r)| *r).unwrap_or(0);
-    let mut band_rows: BTreeMap<usize, usize> = BTreeMap::new();
-    for p in &positions {
-        let rows = row_of(&p.node) + 1;
-        band_rows
-            .entry(p.depth)
-            .and_modify(|m| *m = (*m).max(rows))
-            .or_insert(rows);
-    }
-    let mut base_y: HashMap<usize, f32> = HashMap::new();
-    let mut acc = 0.0f32;
-    for (&depth, &rows) in &band_rows {
-        base_y.insert(depth, acc);
-        acc += rows as f32 * ROW_H;
-    }
-    let node_y = move |n: &HierarchyNode| -> f32 {
-        let base = depth_of.get(n).and_then(|d| base_y.get(d)).copied().unwrap_or(0.0);
-        base + row_of(n) as f32 * ROW_H
-    };
-
-    // Enforced layering (#622): start from the band layout plus each node's drag offset,
-    // then push nodes apart until every input sits above its consumers — tree parents and
-    // dependency inputs alike — with the actively-dragged node authoritative, so the graph
-    // reshuffles in response to a drag instead of ever showing an input below its consumer.
-    let mut final_y: HashMap<HierarchyNode, f32> = positions
-        .iter()
-        .map(|p| (p.node, node_y(&p.node) + graph_layout.drag_offset(p.node).y))
-        .collect();
-    let mut layer_edges: Vec<(HierarchyNode, HierarchyNode)> = positions
-        .iter()
-        .filter_map(|p| p.parent.map(|parent| (parent, p.node)))
-        .collect();
-    let present_for_layers: HashSet<HierarchyNode> = positions.iter().map(|p| p.node).collect();
-    for (input, consumer) in graph_dependency_edges(doc)
-        .into_iter()
-        .chain(graph_shadow_skip_edges(doc, &present_for_layers))
-    {
-        if final_y.contains_key(&input) && final_y.contains_key(&consumer) {
-            layer_edges.push((input, consumer));
-        }
-    }
-    const LAYER_GAP: f32 = ROW_H * 0.6;
-    enforce_graph_layering(&mut final_y, &layer_edges, graph_layout.active_drag, LAYER_GAP, 0.0);
-    // A node dragged up stops once its input chain reaches the top (#638); anything else that
-    // still lands above the top edge would clip, so slide everything down instead.
-    let min_y = final_y.values().fold(f32::MAX, |m, y| m.min(*y));
-    if min_y.is_finite() && min_y < 0.0 {
-        for y in final_y.values_mut() {
-            *y -= min_y;
-        }
-    }
-    // The same floor applied to the *stored* drag offset (#638), so a drag that has run into
-    // the top edge doesn't bank up invisible slack that swallows the first pixels of dragging
-    // back down.
-    let drag_offset_floor = |node: HierarchyNode| -> f32 {
-        LAYER_GAP * input_chain_depth(node, &layer_edges) as f32 - node_y(&node)
-    };
-    let max_y = final_y.values().fold(0.0f32, |m, y| m.max(*y));
-
-    let content_width = available_width;
-    let content_height = max_y.max(acc) + TOP_PADDING + BOTTOM_PADDING + NODE_RADIUS + ROW_H;
+    let content_height = (layout.rows.len() as f32 + 1.0) * GRAPH_ROW_H;
 
     egui::ScrollArea::vertical()
         .id_salt("elements_graph")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            let (rect, _response) =
-                ui.allocate_exact_size(egui::vec2(content_width, content_height), egui::Sense::hover());
+            let width = ui.available_width().max(GRAPH_LEFT_PAD * 2.0);
+            let (rect, _response) = ui
+                .allocate_exact_size(egui::vec2(width, content_height), egui::Sense::hover());
             let painter = ui.painter_at(rect);
-
-            let drag_offsets: HashMap<HierarchyNode, egui::Vec2> = positions
-                .iter()
-                .map(|p| (p.node, graph_layout.drag_offset(p.node)))
-                .collect();
-            let pos_of = |node: HierarchyNode| -> egui::Pos2 {
-                let x = display.get(&node).map(|(x, _)| *x).unwrap_or(GRAPH_MARGIN);
-                // The drag offset's y is already folded into the layering-enforced
-                // `final_y` (#622); only x applies directly.
-                let dx = drag_offsets.get(&node).map(|o| o.x).unwrap_or(0.0);
-                egui::pos2(
-                    rect.left() + x + dx,
-                    rect.top() + TOP_PADDING + final_y.get(&node).copied().unwrap_or(0.0),
+            let lane_x =
+                |lane: usize| rect.left() + GRAPH_LEFT_PAD + lane as f32 * GRAPH_LANE_W;
+            let row_y = |row: usize| rect.top() + (row as f32 + 0.5) * GRAPH_ROW_H;
+            let dot_of = |node: &HierarchyNode| -> Option<egui::Pos2> {
+                Some(egui::pos2(
+                    lane_x(*lane_of.get(node)?),
+                    row_y(*row_of.get(node)?),
+                ))
+            };
+            let row_rect = |row: usize| {
+                egui::Rect::from_min_max(
+                    egui::pos2(rect.left(), row_y(row) - GRAPH_ROW_H * 0.5),
+                    egui::pos2(rect.right(), row_y(row) + GRAPH_ROW_H * 0.5),
                 )
             };
-            let mut dragged_delta: Option<(HierarchyNode, egui::Vec2)> = None;
 
-            // Component areas first, beneath everything (#423): each component shades a
-            // smooth convex region encompassing its member nodes. Outer components paint
-            // before nested ones so the nesting reads as layered tints.
-            let mut comp_sets = component_node_sets(tree);
-            comp_sets.sort_by_key(|(ci, _)| doc.component_chain(*ci).len());
-            for (ci, nodes) in &comp_sets {
-                let pts: Vec<egui::Pos2> =
-                    nodes.iter().filter(|n| present_in(&positions, n)).map(|n| pos_of(*n)).collect();
-                if pts.is_empty() {
-                    continue;
-                }
-                let hull = rounded_hull(&pts, 18.0);
-                if hull.len() >= 3 {
-                    painter.add(egui::Shape::convex_polygon(
-                        hull.clone(),
-                        Color32::from_rgba_unmultiplied(140, 160, 200, 18),
-                        egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(150, 170, 210, 60)),
-                    ));
-                    // Label the area at its top edge.
-                    let top = hull
-                        .iter()
-                        .copied()
-                        .min_by(|a, b| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))
-                        .unwrap_or(egui::Pos2::ZERO);
-                    painter.text(
-                        top + egui::vec2(0.0, -2.0),
-                        egui::Align2::CENTER_BOTTOM,
-                        node_label(doc, HierarchyNode::Component(*ci)),
-                        egui::FontId::proportional(11.0),
-                        Color32::from_rgba_unmultiplied(170, 190, 230, 160),
-                    );
-                }
-            }
+            // Where each on-screen row landed, for scripts driving the pane (#1670).
+            let clip = ui.clip_rect();
+            set_elements_graph_row_rects(
+                ui.ctx(),
+                layout
+                    .rows
+                    .iter()
+                    .enumerate()
+                    .map(|(row, r)| (r.node, row_rect(row)))
+                    .filter(|(_, rr)| clip.intersects(*rr))
+                    .collect(),
+            );
 
-            // Edges first, so node dots paint over the line endpoints. Document→element
-            // spokes are omitted when the element already has another input (#1324).
-            for (parent, child) in graph_parent_edges(&positions, doc) {
-                let highlighted =
-                    related_nodes.contains(&child) && related_nodes.contains(&parent);
-                let stroke = if highlighted {
-                    egui::Stroke::new(2.5, GRAPH_RELATED_EDGE)
+            // Interact first, so the row backgrounds paint underneath the lanes and labels.
+            let responses: Vec<egui::Response> = layout
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(row, r)| {
+                    let id = ui.id().with(("hierarchy_graph_node", r.node));
+                    ui.interact(row_rect(row), id, egui::Sense::click())
+                })
+                .collect();
+            for (row, r) in layout.rows.iter().enumerate() {
+                let selected = scene_element_for_node(r.node)
+                    .is_some_and(|el| row_shows_selection(&el, selection, style_selection));
+                let fill = if selected {
+                    ui.visuals().selection.bg_fill.gamma_multiply(0.55)
+                } else if responses[row].hovered() {
+                    ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.35)
                 } else {
-                    egui::Stroke::new(1.0, Color32::from_gray(110))
+                    continue;
                 };
-                painter.line_segment([pos_of(parent), pos_of(child)], stroke);
+                painter.rect_filled(row_rect(row), 2.0, fill);
             }
 
-            // Dependency edges (input → consumer): relationships beyond the single tree parent —
-            // a drawing projection to its source (#281), and a boolean operation to its shadow
-            // input bodies (#266). Drawn dashed in an accent colour so they read apart from the
-            // neutral parent edges. (A step toward the full element graph, #252.)
-            // Hidden shadow inputs skip to the shadow's visible parent (#1425).
-            let present: std::collections::HashSet<HierarchyNode> =
-                positions.iter().map(|p| p.node).collect();
-            let dep_edges = graph_dependency_edges(doc).into_iter().filter(|(source, consumer)| {
-                present.contains(source) && present.contains(consumer)
-            });
-            for (source, consumer) in dep_edges.chain(graph_shadow_skip_edges(doc, &present)) {
-                let (a, b) = (pos_of(source), pos_of(consumer));
-                // Manual dashes so it's visually distinct without a dashed-line primitive.
-                let delta = b - a;
-                let len = delta.length();
-                if len < 1.0 {
+            for edge in &layout.edges {
+                let (Some(from), Some(to)) = (dot_of(&edge.from), dot_of(&edge.to)) else {
+                    continue;
+                };
+                let highlighted =
+                    related_nodes.contains(&edge.from) && related_nodes.contains(&edge.to);
+                if !edge.kind.is_input() {
+                    // A constraint ties sideways to what it constrains: the shortest dashed
+                    // hop between the two dots, claiming no lane of its own (#1670).
+                    paint_dashed_line(&painter, from, to, GRAPH_RELATED_TIE, highlighted);
                     continue;
                 }
-                let dir = delta / len;
-                let dash = 5.0;
-                let mut t = 0.0;
-                while t < len {
-                    let s = a + dir * t;
-                    let e = a + dir * (t + dash).min(len);
-                    painter.line_segment([s, e], egui::Stroke::new(1.2, GRAPH_DEPENDENCY_EDGE));
-                    t += dash * 2.0;
+                let x = lane_x(edge.lane);
+                let mut points = vec![from];
+                if (x - from.x).abs() > 0.5 {
+                    points.push(egui::pos2(x, from.y + GRAPH_ROW_H * 0.5));
                 }
+                if (x - to.x).abs() > 0.5 {
+                    points.push(egui::pos2(x, to.y - GRAPH_ROW_H * 0.5));
+                }
+                points.push(to);
+                let color = if highlighted {
+                    GRAPH_RELATED_EDGE
+                } else if edge.kind == GraphLaneEdgeKind::Dependency {
+                    GRAPH_DEPENDENCY_EDGE
+                } else {
+                    Color32::from_gray(110)
+                };
+                painter.add(egui::Shape::line(
+                    points,
+                    egui::Stroke::new(if highlighted { 2.0 } else { 1.2 }, color),
+                ));
             }
 
-            for position in &positions {
-                let center = pos_of(position.node);
-                let element = scene_element_for_node(position.node);
+            for (row, r) in layout.rows.iter().enumerate() {
+                let node = r.node;
+                let center = egui::pos2(lane_x(r.lane), row_y(row));
+                let element = scene_element_for_node(node);
                 let style = element.clone().map(|el| {
                     row_style(
                         el.clone(),
@@ -5168,8 +4871,8 @@ fn show_graph_view(
                 let selected = element
                     .as_ref()
                     .is_some_and(|el| row_shows_selection(el, selection, style_selection));
-                let related = related_nodes.contains(&position.node);
-                let fill = if selected {
+                let related = related_nodes.contains(&node);
+                let tint = if selected {
                     Color32::WHITE
                 } else if related {
                     GRAPH_RELATED_EDGE
@@ -5177,15 +4880,10 @@ fn show_graph_view(
                     style.map(icon_tint_for_row_style).unwrap_or(Color32::from_gray(170))
                 };
 
-                let node_rect =
-                    egui::Rect::from_center_size(center, egui::Vec2::splat(NODE_RADIUS * 2.0));
-                let id = ui.id().with(("hierarchy_graph_node", position.node));
-                let response = ui.interact(node_rect, id, egui::Sense::click_and_drag());
-                // Nodes are draggable (#451): the offset persists on top of the layout.
-                if response.dragged() {
-                    dragged_delta = Some((position.node, response.drag_delta()));
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                } else if response.hovered() {
+                let icon_rect =
+                    egui::Rect::from_center_size(center, egui::Vec2::splat(GRAPH_ICON_SIZE));
+                let response = &responses[row];
+                if response.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     // Pane-hover → viewport highlight (#161).
                     if let Some(element) = element.clone() {
@@ -5193,15 +4891,7 @@ fn show_graph_view(
                     }
                 }
                 if let Some(element) = element {
-                    paint_pick_affordance(
-                        ui,
-                        doc,
-                        armed,
-                        &element,
-                        response.hovered(),
-                        node_rect,
-                    );
-                    let response = response.on_hover_text(node_label(doc, position.node));
+                    paint_pick_affordance(ui, doc, armed, &element, response.hovered(), icon_rect);
                     if response.clicked() {
                         let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
                         on_click_element(element.clone(), additive);
@@ -5211,7 +4901,7 @@ fn show_graph_view(
                         element_context_menu(
                             ui,
                             doc,
-                            position.node,
+                            node,
                             &element,
                             active_drawing,
                             on_edit_sketch,
@@ -5240,7 +4930,7 @@ fn show_graph_view(
                     });
                 } else {
                     // Display-only leaves keep their row menus in the graph too (#623).
-                    match position.node {
+                    match node {
                         HierarchyNode::Drawing(index) => {
                             response.context_menu(|ui| {
                                 drawing_context_menu(ui, doc, index, on_edit_drawing, on_rename_drawing);
@@ -5267,39 +4957,56 @@ fn show_graph_view(
                 // Each node draws as its element's icon (#152) — the same icon the List/Tree
                 // rows use, tinted by selection/health state; only the synthetic Document
                 // root (which has no icon) keeps the plain dot.
-                if let Some(icon) = icon_for_hierarchy_node(doc, position.node) {
-                    crate::icons::paint_icon(&painter, ui.ctx(), icon, node_rect, fill);
+                if let Some(icon) = icon_for_hierarchy_node(doc, node) {
+                    crate::icons::paint_icon(&painter, ui.ctx(), icon, icon_rect, tint);
                 } else {
-                    painter.circle_filled(center, NODE_RADIUS, fill);
-                    painter.circle_stroke(
-                        center,
-                        NODE_RADIUS,
-                        egui::Stroke::new(1.0, Color32::from_gray(30)),
-                    );
+                    painter.circle_filled(center, GRAPH_ICON_SIZE * 0.3, tint);
                 }
 
-                let label = node_label(doc, position.node);
-                // Keep the label inside the pane's right edge (#34).
-                let max_label_width =
-                    (rect.right() - (center.x + NODE_RADIUS + 4.0) - 4.0).max(20.0);
-                let truncated = truncate_label(&label, max_label_width, &painter);
+                // The label follows its own dot, so a row's indent shows its place in the
+                // graph; it truncates at the pane edge rather than widening the pane (#34).
+                let label_x = center.x + GRAPH_ICON_SIZE * 0.5 + 4.0;
+                let label = node_label(doc, node);
+                let truncated = truncate_label(&label, (rect.right() - 4.0 - label_x).max(20.0), &painter);
                 painter.text(
-                    center + egui::vec2(NODE_RADIUS + 4.0, 0.0),
+                    egui::pos2(label_x, center.y),
                     egui::Align2::LEFT_CENTER,
                     truncated,
                     egui::FontId::default(),
                     if selected || related { Color32::WHITE } else { Color32::from_gray(200) },
                 );
             }
-            if let Some((node, delta)) = dragged_delta {
-                graph_layout.add_drag_offset(node, delta);
-                graph_layout.clamp_drag_offset_y(node, drag_offset_floor(node));
-                graph_layout.active_drag = Some(node);
-                ui.ctx().request_repaint();
-            } else {
-                graph_layout.active_drag = None;
-            }
         });
+}
+
+/// Dashes a straight line between two points — the graph view's constraint "related" tie
+/// (#1670), which egui has no stroke style for.
+fn paint_dashed_line(
+    painter: &egui::Painter,
+    from: egui::Pos2,
+    to: egui::Pos2,
+    color: Color32,
+    highlighted: bool,
+) {
+    let delta = to - from;
+    let len = delta.length();
+    if len < 1.0 {
+        return;
+    }
+    let dir = delta / len;
+    let (color, width) = if highlighted {
+        (GRAPH_RELATED_EDGE, 2.0)
+    } else {
+        (color, 1.0)
+    };
+    let dash = 4.0;
+    let mut t = 0.0;
+    while t < len {
+        let start = from + dir * t;
+        let end = from + dir * (t + dash).min(len);
+        painter.line_segment([start, end], egui::Stroke::new(width, color));
+        t += dash * 2.0;
+    }
 }
 
 /// Selectable row label that clips to the remaining pane width instead of stretching it (#1575).
@@ -6818,119 +6525,9 @@ mod tests {
             .any(|e| e.node == HierarchyNode::UnitInstance(uikey(0))));
     }
 
-    /// #622: layering enforcement — inputs always end up above consumers; a dragged
-    /// consumer pushes its input up instead of snapping back; without a drag, violated
-    /// chains resolve downward.
-    #[test]
-    fn graph_layering_enforcement_keeps_inputs_above_consumers() {
-        let a = HierarchyNode::Sketch(skey(0));
-        let b = HierarchyNode::Extrusion(xkey(0));
-        let c = HierarchyNode::Body(bkey(0));
-        let edges = vec![(a, b), (b, c)];
-        // b dragged above its input a: a slides up; c stays below b.
-        let mut ys: HashMap<HierarchyNode, f32> =
-            [(a, 100.0), (b, 40.0), (c, 60.0)].into_iter().collect();
-        enforce_graph_layering(&mut ys, &edges, Some(b), 30.0, f32::NEG_INFINITY);
-        assert!(ys[&a] <= ys[&b] - 30.0, "dragged consumer pushes its input up");
-        assert!(ys[&c] >= ys[&b] + 30.0, "output stays below its producer");
-        // No drag: the chain resolves downward from the input.
-        let mut ys: HashMap<HierarchyNode, f32> =
-            [(a, 100.0), (b, 0.0), (c, 0.0)].into_iter().collect();
-        enforce_graph_layering(&mut ys, &edges, None, 30.0, f32::NEG_INFINITY);
-        assert!(ys[&b] >= ys[&a] + 30.0);
-        assert!(ys[&c] >= ys[&b] + 30.0);
-    }
 
-    /// #661: once the force layout settles it **stops stepping**, so a repaint the pane gets
-    /// for an unrelated reason — a click, a hover, a tooltip — can't walk the graph to a new
-    /// position. A changed node set or a drag wakes it again.
-    #[test]
-    fn settled_graph_layout_holds_still_across_repaints() {
-        let node = |i: usize| GraphNodePosition {
-            node: HierarchyNode::Body(bkey(i)),
-            depth: i,
-            column: 0,
-            row: 0,
-            parent: (i > 0).then(|| HierarchyNode::Body(bkey(i - 1))),
-        };
-        let positions: Vec<_> = (0..4).map(node).collect();
-        let mut layout = GraphLayout::default();
-        // Run it to rest, the way the pane does.
-        let mut steps = 0;
-        loop {
-            let kinetic = layout.sync_and_step(&positions, 400.0, 4, 1.0 / 60.0, true);
-            if kinetic <= 0.05 {
-                layout.mark_settled();
-                break;
-            }
-            steps += 1;
-            assert!(steps < 10_000, "layout should settle");
-        }
-        let resting: Vec<_> = positions
-            .iter()
-            .map(|p| layout.pos_of(p.node).expect("seeded"))
-            .collect();
 
-        // Repaints while settled change nothing at all.
-        for _ in 0..50 {
-            assert_eq!(
-                layout.sync_and_step(&positions, 400.0, 4, 1.0 / 60.0, true),
-                0.0,
-                "a settled layout reports no motion"
-            );
-        }
-        for (p, before) in positions.iter().zip(&resting) {
-            assert_eq!(layout.pos_of(p.node), Some(*before), "{:?} held still", p.node);
-        }
 
-        // A new node wakes it.
-        let grown: Vec<_> = (0..5).map(node).collect();
-        assert!(
-            layout.sync_and_step(&grown, 400.0, 4, 1.0 / 60.0, true) > 0.0,
-            "a new node wakes the simulation"
-        );
-    }
-
-    /// #638: dragging a node up shoves its inputs up ahead of it, but only until the
-    /// topmost input reaches the top edge — then the whole chain (dragged node included)
-    /// stops rather than sliding the graph off the top.
-    #[test]
-    fn graph_layering_stops_a_drag_once_its_inputs_hit_the_top() {
-        let a = HierarchyNode::Sketch(skey(0));
-        let b = HierarchyNode::Extrusion(xkey(0));
-        let c = HierarchyNode::Body(bkey(0));
-        let edges = vec![(a, b), (b, c)];
-        // c is dragged far above the top. It has two inputs stacked above it (a → b → c),
-        // so it can rise no further than 2 gaps below the top.
-        let mut ys: HashMap<HierarchyNode, f32> =
-            [(a, 100.0), (b, 130.0), (c, -500.0)].into_iter().collect();
-        enforce_graph_layering(&mut ys, &edges, Some(c), 30.0, 0.0);
-        assert_eq!(ys[&a], 0.0, "the topmost input pins to the top edge");
-        assert_eq!(ys[&b], 30.0);
-        assert_eq!(ys[&c], 60.0, "the dragged node stops below its input chain");
-        // A node with no inputs can go all the way to the top, but no further.
-        let mut ys: HashMap<HierarchyNode, f32> =
-            [(a, -500.0), (b, 130.0), (c, 160.0)].into_iter().collect();
-        enforce_graph_layering(&mut ys, &edges, Some(a), 30.0, 0.0);
-        assert_eq!(ys[&a], 0.0, "an input-less node stops at the top edge");
-    }
-
-    /// #638: the headroom a node needs is its **longest** input chain, and a (malformed)
-    /// cycle still terminates.
-    #[test]
-    fn input_chain_depth_uses_the_longest_chain() {
-        let a = HierarchyNode::Sketch(skey(0));
-        let b = HierarchyNode::Sketch(skey(1));
-        let c = HierarchyNode::Extrusion(xkey(0));
-        let d = HierarchyNode::Body(bkey(0));
-        // a → c → d and b → d: d's longest chain is a → c → d, i.e. 2 above it.
-        let edges = vec![(a, c), (c, d), (b, d)];
-        assert_eq!(input_chain_depth(a, &edges), 0);
-        assert_eq!(input_chain_depth(c, &edges), 1);
-        assert_eq!(input_chain_depth(d, &edges), 2);
-        let cyclic = vec![(a, b), (b, a)];
-        let _ = input_chain_depth(a, &cyclic); // terminates
-    }
 
     /// #448/#449: every operation's inputs appear as graph dependency edges — the
     /// repeat's input body was the reported gap.
@@ -7706,7 +7303,6 @@ label_hidden: false,
         let selection = SceneSelection::default();
         let health = crate::document_health::recompute_document_health(doc);
         let mut view_mode = HierarchyViewMode::List;
-        let mut graph_layout = GraphLayout::default();
         let mut filter = ElementFilter::default();
         let mut filter_expanded = false;
         let mut collapsed_components = HashSet::new();
@@ -7721,7 +7317,6 @@ label_hidden: false,
             &selection,
             &health,
             &mut view_mode,
-            &mut graph_layout,
             &mut filter,
             &mut filter_expanded,
             &mut |_| {},
@@ -8939,267 +8534,99 @@ label_hidden: false,
         (doc, sketch)
     }
 
-    fn settle_graph_layout(width: f32, steps: u32) -> (GraphLayout, Vec<GraphNodePosition>) {
+    /// The lane a node's dot sits in, for the layout assertions below.
+    fn lane_of(layout: &GraphLaneLayout, node: HierarchyNode) -> Option<usize> {
+        layout.rows.iter().find(|r| r.node == node).map(|r| r.lane)
+    }
+
+    /// #1670: the Graph view reads one node per line — every node gets its own row, and an
+    /// input always sits above the node it feeds.
+    #[test]
+    fn graph_lane_layout_puts_one_node_per_row() {
         let (doc, sketch) = doc_with_plane_sketch_rect_and_extrusion();
         let tree = build_hierarchy(&doc, Some(SketchSession { sketch }));
-        let positions = graph_node_positions(&tree);
-        let mut layout = GraphLayout::default();
-        // First call seeds all nodes; subsequent calls just step.
-        for _ in 0..steps {
-            layout.sync_and_step(&positions, width, 1, 0.16, true);
-        }
-        (layout, positions)
-    }
+        let layout = graph_lane_layout(&doc, &tree);
 
-    #[test]
-    fn force_layout_settles_stays_contained_and_flows_top_to_bottom() {
-        let width = 300.0;
-        let (layout, positions) = settle_graph_layout(width, 4000);
+        let nodes: Vec<HierarchyNode> = layout.rows.iter().map(|r| r.node).collect();
+        let unique: HashSet<HierarchyNode> = nodes.iter().copied().collect();
+        assert_eq!(nodes.len(), unique.len(), "one row per node");
+        assert_eq!(
+            unique,
+            graph_node_positions(&tree).iter().map(|p| p.node).collect::<HashSet<_>>(),
+            "every node on screen gets a row"
+        );
 
-        // Kinetic energy has decayed toward zero — the sim settled rather than oscillating.
-        let depth_of: HashMap<HierarchyNode, usize> =
-            positions.iter().map(|p| (p.node, p.depth)).collect();
-        let edges: Vec<(HierarchyNode, HierarchyNode)> = positions
-            .iter()
-            .filter_map(|p| p.parent.map(|parent| (p.node, parent)))
-            .collect();
-        let mut nodes = layout.nodes.clone();
-        let ke = step_graph_layout(&mut nodes, &edges, &depth_of, width, 0.16);
-        assert!(ke < 1e-2, "layout should settle, residual KE = {ke}");
-
-        for p in &positions {
-            let pos = layout.pos_of(p.node).expect("node has a settled position");
-            assert!(pos.x.is_finite() && pos.y.is_finite(), "finite pos for {:?}: {pos:?}", p.node);
-            assert!(
-                (0.0..=width).contains(&pos.x),
-                "x contained to pane for {:?}: {}",
-                p.node,
-                pos.x
-            );
-        }
-
-        // Vertical-layering invariant: every parent settles strictly above (smaller y than)
-        // each of its children.
-        for p in &positions {
-            let Some(parent) = p.parent else { continue };
-            let child_y = layout.pos_of(p.node).unwrap().y;
-            let parent_y = layout.pos_of(parent).unwrap().y;
-            assert!(
-                parent_y < child_y,
-                "parent {parent:?} (y={parent_y}) must sit above child {:?} (y={child_y})",
-                p.node
-            );
-        }
-    }
-
-    /// #151: repulsion must actually separate the dots — with a sketch's dozen-plus children
-    /// sharing one depth band, no two settled nodes may overlap (dot diameter is 18 px).
-    #[test]
-    fn force_layout_keeps_nodes_from_overlapping() {
-        let width = 420.0;
-        let (layout, positions) = settle_graph_layout(width, 4000);
-        for (i, a) in positions.iter().enumerate() {
-            for b in positions.iter().skip(i + 1) {
-                let pa = layout.pos_of(a.node).unwrap();
-                let pb = layout.pos_of(b.node).unwrap();
-                let dist = (pa - pb).length();
-                assert!(
-                    dist >= 19.0,
-                    "nodes {:?} and {:?} overlap: {dist:.1} px apart",
-                    a.node,
-                    b.node
-                );
+        for edge in &layout.edges {
+            if !edge.kind.is_input() {
+                continue;
             }
+            let from = layout.row_of(edge.from).expect("source row");
+            let to = layout.row_of(edge.to).expect("consumer row");
+            assert!(from < to, "{:?} feeds {:?}, so it must sit above it", edge.from, edge.to);
         }
     }
 
-    /// #248: with real (wide) labels, no two nodes' label boxes may overlap after settling —
-    /// so drawn words never land on top of one another.
+    /// #1670: siblings string down a single lane (short legs, not a fan to the right), and a
+    /// one-consumer chain keeps its lane instead of stepping right at every step.
     #[test]
-    fn declutter_spreads_bands_so_no_two_labels_overlap() {
+    fn graph_lane_layout_keeps_the_graph_narrow() {
         let (doc, sketch) = doc_with_plane_sketch_rect_and_extrusion();
         let tree = build_hierarchy(&doc, Some(SketchSession { sketch }));
-        let positions = graph_node_positions(&tree);
+        let layout = graph_lane_layout(&doc, &tree);
 
-        // Settle the physics, then feed its x's plus chunky uniform labels through the declutter.
-        let mut layout = GraphLayout::default();
-        for _ in 0..2000 {
-            layout.sync_and_step(&positions, 300.0, 1, 0.16, true);
-        }
-        let sim_x: HashMap<HierarchyNode, f32> = positions
-            .iter()
-            .map(|p| (p.node, layout.pos_of(p.node).unwrap().x))
+        let lanes: HashSet<usize> = doc
+            .lines
+            .keys()
+            .map(|li| lane_of(&layout, HierarchyNode::Line(li)).expect("line lane"))
             .collect();
-        let label_widths: HashMap<HierarchyNode, f32> =
-            positions.iter().map(|p| (p.node, 60.0)).collect();
-        // A very wide pane so nothing wraps — same-band nodes must be cleared horizontally.
-        let display = declutter_label_bands(&positions, &sim_x, &label_widths, 100_000.0);
+        assert_eq!(lanes.len(), 1, "the rectangle's four lines share one lane: {lanes:?}");
 
-        // Every node keeps a placement, and no two label boxes (dot + rightward text) overlap
-        // when they're in the same band *and* the same sub-row.
-        const R: f32 = 9.0;
-        const GAP: f32 = 4.0;
-        for (i, a) in positions.iter().enumerate() {
-            assert!(display.contains_key(&a.node), "no placement for {:?}", a.node);
-            for b in positions.iter().skip(i + 1) {
-                if a.depth != b.depth {
-                    continue;
-                }
-                let (xa, ra) = display[&a.node];
-                let (xb, rb) = display[&b.node];
-                if ra != rb {
-                    continue;
-                }
-                let overlap = (xa + R + GAP + label_widths[&a.node])
-                    .min(xb + R + GAP + label_widths[&b.node])
-                    - (xa - R).max(xb - R);
-                assert!(
-                    overlap <= 0.0,
-                    "labels of {:?} and {:?} overlap by {overlap:.1}px",
-                    a.node,
-                    b.node
-                );
-            }
-        }
+        assert_eq!(
+            lane_of(&layout, HierarchyNode::Body(bkey(0))),
+            lane_of(&layout, HierarchyNode::Extrusion(xkey(0))),
+            "an only child continues its input's lane"
+        );
+        assert!(layout.lane_count <= 3, "lanes stay narrow, got {}", layout.lane_count);
     }
 
-    /// #350: a band too wide for the pane wraps into stacked sub-rows (grows taller) instead of
-    /// overflowing the width.
+    /// #1670: a constraint relates to the geometry it constrains — it is nobody's child, so
+    /// it hangs off those elements with "related" ties rather than a parent line.
     #[test]
-    fn declutter_wraps_wide_bands_into_rows() {
-        let nodes: Vec<HierarchyNode> =
-            (0..8).map(|i| HierarchyNode::Constraint(nkey(i))).collect();
-        let positions: Vec<GraphNodePosition> = nodes
-            .iter()
-            .enumerate()
-            .map(|(i, &node)| GraphNodePosition { node, parent: None, depth: 1, column: 1, row: i })
-            .collect();
-        let sim_x: HashMap<HierarchyNode, f32> =
-            nodes.iter().enumerate().map(|(i, &n)| (n, i as f32 * 20.0)).collect();
-        let label_widths: HashMap<HierarchyNode, f32> = nodes.iter().map(|&n| (n, 60.0)).collect();
-        // A narrow pane: 8 nodes × ~88px each can't fit ~200px, so they wrap onto several rows.
-        let display = declutter_label_bands(&positions, &sim_x, &label_widths, 200.0);
-        let max_row = nodes.iter().map(|n| display[n].1).max().unwrap();
-        assert!(max_row >= 1, "a wide band should wrap onto more than one row");
-        // Every placement stays within the pane width.
-        for n in &nodes {
-            assert!(display[n].0 >= GRAPH_MARGIN - 0.1 && display[n].0 <= 200.0, "x within pane");
-        }
-    }
-
-    /// Declutter preserves each band's left-to-right order and leaves an already-spread band
-    /// untouched (it only pushes nodes apart, never together).
-    #[test]
-    fn declutter_preserves_order_and_leaves_spread_bands_be() {
-        let nodes = [
-            HierarchyNode::Constraint(nkey(0)),
-            HierarchyNode::Constraint(nkey(1)),
-            HierarchyNode::Constraint(nkey(2)),
-        ];
-        let positions: Vec<GraphNodePosition> = nodes
-            .iter()
-            .enumerate()
-            .map(|(i, &node)| GraphNodePosition {
-                node,
-                parent: None,
-                depth: 1,
-                column: 1,
-                row: i,
-            })
-            .collect();
-        // Already 200 px apart — far beyond any label — so declutter must not move them (a wide
-        // pane so nothing wraps; positions kept ≥ the left margin so no clamp bites).
-        let sim_x: HashMap<HierarchyNode, f32> = nodes
-            .iter()
-            .enumerate()
-            .map(|(i, &n)| (n, GRAPH_MARGIN + i as f32 * 200.0))
-            .collect();
-        let label_widths: HashMap<HierarchyNode, f32> = nodes.iter().map(|&n| (n, 40.0)).collect();
-        let out = declutter_label_bands(&positions, &sim_x, &label_widths, 100_000.0);
-        for &n in &nodes {
-            assert_eq!(out[&n].1, 0, "spread band stays on one row for {n:?}");
-            assert!((out[&n].0 - sim_x[&n]).abs() < 1e-3, "spread band moved for {n:?}");
-        }
-    }
-
-    #[test]
-    #[ignore]
-    fn force_layout_probe() {
-        let (layout, _positions) = settle_graph_layout(300.0, 4000);
-        let mut states: Vec<_> = layout.nodes.iter().map(|(n, s)| (*n, *s)).collect();
-        states.sort_by(|a, b| b.1.vel.length_sq().partial_cmp(&a.1.vel.length_sq()).unwrap());
-        for (n, s) in states.iter().take(10) {
-            println!("{:?} pos=({:.1},{:.1}) vel=({:.2},{:.2})", n, s.pos.x, s.pos.y, s.vel.x, s.vel.y);
-        }
-    }
-
-    #[test]
-    fn force_layout_is_deterministic() {
-        let width = 320.0;
-        let (a, positions) = settle_graph_layout(width, 1500);
-        let (b, _) = settle_graph_layout(width, 1500);
-        for p in &positions {
-            let pa = a.pos_of(p.node).unwrap();
-            let pb = b.pos_of(p.node).unwrap();
-            assert!(
-                (pa.x - pb.x).abs() < 1e-4 && (pa.y - pb.y).abs() < 1e-4,
-                "same seed must give same settled position for {:?}: {pa:?} vs {pb:?}",
-                p.node
-            );
-        }
-    }
-
-    /// #525: with the force layout off, `sync_and_step` still seeds new nodes but does not
-    /// move them — positions are frozen and it reports zero kinetic energy.
-    #[test]
-    fn force_layout_off_freezes_positions() {
+    fn graph_lane_layout_ties_constraints_to_their_geometry() {
         let (doc, sketch) = doc_with_plane_sketch_rect_and_extrusion();
         let tree = build_hierarchy(&doc, Some(SketchSession { sketch }));
-        let positions = graph_node_positions(&tree);
-        let mut layout = GraphLayout::default();
+        let layout = graph_lane_layout(&doc, &tree);
 
-        // First pass seeds every node even with physics off.
-        let ke = layout.sync_and_step(&positions, 300.0, 6, 0.16, false);
-        assert_eq!(ke, 0.0, "no physics runs, so no kinetic energy");
-        assert_eq!(layout.nodes.len(), positions.len(), "all nodes are seeded");
-        let before: Vec<egui::Vec2> =
-            positions.iter().map(|p| layout.pos_of(p.node).unwrap()).collect();
-
-        // Further frozen steps never move a node.
-        for _ in 0..20 {
-            layout.sync_and_step(&positions, 300.0, 6, 0.16, false);
-        }
-        for (p, &b) in positions.iter().zip(before.iter()) {
-            let now = layout.pos_of(p.node).unwrap();
-            assert!(
-                (now - b).length() < 1e-6,
-                "frozen node {:?} moved: {b:?} -> {now:?}",
-                p.node
-            );
-        }
+        let ci = doc.constraints.keys().next().expect("the rectangle brings constraints");
+        let node = HierarchyNode::Constraint(ci);
+        let incoming: Vec<&GraphLaneEdge> = layout.edges.iter().filter(|e| e.to == node).collect();
+        assert!(!incoming.is_empty(), "the constraint is tied to something");
+        assert!(
+            incoming.iter().all(|e| e.kind == GraphLaneEdgeKind::Related),
+            "constraint ties are related, never parent/child"
+        );
+        assert!(
+            incoming.iter().any(|e| matches!(e.from, HierarchyNode::Line(_))),
+            "a coincident constraint ties to the lines it holds together"
+        );
+        assert!(
+            !layout
+                .edges
+                .iter()
+                .any(|e| e.kind.is_input() && matches!(e.to, HierarchyNode::Constraint(_))),
+            "no sketch → constraint parent line"
+        );
     }
 
-    #[test]
-    fn force_layout_syncs_added_and_removed_nodes() {
-        let (doc, sketch) = doc_with_plane_sketch_rect_and_extrusion();
-        let tree = build_hierarchy(&doc, Some(SketchSession { sketch }));
-        let positions = graph_node_positions(&tree);
-        let mut layout = GraphLayout::default();
-        layout.sync_and_step(&positions, 300.0, 1, 0.16, true);
-        assert_eq!(layout.nodes.len(), positions.len());
 
-        // A smaller node set (just the Document root) drops the departed nodes.
-        let root_only = vec![GraphNodePosition {
-            node: HierarchyNode::Document,
-            parent: None,
-            depth: 0,
-            column: 0,
-            row: 0,
-        }];
-        layout.sync_and_step(&root_only, 300.0, 1, 0.16, true);
-        assert_eq!(layout.nodes.len(), 1);
-        assert!(layout.pos_of(HierarchyNode::Document).is_some());
-    }
+
+
+
+
+
+
+
+
 
     /// #252: a loft appears as an operation node with its output body nested beneath it, and its
     /// cross-section sketches feed it as graph dependency edges — the user's canonical example.

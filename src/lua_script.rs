@@ -105,6 +105,27 @@ fn face_element_label(doc: &crate::model::Document, element: &SceneElement) -> O
     }
 }
 
+/// The script-facing kind name of an Elements-pane row (#1670). Most rows are a scene
+/// element; the few display-only ones (the document root, the Drawings section, a unit's
+/// read-only contents) name themselves.
+fn hierarchy_node_kind_name(node: crate::hierarchy::HierarchyNode) -> &'static str {
+    use crate::hierarchy::HierarchyNode as N;
+    if let Some(element) = crate::hierarchy::scene_element_for_node(node) {
+        return element_kind_name(element);
+    }
+    match node {
+        N::Document => "document",
+        N::Drawings => "drawings",
+        N::Drawing(_) => "drawing",
+        N::DrawingProjection { .. } => "projection",
+        N::DrawingAnnotation { .. } => "annotation",
+        N::DrawingDimension { .. } | N::DrawingPointDim { .. } => "drawing_dimension",
+        N::EdgeTreatment { .. } => "edge_treatment",
+        N::UnitChild { .. } => "unit_child",
+        _ => "element",
+    }
+}
+
 fn element_kind_name(element: SceneElement) -> &'static str {
     match element {
         SceneElement::ConstructionPlane(_) => "construction_plane",
@@ -4780,6 +4801,80 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1670: read the Graph view's one-node-per-line layout — `{ lanes = n, rows = { { name,
+    // kind, lane, x, y, w, h }, ... }, edges = { { from, to, lane, kind = "parent" | "dependency"
+    // | "related" },
+    // ... } }`, with `from`/`to` as 1-based row numbers and an edge kind of "parent",
+    // "dependency", or "related". Rows come out in the order the pane
+    // draws them, with the pane's default element filter; `x/y/w/h` are where the row was drawn
+    // last frame, in the coordinates the pointer calls take (relative to the viewport origin,
+    // so a pane row's `x` is negative) — absent unless the Graph view painted that row.
+    api.set(
+        "elements_graph",
+        lua.create_function(|lua, ()| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let state = unsafe { tick.state() };
+            let tree = crate::hierarchy::graph_view_tree(
+                &state.doc,
+                state.sketch_session,
+                &crate::hierarchy::ElementFilter::default(),
+            );
+            let layout = crate::hierarchy::graph_lane_layout(&state.doc, &tree);
+            // Last-frame screen position of each row, for scripts that click the pane; absent
+            // for a row that was scrolled out or while another view is showing.
+            let painted = crate::hierarchy::elements_graph_row_rects(unsafe { tick.egui_ctx() });
+            let out = lua.create_table()?;
+            out.set("lanes", layout.lane_count)?;
+            let rows = lua.create_table()?;
+            for (row, entry) in layout.rows.iter().enumerate() {
+                let t = lua.create_table()?;
+                t.set("name", crate::hierarchy::node_label(&state.doc, entry.node))?;
+                t.set("kind", hierarchy_node_kind_name(entry.node))?;
+                t.set("lane", entry.lane)?;
+                if let (Some((_, rect)), Some(viewport)) = (
+                    painted.iter().find(|(node, _)| *node == entry.node),
+                    tick.viewport,
+                ) {
+                    // Click-space (relative to the 3D viewport's origin, like every pointer
+                    // call takes), so a script can click the row where it actually is.
+                    t.set("x", rect.min.x - viewport.min.x)?;
+                    t.set("y", rect.min.y - viewport.min.y)?;
+                    t.set("w", rect.width())?;
+                    t.set("h", rect.height())?;
+                }
+                rows.set(row + 1, t)?;
+            }
+            out.set("rows", rows)?;
+            let edges = lua.create_table()?;
+            let mut next = 1;
+            for edge in &layout.edges {
+                let (Some(from), Some(to)) =
+                    (layout.row_of(edge.from), layout.row_of(edge.to))
+                else {
+                    continue;
+                };
+                let t = lua.create_table()?;
+                t.set("from", from + 1)?;
+                t.set("to", to + 1)?;
+                t.set("lane", edge.lane)?;
+                t.set(
+                    "kind",
+                    match edge.kind {
+                        crate::hierarchy::GraphLaneEdgeKind::Parent => "parent",
+                        crate::hierarchy::GraphLaneEdgeKind::Dependency => "dependency",
+                        crate::hierarchy::GraphLaneEdgeKind::Related => "related",
+                    },
+                )?;
+                edges.set(next, t)?;
+                next += 1;
+            }
+            out.set("edges", edges)?;
+            Ok(Value::Table(out))
+        })?,
+    )?;
+
     api.set(
         "pane",
         lua.create_function(|lua, (pane, visible): (String, Value)| {
@@ -8493,7 +8588,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "new_tab", "close_tab", "tab", "tab_count", "window_count", "tabs", "reorder_tab", "detach_tab",
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading", "ground",
             "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance", "fps_scale",
-            "camera", "elements_view", "auto_zoom", "animate_joints", "animate_zoom_to_fit",
+            "camera", "elements_view", "elements_graph", "auto_zoom", "animate_joints", "animate_zoom_to_fit",
             "update_channel",
             "snapping", "picker_focus", "angle_snap",
             "tutorial", "tutorial_next", "tutorial_assist", "tutorial_end", "tutorial_step",
@@ -16005,6 +16100,49 @@ pub mod tests {
         assert_eq!(
             state.hierarchy_view_mode,
             crate::hierarchy::HierarchyViewMode::Graph
+        );
+    }
+
+    /// #1670: the Graph view is one node per line, and scripts can read that layout back —
+    /// the row order, the lane each row's dot sits in, and the lines between rows.
+    #[test]
+    fn lua_elements_graph_reports_one_row_per_node() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 20, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+
+            local g = bearcad.ui.elements_graph()
+            assert(#g.rows > 0, "the graph has rows")
+            assert(g.lanes >= 1, "at least one lane")
+
+            local row_of = {}
+            for i, row in ipairs(g.rows) do
+                assert(type(row.name) == "string", "row " .. i .. " has a name")
+                assert(type(row.lane) == "number", "row " .. i .. " has a lane")
+                assert(row.lane < g.lanes, "lanes are within the reported count")
+                row_of[row.kind] = row_of[row.kind] or i
+            end
+            assert(row_of.sketch and row_of.extrusion and row_of.body, "sketch/extrusion/body rows")
+            assert(row_of.sketch < row_of.extrusion, "a sketch sits above the extrusion it feeds")
+            assert(row_of.extrusion < row_of.body, "an extrusion sits above the body it made")
+
+            local related = 0
+            for _, e in ipairs(g.edges) do
+                assert(g.rows[e.from] and g.rows[e.to], "edges name rows")
+                assert(e.from < e.to, "lines run downward")
+                if e.kind == "related" then
+                    related = related + 1
+                    assert(g.rows[e.to].kind == "constraint", "only constraints tie sideways")
+                else
+                    assert(e.kind == "parent" or e.kind == "dependency",
+                           "the other lines are inputs, got " .. e.kind)
+                    assert(g.rows[e.to].kind ~= "constraint", "a constraint is nobody's child")
+                end
+            end
+            assert(related > 0, "the rectangle's constraints tie to the lines they hold")
+        "#,
         );
     }
 

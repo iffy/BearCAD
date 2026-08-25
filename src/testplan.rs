@@ -283,7 +283,7 @@ const FEATURE_SECTIONS: &[Section] = &[
             "Hide a component (hides contents)",
             "Delete a component (re-homes contents)",
             "Export a component to STL or STEP from its right-click menu",
-            "Elements graph view: components as areas; type filter",
+            "Elements graph view: a component's contents string down its lane; type filter",
         ],
     },
     Section {

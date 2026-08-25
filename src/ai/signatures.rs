@@ -192,6 +192,7 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.ui.drag_ground"              , "bearcad.ui.drag_ground(x0, y0, x1, y1)"),
     ("bearcad.ui.drag_line"                , "bearcad.ui.drag_line({ … }, anchor_u?, anchor_v?, u?, v?)"),
     ("bearcad.ui.drag_vertex"              , "bearcad.ui.drag_vertex({ … }, u?, v?)"),
+    ("bearcad.ui.elements_graph"           , "bearcad.ui.elements_graph()"),
     ("bearcad.ui.elements_view"            , "bearcad.ui.elements_view(name)"),
     ("bearcad.ui.focus_calibrate"          , "bearcad.ui.focus_calibrate()"),
     ("bearcad.ui.focus_dim"                , "bearcad.ui.focus_dim(axis)"),

@@ -141,9 +141,8 @@ ones, resolved to a key at the script boundary.
   override → component chain → document default (`effective_length_unit`,
   `effective_component_length_unit`). The context pane shows **Component units** pickers
   (with an **Inherit** entry) for a selected component.
-- **Graph view:** components are not nodes but **areas** — smooth, lightly shaded convex
-  hulls (`rounded_hull`) drawn beneath the member nodes, labeled at the top edge; nested
-  components layer their tints.
+- **Graph view:** a component is a row like any other, and its contents string down the lane
+  it opens beneath itself (#1670).
 - **Persistence:** `components`/`component_members` meta JSON in the SQLite format, serde
   fields in the JSON format.
 - **Scripting:** `bearcad.component{ name =, parent = }` (returns the index),
@@ -2569,7 +2568,7 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   `body` or `sketch`.
 - **Projection elements (#254/#281):** each placed view shows in the Elements pane as a
   **projection** node (`HierarchyNode::DrawingProjection`, its own icon) nested **under its
-  drawing**. In the Graph view it also draws a dashed **dependency edge** to its source body —
+  drawing**. In the Graph view it also draws a **dependency lane** to its source body —
   a second input beyond its drawing parent (the full multi-parent relationship lands with the
   element graph, #252). It's a display-only leaf (no `SceneElement`).
 - **Views:** a drawing collects **views**, each a chosen body shown in one orientation — the
@@ -4424,21 +4423,22 @@ retina machine renders the same composition at 2x, just sharper.
   former **Tree** view is retired (#252): a strict tree can't represent an element with
   multiple inputs (a body that is both one op's output and another's input), which is the whole
   point of the graph model — so its button is gone and a script-set `Tree` mode renders as
-  List. **Graph** is a 2D node-link diagram
-  laid out by a **force-directed simulation (#94)**: nodes are pulled into depth-ordered
-  horizontal layers so the graph flows top-to-bottom — "somewhat vertical" — while pairwise
-  repulsion and weak, capped parent↔child springs spread siblings sideways; repulsion is
-  deliberately sized to beat the springs at dot-diameter range so nodes never rest on top of
-  each other (#151). The layout animates each frame ("bounces") until its kinetic energy
-  decays and it settles, then stops repainting; the pane-edge clamp kills the velocity
-  component into the wall so a crowded row settles instead of pumping forever. x is
-  contained to the pane width so it never scrolls horizontally, only vertically. A depth band
-  too wide to fit the pane **wraps into stacked sub-rows** (#350): each band is laid out to fit
-  the width and the bands stack top-to-bottom by their wrapped height, so the graph grows
-  **taller** rather than overflowing sideways (`declutter_label_bands` returns each node's x and
-  sub-row). The seed layout is deterministic (reproducible across runs, no RNG). Each node draws as its
+  List. **Graph** is a **one-node-per-line** view (#1670) laid out the way `gitk` draws
+  commits (`graph_lane_layout`). Rows run top to bottom in a depth-first walk of the hierarchy
+  that holds a node back until every input it depends on is already placed, so a consumer is
+  always below its inputs; the relationships are drawn beside them as mostly-vertical **lanes**
+  with short diagonal legs into each row. A node with consumers reserves **one** lane for all
+  of them — its children string down that single trunk instead of fanning out sideways — and a
+  lane is reused the moment its last consumer is passed, so a straight chain (sketch → extrude
+  → body) holds its lane rather than drifting right. The graph therefore spills right only as
+  far as the branches actually need, growing **taller** instead: height scrolls vertically and
+  labels truncate at the pane edge (#34). A **constraint** is the exception (#1670): it relates
+  to the geometry it holds rather than being produced by it, so it claims no trunk, drops into
+  the leftmost free lane at or right of its sketch's, and ties to each element it constrains
+  with a soft dashed **related** leg. Each node draws as its
   element's icon — the same icon its List row uses, tinted by selection/health state
-  (#152); only the synthetic Document root keeps a plain dot. Clicking a node in Graph view selects it like any
+  (#152) at its lane, with the label following its own dot so a row's indent shows its place in
+  the graph; only the synthetic Document root keeps a plain dot. Clicking a row in Graph view selects it like any
   other row; selecting a node highlights its ancestor and descendant nodes/edges with a distinct
   accent color/stroke. **Right-clicking a node opens the same context menu its List/Tree row
   shows (#623)** — the shared `element_context_menu` (edit entries, Create drawing / Add to
@@ -4447,8 +4447,8 @@ retina machine renders the same composition at 2x, just sharper.
   **Right-clicking already-selected geometry in the 3D viewport opens that same menu
   (#1224).**
   This is a per-session UI preference, not saved with the document.
-  Beyond the single tree-parent edges, the Graph view also draws dashed **dependency edges**
-  from an element's **inputs** to it (`graph_dependency_edges`), covering **every
+  Beyond the single tree-parent lanes, the Graph view also draws **dependency lanes** — in a
+  warm accent, so they read apart from the neutral parent lanes — from an element's **inputs** to it (`graph_dependency_edges`), covering **every
   operation** (#448/#449): boolean/move/slice input bodies (#266), a repeat's input
   bodies/planes/sketches/replayed cut extrusions, a move's planes and images, a slice's
   construction-plane cutters, a revolution's profile sketch and axis line, the in-sketch
@@ -4458,26 +4458,11 @@ retina machine renders the same composition at 2x, just sharper.
   when that element already has any other input (`graph_parent_edges`, #1324) — a fillet
   fed by the body it treats does not also hang off the document root. When a visible node
   is fed by a **shadow element that is not shown** (shadow bodies are hidden by default,
-  #1109), the graph draws a dashed **skip-edge** from the shadow's visible parent to the
+  #1109), the graph draws a **skip-lane** from the shadow's visible parent to the
   consumer (`graph_shadow_skip_edges`, #1425) so the chain stays connected without
-  resurrecting the hidden node. Nodes are **draggable** (#451): a per-node offset
-  (`GraphLayout::drag_offsets`, UI state) adds on top of the physics/declutter layout, so
-  the user can rearrange without fighting the sim. **Layering is enforced at all times
-  (#622):** every input renders strictly above its consumer and every output below its
-  producer — across tree-parent edges *and* the dashed dependency edges — via a bounded
-  relaxation over the final ys (`enforce_graph_layering`). Drags included: the actively
-  dragged node is authoritative, so dragging a node down pushes its consumers further down
-  and dragging it up pushes its inputs up (transitively, all the way up the chain) — the
-  graph reshuffles in response instead of ever showing an input below what it feeds. That
-  upward shove **stops at the top edge (#638)**: a node needs one layering gap of headroom
-  per link in its longest input chain (`input_chain_depth`), so once the topmost ancestor
-  reaches the top the whole chain — dragged node included — refuses to rise further, rather
-  than the graph sliding off the top. The stored drag offset is clamped to the same floor, so
-  a stalled drag banks no invisible slack. The simulation **latches once it settles (#661)**: below the settle threshold it stops stepping
-  entirely until something actually disturbs the graph — a node appearing or leaving, or a drag.
-  Otherwise it advanced on every repaint the pane happened to get, so merely clicking a node
-  (which repaints for selection, hover, and its tooltip) walked the whole layout to a new
-  position. Force layout always runs in Graph view (#1189 removed the #525 toggle).
+  resurrecting the hidden node. Row order alone puts every input above what it consumes, so
+  the layout is fixed and deterministic — the same document always draws the same graph
+  (#1670), and the rows are readable back from a script with `bearcad.ui.elements_graph()`.
 - **Graph rollback (#524/#531/#545):** a rollback marker lets you view the model as it was just
   after (or just before) a chosen element, temporarily suppressing what **depends on** it. It is
   set from an element row's right-click **Rollback** submenu (#545): **Rollback to here** keeps
@@ -4487,7 +4472,7 @@ retina machine renders the same composition at 2x, just sharper.
   forward) shows atop the Elements pane — there is no separate roll-back button. Suppression is by
   the **element graph, not creation time** (#531): `rolled_back_elements` walks forward from the
   marker along both the nesting tree (an op → its output bodies, a sketch → its geometry, …) and
-  the dashed dependency edges (an input → the operation that consumes it), collecting the
+  the dependency edges (an input → the operation that consumes it), collecting the
   marker's **descendants** (plus the marker itself when inclusive) — so two independent branches
   never affect each other, and rolling back a body hides exactly the operations built on it and
   their results. Those elements are
