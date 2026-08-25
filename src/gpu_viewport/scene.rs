@@ -1830,6 +1830,15 @@ impl ViewportScene {
             );
         }
 
+        // What you are drawing shows through bodies, exactly like the sketch geometry it is
+        // about to become (#1717): a circle dragged out over a solid came out cut in half,
+        // because only committed lines and circles of the open sketch took this lane
+        // (#1192/#1200). Outside a sketch these previews (the Shape tool's, say) still
+        // depth-test — they are 3D, and belong behind what stands in front of them.
+        let preview_shows_through = input.sketch_session.is_some();
+        if preview_shows_through {
+            mesh.set_index_layer(MeshIndexLayer::Wireframe);
+        }
         if let Some(rect) = input.preview_rect.as_ref() {
             mesh.push_preview_rect(
                 rect,
@@ -1881,6 +1890,9 @@ impl ViewportScene {
                 input.palette.construction,
                 PREVIEW_FILL_DEPTH_BIAS,
             );
+        }
+        if preview_shows_through {
+            mesh.set_index_layer(MeshIndexLayer::Overlay);
         }
         // In-sketch repeat ghost (#232): dashed copies of the picked entities at each offset.
         for &(a, b) in &input.sketch_repeat_ghost {
@@ -12838,6 +12850,92 @@ mod tests {
             construction_stroke, 0,
             "open-sketch construction must not use depth-tested strokes, got stroke +{construction_stroke}"
         );
+    }
+
+    /// #1717: the geometry you are *drawing* shows through bodies too. A committed line or
+    /// circle of the open sketch already did (#1192/#1200), but the in-progress preview
+    /// depth-tested — so a circle being dragged out over a solid came out cut in half.
+    #[test]
+    fn in_progress_sketch_geometry_draws_depth_test_disabled() {
+        let mut state = AppState::default();
+        state.apply(crate::actions::Action::BeginSketch {
+            face: FaceId::ConstructionPlane(pkey(0)),
+            viewport: None,
+        });
+        let session = state.sketch_session.unwrap();
+        let cam = state.cam.clone();
+        let viewport = test_viewport();
+        let empty_sel = crate::selection::SceneSelection::default();
+        let empty_vis = crate::hierarchy::ElementVisibility::default();
+        let line = crate::model::Line::from_local_endpoints(session.sketch, 0.0, 0.0, 80.0, 0.0);
+        let circle =
+            crate::model::Circle::from_local_center_radius(session.sketch, 0.0, 0.0, 20.0, 0.0);
+        let build = |line: Option<crate::model::Line>, circle: Option<crate::model::Circle>| {
+            ViewportScene::build(&ViewportSceneInput {
+                doc: &state.doc,
+                open_cross_section: None,
+                creating_move: None,
+                cam: &cam,
+                viewport,
+                palette: ViewportPalette::default(),
+                sketch_session: Some(session),
+                selection: &empty_sel,
+                cut_highlight_bodies: Vec::new(),
+                faded_bodies: Vec::new(),
+                sketch_repeat_ghost: Vec::new(),
+                sketch_ghost_lines: Vec::new(),
+                edit_preview_meshes: std::collections::HashMap::new(),
+                element_visibility: &empty_vis,
+                preview_rect: None,
+                preview_line: line,
+                preview_circle: circle,
+                preview_extrusion: None,
+                preview_solid: None,
+                repeat_ghosts: Vec::new(),
+                cut_surface_ghosts: Vec::new(),
+                preview_cut_body: None,
+                preview_replacement: PreviewReplacement::default(),
+                highlighted_bezier_handles: Vec::new(),
+                editing_extrusion: None,
+                plane_preview: None,
+                active_sketch_face: None,
+                dimension_labels: &[],
+                dim_label_view: None,
+                plane_gizmo: None,
+                extrude_gizmo: None,
+                vertex_treatment_gizmo: None,
+                arrow_gizmos: Vec::new(),
+                move_rotation_gizmos: Vec::new(),
+                revolve_arc_gizmo: None,
+                vertex_treatment_preview: None,
+                hover_highlight: None,
+                extra_pick_highlights: Vec::new(),
+                colored_pick_highlights: Vec::new(),
+                colored_element_highlights: Vec::new(),
+                tinted_bodies: Vec::new(),
+                colored_segments: Vec::new(),
+                parameter_highlight_elements: Vec::new(),
+                hover_color: Color32::WHITE,
+                document_health: &DocumentHealth::default(),
+                constraint_graphics: None,
+                constraint_connector_color: None,
+            })
+        };
+        let baseline = build(None, None);
+        let with_line = build(Some(line), None);
+        let with_circle = build(None, Some(circle));
+        for (what, scene) in [("line", &with_line), ("circle", &with_circle)] {
+            let wire = scene.wireframe_indices.len() - baseline.wireframe_indices.len();
+            let overlay = scene.overlay_indices.len() - baseline.overlay_indices.len();
+            assert!(
+                wire > 0,
+                "the {what} being drawn belongs on the depth-disabled wireframe layer, got +{wire}"
+            );
+            assert_eq!(
+                overlay, 0,
+                "and not on the depth-tested overlay, where a body in front cuts it in half, got +{overlay}"
+            );
+        }
     }
 
     /// #1200 / #1157: when no sketch is open, committed solid lines still depth-test so
