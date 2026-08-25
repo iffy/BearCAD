@@ -4680,12 +4680,8 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 tutorial::UiAnchor::ConstraintButton(kind) => {
                     context::constraint_button_rect(ctx, kind)
                 }
-                // The extrude Output row's Cut button (#804), reported the same way.
-                tutorial::UiAnchor::ExtrudeCut => context::extrude_output_button_rect(
-                    ctx,
-                    // A tutorial anchor only needs the button's identity, not a real body.
-                    &actions::ExtrudeBodyMode::Cut(crate::arena::Key::from_bits(u64::MAX)),
-                ),
+                // An Output-row New/Join/Cut button (#804/#1592), reported the same way.
+                tutorial::UiAnchor::OutputMode(kind) => context::output_mode_icon_rect(ctx, kind),
                 // Shape Height / Radius fields in the Context pane (#1264).
                 tutorial::UiAnchor::ShapeHeight => {
                     context::shape_field_rect(ctx, actions::ShapeDimension::Height)

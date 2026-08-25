@@ -30,9 +30,9 @@ pub enum UiAnchor {
     /// A constraint button in the Context pane's Constraints list (#770) — where a
     /// squaring-up step points once both of its picks are made.
     ConstraintButton(crate::geometric_constraints::GeometricConstraintType),
-    /// The extrude Output row's **Cut** button (#804).
-    #[allow(dead_code)]
-    ExtrudeCut,
+    /// An Output-row mode button — `"new"` / `"join"` / `"cut"` (#804/#1592). Shared by
+    /// Extrude, Revolve, Sweep, Loft and Mirror, so the tutorial names the button, not the tool.
+    OutputMode(&'static str),
     /// The floating value field of the dimension being typed (#814).
     DimensionValue,
     /// The extrude tool's floating **distance** field (#816).
@@ -353,6 +353,12 @@ pub static TUTORIALS: &[Tutorial] = &[
         name: "drawing",
         title: "Technical drawing",
         steps: DRAWING_STEPS,
+    },
+    // #1672: spin a square into a ring, then revolve-cut a groove into it.
+    Tutorial {
+        name: "revolve",
+        title: "Revolve",
+        steps: REVOLVE_STEPS,
     },
 ];
 
@@ -3865,6 +3871,367 @@ static DRAWING_STEPS: &[Step] = &[
     ),
 ];
 
+// --- Revolve tutorial (#1672) ----------------------------------------------------------
+
+fn revolve_tool_active(app: &AppState) -> bool {
+    app.tool == Tool::Revolve
+}
+
+fn circle_tool_active(app: &AppState) -> bool {
+    app.tool == Tool::Circle
+}
+
+fn has_revolution(app: &AppState) -> bool {
+    !app.doc.revolutions.is_empty()
+}
+
+/// The revolve tutorial's profile sketch, in insertion order: the rectangle's sketch.
+fn revolve_sketch(app: &AppState) -> Option<crate::model::SketchId> {
+    app.doc
+        .lines
+        .values()
+        .find(|l| !l.construction)
+        .map(|l| l.sketch)
+        .or_else(|| app.doc.sketches.keys().next())
+}
+
+/// Bounds of the drawn square in ground-local mm: `(u_min, v_min, u_max, v_max)`. The
+/// revolve axis is world X, which is the ground frame's `u`, so `v` is the radius.
+fn revolve_rect_bounds(app: &AppState) -> Option<(f32, f32, f32, f32)> {
+    let sketch = revolve_sketch(app)?;
+    let frame = crate::face::sketch_geometry_frame(&app.doc, sketch)?;
+    let mut bounds: Option<(f32, f32, f32, f32)> = None;
+    for line in app.doc.lines.values().filter(|l| !l.construction && l.sketch == sketch) {
+        for p in crate::face::line_world_polyline(&app.doc, line)? {
+            let (u, v) = crate::face::world_to_local(&frame, p);
+            bounds = Some(match bounds {
+                None => (u, v, u, v),
+                Some((u0, v0, u1, v1)) => (u0.min(u), v0.min(v), u1.max(u), v1.max(v)),
+            });
+        }
+    }
+    bounds
+}
+
+fn revolve_rect_corner_a(app: &AppState) -> Option<glam::Vec3> {
+    ground_local(app, 10.0, 10.0)
+}
+
+fn revolve_rect_corner_b(app: &AppState) -> Option<glam::Vec3> {
+    if let (Some(cr), Some(session)) = (app.creating_rect.as_ref(), app.sketch_session) {
+        let frame = crate::face::sketch_geometry_frame(&app.doc, session.sketch)?;
+        let (ou, ov) = crate::face::world_to_local(&frame, cr.origin);
+        return Some(crate::face::local_to_world(&frame, ou + 20.0, ov + 20.0));
+    }
+    ground_local(app, 30.0, 30.0)
+}
+
+/// A point out along the global X axis — clear of the square, so the axis click can't
+/// land on the profile instead.
+fn revolve_axis_guide(app: &AppState) -> Option<glam::Vec3> {
+    ground_local(app, 60.0, 0.0)
+}
+
+fn revolve_face_picked(app: &AppState) -> bool {
+    has_revolution(app)
+        || app
+            .creating_revolve
+            .as_ref()
+            .is_some_and(|c| !c.faces.is_empty())
+}
+
+fn revolve_axis_picked(app: &AppState) -> bool {
+    has_revolution(app)
+        || app.creating_revolve.as_ref().is_some_and(|c| c.axis.is_some())
+}
+
+/// Sketch reopened so the groove profile can go in beside the square.
+fn revolve_sketch_reopened(app: &AppState) -> bool {
+    app.sketch_session.is_some() || has_groove_circle(app)
+}
+
+fn has_groove_circle(app: &AppState) -> bool {
+    !app.doc.circles.is_empty()
+}
+
+fn groove_circle_started(app: &AppState) -> bool {
+    app.creating_circle.is_some() || has_groove_circle(app)
+}
+
+/// Middle of the square's outer edge — where the groove circle is centred, half in the
+/// material and half out of it.
+fn groove_center_guide(app: &AppState) -> Option<glam::Vec3> {
+    let (u0, _, u1, v1) = revolve_rect_bounds(app)?;
+    ground_local(app, (u0 + u1) * 0.5, v1)
+}
+
+/// The top of the revolved ring: the outer surface, a quarter turn round from the sketch.
+fn ring_body_guide(app: &AppState) -> Option<glam::Vec3> {
+    let (u0, _, u1, v1) = revolve_rect_bounds(app)?;
+    Some(glam::Vec3::new((u0 + u1) * 0.5, 0.0, v1))
+}
+
+fn groove_profile_picked(app: &AppState) -> bool {
+    has_groove_cut(app)
+        || app.creating_revolve.as_ref().is_some_and(|c| {
+            c.faces
+                .iter()
+                .any(|f| matches!(f, crate::model::ExtrudeFace::Circle(_)))
+        })
+}
+
+fn revolve_cut_mode_ready(app: &AppState) -> bool {
+    has_groove_cut(app)
+        || app
+            .creating_revolve
+            .as_ref()
+            .is_some_and(|c| c.body_choice == crate::actions::RevolveBodyChoice::Cut)
+}
+
+fn revolve_cut_body_picked(app: &AppState) -> bool {
+    has_groove_cut(app)
+        || app
+            .creating_revolve
+            .as_ref()
+            .is_some_and(|c| !c.cut_bodies.is_empty())
+}
+
+fn has_groove_cut(app: &AppState) -> bool {
+    app.doc
+        .revolutions
+        .values()
+        .any(|r| matches!(r.mode, crate::model::RevolveMode::Cut(_)))
+}
+
+fn assist_draw_revolve_square(app: &mut AppState) {
+    if has_rectangle_outline(app) {
+        return;
+    }
+    ensure_ground_sketch(app);
+    app.apply(Action::CreateRectangle {
+        x: 10.0,
+        y: 10.0,
+        width: 20.0,
+        height: 20.0,
+        width_expr: Some("20".into()),
+        height_expr: Some("20".into()),
+    });
+}
+
+/// Every non-construction line of the profile sketch, as one closed profile.
+fn revolve_profile_faces(app: &AppState) -> Option<(crate::model::SketchId, Vec<crate::model::ExtrudeFace>)> {
+    let sketch = revolve_sketch(app)?;
+    let lines = crate::polygon::closed_line_loops(&app.doc, sketch)
+        .into_iter()
+        .max_by_key(|l| l.len())?;
+    (lines.len() >= 4).then(|| (sketch, vec![crate::model::ExtrudeFace::Polygon(lines)]))
+}
+
+fn assist_revolve_ring(app: &mut AppState) {
+    if has_revolution(app) {
+        return;
+    }
+    assist_draw_revolve_square(app);
+    let Some((sketch, faces)) = revolve_profile_faces(app) else {
+        return;
+    };
+    if app.sketch_session.is_some() {
+        app.apply(Action::ExitSketch);
+    }
+    app.apply(Action::CreateRevolution {
+        sketch,
+        faces,
+        axis: crate::model::RevolveAxis::X,
+        angle_deg: 360.0,
+        angle_expression: "360".into(),
+        angle_is_revolutions: false,
+        pitch_mm: 0.0,
+        pitch_expression: "0".into(),
+        gap_is_offset: true,
+        symmetric: false,
+        body: crate::actions::RevolveBodyChoice::NewBody,
+        bodies: Vec::new(),
+    });
+}
+
+fn assist_draw_groove_circle(app: &mut AppState) {
+    if has_groove_circle(app) {
+        return;
+    }
+    assist_revolve_ring(app);
+    let Some(sketch) = revolve_sketch(app) else {
+        return;
+    };
+    let Some((u0, _, u1, v1)) = revolve_rect_bounds(app) else {
+        return;
+    };
+    if app.sketch_session.is_none() {
+        app.apply(Action::OpenSketch { sketch, viewport: None });
+    }
+    app.apply(Action::CreateCircle {
+        cx: (u0 + u1) * 0.5,
+        cy: v1,
+        r: 5.0,
+        diameter_expr: Some("10".into()),
+    });
+}
+
+fn assist_cut_groove(app: &mut AppState) {
+    if has_groove_cut(app) {
+        return;
+    }
+    assist_draw_groove_circle(app);
+    let Some(sketch) = revolve_sketch(app) else {
+        return;
+    };
+    let Some(circle) = app.doc.circles.keys().next() else {
+        return;
+    };
+    let Some(ring) = app.doc.bodies.iter().find_map(|(bi, b)| {
+        (!b.shadow && matches!(b.source, crate::model::BodySource::Revolve(_))).then_some(bi)
+    }) else {
+        return;
+    };
+    if app.sketch_session.is_some() {
+        app.apply(Action::ExitSketch);
+    }
+    app.apply(Action::CreateRevolution {
+        sketch,
+        faces: vec![crate::model::ExtrudeFace::Circle(circle)],
+        axis: crate::model::RevolveAxis::X,
+        angle_deg: 360.0,
+        angle_expression: "360".into(),
+        angle_is_revolutions: false,
+        pitch_mm: 0.0,
+        pitch_expression: "0".into(),
+        gap_is_offset: true,
+        symmetric: false,
+        body: crate::actions::RevolveBodyChoice::Cut,
+        bodies: vec![ring],
+    });
+}
+
+/// #1672: spin a square into a ring, then revolve-cut a half-round groove into its face.
+static REVOLVE_STEPS: &[Step] = &[
+    plain_step(
+        "Revolve spins a flat profile around an axis. Let's make a ring.",
+        StepAnchor::None,
+        None,
+    ),
+    plain_step(
+        "Click the Rectangle tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Rectangle)),
+        Some(rectangle_tool_active),
+    ),
+    plain_step_enter(
+        "Click a corner on the ground, out beside the red X axis.",
+        StepAnchor::World(revolve_rect_corner_a),
+        Some(rect_first_corner_placed),
+        ensure_rect_sketch_for_tutorial,
+    ),
+    assisted_step(
+        "Click the opposite corner to close the square.",
+        StepAnchor::World(revolve_rect_corner_b),
+        Some(has_rectangle_outline),
+        StepAssist {
+            label: "Draw it for me",
+            run: assist_draw_revolve_square,
+        },
+        None,
+    ),
+    plain_step(
+        "Click the Revolve tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Revolve)),
+        Some(revolve_tool_active),
+    ),
+    plain_step(
+        "Click inside the square \u{2014} that's the profile.",
+        StepAnchor::World(rectangle_face_guide),
+        Some(revolve_face_picked),
+    ),
+    plain_step(
+        "Click the red X axis. The square will spin around it.",
+        StepAnchor::World(revolve_axis_guide),
+        Some(revolve_axis_picked),
+    ),
+    assisted_step(
+        "Press Enter. A full turn sweeps the square into a ring.",
+        StepAnchor::None,
+        Some(has_revolution),
+        StepAssist {
+            label: "Revolve it for me",
+            run: assist_revolve_ring,
+        },
+        None,
+    ),
+    plain_step(
+        "Now a groove. Reopen the sketch \u{2014} double-click it in the Elements pane.",
+        StepAnchor::Ui(UiAnchor::ElementsSketch),
+        Some(revolve_sketch_reopened),
+    ),
+    plain_step(
+        "Click the Circle tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Circle)),
+        Some(circle_tool_active),
+    ),
+    plain_step(
+        "Click the middle of the square's outer edge \u{2014} the far side from the axis.",
+        StepAnchor::World(groove_center_guide),
+        Some(groove_circle_started),
+    ),
+    assisted_step(
+        "Type `10` for the diameter, then Enter. Half the circle hangs outside the square.",
+        StepAnchor::None,
+        Some(has_groove_circle),
+        StepAssist {
+            label: "Draw it for me",
+            run: assist_draw_groove_circle,
+        },
+        Some(TypeHint::Fixed("10")),
+    ),
+    plain_step(
+        "Click the Revolve tool again.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Revolve)),
+        Some(revolve_tool_active),
+    ),
+    plain_step(
+        "Click inside the circle.",
+        StepAnchor::World(groove_center_guide),
+        Some(groove_profile_picked),
+    ),
+    plain_step(
+        "Click the red X axis again.",
+        StepAnchor::World(revolve_axis_guide),
+        Some(revolve_axis_picked),
+    ),
+    plain_step(
+        "Click Cut in the Output row \u{2014} this revolve takes material away.",
+        StepAnchor::Ui(UiAnchor::OutputMode("cut")),
+        Some(revolve_cut_mode_ready),
+    ),
+    plain_step(
+        "Click the ring to say what gets cut.",
+        StepAnchor::World(ring_body_guide),
+        Some(revolve_cut_body_picked),
+    ),
+    assisted_step(
+        "Press Enter. A half-round groove runs right round the ring's face.",
+        StepAnchor::None,
+        Some(has_groove_cut),
+        StepAssist {
+            label: "Cut it for me",
+            run: assist_cut_groove,
+        },
+        None,
+    ),
+    plain_step(
+        "Revolve builds anything round: rings, shafts, pulleys. Nice work!",
+        StepAnchor::None,
+        None,
+    ),
+];
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4027,10 +4394,11 @@ mod tests {
         assert_eq!(tutorial_index("combine"), Some(7), "#1556: combine is eighth");
         assert_eq!(tutorial_index("raised_text"), Some(8), "#1557: raised text is ninth");
         assert_eq!(tutorial_index("drawing"), Some(9), "#1640: technical drawing is tenth");
+        assert_eq!(tutorial_index("revolve"), Some(10), "#1672: revolve is eleventh");
         assert_eq!(tutorial_index("bracket"), None, "#1334: build-a-bracket tutorial is gone");
         assert_eq!(tutorial_index("nope"), None);
-        assert_eq!(TUTORIALS.last().unwrap().name, "drawing");
-        assert_eq!(TUTORIALS.len(), 10, "pane lists every remaining walkthrough");
+        assert_eq!(TUTORIALS.last().unwrap().name, "revolve");
+        assert_eq!(TUTORIALS.len(), 11, "pane lists every remaining walkthrough");
         for tut in TUTORIALS {
             assert_ne!(tut.name, "bracket");
             assert_ne!(tut.title, "Build an angle bracket");
@@ -5716,7 +6084,6 @@ mod tests {
                 "numbering must keep the skill title: {shown}"
             );
         }
-        assert_eq!(TUTORIALS.len(), 10);
     }
 
     /// #1640: walking the technical-drawing tutorial with its assists leaves the page the
@@ -6183,6 +6550,77 @@ mod tests {
         assert!(
             has_equal_constraint(&app),
             "two sides should be equal, status={}",
+            app.status
+        );
+    }
+
+    fn revolve_tut() -> &'static Tutorial {
+        &TUTORIALS[tutorial_index("revolve").expect("revolve tutorial is registered")]
+    }
+
+    /// #1672: spin a square into a ring, then cut a half-round groove into its face.
+    #[test]
+    fn revolve_tutorial_is_registered_and_covers_a_cut_groove() {
+        let tut = revolve_tut();
+        assert_eq!(tut.name, "revolve");
+        assert_eq!(tut.title, "Revolve");
+        let joined: String = tut
+            .steps
+            .iter()
+            .map(|s| s.narration.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("axis"), "{joined}");
+        assert!(joined.contains("groove"), "{joined}");
+        assert!(
+            tut.steps
+                .iter()
+                .filter(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::Tool(Tool::Revolve))))
+                .count()
+                >= 2,
+            "the Revolve tool is picked twice: once to spin, once to cut"
+        );
+        assert!(
+            tut.steps
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::OutputMode("cut")))),
+            "a step points at Cut in the Output row"
+        );
+        assert!(
+            tut.steps
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::Tool(Tool::Circle)))),
+            "the groove profile is a circle"
+        );
+    }
+
+    /// #1672: the assists leave a revolved ring with a cut groove around it.
+    #[test]
+    fn revolve_tutorial_assists_groove_a_revolved_ring() {
+        let mut app = AppState::default();
+        finish_tutorial_via_next(&mut app, "revolve");
+        assert_eq!(
+            app.doc.revolutions.len(),
+            2,
+            "one revolve for the ring, one for the groove, status={}",
+            app.status
+        );
+        let modes: Vec<_> = app.doc.revolutions.values().map(|r| r.mode.clone()).collect();
+        assert!(
+            modes
+                .iter()
+                .any(|m| matches!(m, crate::model::RevolveMode::NewBody)),
+            "the ring is a new body, got {modes:?}"
+        );
+        assert!(
+            modes
+                .iter()
+                .any(|m| matches!(m, crate::model::RevolveMode::Cut(b) if !b.is_empty())),
+            "the groove cuts the ring, got {modes:?}"
+        );
+        assert!(
+            app.doc.circles.len() == 1,
+            "the groove profile is one circle, status={}",
             app.status
         );
     }

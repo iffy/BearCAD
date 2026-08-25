@@ -5064,15 +5064,6 @@ fn extrude_output_kind(mode: &ExtrudeBodyMode) -> &'static str {
     }
 }
 
-/// Where the pane drew an extrude **Output** button this frame (#804) — the tutorial's orb
-/// points at "pick Cut" there. Same rects the Output-row helper records (#1592).
-pub fn extrude_output_button_rect(
-    ctx: &egui::Context,
-    mode: &ExtrudeBodyMode,
-) -> Option<egui::Rect> {
-    output_mode_icon_rect(ctx, extrude_output_kind(mode))
-}
-
 /// Where the Context pane's constraint button for `kind` sits on screen, if it drew one
 /// this frame (#770) — the tutorial points its orb there once a step's picks are made.
 pub fn constraint_button_rect(

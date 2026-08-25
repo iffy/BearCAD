@@ -10058,6 +10058,7 @@ pub mod tests {
             assert(names.combine == "Combine")
             assert(names.raised_text == "Raised text")
             assert(names.drawing == "Technical drawing")
+            assert(names.revolve == "Revolve")
             "#
             .replace("__COUNT__", &crate::tutorial::TUTORIALS.len().to_string()),
         );
@@ -10082,6 +10083,31 @@ pub mod tests {
             end
             assert(bearcad.count("drawing") == 1, "one drawing")
             assert(bearcad.count("body") >= 1, "the bracket is there")
+            "#,
+        );
+    }
+
+    /// #1672: the revolve tutorial walks with assists and leaves a ring with a groove cut
+    /// into its outer face.
+    #[test]
+    fn revolve_tutorial_lua_walks_and_grooves_a_ring() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.ui.tutorial("revolve")
+            assert(bearcad.ui.tutorial_step() == 0)
+            local guard = 0
+            while bearcad.ui.tutorial_step() ~= nil do
+              guard = guard + 1
+              assert(guard < 60, "revolve tutorial should finish")
+              bearcad.ui.tutorial_assist()
+              if bearcad.ui.tutorial_step() ~= nil then
+                bearcad.ui.tutorial_next()
+              end
+            end
+            assert(bearcad.count("revolution") == 2,
+              "ring + groove, got " .. bearcad.count("revolution"))
+            assert(bearcad.count("circle") == 1, "one groove profile")
+            assert(bearcad.count("body") >= 1, "a solid ring survives the cut")
             "#,
         );
     }
