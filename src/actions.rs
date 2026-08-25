@@ -2471,6 +2471,7 @@ impl CreatingSectionPlane {
             self.roll_deg
         };
         crate::model::CrossSectionCut {
+            name: None,
             origin: self.origin,
             normal: self.normal,
             offset_mm: offset,
@@ -8978,6 +8979,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::UnitInstance(i) => format!("Unit instance {}", i.index()),
         SceneElement::ConstructionPlane(i) => format!("Construction plane {}", i.index()),
         SceneElement::CrossSection(i) => format!("Cross section {}", i.index()),
+        SceneElement::SectionPlane { cut, .. } => format!("Cutting plane {cut}"),
         SceneElement::Sketch(i) => format!("Sketch {}", i.index()),
         SceneElement::Line(i) => format!("Line {}", i.index()),
         SceneElement::Circle(i) => format!("Circle {}", i.index()),

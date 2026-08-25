@@ -138,6 +138,12 @@ pub enum HierarchyNode {
     Views,
     /// A cross-section view (#1671).
     CrossSection(crate::model::CrossSectionKey),
+    /// One cutting plane of a cross-section view: its own element, nested under the view
+    /// in the Views section.
+    SectionPlane {
+        view: crate::model::CrossSectionKey,
+        cut: usize,
+    },
     /// A technical drawing (#180). A display-only leaf (no [`SceneElement`], like
     /// [`HierarchyNode::Document`]): it has its own icon and is right-clickable to edit
     /// (opening the drawing pane), but isn't a selectable/hideable scene element. Lives
@@ -289,6 +295,11 @@ pub enum SceneElement {
     /// A drawing page (#1525): named by `move_to_component{ kind = "drawing" }`.
     /// A cross-section view (#1671): selectable, renameable and deletable like a drawing.
     CrossSection(crate::model::CrossSectionKey),
+    /// One cutting plane of a view: selectable, renameable, deletable, and hideable.
+    SectionPlane {
+        view: crate::model::CrossSectionKey,
+        cut: usize,
+    },
     Drawing(crate::model::DrawingKey),
     /// The origin, selectable in a sketch so a point can be constrained coincident to it from
     /// the constraint tool (#189). Fixed geometry with no owning entity, like `FaceEdge`.
@@ -624,6 +635,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         | HierarchyNode::UnitChild { .. } => return None,
         HierarchyNode::ConstructionPlane(i) => SceneElement::ConstructionPlane(i),
         HierarchyNode::CrossSection(i) => SceneElement::CrossSection(i),
+        HierarchyNode::SectionPlane { view, cut } => SceneElement::SectionPlane { view, cut },
         HierarchyNode::Sketch(i) => SceneElement::Sketch(i),
         HierarchyNode::Line(i) => SceneElement::Line(i),
         HierarchyNode::Circle(i) => SceneElement::Circle(i),
@@ -679,6 +691,10 @@ pub fn node_editable_operation(node: HierarchyNode) -> Option<SceneElement> {
         // A cross-section view opens the View workbench (#1671) — a double-click or the
         // row's Edit entry, the same universal path every operation uses.
         HierarchyNode::CrossSection(i) => Some(SceneElement::CrossSection(i)),
+        // Double-click / Edit opens the parent view so the plane can be adjusted.
+        HierarchyNode::SectionPlane { view, cut } => {
+            Some(SceneElement::SectionPlane { view, cut })
+        }
         _ => None,
     }
 }
@@ -785,6 +801,9 @@ impl ElementVisibility {
             SceneElement::DrawingElement { .. } => true,
             // A cross-section view is a way of looking, not a thing in the scene (#1671).
             SceneElement::CrossSection(_) => true,
+            SceneElement::SectionPlane { view, .. } => {
+                self.effective_visible(doc, SceneElement::CrossSection(view))
+            }
             // A unit instance's visibility is just its own toggle (#723).
             SceneElement::UnitInstance(_) => true,
             SceneElement::Component(index) => doc
@@ -1926,6 +1945,9 @@ pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNod
     Some(match element {
         SceneElement::ConstructionPlane(i) => HierarchyNode::ConstructionPlane(*i),
         SceneElement::CrossSection(i) => HierarchyNode::CrossSection(*i),
+        SceneElement::SectionPlane { view, cut } => {
+            HierarchyNode::SectionPlane { view: *view, cut: *cut }
+        }
         SceneElement::Sketch(i) => HierarchyNode::Sketch(*i),
         SceneElement::Line(i) => HierarchyNode::Line(*i),
         SceneElement::Circle(i) => HierarchyNode::Circle(*i),
@@ -2550,7 +2572,15 @@ pub fn build_hierarchy(
                 .keys()
                 .map(|key| HierarchyEntry {
                     node: HierarchyNode::CrossSection(key),
-                    children: Vec::new(),
+                    children: doc.cross_sections[key]
+                        .cuts
+                        .iter()
+                        .enumerate()
+                        .map(|(cut, _)| HierarchyEntry {
+                            node: HierarchyNode::SectionPlane { view: key, cut },
+                            children: Vec::new(),
+                        })
+                        .collect(),
                 })
                 .collect(),
         });
@@ -2759,7 +2789,9 @@ impl ElementFilter {
             // The Drawings section exists only when drawings do (#1205); hide it with them.
             HierarchyNode::Drawings => self.drawings,
             // Same for the Views section and the cross-section views inside it (#1671).
-            HierarchyNode::Views | HierarchyNode::CrossSection(_) => self.views,
+            HierarchyNode::Views
+            | HierarchyNode::CrossSection(_)
+            | HierarchyNode::SectionPlane { .. } => self.views,
             HierarchyNode::Component(_) => true,
             HierarchyNode::ConstructionPlane(_) => self.planes,
             HierarchyNode::Sketch(_) => self.sketches,
@@ -3101,6 +3133,7 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
         SceneElement::DrawingElement { .. } => None,
         // A cross-section view hangs off nothing (#1671).
         SceneElement::CrossSection(_) => None,
+        SceneElement::SectionPlane { view, .. } => Some(SceneElement::CrossSection(view)),
         // A unit instance is always a top-level row (#723).
         SceneElement::UnitInstance(_) => None,
         SceneElement::Component(index) => doc
@@ -3225,8 +3258,16 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
     match element {
         // Nothing hangs off a drawing item (#967).
         SceneElement::DrawingElement { .. } => {}
-        // Nor off a cross-section view (#1671).
-        SceneElement::CrossSection(_) => {}
+        SceneElement::CrossSection(view) => {
+            if let Some(v) = doc.cross_sections.get(view) {
+                for cut in 0..v.cuts.len() {
+                    let child = SceneElement::SectionPlane { view, cut };
+                    out.insert(child.clone());
+                    collect_descendants(doc, child, out);
+                }
+            }
+        }
+        SceneElement::SectionPlane { .. } => {}
         // A unit's contents have no scene identity to collect (#723).
         SceneElement::UnitInstance(_) => {}
         SceneElement::Component(index) => {
@@ -3874,6 +3915,7 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
         HierarchyNode::Drawings => IconId::Drawing,
         // The Views section and its views wear the cross-section glyph (#1671).
         HierarchyNode::Views | HierarchyNode::CrossSection(_) => IconId::CrossSection,
+        HierarchyNode::SectionPlane { .. } => IconId::Plane,
         HierarchyNode::Component(_) => IconId::Component,
         HierarchyNode::ConstructionPlane(_) => IconId::Plane,
         HierarchyNode::Sketch(_) => IconId::Sketch,
@@ -9136,6 +9178,34 @@ label_hidden: false,
             vec![HierarchyNode::CrossSection(key)],
             "the view sits inside the section"
         );
+
+        // A cutting plane is its own element nested under the view.
+        doc.cross_sections[key].cuts.push(crate::model::CrossSectionCut::default());
+        let tree = build_hierarchy(&doc, None);
+        let views = tree[0]
+            .children
+            .iter()
+            .find(|e| e.node == HierarchyNode::Views)
+            .expect("a Views section");
+        let view_row = views
+            .children
+            .iter()
+            .find(|e| e.node == HierarchyNode::CrossSection(key))
+            .expect("the view");
+        assert_eq!(
+            view_row.children.iter().map(|e| e.node).collect::<Vec<_>>(),
+            vec![HierarchyNode::SectionPlane { view: key, cut: 0 }],
+            "the plane sits under its view"
+        );
+        assert_eq!(
+            node_label(&doc, HierarchyNode::SectionPlane { view: key, cut: 0 }),
+            "Cutting plane"
+        );
+        assert_eq!(
+            scene_element_for_node(HierarchyNode::SectionPlane { view: key, cut: 0 }),
+            Some(SceneElement::SectionPlane { view: key, cut: 0 }),
+            "a cutting plane is selectable, deletable and renameable"
+        );
         assert_eq!(node_label(&doc, HierarchyNode::Views), "Views");
         assert_eq!(node_label(&doc, HierarchyNode::CrossSection(key)), "Front half");
         assert_eq!(
@@ -9785,7 +9855,9 @@ label_hidden: false,
         use ElementEditPath::*;
         match element {
             // A cross-section view opens the View workbench from its row, the universal way.
-            SceneElement::CrossSection(_) => Row { has_edit_action: true },
+            SceneElement::CrossSection(_) | SceneElement::SectionPlane { .. } => {
+                Row { has_edit_action: true }
+            }
             SceneElement::BooleanOp(_)
             | SceneElement::MoveOp(_)
             | SceneElement::MirrorOp(_)
@@ -9933,6 +10005,10 @@ label_hidden: false,
             SceneElement::UnitInstance(uikey(0)),
             SceneElement::Joint(jkey(0)),
             SceneElement::CrossSection(crate::model::cross_section_key_for_slot(0)),
+            SceneElement::SectionPlane {
+                view: crate::model::cross_section_key_for_slot(0),
+                cut: 0,
+            },
             // Keep DrawingElementRef::Text represented so the walk stays a real sample
             // of every *operation* kind; the drawing page itself is Dedicated above.
             SceneElement::DrawingElement {

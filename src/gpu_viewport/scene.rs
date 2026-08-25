@@ -1016,11 +1016,26 @@ impl ViewportScene {
                     .collect(),
                 _ => Default::default(),
             };
-        // The open cross-section view's planes, if any (#1688).
-        let section_cuts: Option<&[crate::model::CrossSectionCut]> = input
+        // The open cross-section view's planes, if any (#1688). Hidden planes don't cut.
+        let visible_section_cuts: Vec<crate::model::CrossSectionCut> = input
             .open_cross_section
-            .and_then(|key| input.doc.cross_sections.get(key))
-            .map(|view| view.cuts.as_slice());
+            .and_then(|key| input.doc.cross_sections.get(key).map(|view| (key, view)))
+            .map(|(key, view)| {
+                view.cuts
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| {
+                        input.element_visibility.is_visible(SceneElement::SectionPlane {
+                            view: key,
+                            cut: *i,
+                        })
+                    })
+                    .map(|(_, c)| c.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let section_cuts: Option<&[crate::model::CrossSectionCut]> =
+            input.open_cross_section.map(|_| visible_section_cuts.as_slice());
         let cut_away = section_cuts.is_some_and(|cuts| !cuts.is_empty());
         let body_meshes: std::collections::HashMap<crate::model::BodyKey, Option<crate::extrude::SolidMesh>> = input
             .doc
@@ -1904,35 +1919,40 @@ impl ViewportScene {
         // The open cross-section view's cutting planes (#1687): an outlined translucent quad
         // per plane, with a short stub along the normal marking the side that survives, so a
         // placed plane is visible while its offset, turn, and flip are adjusted.
-        if let Some(view) = input
-            .open_cross_section
-            .and_then(|key| input.doc.cross_sections.get(key))
-        {
-            for cut in &view.cuts {
-                let plane = crate::construction::cross_section_cut_plane(cut);
-                let corners = crate::construction::plane_corners(&plane);
-                mesh.push_quad_fill(
-                    corners,
-                    fill_color(input.palette.preview, input.palette.construction_plane_opacity),
-                );
-                mesh.push_quad_outline(
-                    corners,
-                    input.palette.preview,
-                    2.0,
-                    input.cam,
-                    input.viewport,
-                    &vp,
-                );
-                let kept = if cut.flip { -plane.normal } else { plane.normal };
-                mesh.push_line_segment(
-                    plane.origin,
-                    plane.origin + kept * 12.0,
-                    input.palette.preview,
-                    2.0,
-                    input.cam,
-                    input.viewport,
-                    &vp,
-                );
+        if let Some(key) = input.open_cross_section {
+            if let Some(view) = input.doc.cross_sections.get(key) {
+                for (i, cut) in view.cuts.iter().enumerate() {
+                    if !input
+                        .element_visibility
+                        .is_visible(SceneElement::SectionPlane { view: key, cut: i })
+                    {
+                        continue;
+                    }
+                    let plane = crate::construction::cross_section_cut_plane(cut);
+                    let corners = crate::construction::plane_corners(&plane);
+                    mesh.push_quad_fill(
+                        corners,
+                        fill_color(input.palette.preview, input.palette.construction_plane_opacity),
+                    );
+                    mesh.push_quad_outline(
+                        corners,
+                        input.palette.preview,
+                        2.0,
+                        input.cam,
+                        input.viewport,
+                        &vp,
+                    );
+                    let kept = if cut.flip { -plane.normal } else { plane.normal };
+                    mesh.push_line_segment(
+                        plane.origin,
+                        plane.origin + kept * 12.0,
+                        input.palette.preview,
+                        2.0,
+                        input.cam,
+                        input.viewport,
+                        &vp,
+                    );
+                }
             }
         }
         // The lined pattern on the faces the planes opened (#1688).
@@ -3986,6 +4006,24 @@ impl<'a> SceneMesh<'a> {
             SceneElement::DrawingElement { .. } => {}
             // A cross-section view has no geometry of its own to highlight (#1671).
             SceneElement::CrossSection(_) => {}
+            SceneElement::SectionPlane { view, cut } => {
+                if let Some(plane) = doc
+                    .cross_sections
+                    .get(view)
+                    .and_then(|v| v.cuts.get(cut))
+                {
+                    let plane = crate::construction::cross_section_cut_plane(plane);
+                    let corners = crate::construction::plane_corners(&plane);
+                    self.push_quad_outline(
+                        corners,
+                        color,
+                        2.5,
+                        cam,
+                        viewport,
+                        view_proj,
+                    );
+                }
+            }
             SceneElement::Line(index) => {
                 self.push_pick_target_highlight(
                     doc,

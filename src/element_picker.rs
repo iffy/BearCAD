@@ -180,6 +180,7 @@ impl ElementKind {
             | SceneElement::Loft(_) => ElementKind::Operation,
             SceneElement::Drawing(_) => ElementKind::Projection,
             SceneElement::CrossSection(_) => ElementKind::View,
+            SceneElement::SectionPlane { .. } => ElementKind::Plane,
         }
     }
 

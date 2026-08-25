@@ -42,6 +42,10 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             .is_some(),
         SceneElement::ConstructionPlane(index) => construction_plane_alive(doc, index),
         SceneElement::CrossSection(index) => doc.cross_sections.contains(index),
+        SceneElement::SectionPlane { view, cut } => doc
+            .cross_sections
+            .get(view)
+            .is_some_and(|v| cut < v.cuts.len()),
         SceneElement::Sketch(sketch) => sketch_alive(doc, sketch),
         SceneElement::Line(index) => line_alive(doc, index),
         SceneElement::Circle(index) => circle_alive(doc, index),
@@ -191,6 +195,14 @@ pub fn delete_element(doc: &mut Document, element: SceneElement) -> bool {
         // A cross-section view owns nothing but itself (#1671).
         SceneElement::CrossSection(index) => {
             changed = doc.cross_sections.remove(index).is_some();
+        }
+        SceneElement::SectionPlane { view, cut } => {
+            if let Some(v) = doc.cross_sections.get_mut(view) {
+                if cut < v.cuts.len() {
+                    v.cuts.remove(cut);
+                    changed = true;
+                }
+            }
         }
         // Deleting a component re-homes its members and child components to its parent
         // (#423) — grouping is organizational, so nothing inside is deleted.

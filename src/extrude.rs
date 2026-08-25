@@ -6323,6 +6323,16 @@ pub fn selection_world_bounds(
             SceneElement::DrawingElement { .. } => {}
             // Nor does a cross-section view, which is a way of looking (#1671).
             SceneElement::CrossSection(_) => {}
+            SceneElement::SectionPlane { view, cut } => {
+                if let Some(plane) = doc
+                    .cross_sections
+                    .get(view)
+                    .and_then(|v| v.cuts.get(cut))
+                {
+                    let p = crate::construction::cross_section_cut_plane(plane);
+                    extend(p.origin);
+                }
+            }
             SceneElement::RepeatOp(op) => {
                 let outputs = doc
                     .repeat_ops

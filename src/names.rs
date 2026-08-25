@@ -12,6 +12,7 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         SceneElement::DrawingElement { .. } => None,
         SceneElement::ConstructionPlane(_)
         | SceneElement::CrossSection(_)
+        | SceneElement::SectionPlane { .. }
         | SceneElement::Sketch(_)
         | SceneElement::Line(_)
         | SceneElement::Circle(_)
@@ -119,6 +120,13 @@ pub fn find_element_by_name(doc: &Document, name: &str) -> Option<SceneElement> 
             return Some(SceneElement::Joint(index));
         }
     }
+    for (view, v) in doc.cross_sections.iter() {
+        for (cut, plane) in v.cuts.iter().enumerate() {
+            if name_matches(plane.name.as_deref(), query) {
+                return Some(SceneElement::SectionPlane { view, cut });
+            }
+        }
+    }
     None
 }
 
@@ -143,6 +151,9 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
     let name = match element {
         SceneElement::ConstructionPlane(index) => doc.construction_planes.get(index)?.name.as_deref(),
         SceneElement::CrossSection(index) => doc.cross_sections.get(index)?.name.as_deref(),
+        SceneElement::SectionPlane { view, cut } => {
+            doc.cross_sections.get(view)?.cuts.get(cut)?.name.as_deref()
+        }
         SceneElement::Sketch(index) => doc.sketches.get(index)?.name.as_deref(),
         SceneElement::Line(index) => doc.lines.get(index)?.name.as_deref(),
         SceneElement::Circle(index) => doc.circles.get(index)?.name.as_deref(),
@@ -224,6 +235,14 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
                 .get_mut(index)
                 .ok_or_else(|| format!("cross section {} not found", index.index()))?;
             view.name = stored;
+        }
+        SceneElement::SectionPlane { view, cut } => {
+            let plane = doc
+                .cross_sections
+                .get_mut(view)
+                .and_then(|v| v.cuts.get_mut(cut))
+                .ok_or_else(|| format!("cutting plane {cut} not found"))?;
+            plane.name = stored;
         }
         SceneElement::Sketch(index) => {
             let sketch = doc
@@ -495,6 +514,13 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
             .get(i)
             .and_then(|v| v.name.clone())
             .unwrap_or_else(|| format!("Section {}", i.index())),
+        HierarchyNode::SectionPlane { cut, .. } => {
+            if cut == 0 {
+                "Cutting plane".to_string()
+            } else {
+                format!("Cutting plane {}", cut + 1)
+            }
+        }
         HierarchyNode::Component(i) => format!("Component {}", i.index()),
         // The instance's own name (set at import from the file stem) lives in
         // `element_name`; this is only the fallback for an unnamed instance (#723).
@@ -776,6 +802,13 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
     }
     match element {
         SceneElement::CrossSection(i) => format!("Section {}", i.index()),
+        SceneElement::SectionPlane { cut, .. } => {
+            if *cut == 0 {
+                "Cutting plane".to_string()
+            } else {
+                format!("Cutting plane {}", cut + 1)
+            }
+        }
         SceneElement::ConstructionPlane(i) => {
             // The first datum plane is the XY ground (#833).
             if doc.construction_planes.keys().next() == Some(*i) {

@@ -113,6 +113,10 @@ pub fn scene_element_from_kind(
         "cross_section" | "section" | "view" => {
             Some(SceneElement::CrossSection(doc.cross_sections.keys().nth(index)?))
         }
+        "section_plane" | "cutting_plane" => {
+            let (view, cut) = crate::model::nth_section_plane(doc, index)?;
+            Some(SceneElement::SectionPlane { view, cut })
+        }
         _ => None,
     }
 }
@@ -124,6 +128,7 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
     match element {
         SceneElement::ConstructionPlane(_) => "construction_plane",
         SceneElement::CrossSection(_) => "cross_section",
+        SceneElement::SectionPlane { .. } => "section_plane",
         SceneElement::Sketch(_) => "sketch",
         SceneElement::Line(_) => "line",
         SceneElement::Circle(_) => "circle",
@@ -190,6 +195,9 @@ pub fn scene_element_selection_index(
         // (#1055) — the same integer `scene_element_from_kind` takes back.
         SceneElement::Image(key) => doc.tracing_images.keys().position(|k| k == *key),
         SceneElement::CrossSection(key) => doc.cross_sections.keys().position(|k| k == *key),
+        SceneElement::SectionPlane { view, cut } => {
+            crate::model::section_plane_ordinal(doc, *view, *cut)
+        }
         SceneElement::Body(key) => doc.bodies.keys().position(|k| k == *key),
         SceneElement::BooleanOp(key) => doc.boolean_ops.keys().position(|k| k == *key),
         SceneElement::MoveOp(key) => doc.move_ops.keys().position(|k| k == *key),
@@ -282,6 +290,8 @@ pub fn scene_element_kind_name(
 ) -> Option<(&'static str, usize)> {
     let kind = match element {
         SceneElement::ConstructionPlane(_) => "plane",
+        SceneElement::CrossSection(_) => "cross_section",
+        SceneElement::SectionPlane { .. } => "section_plane",
         SceneElement::Sketch(_) => "sketch",
         SceneElement::Line(_) => "line",
         SceneElement::Circle(_) => "circle",

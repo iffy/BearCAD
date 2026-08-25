@@ -131,6 +131,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
     match element {
         SceneElement::ConstructionPlane(_) => "construction_plane",
         SceneElement::CrossSection(_) => "cross_section",
+        SceneElement::SectionPlane { .. } => "section_plane",
         SceneElement::Sketch(_) => "sketch",
         SceneElement::Line(_) => "line",
         SceneElement::Circle(_) => "circle",
@@ -201,6 +202,9 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         SceneElement::Drawing(key) => doc.drawings.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::CrossSection(key) => {
             doc.cross_sections.keys().position(|k| k == key).unwrap_or(0)
+        }
+        SceneElement::SectionPlane { view, cut } => {
+            crate::model::section_plane_ordinal(doc, view, cut).unwrap_or(0)
         }
         SceneElement::Shape(key) => doc.primitives.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::Body(key) => doc.bodies.keys().position(|k| k == key).unwrap_or(0),
@@ -347,6 +351,10 @@ pub fn scene_element_from_kind(
         "drawing" => Some(SceneElement::Drawing(doc.drawings.keys().nth(index)?)),
         "cross_section" | "section" => {
             Some(SceneElement::CrossSection(doc.cross_sections.keys().nth(index)?))
+        }
+        "section_plane" | "cutting_plane" => {
+            let (view, cut) = crate::model::nth_section_plane(doc, index)?;
+            Some(SceneElement::SectionPlane { view, cut })
         }
         "joint" => Some(SceneElement::Joint(doc.joints.keys().nth(index)?)),
         "shape" | "primitive" => Some(SceneElement::Shape(doc.primitives.keys().nth(index)?)),
@@ -2341,6 +2349,7 @@ pub const INSPECT_KINDS: &[&str] = &[
     "body",
     "drawing",
     "cross_section",
+    "section_plane",
     "parameter",
     "sketch_text",
     "component",
@@ -2378,6 +2387,7 @@ pub fn count_kind(doc: &crate::model::Document, kind: &str) -> Option<usize> {
         "body" => doc.bodies.len(),
         "drawing" => doc.drawings.len(),
         "cross_section" | "section" => doc.cross_sections.len(),
+        "section_plane" | "cutting_plane" => crate::model::section_plane_count(doc),
         "parameter" => doc.parameters.len(),
         "sketch_text" | "text" => doc.sketch_texts.len(),
         "component" => doc.components.len(),
@@ -3946,6 +3956,31 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     };
                     t.set("cuts", view.cuts.len())?;
                     if let Some(name) = &view.name {
+                        t.set("name", name.as_str())?;
+                    }
+                }
+                "section_plane" | "cutting_plane" => {
+                    let Some((view_key, cut)) = crate::model::nth_section_plane(doc, index) else {
+                        return Ok(Value::Nil);
+                    };
+                    let Some(plane) = doc
+                        .cross_sections
+                        .get(view_key)
+                        .and_then(|v| v.cuts.get(cut))
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set(
+                        "view",
+                        doc.cross_sections.keys().position(|k| k == view_key).unwrap_or(0),
+                    )?;
+                    t.set("cut", cut)?;
+                    t.set("origin", vec3_lua(lua, plane.origin)?)?;
+                    t.set("normal", vec3_lua(lua, plane.normal)?)?;
+                    t.set("offset", plane.offset_mm)?;
+                    t.set("roll", plane.roll.to_degrees())?;
+                    t.set("flip", plane.flip)?;
+                    if let Some(name) = &plane.name {
                         t.set("name", name.as_str())?;
                     }
                 }
@@ -17075,6 +17110,51 @@ pub mod tests {
 
             local ok = pcall(bearcad.delete_section_plane, { cut = 9 })
             assert(not ok, "an unknown plane should error")
+        "#,
+        );
+    }
+
+    /// A cutting plane is its own element: it shows in the Views section, and a script
+    /// can count, get, select, rename, and delete it like any other.
+    #[test]
+    fn lua_section_planes_are_elements_in_the_views_section() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.cross_section{ name = "Front half" }
+            assert(bearcad.count("section_plane") == 0, "a new view has no cutting planes")
+
+            bearcad.section_plane{ origin = {0, 0, 0}, normal = {0, 0, 1} }
+            assert(bearcad.count("section_plane") == 1, "the plane is countable")
+            local p = bearcad.get{ kind = "section_plane", index = 0 }
+            assert(p ~= nil, "the plane is readable")
+            assert(p.view == 0, "it belongs to the view")
+            assert(p.cut == 0)
+
+            local g = bearcad.ui.elements_graph()
+            local kinds = {}
+            local names = {}
+            for _, row in ipairs(g.rows) do
+                kinds[row.kind] = (kinds[row.kind] or 0) + 1
+                names[row.kind] = row.name
+            end
+            assert(kinds.views, "the pane still groups under Views")
+            assert(kinds.cross_section == 1, "the view is a row")
+            assert(kinds.section_plane == 1,
+                   "the cutting plane is its own row, got " .. tostring(kinds.section_plane))
+            assert(names.section_plane == "Cutting plane",
+                   "unnamed planes get a default name, got " .. tostring(names.section_plane))
+
+            bearcad.select{ kind = "section_plane", index = 0 }
+            local sel = bearcad.selection()
+            assert(#sel == 1 and sel[1].kind == "section_plane",
+                   "a cutting plane is selectable")
+            bearcad.set_name({ kind = "section_plane", index = 0 }, "Front cut")
+            assert(bearcad.get{ kind = "section_plane", index = 0 }.name == "Front cut")
+
+            bearcad.delete_selection()
+            assert(bearcad.count("section_plane") == 0, "and deletable")
+            assert(bearcad.count("cross_section") == 1, "deleting a plane leaves its view")
         "#,
         );
     }

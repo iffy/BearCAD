@@ -5398,6 +5398,9 @@ pub struct CrossSection {
 /// number, not a re-placement.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CrossSectionCut {
+    /// A user-visible name; `None` falls back to "Cutting plane" / "Cutting plane 2".
+    #[serde(default)]
+    pub name: Option<String>,
     /// A point on the plane before `offset_mm` is applied, in world millimetres.
     pub origin: glam::Vec3,
     /// The plane's unit normal, in world millimetres.
@@ -5425,6 +5428,7 @@ pub struct CrossSectionCut {
 impl Default for CrossSectionCut {
     fn default() -> Self {
         Self {
+            name: None,
             origin: glam::Vec3::ZERO,
             normal: glam::Vec3::Z,
             offset_mm: 0.0,
@@ -5438,6 +5442,34 @@ impl Default for CrossSectionCut {
 
 /// A cross-section view's identity (#1671): stable across deletions of other views.
 pub type CrossSectionKey = crate::arena::Key<CrossSection>;
+
+/// Every cutting plane in document order: `(view, cut index)`.
+pub fn iter_section_planes(
+    doc: &Document,
+) -> impl Iterator<Item = (CrossSectionKey, usize)> + '_ {
+    doc.cross_sections
+        .iter()
+        .flat_map(|(view, v)| (0..v.cuts.len()).map(move |cut| (view, cut)))
+}
+
+/// How many cutting planes the document holds.
+pub fn section_plane_count(doc: &Document) -> usize {
+    doc.cross_sections.iter().map(|(_, v)| v.cuts.len()).sum()
+}
+
+/// The `index`-th cutting plane in document order.
+pub fn nth_section_plane(doc: &Document, index: usize) -> Option<(CrossSectionKey, usize)> {
+    iter_section_planes(doc).nth(index)
+}
+
+/// The document-order ordinal of a cutting plane, for scripts.
+pub fn section_plane_ordinal(
+    doc: &Document,
+    view: CrossSectionKey,
+    cut: usize,
+) -> Option<usize> {
+    iter_section_planes(doc).position(|(v, c)| v == view && c == cut)
+}
 
 /// A free text annotation on a drawing page (#312). Positions and sizes are page-relative
 /// fractions so they stay put across page-size changes and render identically at any zoom.

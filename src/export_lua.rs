@@ -373,6 +373,7 @@ impl<'a> EmitCtx<'a> {
             // Lua export describes the model.
             | HierarchyNode::Views
             | HierarchyNode::CrossSection(_)
+            | HierarchyNode::SectionPlane { .. }
             | HierarchyNode::UnitChild { .. }
             | HierarchyNode::DrawingDimension { .. }
             | HierarchyNode::DrawingPointDim { .. }

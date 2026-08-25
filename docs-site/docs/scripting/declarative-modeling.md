@@ -301,7 +301,7 @@ bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
 assert(bearcad.count("line") == 4)             -- non-deleted entities per kind
 -- kinds (`count` and `get` take the same set): line, circle, sketch, constraint,
 --        construction_plane, extrusion, shape, body, drawing, cross_section,
---        parameter, sketch_text, component, image, joint
+--        section_plane, parameter, sketch_text, component, image, joint
 local l = bearcad.get{ kind = "line", index = 0 }
 assert(l.x0 == 0 and math.abs(l.length - 40) < 1e-3)
 
@@ -338,7 +338,8 @@ assert(bearcad.parameter("get_expression", "A") == "5mm")
 
 A cross-section view is a saved way of *looking* at the model — cutting planes that hide
 what's in front of them — not a change to it. Views live under **Views** in the Elements
-pane; **View → Create Cross Section** makes one.
+pane; **View → Create Cross Section** makes one. Each cutting plane is its own row under
+the view.
 
 ```lua
 local v = bearcad.cross_section{ name = "Front half" }   -- returns its index; opens the view

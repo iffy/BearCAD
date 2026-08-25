@@ -15806,6 +15806,8 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 } else if let SceneElement::CrossSection(view) = element {
                     // A view "opens" rather than reloading into a tool (#1671/#1686).
                     self.state.apply(Action::EditCrossSection { view: Some(view) });
+                } else if let SceneElement::SectionPlane { view, .. } = element {
+                    self.state.apply(Action::EditCrossSection { view: Some(view) });
                 } else {
                     self.begin_operation_edit(element);
                 }
@@ -29828,6 +29830,8 @@ impl App {
                         self.state.apply(Action::SyncUnit { unit });
                     }
                 } else if let SceneElement::CrossSection(view) = element {
+                    self.state.apply(Action::EditCrossSection { view: Some(view) });
+                } else if let SceneElement::SectionPlane { view, .. } = element {
                     self.state.apply(Action::EditCrossSection { view: Some(view) });
                 } else {
                     self.begin_operation_edit(element);

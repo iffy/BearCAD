@@ -2649,6 +2649,14 @@ fn element_script_tokens(
             index: ordinal_or_slot(doc.map(|d| d.cross_sections.keys().position(|k| k == i)), i.index()),
             point: None,
         },
+        SceneElement::SectionPlane { view, cut } => ElementScriptTokens {
+            kind: "section_plane",
+            index: ordinal_or_slot(
+                doc.map(|d| crate::model::section_plane_ordinal(d, view, cut)),
+                cut as u32,
+            ),
+            point: None,
+        },
         SceneElement::Sketch(i) => ElementScriptTokens {
             kind: "sketch",
             index: ordinal_or_slot(doc.map(|d| d.sketches.keys().position(|k| k == i)), i.index()),

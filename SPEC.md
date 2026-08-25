@@ -2357,7 +2357,11 @@ outside the shape/undo DAG.
 - **Where they live:** views group under a **Views** section at the bottom of the Elements
   pane, the way drawings group under Drawings (#1205) — with their own filter toggle. The
   section collapses; the views inside are ordinary elements (selectable, renameable,
-  deletable).
+  deletable). Each cutting plane is its own element nested under its view
+  (`HierarchyNode::SectionPlane` / `SceneElement::SectionPlane`): selectable, renameable,
+  deletable, and hideable (a hidden plane does not cut). Scriptable as
+  `bearcad.count("section_plane")` / `bearcad.get{ kind = "section_plane", index }` /
+  `bearcad.select{ kind = "section_plane", index }`.
 - **Creating one:** the Elements pane's **+ → New cross section**, or **View → Create Cross
   Section**. Scriptable as `bearcad.cross_section{ name? }` (#1671), and readable back with
   `bearcad.count("cross_section")` / `bearcad.get{ kind = "cross_section", index }`.
