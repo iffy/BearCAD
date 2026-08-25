@@ -693,6 +693,9 @@ pub struct ViewportPlaneGizmo {
     pub angle_deg: f32,
     pub color: Color32,
     pub hover: Option<AxisGizmoHit>,
+    /// Face-anchor gizmos usually only offset. Cutting plane also rolls about the
+    /// normal, so draw the shared rotation ring in the plane (#1745).
+    pub rotate_about_normal: bool,
 }
 
 /// A tool's live result preview standing in for committed geometry: the bodies it hides
@@ -5216,17 +5219,35 @@ impl<'a> SceneMesh<'a> {
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     ) {
         match &gizmo.reference {
-            PlaneReference::Face { origin, normal, .. } => self.push_offset_gizmo(
-                *origin,
-                *normal,
-                gizmo.offset,
-                gizmo.color,
-                gizmo.hover == Some(AxisGizmoHit::Offset),
-                cam,
-                viewport,
-                view_proj,
-                project,
-            ),
+            PlaneReference::Face { origin, normal, .. } => {
+                self.push_offset_gizmo(
+                    *origin,
+                    *normal,
+                    gizmo.offset,
+                    gizmo.color,
+                    gizmo.hover == Some(AxisGizmoHit::Offset),
+                    cam,
+                    viewport,
+                    view_proj,
+                    project,
+                );
+                if gizmo.rotate_about_normal {
+                    let n = normal.normalize_or_zero();
+                    let ring = *origin + n * gizmo.offset;
+                    self.push_axis_plane_gizmo(
+                        ring,
+                        n,
+                        0.0,
+                        gizmo.angle_deg,
+                        gizmo.color,
+                        gizmo.hover.filter(|h| *h == AxisGizmoHit::Angle),
+                        cam,
+                        viewport,
+                        view_proj,
+                        project,
+                    );
+                }
+            }
             PlaneReference::Axis {
                 origin,
                 direction,
@@ -8181,6 +8202,7 @@ mod tests {
             angle_deg: 0.0,
             color: Color32::from_rgb(240, 200, 120),
             hover: None,
+            rotate_about_normal: false,
         };
         let with_gizmo = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,

@@ -7475,6 +7475,9 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
         if self.state.tool != Tool::ConstructionPlane {
             self.state.creating_plane = None;
         }
+        if self.state.tool != Tool::SectionPlane {
+            self.state.creating_section = None;
+        }
         if !matches!(self.state.tool, Tool::Select | Tool::Dimension) {
             self.state.editing_committed_dim = None;
         }
@@ -12511,6 +12514,140 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
         }
     }
 
+    /// Cutting plane tool (#1687/#1745): pick an anchor into the shared picker, drag
+    /// offset/rotate gizmos, Enter / the blue button hangs the plane on the open view.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_section_plane_tool(
+        &mut self,
+        ui: &egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+        cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
+        pick_occlusion: Option<&construction::PickOcclusion>,
+        tool_pickers: &[context::ToolPickerView],
+    ) {
+        if self.state.editing_cross_section.is_none() {
+            return;
+        }
+        if self.tool_enter_commits(ui.ctx())
+            && self
+                .state
+                .creating_section
+                .as_ref()
+                .is_some_and(|c| c.anchor.is_some())
+        {
+            self.state.apply(Action::CommitSectionPlane);
+            return;
+        }
+        let Some(pp) = pointer_screen else {
+            return;
+        };
+        let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+        let length_unit = self.state.doc.default_length_unit;
+        let angle_unit = self.state.doc.default_angle_unit;
+
+        if let Some(cs) = self.state.creating_section.as_mut() {
+            let origin = cs.origin;
+            let normal = cs.normal;
+            let offset = cs.offset_live;
+            let roll = cs.roll_deg;
+            let following = cs.gizmo_drag.is_some();
+            if !following && primary_pressed {
+                if offset_gizmo_hit(pp, project, origin, normal, offset) {
+                    cs.gizmo_drag = Some(construction::AxisGizmoDrag {
+                        hit: AxisGizmoHit::Offset,
+                        start_offset: offset,
+                        start_angle_deg: roll,
+                        start_screen: pp,
+                    });
+                    prepare_gizmo_value_field_focus(
+                        &mut cs.user_edited_offset,
+                        &mut cs.pending_focus,
+                    );
+                    ui.ctx()
+                        .memory_mut(|m| m.request_focus(egui::Id::new("section_plane_offset_ctx")));
+                } else {
+                    let ring_origin = origin + normal.normalize_or_zero() * offset;
+                    if construction::axis_gizmo_hit(pp, project, ring_origin, normal, 0.0, roll)
+                        == Some(AxisGizmoHit::Angle)
+                        || construction::rotation_handle_hit(
+                            pp,
+                            project,
+                            construction::axis_angle_handle(ring_origin, normal, roll),
+                        )
+                    {
+                        cs.gizmo_drag = Some(construction::AxisGizmoDrag {
+                            hit: AxisGizmoHit::Angle,
+                            start_offset: offset,
+                            start_angle_deg: roll,
+                            start_screen: pp,
+                        });
+                        prepare_gizmo_value_field_focus(
+                            &mut cs.user_edited_roll,
+                            &mut cs.pending_focus,
+                        );
+                        ui.ctx()
+                            .memory_mut(|m| m.request_focus(egui::Id::new("section_plane_roll_ctx")));
+                    }
+                }
+            }
+            let drag = cs.gizmo_drag;
+            if let Some(drag) = drag {
+                if value_gizmo_should_release(ui, following) {
+                    cs.gizmo_drag = None;
+                } else {
+                    match drag.hit {
+                        AxisGizmoHit::Offset => {
+                            cs.offset_live = crate::value::snap_gizmo_length_mm(
+                                offset_from_normal_drag(
+                                    origin,
+                                    normal.normalize_or_zero(),
+                                    project,
+                                    drag.start_offset,
+                                    drag.start_screen,
+                                    pp,
+                                ),
+                                length_unit,
+                            );
+                        }
+                        AxisGizmoHit::Angle => {
+                            let ring_origin = origin + normal.normalize_or_zero() * cs.offset_live;
+                            if let Some(hit) =
+                                cam.ray_plane_hit(pp, viewport, vp, ring_origin, normal)
+                            {
+                                cs.roll_deg = crate::value::snap_gizmo_angle_deg(
+                                    construction::angle_from_axis_plane_hit(
+                                        ring_origin, normal, hit,
+                                    ),
+                                    angle_unit,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            if !cs.user_edited_offset {
+                cs.offset_text = crate::value::format_length_display_in(
+                    cs.offset_live,
+                    self.state.doc.default_length_unit,
+                );
+            }
+            if !cs.user_edited_roll {
+                cs.roll_text = format!("{:.0}", cs.roll_deg);
+            }
+            if cs.gizmo_drag.is_some() {
+                return;
+            }
+        }
+
+        if !primary_pressed {
+            return;
+        }
+        self.click_into_focused_picker(tool_pickers, pp, project, pick_occlusion);
+    }
+
     /// Slice tool (#181): with the target picker active, click bodies to toggle them into
     /// the slice set; with the cutter picker active, click construction planes or planar
     /// body faces to toggle them as cutters. Enter commits.
@@ -16509,6 +16646,16 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     can_commit: cl.is_some_and(|c| c.sections.len() >= 2),
                 }
             }),
+            section_plane: (self.state.tool == Tool::SectionPlane).then(|| {
+                let cs = self.state.creating_section.as_ref();
+                context::SectionPlaneControl {
+                    anchor: cs.and_then(|c| c.anchor.clone()),
+                    offset_text: cs.map(|c| c.offset_text.clone()).unwrap_or_default(),
+                    roll_text: cs.map(|c| c.roll_text.clone()).unwrap_or_default(),
+                    flip: cs.map(|c| c.flip).unwrap_or(false),
+                    has_anchor: cs.is_some_and(|c| c.anchor.is_some()),
+                }
+            }),
             plane_tool: (self.state.tool == Tool::ConstructionPlane).then(|| {
                 let cp = self.state.creating_plane.as_ref();
                 let pending = self.state.pending_plane_line.as_ref();
@@ -16661,6 +16808,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             let mut revolve_edit: Option<context::RevolveEdit> = None;
             let mut sweep_edit: Option<context::SweepEdit> = None;
             let mut plane_tool_edit: Option<context::PlaneToolEdit> = None;
+            let mut section_plane_edit: Option<context::SectionPlaneEdit> = None;
             let mut loft_body_choice: Option<actions::RevolveBodyChoice> = None;
             let mut loft_commit = false;
             let mut boolean_edit: Option<context::BooleanEdit> = None;
@@ -16734,6 +16882,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                         &mut |edit| revolve_edit = Some(edit),
                         &mut |edit| sweep_edit = Some(edit),
                         &mut |edit| plane_tool_edit = Some(edit),
+                        &mut |edit| section_plane_edit = Some(edit),
                         &mut |choice| loft_body_choice = Some(choice),
                         &mut || loft_commit = true,
                         &mut |edit| boolean_edit = Some(edit),
@@ -16929,6 +17078,41 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     }
                     context::PlaneToolEdit::Commit => {
                         self.state.apply(Action::CommitConstructionPlane);
+                    }
+                }
+            }
+            if let Some(edit) = section_plane_edit {
+                match edit {
+                    context::SectionPlaneEdit::SetOffset(value) => {
+                        if let Some(cs) = self.state.creating_section.as_mut() {
+                            cs.offset_text = value;
+                            cs.user_edited_offset = true;
+                            cs.offset_live = crate::value::parse_length_or_in_doc(
+                                &cs.offset_text,
+                                &self.state.doc,
+                                cs.offset_live,
+                            );
+                        }
+                    }
+                    context::SectionPlaneEdit::SetRoll(value) => {
+                        if let Some(cs) = self.state.creating_section.as_mut() {
+                            cs.roll_text = value;
+                            cs.user_edited_roll = true;
+                            cs.roll_deg = crate::value::eval_angle_rad_in_doc(
+                                &cs.roll_text,
+                                &self.state.doc,
+                            )
+                            .map(|r| r.to_degrees())
+                            .unwrap_or(cs.roll_deg);
+                        }
+                    }
+                    context::SectionPlaneEdit::SetFlip(flip) => {
+                        if let Some(cs) = self.state.creating_section.as_mut() {
+                            cs.flip = flip;
+                        }
+                    }
+                    context::SectionPlaneEdit::Commit => {
+                        self.state.apply(Action::CommitSectionPlane);
                     }
                 }
             }
@@ -18128,6 +18312,11 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     // removals rebuild the frame from the surviving half — they arrive as a
                     // `PlaneToolEdit`, not here (#955).
                     context::PickerTarget::PlaneAnchor => {}
+                    context::PickerTarget::SectionPlaneAnchor => {
+                        if edit != context::ToolPickerAction::Focus {
+                            self.state.creating_section = None;
+                        }
+                    }
                     // The in-sketch Slice tool's two sides (#238/#955). A target row index
                     // unpacks back into the three sets in the order the pane listed them:
                     // lines, then circles, then faces.
@@ -21301,6 +21490,9 @@ fn resolve_viewport_hover_highlight(
             construction::resolve_plane_pick_target(pp, project, gp, doc, cam.eye(), occlusion)
                 .map(|t| gpu_viewport::ViewportHoverHighlight::PickTarget(t.kind))
         }
+        // While the cutting-plane draft is up, the pointer belongs to the offset/rotate
+        // gizmos; the picker-driven catch-all would still light faces under the cursor.
+        Tool::SectionPlane if creating_plane => None,
         // Project tool (#140): glow the outside edge or body face a click would project.
         Tool::Project if sketch_session.is_some() => {
             let session = sketch_session?;
@@ -29274,7 +29466,12 @@ impl App {
             self.state
                 .creating_plane
                 .as_ref()
-                .is_some_and(|cp| cp.axis_gizmo_drag.is_some()),
+                .is_some_and(|cp| cp.axis_gizmo_drag.is_some())
+                || self
+                    .state
+                    .creating_section
+                    .as_ref()
+                    .is_some_and(|c| c.gizmo_drag.is_some()),
             self.bezier_handle_drag.is_some(),
             // The Move tool's rotation gizmos (#1365): dragging the Face Snap spin ring or
             // the Free Move turn ring must not light up geometry under the cursor.
@@ -30564,42 +30761,17 @@ impl App {
             }
         }
 
-        // The View workbench's cutting-plane tool (#1687): a click hangs a plane on whatever
-        // face, plane, or edge it lands on — the same pick the Plane tool resolves — and each
-        // further click adds another, so a view can cut in several directions at once.
-        if self.state.tool == Tool::SectionPlane && self.state.editing_cross_section.is_some() {
-            if let Some(pp) = pointer_screen {
-                if ui.input(|i| i.pointer.primary_pressed()) {
-                    let gp = cam.ground_point(pp, viewport, &vp);
-                    let pick = construction::resolve_plane_pick_target(
-                        pp,
-                        &project,
-                        gp,
-                        &self.state.doc,
-                        cam.eye(),
-                        pick_occlusion,
-                    );
-                    if let Some(target) = pick {
-                        let (origin, normal) = match &target.reference {
-                            construction::PlaneReference::Face { origin, normal, .. } => {
-                                (*origin, *normal)
-                            }
-                            // An axis pick gives a direction, not a face: cut across it.
-                            construction::PlaneReference::Axis { origin, direction, .. } => {
-                                (*origin, *direction)
-                            }
-                        };
-                        self.state.apply(Action::AddCrossSectionCut {
-                            view: None,
-                            cut: model::CrossSectionCut {
-                                origin,
-                                normal: normal.normalize_or_zero(),
-                                ..Default::default()
-                            },
-                        });
-                    }
-                }
-            }
+        if self.state.tool == Tool::SectionPlane {
+            self.handle_section_plane_tool(
+                ui,
+                &project,
+                pointer_screen,
+                &cam,
+                viewport,
+                &vp,
+                pick_occlusion,
+                tool_pickers,
+            );
         }
 
         if self.state.tool == Tool::ConstructionPlane {
@@ -31077,15 +31249,53 @@ impl App {
         } else {
             Vec::new()
         };
-        let plane_gizmo = self.state.creating_plane.as_ref().map(|cp| {
-            gpu_viewport::ViewportPlaneGizmo {
+        let plane_gizmo = self
+            .state
+            .creating_plane
+            .as_ref()
+            .map(|cp| gpu_viewport::ViewportPlaneGizmo {
                 reference: cp.reference.clone(),
                 offset: cp.offset_live,
                 angle_deg: cp.axis_angle_deg,
                 color: col::PREVIEW,
                 hover: plane_gizmo_hover(cp, pointer_screen, &project),
-            }
-        });
+                rotate_about_normal: false,
+            })
+            .or_else(|| {
+                self.state.creating_section.as_ref().map(|cs| {
+                    let hover = {
+                        let pp = pointer_screen;
+                        if let Some(pp) = pp {
+                            if offset_gizmo_hit(pp, &project, cs.origin, cs.normal, cs.offset_live)
+                            {
+                                Some(AxisGizmoHit::Offset)
+                            } else {
+                                let ring = cs.origin
+                                    + cs.normal.normalize_or_zero() * cs.offset_live;
+                                construction::axis_gizmo_hit(
+                                    pp,
+                                    &project,
+                                    ring,
+                                    cs.normal,
+                                    0.0,
+                                    cs.roll_deg,
+                                )
+                                .filter(|h| *h == AxisGizmoHit::Angle)
+                            }
+                        } else {
+                            None
+                        }
+                    };
+                    gpu_viewport::ViewportPlaneGizmo {
+                        reference: cs.gizmo_reference(),
+                        offset: cs.offset_live,
+                        angle_deg: cs.roll_deg,
+                        color: col::PREVIEW,
+                        hover,
+                        rotate_about_normal: true,
+                    }
+                })
+            });
         let mut hover_highlight = resolve_viewport_hover_highlight(
             // Placement owns the pointer (#1472): nothing else lights up or can be picked.
             suppress_hover_highlight || self.state.placing_dimension.is_some(),
@@ -31110,7 +31320,7 @@ impl App {
                     MoveFocus::EndPointB => MovePickHover::EndB,
                 }
             }),
-            self.state.creating_plane.is_some(),
+            self.state.creating_plane.is_some() || self.state.creating_section.is_some(),
             self.state.editing_committed_dim.is_some(),
             over_committed_dim_label,
             self.dim_label_drag.is_some(),
@@ -32345,6 +32555,17 @@ impl App {
             sketch_ghost_lines,
             edit_preview_meshes,
         );
+        if scene_input.plane_preview.is_none() {
+            if let Some(cs) = self.state.creating_section.as_ref() {
+                if cs.anchor.is_some() {
+                    scene_input.plane_preview = Some(gpu_viewport::ViewportPlanePreview {
+                        plane: construction::cross_section_cut_plane(&cs.as_cut(doc)),
+                        dependents: None,
+                        dim_outline: false,
+                    });
+                }
+            }
+        }
         // Paste preview (#1236): cyan semi-transparent ghosts of the clipboard at the
         // 6-axis-constrained offset, same path as Repeat/Mirror instance ghosts.
         if let Some(cp) = self.state.creating_paste.as_ref() {
@@ -33389,10 +33610,52 @@ impl App {
                 }
             }
         }
+        if let Some(cs) = &self.state.creating_section {
+            if cs.anchor.is_some() && !gpu_drawn {
+                let preview = construction::cross_section_cut_plane(&cs.as_cut(&self.state.doc));
+                draw_construction_plane(&painter, &project, &preview, col::PREVIEW, false);
+                let ring = cs.origin + cs.normal.normalize_or_zero() * cs.offset_live;
+                let hover = pointer_screen.and_then(|pp| {
+                    if offset_gizmo_hit(pp, &project, cs.origin, cs.normal, cs.offset_live) {
+                        Some(AxisGizmoHit::Offset)
+                    } else {
+                        construction::axis_gizmo_hit(
+                            pp,
+                            &project,
+                            ring,
+                            cs.normal,
+                            0.0,
+                            cs.roll_deg,
+                        )
+                        .filter(|h| *h == AxisGizmoHit::Angle)
+                    }
+                });
+                draw_offset_gizmo(
+                    &painter,
+                    &project,
+                    cs.origin,
+                    cs.normal,
+                    cs.offset_live,
+                    col::PREVIEW,
+                    hover == Some(AxisGizmoHit::Offset),
+                );
+                draw_axis_plane_gizmo(
+                    &painter,
+                    &project,
+                    ring,
+                    cs.normal,
+                    0.0,
+                    cs.roll_deg,
+                    col::PREVIEW,
+                    hover,
+                );
+            }
+        }
 
         if !gpu_drawn
-            && self.state.tool == Tool::ConstructionPlane
+            && matches!(self.state.tool, Tool::ConstructionPlane | Tool::SectionPlane)
             && self.state.creating_plane.is_none()
+            && self.state.creating_section.is_none()
             && !suppress_hover_highlight
         {
             if let Some(pp) = response.hover_pos().or(response.interact_pointer_pos()) {
@@ -34127,7 +34390,11 @@ impl App {
                 "Projection — click a body or sketch in the Elements pane, then drag it into place"
             }
             Tool::SectionPlane => {
-                "Cutting plane — click a face or plane to cut the view there • click again for another"
+                if self.state.creating_section.as_ref().is_some_and(|c| c.anchor.is_some()) {
+                    "Cutting plane — drag offset/rotate • Enter: add • Esc: cancel"
+                } else {
+                    "Cutting plane — click a face or plane to hang a cut • Enter: add • Esc: cancel"
+                }
             }
             Tool::DrawingAlign => {
                 "Aligned view — click a projection, then move the mouse and click to place a lined-up child view"

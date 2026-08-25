@@ -5396,7 +5396,7 @@ pub struct CrossSection {
 /// One cutting plane of a [`CrossSection`] (#1671). The plane is stored as the frame it was
 /// placed on plus how far it has been slid along its own normal, so nudging a view is a
 /// number, not a re-placement.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CrossSectionCut {
     /// A point on the plane before `offset_mm` is applied, in world millimetres.
     pub origin: glam::Vec3,
@@ -5405,6 +5405,9 @@ pub struct CrossSectionCut {
     /// How far the plane slides along its normal from `origin`.
     #[serde(default)]
     pub offset_mm: f32,
+    /// Typed offset expression, when the user typed one (#1745). Empty means the live number.
+    #[serde(default)]
+    pub offset_expression: String,
     /// Which side survives: by default the material the normal points **toward** is kept and
     /// everything behind the plane is hidden, so you look along the normal into the cut.
     /// Flipping keeps the other side instead.
@@ -5414,6 +5417,9 @@ pub struct CrossSectionCut {
     /// in place rather than re-anchored (degrees are the UI's business; this is radians).
     #[serde(default)]
     pub roll: f32,
+    /// Typed roll expression in degrees, when the user typed one (#1745).
+    #[serde(default)]
+    pub roll_expression: String,
 }
 
 impl Default for CrossSectionCut {
@@ -5422,8 +5428,10 @@ impl Default for CrossSectionCut {
             origin: glam::Vec3::ZERO,
             normal: glam::Vec3::Z,
             offset_mm: 0.0,
+            offset_expression: String::new(),
             flip: false,
             roll: 0.0,
+            roll_expression: String::new(),
         }
     }
 }

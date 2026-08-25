@@ -89,6 +89,8 @@ pub struct ContextInput<'a> {
     pub sweep: Option<SweepControl>,
     /// Construction Plane tool state (#474): `Some` while the Plane tool is active.
     pub plane_tool: Option<PlaneToolControl>,
+    /// Cutting plane tool state (#1745): `Some` while the tool is active in the View workbench.
+    pub section_plane: Option<SectionPlaneControl>,
     /// Loft tool body-mode state (#479): `Some` while the Loft tool is active.
     pub loft_body: Option<LoftBodyControl>,
     /// Combine tool state: `Some` while the Combine tool is active (creating or editing
@@ -270,6 +272,26 @@ pub enum PlaneToolEdit {
     FocusOffset,
     FocusAngle,
     /// Create the plane (the blue primary button / Enter, #611).
+    Commit,
+}
+
+/// The Cutting plane tool's in-progress draft (#1745): the picked anchor, live offset/roll,
+/// and whether Enter / the blue button can hang it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SectionPlaneControl {
+    pub anchor: Option<SceneElement>,
+    pub offset_text: String,
+    pub roll_text: String,
+    pub flip: bool,
+    pub has_anchor: bool,
+}
+
+/// One edit from the Cutting plane tool's context section (#1745).
+#[derive(Clone, Debug, PartialEq)]
+pub enum SectionPlaneEdit {
+    SetOffset(String),
+    SetRoll(String),
+    SetFlip(bool),
     Commit,
 }
 
@@ -1155,6 +1177,8 @@ pub struct ContextPaneContent {
     pub sweep: Option<SweepControl>,
     /// Construction Plane tool state (#474): `Some` while the Plane tool is active.
     pub plane_tool: Option<PlaneToolControl>,
+    /// Cutting plane tool state (#1745): `Some` while the tool is active in the View workbench.
+    pub section_plane: Option<SectionPlaneControl>,
     /// Loft tool body-mode state (#479): `Some` while the Loft tool is active.
     pub loft_body: Option<LoftBodyControl>,
     /// Combine tool controls.
@@ -1550,6 +1574,9 @@ pub enum PickerTarget {
     /// The Construction Plane tool's anchor set (`CreatingConstructionPlane::anchor_elements`,
     /// #474/#483/#955): a face, a straight edge or axis, a vertex, or a line **and** a point.
     PlaneAnchor,
+    /// The Cutting plane tool's anchor (`CreatingSectionPlane::anchor`, #1745): a face,
+    /// construction plane, edge, or axis — the same kinds the Plane tool's Anchor takes.
+    SectionPlaneAnchor,
 }
 
 /// An interaction with a [`ToolPickerView`] to apply to its backing tool set (#213).
@@ -2101,6 +2128,30 @@ fn in_sketch(filter: ElementFilter, sketch: Option<crate::model::SketchId>) -> E
     }
 }
 
+/// Faces, planes, edges, and axes a plane can hang on (#955/#1745). Construction Plane
+/// and Cutting plane share this so a new plane-anchor tool inherits the same kinds —
+/// and `with_priority` below prefers a face over the edge crossing it.
+pub fn plane_anchor_filter() -> ElementFilter {
+    use ElementKind as K;
+    ElementFilter::kinds(&[
+        K::Face,
+        K::Profile,
+        K::Plane,
+        K::Line,
+        K::Edge,
+        K::Axis,
+        K::Circle,
+        K::Vertex,
+    ])
+}
+
+/// Face over edge: the plane-anchor pick, the reverse of the global order (#1745).
+const PLANE_ANCHOR_PRIORITY: &[ElementKind] = &[
+    ElementKind::Face,
+    ElementKind::Profile,
+    ElementKind::Plane,
+];
+
 /// The kinds (and static rules) a picker target accepts (#1490).
 ///
 /// Runtime-only rules — `InSketch`, `OnBodies` — stay on the live picker. This is the
@@ -2154,16 +2205,7 @@ pub fn picker_filter(target: PickerTarget) -> ElementFilter {
         PickerTarget::ExtrudeUpTo | PickerTarget::RepeatDistanceTo => {
             ElementFilter::kinds(&[K::Plane, K::Profile, K::Vertex])
         }
-        PickerTarget::PlaneAnchor => ElementFilter::kinds(&[
-            K::Face,
-            K::Profile,
-            K::Plane,
-            K::Line,
-            K::Edge,
-            K::Axis,
-            K::Circle,
-            K::Vertex,
-        ]),
+        PickerTarget::PlaneAnchor | PickerTarget::SectionPlaneAnchor => plane_anchor_filter(),
         PickerTarget::DrawingAlignBase => ElementFilter::kind(K::Projection),
         PickerTarget::DrawingSelection => {
             ElementFilter::kinds(&[K::Projection, K::Annotation, K::Dimension])
@@ -3099,19 +3141,8 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         // vertex; two when a line and a point together fix the frame — hence a limit of two
         // rather than one. Focused whenever the tool is up: the anchor is the only thing this
         // tool picks, so every viewport click either sets it or complements it.
-        let mut anchor = ElementPicker::new(
-            ElementFilter::kinds(&[
-                ElementKind::Face,
-                ElementKind::Profile,
-                ElementKind::Plane,
-                ElementKind::Line,
-                ElementKind::Edge,
-                ElementKind::Axis,
-                ElementKind::Circle,
-                ElementKind::Vertex,
-            ]),
-            PickLimit::Finite(2),
-        );
+        let mut anchor = ElementPicker::new(plane_anchor_filter(), PickLimit::Finite(2))
+            .with_priority(PLANE_ANCHOR_PRIORITY);
         anchor.set_focused(true);
         anchor.set_picked(input.doc, p.anchor_elements.iter().cloned());
         tool_pickers.push(ToolPickerView {
@@ -3120,6 +3151,21 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
             target: PickerTarget::PlaneAnchor,
             separator_above: true,
             render: PickerRender::Inline,
+        });
+    }
+    if let Some(p) = input.section_plane.as_ref() {
+        // #1745: the cutting-plane tool's Anchor is a real picker, so hover, the Exploder,
+        // a pane click and `bearcad.pickers()` all see the same set as a viewport click.
+        let mut anchor = ElementPicker::new(plane_anchor_filter(), PickLimit::Finite(1))
+            .with_priority(PLANE_ANCHOR_PRIORITY);
+        anchor.set_focused(true);
+        anchor.set_picked(input.doc, p.anchor.iter().cloned());
+        tool_pickers.push(ToolPickerView {
+            heading: "Anchor",
+            picker: anchor,
+            target: PickerTarget::SectionPlaneAnchor,
+            separator_above: true,
+            render: PickerRender::Shared,
         });
     }
     if let Some(b) = input.boolean_op.as_ref() {
@@ -3279,6 +3325,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let revolve = input.revolve.clone();
     let sweep = input.sweep.clone();
     let plane_tool = input.plane_tool.clone();
+    let section_plane = input.section_plane.clone();
     let loft_body = input.loft_body.clone();
     let boolean_op = input.boolean_op.clone();
     let boolean_edit_start = input.boolean_edit_start;
@@ -3375,6 +3422,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             revolve: revolve.clone(),
             sweep: sweep.clone(),
             plane_tool: plane_tool.clone(),
+            section_plane: section_plane.clone(),
             loft_body: loft_body.clone(),
             boolean_op: boolean_op.clone(),
             boolean_edit_start,
@@ -3442,6 +3490,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             revolve: revolve.clone(),
             sweep: sweep.clone(),
             plane_tool: plane_tool.clone(),
+            section_plane: section_plane.clone(),
             loft_body: loft_body.clone(),
             boolean_op: boolean_op.clone(),
             boolean_edit_start,
@@ -3511,6 +3560,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             revolve: revolve.clone(),
             sweep: sweep.clone(),
             plane_tool: plane_tool.clone(),
+            section_plane: section_plane.clone(),
             loft_body: loft_body.clone(),
             boolean_op: boolean_op.clone(),
             boolean_edit_start,
@@ -3598,6 +3648,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         revolve,
         sweep,
         plane_tool,
+        section_plane,
         loft_body,
         boolean_op,
         boolean_edit_start,
@@ -5657,6 +5708,7 @@ pub fn show_pane(
     on_revolve_edit: &mut impl FnMut(RevolveEdit),
     on_sweep_edit: &mut impl FnMut(SweepEdit),
     on_plane_tool_edit: &mut impl FnMut(PlaneToolEdit),
+    on_section_plane_edit: &mut impl FnMut(SectionPlaneEdit),
     on_loft_body_choice: &mut impl FnMut(crate::actions::RevolveBodyChoice),
     on_loft_commit: &mut impl FnMut(),
     on_boolean_edit: &mut impl FnMut(BooleanEdit),
@@ -6558,6 +6610,53 @@ pub fn show_pane(
             // viewport click (#611).
             if primary_button(ui, controls_enabled, crate::tooltable::commit_label(Tool::ConstructionPlane, false)) {
                 on_plane_tool_edit(PlaneToolEdit::Commit);
+            }
+        }
+    }
+
+    if let Some(control) = &content.section_plane {
+        any_control = true;
+        // The Anchor picker draws in the shared block above. Offset, rotate, flip, and
+        // the blue accept live here — the same controls every other value-gizmo tool uses.
+        if control.has_anchor {
+            labeled_row(ui, "Offset", |ui| {
+                ui.add_enabled_ui(controls_enabled, |ui| {
+                    let mut text = control.offset_text.clone();
+                    let resp = crate::expression_input::ValueInput::new(
+                        "section_plane_offset_ctx",
+                        crate::expression_input::ValueKind::Length,
+                    )
+                    .width(90.0)
+                    .show(ui, &mut text, doc);
+                    if resp.changed() {
+                        on_section_plane_edit(SectionPlaneEdit::SetOffset(text));
+                    }
+                });
+            });
+            labeled_row(ui, "Rotate", |ui| {
+                ui.add_enabled_ui(controls_enabled, |ui| {
+                    let mut text = control.roll_text.clone();
+                    let resp = crate::expression_input::ValueInput::new(
+                        "section_plane_roll_ctx",
+                        crate::expression_input::ValueKind::Angle,
+                    )
+                    .width(90.0)
+                    .show(ui, &mut text, doc);
+                    if resp.changed() {
+                        on_section_plane_edit(SectionPlaneEdit::SetRoll(text));
+                    }
+                });
+            });
+            let mut flip = control.flip;
+            if checkbox_row(ui, "Flip", &mut flip, None) {
+                on_section_plane_edit(SectionPlaneEdit::SetFlip(flip));
+            }
+            if primary_button(
+                ui,
+                controls_enabled,
+                crate::tooltable::commit_label(Tool::SectionPlane, false),
+            ) {
+                on_section_plane_edit(SectionPlaneEdit::Commit);
             }
         }
     }
@@ -10787,6 +10886,7 @@ mod tests {
             revolve: None,
             sweep: None,
             plane_tool: None,
+            section_plane: None,
             loft_body: None,
             boolean_op: None,
             boolean_edit_start: None,
@@ -11210,6 +11310,7 @@ mod tests {
             revolve: None,
             sweep: None,
             plane_tool: None,
+            section_plane: None,
             loft_body: None,
             boolean_op: None,
             boolean_edit_start: None,
@@ -12213,6 +12314,13 @@ mod tests {
                         cut_bodies: vec![bkey(2)],
                         can_commit: true,
                     }),
+                    section_plane: (tool == Tool::SectionPlane).then_some(SectionPlaneControl {
+                        anchor: Some(crate::hierarchy::SceneElement::Origin),
+                        offset_text: String::new(),
+                        roll_text: String::new(),
+                        flip: false,
+                        has_anchor: true,
+                    }),
                     plane_tool: (tool == Tool::ConstructionPlane).then_some(PlaneToolControl {
                         anchor_labels: vec!["Origin".to_string()],
                         anchor_elements: vec![crate::hierarchy::SceneElement::Origin],
@@ -12346,6 +12454,42 @@ mod tests {
         assert!(accepts.contains(&ElementKind::Vertex));
         assert!(accepts.contains(&ElementKind::Edge));
         assert!(!accepts.contains(&ElementKind::Body));
+    }
+
+    #[test]
+    fn the_cutting_plane_tools_anchor_is_a_real_picker() {
+        // #1745: the cutting-plane tool was a click-to-place one-off. Its Anchor is a
+        // real picker so hover, the Exploder, a pane click and scripts all see it.
+        use crate::hierarchy::SceneElement;
+        let doc = doc_with_a_sketch();
+        let selection = SceneSelection::default();
+        let face = SceneElement::ConstructionPlane(pkey(0));
+        let input = ContextInput {
+            tool: Tool::SectionPlane,
+            section_plane: Some(SectionPlaneControl {
+                anchor: Some(face.clone()),
+                offset_text: String::new(),
+                roll_text: String::new(),
+                flip: false,
+                has_anchor: true,
+            }),
+            ..input(&doc, &selection)
+        };
+        let pickers = context_pane_content(&input).tool_pickers;
+        let anchor = pickers
+            .iter()
+            .find(|v| v.target == PickerTarget::SectionPlaneAnchor)
+            .expect("the cutting plane tool registers its Anchor picker");
+        assert_eq!(anchor.heading, "Anchor");
+        assert!(anchor.picker.is_focused(), "the anchor is what the tool picks");
+        assert_eq!(anchor.picker.picked(), &[face]);
+        assert_eq!(anchor.picker.limit(), PickLimit::Finite(1));
+        let accepts = anchor.picker.filter().accepted_kinds();
+        assert!(accepts.contains(&ElementKind::Face));
+        assert!(accepts.contains(&ElementKind::Plane));
+        assert!(accepts.contains(&ElementKind::Edge));
+        assert!(!accepts.contains(&ElementKind::Body));
+        assert_eq!(anchor.render, PickerRender::Shared);
     }
 
     #[test]
@@ -12965,6 +13109,7 @@ mod tests {
                 revolve: None,
             sweep: None,
             plane_tool: None,
+            section_plane: None,
             loft_body: None,
             boolean_op: None,
             boolean_edit_start: None,
@@ -13049,6 +13194,7 @@ mod tests {
             revolve: None,
             sweep: None,
             plane_tool: None,
+            section_plane: None,
             loft_body: None,
             boolean_op: None,
             boolean_edit_start: None,
@@ -13126,6 +13272,7 @@ mod tests {
                 revolve: None,
             sweep: None,
             plane_tool: None,
+            section_plane: None,
             loft_body: None,
             boolean_op: None,
             boolean_edit_start: None,
@@ -13210,6 +13357,7 @@ mod tests {
             revolve: None,
             sweep: None,
             plane_tool: None,
+            section_plane: None,
             loft_body: None,
             boolean_op: None,
             boolean_edit_start: None,
@@ -13347,6 +13495,7 @@ mod tests {
                 revolve: None,
             sweep: None,
             plane_tool: None,
+            section_plane: None,
             loft_body: None,
             boolean_op: None,
             boolean_edit_start: None,
@@ -13479,6 +13628,7 @@ mod tests {
             revolve: None,
             sweep: None,
             plane_tool: None,
+            section_plane: None,
             loft_body: None,
             boolean_op: None,
             boolean_edit_start: None,
@@ -13563,6 +13713,7 @@ mod tests {
             revolve: None,
             sweep: None,
             plane_tool: None,
+            section_plane: None,
             loft_body: None,
             boolean_op: None,
             boolean_edit_start: None,
@@ -13650,6 +13801,7 @@ mod tests {
                 revolve: None,
             sweep: None,
             plane_tool: None,
+            section_plane: None,
             loft_body: None,
             boolean_op: None,
             boolean_edit_start: None,
@@ -13725,6 +13877,7 @@ mod tests {
             revolve: None,
             sweep: None,
             plane_tool: None,
+            section_plane: None,
             loft_body: None,
             boolean_op: None,
             boolean_edit_start: None,

@@ -950,6 +950,55 @@ pub fn tracing_image_under_cursor(
     }
 }
 
+/// Origin and normal a cutting plane hangs on from a picked element (#1745).
+/// Faces and construction planes contribute their own frame; an edge or axis cuts across
+/// it (the direction is the plane's normal). `None` if this element cannot anchor a plane.
+pub fn plane_frame_from_element(
+    doc: &Document,
+    element: &SceneElement,
+) -> Option<(Vec3, Vec3)> {
+    if let Some(face) = element.as_face_id() {
+        let frame = crate::face::sketch_frame(doc, face)?;
+        let n = frame.normal.normalize_or_zero();
+        return (n.length_squared() >= 1e-8).then_some((frame.origin, n));
+    }
+    match element {
+        SceneElement::BodyFace { centroid, normal, .. } => {
+            let origin = crate::hierarchy::dequantize_body_point(*centroid);
+            let n = crate::hierarchy::dequantize_body_point(*normal).normalize_or_zero();
+            (n.length_squared() >= 1e-8).then_some((origin, n))
+        }
+        SceneElement::Line(i) => {
+            let line = doc.lines.get(*i)?;
+            let (a, b) = crate::face::line_world_endpoints(doc, line)?;
+            let n = (b - a).normalize_or_zero();
+            (n.length_squared() >= 1e-8).then_some((a, n))
+        }
+        SceneElement::BodyEdge { a, b, .. } => {
+            let a = crate::hierarchy::dequantize_body_point(*a);
+            let b = crate::hierarchy::dequantize_body_point(*b);
+            let n = (b - a).normalize_or_zero();
+            (n.length_squared() >= 1e-8).then_some((a, n))
+        }
+        SceneElement::GlobalAxis(axis) => Some((Vec3::ZERO, axis.direction())),
+        SceneElement::BodyAxis { origin, dir, .. } => {
+            let origin = crate::hierarchy::dequantize_body_point(*origin);
+            let n = crate::hierarchy::dequantize_body_point(*dir).normalize_or_zero();
+            (n.length_squared() >= 1e-8).then_some((origin, n))
+        }
+        SceneElement::Circle(i) => {
+            let circle = doc.circles.get(*i)?;
+            let face = doc.sketch_face(circle.sketch)?;
+            let frame = crate::face::sketch_frame(doc, face)?;
+            let origin = crate::face::local_to_world(&frame, circle.cx, circle.cy);
+            let n = frame.normal.normalize_or_zero();
+            (n.length_squared() >= 1e-8).then_some((origin, n))
+        }
+        SceneElement::Origin => Some((Vec3::ZERO, Vec3::Z)),
+        _ => None,
+    }
+}
+
 /// Corners of the visible plane quad in world space.
 /// The frame a cross-section cut draws as (#1687): its plane slid along its own normal by the
 /// cut's offset and turned by its roll, expressed as a [`ConstructionPlane`] so the same quad

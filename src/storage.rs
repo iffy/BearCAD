@@ -1587,6 +1587,7 @@ mod tests {
                     offset_mm: 4.5,
                     flip: true,
                     roll: 0.25,
+                    ..Default::default()
                 },
                 crate::model::CrossSectionCut::default(),
             ],

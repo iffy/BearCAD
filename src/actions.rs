@@ -2383,6 +2383,121 @@ impl CreatingConstructionPlane {
     }
 }
 
+/// In-progress cutting plane (#1745): a picked anchor plus live offset/roll/flip, committed
+/// by Enter or the blue primary button. Offset and rotate are value gizmos.
+#[derive(Clone, Debug)]
+pub struct CreatingSectionPlane {
+    pub origin: glam::Vec3,
+    pub normal: glam::Vec3,
+    pub offset_live: f32,
+    pub roll_deg: f32,
+    pub flip: bool,
+    pub offset_text: String,
+    pub roll_text: String,
+    pub user_edited_offset: bool,
+    pub user_edited_roll: bool,
+    pub pending_focus: bool,
+    pub gizmo_drag: Option<crate::construction::AxisGizmoDrag>,
+    pub anchor: Option<SceneElement>,
+}
+
+impl Default for CreatingSectionPlane {
+    fn default() -> Self {
+        Self {
+            origin: glam::Vec3::ZERO,
+            normal: glam::Vec3::Z,
+            offset_live: 0.0,
+            roll_deg: 0.0,
+            flip: false,
+            offset_text: String::new(),
+            roll_text: String::new(),
+            user_edited_offset: false,
+            user_edited_roll: false,
+            pending_focus: false,
+            gizmo_drag: None,
+            anchor: None,
+        }
+    }
+}
+
+impl CreatingSectionPlane {
+    pub fn from_element(doc: &crate::model::Document, element: &SceneElement) -> Option<Self> {
+        let (origin, normal) = crate::construction::plane_frame_from_element(doc, element)?;
+        Some(Self {
+            origin,
+            normal,
+            anchor: Some(element.clone()),
+            pending_focus: true,
+            ..Self::default()
+        })
+    }
+
+    #[cfg(test)]
+    pub fn from_cut(cut: &crate::model::CrossSectionCut) -> Self {
+        Self {
+            origin: cut.origin,
+            normal: cut.normal,
+            offset_live: cut.offset_mm,
+            roll_deg: cut.roll.to_degrees(),
+            flip: cut.flip,
+            offset_text: if cut.offset_expression.is_empty() {
+                format!("{}", cut.offset_mm)
+            } else {
+                cut.offset_expression.clone()
+            },
+            roll_text: if cut.roll_expression.is_empty() {
+                format!("{}", cut.roll.to_degrees())
+            } else {
+                cut.roll_expression.clone()
+            },
+            user_edited_offset: !cut.offset_expression.is_empty(),
+            user_edited_roll: !cut.roll_expression.is_empty(),
+            ..Self::default()
+        }
+    }
+
+    pub fn as_cut(&self, doc: &crate::model::Document) -> crate::model::CrossSectionCut {
+        let offset = if self.user_edited_offset {
+            crate::value::parse_length_or_in_doc(&self.offset_text, doc, self.offset_live)
+        } else {
+            self.offset_live
+        };
+        let roll_deg = if self.user_edited_roll {
+            crate::value::eval_angle_rad_in_doc(&self.roll_text, doc)
+                .map(|r| r.to_degrees())
+                .unwrap_or(self.roll_deg)
+                .rem_euclid(360.0)
+        } else {
+            self.roll_deg
+        };
+        crate::model::CrossSectionCut {
+            origin: self.origin,
+            normal: self.normal,
+            offset_mm: offset,
+            offset_expression: if self.user_edited_offset {
+                self.offset_text.trim().to_string()
+            } else {
+                String::new()
+            },
+            flip: self.flip,
+            roll: roll_deg.to_radians(),
+            roll_expression: if self.user_edited_roll {
+                self.roll_text.trim().to_string()
+            } else {
+                String::new()
+            },
+        }
+    }
+
+    pub fn gizmo_reference(&self) -> crate::construction::PlaneReference {
+        crate::construction::PlaneReference::Face {
+            origin: self.origin,
+            normal: self.normal,
+            label: String::new(),
+        }
+    }
+}
+
 /// Every user-visible operation the app supports.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
@@ -2967,6 +3082,8 @@ pub enum Action {
         view: Option<crate::model::CrossSectionKey>,
         cut: crate::model::CrossSectionCut,
     },
+    /// Commit the cutting-plane tool's draft onto the open view (#1745).
+    CommitSectionPlane,
     /// Slide, turn, or flip one of a view's cutting planes (#1687); `None` fields are left
     /// as they are.
     SetCrossSectionCut {
@@ -4520,6 +4637,8 @@ pub struct AppState {
     /// `draw_curve_mode` is on.
     pub draw_tangent_constraint: bool,
     pub creating_plane: Option<CreatingConstructionPlane>,
+    /// The View workbench's in-progress cutting plane (#1745).
+    pub creating_section: Option<CreatingSectionPlane>,
     /// Partial plane anchor: a curve (or line held for line+point) awaiting a point (#483).
     pub pending_plane_line: Option<PendingPlaneLine>,
     pub panes: PaneVisibility,
@@ -4750,6 +4869,7 @@ impl Default for AppState {
             draw_curve_mode: false,
             draw_tangent_constraint: true,
             creating_plane: None,
+            creating_section: None,
             pending_plane_line: None,
             panes: PaneVisibility::default(),
             parameters_pane: ParametersPaneState::default(),
@@ -9679,6 +9799,7 @@ impl AppState {
                 self.creating_line = None;
                 self.creating_circle = None;
                 self.creating_plane = None;
+                self.creating_section = None;
                 self.element_visibility = ElementVisibility::default();
                 self.scene_selection.clear();
                 self.tool = Tool::Select;
@@ -10222,6 +10343,9 @@ impl AppState {
                     self.creating_plane = None;
                     self.pending_plane_line = None;
                 }
+                if tool != Tool::SectionPlane {
+                    self.creating_section = None;
+                }
                 if self.creating_extrusion.is_some() && tool != Tool::Extrude {
                     if let Some(ce) = self.creating_extrusion.take() {
                         if let Some(sketch) = ce.sketch {
@@ -10381,7 +10505,7 @@ impl AppState {
                     Tool::Constraint => "Constraint tool — click a face".to_string(),
                     Tool::ConstructionPlane => "Construction plane tool".to_string(),
                     Tool::SectionPlane => {
-                        "Cutting plane — click a face or plane to cut the view there".to_string()
+                        "Cutting plane — click a face or plane, then Enter to add".to_string()
                     }
                     Tool::Extrude => {
                         "Extrude tool — click coplanar faces, then set a distance".to_string()
@@ -13626,6 +13750,27 @@ impl AppState {
                 view.cuts.push(cut);
                 self.status = format!("Cutting plane {} added", view.cuts.len() - 1);
                 ActionResult::Ok
+            }
+            Action::CommitSectionPlane => {
+                let Some(draft) = self.creating_section.take() else {
+                    let e = "Pick a face or plane to cut".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                if draft.anchor.is_none() {
+                    self.creating_section = Some(draft);
+                    let e = "Pick a face or plane to cut".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let cut = draft.as_cut(&self.doc);
+                let result = self.apply_inner(Action::AddCrossSectionCut { view: None, cut });
+                if matches!(result, ActionResult::Ok) {
+                    self.finish_commit_of(Tool::SectionPlane);
+                } else {
+                    self.creating_section = Some(draft);
+                }
+                result
             }
             Action::SetCrossSectionCut {
                 view,
@@ -20640,6 +20785,18 @@ pub fn apply_pick(
             true
         }
         (_, SceneElement::Body(bi)) => toggle_body_in_active_tool(state, *bi),
+        (P::SectionPlaneAnchor, element) => {
+            if state.creating_section.as_ref().is_some_and(|c| c.anchor.as_ref() == Some(element))
+            {
+                state.creating_section = None;
+                return true;
+            }
+            let Some(draft) = CreatingSectionPlane::from_element(&state.doc, element) else {
+                return false;
+            };
+            state.creating_section = Some(draft);
+            true
+        }
         _ => false,
     }
 }
@@ -21017,6 +21174,20 @@ pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
     }
     if let Some(cp) = &state.creating_plane {
         gizmos.push(GizmoInfo { kind: "offset", name: "offset", value: cp.offset_live, position: None });
+    }
+    if let Some(cs) = &state.creating_section {
+        gizmos.push(GizmoInfo {
+            kind: "offset",
+            name: "offset",
+            value: cs.offset_live,
+            position: None,
+        });
+        gizmos.push(GizmoInfo {
+            kind: "rotate",
+            name: "roll",
+            value: cs.roll_deg.to_radians(),
+            position: None,
+        });
     }
     // Sketch Offset (#939/#1502): signed-distance push/pull once something is picked.
     if let Some(co) = &state.creating_sketch_offset {
@@ -21458,6 +21629,29 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
             if state.creating_plane.is_some() {
                 // Force millimetres so the value matches the mm-valued `offset` gizmo reading.
                 state.apply(Action::SetPlaneOffset { value: format!("{value}mm") });
+                true
+            } else if let Some(cs) = state.creating_section.as_mut() {
+                cs.offset_live = value;
+                cs.user_edited_offset = false;
+                crate::tooltable::refresh_gizmo_field_text(
+                    cs.user_edited_offset,
+                    &mut cs.offset_text,
+                    crate::value::format_length_display_in(value, state.doc.default_length_unit),
+                );
+                true
+            } else {
+                false
+            }
+        }
+        "roll" => {
+            if let Some(cs) = state.creating_section.as_mut() {
+                cs.roll_deg = value.to_degrees().rem_euclid(360.0);
+                cs.user_edited_roll = false;
+                crate::tooltable::refresh_gizmo_field_text(
+                    cs.user_edited_roll,
+                    &mut cs.roll_text,
+                    format!("{:.0}", cs.roll_deg),
+                );
                 true
             } else {
                 false
@@ -22040,6 +22234,7 @@ impl AppState {
             D::Line => self.creating_line.is_some(),
             D::Circle => self.creating_circle.is_some(),
             D::Plane => self.creating_plane.is_some() || self.pending_plane_line.is_some(),
+            D::SectionPlane => self.creating_section.as_ref().is_some_and(|c| c.anchor.is_some()),
             D::Shape => self
                 .creating_shape
                 .as_ref()
@@ -22060,6 +22255,7 @@ impl AppState {
             D::Line => self.creating_line.is_some(),
             D::Circle => self.creating_circle.is_some(),
             D::Plane => self.creating_plane.is_some() || self.pending_plane_line.is_some(),
+            D::SectionPlane => self.creating_section.as_ref().is_some_and(|c| c.anchor.is_some()),
             D::Extrusion => self
                 .creating_extrusion
                 .as_ref()
@@ -22152,6 +22348,7 @@ impl AppState {
                 self.creating_plane = None;
                 self.pending_plane_line = None;
             }
+            D::SectionPlane => self.creating_section = None,
             D::Extrusion => {
                 if let Some(ce) = self.creating_extrusion.take() {
                     if let Some(sketch) = ce.sketch {
@@ -37261,7 +37458,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 };
                 if matches!(
                     primary.target,
-                    P::PlaneAnchor | P::DrawingAlignBase | P::DrawingSelection
+                    P::PlaneAnchor | P::SectionPlaneAnchor | P::DrawingAlignBase | P::DrawingSelection
                 ) {
                     continue;
                 }
@@ -37641,6 +37838,12 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 .as_ref()
                 .and_then(|c| c.line)
                 .map(|axis| vec![SceneElement::from_sketch_mirror_axis(axis)])
+                .unwrap_or_default(),
+            P::SectionPlaneAnchor => state
+                .creating_section
+                .as_ref()
+                .and_then(|c| c.anchor.clone())
+                .map(|e| vec![e])
                 .unwrap_or_default(),
             P::SketchSliceTargets => state
                 .creating_sketch_slice
@@ -39202,7 +39405,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             normal: glam::Vec3::Z,
             ..Default::default()
         };
-        let top = crate::extrude::cross_section_body_mesh(&state.doc, body, &[cut])
+        let top = crate::extrude::cross_section_body_mesh(&state.doc, body, &[cut.clone()])
             .expect("the cut mesh");
         let top_volume = crate::extrude::mesh_signed_volume(&top).abs();
         assert!(
@@ -39214,7 +39417,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert!(top_max.z > mid_z, "and the upper half is");
 
         // Flipping keeps the other half instead.
-        let flipped = crate::model::CrossSectionCut { flip: true, ..cut };
+        let flipped = crate::model::CrossSectionCut { flip: true, ..cut.clone() };
         let bottom = crate::extrude::cross_section_body_mesh(&state.doc, body, &[flipped])
             .expect("the flipped mesh");
         let (_, bottom_max) = bottom.bounds().expect("bounds");
@@ -39288,7 +39491,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             roll_deg: Some(90.0),
             flip: Some(true),
         });
-        let cut = state.doc.cross_sections[view].cuts[0];
+        let cut = state.doc.cross_sections[view].cuts[0].clone();
         assert_eq!(cut.offset_mm, -3.5);
         assert!((cut.roll - std::f32::consts::FRAC_PI_2).abs() < 1e-5, "roll stored in radians");
         assert!(cut.flip, "and the kept side flipped");
@@ -39315,6 +39518,32 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             }),
             ActionResult::Err(_)
         ));
+    }
+
+    /// #1745: picking an anchor fills the draft; Enter / CommitSectionPlane hangs the plane.
+    #[test]
+    fn cutting_plane_pick_fills_the_draft_and_accept_commits() {
+        use crate::hierarchy::SceneElement;
+        let mut state = AppState::default();
+        state.apply(Action::CreateCrossSection { name: None });
+        let view = state.doc.cross_sections.keys().next().expect("the view");
+        let plane = SceneElement::ConstructionPlane(pkey(0));
+        state.tool = Tool::SectionPlane;
+        assert!(apply_pick(
+            &mut state,
+            crate::context::PickerTarget::SectionPlaneAnchor,
+            &plane
+        ));
+        assert!(state.creating_section.is_some(), "the pick starts a draft");
+        assert_eq!(state.doc.cross_sections[view].cuts.len(), 0, "click does not hang the plane");
+        assert_eq!(
+            state.creating_section.as_ref().unwrap().anchor.as_ref(),
+            Some(&plane)
+        );
+        assert_eq!(state.apply(Action::CommitSectionPlane), ActionResult::Ok);
+        assert_eq!(state.doc.cross_sections[view].cuts.len(), 1);
+        assert!(state.creating_section.is_none(), "accept empties the draft");
+        assert_eq!(state.tool, Tool::SectionPlane, "and stays armed");
     }
 
     /// #1671/#1686: creating a cross-section view opens the View workbench; leaving it puts
@@ -40053,6 +40282,53 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 assert_eq!(
                     state.creating_plane.as_ref().unwrap().angle_text,
                     "37.5",
+                    "re-edit must not reformat 37.5° to 38"
+                );
+            }
+            (Tool::SectionPlane, _, "offset") => {
+                let mut state = AppState::default();
+                add_param(&mut state, "off", "12.5");
+                state.apply(Action::CreateCrossSection { name: None });
+                state.creating_section = Some(CreatingSectionPlane {
+                    origin: glam::Vec3::ZERO,
+                    normal: glam::Vec3::Z,
+                    offset_text: "off".to_string(),
+                    user_edited_offset: true,
+                    anchor: Some(crate::hierarchy::SceneElement::ConstructionPlane(pkey(0))),
+                    ..CreatingSectionPlane::default()
+                });
+                assert!(
+                    matches!(state.apply(Action::CommitSectionPlane), ActionResult::Ok),
+                    "{}",
+                    state.status
+                );
+                let cut = &state.doc.cross_sections.values().next().unwrap().cuts[0];
+                assert_eq!(cut.offset_expression, "off");
+                assert!((cut.offset_mm - 12.5).abs() < 1e-3);
+                let restored = CreatingSectionPlane::from_cut(cut);
+                assert_eq!(restored.offset_text, "off");
+            }
+            (Tool::SectionPlane, _, "roll") => {
+                let mut state = AppState::default();
+                state.apply(Action::CreateCrossSection { name: None });
+                state.creating_section = Some(CreatingSectionPlane {
+                    origin: glam::Vec3::ZERO,
+                    normal: glam::Vec3::Z,
+                    roll_text: "37.5".to_string(),
+                    user_edited_roll: true,
+                    anchor: Some(crate::hierarchy::SceneElement::ConstructionPlane(pkey(0))),
+                    ..CreatingSectionPlane::default()
+                });
+                assert!(
+                    matches!(state.apply(Action::CommitSectionPlane), ActionResult::Ok),
+                    "{}",
+                    state.status
+                );
+                let cut = &state.doc.cross_sections.values().next().unwrap().cuts[0];
+                assert_eq!(cut.roll_expression, "37.5");
+                let restored = CreatingSectionPlane::from_cut(cut);
+                assert_eq!(
+                    restored.roll_text, "37.5",
                     "re-edit must not reformat 37.5° to 38"
                 );
             }

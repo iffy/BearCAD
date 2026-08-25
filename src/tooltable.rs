@@ -212,6 +212,8 @@ pub enum Draft {
     SketchSlice,
     Shell,
     Joint,
+    /// The View workbench's cutting-plane draft (#1745).
+    SectionPlane,
 }
 
 /// One picker this tool can arm (#1485/#1508).
@@ -541,6 +543,7 @@ pub fn commit_label(tool: Tool, editing: bool) -> &'static str {
     }
     match tool {
         Tool::ConstructionPlane => "Create plane",
+        Tool::SectionPlane => "Add cutting plane",
         Tool::Dimension => "Set dimension",
         // The toolbar says Projection; the commit button kept the shorter verb.
         Tool::Project => "Project",
@@ -608,6 +611,10 @@ const PLANE_FIELDS: &[ToolField] = &[
     ToolField::Named("cp_offset"),
     ToolField::Named("cp_angle"),
 ];
+const SECTION_PLANE_FIELDS: &[ToolField] = &[
+    ToolField::Named("section_plane_offset_ctx"),
+    ToolField::Named("section_plane_roll_ctx"),
+];
 
 // ── Picker groups (#1485) ───────────────────────────────────────────────────
 
@@ -615,6 +622,8 @@ use crate::context::PickerTarget as P;
 
 const SELECTION: &[ToolPicker] = &[ToolPicker { target: P::Selection, heading: "Selection" }];
 const PLANE_PICKERS: &[ToolPicker] = &[ToolPicker { target: P::PlaneAnchor, heading: "Anchor" }];
+const SECTION_PLANE_PICKERS: &[ToolPicker] =
+    &[ToolPicker { target: P::SectionPlaneAnchor, heading: "Anchor" }];
 const EXTRUDE_PICKERS: &[ToolPicker] = &[
     ToolPicker { target: P::ExtrudeProfile, heading: "Faces" },
     ToolPicker { target: P::ExtrudeUpTo, heading: "Up to" },
@@ -980,9 +989,15 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             prefs: if sketch { SKETCH_REPEAT_PREFS } else { REPEAT_PREFS },
             ..base
         },
-        // The cutting-plane tool (#1687): a click places a plane straight into the open view
-        // — nothing is drafted and nothing is committed, so its row is bare.
+        // The cutting-plane tool (#1687/#1745): the same picker/gizmo/accept machinery
+        // every other tool uses. A click fills the Anchor picker; offset/rotate gizmos
+        // follow; Enter / the blue primary button hangs the plane on the open view.
         Tool::SectionPlane => ToolRow {
+            gizmo: Gizmo::Value,
+            commit_on_enter: true,
+            commit_fields: SECTION_PLANE_FIELDS,
+            draft: Draft::SectionPlane,
+            pickers: SECTION_PLANE_PICKERS,
             stay_armed: true,
             ..base
         },
@@ -1067,8 +1082,6 @@ pub fn stored_value_fields(tool: Tool, space: ToolSpace) -> &'static [&'static s
         | Tool::Line
         | Tool::Circle
         | Tool::Sketch
-        // The cutting-plane tool stores its numbers on the cut it places, not on a draft.
-        | Tool::SectionPlane
         | Tool::Dimension
         | Tool::Constraint
         | Tool::Project
@@ -1081,6 +1094,7 @@ pub fn stored_value_fields(tool: Tool, space: ToolSpace) -> &'static [&'static s
         | Tool::DrawingAdd
         | Tool::DrawingAlign => &[],
         Tool::ConstructionPlane => &["offset", "angle"],
+        Tool::SectionPlane => &["offset", "roll"],
         Tool::Extrude => &["distance", "taper"],
         Tool::Chamfer | Tool::Fillet => &["amount"],
         Tool::Offset => &["distance"],
@@ -1232,9 +1246,6 @@ mod tests {
                             | Tool::Dimension
                             | Tool::DrawingAdd
                             | Tool::DrawingAlign
-                            // The cutting-plane tool places a plane on the click that
-                            // picks the face (#1687): there is nothing to draft.
-                            | Tool::SectionPlane
                     ),
                     "{:?}/{:?} keeps picks but names no draft",
                     r.tool,
@@ -1637,6 +1648,7 @@ mod tests {
             Tool::Shell,
             Tool::Offset,
             Tool::ConstructionPlane,
+            Tool::SectionPlane,
             Tool::Chamfer,
             Tool::Fillet,
             Tool::Rectangle,
@@ -1740,6 +1752,39 @@ mod tests {
         assert_eq!(text, "12");
         refresh_gizmo_field_text(false, &mut text, "20");
         assert_eq!(text, "20");
+    }
+
+    /// #1745: the cutting-plane tool is a row like every other tool — an element picker, a
+    /// value gizmo (offset/rotate), Enter-to-commit (the blue primary button), and a draft
+    /// Esc empties. A one-off click-to-place path cannot grow those later.
+    #[test]
+    fn cutting_plane_uses_shared_picker_gizmo_and_commit() {
+        let r = row(Tool::SectionPlane, ToolSpace::View);
+        assert!(
+            !r.pickers.is_empty(),
+            "Cutting plane must register an element picker so hover, the Exploder, and scripts see it"
+        );
+        assert_eq!(
+            r.pickers[0].heading, "Anchor",
+            "the primary picker is the cutting-plane anchor"
+        );
+        assert!(r.commit_on_enter, "Enter commits, which also gives the blue primary button");
+        assert_eq!(r.commit_widget, CommitWidget::Primary);
+        assert_eq!(
+            r.gizmo,
+            Gizmo::Value,
+            "offset and rotate are value gizmos, not a click-to-place"
+        );
+        assert_ne!(
+            r.draft,
+            Draft::None,
+            "Esc must have a draft to empty instead of throwing the tool away"
+        );
+        assert!(r.stay_armed, "after accept, pick another plane");
+        assert!(
+            !r.commit_fields.is_empty(),
+            "offset/rotate fields must commit on Enter"
+        );
     }
 
     /// #1505: every tool that commits on Enter uses the shared blue primary button, so
