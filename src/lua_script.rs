@@ -3254,8 +3254,19 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "derive_parameter",
-                &["kind", "a", "b", "body", "body_b", "name", "instance", "face", "edge"],
+                &["kind", "from", "a", "b", "body", "body_b", "name", "instance", "face", "edge"],
             )?;
+            // `from = "selection"` measures whatever is picked (#1730) — the pane's
+            // "Derive parameter" button, which the Dimension tool shows in a sketch too.
+            if let Some(from) = opts.get::<Option<String>>("from")? {
+                if from != "selection" {
+                    return Err(mlua::Error::external(format!(
+                        "derive_parameter `from` takes \"selection\", got {from:?}"
+                    )));
+                }
+                let name: Option<String> = opts.get("name")?;
+                return unsafe { tick.exec(Instruction::DeriveParameterFromSelection { name }) };
+            }
             let kind: String = opts.get("kind")?;
             let mm_point = |key: &str| -> mlua::Result<[i32; 3]> {
                 let v: Vec<f32> = opts.get(key)?;
@@ -10328,7 +10339,7 @@ pub mod tests {
     /// #1676: the derived-parameter tutorial walks with assists and leaves `hole` still an
     /// expression on `plate` — change the source, the derived value and the geometry follow.
     #[test]
-    fn derived_parameter_tutorial_lua_walks_and_keeps_the_expression() {
+    fn derived_parameter_tutorial_lua_walks_and_measures_an_edge() {
         run_lua_expect_ok(
             r#"
             bearcad.ui.tutorial("derived_parameter")
@@ -10342,13 +10353,11 @@ pub mod tests {
                 bearcad.ui.tutorial_next()
               end
             end
-            assert(bearcad.parameter("get", "plate") == 100, "plate moved to 100")
-            assert(bearcad.parameter("get", "hole") == 25, "hole follows to 25")
-            assert(bearcad.parameter("get_expression", "hole"):find("plate"),
-              "hole is still derived, got " .. bearcad.parameter("get_expression", "hole"))
-            -- The rectangle really is 100 x 25 now.
-            bearcad.parameter("value", 0, "80mm")
-            assert(bearcad.parameter("get", "hole") == 20, "hole tracks plate again")
+            -- #1729: the walkthrough measures a 40 mm edge and records it.
+            assert(bearcad.count("parameter") == 1,
+              "one parameter, got " .. bearcad.count("parameter"))
+            assert(bearcad.parameter("get", "width") == 40,
+              "width measures the edge, got " .. tostring(bearcad.parameter("get", "width")))
             "#,
         );
     }

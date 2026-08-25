@@ -4738,6 +4738,9 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 tutorial::UiAnchor::TextContent => context::text_content_rect(ctx),
                 // The plane tool's Tilt field (#1723).
                 tutorial::UiAnchor::PlaneTilt => context::plane_tilt_rect(ctx),
+                // The Dimension tool's derive block (#1729).
+                tutorial::UiAnchor::DeriveName => context::derive_name_rect(ctx),
+                tutorial::UiAnchor::DeriveButton => context::derive_button_rect(ctx),
                 // A selected drawing view's orientation bear and Style row (#1640).
                 tutorial::UiAnchor::DrawingViewBear => context::drawing_view_bear_rect(ctx),
                 tutorial::UiAnchor::DrawingViewStyle => context::drawing_view_style_rect(ctx),
@@ -16801,10 +16804,11 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             }),
             calibrate_start: None,
             calibrate_pending: None,
-            // Dimension tool in 3D (#618): the derived-parameter name/value/commit block.
-            dimension_derive: (self.state.tool == Tool::Dimension
-                && self.state.sketch_session.is_none()
-                && self.state.editing_drawing.is_none())
+            // The Dimension tool's derived-parameter name/value/commit block (#618).
+            dimension_derive: context::dimension_derive_shown(
+                self.state.tool,
+                self.state.editing_drawing.is_some(),
+            )
             .then(|| context::DimensionDeriveControl {
                 name_text: self.state.dimension_param_name.clone(),
             }),
@@ -18136,20 +18140,9 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     self.state.dimension_param_name = name;
                 }
                 Some(context::DimensionDeriveEdit::Commit) => {
-                    if let Some(source) = parameters::derived_source_from_selection(
-                        &self.state.doc,
-                        &self.state.scene_selection,
-                    ) {
-                        let name = Some(self.state.dimension_param_name.trim().to_string())
-                            .filter(|n| !n.is_empty());
-                        let before = self.state.doc.parameters.len();
-                        self.state.apply(Action::CreateDerivedParameter { source, name });
-                        if self.state.doc.parameters.len() > before {
-                            self.state.dimension_param_name.clear();
-                            self.state.dimension_param_auto.clear();
-                            self.state.scene_selection.clear();
-                        }
-                    }
+                    let name = Some(self.state.dimension_param_name.trim().to_string())
+                        .filter(|n| !n.is_empty());
+                    self.state.apply(Action::DeriveParameterFromSelection { name });
                 }
                 None => {}
             }

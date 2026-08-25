@@ -40,9 +40,10 @@ that's the goal: a sketch that only changes when you change a number. Until it's
 **located** (say, a corner pinned to the origin), the whole shape still drags around as
 one piece, dimensions intact.
 
-## In 3D mode
+## Measuring
 
-Outside a sketch, the Dimension tool **measures**. Pick what to measure — one line or body
+Outside a sketch the Dimension tool **measures** rather than constrains, and the
+**Derive parameter** block is there in a sketch too. Pick what to measure — one line or body
 edge for its length, two parallel lines for the distance between them, two non-parallel lines
 for the angle, or two vertices (sketch points or body corners) for their distance — and
 the Context pane shows the live **Value**

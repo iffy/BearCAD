@@ -76,8 +76,8 @@ existing parameter; `name=value` redefines it.
 ## Derived parameters
 
 A **derived** parameter's value comes from measuring geometry. The
-[Dimension tool](/docs/tools/dimension#in-3d-mode) in 3D mode records one from the
-selection with its **Derive parameter** button. Valid selections:
+[Dimension tool](/docs/tools/dimension#measuring) records one from the selection with its
+**Derive parameter** button, in a sketch or in 3D. Valid selections:
 
 - **One line or edge** — its length (also on right-click: **Create parameter from
   length**).

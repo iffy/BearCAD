@@ -2800,6 +2800,11 @@ pub enum Action {
     CreateParameterFromLineLength { line_index: crate::model::LineKey, name: Option<String> },
     /// Create a read-only parameter measuring the current selection (#432): a line's
     /// length, two points' distance, two parallel lines' distance, or two lines' angle.
+    /// Measure whatever is selected and record it as a derived parameter (#618/#1730) — what
+    /// the Dimension tool's "Derive parameter" button does.
+    DeriveParameterFromSelection {
+        name: Option<String>,
+    },
     CreateDerivedParameter {
         source: crate::model::ParameterSource,
         name: Option<String>,
@@ -12110,6 +12115,27 @@ impl AppState {
                         ActionResult::Err(e)
                     }
                 }
+            }
+            // The Dimension tool's "Derive parameter" button (#618/#1730), as an action so the
+            // pane, a script and a test all take the same path — and so it works wherever the
+            // block is shown, in a sketch as well as in 3D.
+            Action::DeriveParameterFromSelection { name } => {
+                let Some(source) = crate::parameters::derived_source_from_selection(
+                    &self.doc,
+                    &self.scene_selection,
+                ) else {
+                    let e = "Pick 1–2 lines or 2 vertices to measure".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                let before = self.doc.parameters.len();
+                let result = self.apply(Action::CreateDerivedParameter { source, name });
+                if self.doc.parameters.len() > before {
+                    self.dimension_param_name.clear();
+                    self.dimension_param_auto.clear();
+                    self.scene_selection.clear();
+                }
+                result
             }
             Action::CreateDerivedParameter { source, name } => {
                 match crate::parameters::add_derived_parameter(&mut self.doc, source, name) {

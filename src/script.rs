@@ -955,6 +955,9 @@ pub enum Instruction {
         source: crate::model::ParameterSource,
         name: Option<String>,
     },
+    /// Measure the current selection and record it (#1730) — the Dimension tool's
+    /// "Derive parameter" button, which works in a sketch as well as in 3D.
+    DeriveParameterFromSelection { name: Option<String> },
     SetParameterName { index: usize, name: String },
     SetParameterExpression { index: usize, expression: String },
     /// Flip a parameter's primary flag (#727).
@@ -2222,6 +2225,10 @@ impl Instruction {
             Instruction::AddParameter { name, expression } => {
                 format!("bearcad.parameter(\"add\", {name:?}, {expression:?})")
             }
+            Instruction::DeriveParameterFromSelection { name } => match name {
+                Some(name) => format!("bearcad.derive_parameter{{ from = \"selection\", name = {name:?} }}"),
+                None => "bearcad.derive_parameter{ from = \"selection\" }".to_string(),
+            },
             Instruction::CreateDerivedParameter { source, name } => {
                 use crate::model::ParameterSource as PS;
                 let src = match source {
@@ -8424,6 +8431,11 @@ impl ScriptRunner {
             }
             Instruction::CreateDerivedParameter { source, name } => {
                 let result = state.apply(Action::CreateDerivedParameter { source, name });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::DeriveParameterFromSelection { name } => {
+                let result = state.apply(Action::DeriveParameterFromSelection { name });
                 self.record_action_error(result);
                 StepResult::Continue
             }

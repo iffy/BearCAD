@@ -94,6 +94,10 @@ pub enum UiAnchor {
     CombineKind(crate::model::BooleanOpKind),
     /// The Text tool's string field in the Context pane (#1557).
     TextContent,
+    /// The Dimension tool's derived-parameter **name** field, and the **Derive parameter**
+    /// button under it (#1729).
+    DeriveName,
+    DeriveButton,
     /// The Construction Plane tool's **Tilt** field in the Context pane (#1723) — the one the
     /// walkthrough asks for, as opposed to the Offset field above it.
     PlaneTilt,
@@ -5143,216 +5147,18 @@ static SHELL_STEPS: &[Step] = &[
 
 // --- Derived parameter tutorial (#1676) ------------------------------------------------
 
-/// The parameter the walkthrough types by hand, and the one worked out from it.
-const DERIVED_SOURCE: &str = "plate";
-const DERIVED_SOURCE_VALUE: &str = "60mm";
-const DERIVED_NAME: &str = "hole";
-const DERIVED_EXPRESSION: &str = "plate / 4";
-/// What the source is changed to at the end, so the derived one visibly follows.
-const DERIVED_SOURCE_CHANGED: &str = "100mm";
+/// The name the walkthrough gives the measurement it takes.
+const DERIVED_NAME: &str = "width";
 
-fn draft_name_is(app: &AppState, want: &str) -> bool {
-    app.parameters_pane.new_name.trim().eq_ignore_ascii_case(want)
-}
-
-/// A draft row is being filled in: the box has focus, or something is already typed.
-fn drafting_name(app: &AppState) -> bool {
-    app.parameters_pane.new_name_focused
-        || !app.parameters_pane.new_name.trim().is_empty()
-}
-
-fn drafting_value(app: &AppState) -> bool {
-    app.parameters_pane.new_value_focused
-        || !app.parameters_pane.new_value.trim().is_empty()
-}
-
-fn plate_added(app: &AppState) -> bool {
-    param_exists(app, DERIVED_SOURCE)
-}
-
-fn hole_added(app: &AppState) -> bool {
-    param_exists(app, DERIVED_NAME)
-}
-
-fn plate_name_tapped(app: &AppState) -> bool {
-    plate_added(app) || drafting_name(app)
-}
-
-fn plate_name_typed(app: &AppState) -> bool {
-    plate_added(app) || draft_name_is(app, DERIVED_SOURCE)
-}
-
-fn plate_value_tapped(app: &AppState) -> bool {
-    plate_added(app) || drafting_value(app)
-}
-
-fn plate_value_typed(app: &AppState) -> bool {
-    plate_added(app)
-        || crate::value::eval_length_mm(&app.parameters_pane.new_value)
-            .is_some_and(|v| (v - 60.0).abs() < 1e-3)
-}
-
-fn hole_name_tapped(app: &AppState) -> bool {
-    hole_added(app) || (plate_added(app) && drafting_name(app))
-}
-
-fn hole_name_typed(app: &AppState) -> bool {
-    hole_added(app) || draft_name_is(app, DERIVED_NAME)
-}
-
-fn hole_value_tapped(app: &AppState) -> bool {
-    hole_added(app) || (plate_added(app) && drafting_value(app))
-}
-
-fn hole_value_typed(app: &AppState) -> bool {
-    hole_added(app) || expr_eq(&app.parameters_pane.new_value, DERIVED_EXPRESSION)
-}
-
-fn derived_rect_width_typed(app: &AppState) -> bool {
-    creating_rect_text_eq(app, 0, DERIVED_SOURCE) || dim_expr_eq(app, DERIVED_SOURCE)
-}
-
-fn derived_rect_height_focused(app: &AppState) -> bool {
-    app.creating_rect.as_ref().is_some_and(|cr| cr.focused == 1) || derived_rect_committed(app)
-}
-
-fn derived_rect_committed(app: &AppState) -> bool {
-    has_rectangle_outline(app) && dim_expr_eq(app, DERIVED_SOURCE) && dim_expr_eq(app, DERIVED_NAME)
-}
-
-fn plate_value_open(app: &AppState) -> bool {
-    editing_param_value(app, DERIVED_SOURCE) || plate_is_changed(app)
-}
-
-fn plate_is_changed(app: &AppState) -> bool {
-    param_length_near(app, DERIVED_SOURCE, 100.0)
-}
-
-fn assist_add_plate(app: &mut AppState) {
-    ensure_param(app, DERIVED_SOURCE, DERIVED_SOURCE_VALUE);
-}
-
-fn assist_add_hole(app: &mut AppState) {
-    assist_add_plate(app);
-    ensure_param(app, DERIVED_NAME, DERIVED_EXPRESSION);
-}
-
-fn assist_draw_derived_rect(app: &mut AppState) {
-    if derived_rect_committed(app) {
-        return;
-    }
-    assist_add_hole(app);
-    if app.creating_rect.is_some() {
-        if let Some(cr) = app.creating_rect.as_mut() {
-            cr.texts[0] = DERIVED_SOURCE.into();
-            cr.texts[1] = DERIVED_NAME.into();
-            cr.user_edited = [true, true];
-        }
-        app.apply(Action::CommitRectangle);
-        return;
-    }
-    if has_rectangle_outline(app) {
-        dimension_rect_line(app, 0, DERIVED_SOURCE);
-        dimension_rect_line(app, 1, DERIVED_NAME);
-        return;
-    }
-    ensure_ground_sketch(app);
-    let w = crate::value::eval_length_mm_in_doc(DERIVED_SOURCE, &app.doc).unwrap_or(60.0);
-    let h = crate::value::eval_length_mm_in_doc(DERIVED_NAME, &app.doc).unwrap_or(15.0);
-    app.apply(Action::CreateRectangle {
-        x: 0.0,
-        y: 0.0,
-        width: w,
-        height: h,
-        width_expr: Some(DERIVED_SOURCE.into()),
-        height_expr: Some(DERIVED_NAME.into()),
-    });
-}
-
-fn assist_change_plate(app: &mut AppState) {
-    assist_draw_derived_rect(app);
-    set_param(app, DERIVED_SOURCE, DERIVED_SOURCE_CHANGED);
-}
-
-/// #1676: type one parameter, work a second one out from it, drive a rectangle with both,
-/// then change the source and watch the derived one follow.
+/// #1676/#1729: measure a sketch edge with the Dimension tool and record it as a parameter —
+/// a value the model owns, which follows the geometry instead of being typed.
 static DERIVED_PARAMETER_STEPS: &[Step] = &[
     plain_step_enter(
-        "A derived parameter is worked out from another one. Change the source and \
-         everything downstream moves.",
+        "A derived parameter is measured off the model. Pick some geometry, name the \
+         measurement, and the number follows the shape.",
         StepAnchor::None,
         None,
         keep_the_ground_plane,
-    ),
-    plain_step(
-        "See the Parameters pane? Tap inside the name box.",
-        StepAnchor::Ui(UiAnchor::ParametersName),
-        Some(plate_name_tapped),
-    ),
-    assisted_step(
-        "Type `plate`.",
-        StepAnchor::Ui(UiAnchor::ParametersName),
-        Some(plate_name_typed),
-        StepAssist {
-            label: "Add it for me",
-            run: assist_add_plate,
-        },
-        Some(TypeHint::Fixed(DERIVED_SOURCE)),
-    ),
-    plain_step(
-        "Tap the value box beside it.",
-        StepAnchor::Ui(UiAnchor::ParametersValue),
-        Some(plate_value_tapped),
-    ),
-    assisted_step(
-        "Type `60mm`.",
-        StepAnchor::Ui(UiAnchor::ParametersValue),
-        Some(plate_value_typed),
-        StepAssist {
-            label: "Add it for me",
-            run: assist_add_plate,
-        },
-        Some(TypeHint::Fixed(DERIVED_SOURCE_VALUE)),
-    ),
-    plain_step(
-        "Press + to add it.",
-        StepAnchor::Ui(UiAnchor::ParametersAdd),
-        Some(plate_added),
-    ),
-    plain_step(
-        "Now the derived one. Tap the name box again.",
-        StepAnchor::Ui(UiAnchor::ParametersName),
-        Some(hole_name_tapped),
-    ),
-    assisted_step(
-        "Type `hole`.",
-        StepAnchor::Ui(UiAnchor::ParametersName),
-        Some(hole_name_typed),
-        StepAssist {
-            label: "Add it for me",
-            run: assist_add_hole,
-        },
-        Some(TypeHint::Fixed(DERIVED_NAME)),
-    ),
-    plain_step(
-        "Tap the value box.",
-        StepAnchor::Ui(UiAnchor::ParametersValue),
-        Some(hole_value_tapped),
-    ),
-    assisted_step(
-        "Type `plate / 4` \u{2014} a value that names another parameter, not a number.",
-        StepAnchor::Ui(UiAnchor::ParametersValue),
-        Some(hole_value_typed),
-        StepAssist {
-            label: "Add it for me",
-            run: assist_add_hole,
-        },
-        Some(TypeHint::Fixed(DERIVED_EXPRESSION)),
-    ),
-    plain_step(
-        "Press + to add it. `hole` now reads 15 mm \u{2014} a quarter of `plate`.",
-        StepAnchor::Ui(UiAnchor::ParametersAdd),
-        Some(hole_added),
     ),
     plain_step(
         "Rectangle tool \u{2014} glowing button, or `R`.",
@@ -5366,58 +5172,135 @@ static DERIVED_PARAMETER_STEPS: &[Step] = &[
         ensure_rect_sketch_for_tutorial,
     ),
     assisted_step(
-        "Type `plate` in the width field.",
-        StepAnchor::Ui(UiAnchor::RectWidth),
-        Some(derived_rect_width_typed),
+        "Click the opposite corner. Leave it free \u{2014} this one gets measured, not set.",
+        StepAnchor::World(rect_opposite_corner_guide),
+        Some(has_rectangle_outline),
         StepAssist {
             label: "Draw it for me",
-            run: assist_draw_derived_rect,
-        },
-        Some(TypeHint::Fixed(DERIVED_SOURCE)),
-    ),
-    assisted_step(
-        "Press `Tab` to reach the height field.",
-        StepAnchor::Ui(UiAnchor::RectHeight),
-        Some(derived_rect_height_focused),
-        StepAssist {
-            label: "Draw it for me",
-            run: assist_draw_derived_rect,
+            run: assist_draw_free_derived_rect,
         },
         None,
     ),
-    assisted_step_enter(
-        "Type `hole`, then Enter.",
-        StepAnchor::Ui(UiAnchor::RectHeight),
-        Some(derived_rect_committed),
-        StepAssist {
-            label: "Draw it for me",
-            run: assist_draw_derived_rect,
-        },
-        Some(TypeHint::Fixed(DERIVED_NAME)),
-        ensure_rect_height_focus,
-    ),
-    plain_step(
-        "Click the `plate` value in the Parameters pane.",
-        StepAnchor::Ui(UiAnchor::ParametersExistingValue("plate")),
-        Some(plate_value_open),
+    plain_step_enter(
+        "Click the Dimension tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Dimension)),
+        Some(dimension_tool_active),
+        clear_selection_for_dimensioning,
     ),
     assisted_step(
-        "Change it to `100mm`. Both sides move \u{2014} `hole` was never a number.",
-        StepAnchor::Ui(UiAnchor::ParametersExistingValue("plate")),
-        Some(plate_is_changed),
+        "Click the rectangle's bottom edge. The Context pane measures it.",
+        StepAnchor::World(derived_edge_guide),
+        Some(derive_source_ready),
         StepAssist {
-            label: "Change it for me",
-            run: assist_change_plate,
+            label: "Pick it for me",
+            run: assist_pick_derived_edge,
         },
-        Some(TypeHint::Fixed(DERIVED_SOURCE_CHANGED)),
+        None,
+    ),
+    assisted_step(
+        "Type `width` for the name.",
+        StepAnchor::Ui(UiAnchor::DeriveName),
+        Some(derive_name_typed),
+        StepAssist {
+            label: "Name it for me",
+            run: assist_name_derived_parameter,
+        },
+        Some(TypeHint::Fixed(DERIVED_NAME)),
+    ),
+    assisted_step(
+        "Press Derive parameter.",
+        StepAnchor::Ui(UiAnchor::DeriveButton),
+        Some(has_derived_parameter),
+        StepAssist {
+            label: "Derive it for me",
+            run: assist_derive_parameter,
+        },
+        None,
     ),
     plain_step(
-        "That's a derived parameter: one number to edit, the rest work themselves out. \
-         Nice!",
+        "There it is in the Parameters pane, greyed out \u{2014} you can't type over a \
+         measurement. Move the edge and `width` follows it. Nice!",
         StepAnchor::None,
         None,
     ),
 ];
+
+/// The tutorial's rectangle, drawn free so its sides are unconstrained — a side with a
+/// length constraint already has its number and can't be measured into one (#1729).
+fn assist_draw_free_derived_rect(app: &mut AppState) {
+    if has_rectangle_outline(app) {
+        return;
+    }
+    ensure_rect_sketch_for_tutorial(app);
+    let Some(session) = app.sketch_session else { return };
+    crate::construction::add_line_rectangle(
+        &mut app.doc,
+        session.sketch,
+        DERIVED_RECT_MM.0,
+        DERIVED_RECT_MM.1,
+        DERIVED_RECT_MM.2,
+        DERIVED_RECT_MM.3,
+        [false; 4],
+    );
+    app.creating_rect = None;
+}
+
+/// Where the walkthrough's rectangle sits, and how big: (u, v, width, height) in mm.
+const DERIVED_RECT_MM: (f32, f32, f32, f32) = (20.0, 20.0, 40.0, 40.0);
+
+/// The bottom edge of that rectangle — the one the walkthrough measures.
+fn derived_measured_line(app: &AppState) -> Option<crate::model::LineKey> {
+    first_sketch_rect_lines(app).first().copied()
+}
+
+fn derived_edge_guide(app: &AppState) -> Option<glam::Vec3> {
+    let line = derived_measured_line(app)?;
+    let (a, b) = crate::face::line_world_endpoints(&app.doc, app.doc.lines.get(line)?)?;
+    Some((a + b) * 0.5)
+}
+
+/// The pane can measure what is picked — the state its "Derive parameter" button reads.
+fn derive_source_ready(app: &AppState) -> bool {
+    has_derived_parameter(app)
+        || crate::parameters::derived_source_from_selection(&app.doc, &app.scene_selection)
+            .is_some()
+}
+
+fn derive_name_typed(app: &AppState) -> bool {
+    has_derived_parameter(app)
+        || app.dimension_param_name.trim().eq_ignore_ascii_case(DERIVED_NAME)
+}
+
+fn has_derived_parameter(app: &AppState) -> bool {
+    app.doc.parameters.values().any(|p| p.source.is_some())
+}
+
+fn assist_pick_derived_edge(app: &mut AppState) {
+    if derive_source_ready(app) {
+        return;
+    }
+    assist_draw_free_derived_rect(app);
+    let Some(line) = derived_measured_line(app) else { return };
+    app.scene_selection.clear();
+    app.scene_selection
+        .insert(crate::hierarchy::SceneElement::Line(line));
+}
+
+fn assist_name_derived_parameter(app: &mut AppState) {
+    assist_pick_derived_edge(app);
+    if !has_derived_parameter(app) {
+        app.dimension_param_name = DERIVED_NAME.to_string();
+    }
+}
+
+fn assist_derive_parameter(app: &mut AppState) {
+    if has_derived_parameter(app) {
+        return;
+    }
+    assist_name_derived_parameter(app);
+    let name = Some(app.dimension_param_name.trim().to_string()).filter(|n| !n.is_empty());
+    app.apply(Action::DeriveParameterFromSelection { name });
+}
 
 // --- Curves tutorial (#1677) -----------------------------------------------------------
 
@@ -9663,9 +9546,11 @@ mod tests {
             .expect("derived_parameter tutorial is registered")]
     }
 
-    /// #1676: a parameter whose value is worked out from another one.
+    /// #1729: it teaches the real thing — measure geometry with the Dimension tool and press
+    /// "Derive parameter". It used to teach expressions (one parameter naming another), which
+    /// is a different feature entirely.
     #[test]
-    fn derived_parameter_tutorial_is_registered_and_teaches_an_expression_value() {
+    fn derived_parameter_tutorial_measures_geometry_with_the_dimension_tool() {
         let tut = derived_tut();
         assert_eq!(tut.name, "derived_parameter");
         assert_eq!(tut.title, "Derived parameters");
@@ -9675,41 +9560,48 @@ mod tests {
             .map(|s| s.narration)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(joined.contains(DERIVED_SOURCE), "{joined}");
-        assert!(joined.contains(DERIVED_EXPRESSION), "the derived value is typed in full");
+        assert!(joined.contains("measured off the model"), "{joined}");
+        assert!(joined.contains("Derive parameter"), "{joined}");
         assert!(
-            tut.steps
-                .iter()
-                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::ParametersAdd))),
-            "the walkthrough presses + to add a parameter"
+            !joined.contains('/'),
+            "no expression arithmetic — that is the Parameters walkthrough's job: {joined}"
         );
+        for anchor in [UiAnchor::DeriveName, UiAnchor::DeriveButton] {
+            assert!(
+                tut.steps.iter().any(|s| matches!(&s.anchor, StepAnchor::Ui(a) if *a == anchor)),
+                "the walkthrough points at {anchor:?}"
+            );
+        }
         assert!(
             tut.steps
                 .iter()
-                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::ParametersExistingValue(_)))),
-            "and changes the source parameter at the end"
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::Tool(Tool::Dimension)))),
+            "and arms the Dimension tool"
         );
     }
 
-    /// #1676: the assists leave `plate` changed and `hole` still derived from it.
+    /// #1729: the assists leave a real derived parameter — one the model measured, which the
+    /// Parameters pane will not let you type over.
     #[test]
-    fn derived_parameter_tutorial_assists_drive_one_parameter_from_another() {
+    fn derived_parameter_tutorial_assists_measure_an_edge() {
         let mut app = AppState::default();
         finish_tutorial_via_next(&mut app, "derived_parameter");
-        assert!(param_exists(&app, DERIVED_SOURCE), "status={}", app.status);
-        assert!(param_exists(&app, DERIVED_NAME), "status={}", app.status);
-        let derived = param_key(&app, DERIVED_NAME).unwrap();
+        let measured: Vec<_> = app
+            .doc
+            .parameters
+            .values()
+            .filter(|p| p.source.is_some())
+            .collect();
+        assert_eq!(measured.len(), 1, "one measured parameter, status={}", app.status);
+        assert_eq!(measured[0].name, DERIVED_NAME);
         assert!(
-            expr_eq(&app.doc.parameters[derived].expression, DERIVED_EXPRESSION),
-            "the derived parameter keeps its expression, got {:?}",
-            app.doc.parameters[derived].expression
+            crate::parameters::parameter_value_is_readonly(measured[0]),
+            "a measured value is read-only"
         );
-        // The source moved to 100, so the derived one recomputed to a quarter of it.
-        assert!(param_length_near(&app, DERIVED_SOURCE, 100.0), "source is 100mm");
-        assert!(param_length_near(&app, DERIVED_NAME, 25.0), "derived follows to 25mm");
         assert!(
-            dim_expr_eq(&app, DERIVED_SOURCE) && dim_expr_eq(&app, DERIVED_NAME),
-            "the rectangle's sides are driven by both parameters"
+            param_length_near(&app, DERIVED_NAME, DERIVED_RECT_MM.2),
+            "and it measures the edge it was taken from, got {:?}",
+            measured[0].expression
         );
     }
 

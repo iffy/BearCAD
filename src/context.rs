@@ -1656,6 +1656,14 @@ pub enum TreatmentEdit {
     Commit,
 }
 
+/// Whether the Dimension tool shows its derived-parameter block. In a sketch as well as in
+/// 3D (#1730): the measure comes from the selection, and the sketch Dimension tool selects
+/// the same lines and vertices its 3D counterpart does. Never on a drawing page — a
+/// projection's dimensions belong to the sheet, not to the model's parameters.
+pub fn dimension_derive_shown(tool: Tool, in_drawing: bool) -> bool {
+    tool == Tool::Dimension && !in_drawing
+}
+
 /// Rendered state of the Dimension tool's derived-parameter block (#618): the measured
 /// value of the current selection (one line → its length; two parallel lines → the
 /// distance between them; two non-parallel lines → the angle; two vertices → the
@@ -5057,6 +5065,24 @@ pub fn repeat_var_row_rect(
     ctx.data(|d| d.get_temp::<egui::Rect>(repeat_var_row_rect_id(var, part)))
 }
 
+fn derive_name_rect_id() -> egui::Id {
+    egui::Id::new("derive_name_rect")
+}
+
+fn derive_button_rect_id() -> egui::Id {
+    egui::Id::new("derive_button_rect")
+}
+
+/// Where the Dimension tool drew its derived-parameter **name** field this frame (#1729).
+pub fn derive_name_rect(ctx: &egui::Context) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<egui::Rect>(derive_name_rect_id()))
+}
+
+/// Where it drew the **Derive parameter** button (#1729).
+pub fn derive_button_rect(ctx: &egui::Context) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<egui::Rect>(derive_button_rect_id()))
+}
+
 fn plane_tilt_rect_id() -> egui::Id {
     egui::Id::new("plane_tilt_rect")
 }
@@ -5848,6 +5874,10 @@ pub fn show_pane(
                 let mut text = control.name_text.clone();
                 let resp =
                     ui.add(egui::TextEdit::singleline(&mut text).desired_width(120.0));
+                // The derived-parameter walkthrough rings this field and the button below
+                // (#1729).
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(derive_name_rect_id(), resp.rect));
                 if resp.changed() {
                     on_dimension_derive_edit(DimensionDeriveEdit::SetName(text));
                 }
@@ -5864,7 +5894,13 @@ pub fn show_pane(
             };
         });
         // A labeled button (#629): the action's name should be readable, not a bare ✓.
-        if primary_text_button(ui, controls_enabled && control.can_commit, "Derive parameter") {
+        let commit = ui
+            .scope(|ui| {
+                primary_text_button(ui, controls_enabled && control.can_commit, "Derive parameter")
+            });
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(derive_button_rect_id(), commit.response.rect));
+        if commit.inner {
             on_dimension_derive_edit(DimensionDeriveEdit::Commit);
         }
         ui.add_space(4.0);
@@ -13973,6 +14009,18 @@ mod tests {
 
     /// #505: New/Add/Cut stay visible while extruding even without a host body; Add/Cut
     /// simply have no merge target until the sketch sits on a body face.
+    /// #1730: the derived-parameter block follows the Dimension tool into a sketch — the
+    /// measure comes from the selection, and the sketch Dimension tool selects the same lines
+    /// and vertices. Only a drawing page keeps it out: a projection's dimensions belong to
+    /// the sheet, not to the model's parameters.
+    #[test]
+    fn the_derive_block_follows_the_dimension_tool_into_a_sketch() {
+        assert!(dimension_derive_shown(Tool::Dimension, false));
+        assert!(!dimension_derive_shown(Tool::Dimension, true), "not on a drawing page");
+        assert!(!dimension_derive_shown(Tool::Select, false), "and only for that tool");
+    }
+
+
     #[test]
     fn extrude_body_modes_always_shown_while_extruding() {
         let doc = Document::default();
