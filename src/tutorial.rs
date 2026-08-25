@@ -2427,11 +2427,13 @@ fn sketch_drawn_line_count(app: &AppState) -> usize {
     app.doc.lines.values().filter(|l| !l.construction).count()
 }
 
+/// A closed outline in any sketch. Three sides is the least that encloses anything (#1733) --
+/// requiring four missed a user who joined three curved sides back to the start.
 fn has_closed_polygon(app: &AppState) -> bool {
     app.doc.sketches.keys().any(|sk| {
         crate::polygon::closed_line_loops(&app.doc, sk)
             .iter()
-            .any(|loop_| loop_.len() >= 4)
+            .any(|loop_| loop_.len() >= 3)
     })
 }
 
@@ -5389,7 +5391,11 @@ fn assist_draw_curved_outline(app: &mut AppState) {
         let Some(session) = app.sketch_session else {
             return;
         };
-        crate::construction::add_line_polygon(&mut app.doc, session.sketch, &CURVE_UV);
+        // Close what's already on the page (#1734). Stamping the whole outline regardless
+        // dropped a fresh four-sided box on top of the sides the user had just curved.
+        if close_drawn_outline(app, session.sketch).is_none() {
+            crate::construction::add_line_polygon(&mut app.doc, session.sketch, &CURVE_UV);
+        }
         app.refresh_document_health();
     }
     let lines = first_sketch_rect_lines(app);
@@ -5408,6 +5414,56 @@ fn assist_draw_curved_outline(app: &mut AppState) {
             },
         });
     }
+}
+
+/// Join the open chain of lines in `sketch` back to where it started, the way a last click on
+/// the first point does (#1734). `None` when there is nothing to close -- no lines, or a chain
+/// whose ends are already together.
+fn close_drawn_outline(app: &mut AppState, sketch: crate::model::SketchId) -> Option<()> {
+    use crate::model::{Constraint, ConstraintEntity, ConstraintKind, LineEnd, ShapeKind};
+    let drawn: Vec<crate::model::LineKey> = app
+        .doc
+        .lines
+        .iter()
+        .filter(|(_, l)| l.sketch == sketch && !l.construction)
+        .map(|(k, _)| k)
+        .collect();
+    let (&first, &last) = (drawn.first()?, drawn.last()?);
+    let start = app.doc.lines.get(first)?;
+    let (u0, v0) = (start.x0, start.y0);
+    let end = app.doc.lines.get(last)?;
+    let (u1, v1) = (end.x1, end.y1);
+    if (u1 - u0).hypot(v1 - v0) < 1e-3 {
+        return None;
+    }
+    let closing = app
+        .doc
+        .lines
+        .insert(crate::model::Line::from_local_endpoints(sketch, u1, v1, u0, v0));
+    app.doc.shape_order.push(ShapeKind::Line);
+    for (a, a_end, b, b_end) in [
+        (last, LineEnd::End, closing, LineEnd::Start),
+        (closing, LineEnd::End, first, LineEnd::Start),
+    ] {
+        app.doc.constraints.insert(Constraint {
+            sketch,
+            kind: ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(crate::model::ConstraintPoint::LineEndpoint {
+                    line: a,
+                    end: a_end,
+                }),
+                b: ConstraintEntity::Point(crate::model::ConstraintPoint::LineEndpoint {
+                    line: b,
+                    end: b_end,
+                }),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+        });
+        app.doc.shape_order.push(ShapeKind::Constraint);
+    }
+    Some(())
 }
 
 fn assist_curve_mode_on(app: &mut AppState) {
@@ -9167,6 +9223,51 @@ mod tests {
 
     fn curves_tut() -> &'static Tutorial {
         &TUTORIALS[tutorial_index("curves").expect("curves tutorial is registered")]
+    }
+
+    /// #1733: a three-sided closed outline *is* a closed outline. The predicate wanted four
+    /// lines, so a user who joined three curved sides back to the start went unnoticed.
+    #[test]
+    fn a_three_sided_loop_counts_as_a_closed_outline() {
+        let mut app = AppState::default();
+        ensure_ground_sketch(&mut app);
+        let sketch = app.sketch_session.expect("a sketch").sketch;
+        crate::construction::add_line_polygon(
+            &mut app.doc,
+            sketch,
+            &[(10.0, 10.0), (60.0, 10.0), (10.0, 50.0)],
+        );
+        app.refresh_document_health();
+        assert!(
+            has_closed_polygon(&app),
+            "a closed triangle should read as a closed outline"
+        );
+    }
+
+    /// #1734: "Close it for me" joins up the outline already drawn -- it used to stamp a
+    /// whole fresh four-sided box on top of the user's curved sides.
+    #[test]
+    fn closing_a_drawn_outline_adds_one_line_not_a_new_box() {
+        let mut app = AppState::default();
+        ensure_ground_sketch(&mut app);
+        let sketch = app.sketch_session.expect("a sketch").sketch;
+        // Two sides drawn by hand, chained end to start, left open.
+        crate::construction::add_line_chain(
+            &mut app.doc,
+            sketch,
+            &[(10.0, 10.0), (60.0, 10.0), (10.0, 50.0)],
+        );
+        app.refresh_document_health();
+        let before = app.doc.lines.len();
+        assert_eq!(before, 2, "two open sides to start");
+
+        assist_draw_curved_outline(&mut app);
+        assert_eq!(
+            app.doc.lines.len(),
+            before + 1,
+            "closing adds exactly the one missing side, not a new outline"
+        );
+        assert!(has_closed_polygon(&app), "and the outline is closed");
     }
 
     /// #1677: draw a shape whose sides bend, using the Line tool's Curve mode.
