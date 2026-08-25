@@ -2246,6 +2246,17 @@ pub fn scene_element_from_pick(kind: &PickTargetKind) -> Option<SceneElement> {
     }
 }
 
+/// Whether the viewport draws this candidate straight through solids (#1720). The world triad
+/// and a sketch's origin axes are infinite datum lines painted over everything, so a click on
+/// one is a click on what you can see -- the "take what isn't buried" gate (#1578) must not
+/// throw them away just because a body happens to stand between them and the eye.
+pub fn draws_through_solids(kind: &PickTargetKind) -> bool {
+    matches!(
+        kind,
+        PickTargetKind::GlobalAxis(_) | PickTargetKind::OriginAxis(_)
+    )
+}
+
 /// Every feature edge of a body's solid mesh (#902), in world space — what a whole-body
 /// hover/loupe draws. Empty when the body doesn't mesh.
 ///

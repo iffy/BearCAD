@@ -21107,8 +21107,13 @@ fn pick_into(
             .into_iter()
             // Buried geometry stays in the Exploder crowd; a normal click takes what you can
             // see (#1578). A cuboid edge through a sphere would otherwise outrank the sphere's
-            // face and steal the pick from the middle of the disc.
-            .filter(|c| occlusion.is_none_or(|occ| !occ.occluded(c.anchor)))
+            // face and steal the pick from the middle of the disc. Datum lines that draw
+            // *through* solids are exempt: they are visible there, so they are pickable there
+            // (#1720).
+            .filter(|c| {
+                construction::draws_through_solids(&c.kind)
+                    || occlusion.is_none_or(|occ| !occ.occluded(c.anchor))
+            })
             .filter_map(|c| {
                 let element = scene_element_from_pick(&c.kind)?;
                 let taken =
@@ -37915,6 +37920,75 @@ mod tests {
         assert!(
             taken.iter().any(|e| matches!(e, SceneElement::Body(b) if *b == sphere_body)),
             "Combine must take the sphere, not the cuboid {cube:?}, got {taken:?}"
+        );
+    }
+
+    /// #1720/#1721: a global axis draws straight through solids, so a picker that wants an
+    /// axis takes it even where a body sits in front -- otherwise Revolve's Axis picker
+    /// refuses every click over the ring it is meant to spin.
+    #[test]
+    fn an_axis_picker_takes_a_global_axis_buried_in_a_body() {
+        let mut doc = crate::model::Document::default();
+        // A slab hanging over the X axis at z = 20, between the eye and the axis.
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
+            triangles: vec![
+                [
+                    glam::Vec3::new(-40.0, -40.0, 20.0),
+                    glam::Vec3::new(40.0, -40.0, 20.0),
+                    glam::Vec3::new(40.0, 40.0, 20.0),
+                ],
+                [
+                    glam::Vec3::new(-40.0, -40.0, 20.0),
+                    glam::Vec3::new(40.0, 40.0, 20.0),
+                    glam::Vec3::new(-40.0, 40.0, 20.0),
+                ],
+            ],
+            source_name: "slab".to_string(),
+            step_bytes: None,
+        });
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Imported(mesh),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+
+        // Look down Z; the X axis runs across the middle of the slab.
+        let project = |w: glam::Vec3| Some(egui::pos2(w.x, w.y));
+        let eye = glam::Vec3::new(0.0, 0.0, 200.0);
+        let cursor = egui::pos2(10.0, 0.0);
+        let vis = crate::hierarchy::ElementVisibility::default();
+        let occ = construction::PickOcclusion::new(&doc, &vis, eye);
+        assert!(
+            occ.occluded(glam::Vec3::new(10.0, 0.0, 0.0)),
+            "the slab should bury the axis point the cursor is over"
+        );
+        let pickers = test_pickers(
+            crate::element_picker::ElementFilter::kinds(&[
+                crate::element_picker::ElementKind::Line,
+                crate::element_picker::ElementKind::Edge,
+                crate::element_picker::ElementKind::Axis,
+            ])
+            .rule(crate::element_picker::PickRule::Straight),
+            context::PickerTarget::RevolveAxis,
+            crate::element_picker::PickLimit::Finite(1),
+        );
+        let (_target, taken) = super::pick_for_focused_picker(
+            &doc,
+            &pickers,
+            cursor,
+            &project,
+            eye,
+            Some(&occ),
+            false,
+        )
+        .expect("the axis picker should take the buried global axis");
+        assert!(
+            taken.iter().any(|e| matches!(
+                e,
+                SceneElement::GlobalAxis(crate::construction::GlobalAxis::X)
+            )),
+            "expected the global X axis, got {taken:?}"
         );
     }
 
