@@ -10060,6 +10060,7 @@ pub mod tests {
             assert(names.drawing == "Technical drawing")
             assert(names.revolve == "Revolve")
             assert(names.tilted_plane == "Angled plane")
+            assert(names.offset == "Offset")
             "#
             .replace("__COUNT__", &crate::tutorial::TUTORIALS.len().to_string()),
         );
@@ -10134,6 +10135,35 @@ pub mod tests {
             local plane = bearcad.get{ kind = "plane", index = 3 }
             assert(math.abs(plane.normal[3]) < 0.99,
               "the plane is tilted off the ground, nz=" .. tostring(plane.normal[3]))
+            "#,
+        );
+    }
+
+    /// #1674: the offset tutorial walks with assists and leaves a real tube — a wall the
+    /// offset distance thick, with a hollow middle.
+    #[test]
+    fn offset_tutorial_lua_walks_and_builds_a_tube() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.ui.tutorial("offset")
+            local guard = 0
+            while bearcad.ui.tutorial_step() ~= nil do
+              guard = guard + 1
+              assert(guard < 60, "offset tutorial should finish")
+              bearcad.ui.tutorial_assist()
+              if bearcad.ui.tutorial_step() ~= nil then
+                bearcad.ui.tutorial_next()
+              end
+            end
+            assert(bearcad.count("sketch_offset") == 1, "one offset op")
+            assert(bearcad.count("circle") == 2, "the circle plus its copy")
+            local op = bearcad.get{ kind = "sketch_offset", index = 0 }
+            assert(op.distance == "5", "distance, got " .. tostring(op.distance))
+            -- A 5 mm wall between r=20 and r=25, 10 mm tall: pi*(25^2-20^2)*10.
+            local v = bearcad.body_stats(bearcad.count("body") - 1).volume
+            local want = math.pi * (25 * 25 - 20 * 20) * 10
+            assert(math.abs(v - want) / want < 0.02,
+              "tube volume " .. v .. " should be about " .. want)
             "#,
         );
     }

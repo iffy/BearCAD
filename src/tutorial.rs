@@ -369,6 +369,12 @@ pub static TUTORIALS: &[Tutorial] = &[
         title: "Angled plane",
         steps: TILTED_PLANE_STEPS,
     },
+    // #1674: offset a circle, then extrude the ring between the two.
+    Tutorial {
+        name: "offset",
+        title: "Offset",
+        steps: OFFSET_STEPS,
+    },
 ];
 
 pub fn tutorial_index(name: &str) -> Option<usize> {
@@ -4523,6 +4529,211 @@ static TILTED_PLANE_STEPS: &[Step] = &[
     ),
 ];
 
+// --- Offset tutorial (#1674) -----------------------------------------------------------
+
+/// Where the walkthrough's circle sits on the ground, and how big it and its copy are.
+const OFFSET_CENTRE_MM: (f32, f32) = (20.0, 20.0);
+const OFFSET_RADIUS_MM: f32 = 20.0;
+/// How far the offset copy sits outside the original.
+const OFFSET_DISTANCE_MM: f32 = 5.0;
+
+fn offset_tool_active(app: &AppState) -> bool {
+    app.tool == Tool::Offset
+}
+
+fn has_offset_op(app: &AppState) -> bool {
+    !app.doc.sketch_offset_ops.is_empty()
+}
+
+fn offset_circle_picked(app: &AppState) -> bool {
+    has_offset_op(app)
+        || app
+            .creating_sketch_offset
+            .as_ref()
+            .is_some_and(|c| !c.circle_targets.is_empty())
+}
+
+/// The circle the walkthrough draws — the first one, before the offset copies it.
+fn offset_source_circle(app: &AppState) -> Option<crate::model::CircleKey> {
+    app.doc.circles.keys().next()
+}
+
+fn offset_circle_drawn(app: &AppState) -> bool {
+    !app.doc.circles.is_empty()
+}
+
+fn offset_circle_started(app: &AppState) -> bool {
+    app.creating_circle.is_some() || offset_circle_drawn(app)
+}
+
+fn offset_centre_guide(app: &AppState) -> Option<glam::Vec3> {
+    ground_local(app, OFFSET_CENTRE_MM.0, OFFSET_CENTRE_MM.1)
+}
+
+/// A point on the drawn circle — where Offset takes its pick.
+fn offset_circle_edge_guide(app: &AppState) -> Option<glam::Vec3> {
+    let (cx, cy, r) = match offset_source_circle(app).map(|k| &app.doc.circles[k]) {
+        Some(c) => (c.cx, c.cy, c.r),
+        None => (OFFSET_CENTRE_MM.0, OFFSET_CENTRE_MM.1, OFFSET_RADIUS_MM),
+    };
+    ground_local(app, cx + r, cy)
+}
+
+/// A point in the ring between the circle and its offset copy — where Extrude picks.
+fn offset_ring_guide(app: &AppState) -> Option<glam::Vec3> {
+    let (cx, cy, r) = match offset_source_circle(app).map(|k| &app.doc.circles[k]) {
+        Some(c) => (c.cx, c.cy, c.r),
+        None => (OFFSET_CENTRE_MM.0, OFFSET_CENTRE_MM.1, OFFSET_RADIUS_MM),
+    };
+    ground_local(app, cx + r + OFFSET_DISTANCE_MM * 0.5, cy)
+}
+
+fn assist_draw_offset_circle(app: &mut AppState) {
+    if offset_circle_drawn(app) {
+        return;
+    }
+    ensure_ground_sketch(app);
+    app.apply(Action::CreateCircle {
+        cx: OFFSET_CENTRE_MM.0,
+        cy: OFFSET_CENTRE_MM.1,
+        r: OFFSET_RADIUS_MM,
+        diameter_expr: Some(format!("{}", OFFSET_RADIUS_MM * 2.0)),
+    });
+}
+
+fn assist_offset_circle(app: &mut AppState) {
+    if has_offset_op(app) {
+        return;
+    }
+    assist_draw_offset_circle(app);
+    let Some(circle) = offset_source_circle(app) else {
+        return;
+    };
+    let Some(sketch) = app.doc.circles.get(circle).map(|c| c.sketch) else {
+        return;
+    };
+    app.apply(Action::CreateSketchOffsetOperation {
+        sketch,
+        line_targets: Vec::new(),
+        circle_targets: vec![circle],
+        distance: OFFSET_DISTANCE_MM.to_string(),
+        construction: false,
+    });
+}
+
+fn assist_extrude_offset_ring(app: &mut AppState) {
+    if has_extrusion(app) {
+        return;
+    }
+    assist_offset_circle(app);
+    // Inner is the circle that was drawn; outer is the offset copy.
+    let mut circles: Vec<_> = app
+        .doc
+        .circles
+        .iter()
+        .map(|(k, c)| (k, c.r, c.sketch))
+        .collect();
+    circles.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    let [inner, outer] = circles.as_slice() else {
+        return;
+    };
+    let sketch = outer.2;
+    if app.sketch_session.is_some() {
+        app.apply(Action::ExitSketch);
+    }
+    app.apply(Action::CreateExtrusion {
+        sketch,
+        faces: vec![crate::model::ExtrudeFace::Boolean {
+            op: crate::model::BooleanOp::Difference,
+            a: Box::new(crate::model::ExtrudeFace::Circle(outer.0)),
+            b: Box::new(crate::model::ExtrudeFace::Circle(inner.0)),
+        }],
+        distance: 10.0,
+        body: crate::actions::ExtrudeBodyChoice::New,
+        target: None,
+        expression: Some("10".into()),
+        symmetric: false,
+        taper: 0.0,
+        taper_mode: crate::model::ExtrudeTaperMode::Distance,
+        taper_expression: None,
+    });
+}
+
+/// #1674: offset a circle to get a parallel copy, then extrude the ring between them.
+static OFFSET_STEPS: &[Step] = &[
+    plain_step(
+        "Offset copies sketch geometry a set distance away \u{2014} that's how you get a wall.",
+        StepAnchor::None,
+        None,
+    ),
+    plain_step(
+        "Click the Circle tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Circle)),
+        Some(circle_tool_active),
+    ),
+    plain_step_enter(
+        "Click the ground to set the centre.",
+        StepAnchor::World(offset_centre_guide),
+        Some(offset_circle_started),
+        ensure_ground_sketch,
+    ),
+    assisted_step(
+        "Type `40` for the diameter, then Enter.",
+        StepAnchor::None,
+        Some(offset_circle_drawn),
+        StepAssist {
+            label: "Draw it for me",
+            run: assist_draw_offset_circle,
+        },
+        Some(TypeHint::Fixed("40")),
+    ),
+    plain_step(
+        "Click the Offset tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Offset)),
+        Some(offset_tool_active),
+    ),
+    plain_step(
+        "Click the circle.",
+        StepAnchor::World(offset_circle_edge_guide),
+        Some(offset_circle_picked),
+    ),
+    assisted_step(
+        "Type `5`, then Enter. A second circle appears 5 mm outside the first.",
+        StepAnchor::None,
+        Some(has_offset_op),
+        StepAssist {
+            label: "Offset it for me",
+            run: assist_offset_circle,
+        },
+        Some(TypeHint::Fixed("5")),
+    ),
+    plain_step(
+        "Click the Extrude tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude)),
+        Some(extrude_tool_active),
+    ),
+    plain_step(
+        "Click the ring between the two circles.",
+        StepAnchor::World(offset_ring_guide),
+        Some(extrude_face_picked),
+    ),
+    assisted_step(
+        "Type `10`, then Enter. A tube with a 5 mm wall.",
+        StepAnchor::Ui(UiAnchor::ExtrudeDistance),
+        Some(has_extrusion),
+        StepAssist {
+            label: "Extrude it for me",
+            run: assist_extrude_offset_ring,
+        },
+        Some(TypeHint::Fixed("10")),
+    ),
+    plain_step(
+        "The offset stays linked: change the circle and the wall follows. Nice!",
+        StepAnchor::None,
+        None,
+    ),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4687,10 +4898,11 @@ mod tests {
         assert_eq!(tutorial_index("drawing"), Some(9), "#1640: technical drawing is tenth");
         assert_eq!(tutorial_index("revolve"), Some(10), "#1672: revolve is eleventh");
         assert_eq!(tutorial_index("tilted_plane"), Some(11), "#1673: angled plane is twelfth");
+        assert_eq!(tutorial_index("offset"), Some(12), "#1674: offset is thirteenth");
         assert_eq!(tutorial_index("bracket"), None, "#1334: build-a-bracket tutorial is gone");
         assert_eq!(tutorial_index("nope"), None);
-        assert_eq!(TUTORIALS.last().unwrap().name, "tilted_plane");
-        assert_eq!(TUTORIALS.len(), 12, "pane lists every remaining walkthrough");
+        assert_eq!(TUTORIALS.last().unwrap().name, "offset");
+        assert_eq!(TUTORIALS.len(), 13, "pane lists every remaining walkthrough");
         for tut in TUTORIALS {
             assert_ne!(tut.name, "bracket");
             assert_ne!(tut.title, "Build an angle bracket");
@@ -6843,6 +7055,63 @@ mod tests {
             has_equal_constraint(&app),
             "two sides should be equal, status={}",
             app.status
+        );
+    }
+
+    fn offset_tut() -> &'static Tutorial {
+        &TUTORIALS[tutorial_index("offset").expect("offset tutorial is registered")]
+    }
+
+    /// #1674: offset a circle to get a wall, then extrude the ring between them.
+    #[test]
+    fn offset_tutorial_is_registered_and_extrudes_the_ring() {
+        let tut = offset_tut();
+        assert_eq!(tut.name, "offset");
+        assert_eq!(tut.title, "Offset");
+        let joined: String = tut
+            .steps
+            .iter()
+            .map(|s| s.narration.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("offset"), "{joined}");
+        assert!(joined.contains("ring") || joined.contains("wall"), "{joined}");
+        for tool in [Tool::Circle, Tool::Offset, Tool::Extrude] {
+            assert!(
+                tut.steps
+                    .iter()
+                    .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::Tool(t)) if t == tool)),
+                "the walkthrough picks {tool:?}"
+            );
+        }
+    }
+
+    /// #1674: the assists leave two concentric circles and a tube extruded between them.
+    #[test]
+    fn offset_tutorial_assists_build_a_tube() {
+        let mut app = AppState::default();
+        finish_tutorial_via_next(&mut app, "offset");
+        assert_eq!(
+            app.doc.sketch_offset_ops.len(),
+            1,
+            "one offset operation, status={}",
+            app.status
+        );
+        assert_eq!(app.doc.circles.len(), 2, "the circle plus its offset copy");
+        let radii: Vec<f32> = app.doc.circles.values().map(|c| c.r).collect();
+        let (min, max) = (
+            radii.iter().cloned().fold(f32::MAX, f32::min),
+            radii.iter().cloned().fold(0.0f32, f32::max),
+        );
+        assert!(
+            (max - min - OFFSET_DISTANCE_MM).abs() < 0.01,
+            "the copy sits {OFFSET_DISTANCE_MM} mm out, radii={radii:?}"
+        );
+        assert!(has_extrusion(&app), "the ring is extruded, status={}", app.status);
+        let faces = &app.doc.extrusions.values().next().unwrap().faces;
+        assert!(
+            matches!(faces.first(), Some(crate::model::ExtrudeFace::Boolean { .. })),
+            "the profile is the ring between the two circles, got {faces:?}"
         );
     }
 
