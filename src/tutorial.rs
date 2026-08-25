@@ -63,6 +63,13 @@ pub enum UiAnchor {
     /// One of the Repeat tool's Count / Gap / Distance rows (#1679), named by the variable
     /// so the orb keeps up when the label flips between Gap and Offset.
     RepeatVar(crate::model::RepeatVar),
+    /// A spot on the open drawing page (#1681), one card-width right and one card-height
+    /// **up** from the named view's card — where the Aligned-view tool wants its click.
+    DrawingSpot {
+        view: usize,
+        right: i8,
+        up: i8,
+    },
     /// The toolbar Zoom to Fit (magnifying glass) button (#1583).
     ZoomToFit,
     /// A status-bar pane toggle (phone layout only, #828): Elements / Context / Params.
@@ -1758,7 +1765,7 @@ static SHAPES_STEPS: &[Step] = &[
         Some(cylinder_anchored),
     ),
     assisted_step(
-        "Type the radius: `10`, then Tab.",
+        "Type the radius: `10`.",
         StepAnchor::Ui(UiAnchor::ShapeRadius),
         Some(cylinder_radius_typed_10),
         StepAssist {
@@ -2266,7 +2273,7 @@ static PARAMETERS_STEPS: &[Step] = &[
         ensure_rect_sketch_for_tutorial,
     ),
     assisted_step(
-        "Type `width` in the width field, then Tab.",
+        "Type `width` in the width field.",
         StepAnchor::Ui(UiAnchor::RectWidth),
         Some(rect_width_is_width),
         StepAssist {
@@ -2276,7 +2283,7 @@ static PARAMETERS_STEPS: &[Step] = &[
         Some(TypeHint::Fixed("width")),
     ),
     assisted_step(
-        "Press `Tab`, or click the height field.",
+        "Press `Tab` to reach the height field.",
         StepAnchor::Ui(UiAnchor::RectHeight),
         Some(rect_height_focused),
         StepAssist {
@@ -3821,7 +3828,7 @@ static DRAWING_STEPS: &[Step] = &[
         None,
     ),
     plain_step(
-        "Click the Add view tool.",
+        "Click the Projection tool.",
         StepAnchor::Ui(UiAnchor::Tool(Tool::DrawingAdd)),
         Some(drawing_add_ready),
     ),
@@ -3844,7 +3851,7 @@ static DRAWING_STEPS: &[Step] = &[
     ),
     assisted_step(
         "Click above the front view: that's the top view, lined up with it.",
-        StepAnchor::None,
+        StepAnchor::Ui(UiAnchor::DrawingSpot { view: 0, right: 0, up: 1 }),
         Some(drawing_has_one_aligned),
         StepAssist {
             label: "Add the top view",
@@ -3854,7 +3861,7 @@ static DRAWING_STEPS: &[Step] = &[
     ),
     assisted_step(
         "Now click to the right of the front view for the side view.",
-        StepAnchor::None,
+        StepAnchor::Ui(UiAnchor::DrawingSpot { view: 0, right: 1, up: 0 }),
         Some(drawing_has_two_aligned),
         StepAssist {
             label: "Add the side view",
@@ -3868,7 +3875,7 @@ static DRAWING_STEPS: &[Step] = &[
         None,
     ),
     plain_step(
-        "Back to the Add view tool.",
+        "Back to the Projection tool.",
         StepAnchor::Ui(UiAnchor::Tool(Tool::DrawingAdd)),
         Some(drawing_add_ready_again),
     ),
@@ -3911,7 +3918,7 @@ static DRAWING_STEPS: &[Step] = &[
     ),
     assisted_step(
         "Click a line on the front view to dimension it.",
-        StepAnchor::None,
+        StepAnchor::Ui(UiAnchor::DrawingSpot { view: 0, right: 0, up: 0 }),
         Some(drawing_has_a_dimension),
         StepAssist {
             label: "Dimension one for me",
@@ -5575,6 +5582,14 @@ fn slice_line_end_guide(app: &AppState) -> Option<glam::Vec3> {
     slice_line_guide(app, 1)
 }
 
+/// The middle of the drawn line — where Slice's cutter click should land, rather than the
+/// endpoint that hangs off the block (#1681).
+fn slice_line_mid_guide(app: &AppState) -> Option<glam::Vec3> {
+    let a = slice_line_guide(app, 0)?;
+    let b = slice_line_guide(app, 1)?;
+    Some((a + b) * 0.5)
+}
+
 /// The line drawn across the block's top — the one Slice uses as its cutter.
 fn slice_cutter_line(app: &AppState) -> Option<crate::model::LineKey> {
     let face = slice_top_face(app)?;
@@ -5747,7 +5762,7 @@ static SLICE_STEPS: &[Step] = &[
     ),
     plain_step(
         "Click the slanted line \u{2014} that's the cutter.",
-        StepAnchor::World(slice_line_end_guide),
+        StepAnchor::World(slice_line_mid_guide),
         Some(slice_cutter_picked),
     ),
     assisted_step(
@@ -6122,6 +6137,16 @@ fn mirror_first_circle_guide(app: &AppState) -> Option<glam::Vec3> {
     mirror_circle_guide(app, 0)
 }
 
+/// A point on the source circle's rim: the Mirror tool picks the circle itself, so the orb
+/// belongs on the line, not in the middle of it (#1681).
+fn mirror_circle_edge_guide(app: &AppState) -> Option<glam::Vec3> {
+    let (cx, cy, r) = match mirror_source_circle(app).map(|k| &app.doc.circles[k]) {
+        Some(c) => (c.cx, c.cy, c.r),
+        None => (MIRROR_CENTRE_MM.0, MIRROR_CENTRE_MM.1, MIRROR_RADIUS_MM),
+    };
+    ground_local(app, cx + r, cy)
+}
+
 fn mirror_second_circle_guide(app: &AppState) -> Option<glam::Vec3> {
     mirror_circle_guide(app, 1).or_else(|| mirror_circle_guide(app, 0))
 }
@@ -6243,7 +6268,7 @@ static SKETCH_MIRROR_STEPS: &[Step] = &[
     ),
     plain_step(
         "Click the circle \u{2014} that's what gets reflected.",
-        StepAnchor::World(mirror_first_circle_guide),
+        StepAnchor::World(mirror_circle_edge_guide),
         Some(mirror_shape_picked),
     ),
     plain_step(
@@ -6480,6 +6505,136 @@ mod tests {
         for tut in TUTORIALS {
             assert_ne!(tut.name, "bracket");
             assert_ne!(tut.title, "Build an angle bracket");
+        }
+    }
+
+    /// #1681: no step asks for two actions. A narration that says "click" twice, or joins
+    /// two moves with "and then", is two steps wearing one coat.
+    #[test]
+    fn tutorial_steps_ask_for_one_action_each() {
+        for tut in TUTORIALS {
+            for step in tut.steps {
+                for text in [Some(step.narration), step.phone_narration].into_iter().flatten() {
+                    let n = text.to_ascii_lowercase();
+                    // "then Enter" is the one exception: committing what was just typed is
+                    // part of typing it, not a second target to find. "Then Tab" is not —
+                    // moving to another field is its own step (#1681).
+                    assert!(
+                        !n.contains("then tab"),
+                        "tutorial '{}' types and tabs in one step: {text}",
+                        tut.name
+                    );
+                    let rest = n.replace("then enter", "").replace("then hit enter", "");
+                    // " or " offers a second *way* to do the one action, not a second
+                    // action — so each alternative is counted on its own.
+                    for alternative in rest.split(" or ") {
+                        let clicks = alternative.matches("click").count();
+                        assert!(
+                            clicks <= 1,
+                            "tutorial '{}' asks for {clicks} clicks in one step: {text}",
+                            tut.name
+                        );
+                    }
+                    assert!(
+                        !rest.contains(" and then "),
+                        "tutorial '{}' chains two moves in one step: {text}",
+                        tut.name
+                    );
+                }
+            }
+        }
+    }
+
+    /// #1681: every step that points somewhere in the world resolves an orb position by
+    /// the time it is the live step — an orb that resolves to `None` points nowhere.
+    #[test]
+    fn tutorial_world_orbs_resolve_at_the_step_that_uses_them() {
+        for tut in TUTORIALS {
+            let mut app = AppState::default();
+            app.apply(Action::StartTutorial {
+                index: tutorial_index(tut.name).unwrap(),
+            });
+            let mut guard = 0;
+            while app.tutorial.is_some() {
+                guard += 1;
+                assert!(guard < 60, "tutorial '{}' should finish", tut.name);
+                let run = app.tutorial.unwrap();
+                let step = &TUTORIALS[run.tutorial].steps[run.step];
+                match step.anchor {
+                    StepAnchor::World(point) => assert!(
+                        point(&app).is_some(),
+                        "tutorial '{}' step {} has no orb position: {}",
+                        tut.name,
+                        run.step,
+                        step.narration
+                    ),
+                    StepAnchor::Guided(target) => assert!(
+                        target(&app).is_some(),
+                        "tutorial '{}' step {} has no orb target: {}",
+                        tut.name,
+                        run.step,
+                        step.narration
+                    ),
+                    StepAnchor::Ui(_) | StepAnchor::None => {}
+                }
+                if step.assist.is_some() {
+                    app.apply(Action::TutorialAssist);
+                }
+                if app.tutorial.is_some() && app.tutorial != Some(run) {
+                    continue;
+                }
+                if app.tutorial.is_some() {
+                    app.apply(Action::TutorialNext);
+                }
+            }
+        }
+    }
+
+    /// #1681: a step that names a tool points its orb at that tool's button.
+    #[test]
+    fn tutorial_tool_steps_point_at_the_tool_they_name() {
+        for tut in TUTORIALS {
+            for step in tut.steps {
+                let StepAnchor::Ui(UiAnchor::Tool(tool)) = step.anchor else {
+                    continue;
+                };
+                // The button's own label, or the scripting name — the step has to call the
+                // tool what the app calls it, or the orb points at a stranger.
+                let label = crate::opsigs::tool_label(tool).to_ascii_lowercase();
+                let script = crate::shortcuts::tool_script_name(tool).replace('_', " ");
+                let n = step.narration.to_ascii_lowercase();
+                // A two-word label reads by its distinctive last word on the toolbar
+                // ("Drawing projection" is the Projection button), so that counts too.
+                let short = label.rsplit(' ').next().unwrap_or(&label).to_string();
+                assert!(
+                    [label.clone(), short, script.clone(), script.replace(' ', "")]
+                        .iter()
+                        .any(|name| n.contains(name.as_str())),
+                    "tutorial '{}' points at the {tool:?} button but says: {}",
+                    tut.name,
+                    step.narration
+                );
+            }
+        }
+    }
+
+    /// #1681: a step that asks for a click points the orb somewhere. A "click this" with no
+    /// anchor leaves the reader hunting.
+    #[test]
+    fn tutorial_click_steps_have_an_orb() {
+        for tut in TUTORIALS {
+            for step in tut.steps {
+                let n = step.narration.to_ascii_lowercase();
+                if !n.contains("click") && !n.contains("tap ") {
+                    continue;
+                }
+                assert!(
+                    !matches!(step.anchor, StepAnchor::None),
+                    "tutorial '{}' asks for a click with no orb: {}",
+                    tut.name,
+                    step.narration
+                );
+            }
         }
     }
 
@@ -6959,6 +7114,7 @@ mod tests {
 
     /// #1309: after typing the cylinder radius, teach Tab/click Height *before*
     /// telling the user to type 20. Type-20 is gated on Height being the focused phase.
+    /// #1681: reaching Height is its own step, so the radius step never says "then Tab".
     #[test]
     fn shapes_cylinder_asks_to_tab_before_typing_height() {
         let shapes = &TUTORIALS[tutorial_index("shapes").unwrap()];
@@ -6972,8 +7128,8 @@ mod tests {
             .expect("cylinder radius typing step");
         let radius = &shapes.steps[radius_i];
         assert!(
-            radius.narration.to_ascii_lowercase().contains("tab"),
-            "radius step should send the user to Tab, not Enter: {}",
+            !radius.narration.to_ascii_lowercase().contains("enter"),
+            "radius step must not send the user to Enter — that commits the cylinder: {}",
             radius.narration
         );
 

@@ -4706,6 +4706,15 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 tutorial::UiAnchor::CheckboxRow(label) => context::checkbox_row_rect(ctx, label),
                 // One of the Repeat tool's Count / Gap / Distance rows (#1679).
                 tutorial::UiAnchor::RepeatVar(var) => context::repeat_var_row_rect(ctx, var),
+                // A spot on the drawing page, offset from a view's card (#1681).
+                tutorial::UiAnchor::DrawingSpot { view, right, up } => {
+                    drawing_view_card_rect(ctx, view).map(|card| {
+                        card.translate(egui::vec2(
+                            card.width() * f32::from(right),
+                            -card.height() * f32::from(up),
+                        ))
+                    })
+                }
                 // View-cube bear + home button live in the viewport's top-right (#1269).
                 tutorial::UiAnchor::ViewCube => Some(view_cube::cube_rect_in_viewport(viewport)),
                 tutorial::UiAnchor::ViewHome => {
@@ -25552,6 +25561,21 @@ fn in_progress_tab_claimed_by_autocomplete(state: &AppState, ctx: &egui::Context
     expression_input::autocomplete_dropdown_visible(ctx, id, text, &state.doc, &[])
 }
 
+/// Egui-memory key for where a drawing view's card was drawn this frame (#1681).
+fn drawing_view_card_rect_id(view: usize) -> egui::Id {
+    egui::Id::new(("drawing_view_card_rect", view))
+}
+
+fn set_drawing_view_card_rect(ctx: &egui::Context, view: usize, rect: egui::Rect) {
+    ctx.data_mut(|d| d.insert_temp(drawing_view_card_rect_id(view), rect));
+}
+
+/// Where the drawing page drew a view's card this frame (#1681) — the walkthrough's orb
+/// points at spots on the page by offsetting from a card.
+fn drawing_view_card_rect(ctx: &egui::Context, view: usize) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<egui::Rect>(drawing_view_card_rect_id(view)))
+}
+
 impl App {
     /// Tab for in-progress sketch dimensions. Consumes Tab so focus cannot escape to the toolbar
     /// while creating geometry. Enter is handled after dim TextEdits render (see draw_viewport).
@@ -26137,6 +26161,9 @@ impl App {
                 let cell_w = page.width() * sx;
                 let cell_h = page.height() * sy;
                 let cell = egui::Rect::from_center_size(center, egui::vec2(cell_w, cell_h));
+                // #1681: the drawing walkthrough's orb points at spots on the page relative
+                // to a view's card, so record where each card landed this frame.
+                set_drawing_view_card_rect(ui.ctx(), vi, cell);
 
                 // Corner grips on the selected projection under the Select tool (#1207). Hit
                 // them before the card-move grab so a corner press resizes instead of moves.
