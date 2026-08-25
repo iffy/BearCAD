@@ -18762,7 +18762,7 @@ pub mod tests {
         // PDF: the same labels are emitted with a Tm whose baseline is 0.35em off the
         // layout point (so the glyphs centre on it, matching the SVG/editor).
         assert!(
-            pdf_text.contains("80.0 mm") || pdf_text.contains("(80.0 mm)"),
+            pdf_text.contains("80 mm") || pdf_text.contains("(80 mm)"),
             "PDF should contain the 80 mm label"
         );
     }

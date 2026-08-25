@@ -26992,6 +26992,7 @@ impl App {
                                 glam::Vec2::new(slb.x, slb.y),
                                 glam::Vec2::new(out_screen.x, out_screen.y),
                                 crate::drawing::text_device_width(dim_font, &label),
+                                dim_font,
                                 5.0 * px_per_pt,
                             );
                             let label_screen = egui::pos2(lp.x, lp.y);
@@ -27131,6 +27132,7 @@ impl App {
                             glam::Vec2::new(slb.x, slb.y),
                             glam::Vec2::new(out_screen.x, out_screen.y),
                             crate::drawing::text_device_width(dim_font, &label_text),
+                            dim_font,
                             5.0 * px_per_pt,
                         );
                         let label_screen = egui::pos2(lp.x, lp.y);
@@ -27292,6 +27294,7 @@ impl App {
                         glam::Vec2::new(slb.x, slb.y),
                         glam::Vec2::new(out_screen.x, out_screen.y),
                         crate::drawing::text_device_width(dim_font, &label),
+                        dim_font,
                         5.0 * px_per_pt,
                     );
                     let label_screen = egui::pos2(lp.x, lp.y);
@@ -37187,7 +37190,7 @@ mod tests {
         assert_eq!(format_live_dimension(88.9, LengthUnit::In), "3.5 in");
         assert_eq!(format_live_dimension(88.9, LengthUnit::Mm), "88.9 mm");
         assert_eq!(format_live_dimension(0.0, LengthUnit::In), "0 in");
-        assert_eq!(format_live_dimension(25.4, LengthUnit::In), "1.0 in");
+        assert_eq!(format_live_dimension(25.4, LengthUnit::In), "1 in");
     }
 
     /// UV-order screen corners for an axis-aligned rect: BL, BR, TR, TL.

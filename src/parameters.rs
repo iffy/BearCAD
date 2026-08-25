@@ -3788,12 +3788,12 @@ mod tests {
         add_parameter(&mut doc, "C".to_string(), "2 * B".to_string()).unwrap();
         assert_eq!(
             format_parameter_value_display(&doc, "A + 5mm"),
-            "10.0 mm (A + 5mm)"
+            "10 mm (A + 5mm)"
         );
-        assert_eq!(format_parameter_value_display(&doc, "A"), "5.0 mm (A)");
+        assert_eq!(format_parameter_value_display(&doc, "A"), "5 mm (A)");
         assert_eq!(
             format_parameter_value_display(&doc, "2 * B"),
-            "20.0 mm (2 * B)"
+            "20 mm (2 * B)"
         );
     }
 
@@ -4296,7 +4296,7 @@ mod tests {
         add_computed_parameter_from_line_length(&mut doc, line_index, None).unwrap();
         doc.lines[lkey(0)].x1 = 25.0;
         recompute_document_geometry(&mut doc).unwrap();
-        assert_eq!(doc.parameters.values().next().unwrap().expression, "25.0 mm");
+        assert_eq!(doc.parameters.values().next().unwrap().expression, "25 mm");
     }
 
     #[test]
@@ -4320,7 +4320,7 @@ mod tests {
         add_computed_parameter_from_line_length(&mut doc, line_index, None).unwrap();
         delete_element(&mut doc, SceneElement::Line(line_index));
         assert_eq!(doc.parameters.len(), 1);
-        assert_eq!(doc.parameters.values().next().unwrap().expression, "10.0 mm");
+        assert_eq!(doc.parameters.values().next().unwrap().expression, "10 mm");
         let health = crate::document_health::recompute_document_health(&doc);
         let param = doc.parameters.keys().next().expect("the parameter");
         assert_eq!(

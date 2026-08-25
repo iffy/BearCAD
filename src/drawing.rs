@@ -1615,17 +1615,23 @@ pub fn dimension_label_layout(
     b: glam::Vec2,
     outward: glam::Vec2,
     text_w: f32,
+    text_h: f32,
     gap: f32,
 ) -> (glam::Vec2, f32) {
     let along = b - a;
     let len = along.length();
     let dir = if len > 1e-3 { along / len } else { glam::Vec2::new(1.0, 0.0) };
     let mid = (a + b) * 0.5;
+    // The returned point is the label's visual *centre*, so half a glyph has to come out of
+    // the gap before the text clears the stroke (#1716). Without it a `gap` of 5 pt put an
+    // 11 pt label's lower edge about a point off the line -- close enough to read as sitting
+    // on it, worst of all where the label runs alongside the stroke for its whole width.
+    let clear = gap + text_h * DIM_LABEL_MID_EM;
     if text_w + gap <= len {
-        (mid + outward * gap, readable_text_angle(dir))
+        (mid + outward * clear, readable_text_angle(dir))
     } else {
         // Too short: sit horizontally just past the far end, on the outward side.
-        (b + dir * (text_w * 0.5 + gap) + outward * gap, 0.0)
+        (b + dir * (text_w * 0.5 + gap) + outward * clear, 0.0)
     }
 }
 
@@ -1999,7 +2005,7 @@ fn render_view_geometry<C: Canvas>(
                 let (sla, slb) = (to_screen(geom.line.0), to_screen(geom.line.1));
                 let out_screen =
                     (to_screen(geom.line.0 + outward) - to_screen(geom.line.0)).normalize_or_zero();
-                let (lp, ang) = dimension_label_layout(sla, slb, out_screen, text_device_width(11.0, &label), 5.0);
+                let (lp, ang) = dimension_label_layout(sla, slb, out_screen, text_device_width(11.0, &label), 11.0, 5.0);
                 canvas.text_rot(lp.x, lp.y, 11.0, Anchor::Middle, &label, ang);
             }
         }
@@ -2050,6 +2056,7 @@ fn render_view_geometry<C: Canvas>(
             sb,
             out_screen,
             text_device_width(11.0, &label),
+            11.0,
             5.0,
         );
         canvas.text_rot(lp.x, lp.y, 11.0, Anchor::Middle, &label, ang);
@@ -2083,7 +2090,7 @@ fn render_view_geometry<C: Canvas>(
         let (sa, sb) = (to_screen(pa), to_screen(pb));
         let out_screen = (to_screen(pa + out) - to_screen(pa)).normalize_or_zero();
         let (lp, ang) =
-            dimension_label_layout(sa, sb, out_screen, text_device_width(11.0, &label), 5.0);
+            dimension_label_layout(sa, sb, out_screen, text_device_width(11.0, &label), 11.0, 5.0);
         canvas.text_rot(lp.x, lp.y, 11.0, Anchor::Middle, &label, ang);
     }
 
@@ -3007,6 +3014,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
             glam::Vec2::new(100.0, 0.0),
             out,
             30.0,
+            11.0,
             5.0,
         );
         assert!(ang.abs() < 1e-3, "horizontal line → horizontal label");
@@ -3018,6 +3026,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
             glam::Vec2::new(0.0, 100.0),
             glam::Vec2::new(1.0, 0.0),
             30.0,
+            11.0,
             5.0,
         );
         assert!((ang_v + FRAC_PI_2).abs() < 1e-3, "downward vertical → reads bottom-to-top (−90°)");
@@ -3034,16 +3043,39 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
             glam::Vec2::new(4.0, 0.0),
             out,
             30.0,
+            11.0,
             5.0,
         );
         assert!(ang_s.abs() < 1e-3, "short line → horizontal label");
         assert!(pos_s.x > 4.0, "label sits past the far end");
-        // The returned point is the visual centre, offset `gap` off the line so a centred
-        // 11 pt box does not sit on the stroke (#1350).
+        // The returned point is the visual centre, offset `gap` plus half a glyph off the
+        // line so a centred 11 pt box clears the stroke (#1350, #1716).
         assert!(
-            (pos.y + 5.0).abs() < 1e-3,
-            "fitting label's visual centre is `gap` off the line"
+            (pos.y + 5.0 + 11.0 * DIM_LABEL_MID_EM).abs() < 1e-3,
+            "fitting label's visual centre clears the line by gap plus half a glyph"
         );
+    }
+
+    /// #1716: the label clears the dimension stroke by the gap *plus* half a glyph, so a
+    /// centred label never crowds the line -- vertical and slanted labels most of all, where
+    /// the text runs alongside the stroke for its whole width.
+    #[test]
+    fn dimension_label_clears_the_stroke_by_more_than_half_a_glyph() {
+        let size = 11.0;
+        let gap = 5.0;
+        for (a, b, out) in [
+            (glam::Vec2::ZERO, glam::Vec2::new(100.0, 0.0), glam::Vec2::new(0.0, -1.0)),
+            (glam::Vec2::ZERO, glam::Vec2::new(0.0, 100.0), glam::Vec2::new(1.0, 0.0)),
+            (glam::Vec2::ZERO, glam::Vec2::new(70.0, 70.0), glam::Vec2::new(0.7, -0.7)),
+        ] {
+            let (pos, _) = dimension_label_layout(a, b, out.normalize(), 30.0, size, gap);
+            let mid = (a + b) * 0.5;
+            let off = (pos - mid).dot(out.normalize());
+            assert!(
+                off >= gap + size * DIM_LABEL_MID_EM,
+                "label sits {off} off the line; needs gap plus half a glyph"
+            );
+        }
     }
 
     /// #1350: SVG `text_rot` treats `(x, y)` as the visual centre (matching the editor's
@@ -3470,7 +3502,7 @@ label_hidden: false,
         let svg = drawing_to_svg(&doc, dkey(0)).unwrap();
         assert!(!svg.contains(auto_caption), "a custom template replaces the auto caption");
         assert!(
-            svg.contains("Width 40.0 mm"),
+            svg.contains("Width 40 mm"),
             "custom template interpolates {{param}} fields"
         );
         // Bottom-right: anchored at (cell_x + cell_w - CELL_PAD, cell_y + cell_h - 8).

@@ -1629,7 +1629,7 @@ mod tests {
         // the arc length shown in labels/introspection is longer.
         assert!(doc.lines[lkey(0)].length() > 10.5);
         let expr = default_distance_expression(&doc, sketch, DistanceTarget::LineLength(lkey(0)));
-        assert_eq!(expr, "10.0 mm");
+        assert_eq!(expr, "10 mm");
         // Solving the dimension moves the endpoints so the chord matches.
         add_distance_constraint(
             &mut doc,
@@ -1769,7 +1769,7 @@ mod tests {
         let label = constraint_label(&doc, nkey(0));
         assert!(label.starts_with("Constraint 0"));
         assert!(label.contains("Line 0 length"));
-        assert!(label.contains("10.0 mm"));
+        assert!(label.contains("10 mm"));
     }
 
     #[test]
@@ -1817,7 +1817,7 @@ mod tests {
         )
         .unwrap();
         let label = constraint_label(&doc, nkey(0));
-        assert!(label.contains("Ø10.0 mm"));
+        assert!(label.contains("Ø10 mm"));
         assert!(label.contains("Circle 0 diameter"));
     }
 
@@ -1832,7 +1832,7 @@ mod tests {
         add_distance_constraint(&mut doc, sketch, DistanceTarget::LineLength(lkey(0)), "25.4mm".to_string())
             .unwrap();
         let label = constraint_label(&doc, nkey(0));
-        assert!(label.contains("1.0 in"), "expected inches in {label:?}");
+        assert!(label.contains("1 in"), "expected inches in {label:?}");
         assert!(!label.contains("mm"), "should not show mm: {label:?}");
     }
 
@@ -1852,7 +1852,7 @@ mod tests {
         )
         .unwrap();
         let label = constraint_label(&doc, nkey(0));
-        assert!(label.contains("1.0 ft"), "expected feet in {label:?}");
+        assert!(label.contains("1 ft"), "expected feet in {label:?}");
     }
 
     #[test]

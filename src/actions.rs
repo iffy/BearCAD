@@ -28351,7 +28351,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         });
         assert_eq!(state.doc.parameters.len(), 1);
         assert_eq!(state.doc.parameters.values().next().unwrap().name, "line0_length");
-        assert_eq!(state.doc.parameters.values().next().unwrap().expression, "15.0 mm");
+        assert_eq!(state.doc.parameters.values().next().unwrap().expression, "15 mm");
         assert!(crate::parameters::parameter_value_is_readonly(
             &state.doc.parameters.values().next().unwrap()
         ));

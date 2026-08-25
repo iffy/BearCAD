@@ -1638,16 +1638,16 @@ mod tests {
         // Parameters and expressions show their value.
         assert_eq!(
             value_input_computed_display("gap", ValueKind::Length, &doc),
-            Some("3.0 mm".to_string())
+            Some("3 mm".to_string())
         );
         assert_eq!(
             value_input_computed_display("gap * 2", ValueKind::Length, &doc),
-            Some("6.0 mm".to_string())
+            Some("6 mm".to_string())
         );
         // Inline definitions preview their right-hand side.
         assert_eq!(
             value_input_computed_display("a = 2 + 3", ValueKind::Length, &doc),
-            Some("5.0 mm".to_string())
+            Some("5 mm".to_string())
         );
         // Counts stay unitless and hide when identical.
         assert_eq!(value_input_computed_display("4", ValueKind::Count, &doc), None);
@@ -1673,26 +1673,26 @@ mod tests {
         let doc = Document::default();
         assert_eq!(value_input_computed_display("10 mm", ValueKind::Length, &doc), None);
         assert_eq!(value_input_computed_display("10mm", ValueKind::Length, &doc), None);
-        assert_eq!(value_input_computed_display("10.0 mm", ValueKind::Length, &doc), None);
+        assert_eq!(value_input_computed_display("10 mm", ValueKind::Length, &doc), None);
         assert_eq!(value_input_computed_display("10.00 mm", ValueKind::Length, &doc), None);
         assert_eq!(value_input_computed_display("10.50 mm", ValueKind::Length, &doc), None);
         assert_eq!(value_input_computed_display("12.50mm", ValueKind::Length, &doc), None);
         // Bare number: the unit is a real difference, even when the digits only add `.0`.
         assert_eq!(
             value_input_computed_display("10", ValueKind::Length, &doc),
-            Some("10.0 mm".to_string())
+            Some("10 mm".to_string())
         );
         assert_eq!(
             value_input_computed_display("10.00", ValueKind::Length, &doc),
-            Some("10.0 mm".to_string())
+            Some("10 mm".to_string())
         );
         assert_eq!(value_input_computed_display("45.0 deg", ValueKind::Angle, &doc), None);
         assert_eq!(value_input_computed_display("45.00deg", ValueKind::Angle, &doc), None);
         assert_eq!(value_input_computed_display("90.0deg", ValueKind::Angle, &doc), None);
         assert_eq!(value_input_computed_display("4.0", ValueKind::Count, &doc), None);
         assert_eq!(value_input_computed_display("4.00", ValueKind::Count, &doc), None);
-        assert_eq!(canonical_value_text("10.00 mm"), canonical_value_text("10.0 mm"));
-        assert_eq!(canonical_value_text("10 mm"), canonical_value_text("10.0 mm"));
+        assert_eq!(canonical_value_text("10.00 mm"), canonical_value_text("10 mm"));
+        assert_eq!(canonical_value_text("10 mm"), canonical_value_text("10 mm"));
         assert_eq!(canonical_value_text("10.50mm"), canonical_value_text("10.5 mm"));
         // Sketch fields format in the sketch unit; trailing zeros still hide.
         assert_eq!(
@@ -1723,7 +1723,7 @@ mod tests {
                 crate::value::LengthUnit::In,
                 crate::value::AngleUnit::Deg,
             ),
-            Some("1.0 in".to_string())
+            Some("1 in".to_string())
         );
     }
 
@@ -1793,7 +1793,7 @@ mod tests {
                 None,
                 Some(10.0),
             ),
-            Some("10.0 mm".to_string())
+            Some("10 mm".to_string())
         );
         assert!(
             value_input_limit_warning("1000", ValueKind::Length, &doc, None, Some(10.0)).is_some()

@@ -430,8 +430,16 @@ pub fn format_length_display_in(v_mm: f32, unit: LengthUnit) -> String {
     if v_mm.abs() < 0.1 {
         format!("0 {}", unit.label())
     } else {
-        format!("{:.1} {}", v_mm / unit.to_mm(), unit.label())
+        format!("{} {}", trim_trailing_zero(v_mm / unit.to_mm()), unit.label())
     }
+}
+
+/// One decimal place, with a trailing `.0` dropped (#1715): `50` rather than `50.0`, but
+/// `37.7` intact. Every displayed length goes through here, so whole numbers read clean
+/// wherever they appear.
+fn trim_trailing_zero(v: f32) -> String {
+    let text = format!("{v:.1}");
+    text.strip_suffix(".0").map(str::to_string).unwrap_or(text)
 }
 
 /// Format a circle diameter (stored internally in mm) for display in `unit` (#85).
@@ -439,7 +447,7 @@ pub fn format_diameter_display_in(v_mm: f32, unit: LengthUnit) -> String {
     if v_mm.abs() < 0.1 {
         format!("Ø0 {}", unit.label())
     } else {
-        format!("Ø{:.1} {}", v_mm / unit.to_mm(), unit.label())
+        format!("Ø{} {}", trim_trailing_zero(v_mm / unit.to_mm()), unit.label())
     }
 }
 
@@ -1427,6 +1435,17 @@ impl<'a> AngleParser<'a> {
 
 #[cfg(test)]
 mod tests {
+    /// #1715: a whole number reads as `50 mm`, not `50.0 mm` -- the trailing zero is noise
+    /// on every dimension label. A real fraction keeps its digit.
+    #[test]
+    fn length_display_drops_a_trailing_zero() {
+        assert_eq!(format_length_display_in(50.0, LengthUnit::Mm), "50 mm");
+        assert_eq!(format_length_display_in(37.7, LengthUnit::Mm), "37.7 mm");
+        assert_eq!(format_length_display_in(37.65, LengthUnit::Mm), "37.7 mm");
+        assert_eq!(format_diameter_display_in(8.0, LengthUnit::Mm), "\u{d8}8 mm");
+        assert_eq!(format_diameter_display_in(8.5, LengthUnit::Mm), "\u{d8}8.5 mm");
+    }
+
     use crate::model::unit_key_for_slot as ukey;
     use crate::model::unit_instance_key_for_slot as uikey;
     use super::*;
@@ -1664,10 +1683,10 @@ mod tests {
     #[test]
     fn format_length_display_in_converts_to_target_unit() {
         assert_eq!(format_length_display_in(0.0, LengthUnit::In), "0 in");
-        assert_eq!(format_length_display_in(25.4, LengthUnit::In), "1.0 in");
-        assert_eq!(format_length_display_in(304.8, LengthUnit::Ft), "1.0 ft");
-        assert_eq!(format_length_display_in(1000.0, LengthUnit::M), "1.0 m");
-        assert_eq!(format_length_display_in(10.0, LengthUnit::Cm), "1.0 cm");
+        assert_eq!(format_length_display_in(25.4, LengthUnit::In), "1 in");
+        assert_eq!(format_length_display_in(304.8, LengthUnit::Ft), "1 ft");
+        assert_eq!(format_length_display_in(1000.0, LengthUnit::M), "1 m");
+        assert_eq!(format_length_display_in(10.0, LengthUnit::Cm), "1 cm");
         assert_eq!(format_length_display_in(53.3, LengthUnit::Mm), "53.3 mm");
         // Zero-snap threshold stays in mm-space, not converted-unit space.
         assert_eq!(format_length_display_in(0.05, LengthUnit::In), "0 in");
@@ -1676,7 +1695,7 @@ mod tests {
     #[test]
     fn format_diameter_display_in_converts_to_target_unit() {
         assert_eq!(format_diameter_display_in(0.0, LengthUnit::In), "Ø0 in");
-        assert_eq!(format_diameter_display_in(25.4, LengthUnit::In), "Ø1.0 in");
+        assert_eq!(format_diameter_display_in(25.4, LengthUnit::In), "Ø1 in");
         assert_eq!(format_diameter_display_in(53.3, LengthUnit::Mm), "Ø53.3 mm");
     }
 
@@ -1820,7 +1839,7 @@ mod tests {
             step: None,
             source: None,
         });
-        assert_eq!(interpolate_text("Dim: {foo}", &doc), "Dim: 20.0 mm");
+        assert_eq!(interpolate_text("Dim: {foo}", &doc), "Dim: 20 mm");
         // Arbitrary expression: foo + 3in = 20 + 76.2 = 96.2 mm.
         assert_eq!(interpolate_text("{foo + 3in}", &doc), "96.2 mm");
         // Literal braces via doubling.
@@ -1849,7 +1868,7 @@ mod tests {
             source: None,
         });
         doc.default_length_unit = LengthUnit::In;
-        assert_eq!(interpolate_text("{foo}", &doc), "3.0 in");
+        assert_eq!(interpolate_text("{foo}", &doc), "3 in");
     }
 
     /// #1394: a bare number in a doc-aware length expression is interpreted in the
