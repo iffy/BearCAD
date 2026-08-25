@@ -3177,7 +3177,11 @@ fn apply_picker_focus_override(views: &mut [ToolPickerView], armed: Option<Picke
 
 pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let tool_title = tool_context_title(input);
-    let name = single_nameable_from_selection(input.selection).map(|element| NameControl { element });
+    // The Dimension tool measures the pick; it never edits it, so its pane carries no
+    // per-element rows (#1731) -- the Name field belongs to the Select tool's inspector.
+    let name = (input.tool != Tool::Dimension)
+        .then(|| single_nameable_from_selection(input.selection).map(|element| NameControl { element }))
+        .flatten();
     // The selected unit instance's own section (#734).
     let unit_instance = match input.selection.single() {
         Some(SceneElement::UnitInstance(instance)) => {
@@ -3545,9 +3549,10 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         };
     }
 
-    // The Dimension tool in 3D measures the selection (#618) — its pane is the
-    // derived-parameter block, not per-entity editing, so no Construction toggle (#630).
-    let targets = if input.tool == Tool::Dimension && !input.in_sketch {
+    // The Dimension tool measures the selection (#618) — its pane is the derived-parameter
+    // block, not per-entity editing, so no Construction toggle, in a sketch as in 3D
+    // (#630, #1731).
+    let targets = if input.tool == Tool::Dimension {
         Vec::new()
     } else {
         construction_targets_from_selection(input.selection)
@@ -11265,6 +11270,32 @@ mod tests {
             .selection_picker
             .expect("always-present select picker");
         assert!(empty_picker.is_empty());
+    }
+
+    /// #1731: the Dimension tool measures what you pick -- it never edits the picked line,
+    /// so its pane carries no Name field and no Construction toggle, in a sketch as in 3D.
+    #[test]
+    fn dimension_tool_pane_has_no_name_or_construction_rows() {
+        use crate::hierarchy::SceneElement;
+        let doc = doc_with_a_sketch();
+        let mut selection = SceneSelection::default();
+        crate::selection::click_scene_selection(&mut selection, SceneElement::Line(lkey(0)), true);
+        for in_sketch in [true, false] {
+            let input = ContextInput {
+                tool: Tool::Dimension,
+                in_sketch,
+                open_sketch: in_sketch.then(|| skey(0)),
+                in_drawing_workbench: false,
+                open_drawing: None,
+                ..input(&doc, &selection)
+            };
+            let pane = context_pane_content(&input);
+            assert!(pane.name.is_none(), "in_sketch={in_sketch}: no Name field");
+            assert!(
+                pane.construction.is_none(),
+                "in_sketch={in_sketch}: no Construction toggle"
+            );
+        }
     }
 
     #[test]
