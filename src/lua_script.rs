@@ -10066,6 +10066,7 @@ pub mod tests {
             assert(names.curves == "Curves")
             assert(names.slice == "Slice")
             assert(names["repeat"] == "Repeat")
+            assert(names.sketch_mirror == "Mirror in a sketch")
             "#
             .replace("__COUNT__", &crate::tutorial::TUTORIALS.len().to_string()),
         );
@@ -10326,6 +10327,39 @@ pub mod tests {
             assert(op.length == "300", "distance, got " .. tostring(op.length))
             assert(op.mode == "count_fit_centers", "mode, got " .. tostring(op.mode))
             assert(op.outputs == 4, "four extra copies, got " .. tostring(op.outputs))
+            "#,
+        );
+    }
+
+    /// #1680: the in-sketch Mirror tutorial walks with assists and leaves two posts, one
+    /// each side of the axis, of equal volume.
+    #[test]
+    fn sketch_mirror_tutorial_lua_walks_and_reflects_a_circle() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.ui.tutorial("sketch_mirror")
+            local guard = 0
+            while bearcad.ui.tutorial_step() ~= nil do
+              guard = guard + 1
+              assert(guard < 60, "sketch mirror tutorial should finish")
+              local at = bearcad.ui.tutorial_step()
+              bearcad.ui.tutorial_assist()
+              if bearcad.ui.tutorial_step() == at then
+                bearcad.ui.tutorial_next()
+              end
+            end
+            assert(bearcad.count("sketch_mirror") == 1, "one mirror op")
+            assert(bearcad.count("circle") == 2, "the circle plus its reflection")
+            local a = bearcad.get{ kind = "circle", index = 0 }
+            local b = bearcad.get{ kind = "circle", index = 1 }
+            assert(a.x * b.x < 0, "the pair straddles the axis: " .. a.x .. " / " .. b.x)
+            assert(math.abs(a.x + b.x) < 0.01, "and sits the same distance either side")
+            assert(bearcad.count("body") == 2, "two posts")
+            local v = math.pi * 10 * 10 * 15
+            for i = 0, 1 do
+              local got = bearcad.body_stats(i).volume
+              assert(math.abs(got - v) / v < 0.02, "post " .. i .. " volume " .. got)
+            end
             "#,
         );
     }

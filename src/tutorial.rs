@@ -410,6 +410,12 @@ pub static TUTORIALS: &[Tutorial] = &[
         title: "Repeat",
         steps: REPEAT_STEPS,
     },
+    // #1680: reflect a sketch shape across an axis.
+    Tutorial {
+        name: "sketch_mirror",
+        title: "Mirror in a sketch",
+        steps: SKETCH_MIRROR_STEPS,
+    },
 ];
 
 pub fn tutorial_index(name: &str) -> Option<usize> {
@@ -6053,6 +6059,241 @@ static REPEAT_STEPS: &[Step] = &[
     ),
 ];
 
+// --- In-sketch Mirror tutorial (#1680) -------------------------------------------------
+
+/// Where the source circle sits, off to one side of the sketch's vertical axis.
+const MIRROR_CENTRE_MM: (f32, f32) = (30.0, 25.0);
+const MIRROR_RADIUS_MM: f32 = 10.0;
+
+fn mirror_tool_active(app: &AppState) -> bool {
+    app.tool == Tool::Mirror
+}
+
+fn has_sketch_mirror(app: &AppState) -> bool {
+    !app.doc.sketch_mirror_ops.is_empty()
+}
+
+fn mirror_circle_drawn(app: &AppState) -> bool {
+    !app.doc.circles.is_empty()
+}
+
+fn mirror_circle_started(app: &AppState) -> bool {
+    app.creating_circle.is_some() || mirror_circle_drawn(app)
+}
+
+fn mirror_shape_picked(app: &AppState) -> bool {
+    has_sketch_mirror(app)
+        || app
+            .creating_sketch_mirror
+            .as_ref()
+            .is_some_and(|c| c.has_targets())
+}
+
+fn mirror_line_picked(app: &AppState) -> bool {
+    has_sketch_mirror(app)
+        || app
+            .creating_sketch_mirror
+            .as_ref()
+            .is_some_and(|c| c.line.is_some())
+}
+
+/// The circle the walkthrough draws — the one the mirror reflects.
+fn mirror_source_circle(app: &AppState) -> Option<crate::model::CircleKey> {
+    app.doc.circles.keys().next()
+}
+
+fn mirror_centre_guide(app: &AppState) -> Option<glam::Vec3> {
+    ground_local(app, MIRROR_CENTRE_MM.0, MIRROR_CENTRE_MM.1)
+}
+
+/// A point up the green Y axis, clear of the circle — the mirror line.
+fn mirror_axis_guide(app: &AppState) -> Option<glam::Vec3> {
+    let _ = app;
+    Some(glam::Vec3::new(0.0, 80.0, 0.0))
+}
+
+/// Centre of the nth circle in the sketch, for the two extrude picks.
+fn mirror_circle_guide(app: &AppState, nth: usize) -> Option<glam::Vec3> {
+    let c = app.doc.circles.keys().nth(nth).map(|k| &app.doc.circles[k])?;
+    ground_local(app, c.cx, c.cy)
+}
+
+fn mirror_first_circle_guide(app: &AppState) -> Option<glam::Vec3> {
+    mirror_circle_guide(app, 0)
+}
+
+fn mirror_second_circle_guide(app: &AppState) -> Option<glam::Vec3> {
+    mirror_circle_guide(app, 1).or_else(|| mirror_circle_guide(app, 0))
+}
+
+fn extrude_faces_picked(app: &AppState, want: usize) -> bool {
+    has_extrusion(app)
+        || app
+            .creating_extrusion
+            .as_ref()
+            .is_some_and(|c| c.faces.len() >= want)
+}
+
+fn mirror_one_face_picked(app: &AppState) -> bool {
+    extrude_faces_picked(app, 1)
+}
+
+fn mirror_both_faces_picked(app: &AppState) -> bool {
+    extrude_faces_picked(app, 2)
+}
+
+fn assist_draw_mirror_circle(app: &mut AppState) {
+    if mirror_circle_drawn(app) {
+        return;
+    }
+    ensure_ground_sketch(app);
+    app.apply(Action::CreateCircle {
+        cx: MIRROR_CENTRE_MM.0,
+        cy: MIRROR_CENTRE_MM.1,
+        r: MIRROR_RADIUS_MM,
+        diameter_expr: Some(format!("{}", MIRROR_RADIUS_MM * 2.0)),
+    });
+}
+
+fn assist_mirror_the_circle(app: &mut AppState) {
+    if has_sketch_mirror(app) {
+        return;
+    }
+    assist_draw_mirror_circle(app);
+    let Some(circle) = mirror_source_circle(app) else {
+        return;
+    };
+    let Some(sketch) = app.doc.circles.get(circle).map(|c| c.sketch) else {
+        return;
+    };
+    app.apply(Action::CreateSketchMirrorOperation {
+        sketch,
+        line: crate::model::SketchMirrorAxis::Y,
+        line_targets: Vec::new(),
+        circle_targets: vec![circle],
+    });
+}
+
+fn assist_extrude_mirrored_pair(app: &mut AppState) {
+    if has_extrusion(app) {
+        return;
+    }
+    assist_mirror_the_circle(app);
+    let circles: Vec<_> = app.doc.circles.keys().collect();
+    let Some(&first) = circles.first() else {
+        return;
+    };
+    let Some(sketch) = app.doc.circles.get(first).map(|c| c.sketch) else {
+        return;
+    };
+    let faces: Vec<_> = circles
+        .iter()
+        .map(|&k| crate::model::ExtrudeFace::Circle(k))
+        .collect();
+    if app.sketch_session.is_some() {
+        app.apply(Action::ExitSketch);
+    }
+    app.apply(Action::CreateExtrusion {
+        sketch,
+        faces,
+        distance: 15.0,
+        body: crate::actions::ExtrudeBodyChoice::New,
+        target: None,
+        expression: Some("15".into()),
+        symmetric: false,
+        taper: 0.0,
+        taper_mode: crate::model::ExtrudeTaperMode::Distance,
+        taper_expression: None,
+    });
+}
+
+/// #1680: reflect a sketch circle across the Y axis, then extrude the pair.
+static SKETCH_MIRROR_STEPS: &[Step] = &[
+    plain_step(
+        "Mirror reflects sketch shapes across a line. Draw one side and the other comes \
+         free \u{2014} and stays linked.",
+        StepAnchor::None,
+        None,
+    ),
+    plain_step(
+        "Click the Circle tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Circle)),
+        Some(circle_tool_active),
+    ),
+    plain_step_enter(
+        "Click the ground to one side of the green Y axis.",
+        StepAnchor::World(mirror_centre_guide),
+        Some(mirror_circle_started),
+        ensure_ground_sketch,
+    ),
+    assisted_step(
+        "Type `20` for the diameter, then Enter.",
+        StepAnchor::None,
+        Some(mirror_circle_drawn),
+        StepAssist {
+            label: "Draw it for me",
+            run: assist_draw_mirror_circle,
+        },
+        Some(TypeHint::Fixed("20")),
+    ),
+    plain_step(
+        "Click the Mirror tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Mirror)),
+        Some(mirror_tool_active),
+    ),
+    plain_step(
+        "Click the circle \u{2014} that's what gets reflected.",
+        StepAnchor::World(mirror_first_circle_guide),
+        Some(mirror_shape_picked),
+    ),
+    plain_step(
+        "Click the green Y axis \u{2014} that's the mirror line.",
+        StepAnchor::World(mirror_axis_guide),
+        Some(mirror_line_picked),
+    ),
+    assisted_step(
+        "Press Enter. A matching circle lands on the far side.",
+        StepAnchor::None,
+        Some(has_sketch_mirror),
+        StepAssist {
+            label: "Mirror it for me",
+            run: assist_mirror_the_circle,
+        },
+        None,
+    ),
+    plain_step(
+        "Click the Extrude tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude)),
+        Some(extrude_tool_active),
+    ),
+    plain_step(
+        "Click one circle.",
+        StepAnchor::World(mirror_first_circle_guide),
+        Some(mirror_one_face_picked),
+    ),
+    plain_step(
+        "Click the other one too \u{2014} Extrude takes both.",
+        StepAnchor::World(mirror_second_circle_guide),
+        Some(mirror_both_faces_picked),
+    ),
+    assisted_step(
+        "Type `15`, then Enter. Two matching posts.",
+        StepAnchor::Ui(UiAnchor::ExtrudeDistance),
+        Some(has_extrusion),
+        StepAssist {
+            label: "Extrude it for me",
+            run: assist_extrude_mirrored_pair,
+        },
+        Some(TypeHint::Fixed("15")),
+    ),
+    plain_step(
+        "The reflection stays tied to its source: change the original and the copy \
+         follows. Nice!",
+        StepAnchor::None,
+        None,
+    ),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6227,10 +6468,15 @@ mod tests {
         assert_eq!(tutorial_index("curves"), Some(15), "#1677: curves is sixteenth");
         assert_eq!(tutorial_index("slice"), Some(16), "#1678: slice is seventeenth");
         assert_eq!(tutorial_index("repeat"), Some(17), "#1679: repeat is eighteenth");
+        assert_eq!(
+            tutorial_index("sketch_mirror"),
+            Some(18),
+            "#1680: sketch mirror is nineteenth"
+        );
         assert_eq!(tutorial_index("bracket"), None, "#1334: build-a-bracket tutorial is gone");
         assert_eq!(tutorial_index("nope"), None);
-        assert_eq!(TUTORIALS.last().unwrap().name, "repeat");
-        assert_eq!(TUTORIALS.len(), 18, "pane lists every remaining walkthrough");
+        assert_eq!(TUTORIALS.last().unwrap().name, "sketch_mirror");
+        assert_eq!(TUTORIALS.len(), 19, "pane lists every remaining walkthrough");
         for tut in TUTORIALS {
             assert_ne!(tut.name, "bracket");
             assert_ne!(tut.title, "Build an angle bracket");
@@ -8392,6 +8638,56 @@ mod tests {
             "two sides should be equal, status={}",
             app.status
         );
+    }
+
+    fn sketch_mirror_tut() -> &'static Tutorial {
+        &TUTORIALS[tutorial_index("sketch_mirror").expect("sketch_mirror tutorial is registered")]
+    }
+
+    /// #1680: reflect a sketch circle across the Y axis, then extrude both.
+    #[test]
+    fn sketch_mirror_tutorial_is_registered_and_mirrors_across_an_axis() {
+        let tut = sketch_mirror_tut();
+        assert_eq!(tut.name, "sketch_mirror");
+        assert_eq!(tut.title, "Mirror in a sketch");
+        let joined: String = tut
+            .steps
+            .iter()
+            .map(|s| s.narration.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("mirror"), "{joined}");
+        assert!(joined.contains("axis"), "{joined}");
+        for tool in [Tool::Circle, Tool::Mirror, Tool::Extrude] {
+            assert!(
+                tut.steps
+                    .iter()
+                    .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::Tool(t)) if t == tool)),
+                "the walkthrough picks {tool:?}"
+            );
+        }
+    }
+
+    /// #1680: the assists leave a mirrored pair of circles, both extruded.
+    #[test]
+    fn sketch_mirror_tutorial_assists_reflect_a_circle_and_extrude_the_pair() {
+        let mut app = AppState::default();
+        finish_tutorial_via_next(&mut app, "sketch_mirror");
+        assert_eq!(
+            app.doc.sketch_mirror_ops.len(),
+            1,
+            "one mirror operation, status={}",
+            app.status
+        );
+        assert_eq!(app.doc.circles.len(), 2, "the circle plus its reflection");
+        let xs: Vec<f32> = app.doc.circles.values().map(|c| c.cx).collect();
+        assert!(
+            xs.iter().any(|x| *x > 0.0) && xs.iter().any(|x| *x < 0.0),
+            "the pair straddles the axis, centres at {xs:?}"
+        );
+        // Disjoint profiles become one extrusion each, so both circles show up as faces.
+        let faces: usize = app.doc.extrusions.values().map(|e| e.faces.len()).sum();
+        assert_eq!(faces, 2, "both circles extrude, status={}", app.status);
     }
 
     fn repeat_tut() -> &'static Tutorial {
