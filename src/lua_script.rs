@@ -10061,6 +10061,7 @@ pub mod tests {
             assert(names.revolve == "Revolve")
             assert(names.tilted_plane == "Angled plane")
             assert(names.offset == "Offset")
+            assert(names.shell == "Shell")
             "#
             .replace("__COUNT__", &crate::tutorial::TUTORIALS.len().to_string()),
         );
@@ -10101,8 +10102,11 @@ pub mod tests {
             while bearcad.ui.tutorial_step() ~= nil do
               guard = guard + 1
               assert(guard < 60, "revolve tutorial should finish")
+              local at = bearcad.ui.tutorial_step()
               bearcad.ui.tutorial_assist()
-              if bearcad.ui.tutorial_step() ~= nil then
+              -- An assist that satisfies its step advances on its own; Next on top of
+              -- that would skip the following step.
+              if bearcad.ui.tutorial_step() == at then
                 bearcad.ui.tutorial_next()
               end
             end
@@ -10125,8 +10129,11 @@ pub mod tests {
             while bearcad.ui.tutorial_step() ~= nil do
               guard = guard + 1
               assert(guard < 60, "angled-plane tutorial should finish")
+              local at = bearcad.ui.tutorial_step()
               bearcad.ui.tutorial_assist()
-              if bearcad.ui.tutorial_step() ~= nil then
+              -- An assist that satisfies its step advances on its own; Next on top of
+              -- that would skip the following step.
+              if bearcad.ui.tutorial_step() == at then
                 bearcad.ui.tutorial_next()
               end
             end
@@ -10150,8 +10157,11 @@ pub mod tests {
             while bearcad.ui.tutorial_step() ~= nil do
               guard = guard + 1
               assert(guard < 60, "offset tutorial should finish")
+              local at = bearcad.ui.tutorial_step()
               bearcad.ui.tutorial_assist()
-              if bearcad.ui.tutorial_step() ~= nil then
+              -- An assist that satisfies its step advances on its own; Next on top of
+              -- that would skip the following step.
+              if bearcad.ui.tutorial_step() == at then
                 bearcad.ui.tutorial_next()
               end
             end
@@ -10164,6 +10174,38 @@ pub mod tests {
             local want = math.pi * (25 * 25 - 20 * 20) * 10
             assert(math.abs(v - want) / want < 0.02,
               "tube volume " .. v .. " should be about " .. want)
+            "#,
+        );
+    }
+
+    /// #1675: the shell tutorial walks with assists and leaves a four-walled box — both
+    /// caps open, a 2 mm wall, and a volume to prove it.
+    #[test]
+    fn shell_tutorial_lua_walks_and_hollows_a_box() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.ui.tutorial("shell")
+            local guard = 0
+            while bearcad.ui.tutorial_step() ~= nil do
+              guard = guard + 1
+              assert(guard < 60, "shell tutorial should finish")
+              local at = bearcad.ui.tutorial_step()
+              bearcad.ui.tutorial_assist()
+              -- An assist that satisfies its step advances on its own; Next on top of
+              -- that would skip the following step.
+              if bearcad.ui.tutorial_step() == at then
+                bearcad.ui.tutorial_next()
+              end
+            end
+            assert(bearcad.count("shell") == 1, "one shell op")
+            local op = bearcad.get{ kind = "shell", index = 0 }
+            assert(op.open_faces == 2, "top and bottom open, got " .. tostring(op.open_faces))
+            assert(op.thickness == "2", "wall, got " .. tostring(op.thickness))
+            -- Four walls only: 20x20x20 block, 2 mm wall, both caps gone.
+            local v = bearcad.body_stats(bearcad.count("body") - 1).volume
+            local want = (20 * 20 - 16 * 16) * 20
+            assert(math.abs(v - want) / want < 0.02,
+              "box volume " .. v .. " should be about " .. want)
             "#,
         );
     }

@@ -375,6 +375,12 @@ pub static TUTORIALS: &[Tutorial] = &[
         title: "Offset",
         steps: OFFSET_STEPS,
     },
+    // #1675: hollow a block into a four-sided box.
+    Tutorial {
+        name: "shell",
+        title: "Shell",
+        steps: SHELL_STEPS,
+    },
 ];
 
 pub fn tutorial_index(name: &str) -> Option<usize> {
@@ -4734,6 +4740,231 @@ static OFFSET_STEPS: &[Step] = &[
     ),
 ];
 
+// --- Shell tutorial (#1675) ------------------------------------------------------------
+
+/// Wall thickness the walkthrough shells to.
+const SHELL_THICKNESS_MM: f32 = 2.0;
+
+fn shell_tool_active(app: &AppState) -> bool {
+    app.tool == Tool::Shell
+}
+
+fn has_shell(app: &AppState) -> bool {
+    !app.doc.shell_ops.is_empty()
+}
+
+fn shell_body_picked(app: &AppState) -> bool {
+    has_shell(app)
+        || app
+            .creating_shell
+            .as_ref()
+            .is_some_and(|c| !c.targets.is_empty())
+}
+
+/// How many faces the in-progress shell has opened (or the committed one holds).
+fn shell_open_face_count(app: &AppState) -> usize {
+    if let Some(op) = app.doc.shell_ops.values().next() {
+        return op.open_faces.len();
+    }
+    app.creating_shell
+        .as_ref()
+        .map(|c| c.open_faces.len())
+        .unwrap_or(0)
+}
+
+fn shell_top_opened(app: &AppState) -> bool {
+    shell_open_face_count(app) >= 1
+}
+
+fn shell_both_ends_opened(app: &AppState) -> bool {
+    shell_open_face_count(app) >= 2
+}
+
+/// Looking up from below, so the block's underside is clickable.
+fn camera_under_the_model(app: &AppState) -> bool {
+    let (_, pitch) = crate::camera::StandardView::Bottom.yaw_pitch();
+    shell_both_ends_opened(app) || (app.cam.pitch - pitch).abs() < 0.2
+}
+
+fn cuboid_bottom_guide(app: &AppState) -> Option<glam::Vec3> {
+    let p = app
+        .doc
+        .primitives
+        .values()
+        .find(|p| p.kind == crate::model::PrimitiveKind::Cuboid)?;
+    crate::primitives::resolve(&app.doc, p).map(|r| r.origin)
+}
+
+/// The tutorial's cuboid and its top / bottom face ids.
+fn shell_cuboid_faces(
+    app: &AppState,
+) -> Option<(crate::model::BodyKey, Vec<crate::model::FaceId>)> {
+    let prim = app
+        .doc
+        .primitives
+        .iter()
+        .find(|(_, p)| p.kind == crate::model::PrimitiveKind::Cuboid)
+        .map(|(k, _)| k)?;
+    let body = live_body_for_primitive(app, crate::model::PrimitiveKind::Cuboid)?;
+    Some((
+        body,
+        vec![
+            crate::model::FaceId::PrimitiveFace {
+                primitive: prim,
+                face: crate::model::PrimitiveFace::CuboidTop,
+            },
+            crate::model::FaceId::PrimitiveFace {
+                primitive: prim,
+                face: crate::model::PrimitiveFace::CuboidBottom,
+            },
+        ],
+    ))
+}
+
+/// Open one more of the block's caps, the way the two click steps do.
+fn assist_open_shell_face(app: &mut AppState, want: usize) {
+    if shell_open_face_count(app) >= want || has_shell(app) {
+        return;
+    }
+    assist_place_cuboid(app);
+    let Some((body, faces)) = shell_cuboid_faces(app) else {
+        return;
+    };
+    let cs = app
+        .creating_shell
+        .get_or_insert_with(crate::actions::CreatingShell::default);
+    if cs.targets.is_empty() {
+        cs.targets.push(body);
+    }
+    cs.picking_faces = true;
+    cs.open_faces = faces.into_iter().take(want).collect();
+}
+
+fn assist_open_shell_top(app: &mut AppState) {
+    assist_open_shell_face(app, 1);
+}
+
+fn assist_look_under_the_model(app: &mut AppState) {
+    let (yaw, pitch) = crate::camera::StandardView::Bottom.yaw_pitch();
+    app.cam.yaw = yaw;
+    app.cam.pitch = pitch;
+}
+
+fn assist_open_shell_bottom(app: &mut AppState) {
+    assist_open_shell_face(app, 2);
+}
+
+fn assist_shell_the_box(app: &mut AppState) {
+    if has_shell(app) {
+        return;
+    }
+    assist_open_shell_face(app, 2);
+    let Some((body, faces)) = shell_cuboid_faces(app) else {
+        return;
+    };
+    app.apply(Action::CreateShellOperation {
+        targets: vec![body],
+        open_faces: faces,
+        thickness: SHELL_THICKNESS_MM.to_string(),
+    });
+}
+
+/// #1675: shell a block with both caps open, leaving a four-walled box.
+static SHELL_STEPS: &[Step] = &[
+    plain_step(
+        "Shell hollows a solid out to a wall. Open both ends and a block becomes a \
+         four-sided box.",
+        StepAnchor::None,
+        None,
+    ),
+    plain_step(
+        "Grab the Shape tool \u{2014} the glowing button, or press `B`.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        Some(shape_tool_active_or_has_cuboid),
+    ),
+    plain_step(
+        "Click Cuboid in the Context pane (or press `B`).",
+        StepAnchor::Ui(UiAnchor::ShapeKind(crate::model::PrimitiveKind::Cuboid)),
+        Some(cuboid_kind_ready),
+    ),
+    plain_step(
+        "Click a ground corner to anchor the block.",
+        StepAnchor::World(ground_anchor_a),
+        Some(cuboid_anchored),
+    ),
+    plain_step(
+        "Click the opposite corner of the base.",
+        StepAnchor::World(ground_anchor_b),
+        Some(cuboid_base_set),
+    ),
+    assisted_step_enter(
+        "Type the height: `20`, then Enter.",
+        StepAnchor::Ui(UiAnchor::ShapeHeight),
+        Some(has_cuboid),
+        StepAssist {
+            label: "Place it for me",
+            run: assist_place_cuboid,
+        },
+        Some(TypeHint::Fixed("20")),
+        ensure_shape_height_focus,
+    ),
+    plain_step(
+        "Click the Shell tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Shell)),
+        Some(shell_tool_active),
+    ),
+    plain_step(
+        "Click the block \u{2014} that's what gets hollowed.",
+        StepAnchor::World(cuboid_body_guide),
+        Some(shell_body_picked),
+    ),
+    assisted_step(
+        "Click the top face to leave it open.",
+        StepAnchor::World(cuboid_top_guide),
+        Some(shell_top_opened),
+        StepAssist {
+            label: "Open it for me",
+            run: assist_open_shell_top,
+        },
+        None,
+    ),
+    assisted_step(
+        "The bottom face is hidden. Click the bear's underside to look up from below.",
+        StepAnchor::Ui(UiAnchor::ViewCube),
+        Some(camera_under_the_model),
+        StepAssist {
+            label: "Turn it over for me",
+            run: assist_look_under_the_model,
+        },
+        None,
+    ),
+    assisted_step(
+        "Click the bottom face to open that one too.",
+        StepAnchor::World(cuboid_bottom_guide),
+        Some(shell_both_ends_opened),
+        StepAssist {
+            label: "Open it for me",
+            run: assist_open_shell_bottom,
+        },
+        None,
+    ),
+    assisted_step(
+        "Type `2` for the wall thickness, then Enter.",
+        StepAnchor::None,
+        Some(has_shell),
+        StepAssist {
+            label: "Shell it for me",
+            run: assist_shell_the_box,
+        },
+        Some(TypeHint::Fixed("2")),
+    ),
+    plain_step(
+        "Four walls, 2 mm thick, open top and bottom. That's Shell. Nice work!",
+        StepAnchor::None,
+        None,
+    ),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4899,10 +5130,11 @@ mod tests {
         assert_eq!(tutorial_index("revolve"), Some(10), "#1672: revolve is eleventh");
         assert_eq!(tutorial_index("tilted_plane"), Some(11), "#1673: angled plane is twelfth");
         assert_eq!(tutorial_index("offset"), Some(12), "#1674: offset is thirteenth");
+        assert_eq!(tutorial_index("shell"), Some(13), "#1675: shell is fourteenth");
         assert_eq!(tutorial_index("bracket"), None, "#1334: build-a-bracket tutorial is gone");
         assert_eq!(tutorial_index("nope"), None);
-        assert_eq!(TUTORIALS.last().unwrap().name, "offset");
-        assert_eq!(TUTORIALS.len(), 13, "pane lists every remaining walkthrough");
+        assert_eq!(TUTORIALS.last().unwrap().name, "shell");
+        assert_eq!(TUTORIALS.len(), 14, "pane lists every remaining walkthrough");
         for tut in TUTORIALS {
             assert_ne!(tut.name, "bracket");
             assert_ne!(tut.title, "Build an angle bracket");
@@ -4957,6 +5189,11 @@ mod tests {
     }
 
     /// Drive a registered tutorial to completion via Next / assist (no predicates).
+    ///
+    /// An assist that satisfies its own step auto-advances (`AppState::apply` runs
+    /// `advance_tutorial`), exactly as it does for a user who presses the button. Pressing
+    /// Next on top of that would skip the *following* step — and its assist with it — so
+    /// Next is only pressed when the assist left us where we were.
     fn finish_tutorial_via_next(app: &mut AppState, name: &str) {
         app.apply(Action::StartTutorial {
             index: tutorial_index(name).unwrap(),
@@ -4969,6 +5206,9 @@ mod tests {
             let step = &TUTORIALS[run.tutorial].steps[run.step];
             if step.assist.is_some() {
                 app.apply(Action::TutorialAssist);
+            }
+            if app.tutorial.is_some() && app.tutorial != Some(run) {
+                continue;
             }
             if app.tutorial.is_some() {
                 app.apply(Action::TutorialNext);
@@ -7056,6 +7296,55 @@ mod tests {
             "two sides should be equal, status={}",
             app.status
         );
+    }
+
+    fn shell_tut() -> &'static Tutorial {
+        &TUTORIALS[tutorial_index("shell").expect("shell tutorial is registered")]
+    }
+
+    /// #1675: hollow a block into a four-sided box — open top *and* bottom.
+    #[test]
+    fn shell_tutorial_is_registered_and_opens_two_faces() {
+        let tut = shell_tut();
+        assert_eq!(tut.name, "shell");
+        assert_eq!(tut.title, "Shell");
+        let joined: String = tut
+            .steps
+            .iter()
+            .map(|s| s.narration.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("top"), "{joined}");
+        assert!(joined.contains("bottom"), "{joined}");
+        assert!(
+            tut.steps
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::Tool(Tool::Shell)))),
+            "the walkthrough picks the Shell tool"
+        );
+        assert!(
+            tut.steps
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::ViewCube))),
+            "and turns the model over to reach the bottom face"
+        );
+    }
+
+    /// #1675: the assists leave a shell with both caps open — a four-walled box.
+    #[test]
+    fn shell_tutorial_assists_hollow_a_four_sided_box() {
+        let mut app = AppState::default();
+        finish_tutorial_via_next(&mut app, "shell");
+        assert_eq!(
+            app.doc.shell_ops.len(),
+            1,
+            "one shell operation, status={}",
+            app.status
+        );
+        let op = app.doc.shell_ops.values().next().unwrap();
+        assert_eq!(op.open_faces.len(), 2, "top and bottom are both open");
+        assert_eq!(op.thickness, SHELL_THICKNESS_MM.to_string());
+        assert!(!op.outputs.is_empty(), "the shell makes a body");
     }
 
     fn offset_tut() -> &'static Tutorial {
