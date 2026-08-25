@@ -13,10 +13,10 @@ assert(bearcad.ui.workbench() == "model", "and leaving it comes back")
 bearcad.cross_section{ name = "Front half" }
 bearcad.ui.wait(5)
 assert(bearcad.ui.workbench() == "view", "a new view opens the View workbench")
--- The View bar carries only its own tools.
+-- The View bar carries only its own tools: Select and the cutting-plane tool (#1687).
 local tools = bearcad.ui.toolbar_tools()
-assert(#tools == 1 and tools[1] == "select",
-  "the View bar is Select alone for now, got " .. table.concat(tools, ", "))
+assert(#tools == 2 and tools[1] == "select" and tools[2] == "section_plane",
+  "the View bar is Select plus the cutting-plane tool, got " .. table.concat(tools, ", "))
 
 bearcad.ui.workbench("model")
 bearcad.ui.wait(3)
