@@ -14745,23 +14745,20 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 // switching from here is how you get between the model, a drawing, and a
                 // cross-section view without hunting for the row that opens it.
                 let current = self.state.workbench();
-                let picker = ui.button(format!("{} ⏷", current.label()));
+                // As tall as the tool buttons beside it (#1711), so the bar reads as one row.
+                let picker = ui.add(
+                    egui::Button::new(format!("{} \u{23f7}", current.label()))
+                        .min_size(egui::vec2(0.0, TOOLBAR_ICON_SIZE)),
+                );
                 let mut switch_to: Option<actions::Workbench> = None;
+                // Only what this document can be switched to (#1710): a workbench with
+                // nothing to work on yet isn't offered at all.
+                let reachable = self.state.reachable_workbenches();
                 egui::Popup::menu(&picker).show(|ui| {
-                    for &target in actions::Workbench::ALL {
-                        // A workbench with nothing to work on yet (no sketch, no drawing, no
-                        // view) is listed but not selectable, so the set stays legible.
-                        let reachable = match target {
-                            actions::Workbench::Model => true,
-                            actions::Workbench::Sketch => !self.state.doc.sketches.is_empty(),
-                            actions::Workbench::Drawing => !self.state.doc.drawings.is_empty(),
-                            actions::Workbench::View => {
-                                !self.state.doc.cross_sections.is_empty()
-                            }
-                        };
+                    for &target in &reachable {
                         let button =
                             egui::Button::new(target.label()).selected(target == current);
-                        if ui.add_enabled(reachable, button).clicked() {
+                        if ui.add(button).clicked() {
                             switch_to = Some(target);
                             ui.close();
                         }

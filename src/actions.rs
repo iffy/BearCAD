@@ -9154,6 +9154,22 @@ impl AppState {
         }
     }
 
+    /// The workbenches this document can actually be switched to (#1710): Modeling always,
+    /// and each of the others once there is something for it to work on. The toolbar's
+    /// picker lists exactly these -- a workbench you cannot enter is not shown at all.
+    pub fn reachable_workbenches(&self) -> Vec<Workbench> {
+        Workbench::ALL
+            .iter()
+            .copied()
+            .filter(|target| match target {
+                Workbench::Model => true,
+                Workbench::Sketch => !self.doc.sketches.is_empty(),
+                Workbench::Drawing => !self.doc.drawings.is_empty(),
+                Workbench::View => !self.doc.cross_sections.is_empty(),
+            })
+            .collect()
+    }
+
     /// Which view a cut action acts on (#1687): the one named, or the open one.
     fn cross_section_target(
         &self,
@@ -28331,6 +28347,30 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             lua.iter().any(|l| l.contains("add_geometric_constraint(\"coincident\")")),
             "{lua:?}"
         );
+    }
+
+    /// #1710: the workbench picker lists only what you can switch to -- a fresh document
+    /// has nothing but Modeling; a sketch, a drawing and a cross-section each add their own.
+    #[test]
+    fn reachable_workbenches_grow_with_the_document() {
+        let mut state = AppState::default();
+        assert_eq!(state.reachable_workbenches(), vec![Workbench::Model]);
+
+        let plane = state.doc.construction_planes.keys().next().expect("a default plane");
+        state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(plane));
+        assert_eq!(
+            state.reachable_workbenches(),
+            vec![Workbench::Model, Workbench::Sketch]
+        );
+
+        state.doc.drawings.insert(crate::model::Drawing::default());
+        assert_eq!(
+            state.reachable_workbenches(),
+            vec![Workbench::Model, Workbench::Sketch, Workbench::Drawing]
+        );
+
+        state.doc.cross_sections.insert(crate::model::CrossSection::default());
+        assert_eq!(state.reachable_workbenches(), Workbench::ALL.to_vec());
     }
 
     #[test]
