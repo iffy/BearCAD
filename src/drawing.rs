@@ -1472,6 +1472,10 @@ pub fn styled_view_geometry(
         })
         .filter(|t| t.area2.abs() > 1e-6)
         .collect();
+    /// How far outside a projected triangle a point may sit and still count as inside, in
+    /// barycentric units (#1713) — enough to close the seam between two triangles of one
+    /// flat, far too little to reach across a real gap.
+    const BARY_TOL: f32 = 1e-5;
     // Whether some face is strictly in front of `(point, depth)`.
     let occluded = |point: glam::Vec2, depth: f32| -> bool {
         tris.iter().any(|t| {
@@ -1479,7 +1483,11 @@ pub fn styled_view_geometry(
             let w0 = (t.p[1] - point).perp_dot(t.p[2] - point) / t.area2;
             let w1 = (t.p[2] - point).perp_dot(t.p[0] - point) / t.area2;
             let w2 = 1.0 - w0 - w1;
-            if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+            // A point on the seam between two triangles of the same flat belongs to both;
+            // float error can put it a hair outside *both*, leaving a crack the hidden edge
+            // shows through — a stub of a hidden line poking out of a solid (#1713). A sliver
+            // of tolerance closes the seam.
+            if w0 < -BARY_TOL || w1 < -BARY_TOL || w2 < -BARY_TOL {
                 return false;
             }
             w0 * t.d[0] + w1 * t.d[1] + w2 * t.d[2] > depth + eps
@@ -2699,6 +2707,57 @@ mod tests {
             (p(20.0, 30.0), p(40.0, 30.0)),
         ]);
         assert_eq!(others.len(), 3, "got {others:?}");
+    }
+
+    /// #1713: a hidden line poked a stub out of the solid in the shaded three-quarter view.
+    /// The occluding face is two triangles; a point on the seam between them was a hair
+    /// outside *both*, so the hidden-line test found a crack and let the edge through there.
+    #[test]
+    fn a_shaded_view_shows_no_stub_of_a_hidden_line() {
+        let bytes = std::fs::read("tests/fixtures/issue_1713.json").expect("fixture");
+        let doc = crate::storage::from_json_bytes(&bytes).expect("load");
+        let d = doc.drawings.values().next().expect("the drawing");
+        let iso = d
+            .views
+            .iter()
+            .find(|v| v.style == crate::model::DrawingViewStyle::Shaded)
+            .expect("the shaded three-quarter view");
+        let (right, up) = resolved_view_axes(&d.views, iso);
+        let project = |p: Vec3| glam::Vec2::new(p.dot(right), p.dot(up));
+        let mut edges = drawing_view_world_edges(&doc, iso);
+        edges.extend(drawing_view_silhouette_edges(&doc, &d.views, iso));
+        let geo = styled_view_geometry(&doc, &d.views, iso);
+        assert!(!geo.segments.is_empty(), "the view strokes something");
+        for (pa, pb) in &geo.segments {
+            // Which edge is this a run of, and how much of it survived hidden-line removal?
+            for (a, b) in &edges {
+                let (qa, qb) = (project(*a), project(*b));
+                let full = (qb - qa).length();
+                if full < 1e-6 {
+                    continue;
+                }
+                let off = |p: &glam::Vec2| {
+                    let t = ((*p - qa).dot(qb - qa) / (full * full)).clamp(0.0, 1.0);
+                    (*p - (qa + (qb - qa) * t)).length()
+                };
+                if off(pa).max(off(pb)) < 1e-3 {
+                    let frac = (*pb - *pa).length() / full;
+                    // The one real partial here is a third of its edge; the stubs were
+                    // a sample or two long — 3 % and 6 %.
+                    assert!(
+                        frac > 0.2,
+                        "a {:.0} % sliver of a {full:.1} mm edge is a hidden-line leak, \
+                         not geometry: ({:.2},{:.2}) -> ({:.2},{:.2})",
+                        frac * 100.0,
+                        pa.x,
+                        pa.y,
+                        pb.x,
+                        pb.y
+                    );
+                    break;
+                }
+            }
+        }
     }
 
     /// #1644: end to end on the reporter's drawing — the front view's 80 mm vertical line is
