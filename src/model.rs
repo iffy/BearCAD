@@ -5333,6 +5333,56 @@ pub struct Drawing {
 /// A drawing's identity (#1055): stable across deletions of other drawings.
 pub type DrawingKey = crate::arena::Key<Drawing>;
 
+/// A cross-section view (#1671): a saved way of **looking** at the model, not a change to it.
+/// Each cut plane hides whatever sits in front of it and the exposed faces are hatched, so a
+/// view can show the inside of a part without carving anything. A view makes no geometry, so
+/// nothing in the model depends on it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CrossSection {
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The planes this view cuts with; several combine to cut in several directions at once.
+    #[serde(default)]
+    pub cuts: Vec<CrossSectionCut>,
+}
+
+/// One cutting plane of a [`CrossSection`] (#1671). The plane is stored as the frame it was
+/// placed on plus how far it has been slid along its own normal, so nudging a view is a
+/// number, not a re-placement.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CrossSectionCut {
+    /// A point on the plane before `offset_mm` is applied, in world millimetres.
+    pub origin: glam::Vec3,
+    /// The plane's unit normal, in world millimetres.
+    pub normal: glam::Vec3,
+    /// How far the plane slides along its normal from `origin`.
+    #[serde(default)]
+    pub offset_mm: f32,
+    /// Which side survives: by default the material the normal points **away** from is kept,
+    /// so the normal faces the viewer through the cut. Flipping keeps the other side.
+    #[serde(default)]
+    pub flip: bool,
+    /// Turn of the plane about its own normal — kept so a placed plane can be rotated
+    /// in place rather than re-anchored (degrees are the UI's business; this is radians).
+    #[serde(default)]
+    pub roll: f32,
+}
+
+impl Default for CrossSectionCut {
+    fn default() -> Self {
+        Self {
+            origin: glam::Vec3::ZERO,
+            normal: glam::Vec3::Z,
+            offset_mm: 0.0,
+            flip: false,
+            roll: 0.0,
+        }
+    }
+}
+
+/// A cross-section view's identity (#1671): stable across deletions of other views.
+pub type CrossSectionKey = crate::arena::Key<CrossSection>;
+
 /// A free text annotation on a drawing page (#312). Positions and sizes are page-relative
 /// fractions so they stay put across page-size changes and render identically at any zoom.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -5654,6 +5704,10 @@ pub struct Document {
     /// Technical drawings (#180): black-on-white projected sheets of bodies for print/PDF.
     #[serde(default)]
     pub drawings: crate::arena::Arena<Drawing>,
+    /// Cross-section views (#1671): saved ways of *looking* at the model, each a set of
+    /// cutting planes that hide what's in front of them.
+    #[serde(default)]
+    pub cross_sections: crate::arena::Arena<CrossSection>,
     /// Joints between parts (#891): kinematic relationships resolved in place at
     /// recompute — no output bodies.
     #[serde(default)]
@@ -5888,6 +5942,7 @@ impl Default for Document {
             sketch_slice_ops: crate::arena::Arena::new(),
             sketch_texts: crate::arena::Arena::new(),
             drawings: crate::arena::Arena::new(),
+            cross_sections: crate::arena::Arena::new(),
             joints: crate::arena::Arena::new(),
             shape_order: Vec::new(),
             undo_groups: Vec::new(),

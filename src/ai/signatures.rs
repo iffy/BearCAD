@@ -42,6 +42,7 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.constraint_shortcut"         , "bearcad.constraint_shortcut(key)"),
     ("bearcad.copy"                        , "bearcad.copy()"),
     ("bearcad.count"                       , "bearcad.count(kind)"),
+    ("bearcad.cross_section"               , "bearcad.cross_section{ name }"),
     ("bearcad.cuboid"                      , "bearcad.cuboid{ width, depth, height, at?, normal?, u_axis?, name? }"),
     ("bearcad.cylinder"                    , "bearcad.cylinder{ radius, height, at?, normal?, u_axis?, name? }"),
     ("bearcad.delete_selection"            , "bearcad.delete_selection()"),

@@ -299,6 +299,8 @@ pub enum Instruction {
     },
     /// Create a technical drawing (#180), optionally named.
     CreateDrawing { name: Option<String> },
+    /// #1671: add a cross-section view.
+    CreateCrossSection { name: Option<String> },
     /// Set a drawing's page size and margin, in millimetres (#273/#406). `None` keeps the
     /// drawing's current value.
     SetDrawingPage {
@@ -1371,6 +1373,10 @@ impl Instruction {
             Instruction::CreateDrawing { name } => match name {
                 Some(n) => format!("bearcad.drawing{{ name = {:?} }}", n),
                 None => "bearcad.drawing{}".to_string(),
+            },
+            Instruction::CreateCrossSection { name } => match name {
+                Some(n) => format!("bearcad.cross_section{{ name = {:?} }}", n),
+                None => "bearcad.cross_section{}".to_string(),
             },
             Instruction::ExportDrawingPdf { drawing, path } => {
                 format!("bearcad.export_drawing_pdf{{ drawing = {drawing}, path = {path:?} }}")
@@ -2485,6 +2491,11 @@ fn element_script_tokens(
         SceneElement::ConstructionPlane(i) => ElementScriptTokens {
             kind: "construction_plane",
             index: ordinal_or_slot(doc.map(|d| d.construction_planes.keys().position(|k| k == i)), i.index()),
+            point: None,
+        },
+        SceneElement::CrossSection(i) => ElementScriptTokens {
+            kind: "cross_section",
+            index: ordinal_or_slot(doc.map(|d| d.cross_sections.keys().position(|k| k == i)), i.index()),
             point: None,
         },
         SceneElement::Sketch(i) => ElementScriptTokens {
@@ -6611,6 +6622,11 @@ impl ScriptRunner {
             }
             Instruction::CreateDrawing { name } => {
                 let result = state.apply(Action::CreateDrawing { name });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::CreateCrossSection { name } => {
+                let result = state.apply(Action::CreateCrossSection { name });
                 self.record_action_error(result);
                 StepResult::Continue
             }

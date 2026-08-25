@@ -6321,6 +6321,8 @@ pub fn selection_world_bounds(
         match element {
             // A drawing item is on a page, not in the model, so it contributes no bounds.
             SceneElement::DrawingElement { .. } => {}
+            // Nor does a cross-section view, which is a way of looking (#1671).
+            SceneElement::CrossSection(_) => {}
             SceneElement::RepeatOp(op) => {
                 let outputs = doc
                     .repeat_ops

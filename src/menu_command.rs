@@ -48,6 +48,8 @@ pub enum MenuCommand {
     PasteLinked,
     /// Create a new technical drawing (CAD menu, #210).
     NewDrawing,
+    /// Create a new cross-section view (View menu, #1671).
+    NewCrossSection,
     About,
     /// Open the third-party open-source licenses document (Help menu). See #86.
     Licenses,
@@ -109,6 +111,7 @@ impl MenuCommand {
             MenuCommand::Paste => Some(Action::BeginPaste { linked: false }),
             MenuCommand::PasteLinked => Some(Action::BeginPaste { linked: true }),
             MenuCommand::NewDrawing => Some(Action::CreateDrawing { name: None }),
+            MenuCommand::NewCrossSection => Some(Action::CreateCrossSection { name: None }),
             MenuCommand::About => None,
             // Opens a URL in the browser, handled in the app frame loop.
             MenuCommand::Licenses => None,

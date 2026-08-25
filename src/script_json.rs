@@ -110,6 +110,9 @@ pub fn scene_element_from_kind(
             Some(SceneElement::SketchText(doc.sketch_texts.keys().nth(index)?))
         }
         "joint" => Some(SceneElement::Joint(doc.joints.keys().nth(index)?)),
+        "cross_section" | "section" | "view" => {
+            Some(SceneElement::CrossSection(doc.cross_sections.keys().nth(index)?))
+        }
         _ => None,
     }
 }
@@ -120,6 +123,7 @@ pub fn scene_element_from_kind(
 pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
     match element {
         SceneElement::ConstructionPlane(_) => "construction_plane",
+        SceneElement::CrossSection(_) => "cross_section",
         SceneElement::Sketch(_) => "sketch",
         SceneElement::Line(_) => "line",
         SceneElement::Circle(_) => "circle",
@@ -185,6 +189,7 @@ pub fn scene_element_selection_index(
         // An arena-backed element reports its **ordinal** among the live ones of its kind
         // (#1055) — the same integer `scene_element_from_kind` takes back.
         SceneElement::Image(key) => doc.tracing_images.keys().position(|k| k == *key),
+        SceneElement::CrossSection(key) => doc.cross_sections.keys().position(|k| k == *key),
         SceneElement::Body(key) => doc.bodies.keys().position(|k| k == *key),
         SceneElement::BooleanOp(key) => doc.boolean_ops.keys().position(|k| k == *key),
         SceneElement::MoveOp(key) => doc.move_ops.keys().position(|k| k == *key),

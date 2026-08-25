@@ -1569,6 +1569,37 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
     }
 
+    /// #1671: a cross-section view round-trips — its name and its cutting planes.
+    #[test]
+    fn round_trips_cross_sections() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("bearcad_cross_section_roundtrip_test.bearcad");
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        doc.cross_sections.insert(crate::model::CrossSection {
+            name: Some("Front half".to_string()),
+            cuts: vec![
+                crate::model::CrossSectionCut {
+                    origin: glam::Vec3::new(1.0, 2.0, 3.0),
+                    normal: glam::Vec3::X,
+                    offset_mm: 4.5,
+                    flip: true,
+                    roll: 0.25,
+                },
+                crate::model::CrossSectionCut::default(),
+            ],
+        });
+        doc.cross_sections.insert(crate::model::CrossSection::default());
+
+        save(&path, &doc).unwrap();
+        let loaded = open(&path).unwrap();
+        assert_eq!(loaded.cross_sections, doc.cross_sections);
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
     /// #909: a primitive shape round-trips — kind, frame, and its dimension expressions —
     /// with the body that points back at it.
     #[test]

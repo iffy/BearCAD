@@ -11,6 +11,7 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         // A drawing's items aren't renameable (#967); the drawing itself is.
         SceneElement::DrawingElement { .. } => None,
         SceneElement::ConstructionPlane(_)
+        | SceneElement::CrossSection(_)
         | SceneElement::Sketch(_)
         | SceneElement::Line(_)
         | SceneElement::Circle(_)
@@ -141,6 +142,7 @@ pub fn revolve_axis_label(doc: &Document, axis: crate::model::RevolveAxis) -> St
 pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
     let name = match element {
         SceneElement::ConstructionPlane(index) => doc.construction_planes.get(index)?.name.as_deref(),
+        SceneElement::CrossSection(index) => doc.cross_sections.get(index)?.name.as_deref(),
         SceneElement::Sketch(index) => doc.sketches.get(index)?.name.as_deref(),
         SceneElement::Line(index) => doc.lines.get(index)?.name.as_deref(),
         SceneElement::Circle(index) => doc.circles.get(index)?.name.as_deref(),
@@ -215,6 +217,13 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
                 .get_mut(index)
                 .ok_or_else(|| format!("construction plane {} not found", index.index()))?;
             plane.name = stored;
+        }
+        SceneElement::CrossSection(index) => {
+            let view = doc
+                .cross_sections
+                .get_mut(index)
+                .ok_or_else(|| format!("cross section {} not found", index.index()))?;
+            view.name = stored;
         }
         SceneElement::Sketch(index) => {
             let sketch = doc
@@ -479,6 +488,13 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
         HierarchyNode::Document => "Document".to_string(),
         // Fixed section header for the collapsible drawings group (#1205).
         HierarchyNode::Drawings => "Drawings".to_string(),
+        // …and for the views group (#1671).
+        HierarchyNode::Views => "Views".to_string(),
+        HierarchyNode::CrossSection(i) => doc
+            .cross_sections
+            .get(i)
+            .and_then(|v| v.name.clone())
+            .unwrap_or_else(|| format!("Section {}", i.index())),
         HierarchyNode::Component(i) => format!("Component {}", i.index()),
         // The instance's own name (set at import from the file stem) lives in
         // `element_name`; this is only the fallback for an unnamed instance (#723).
@@ -759,6 +775,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         return name.to_string();
     }
     match element {
+        SceneElement::CrossSection(i) => format!("Section {}", i.index()),
         SceneElement::ConstructionPlane(i) => {
             // The first datum plane is the XY ground (#833).
             if doc.construction_planes.keys().next() == Some(*i) {

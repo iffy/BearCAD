@@ -121,6 +121,11 @@ pub enum HierarchyNode {
     /// into a component; collapsible in the List view so drawings sit together at the
     /// bottom instead of interspersing with bodies. Display-only (no [`SceneElement`]).
     Drawings,
+    /// The collapsible **Views** section (#1671): where cross-section views live, the way
+    /// drawings live under [`HierarchyNode::Drawings`].
+    Views,
+    /// A cross-section view (#1671).
+    CrossSection(crate::model::CrossSectionKey),
     /// A technical drawing (#180). A display-only leaf (no [`SceneElement`], like
     /// [`HierarchyNode::Document`]): it has its own icon and is right-clickable to edit
     /// (opening the drawing pane), but isn't a selectable/hideable scene element. Lives
@@ -270,6 +275,8 @@ pub enum SceneElement {
     /// A loft (Loft tool, #1487).
     Loft(crate::model::LoftKey),
     /// A drawing page (#1525): named by `move_to_component{ kind = "drawing" }`.
+    /// A cross-section view (#1671): selectable, renameable and deletable like a drawing.
+    CrossSection(crate::model::CrossSectionKey),
     Drawing(crate::model::DrawingKey),
     /// The origin, selectable in a sketch so a point can be constrained coincident to it from
     /// the constraint tool (#189). Fixed geometry with no owning entity, like `FaceEdge`.
@@ -591,6 +598,9 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         // Display-only leaves with no independent selectable/hideable identity (#192/#180/#1205).
         HierarchyNode::Document
         | HierarchyNode::Drawings
+        // The Views section groups cross-section views; the views themselves are elements
+        // (#1671), so only the section header is display-only.
+        | HierarchyNode::Views
         | HierarchyNode::EdgeTreatment { .. }
         | HierarchyNode::Drawing(_)
         | HierarchyNode::DrawingProjection { .. }
@@ -601,6 +611,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         // identity means no selection, visibility, deletion, or renaming can target them.
         | HierarchyNode::UnitChild { .. } => return None,
         HierarchyNode::ConstructionPlane(i) => SceneElement::ConstructionPlane(i),
+        HierarchyNode::CrossSection(i) => SceneElement::CrossSection(i),
         HierarchyNode::Sketch(i) => SceneElement::Sketch(i),
         HierarchyNode::Line(i) => SceneElement::Line(i),
         HierarchyNode::Circle(i) => SceneElement::Circle(i),
@@ -757,6 +768,8 @@ impl ElementVisibility {
         match element {
             // A drawing's items are shown on the page, not hidden through the scene (#967).
             SceneElement::DrawingElement { .. } => true,
+            // A cross-section view is a way of looking, not a thing in the scene (#1671).
+            SceneElement::CrossSection(_) => true,
             // A unit instance's visibility is just its own toggle (#723).
             SceneElement::UnitInstance(_) => true,
             SceneElement::Component(index) => doc
@@ -960,6 +973,38 @@ pub fn face_owner_element(face: &FaceId) -> Option<SceneElement> {
     face.extrusion_index()
         .map(SceneElement::Extrusion)
         .or_else(|| face.revolution_key().map(SceneElement::Revolution))
+}
+
+/// Which of the Elements pane's bottom sections are collapsed (#1205/#1671) — UI-only state
+/// held by the app, never part of the document.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SectionCollapse {
+    pub drawings: bool,
+    pub views: bool,
+}
+
+impl SectionCollapse {
+    /// Whether `node`'s section is collapsed; `false` for anything that isn't a section.
+    fn collapsed(&self, node: HierarchyNode) -> bool {
+        match node {
+            HierarchyNode::Drawings => self.drawings,
+            HierarchyNode::Views => self.views,
+            _ => false,
+        }
+    }
+
+    fn toggle(&mut self, node: HierarchyNode) {
+        match node {
+            HierarchyNode::Drawings => self.drawings = !self.drawings,
+            HierarchyNode::Views => self.views = !self.views,
+            _ => {}
+        }
+    }
+}
+
+/// Whether a node is one of the pane's bottom grouping sections (#1205/#1671).
+fn is_section_node(node: HierarchyNode) -> bool {
+    matches!(node, HierarchyNode::Drawings | HierarchyNode::Views)
 }
 
 /// A hierarchy entry with optional children (used to derive parent links).
@@ -1865,6 +1910,7 @@ pub fn selected_context_menu_element(
 pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNode> {
     Some(match element {
         SceneElement::ConstructionPlane(i) => HierarchyNode::ConstructionPlane(*i),
+        SceneElement::CrossSection(i) => HierarchyNode::CrossSection(*i),
         SceneElement::Sketch(i) => HierarchyNode::Sketch(*i),
         SceneElement::Line(i) => HierarchyNode::Line(*i),
         SceneElement::Circle(i) => HierarchyNode::Circle(*i),
@@ -2479,6 +2525,21 @@ pub fn build_hierarchy(
             children: drawing_entries,
         });
     }
+    // Cross-section views get the same treatment under a Views section (#1671): ways of
+    // looking at the model, grouped at the bottom rather than mixed in with it.
+    if !doc.cross_sections.is_empty() {
+        roots.push(HierarchyEntry {
+            node: HierarchyNode::Views,
+            children: doc
+                .cross_sections
+                .keys()
+                .map(|key| HierarchyEntry {
+                    node: HierarchyNode::CrossSection(key),
+                    children: Vec::new(),
+                })
+                .collect(),
+        });
+    }
     vec![HierarchyEntry {
         node: HierarchyNode::Document,
         children: roots,
@@ -2612,6 +2673,8 @@ pub struct ElementFilter {
     /// instance as one opaque row; turning this on lets its contents into the graph. The
     /// List view ignores it — there the instance row expands instead.
     pub unit_contents: bool,
+    /// Cross-section **views** (#1671) and the section that groups them.
+    pub views: bool,
     /// **Shadow bodies** — bodies consumed (shadowed) by an operation (#1109). Off by
     /// default: a shadow body is a kept-for-editing input, not a live result, so the pane
     /// hides it unless the user turns this on. Bodies are always leaves in the hierarchy
@@ -2632,6 +2695,7 @@ impl Default for ElementFilter {
             drawing_components: false,
             unit_contents: false,
             shadow_bodies: false,
+            views: true,
         }
     }
 }
@@ -2652,11 +2716,12 @@ impl ElementFilter {
             drawing_components: true,
             unit_contents: false,
             shadow_bodies: false,
+            views: true,
         }
     }
 
     /// The toggles in display order: `(label, &mut enabled)` pairs the filter UI iterates.
-    pub fn rows(&mut self) -> [(&'static str, &mut bool); 10] {
+    pub fn rows(&mut self) -> [(&'static str, &mut bool); 11] {
         [
             ("Planes", &mut self.planes),
             ("Sketches", &mut self.sketches),
@@ -2668,6 +2733,7 @@ impl ElementFilter {
             ("Drawings", &mut self.drawings),
             ("Drawing components", &mut self.drawing_components),
             ("Unit contents", &mut self.unit_contents),
+            ("Views", &mut self.views),
         ]
     }
 
@@ -2677,6 +2743,8 @@ impl ElementFilter {
             HierarchyNode::Document => true,
             // The Drawings section exists only when drawings do (#1205); hide it with them.
             HierarchyNode::Drawings => self.drawings,
+            // Same for the Views section and the cross-section views inside it (#1671).
+            HierarchyNode::Views | HierarchyNode::CrossSection(_) => self.views,
             HierarchyNode::Component(_) => true,
             HierarchyNode::ConstructionPlane(_) => self.planes,
             HierarchyNode::Sketch(_) => self.sketches,
@@ -3016,6 +3084,8 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
     match element {
         // A drawing item's parent is its page, which has no scene element of its own (#967).
         SceneElement::DrawingElement { .. } => None,
+        // A cross-section view hangs off nothing (#1671).
+        SceneElement::CrossSection(_) => None,
         // A unit instance is always a top-level row (#723).
         SceneElement::UnitInstance(_) => None,
         SceneElement::Component(index) => doc
@@ -3140,6 +3210,8 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
     match element {
         // Nothing hangs off a drawing item (#967).
         SceneElement::DrawingElement { .. } => {}
+        // Nor off a cross-section view (#1671).
+        SceneElement::CrossSection(_) => {}
         // A unit's contents have no scene identity to collect (#723).
         SceneElement::UnitInstance(_) => {}
         SceneElement::Component(index) => {
@@ -3785,6 +3857,8 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
         HierarchyNode::Document => return None,
         // Section header reuses the drawing icon (#1205).
         HierarchyNode::Drawings => IconId::Drawing,
+        // The Views section and its views wear the cross-section glyph (#1671).
+        HierarchyNode::Views | HierarchyNode::CrossSection(_) => IconId::CrossSection,
         HierarchyNode::Component(_) => IconId::Component,
         HierarchyNode::ConstructionPlane(_) => IconId::Plane,
         HierarchyNode::Sketch(_) => IconId::Sketch,
@@ -4384,8 +4458,9 @@ pub fn show_pane(
     // collapsed, so an instance reads as one row.
     expanded_units: &mut HashSet<crate::model::UnitInstanceKey>,
     // The collapsible Drawings section at the bottom of the List (#1205); default expanded.
-    drawings_section_collapsed: &mut bool,
+    section_collapsed: &mut SectionCollapse,
     on_add_component: &mut impl FnMut(Option<crate::model::ComponentKey>),
+    on_add_cross_section: &mut impl FnMut(),
     on_move_to_component: &mut impl FnMut(SceneElement, Option<crate::model::ComponentKey>),
     active_component: Option<crate::model::ComponentKey>,
     on_activate_component: &mut impl FnMut(Option<crate::model::ComponentKey>),
@@ -4423,6 +4498,12 @@ pub fn show_pane(
                 egui::Popup::menu(&add).show(|ui| {
                     if ui.button("New component").clicked() {
                         on_add_component(None);
+                        ui.close();
+                    }
+                    // A cross-section view (#1671): a way of looking at the model, kept with
+                    // the other views at the bottom of the pane.
+                    if ui.button("New cross section").clicked() {
+                        on_add_cross_section();
                         ui.close();
                     }
                 });
@@ -4510,7 +4591,7 @@ pub fn show_pane(
                 &tree,
                 doc,
                 collapsed_components,
-                *drawings_section_collapsed,
+                *section_collapsed,
             );
             // A collapsed unit instance is one row (#723): its read-only contents only
             // appear while the row's triangle has expanded it.
@@ -4560,14 +4641,9 @@ pub fn show_pane(
                         );
                         continue;
                     }
-                    // Drawings section header (#1205): collapse triangle + label, no eye.
-                    if matches!(node, HierarchyNode::Drawings) {
-                        show_drawings_section_row(
-                            ui,
-                            doc,
-                            base_depth,
-                            drawings_section_collapsed,
-                        );
+                    // Section headers (#1205/#1671): collapse triangle + label, no eye.
+                    if is_section_node(node) {
+                        show_section_row(ui, doc, node, base_depth, section_collapsed);
                         continue;
                     }
                     // When editing a sketch, indent that sketch's own components one level so they
@@ -4721,8 +4797,9 @@ fn show_elements_filter(
                         drawings,
                         drawing_components,
                         unit_contents,
+                        views,
                     } = filter;
-                    let groups: [(&str, &[I], &mut bool); 10] = [
+                    let groups: [(&str, &[I], &mut bool); 11] = [
                         ("Planes", &[I::Plane], planes),
                         ("Sketches", &[I::Sketch], sketches),
                         ("Sketch components", &[I::SketchComponents], sketch_geometry),
@@ -4733,6 +4810,7 @@ fn show_elements_filter(
                         ("Drawings", &[I::Drawing], drawings),
                         ("Drawing components", &[I::DrawingComponents], drawing_components),
                         ("Unit contents", &[I::Import], unit_contents),
+                        ("Views", &[I::CrossSection], views),
                     ];
                     ui.horizontal_wrapped(|ui| {
                         for (label, icons, enabled) in groups {
@@ -5291,23 +5369,24 @@ fn component_list_rows(
     tree: &[HierarchyEntry],
     doc: &Document,
     collapsed: &HashSet<crate::model::ComponentKey>,
-    drawings_collapsed: bool,
+    sections_collapsed: SectionCollapse,
 ) -> Vec<(HierarchyNode, usize)> {
     fn level(
         entries: &[HierarchyEntry],
         doc: &Document,
         collapsed: &HashSet<crate::model::ComponentKey>,
-        drawings_collapsed: bool,
+        sections_collapsed: SectionCollapse,
         base: usize,
         out: &mut Vec<(HierarchyNode, usize)>,
     ) {
         let (components, rest): (Vec<&HierarchyEntry>, Vec<&HierarchyEntry>) = entries
             .iter()
             .partition(|e| matches!(e.node, HierarchyNode::Component(_)));
-        // Drawings section is forced last so it never intersperses with model elements (#1205).
-        let (drawings_secs, loose): (Vec<&HierarchyEntry>, Vec<&HierarchyEntry>) = rest
+        // The bottom sections are forced last so they never intersperse with model elements
+        // (#1205/#1671).
+        let (sections, loose): (Vec<&HierarchyEntry>, Vec<&HierarchyEntry>) = rest
             .into_iter()
-            .partition(|e| matches!(e.node, HierarchyNode::Drawings));
+            .partition(|e| is_section_node(e.node));
         let loose_owned: Vec<HierarchyEntry> = loose.into_iter().cloned().collect();
         for node in element_list_from_tree(&loose_owned, doc) {
             out.push((node, base));
@@ -5320,15 +5399,15 @@ fn component_list_rows(
                     &entry.children,
                     doc,
                     collapsed,
-                    drawings_collapsed,
+                    sections_collapsed,
                     base + 1,
                     out,
                 );
             }
         }
-        for entry in drawings_secs {
+        for entry in sections {
             out.push((entry.node, base));
-            if !drawings_collapsed {
+            if !sections_collapsed.collapsed(entry.node) {
                 // Each drawing (and its projections/notes when the filter keeps them) sits
                 // one level under the section header.
                 for child in &entry.children {
@@ -5346,7 +5425,7 @@ fn component_list_rows(
             &root.children,
             doc,
             collapsed,
-            drawings_collapsed,
+            sections_collapsed,
             1,
             &mut out,
         );
@@ -5388,31 +5467,27 @@ fn collapse_triangle(ui: &mut egui::Ui, collapsed: bool, width: f32) -> egui::Re
 /// Narrow disclosure column when a row also has a visibility eye (components, units).
 const DISCLOSURE_BEFORE_EYE_WIDTH: f32 = 12.0;
 
-/// The collapsible "Drawings" section header in the List view (#1205): triangle + icon +
-/// label. Not selectable or hideable — it only groups drawing rows at the bottom.
-fn show_drawings_section_row(
+/// A collapsible bottom-section header in the List view — "Drawings" (#1205) or "Views"
+/// (#1671): triangle + icon + label. Not selectable or hideable; it only groups its rows.
+fn show_section_row(
     ui: &mut egui::Ui,
     doc: &Document,
+    node: HierarchyNode,
     depth: usize,
-    drawings_section_collapsed: &mut bool,
+    section_collapsed: &mut SectionCollapse,
 ) {
     ui.horizontal(|ui| {
         ui.add_space(depth as f32 * 18.0);
-        let collapsed = *drawings_section_collapsed;
+        let collapsed = section_collapsed.collapsed(node);
         // Triangle replaces the eye column, so match eye width for type-icon alignment (#1232).
         if collapse_triangle(ui, collapsed, ICON_DISPLAY_SIZE).clicked() {
-            *drawings_section_collapsed = !collapsed;
+            section_collapsed.toggle(node);
         }
-        if let Some(icon) = icon_for_hierarchy_node(doc, HierarchyNode::Drawings) {
+        if let Some(icon) = icon_for_hierarchy_node(doc, node) {
             ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
         }
-        let drawings = node_label(doc, HierarchyNode::Drawings);
-        let _ = clipped_selectable_label(
-            ui,
-            false,
-            RichText::new(&drawings).strong(),
-            &drawings,
-        );
+        let label = node_label(doc, node);
+        let _ = clipped_selectable_label(ui, false, RichText::new(&label).strong(), &label);
     });
 }
 
@@ -5656,20 +5731,20 @@ fn show_row(
     // and returns before any of the SceneElement-keyed lookups below. Every other row is
     // indented `depth` levels (List always passes 1, matching #87's original single level;
     // Tree passes the node's real depth in the nested hierarchy, #34).
-    // The Drawings section header is drawn by `show_drawings_section_row` in the List path;
-    // Graph falls through here with a plain label.
-    if matches!(node, HierarchyNode::Drawings) {
+    // A section header is drawn by `show_section_row` in the List path; Graph falls through
+    // here with a plain label.
+    if is_section_node(node) {
         ui.horizontal(|ui| {
             ui.add_space(depth as f32 * 18.0);
             if let Some(icon) = icon_for_hierarchy_node(doc, node) {
                 ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
             }
-            let drawings = node_label(doc, node);
+            let label = node_label(doc, node);
             let _ = clipped_selectable_label(
                 ui,
                 false,
-                RichText::new(&drawings).strong(),
-                &drawings,
+                RichText::new(&label).strong(),
+                &label,
             );
         });
         return;
@@ -5974,7 +6049,7 @@ fn show_row(
         }
         // Clicks: double-click edits (where applicable), single-click selects.
         match node {
-            HierarchyNode::Document | HierarchyNode::Drawings => {
+            HierarchyNode::Document | HierarchyNode::Drawings | HierarchyNode::Views => {
                 unreachable!("handled by the early return above")
             }
             HierarchyNode::Sketch(sketch) => {
@@ -6930,7 +7005,7 @@ mod tests {
         );
 
         // List rows: the component at depth 1, its plane at depth 2; collapsing hides it.
-        let rows = component_list_rows(&tree, &doc, &HashSet::new(), false);
+        let rows = component_list_rows(&tree, &doc, &HashSet::new(), SectionCollapse::default());
         let comp_row = rows.iter().find(|(n, _)| *n == HierarchyNode::Component(ckey(0))).unwrap();
         assert_eq!(comp_row.1, 1);
         let plane_row = rows
@@ -6939,7 +7014,7 @@ mod tests {
             .unwrap();
         assert_eq!(plane_row.1, 2, "component contents indent one level");
         let collapsed: HashSet<crate::model::ComponentKey> = [ckey(0)].into_iter().collect();
-        let rows = component_list_rows(&tree, &doc, &collapsed, false);
+        let rows = component_list_rows(&tree, &doc, &collapsed, SectionCollapse::default());
         assert!(
             !rows.iter().any(|(n, _)| *n == HierarchyNode::ConstructionPlane(plane)),
             "collapsed component hides its contents"
@@ -7431,7 +7506,7 @@ label_hidden: false,
         );
 
         // List: section last; drawings one level under it; collapse hides them.
-        let rows = component_list_rows(&tree, &doc, &HashSet::new(), false);
+        let rows = component_list_rows(&tree, &doc, &HashSet::new(), SectionCollapse::default());
         let section_pos = rows
             .iter()
             .position(|(n, _)| *n == HierarchyNode::Drawings)
@@ -7462,7 +7537,7 @@ label_hidden: false,
             .find(|(n, _)| *n == HierarchyNode::Drawing(dkey(0)))
             .expect("drawing 0 row");
         assert_eq!(d0.1, 2, "drawings indent under the section");
-        let collapsed_rows = component_list_rows(&tree, &doc, &HashSet::new(), true);
+        let collapsed_rows = component_list_rows(&tree, &doc, &HashSet::new(), SectionCollapse { drawings: true, views: true });
         assert!(
             !collapsed_rows
                 .iter()
@@ -7539,7 +7614,7 @@ label_hidden: false,
         let mut filter_expanded = false;
         let mut collapsed_components = HashSet::new();
         let mut expanded_units = HashSet::new();
-        let mut drawings_section_collapsed = false;
+        let mut section_collapsed = SectionCollapse::default();
         let none: HashSet<SceneElement> = HashSet::new();
         show_pane(
             ui,
@@ -7590,8 +7665,9 @@ label_hidden: false,
             &mut |_| {},
             &mut collapsed_components,
             &mut expanded_units,
-            &mut drawings_section_collapsed,
+            &mut section_collapsed,
             &mut |_| {},
+            &mut || {},
             &mut |_, _| {},
             None,
             &mut |_| {},
@@ -8995,6 +9071,45 @@ label_hidden: false,
         }
     }
 
+    /// #1671: cross-section views live in their own Views section at the bottom of the pane,
+    /// the way drawings live under Drawings.
+    #[test]
+    fn cross_section_views_group_under_a_views_section() {
+        let mut doc = Document::default();
+        doc.cross_sections.insert(crate::model::CrossSection {
+            name: Some("Front half".to_string()),
+            cuts: Vec::new(),
+        });
+        let key = doc.cross_sections.keys().next().expect("the view");
+
+        let tree = build_hierarchy(&doc, None);
+        let root = tree.first().expect("the document root");
+        let views = root
+            .children
+            .iter()
+            .find(|e| e.node == HierarchyNode::Views)
+            .expect("a Views section");
+        assert_eq!(
+            views.children.iter().map(|e| e.node).collect::<Vec<_>>(),
+            vec![HierarchyNode::CrossSection(key)],
+            "the view sits inside the section"
+        );
+        assert_eq!(node_label(&doc, HierarchyNode::Views), "Views");
+        assert_eq!(node_label(&doc, HierarchyNode::CrossSection(key)), "Front half");
+        assert_eq!(
+            scene_element_for_node(HierarchyNode::CrossSection(key)),
+            Some(SceneElement::CrossSection(key)),
+            "a view is selectable, deletable and renameable like any element"
+        );
+
+        // Without any view there is no empty section.
+        let empty = build_hierarchy(&Document::default(), None);
+        assert!(
+            !empty[0].children.iter().any(|e| e.node == HierarchyNode::Views),
+            "no views, no section"
+        );
+    }
+
     /// #1682: the Graph view drops the synthetic Document root — a model's own top-level
     /// elements are the roots there. The List view keeps it.
     #[test]
@@ -9627,6 +9742,8 @@ label_hidden: false,
     fn element_edit_path(element: &SceneElement) -> ElementEditPath {
         use ElementEditPath::*;
         match element {
+            // A cross-section view opens in the View workbench, its own dedicated entry.
+            SceneElement::CrossSection(_) => Dedicated,
             SceneElement::BooleanOp(_)
             | SceneElement::MoveOp(_)
             | SceneElement::MirrorOp(_)

@@ -41,6 +41,7 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             .get(drawing)
             .is_some(),
         SceneElement::ConstructionPlane(index) => construction_plane_alive(doc, index),
+        SceneElement::CrossSection(index) => doc.cross_sections.contains(index),
         SceneElement::Sketch(sketch) => sketch_alive(doc, sketch),
         SceneElement::Line(index) => line_alive(doc, index),
         SceneElement::Circle(index) => circle_alive(doc, index),
@@ -187,6 +188,10 @@ pub fn delete_element(doc: &mut Document, element: SceneElement) -> bool {
         // Deleting from a drawing page goes through the drawing's own actions (#967), which
         // renumber what's left; there is nothing to delete here.
         SceneElement::DrawingElement { .. } => {}
+        // A cross-section view owns nothing but itself (#1671).
+        SceneElement::CrossSection(index) => {
+            changed = doc.cross_sections.remove(index).is_some();
+        }
         // Deleting a component re-homes its members and child components to its parent
         // (#423) — grouping is organizational, so nothing inside is deleted.
         SceneElement::Component(index) => {

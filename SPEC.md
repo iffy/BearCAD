@@ -2342,6 +2342,26 @@ Each operation is exposed identically through the GUI, the action DAG, and the s
 API (§8). Failures from the kernel (e.g. a fillet that can't be applied) must surface as a
 recoverable error on the relevant feature node, not a crash.
 
+### 3.7 Cross-section views (#1671)
+
+A **cross-section view** is a saved way of *looking* at the model: a set of cutting planes
+that hide whatever sits in front of them, with the exposed faces hatched. It carves nothing —
+no geometry is produced and nothing in the model depends on it — so, like a drawing, it lives
+outside the shape/undo DAG.
+
+- **Model:** `Document::cross_sections` is an `arena::Arena<CrossSection>`; a view is named by
+  a `CrossSectionKey` (`SceneElement::CrossSection`, `HierarchyNode::CrossSection`). Each
+  view holds a name and its `cuts`: a `CrossSectionCut` per plane — the frame it was placed on
+  (`origin`/`normal`), how far it has slid along its own normal (`offset_mm`), its turn about
+  that normal (`roll`), and which side survives (`flip`).
+- **Where they live:** views group under a **Views** section at the bottom of the Elements
+  pane, the way drawings group under Drawings (#1205) — with their own filter toggle. The
+  section collapses; the views inside are ordinary elements (selectable, renameable,
+  deletable).
+- **Creating one:** the Elements pane's **+ → New cross section**, or **View → Create Cross
+  Section**. Scriptable as `bearcad.cross_section{ name? }` (#1671), and readable back with
+  `bearcad.count("cross_section")` / `bearcad.get{ kind = "cross_section", index }`.
+
 ### 3.6 Technical drawings (#180)
 
 A **technical drawing** is a black-on-white sheet for print/PDF output. A document holds any

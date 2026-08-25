@@ -369,6 +369,10 @@ impl<'a> EmitCtx<'a> {
         match node {
             HierarchyNode::Document
             | HierarchyNode::Drawings
+            // A cross-section view is a way of looking, not modelled geometry (#1671); the
+            // Lua export describes the model.
+            | HierarchyNode::Views
+            | HierarchyNode::CrossSection(_)
             | HierarchyNode::UnitChild { .. }
             | HierarchyNode::DrawingDimension { .. }
             | HierarchyNode::DrawingPointDim { .. }

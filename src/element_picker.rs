@@ -62,6 +62,8 @@ pub enum ElementKind {
     Constraint,
     /// A projected view on a drawing page (#967).
     Projection,
+    /// A cross-section view (#1671): a saved way of looking at the model.
+    View,
     /// A text note on a drawing page (#967).
     Annotation,
     /// A dimension shown on a drawing page (#967).
@@ -87,7 +89,7 @@ impl ElementKind {
     /// walking this list, so a kind left out is one no picker can accept and no summary can
     /// count (which is exactly what happened to `Image`). `every_kind_is_in_the_canonical_order`
     /// guards that.
-    pub const ORDER: [ElementKind; 19] = [
+    pub const ORDER: [ElementKind; 20] = [
         ElementKind::Plane,
         ElementKind::Image,
         ElementKind::Sketch,
@@ -101,6 +103,7 @@ impl ElementKind {
         ElementKind::Profile,
         ElementKind::Constraint,
         ElementKind::Projection,
+        ElementKind::View,
         ElementKind::Annotation,
         ElementKind::Dimension,
         ElementKind::Body,
@@ -176,6 +179,7 @@ impl ElementKind {
             | SceneElement::SweepOp(_)
             | SceneElement::Loft(_) => ElementKind::Operation,
             SceneElement::Drawing(_) => ElementKind::Projection,
+            SceneElement::CrossSection(_) => ElementKind::View,
         }
     }
 
@@ -194,6 +198,7 @@ impl ElementKind {
             ElementKind::Face | ElementKind::Profile | ElementKind::Cylinder => IconId::Face,
             ElementKind::Constraint => IconId::Constraint,
             ElementKind::Projection => IconId::Projection,
+            ElementKind::View => IconId::CrossSection,
             ElementKind::Annotation => IconId::Text,
             ElementKind::Dimension => IconId::Dimension,
             ElementKind::Body => IconId::Body,
@@ -219,6 +224,7 @@ impl ElementKind {
             ElementKind::Profile => "profile",
             ElementKind::Constraint => "constraint",
             ElementKind::Projection => "projection",
+            ElementKind::View => "view",
             ElementKind::Annotation => "annotation",
             ElementKind::Dimension => "dimension",
             ElementKind::Body => "body",
@@ -264,6 +270,7 @@ pub fn default_pick_band(kind: ElementKind) -> usize {
         ElementKind::Dimension => 2,
         ElementKind::Annotation => 3,
         ElementKind::Projection => 5,
+        ElementKind::View => 5,
         ElementKind::Face | ElementKind::Profile | ElementKind::Cylinder => 3,
         ElementKind::Plane | ElementKind::Image => 4,
         ElementKind::Sketch => 5,

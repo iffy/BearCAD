@@ -2931,6 +2931,9 @@ pub enum Action {
     CommitLoft,
     /// Create a new technical drawing (#180) and open it in the drawing pane.
     CreateDrawing { name: Option<String> },
+    /// Add a cross-section view (#1671): a saved way of looking at the model. It makes no
+    /// geometry, so nothing recomputes.
+    CreateCrossSection { name: Option<String> },
     /// Create a new technical drawing of a body and open it with a default view (#1158).
     /// Reuses [`Action::CreateDrawing`] + [`Action::AddDrawingView`].
     CreateDrawingOfBody { body: crate::model::BodyKey },
@@ -8732,6 +8735,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::Component(i) => format!("Component {}", i.index()),
         SceneElement::UnitInstance(i) => format!("Unit instance {}", i.index()),
         SceneElement::ConstructionPlane(i) => format!("Construction plane {}", i.index()),
+        SceneElement::CrossSection(i) => format!("Cross section {}", i.index()),
         SceneElement::Sketch(i) => format!("Sketch {}", i.index()),
         SceneElement::Line(i) => format!("Line {}", i.index()),
         SceneElement::Circle(i) => format!("Circle {}", i.index()),
@@ -13417,6 +13421,19 @@ impl AppState {
                 let key = self.doc.drawings.insert(drawing);
                 self.editing_drawing = Some(key);
                 self.status = format!("Added drawing {index}");
+                ActionResult::Ok
+            }
+            Action::CreateCrossSection { name } => {
+                let index = self.doc.cross_sections.len();
+                let key = self.doc.cross_sections.insert(crate::model::CrossSection {
+                    name: name.and_then(|n| {
+                        let t = n.trim().to_string();
+                        (!t.is_empty()).then_some(t)
+                    }),
+                    cuts: Vec::new(),
+                });
+                let _ = key;
+                self.status = format!("Added cross section {index}");
                 ActionResult::Ok
             }
             // #1158: Elements-pane body right-click → create a drawing of that body. Same paths

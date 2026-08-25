@@ -46,6 +46,7 @@ pub struct MenuIds {
     pub paste: MenuId,
     pub paste_linked: MenuId,
     pub new_drawing: MenuId,
+    pub new_cross_section: MenuId,
     pub about: MenuId,
     pub licenses: MenuId,
     pub install_cli: MenuId,
@@ -192,6 +193,9 @@ pub fn command_for_id(
     }
     if id == &ids.new_drawing {
         return Some(MenuCommand::NewDrawing);
+    }
+    if id == &ids.new_cross_section {
+        return Some(MenuCommand::NewCrossSection);
     }
     if ids.about == id {
         return Some(MenuCommand::About);
@@ -392,6 +396,9 @@ impl NativeMenu {
         let paste_linked = MenuItem::with_id("paste_linked", "Paste Linked", true, None);
         let clear = MenuItem::with_id("clear", "Clear", true, None);
         let new_drawing = MenuItem::with_id("new_drawing", "New Drawing", true, None);
+        // #1671: a cross-section view is a way of *looking* at the model, so it lives in View.
+        let new_cross_section =
+            MenuItem::with_id("new_cross_section", "Create Cross Section", true, None);
         let command_palette = MenuItem::with_id(
             "command_palette",
             "Command Palette…",
@@ -499,6 +506,8 @@ impl NativeMenu {
             .map(|(_, item)| item as &dyn muda::IsMenuItem)
             .collect();
         panes_menu.append_items(&pane_item_refs)?;
+        view_menu.append(&new_cross_section)?;
+        view_menu.append(&PredefinedMenuItem::separator())?;
         view_menu.append(&command_palette)?;
         view_menu.append(&zoom_to_fit)?;
         view_menu.append(&fps_mode)?;
@@ -574,6 +583,7 @@ impl NativeMenu {
             paste: paste.id().clone(),
             paste_linked: paste_linked.id().clone(),
             new_drawing: new_drawing.id().clone(),
+            new_cross_section: new_cross_section.id().clone(),
             about: about.id().clone(),
             licenses: licenses.id().clone(),
             install_cli: install_cli.id().clone(),
@@ -763,6 +773,7 @@ mod tests {
             paste: MenuId::new("paste"),
             paste_linked: MenuId::new("paste_linked"),
             new_drawing: MenuId::new("new_drawing"),
+            new_cross_section: MenuId::new("new_cross_section"),
             about: MenuId::new("about"),
             licenses: MenuId::new("licenses"),
             install_cli: MenuId::new("install_cli"),

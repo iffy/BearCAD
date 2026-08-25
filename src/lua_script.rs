@@ -122,6 +122,7 @@ fn hierarchy_node_kind_name(node: crate::hierarchy::HierarchyNode) -> &'static s
         N::DrawingDimension { .. } | N::DrawingPointDim { .. } => "drawing_dimension",
         N::EdgeTreatment { .. } => "edge_treatment",
         N::UnitChild { .. } => "unit_child",
+        N::Views => "views",
         _ => "element",
     }
 }
@@ -129,6 +130,7 @@ fn hierarchy_node_kind_name(node: crate::hierarchy::HierarchyNode) -> &'static s
 fn element_kind_name(element: SceneElement) -> &'static str {
     match element {
         SceneElement::ConstructionPlane(_) => "construction_plane",
+        SceneElement::CrossSection(_) => "cross_section",
         SceneElement::Sketch(_) => "sketch",
         SceneElement::Line(_) => "line",
         SceneElement::Circle(_) => "circle",
@@ -197,6 +199,9 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         SceneElement::SweepOp(key) => doc.sweeps.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::Loft(key) => doc.lofts.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::Drawing(key) => doc.drawings.keys().position(|k| k == key).unwrap_or(0),
+        SceneElement::CrossSection(key) => {
+            doc.cross_sections.keys().position(|k| k == key).unwrap_or(0)
+        }
         SceneElement::Shape(key) => doc.primitives.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::Body(key) => doc.bodies.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::BooleanOp(key) => {
@@ -340,6 +345,9 @@ pub fn scene_element_from_kind(
         "sweep" | "sweep_op" => Some(SceneElement::SweepOp(doc.sweeps.keys().nth(index)?)),
         "loft" => Some(SceneElement::Loft(doc.lofts.keys().nth(index)?)),
         "drawing" => Some(SceneElement::Drawing(doc.drawings.keys().nth(index)?)),
+        "cross_section" | "section" => {
+            Some(SceneElement::CrossSection(doc.cross_sections.keys().nth(index)?))
+        }
         "joint" => Some(SceneElement::Joint(doc.joints.keys().nth(index)?)),
         "shape" | "primitive" => Some(SceneElement::Shape(doc.primitives.keys().nth(index)?)),
         // #1517: the remaining top-level kinds a component can hold, so
@@ -3571,6 +3579,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "extrusion" => doc.extrusions.len(),
                 "body" => doc.bodies.len(),
                 "drawing" => doc.drawings.len(),
+                "cross_section" | "section" => doc.cross_sections.len(),
                 "parameter" => doc.parameters.len(),
                 "sketch_text" | "text" => {
                     doc.sketch_texts.len()
@@ -3863,6 +3872,17 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     t.set("views", drawing.views.len())?;
                     t.set("annotations", drawing.annotations.len())?;
                     if let Some(name) = &drawing.name {
+                        t.set("name", name.as_str())?;
+                    }
+                }
+                "cross_section" | "section" => {
+                    let Some(view) =
+                        doc.cross_sections.keys().nth(index).map(|k| &doc.cross_sections[k])
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("cuts", view.cuts.len())?;
+                    if let Some(name) = &view.name {
                         t.set("name", name.as_str())?;
                     }
                 }
@@ -7806,6 +7826,25 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 tick.exec(Instruction::CreateDrawing { name })?;
             }
             Ok(unsafe { tick.state().doc.drawings.len().saturating_sub(1) })
+        })?,
+    )?;
+    // Cross-section views (#1671): `bearcad.cross_section{ name? }` adds one and returns its
+    // index. The planes it cuts with are added with the View workbench's plane tool.
+    api.set(
+        "cross_section",
+        lua.create_function(|lua, opts: Option<Table>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let name: Option<String> = match &opts {
+                Some(t) => {
+                    check_keys(t, "cross_section", &["name"])?;
+                    t.get("name")?
+                }
+                None => None,
+            };
+            unsafe {
+                tick.exec(Instruction::CreateCrossSection { name })?;
+            }
+            Ok(unsafe { tick.state().doc.cross_sections.len().saturating_sub(1) })
         })?,
     )?;
     api.set(
@@ -16089,6 +16128,35 @@ pub mod tests {
             assert(bearcad.ui.pane_rect("hierarchy") == nil)
             assert(bearcad.ui.pane_rect("context") == nil)
             assert(bearcad.ui.pane_rect("parameters") == nil)
+        "#,
+        );
+    }
+
+    /// #1671: `bearcad.cross_section{ name? }` adds a cross-section view — a saved way of
+    /// looking at the model — which reads back like any other element.
+    #[test]
+    fn lua_cross_section_creates_a_named_view() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            assert(bearcad.count("cross_section") == 0, "a new document has no views")
+            local i = bearcad.cross_section{ name = "Front half" }
+            assert(i == 0, "the first view is 0, got " .. tostring(i))
+            assert(bearcad.count("cross_section") == 1)
+            local v = bearcad.get{ kind = "cross_section", index = 0 }
+            assert(v.name == "Front half", "name read back: " .. tostring(v.name))
+            assert(v.cuts == 0, "a fresh view cuts with nothing yet")
+
+            bearcad.cross_section{}
+            assert(bearcad.count("cross_section") == 2)
+            bearcad.select{ kind = "cross_section", index = 1 }
+            local sel = bearcad.selection()
+            assert(#sel == 1 and sel[1].kind == "cross_section", "a view is selectable")
+            bearcad.set_name({ kind = "cross_section", index = 1 }, "Top half")
+            assert(bearcad.get{ kind = "cross_section", index = 1 }.name == "Top half")
+            -- still selected from above
+            bearcad.delete_selection()
+            assert(bearcad.count("cross_section") == 1, "and deletable")
         "#,
         );
     }

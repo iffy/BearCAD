@@ -3817,7 +3817,7 @@ struct App {
     /// UI-only state, default collapsed.
     expanded_units: std::collections::HashSet<model::UnitInstanceKey>,
     /// Collapsed state of the Drawings section in the Elements list (#1205); default expanded.
-    drawings_section_collapsed: bool,
+    section_collapsed: hierarchy::SectionCollapse,
     /// Timeline rollback marker (#524): when set, everything created after this element is
     /// suppressed in the viewport and faded in the Elements pane, so the model reads as it did
     /// just after that element. UI-only session state (not persisted).
@@ -5350,7 +5350,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             gpu_view_cube: gpu_view_cube::install(cc),
             collapsed_components: std::collections::HashSet::new(),
             expanded_units: std::collections::HashSet::new(),
-            drawings_section_collapsed: false,
+            section_collapsed: hierarchy::SectionCollapse::default(),
             rollback_marker: None,
             exploder: None,
             exploder_palette_request: false,
@@ -15150,6 +15150,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             let mut rename_drawing: Option<(model::DrawingKey, String)> = None;
             let mut pane_hovered_element: Option<SceneElement> = None;
             let mut add_component: Option<Option<model::ComponentKey>> = None;
+            let mut add_cross_section = false;
             let mut move_to_component: Option<(SceneElement, Option<model::ComponentKey>)> = None;
             let mut activate_component: Option<Option<model::ComponentKey>> = None;
             // Timeline rollback marker set/cleared from the pane (#524), applied after it closes.
@@ -15276,6 +15277,9 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     let mut queue_set_rollback = |m: Option<hierarchy::RollbackMarker>| {
                         set_rollback = Some(m);
                     };
+                    let mut queue_add_cross_section = || {
+                        add_cross_section = true;
+                    };
                     let mut queue_add_component = |parent: Option<model::ComponentKey>| {
                         add_component = Some(parent);
                     };
@@ -15369,8 +15373,9 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                         &mut queue_set_rollback,
                         &mut self.collapsed_components,
                         &mut self.expanded_units,
-                        &mut self.drawings_section_collapsed,
+                        &mut self.section_collapsed,
                         &mut queue_add_component,
+                        &mut queue_add_cross_section,
                         &mut queue_move_to_component,
                         self.state.active_component,
                         &mut queue_activate_component,
@@ -15379,6 +15384,9 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             self.pane_hovered_element = pane_hovered_element;
             if let Some(parent) = add_component {
                 self.state.apply(Action::CreateComponent { name: None, parent });
+            }
+            if add_cross_section {
+                self.state.apply(Action::CreateCrossSection { name: None });
             }
             if let Some(component) = activate_component {
                 self.state.active_component = component;

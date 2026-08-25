@@ -300,8 +300,8 @@ bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
 
 assert(bearcad.count("line") == 4)             -- non-deleted entities per kind
 -- kinds (`count` and `get` take the same set): line, circle, sketch, constraint,
---        construction_plane, extrusion, shape, body, drawing, parameter,
---        sketch_text, component, image, joint
+--        construction_plane, extrusion, shape, body, drawing, cross_section,
+--        parameter, sketch_text, component, image, joint
 local l = bearcad.get{ kind = "line", index = 0 }
 assert(l.x0 == 0 and math.abs(l.length - 40) < 1e-3)
 
@@ -333,6 +333,17 @@ assert(bearcad.parameter("get_expression", "A") == "5mm")
 `get` returns `nil` for an out-of-range or deleted index. See also
 `bearcad.sketch_dof()` / `bearcad.sketch_conflicts()` for solver introspection, and
 [`bearcad.ui.camera{}`](./ui-namespace#camera) for the camera pose.
+
+## Cross-section views
+
+A cross-section view is a saved way of *looking* at the model — cutting planes that hide
+what's in front of them — not a change to it. Views live under **Views** in the Elements
+pane; **View → Create Cross Section** makes one.
+
+```lua
+local v = bearcad.cross_section{ name = "Front half" }   -- returns its index
+assert(bearcad.get{ kind = "cross_section", index = v }.name == "Front half")
+```
 
 ## Materials
 

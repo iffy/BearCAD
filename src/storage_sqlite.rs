@@ -332,6 +332,11 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             margin_mm REAL NOT NULL,
             payload_json TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS cross_sections (
+            id INTEGER PRIMARY KEY,
+            name TEXT,
+            payload_json TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS joints (
             id INTEGER PRIMARY KEY,
             name TEXT,
@@ -621,6 +626,7 @@ fn save_all(tx: &Connection, doc: &Document) -> Result<()> {
     save_sketch_slice_ops(tx, &doc.sketch_slice_ops)?;
     save_sketch_texts(tx, &doc.sketch_texts)?;
     save_drawings(tx, &doc.drawings)?;
+    save_cross_sections(tx, &doc.cross_sections)?;
     save_joints(tx, &doc.joints)?;
     save_units(tx, &doc.units)?;
     save_unit_instances(tx, &doc.unit_instances)?;
@@ -1560,6 +1566,44 @@ fn save_drawings(tx: &Connection, arena: &Arena<Drawing>) -> Result<()> {
     Ok(())
 }
 
+fn save_cross_sections(tx: &Connection, arena: &Arena<crate::model::CrossSection>) -> Result<()> {
+    for (key, view) in arena.iter() {
+        tx.execute(
+            "INSERT INTO cross_sections (id, name, payload_json) VALUES (?1, ?2, ?3)",
+            params![key_bits(key), view.name, to_json(&view.cuts)?],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn load_cross_sections(conn: &Connection) -> Result<Arena<crate::model::CrossSection>> {
+    let mut stmt = conn
+        .prepare("SELECT id, name, payload_json FROM cross_sections")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut entries = Vec::new();
+    for row in rows {
+        let (id, name, payload_json) = row.map_err(|e| e.to_string())?;
+        entries.push((
+            id,
+            crate::model::CrossSection {
+                name,
+                cuts: from_json(&payload_json)?,
+            },
+        ));
+    }
+    arena_from(entries)
+}
+
 fn joint_kind_tag(k: &JointKind) -> &'static str {
     k.name()
 }
@@ -1803,6 +1847,7 @@ fn hydrate_document(conn: &Connection) -> Result<Document> {
         sketch_slice_ops: load_sketch_slice_ops(conn)?,
         sketch_texts: load_sketch_texts(conn)?,
         drawings: load_drawings(conn)?,
+        cross_sections: load_cross_sections(conn)?,
         joints: load_joints(conn)?,
         shape_order: load_shape_order(conn)?,
         undo_groups: load_undo_groups(conn)?,

@@ -3896,6 +3896,8 @@ impl<'a> SceneMesh<'a> {
         match element {
             // Nothing on a drawing page draws in the 3D viewport (#967).
             SceneElement::DrawingElement { .. } => {}
+            // A cross-section view has no geometry of its own to highlight (#1671).
+            SceneElement::CrossSection(_) => {}
             SceneElement::Line(index) => {
                 self.push_pick_target_highlight(
                     doc,

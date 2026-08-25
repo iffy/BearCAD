@@ -84,6 +84,8 @@ pub enum IconId {
     Chamfer,
     Fillet,
     Drawing,
+    /// A cross-section view (#1671): a block cut open, the exposed face hatched.
+    CrossSection,
     Gear,
     ShadingWireframe,
     ShadingTransparentSolid,
@@ -149,7 +151,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 97] = [
+    pub const ALL: [Self; 98] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -207,6 +209,7 @@ impl IconId {
         Self::Chamfer,
         Self::Fillet,
         Self::Drawing,
+        Self::CrossSection,
         Self::Gear,
         Self::ShadingWireframe,
         Self::ShadingTransparentSolid,
@@ -310,6 +313,7 @@ impl IconId {
             Self::Chamfer => include_str!("assets/icons/chamfer.svg"),
             Self::Fillet => include_str!("assets/icons/fillet.svg"),
             Self::Drawing => include_str!("assets/icons/drawing.svg"),
+            Self::CrossSection => include_str!("assets/icons/cross_section.svg"),
             Self::Gear => include_str!("assets/icons/gear.svg"),
             Self::ShadingWireframe => include_str!("assets/icons/wireframe.svg"),
             Self::ShadingTransparentSolid => include_str!("assets/icons/transparent_solid.svg"),
@@ -414,6 +418,7 @@ impl IconId {
             Self::Chamfer => "Chamfer",
             Self::Fillet => "Fillet",
             Self::Drawing => "Drawing",
+            Self::CrossSection => "Cross section",
             Self::Gear => "Gear",
             Self::ShadingWireframe => "Wireframe",
             Self::ShadingTransparentSolid => "Transparent solid",

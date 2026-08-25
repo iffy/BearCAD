@@ -118,6 +118,11 @@ pub fn bar(ui: &mut egui::Ui, pane_visible: impl Fn(Pane) -> bool) -> Option<Men
                 }
             });
             ui.menu_button("View", |ui| {
+                if ui.button("Create Cross Section").clicked() {
+                    picked = Some(MenuCommand::NewCrossSection);
+                    ui.close();
+                }
+                ui.separator();
                 if ui.button("Zoom to fit").clicked() {
                     picked = Some(MenuCommand::ZoomToFit);
                     ui.close();

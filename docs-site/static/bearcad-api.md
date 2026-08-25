@@ -195,6 +195,7 @@ bearcad.component{ name, parent }?
 bearcad.constraint_shortcut(key)
 bearcad.copy()
 bearcad.count(kind)
+bearcad.cross_section{ name }
 bearcad.cuboid{ width, depth, height, at?, normal?, u_axis?, name? }
 bearcad.cylinder{ radius, height, at?, normal?, u_axis?, name? }
 bearcad.delete_selection()
