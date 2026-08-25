@@ -4049,21 +4049,23 @@ impl RowClick {
     }
 }
 
-/// How a sketch row should react to pointer input this frame.
+/// How an Elements row that can be *reopened* should react to pointer input this frame:
+/// double-click edits, a plain click selects. Sketches, construction planes (#1691) and
+/// every editable operation share it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SketchRowAction {
+pub enum RowAction {
     None,
     Select { additive: bool },
     Edit,
 }
 
-pub fn sketch_row_action(double_clicked: bool, clicked: bool, additive: bool) -> SketchRowAction {
+pub fn row_click_action(double_clicked: bool, clicked: bool, additive: bool) -> RowAction {
     if double_clicked {
-        SketchRowAction::Edit
+        RowAction::Edit
     } else if clicked {
-        SketchRowAction::Select { additive }
+        RowAction::Select { additive }
     } else {
-        SketchRowAction::None
+        RowAction::None
     }
 }
 
@@ -6057,12 +6059,24 @@ fn show_row(
             }
             HierarchyNode::Sketch(sketch) => {
                 let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
-                match sketch_row_action(row.double_clicked, row.clicked, additive) {
-                    SketchRowAction::Edit => on_edit_sketch(sketch),
-                    SketchRowAction::Select { additive } => {
+                match row_click_action(row.double_clicked, row.clicked, additive) {
+                    RowAction::Edit => on_edit_sketch(sketch),
+                    RowAction::Select { additive } => {
                         on_click_element(element.clone(), additive)
                     }
-                    SketchRowAction::None => {}
+                    RowAction::None => {}
+                }
+            }
+            // #1691: a plane reopens in the Plane tool the same way, so its offset and tilt
+            // can be changed after the fact.
+            HierarchyNode::ConstructionPlane(index) => {
+                let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
+                match row_click_action(row.double_clicked, row.clicked, additive) {
+                    RowAction::Edit => on_edit_plane(index),
+                    RowAction::Select { additive } => {
+                        on_click_element(element.clone(), additive)
+                    }
+                    RowAction::None => {}
                 }
             }
             HierarchyNode::Extrusion(index) => {
@@ -8033,15 +8047,12 @@ label_hidden: false,
 
     #[test]
     fn sketch_row_double_click_opens_for_edit_not_select() {
+        assert_eq!(row_click_action(true, true, false), RowAction::Edit);
         assert_eq!(
-            sketch_row_action(true, true, false),
-            SketchRowAction::Edit
+            row_click_action(false, true, false),
+            RowAction::Select { additive: false }
         );
-        assert_eq!(
-            sketch_row_action(false, true, false),
-            SketchRowAction::Select { additive: false }
-        );
-        assert_eq!(sketch_row_action(false, false, false), SketchRowAction::None);
+        assert_eq!(row_click_action(false, false, false), RowAction::None);
     }
 
     #[test]
