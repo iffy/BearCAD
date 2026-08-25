@@ -47,6 +47,16 @@ fn param_value_id(key: ParameterKey) -> Id {
 }
 
 /// Widget id for a gear-options min/max/step field (#1576).
+fn parameter_value_rect_id(name: &str) -> egui::Id {
+    egui::Id::new(("parameter_value_rect", name))
+}
+
+/// Where the Parameters pane drew a named parameter's **value** cell this frame (#1347/#1728)
+/// — what a tutorial orb asking for that row points at.
+pub fn parameter_value_rect(ctx: &egui::Context, name: &str) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<egui::Rect>(parameter_value_rect_id(name)))
+}
+
 pub fn param_bound_id(key: ParameterKey, which: ParameterBound) -> Id {
     Id::new((
         "bearcad_parameters_bound",
@@ -2867,10 +2877,11 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                         }
                         response
                     };
-                    app.tutorial_anchor_rects.insert(
-                        crate::tutorial::UiAnchor::ParametersExistingValue,
-                        value_cell.rect,
-                    );
+                    // Keyed by the parameter's name (#1728): one shared anchor meant a step
+                    // asking for `plate` rang whichever row the pane drew last.
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(parameter_value_rect_id(&param_name), value_cell.rect)
+                    });
                     let extras_cell = ui.horizontal(|ui| {
                         let remove = ui.add(
                             egui::Button::new(

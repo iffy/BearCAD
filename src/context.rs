@@ -4998,9 +4998,14 @@ fn checkbox_row(
                     changed = true;
                 }
                 // Right column: the checkbox, with the shortcut hint to its **right** (#597).
-                if ui.checkbox(checked, "").changed() {
+                let tick = ui.checkbox(checked, "");
+                if tick.changed() {
                     changed = true;
                 }
+                // A tutorial orb pointing at this row means the tick box itself (#1732) — the
+                // row rect's centre is the empty gap between the label and the box.
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(checkbox_row_rect_id(label), tick.rect));
                 if let Some(hint) = shortcut {
                     ui.add(egui::Label::new(
                         egui::RichText::new(crate::shortcuts::format_shortcut(hint))
@@ -5013,8 +5018,6 @@ fn checkbox_row(
         })
         .inner;
     note_help(ui, label, row.response.rect);
-    ui.ctx()
-        .data_mut(|d| d.insert_temp(checkbox_row_rect_id(label), row.response.rect));
     changed
 }
 

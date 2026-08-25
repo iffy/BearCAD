@@ -25,8 +25,10 @@ pub enum UiAnchor {
     ParametersName,
     /// The Parameters pane's new-parameter **value** field.
     ParametersValue,
-    /// An existing parameter's **value** cell in the Parameters pane (#1347).
-    ParametersExistingValue,
+    /// A named parameter's **value** cell in the Parameters pane (#1347). The name matters
+    /// (#1728): every row used to overwrite one shared anchor, so a step that asked for
+    /// `plate` rang whichever row the pane drew last.
+    ParametersExistingValue(&'static str),
     /// A constraint button in the Context pane's Constraints list (#770) — where a
     /// squaring-up step points once both of its picks are made.
     ConstraintButton(crate::geometric_constraints::GeometricConstraintType),
@@ -2317,12 +2319,12 @@ static PARAMETERS_STEPS: &[Step] = &[
     ),
     plain_step(
         "Click the `width` value in the Parameters pane.",
-        StepAnchor::Ui(UiAnchor::ParametersExistingValue),
+        StepAnchor::Ui(UiAnchor::ParametersExistingValue("width")),
         Some(width_value_open),
     ),
     assisted_step(
         "Change it to `30mm`. The rectangle stretches.",
-        StepAnchor::Ui(UiAnchor::ParametersExistingValue),
+        StepAnchor::Ui(UiAnchor::ParametersExistingValue("width")),
         Some(width_is_30),
         StepAssist {
             label: "Change it for me",
@@ -2352,12 +2354,12 @@ static PARAMETERS_STEPS: &[Step] = &[
     ),
     plain_step(
         "Click the `height` value in the Parameters pane.",
-        StepAnchor::Ui(UiAnchor::ParametersExistingValue),
+        StepAnchor::Ui(UiAnchor::ParametersExistingValue("height")),
         Some(height_value_open),
     ),
     assisted_step(
         "Change it to `50mm`. The solid grows.",
-        StepAnchor::Ui(UiAnchor::ParametersExistingValue),
+        StepAnchor::Ui(UiAnchor::ParametersExistingValue("height")),
         Some(height_is_50),
         StepAssist {
             label: "Change it for me",
@@ -5315,12 +5317,12 @@ static DERIVED_PARAMETER_STEPS: &[Step] = &[
     ),
     plain_step(
         "Click the `plate` value in the Parameters pane.",
-        StepAnchor::Ui(UiAnchor::ParametersExistingValue),
+        StepAnchor::Ui(UiAnchor::ParametersExistingValue("plate")),
         Some(plate_value_open),
     ),
     assisted_step(
         "Change it to `100mm`. Both sides move \u{2014} `hole` was never a number.",
-        StepAnchor::Ui(UiAnchor::ParametersExistingValue),
+        StepAnchor::Ui(UiAnchor::ParametersExistingValue("plate")),
         Some(plate_is_changed),
         StepAssist {
             label: "Change it for me",
@@ -9498,7 +9500,7 @@ mod tests {
         assert!(
             tut.steps
                 .iter()
-                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::ParametersExistingValue))),
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::ParametersExistingValue(_)))),
             "and changes the source parameter at the end"
         );
     }
