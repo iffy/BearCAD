@@ -155,7 +155,8 @@ bearcad.ui.camera{ yaw?, pitch?, distance?, target? }
 bearcad.ui.pane("ai"|"hierarchy"|"context"|"parameters"|…, "show"|"hide"|"toggle")
 bearcad.ui.click_ground(x, y)               -- sketch-plane millimetres
 bearcad.ui.click_world(x, y, z)             -- any world point: a body's side wall, say
-bearcad.ui.viewport()                       -- { width, height } of the area clicks address
+bearcad.ui.double_click(x, y)               -- opens a sketch / plane / dimension for editing
+bearcad.ui.viewport()                       -- { width, height, x, y } of the area clicks address
 bearcad.ui.right_click_ground(x, y)         -- opens a context menu
 bearcad.ui.context_menu()                   -- { kind, index } of the open menu, or nil
 bearcad.ui.key("enter")
@@ -351,6 +352,7 @@ bearcad.ui.complete_all_tutorials()
 bearcad.ui.complete_tutorial(name)
 bearcad.ui.context_menu()
 bearcad.ui.detach_tab(index?)
+bearcad.ui.double_click(x, y)
 bearcad.ui.drag(x0, y0, x1, y1)
 bearcad.ui.drag_ground(x0, y0, x1, y1)
 bearcad.ui.drag_line({ … }, anchor_u?, anchor_v?, u?, v?)
@@ -404,7 +406,7 @@ bearcad.ui.tab(index?)
 bearcad.ui.tab_count()
 bearcad.ui.tabs()
 bearcad.ui.toggle_projection()
-bearcad.ui.tool(name)
+bearcad.ui.tool(name?) -- no name reads the armed tool
 bearcad.ui.tool_hints(on?)
 bearcad.ui.tool_mode(mode?)
 bearcad.ui.toolbar_shortcuts()
@@ -427,7 +429,7 @@ bearcad.ui.unstart_all_tutorials()
 bearcad.ui.update_channel(channel?)
 bearcad.ui.view(…)
 bearcad.ui.view_home()
-bearcad.ui.viewport()
+bearcad.ui.viewport() -- { width, height, x, y }
 bearcad.ui.wait(frames)
 bearcad.ui.wait_ms(ms)
 bearcad.ui.wheel(scroll)

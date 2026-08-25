@@ -3142,13 +3142,21 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Setter with a name; with no argument it reads back the tool that is armed (#1692) —
+    // the same shape `bearcad.ui.tool_mode` has.
     api.set(
         "tool",
-        lua.create_function(|lua, name: String| {
+        lua.create_function(|lua, name: Option<String>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let Some(name) = name else {
+                let state = unsafe { tick.state() };
+                let armed = crate::shortcuts::tool_script_name(state.tool);
+                return Ok(Value::String(lua.create_string(armed)?));
+            };
             let tool = Tool::from_name(&name)
                 .ok_or_else(|| mlua::Error::external(format!("unknown tool '{name}'")))?;
-            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            unsafe { tick.exec(Instruction::Tool(tool)) }
+            unsafe { tick.exec(Instruction::Tool(tool))? };
+            Ok(Value::Nil)
         })?,
     )?;
 
@@ -6032,6 +6040,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let t = lua.create_table()?;
             t.set("height", state.viewport_height)?;
             t.set("width", state.viewport_height * state.viewport_aspect)?;
+            // Where that area sits in the window (#1692), so a script can turn a window
+            // coordinate — `bearcad.ui.tutorial_orb()`'s, say — into a click coordinate.
+            if let Some(vp) = tick.viewport {
+                t.set("x", vp.min.x)?;
+                t.set("y", vp.min.y)?;
+            }
             Ok(t)
         })?,
     )?;
@@ -6322,6 +6336,15 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let mods = click_mods(opts)?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::Click { x, y, mods }) }
+        })?,
+    )?;
+
+    // #1692: a double-click, for the pane rows and labels that open on one.
+    api.set(
+        "double_click",
+        lua.create_function(|lua, (x, y): (f32, f32)| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::DoubleClick { x, y }) }
         })?,
     )?;
 
@@ -9098,7 +9121,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "complete_tutorial",
             "touch",
             "os_open",
-            "move", "click", "move_ground", "click_ground",
+            "move", "click", "double_click", "move_ground", "click_ground",
             "move_world", "click_world",
             "drag", "drag_ground", "right_drag", "right_drag_pan",
             "right_click", "right_click_ground", "context_menu",

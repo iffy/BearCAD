@@ -13,12 +13,14 @@ testing; for ordinary modeling use the [declarative API](./declarative-modeling)
 
 ```lua
 bearcad.ui.tool("rectangle")            -- select, line, circle, sketch, rectangle, ...
+bearcad.ui.tool()                       -- no name: the tool that is armed
 bearcad.ui.click_ground(0, 0)           -- click on the active sketch plane, in millimetres
 bearcad.ui.move_ground(80, 50)
 bearcad.ui.click(x, y)                  -- viewport pixel coordinates instead
+bearcad.ui.double_click(x, y)           -- opens a sketch / plane / dimension for editing
 bearcad.ui.click_world(20, 10, 50)      -- a point in world space: a body's side wall, say
 bearcad.ui.move_world(20, 10, 50)
-bearcad.ui.viewport()                   -- { width, height } of the area clicks address
+bearcad.ui.viewport()                   -- { width, height, x, y } of the area clicks address
 bearcad.ui.click_ground(20, -10, { shift = true })   -- Shift+click
 bearcad.ui.click_ground(20, -10, { ctrl = true })    -- Ctrl+click: one edge, not its run
 bearcad.ui.move(x, y)
@@ -171,7 +173,8 @@ bearcad.ui.tutorial_assist()
 bearcad.ui.tutorial_end()
 local step = bearcad.ui.tutorial_step()  -- nil when none running
 local text = bearcad.ui.tutorial_narration()  -- current step text, or nil
-local orb = bearcad.ui.tutorial_orb()    -- {x=, y=} screen px, or nil
+local orb = bearcad.ui.tutorial_orb()    -- {x=, y=} window px, or nil
+                                         -- subtract viewport().x/y to click it
 local bubble = bearcad.ui.tutorial_bubble() -- {x=, y=, w=, h=} screen px, or nil
 bearcad.ui.complete_all_tutorials()     -- mark every walkthrough finished
 bearcad.ui.unstart_all_tutorials()      -- clear every completion check

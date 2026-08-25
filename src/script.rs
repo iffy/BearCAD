@@ -1015,6 +1015,9 @@ pub enum Instruction {
     // Synthetic input (viewport-local pixel coordinates)
     Move { x: f32, y: f32 },
     Click { x: f32, y: f32, mods: ClickMods },
+    /// Two primary clicks in quick succession at one spot (#1692) — what opens a sketch,
+    /// a plane, or a dimension label for editing from a pane row.
+    DoubleClick { x: f32, y: f32 },
     /// Move/click at ground-plane world coordinates (millimetres, z = 0).
     MoveGround { x: f32, y: f32 },
     /// A click at ground coordinates, optionally with modifiers held (#835/#984).
@@ -2389,6 +2392,9 @@ impl Instruction {
             Instruction::Move { x, y } => format!("bearcad.ui.move({x}, {y})"),
             Instruction::Click { x, y, mods } => {
                 format!("bearcad.ui.click({x}, {y}{})", mods.lua_opts())
+            }
+            Instruction::DoubleClick { x, y } => {
+                format!("bearcad.ui.double_click({x}, {y})")
             }
             Instruction::MoveGround { x, y } => format!("bearcad.ui.move_ground({x}, {y})"),
             Instruction::ClickGround { x, y, mods } => {
@@ -5196,6 +5202,24 @@ impl SyntheticInput {
             pressed: false,
             modifiers,
         });
+    }
+
+    /// Two clicks at one spot, back to back (#1692). Each event is its own frame, so the
+    /// pair lands milliseconds apart — inside egui's double-click window.
+    pub fn double_click(&mut self, viewport: egui::Rect, x: f32, y: f32) {
+        let pos = Self::viewport_pos(viewport, x, y);
+        self.pointer_pos = Some(pos);
+        self.push_event(egui::Event::PointerMoved(pos));
+        for _ in 0..2 {
+            for pressed in [true, false] {
+                self.push_event(egui::Event::PointerButton {
+                    pos,
+                    button: PointerButton::Primary,
+                    pressed,
+                    modifiers: Modifiers::NONE,
+                });
+            }
+        }
     }
 
     pub fn drag(&mut self, viewport: egui::Rect, x0: f32, y0: f32, x1: f32, y1: f32) {
@@ -8547,6 +8571,13 @@ impl ScriptRunner {
                     return StepResult::Wait;
                 };
                 synthetic.click_with(vp, x, y, mods);
+                StepResult::Continue
+            }
+            Instruction::DoubleClick { x, y } => {
+                let Some(vp) = viewport else {
+                    return StepResult::Wait;
+                };
+                synthetic.double_click(vp, x, y);
                 StepResult::Continue
             }
             Instruction::MoveGround { x, y } => {
