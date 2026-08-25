@@ -10062,6 +10062,7 @@ pub mod tests {
             assert(names.tilted_plane == "Angled plane")
             assert(names.offset == "Offset")
             assert(names.shell == "Shell")
+            assert(names.derived_parameter == "Derived parameters")
             "#
             .replace("__COUNT__", &crate::tutorial::TUTORIALS.len().to_string()),
         );
@@ -10206,6 +10207,34 @@ pub mod tests {
             local want = (20 * 20 - 16 * 16) * 20
             assert(math.abs(v - want) / want < 0.02,
               "box volume " .. v .. " should be about " .. want)
+            "#,
+        );
+    }
+
+    /// #1676: the derived-parameter tutorial walks with assists and leaves `hole` still an
+    /// expression on `plate` — change the source, the derived value and the geometry follow.
+    #[test]
+    fn derived_parameter_tutorial_lua_walks_and_keeps_the_expression() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.ui.tutorial("derived_parameter")
+            local guard = 0
+            while bearcad.ui.tutorial_step() ~= nil do
+              guard = guard + 1
+              assert(guard < 60, "derived-parameter tutorial should finish")
+              local at = bearcad.ui.tutorial_step()
+              bearcad.ui.tutorial_assist()
+              if bearcad.ui.tutorial_step() == at then
+                bearcad.ui.tutorial_next()
+              end
+            end
+            assert(bearcad.parameter("get", "plate") == 100, "plate moved to 100")
+            assert(bearcad.parameter("get", "hole") == 25, "hole follows to 25")
+            assert(bearcad.parameter("get_expression", "hole"):find("plate"),
+              "hole is still derived, got " .. bearcad.parameter("get_expression", "hole"))
+            -- The rectangle really is 100 x 25 now.
+            bearcad.parameter("value", 0, "80mm")
+            assert(bearcad.parameter("get", "hole") == 20, "hole tracks plate again")
             "#,
         );
     }

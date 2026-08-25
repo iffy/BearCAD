@@ -381,6 +381,12 @@ pub static TUTORIALS: &[Tutorial] = &[
         title: "Shell",
         steps: SHELL_STEPS,
     },
+    // #1676: one parameter worked out from another.
+    Tutorial {
+        name: "derived_parameter",
+        title: "Derived parameters",
+        steps: DERIVED_PARAMETER_STEPS,
+    },
 ];
 
 pub fn tutorial_index(name: &str) -> Option<usize> {
@@ -4965,6 +4971,283 @@ static SHELL_STEPS: &[Step] = &[
     ),
 ];
 
+// --- Derived parameter tutorial (#1676) ------------------------------------------------
+
+/// The parameter the walkthrough types by hand, and the one worked out from it.
+const DERIVED_SOURCE: &str = "plate";
+const DERIVED_SOURCE_VALUE: &str = "60mm";
+const DERIVED_NAME: &str = "hole";
+const DERIVED_EXPRESSION: &str = "plate / 4";
+/// What the source is changed to at the end, so the derived one visibly follows.
+const DERIVED_SOURCE_CHANGED: &str = "100mm";
+
+fn draft_name_is(app: &AppState, want: &str) -> bool {
+    app.parameters_pane.new_name.trim().eq_ignore_ascii_case(want)
+}
+
+/// A draft row is being filled in: the box has focus, or something is already typed.
+fn drafting_name(app: &AppState) -> bool {
+    app.parameters_pane.new_name_focused
+        || !app.parameters_pane.new_name.trim().is_empty()
+}
+
+fn drafting_value(app: &AppState) -> bool {
+    app.parameters_pane.new_value_focused
+        || !app.parameters_pane.new_value.trim().is_empty()
+}
+
+fn plate_added(app: &AppState) -> bool {
+    param_exists(app, DERIVED_SOURCE)
+}
+
+fn hole_added(app: &AppState) -> bool {
+    param_exists(app, DERIVED_NAME)
+}
+
+fn plate_name_tapped(app: &AppState) -> bool {
+    plate_added(app) || drafting_name(app)
+}
+
+fn plate_name_typed(app: &AppState) -> bool {
+    plate_added(app) || draft_name_is(app, DERIVED_SOURCE)
+}
+
+fn plate_value_tapped(app: &AppState) -> bool {
+    plate_added(app) || drafting_value(app)
+}
+
+fn plate_value_typed(app: &AppState) -> bool {
+    plate_added(app)
+        || crate::value::eval_length_mm(&app.parameters_pane.new_value)
+            .is_some_and(|v| (v - 60.0).abs() < 1e-3)
+}
+
+fn hole_name_tapped(app: &AppState) -> bool {
+    hole_added(app) || (plate_added(app) && drafting_name(app))
+}
+
+fn hole_name_typed(app: &AppState) -> bool {
+    hole_added(app) || draft_name_is(app, DERIVED_NAME)
+}
+
+fn hole_value_tapped(app: &AppState) -> bool {
+    hole_added(app) || (plate_added(app) && drafting_value(app))
+}
+
+fn hole_value_typed(app: &AppState) -> bool {
+    hole_added(app) || expr_eq(&app.parameters_pane.new_value, DERIVED_EXPRESSION)
+}
+
+fn derived_rect_width_typed(app: &AppState) -> bool {
+    creating_rect_text_eq(app, 0, DERIVED_SOURCE) || dim_expr_eq(app, DERIVED_SOURCE)
+}
+
+fn derived_rect_height_focused(app: &AppState) -> bool {
+    app.creating_rect.as_ref().is_some_and(|cr| cr.focused == 1) || derived_rect_committed(app)
+}
+
+fn derived_rect_committed(app: &AppState) -> bool {
+    has_rectangle_outline(app) && dim_expr_eq(app, DERIVED_SOURCE) && dim_expr_eq(app, DERIVED_NAME)
+}
+
+fn plate_value_open(app: &AppState) -> bool {
+    editing_param_value(app, DERIVED_SOURCE) || plate_is_changed(app)
+}
+
+fn plate_is_changed(app: &AppState) -> bool {
+    param_length_near(app, DERIVED_SOURCE, 100.0)
+}
+
+fn assist_add_plate(app: &mut AppState) {
+    ensure_param(app, DERIVED_SOURCE, DERIVED_SOURCE_VALUE);
+}
+
+fn assist_add_hole(app: &mut AppState) {
+    assist_add_plate(app);
+    ensure_param(app, DERIVED_NAME, DERIVED_EXPRESSION);
+}
+
+fn assist_draw_derived_rect(app: &mut AppState) {
+    if derived_rect_committed(app) {
+        return;
+    }
+    assist_add_hole(app);
+    if app.creating_rect.is_some() {
+        if let Some(cr) = app.creating_rect.as_mut() {
+            cr.texts[0] = DERIVED_SOURCE.into();
+            cr.texts[1] = DERIVED_NAME.into();
+            cr.user_edited = [true, true];
+        }
+        app.apply(Action::CommitRectangle);
+        return;
+    }
+    if has_rectangle_outline(app) {
+        dimension_rect_line(app, 0, DERIVED_SOURCE);
+        dimension_rect_line(app, 1, DERIVED_NAME);
+        return;
+    }
+    ensure_ground_sketch(app);
+    let w = crate::value::eval_length_mm_in_doc(DERIVED_SOURCE, &app.doc).unwrap_or(60.0);
+    let h = crate::value::eval_length_mm_in_doc(DERIVED_NAME, &app.doc).unwrap_or(15.0);
+    app.apply(Action::CreateRectangle {
+        x: 0.0,
+        y: 0.0,
+        width: w,
+        height: h,
+        width_expr: Some(DERIVED_SOURCE.into()),
+        height_expr: Some(DERIVED_NAME.into()),
+    });
+}
+
+fn assist_change_plate(app: &mut AppState) {
+    assist_draw_derived_rect(app);
+    set_param(app, DERIVED_SOURCE, DERIVED_SOURCE_CHANGED);
+}
+
+/// #1676: type one parameter, work a second one out from it, drive a rectangle with both,
+/// then change the source and watch the derived one follow.
+static DERIVED_PARAMETER_STEPS: &[Step] = &[
+    plain_step(
+        "A derived parameter is worked out from another one. Change the source and \
+         everything downstream moves.",
+        StepAnchor::None,
+        None,
+    ),
+    plain_step(
+        "See the Parameters pane? Tap inside the name box.",
+        StepAnchor::Ui(UiAnchor::ParametersName),
+        Some(plate_name_tapped),
+    ),
+    assisted_step(
+        "Type `plate`.",
+        StepAnchor::Ui(UiAnchor::ParametersName),
+        Some(plate_name_typed),
+        StepAssist {
+            label: "Add it for me",
+            run: assist_add_plate,
+        },
+        Some(TypeHint::Fixed(DERIVED_SOURCE)),
+    ),
+    plain_step(
+        "Tap the value box beside it.",
+        StepAnchor::Ui(UiAnchor::ParametersValue),
+        Some(plate_value_tapped),
+    ),
+    assisted_step(
+        "Type `60mm`.",
+        StepAnchor::Ui(UiAnchor::ParametersValue),
+        Some(plate_value_typed),
+        StepAssist {
+            label: "Add it for me",
+            run: assist_add_plate,
+        },
+        Some(TypeHint::Fixed(DERIVED_SOURCE_VALUE)),
+    ),
+    plain_step(
+        "Press + to add it.",
+        StepAnchor::Ui(UiAnchor::ParametersAdd),
+        Some(plate_added),
+    ),
+    plain_step(
+        "Now the derived one. Tap the name box again.",
+        StepAnchor::Ui(UiAnchor::ParametersName),
+        Some(hole_name_tapped),
+    ),
+    assisted_step(
+        "Type `hole`.",
+        StepAnchor::Ui(UiAnchor::ParametersName),
+        Some(hole_name_typed),
+        StepAssist {
+            label: "Add it for me",
+            run: assist_add_hole,
+        },
+        Some(TypeHint::Fixed(DERIVED_NAME)),
+    ),
+    plain_step(
+        "Tap the value box.",
+        StepAnchor::Ui(UiAnchor::ParametersValue),
+        Some(hole_value_tapped),
+    ),
+    assisted_step(
+        "Type `plate / 4` \u{2014} a value that names another parameter, not a number.",
+        StepAnchor::Ui(UiAnchor::ParametersValue),
+        Some(hole_value_typed),
+        StepAssist {
+            label: "Add it for me",
+            run: assist_add_hole,
+        },
+        Some(TypeHint::Fixed(DERIVED_EXPRESSION)),
+    ),
+    plain_step(
+        "Press + to add it. `hole` now reads 15 mm \u{2014} a quarter of `plate`.",
+        StepAnchor::Ui(UiAnchor::ParametersAdd),
+        Some(hole_added),
+    ),
+    plain_step(
+        "Rectangle tool \u{2014} glowing button, or `R`.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Rectangle)),
+        Some(rectangle_tool_active),
+    ),
+    plain_step_enter(
+        "Click a corner on the ground.",
+        StepAnchor::World(rect_first_corner_guide),
+        Some(rect_first_corner_placed),
+        ensure_rect_sketch_for_tutorial,
+    ),
+    assisted_step(
+        "Type `plate` in the width field.",
+        StepAnchor::Ui(UiAnchor::RectWidth),
+        Some(derived_rect_width_typed),
+        StepAssist {
+            label: "Draw it for me",
+            run: assist_draw_derived_rect,
+        },
+        Some(TypeHint::Fixed(DERIVED_SOURCE)),
+    ),
+    assisted_step(
+        "Press `Tab` to reach the height field.",
+        StepAnchor::Ui(UiAnchor::RectHeight),
+        Some(derived_rect_height_focused),
+        StepAssist {
+            label: "Draw it for me",
+            run: assist_draw_derived_rect,
+        },
+        None,
+    ),
+    assisted_step_enter(
+        "Type `hole`, then Enter.",
+        StepAnchor::Ui(UiAnchor::RectHeight),
+        Some(derived_rect_committed),
+        StepAssist {
+            label: "Draw it for me",
+            run: assist_draw_derived_rect,
+        },
+        Some(TypeHint::Fixed(DERIVED_NAME)),
+        ensure_rect_height_focus,
+    ),
+    plain_step(
+        "Click the `plate` value in the Parameters pane.",
+        StepAnchor::Ui(UiAnchor::ParametersExistingValue),
+        Some(plate_value_open),
+    ),
+    assisted_step(
+        "Change it to `100mm`. Both sides move \u{2014} `hole` was never a number.",
+        StepAnchor::Ui(UiAnchor::ParametersExistingValue),
+        Some(plate_is_changed),
+        StepAssist {
+            label: "Change it for me",
+            run: assist_change_plate,
+        },
+        Some(TypeHint::Fixed(DERIVED_SOURCE_CHANGED)),
+    ),
+    plain_step(
+        "That's a derived parameter: one number to edit, the rest work themselves out. \
+         Nice!",
+        StepAnchor::None,
+        None,
+    ),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5131,10 +5414,15 @@ mod tests {
         assert_eq!(tutorial_index("tilted_plane"), Some(11), "#1673: angled plane is twelfth");
         assert_eq!(tutorial_index("offset"), Some(12), "#1674: offset is thirteenth");
         assert_eq!(tutorial_index("shell"), Some(13), "#1675: shell is fourteenth");
+        assert_eq!(
+            tutorial_index("derived_parameter"),
+            Some(14),
+            "#1676: derived parameters is fifteenth"
+        );
         assert_eq!(tutorial_index("bracket"), None, "#1334: build-a-bracket tutorial is gone");
         assert_eq!(tutorial_index("nope"), None);
-        assert_eq!(TUTORIALS.last().unwrap().name, "shell");
-        assert_eq!(TUTORIALS.len(), 14, "pane lists every remaining walkthrough");
+        assert_eq!(TUTORIALS.last().unwrap().name, "derived_parameter");
+        assert_eq!(TUTORIALS.len(), 15, "pane lists every remaining walkthrough");
         for tut in TUTORIALS {
             assert_ne!(tut.name, "bracket");
             assert_ne!(tut.title, "Build an angle bracket");
@@ -7295,6 +7583,61 @@ mod tests {
             has_equal_constraint(&app),
             "two sides should be equal, status={}",
             app.status
+        );
+    }
+
+    fn derived_tut() -> &'static Tutorial {
+        &TUTORIALS[tutorial_index("derived_parameter")
+            .expect("derived_parameter tutorial is registered")]
+    }
+
+    /// #1676: a parameter whose value is worked out from another one.
+    #[test]
+    fn derived_parameter_tutorial_is_registered_and_teaches_an_expression_value() {
+        let tut = derived_tut();
+        assert_eq!(tut.name, "derived_parameter");
+        assert_eq!(tut.title, "Derived parameters");
+        let joined: String = tut
+            .steps
+            .iter()
+            .map(|s| s.narration)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains(DERIVED_SOURCE), "{joined}");
+        assert!(joined.contains(DERIVED_EXPRESSION), "the derived value is typed in full");
+        assert!(
+            tut.steps
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::ParametersAdd))),
+            "the walkthrough presses + to add a parameter"
+        );
+        assert!(
+            tut.steps
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::ParametersExistingValue))),
+            "and changes the source parameter at the end"
+        );
+    }
+
+    /// #1676: the assists leave `plate` changed and `hole` still derived from it.
+    #[test]
+    fn derived_parameter_tutorial_assists_drive_one_parameter_from_another() {
+        let mut app = AppState::default();
+        finish_tutorial_via_next(&mut app, "derived_parameter");
+        assert!(param_exists(&app, DERIVED_SOURCE), "status={}", app.status);
+        assert!(param_exists(&app, DERIVED_NAME), "status={}", app.status);
+        let derived = param_key(&app, DERIVED_NAME).unwrap();
+        assert!(
+            expr_eq(&app.doc.parameters[derived].expression, DERIVED_EXPRESSION),
+            "the derived parameter keeps its expression, got {:?}",
+            app.doc.parameters[derived].expression
+        );
+        // The source moved to 100, so the derived one recomputed to a quarter of it.
+        assert!(param_length_near(&app, DERIVED_SOURCE, 100.0), "source is 100mm");
+        assert!(param_length_near(&app, DERIVED_NAME, 25.0), "derived follows to 25mm");
+        assert!(
+            dim_expr_eq(&app, DERIVED_SOURCE) && dim_expr_eq(&app, DERIVED_NAME),
+            "the rectangle's sides are driven by both parameters"
         );
     }
 
