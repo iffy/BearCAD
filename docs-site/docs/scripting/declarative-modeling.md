@@ -341,9 +341,13 @@ what's in front of them — not a change to it. Views live under **Views** in th
 pane; **View → Create Cross Section** makes one.
 
 ```lua
-local v = bearcad.cross_section{ name = "Front half" }   -- returns its index
-assert(bearcad.get{ kind = "cross_section", index = v }.name == "Front half")
+local v = bearcad.cross_section{ name = "Front half" }   -- returns its index; opens the view
+assert(bearcad.ui.workbench() == "view")
+bearcad.ui.workbench("model")                            -- back to the model
 ```
+
+Creating a view (or double-clicking its row) opens the **View workbench**; the toolbar's
+leftmost control names the workbench you're on and switches between them.
 
 ## Materials
 

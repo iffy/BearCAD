@@ -73,6 +73,8 @@ bearcad.ui.palette("run", "view top")   -- run a command palette entry by name
 -- With a construction plane selected, the third value is the image path:
 bearcad.ui.palette("run", "import image on this plane", "drawing.png")
 bearcad.ui.elements_view("graph")       -- Elements-pane layout: "list" | "tree" | "graph"
+bearcad.ui.workbench()                  -- "model" | "sketch" | "drawing" | "view"
+bearcad.ui.workbench("view")            -- switch, opening the most recent view/drawing/sketch
 local g = bearcad.ui.elements_graph()   -- the graph view's one-node-per-line layout
 -- g.lanes                              -- how many lanes wide it is
 -- g.rows[i]  = { name=, kind=, lane=, x=, y=, w=, h= }   -- x/y/w/h: where the row was drawn

@@ -4895,6 +4895,31 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1686: which workbench the app is in — `bearcad.ui.workbench()` reads it back
+    // ("model" | "sketch" | "drawing" | "view"); passing a name switches to it, opening the
+    // most recent sketch / drawing / cross-section view the way the toolbar's picker does.
+    api.set(
+        "workbench",
+        lua.create_function(|lua, name: Option<String>| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let Some(name) = name else {
+                let state = unsafe { tick.state() };
+                return Ok(Value::String(
+                    lua.create_string(state.workbench().script_name())?,
+                ));
+            };
+            let workbench = crate::actions::Workbench::from_name(&name).ok_or_else(|| {
+                mlua::Error::external(format!(
+                    "unknown workbench '{name}' (expected 'model', 'sketch', 'drawing', or 'view')"
+                ))
+            })?;
+            unsafe { tick.exec(Instruction::SetWorkbench { workbench })? };
+            Ok(Value::Nil)
+        })?,
+    )?;
+
     api.set(
         "pane",
         lua.create_function(|lua, (pane, visible): (String, Value)| {
@@ -6061,12 +6086,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let state = unsafe { tick.state() };
             let table = lua.create_table()?;
-            for (i, tool) in crate::tooltable::visible_toolbar_tools(
-                state.editing_drawing.is_some(),
-                state.sketch_session.is_some(),
-            )
-            .into_iter()
-            .enumerate()
+            // The bar belongs to the workbench (#1686), so this reports whichever one is open.
+            for (i, tool) in crate::tooltable::workbench_tools(state.workbench())
+                .into_iter()
+                .enumerate()
             {
                 table.set(i + 1, crate::shortcuts::tool_script_name(tool))?;
             }
@@ -8627,7 +8650,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "new_tab", "close_tab", "tab", "tab_count", "window_count", "tabs", "reorder_tab", "detach_tab",
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading", "ground",
             "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance", "fps_scale",
-            "camera", "elements_view", "elements_graph", "auto_zoom", "animate_joints", "animate_zoom_to_fit",
+            "camera", "elements_view", "elements_graph", "workbench", "auto_zoom", "animate_joints", "animate_zoom_to_fit",
             "update_channel",
             "snapping", "picker_focus", "angle_snap",
             "tutorial", "tutorial_next", "tutorial_assist", "tutorial_end", "tutorial_step",
@@ -16128,6 +16151,35 @@ pub mod tests {
             assert(bearcad.ui.pane_rect("hierarchy") == nil)
             assert(bearcad.ui.pane_rect("context") == nil)
             assert(bearcad.ui.pane_rect("parameters") == nil)
+        "#,
+        );
+    }
+
+    /// #1686: scripts read and switch the workbench the app is in.
+    #[test]
+    fn lua_workbench_reads_and_switches() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            assert(bearcad.ui.workbench() == "model", "a fresh document is on the model")
+
+            bearcad.rect{ width = 10, height = 10 }     -- opens a sketch implicitly
+            assert(bearcad.ui.workbench() == "sketch", "drawing a rect is sketch work")
+
+            bearcad.cross_section{ name = "Front" }
+            assert(bearcad.ui.workbench() == "view", "a new view opens its workbench")
+
+            bearcad.ui.workbench("model")
+            assert(bearcad.ui.workbench() == "model", "and you can leave it")
+
+            bearcad.ui.workbench("view")
+            assert(bearcad.ui.workbench() == "view", "and come back to it")
+
+            bearcad.drawing{}
+            assert(bearcad.ui.workbench() == "drawing", "a new drawing opens its own")
+
+            local ok = pcall(bearcad.ui.workbench, "spiral")
+            assert(not ok, "an unknown workbench should error")
         "#,
         );
     }

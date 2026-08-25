@@ -2932,8 +2932,10 @@ pub enum Action {
     /// Create a new technical drawing (#180) and open it in the drawing pane.
     CreateDrawing { name: Option<String> },
     /// Add a cross-section view (#1671): a saved way of looking at the model. It makes no
-    /// geometry, so nothing recomputes.
+    /// geometry, so nothing recomputes. Opens the new view in the View workbench.
     CreateCrossSection { name: Option<String> },
+    /// Open a cross-section view in the View workbench, or leave it with `None` (#1686).
+    EditCrossSection { view: Option<crate::model::CrossSectionKey> },
     /// Create a new technical drawing of a body and open it with a default view (#1158).
     /// Reuses [`Action::CreateDrawing`] + [`Action::AddDrawingView`].
     CreateDrawingOfBody { body: crate::model::BodyKey },
@@ -3633,6 +3635,60 @@ impl Action {
             self,
             Action::NewDocument | Action::Open { .. } | Action::Clear
         )
+    }
+}
+
+/// Which workbench the app is in (#1671/#1686): the mode that decides what the toolbar
+/// offers and what a click in the viewport means. Derived from `AppState`, never stored —
+/// an open sketch *is* the Sketch workbench, an open drawing *is* the Drawing workbench.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum Workbench {
+    /// The 3D model: sketches, features, bodies.
+    #[default]
+    Model,
+    /// Inside a sketch.
+    Sketch,
+    /// On a technical drawing's page.
+    Drawing,
+    /// Setting up a cross-section view.
+    View,
+}
+
+impl Workbench {
+    /// All workbenches, in the order the toolbar's picker lists them.
+    pub const ALL: &'static [Workbench] = &[
+        Workbench::Model,
+        Workbench::Sketch,
+        Workbench::Drawing,
+        Workbench::View,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Workbench::Model => "Modeling",
+            Workbench::Sketch => "Sketch",
+            Workbench::Drawing => "Drawing",
+            Workbench::View => "View",
+        }
+    }
+
+    pub fn script_name(self) -> &'static str {
+        match self {
+            Workbench::Model => "model",
+            Workbench::Sketch => "sketch",
+            Workbench::Drawing => "drawing",
+            Workbench::View => "view",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "model" | "modeling" => Some(Workbench::Model),
+            "sketch" | "sketching" => Some(Workbench::Sketch),
+            "drawing" => Some(Workbench::Drawing),
+            "view" | "views" | "cross_section" => Some(Workbench::View),
+            _ => None,
+        }
     }
 }
 
@@ -4362,6 +4418,8 @@ pub struct AppState {
     /// (never persisted): while `Some`, the central area shows that drawing instead of the
     /// 3D viewport.
     pub editing_drawing: Option<crate::model::DrawingKey>,
+    /// The cross-section view being set up (#1671): the View workbench, when it is `Some`.
+    pub editing_cross_section: Option<crate::model::CrossSectionKey>,
     /// The elements selected on the open drawing page (#346): projections, text notes, and shown
     /// dimensions, each tagged with its owning drawing index. Multi-select, mirrored by the Select
     /// tool's element picker and the Elements pane. The single-element `selected_drawing_view` /
@@ -4615,6 +4673,7 @@ impl Default for AppState {
             creating_shell: None,
             creating_sketch_slice: None,
             editing_drawing: None,
+            editing_cross_section: None,
             selected_drawing_elements: Vec::new(),
             hovered_drawing_element: None,
             viewport_aspect: 16.0 / 9.0,
@@ -9018,6 +9077,34 @@ impl AppState {
         )
     }
 
+    /// Which workbench the app is in (#1686). Derived, never stored: an open sketch *is*
+    /// the Sketch workbench. A view being set up wins over a sketch left open behind it.
+    pub fn workbench(&self) -> Workbench {
+        if self.editing_cross_section.is_some() {
+            Workbench::View
+        } else if self.editing_drawing.is_some() {
+            Workbench::Drawing
+        } else if self.sketch_session.is_some() {
+            Workbench::Sketch
+        } else {
+            Workbench::Model
+        }
+    }
+
+    /// Enter (or leave) the View workbench, dropping any tool that bar doesn't carry (#1686)
+    /// — the same rule the Drawing workbench follows.
+    fn open_cross_section(&mut self, view: Option<crate::model::CrossSectionKey>) {
+        // One workbench at a time (#1686): opening a view leaves a drawing page behind.
+        if view.is_some() {
+            self.editing_drawing = None;
+        }
+        self.editing_cross_section = view;
+        let workbench = self.workbench();
+        if !crate::tooltable::workbench_tools(workbench).contains(&self.tool) {
+            self.tool = Tool::Select;
+        }
+    }
+
     pub fn apply(&mut self, action: Action) -> ActionResult {
         // The one funnel every action goes through, so it is the one place worth logging
         // from (#1023). A refusal only ever reached the status bar, where the next action
@@ -13419,6 +13506,8 @@ impl AppState {
                     wrap_frac: None,
                 });
                 let key = self.doc.drawings.insert(drawing);
+                // One workbench at a time (#1686): opening a page leaves a view behind.
+                self.editing_cross_section = None;
                 self.editing_drawing = Some(key);
                 self.status = format!("Added drawing {index}");
                 ActionResult::Ok
@@ -13432,8 +13521,19 @@ impl AppState {
                     }),
                     cuts: Vec::new(),
                 });
-                let _ = key;
                 self.status = format!("Added cross section {index}");
+                self.open_cross_section(Some(key));
+                ActionResult::Ok
+            }
+            Action::EditCrossSection { view } => {
+                if let Some(key) = view {
+                    if !self.doc.cross_sections.contains(key) {
+                        let e = format!("No cross section {}", key.index());
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                }
+                self.open_cross_section(view);
                 ActionResult::Ok
             }
             // #1158: Elements-pane body right-click → create a drawing of that body. Same paths
@@ -14077,6 +14177,9 @@ impl AppState {
                     && !crate::tooltable::visible_toolbar_tools(false, false).contains(&self.tool)
                 {
                     self.tool = Tool::Select;
+                }
+                if drawing.is_some() {
+                    self.editing_cross_section = None;
                 }
                 self.editing_drawing = drawing;
                 ActionResult::Ok
@@ -38736,6 +38839,38 @@ translate_mode: crate::model::MoveTranslateMode::Free,
     /// #1158: create a drawing of a body in one step (Elements-pane body context menu): a new
     /// drawing opens with a default-orientation view of that body. Named bodies seed the
     /// drawing's name; missing bodies are rejected.
+    /// #1671/#1686: creating a cross-section view opens the View workbench; leaving it puts
+    /// the app back on the modeling bar.
+    #[test]
+    fn create_cross_section_opens_the_view_workbench() {
+        let mut state = AppState::default();
+        assert_eq!(state.workbench(), Workbench::Model);
+
+        assert_eq!(
+            state.apply(Action::CreateCrossSection { name: Some("Front".into()) }),
+            ActionResult::Ok
+        );
+        let key = state.doc.cross_sections.keys().next().expect("the view");
+        assert_eq!(state.editing_cross_section, Some(key), "opens the new view");
+        assert_eq!(state.workbench(), Workbench::View);
+
+        // The View bar's tools are its own; a modeling tool doesn't survive the switch.
+        assert!(
+            crate::tooltable::workbench_tools(Workbench::View).contains(&state.tool),
+            "the active tool belongs to the View bar, got {:?}",
+            state.tool
+        );
+
+        state.apply(Action::EditCrossSection { view: None });
+        assert_eq!(state.editing_cross_section, None, "Back leaves the workbench");
+        assert_eq!(state.workbench(), Workbench::Model);
+        assert!(crate::tooltable::workbench_tools(Workbench::Model).contains(&state.tool));
+
+        // Re-opening an existing view returns to it.
+        state.apply(Action::EditCrossSection { view: Some(key) });
+        assert_eq!(state.workbench(), Workbench::View);
+    }
+
     #[test]
     fn create_drawing_of_body_opens_with_a_view() {
         use crate::model::DrawingOrientation;

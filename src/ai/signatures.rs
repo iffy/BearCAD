@@ -272,6 +272,7 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.ui.widget_id_warnings"       , "bearcad.ui.widget_id_warnings()"),
     ("bearcad.ui.window_count"             , "bearcad.ui.window_count()"),
     ("bearcad.ui.windows"                  , "bearcad.ui.windows()"),
+    ("bearcad.ui.workbench"                , "bearcad.ui.workbench(name)"),
     ("bearcad.ui.zoom_fit"                 , "bearcad.ui.zoom_fit()"),
     ("bearcad.undo"                        , "bearcad.undo()"),
     ("bearcad.unit_link"                   , "bearcad.unit_link(unit, mode)"),

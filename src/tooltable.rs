@@ -460,6 +460,19 @@ pub fn survives_begin_sketch(tool: Tool) -> bool {
 ///
 /// The letter keys, the toolbar, and `EditDrawing`'s drop-to-Select all read this list
 /// so a new drawing tool or a new 3D letter cannot drift.
+/// The toolbar for a workbench (#1686). Each bar carries only the tools that mean something
+/// there, and switching workbenches drops a tool the new bar doesn't have.
+pub fn workbench_tools(workbench: crate::actions::Workbench) -> Vec<Tool> {
+    use crate::actions::Workbench;
+    match workbench {
+        Workbench::Drawing => visible_toolbar_tools(true, false),
+        // The View workbench sets up cross-section planes (#1671); its cutting-plane tool
+        // lands with #1687.
+        Workbench::View => vec![Tool::Select],
+        Workbench::Model | Workbench::Sketch => visible_toolbar_tools(false, false),
+    }
+}
+
 pub fn visible_toolbar_tools(drawing: bool, _in_sketch: bool) -> Vec<Tool> {
     if drawing {
         return vec![

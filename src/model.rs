@@ -2771,6 +2771,12 @@ pub fn drawing_key_for_slot(n: usize) -> DrawingKey {
     crate::arena::Key::from_bits((n as u64) << 32)
 }
 
+/// The same for a cross-section view (#1671) — tests only, same caveat.
+#[cfg(test)]
+pub fn cross_section_key_for_slot(n: usize) -> CrossSectionKey {
+    crate::arena::Key::from_bits((n as u64) << 32)
+}
+
 /// The same for a drawing annotation (#1055) — tests only, same caveat.
 #[cfg(test)]
 pub fn annotation_key_for_slot(n: usize) -> AnnotationKey {

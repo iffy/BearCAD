@@ -14672,6 +14672,46 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
         self.state.status = "New tab (same document)".into();
     }
 
+    /// Move to another workbench (#1686). Each one is entered by opening the thing it is
+    /// about — the most recent sketch, drawing, or cross-section view — and left by closing
+    /// whatever is open, so the picker never lands somewhere with nothing to work on.
+    fn switch_workbench(&mut self, target: actions::Workbench) {
+        use actions::Workbench;
+        if self.state.workbench() == target {
+            return;
+        }
+        if self.state.editing_cross_section.is_some() && target != Workbench::View {
+            self.state.apply(Action::EditCrossSection { view: None });
+        }
+        if self.state.editing_drawing.is_some() && target != Workbench::Drawing {
+            self.state.apply(Action::EditDrawing { drawing: None });
+        }
+        if self.state.sketch_session.is_some() && target != Workbench::Sketch {
+            self.state.apply(Action::ExitSketch);
+        }
+        match target {
+            Workbench::Model => {}
+            Workbench::Sketch => {
+                if let Some(sketch) = self.state.doc.sketches.keys().last() {
+                    self.state.apply(Action::OpenSketch {
+                        sketch,
+                        viewport: self.last_viewport,
+                    });
+                }
+            }
+            Workbench::Drawing => {
+                if let Some(drawing) = self.state.doc.drawings.keys().last() {
+                    self.state.apply(Action::EditDrawing { drawing: Some(drawing) });
+                }
+            }
+            Workbench::View => {
+                if let Some(view) = self.state.doc.cross_sections.keys().last() {
+                    self.state.apply(Action::EditCrossSection { view: Some(view) });
+                }
+            }
+        }
+    }
+
     /// Detached tab windows: each is an immediate viewport with its own tab strip + content.
     /// Toolbar, panes, status bar, and central viewport/drawing for the window whose
     /// active tab is currently in [`Self::state`]. Shared by the main window and every
@@ -14691,6 +14731,36 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                 .show(ui, |ui| {
             ui.horizontal(|ui| {
+                // Which workbench this bar belongs to (#1686): the picker names it, and
+                // switching from here is how you get between the model, a drawing, and a
+                // cross-section view without hunting for the row that opens it.
+                let current = self.state.workbench();
+                let picker = ui.button(format!("{} ⏷", current.label()));
+                let mut switch_to: Option<actions::Workbench> = None;
+                egui::Popup::menu(&picker).show(|ui| {
+                    for &target in actions::Workbench::ALL {
+                        // A workbench with nothing to work on yet (no sketch, no drawing, no
+                        // view) is listed but not selectable, so the set stays legible.
+                        let reachable = match target {
+                            actions::Workbench::Model => true,
+                            actions::Workbench::Sketch => !self.state.doc.sketches.is_empty(),
+                            actions::Workbench::Drawing => !self.state.doc.drawings.is_empty(),
+                            actions::Workbench::View => {
+                                !self.state.doc.cross_sections.is_empty()
+                            }
+                        };
+                        let button =
+                            egui::Button::new(target.label()).selected(target == current);
+                        if ui.add_enabled(reachable, button).clicked() {
+                            switch_to = Some(target);
+                            ui.close();
+                        }
+                    }
+                });
+                if let Some(target) = switch_to {
+                    self.switch_workbench(target);
+                }
+                ui.separator();
                 // Tool buttons sit flush, like a segmented control (#461).
                 ui.spacing_mut().item_spacing.x = 0.0;
                 // Workbench toolbars (#254/#271): the Drawing workbench (a drawing open) shows
@@ -14760,6 +14830,24 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                             }
                         });
                     }
+                    return;
+                }
+                // The View workbench (#1671/#1686): setting up a cross-section view. Its
+                // cutting-plane tool lands with #1687; for now it is Select plus the way out.
+                if self.state.editing_cross_section.is_some() {
+                    if icons::selectable_icon_button_at(
+                        ui,
+                        icons::IconId::Back,
+                        false,
+                        "Return to the 3D model",
+                        TOOLBAR_ICON_SIZE,
+                    )
+                    .clicked()
+                    {
+                        self.state.apply(Action::EditCrossSection { view: None });
+                    }
+                    ui.separator();
+                    self.tool_button(ui, icons::IconId::Select, Tool::Select, "Select");
                     return;
                 }
                 self.tool_button(ui, icons::IconId::Select, Tool::Select, "Select");
@@ -15557,6 +15645,9 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     if let Some(unit) = self.state.doc.unit_instances.get(instance).map(|i| i.unit) {
                         self.state.apply(Action::SyncUnit { unit });
                     }
+                } else if let SceneElement::CrossSection(view) = element {
+                    // A view "opens" rather than reloading into a tool (#1671/#1686).
+                    self.state.apply(Action::EditCrossSection { view: Some(view) });
                 } else {
                     self.begin_operation_edit(element);
                 }
@@ -29455,6 +29546,8 @@ impl App {
                     {
                         self.state.apply(Action::SyncUnit { unit });
                     }
+                } else if let SceneElement::CrossSection(view) = element {
+                    self.state.apply(Action::EditCrossSection { view: Some(view) });
                 } else {
                     self.begin_operation_edit(element);
                 }

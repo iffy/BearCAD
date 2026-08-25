@@ -664,6 +664,9 @@ pub fn node_editable_operation(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::SketchSliceOp(i) => Some(SceneElement::SketchSliceOp(i)),
         HierarchyNode::SketchVertexTreatmentOp(i) => Some(SceneElement::SketchVertexTreatmentOp(i)),
         HierarchyNode::Joint(i) => Some(SceneElement::Joint(i)),
+        // A cross-section view opens the View workbench (#1671) — a double-click or the
+        // row's Edit entry, the same universal path every operation uses.
+        HierarchyNode::CrossSection(i) => Some(SceneElement::CrossSection(i)),
         _ => None,
     }
 }
@@ -9742,8 +9745,8 @@ label_hidden: false,
     fn element_edit_path(element: &SceneElement) -> ElementEditPath {
         use ElementEditPath::*;
         match element {
-            // A cross-section view opens in the View workbench, its own dedicated entry.
-            SceneElement::CrossSection(_) => Dedicated,
+            // A cross-section view opens the View workbench from its row, the universal way.
+            SceneElement::CrossSection(_) => Row { has_edit_action: true },
             SceneElement::BooleanOp(_)
             | SceneElement::MoveOp(_)
             | SceneElement::MirrorOp(_)
@@ -9890,6 +9893,7 @@ label_hidden: false,
             SceneElement::Component(ckey(0)),
             SceneElement::UnitInstance(uikey(0)),
             SceneElement::Joint(jkey(0)),
+            SceneElement::CrossSection(crate::model::cross_section_key_for_slot(0)),
             // Keep DrawingElementRef::Text represented so the walk stays a real sample
             // of every *operation* kind; the drawing page itself is Dedicated above.
             SceneElement::DrawingElement {

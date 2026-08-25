@@ -301,6 +301,8 @@ pub enum Instruction {
     CreateDrawing { name: Option<String> },
     /// #1671: add a cross-section view.
     CreateCrossSection { name: Option<String> },
+    /// #1686: switch workbench, the way the toolbar's picker does.
+    SetWorkbench { workbench: crate::actions::Workbench },
     /// Set a drawing's page size and margin, in millimetres (#273/#406). `None` keeps the
     /// drawing's current value.
     SetDrawingPage {
@@ -1378,6 +1380,9 @@ impl Instruction {
                 Some(n) => format!("bearcad.cross_section{{ name = {:?} }}", n),
                 None => "bearcad.cross_section{}".to_string(),
             },
+            Instruction::SetWorkbench { workbench } => {
+                format!("bearcad.ui.workbench({:?})", workbench.script_name())
+            }
             Instruction::ExportDrawingPdf { drawing, path } => {
                 format!("bearcad.export_drawing_pdf{{ drawing = {drawing}, path = {path:?} }}")
             }
@@ -6627,6 +6632,42 @@ impl ScriptRunner {
             }
             Instruction::CreateCrossSection { name } => {
                 let result = state.apply(Action::CreateCrossSection { name });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            // The picker's own rule (#1686): leave whatever is open, then open the most
+            // recent thing the target workbench is about.
+            Instruction::SetWorkbench { workbench } => {
+                use crate::actions::Workbench;
+                if state.workbench() == workbench {
+                    return StepResult::Continue;
+                }
+                if state.editing_cross_section.is_some() && workbench != Workbench::View {
+                    state.apply(Action::EditCrossSection { view: None });
+                }
+                if state.editing_drawing.is_some() && workbench != Workbench::Drawing {
+                    state.apply(Action::EditDrawing { drawing: None });
+                }
+                if state.sketch_session.is_some() && workbench != Workbench::Sketch {
+                    state.apply(Action::ExitSketch);
+                }
+                let result = match workbench {
+                    Workbench::Model => ActionResult::Ok,
+                    Workbench::Sketch => match state.doc.sketches.keys().last() {
+                        Some(sketch) => state.apply(Action::OpenSketch { sketch, viewport }),
+                        None => ActionResult::Err("No sketch to open".to_string()),
+                    },
+                    Workbench::Drawing => match state.doc.drawings.keys().last() {
+                        Some(drawing) => {
+                            state.apply(Action::EditDrawing { drawing: Some(drawing) })
+                        }
+                        None => ActionResult::Err("No drawing to open".to_string()),
+                    },
+                    Workbench::View => match state.doc.cross_sections.keys().last() {
+                        Some(view) => state.apply(Action::EditCrossSection { view: Some(view) }),
+                        None => ActionResult::Err("No cross-section view to open".to_string()),
+                    },
+                };
                 self.record_action_error(result);
                 StepResult::Continue
             }

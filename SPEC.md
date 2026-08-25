@@ -2361,6 +2361,17 @@ outside the shape/undo DAG.
 - **Creating one:** the Elements pane's **+ → New cross section**, or **View → Create Cross
   Section**. Scriptable as `bearcad.cross_section{ name? }` (#1671), and readable back with
   `bearcad.count("cross_section")` / `bearcad.get{ kind = "cross_section", index }`.
+- **The View workbench (#1686):** creating a view — or double-clicking one's row, or its
+  right-click **Edit** — opens it in the **View** workbench (`AppState::editing_cross_section`),
+  whose toolbar carries the view's own tools plus a **Back to the 3D model** button.
+- **Workbenches (#1686):** `Workbench` (Model / Sketch / Drawing / View) is **derived** from
+  `AppState`, never stored — an open sketch *is* the Sketch workbench — and exactly one is
+  open at a time: opening a view leaves a drawing page and vice versa. The toolbar's leftmost
+  control is a **picker naming the current workbench**; choosing another leaves what is open
+  and enters the target by opening its most recent sketch / drawing / view, and a workbench
+  with nothing to work on yet is listed but not selectable. `tooltable::workbench_tools` is
+  the one place a bar's tool set is decided, and switching drops any tool the new bar lacks.
+  Scriptable: `bearcad.ui.workbench()` reads it, `bearcad.ui.workbench(name)` switches.
 
 ### 3.6 Technical drawings (#180)
 
