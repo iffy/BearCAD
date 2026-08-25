@@ -50,6 +50,22 @@ pub fn elements_graph_row_rects(ctx: &egui::Context) -> Vec<(HierarchyNode, egui
         .unwrap_or_default()
 }
 
+fn elements_list_row_rects_id() -> egui::Id {
+    egui::Id::new("elements_list_row_rects")
+}
+
+/// Where the List view drew each of its rows this frame (#1712), by label, in screen points.
+/// Scripts read these through `bearcad.ui.elements_row_rect(label)` so a test can click a row
+/// where it really is. Empty whenever the pane is showing the Graph.
+pub fn elements_list_row_rect(ctx: &egui::Context, label: &str) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<Vec<(String, egui::Rect)>>(elements_list_row_rects_id()))
+        .and_then(|rows| rows.into_iter().find(|(name, _)| name == label).map(|(_, r)| r))
+}
+
+fn set_elements_list_row_rects(ctx: &egui::Context, rows: Vec<(String, egui::Rect)>) {
+    ctx.data_mut(|d| d.insert_temp(elements_list_row_rects_id(), rows));
+}
+
 fn set_elements_graph_row_rects(ctx: &egui::Context, rects: Vec<(HierarchyNode, egui::Rect)>) {
     ctx.data_mut(|d| d.insert_temp(elements_graph_row_rects_id(), rects));
 }
@@ -4648,6 +4664,7 @@ pub fn show_pane(
         HierarchyViewMode::List | HierarchyViewMode::Tree => {
             // Row rects belong to the Graph view alone; don't leave last frame's behind (#1670).
             set_elements_graph_row_rects(ui.ctx(), Vec::new());
+            let mut list_rows: Vec<(String, egui::Rect)> = Vec::new();
             let tree = filter_hierarchy(&build_hierarchy(doc, sketch_session), filter);
             let tree = if filter.shadow_bodies {
                 tree
@@ -4739,6 +4756,9 @@ pub fn show_pane(
                     // A unit's contents indent one level under their instance row (#723).
                     let row_depth = row_depth
                         + usize::from(matches!(node, HierarchyNode::UnitChild { .. }));
+                    // Where each List row landed (#1712), so a script can click a row where it
+                    // really is — the Graph view already reports its rows this way (#1670).
+                    let row_top = ui.cursor().top();
                     show_row(
                         ui,
                         doc,
@@ -4788,7 +4808,13 @@ pub fn show_pane(
                         active_component,
                         on_activate_component,
                     );
+                    let row_rect = egui::Rect::from_x_y_ranges(
+                        ui.min_rect().x_range(),
+                        row_top..=ui.cursor().top(),
+                    );
+                    list_rows.push((node_label(doc, node), row_rect));
                 }
+                set_elements_list_row_rects(ui.ctx(), list_rows);
             });
         }
         HierarchyViewMode::Graph => {
@@ -5899,8 +5925,10 @@ fn show_row(
         return;
     }
 
-    // A technical drawing (#180): a display-only leaf with no `SceneElement`. Clicking the row
-    // or its right-click "Edit drawing" opens the drawing pane.
+    // A technical drawing (#180): a display-only leaf with no `SceneElement`. **Double**-click
+    // the row (or right-click → "Edit drawing") to open the drawing pane — re-entering a
+    // drawing is the same gesture as reopening a sketch (#1712), not a single click that
+    // whisks you onto another workbench the moment you brush the row.
     if let HierarchyNode::Drawing(index) = node {
         ui.horizontal(|ui| {
             ui.add_space(depth as f32 * 18.0);
@@ -5909,7 +5937,7 @@ fn show_row(
             }
             let label = node_label(doc, node);
             let response = clipped_selectable_label(ui, false, &label, &label);
-            if response.clicked() {
+            if row_primary_double_clicked(&response, ui) {
                 on_edit_drawing(index);
             }
             response

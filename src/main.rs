@@ -26196,6 +26196,11 @@ impl App {
             || self.drawing_view_resize_drag.is_some()
             // A dim-label drag owns the pointer: don't pan the sheet underneath it (#1227).
             || self.drawing_dim_label_drag.is_some();
+        // Which card a press over overlapping views belongs to (#1707), decided across the
+        // whole card loop rather than by whichever card was drawn first: the cards are drawn
+        // in order, so a later one sits on top, and the card you have selected outranks
+        // whatever it overlaps. `(view, selected)`.
+        let mut card_claim: Option<(usize, bool)> = None;
         let scroll = if bg.hovered() { raw_scroll_y(ui.ctx()) } else { 0.0 };
         if scroll != 0.0 {
             let f = (1.0 + scroll * 0.0015).clamp(0.5, 2.0);
@@ -26477,8 +26482,10 @@ impl App {
                     && self.drawing_dim_label_drag.is_none()
                     && primary_down
                     && press_origin.is_some_and(|o| cell.contains(o))
+                    // A selected card beats any other; failing that, the one on top wins.
+                    && card_claim.is_none_or(|(_, was_selected)| selected_here || !was_selected)
                 {
-                    self.drawing_view_drag = Some((drawing, vi));
+                    card_claim = Some((vi, selected_here));
                     pan_suppressed_by_card = true;
                 }
                 let grabbed = self.drawing_view_drag == Some((drawing, vi))
@@ -27615,6 +27622,14 @@ impl App {
                         egui::FontId::proportional(dim_font),
                         INK,
                     );
+                }
+            }
+
+            // The claim is committed once the whole loop has seen every card (#1707) — the
+            // best one, not the first.
+            if let Some((vi, _)) = card_claim {
+                if self.drawing_view_drag.is_none() {
+                    self.drawing_view_drag = Some((drawing, vi));
                 }
             }
         }
