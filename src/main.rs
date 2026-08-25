@@ -4704,8 +4704,17 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 tutorial::UiAnchor::ElementsPlane => hierarchy::elements_plane_row_rect(ctx),
                 // A Context-pane tick box, named by its label (#1677).
                 tutorial::UiAnchor::CheckboxRow(label) => context::checkbox_row_rect(ctx, label),
-                // One of the Repeat tool's Count / Gap / Distance rows (#1679).
-                tutorial::UiAnchor::RepeatVar(var) => context::repeat_var_row_rect(ctx, var),
+                // One of the Repeat tool's Count / Gap / Distance rows (#1679), or the measure
+                // icon at its head / the lock at its tail (#1741/#1742/#1743).
+                tutorial::UiAnchor::RepeatVar(var) => {
+                    context::repeat_var_row_rect(ctx, var, context::RepeatVarPart::Row)
+                }
+                tutorial::UiAnchor::RepeatVarIcon(var) => {
+                    context::repeat_var_row_rect(ctx, var, context::RepeatVarPart::Icon)
+                }
+                tutorial::UiAnchor::RepeatVarLock(var) => {
+                    context::repeat_var_row_rect(ctx, var, context::RepeatVarPart::Lock)
+                }
                 // A spot on the drawing page, offset from a view's card (#1681).
                 tutorial::UiAnchor::DrawingSpot { view, right, up } => {
                     drawing_view_card_rect(ctx, view).map(|card| {

@@ -63,6 +63,13 @@ pub enum UiAnchor {
     /// One of the Repeat tool's Count / Gap / Distance rows (#1679), named by the variable
     /// so the orb keeps up when the label flips between Gap and Offset.
     RepeatVar(crate::model::RepeatVar),
+    /// The **measure icon** at the head of one of those rows (#1741/#1743) — the toggle that
+    /// flips Gap to Offset, or Distance between the last copy's far end and its start. A step
+    /// that asks for the icon has to ring the icon, not the value field beside it.
+    RepeatVarIcon(crate::model::RepeatVar),
+    /// The **lock** at the tail of one of those rows (#1742): grey on a value you set, green
+    /// on the one the app computes from the other two.
+    RepeatVarLock(crate::model::RepeatVar),
     /// A spot on the open drawing page (#1681), one card-width right and one card-height
     /// **up** from the named view's card — where the Aligned-view tool wants its click.
     DrawingSpot {
@@ -5901,11 +5908,63 @@ static SLICE_STEPS: &[Step] = &[
         None,
     ),
     plain_step(
-        "Each piece is its own body now \u{2014} move them apart, or cut again. Nice!",
-        StepAnchor::None,
-        None,
+        "Each piece is its own body now. Click the Select tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Select)),
+        Some(select_tool_active),
+    ),
+    plain_step(
+        "Click one of the wedges to select it.",
+        StepAnchor::World(slice_block_guide),
+        Some(a_body_is_selected),
+    ),
+    keyed_assist_step(
+        "Press `V`. The piece vanishes \u{2014} press it again to bring it back. Nice!",
+        a_body_is_hidden,
+        "V",
+        "to hide the selected piece",
+        StepAssist {
+            label: "Hide it for me",
+            run: assist_hide_a_slice_piece,
+        },
     ),
 ];
+
+fn select_tool_active(app: &AppState) -> bool {
+    app.tool == Tool::Select
+}
+
+/// A whole body is in the selection -- what V acts on (#1739).
+fn a_body_is_selected(app: &AppState) -> bool {
+    a_body_is_hidden(app)
+        || app
+            .scene_selection
+            .iter()
+            .any(|e| matches!(e, crate::hierarchy::SceneElement::Body(_)))
+}
+
+fn a_body_is_hidden(app: &AppState) -> bool {
+    app.doc
+        .bodies
+        .keys()
+        .any(|b| !app.element_visibility.is_visible(crate::hierarchy::SceneElement::Body(b)))
+}
+
+/// Select one of the pieces and hide it, exactly as the two steps ask by hand.
+fn assist_hide_a_slice_piece(app: &mut AppState) {
+    if a_body_is_hidden(app) {
+        return;
+    }
+    if app.tool != Tool::Select {
+        app.apply(Action::SetTool(Tool::Select));
+    }
+    let Some(body) = app.doc.bodies.keys().next() else {
+        return;
+    };
+    app.scene_selection.clear();
+    app.scene_selection
+        .insert(crate::hierarchy::SceneElement::Body(body));
+    app.apply(Action::ToggleSelectionVisibility);
+}
 
 // --- Repeat tutorial (#1679) -----------------------------------------------------------
 
@@ -6091,8 +6150,7 @@ fn assist_commit_repeat(app: &mut AppState) {
 /// of the Repeat tool's measure toggles.
 static REPEAT_STEPS: &[Step] = &[
     plain_step(
-        "Repeat stamps copies of a body along an axis. Count, Gap and Distance are linked: \
-         set any two and the third works itself out.",
+        "Repeat stamps copies of a body along an axis.",
         StepAnchor::None,
         None,
     ),
@@ -6165,7 +6223,7 @@ static REPEAT_STEPS: &[Step] = &[
     assisted_step(
         "Click the Gap icon. It flips to Offset: the same 40 mm now measures start to \
          start, so the copies close up.",
-        StepAnchor::Ui(UiAnchor::RepeatVar(crate::model::RepeatVar::Gap)),
+        StepAnchor::Ui(UiAnchor::RepeatVarIcon(crate::model::RepeatVar::Gap)),
         Some(repeat_gap_is_offset),
         StepAssist {
             label: "Flip it for me",
@@ -6174,9 +6232,9 @@ static REPEAT_STEPS: &[Step] = &[
         None,
     ),
     assisted_step(
-        "Distance is greyed out because it's the computed one. Click its grey lock to \
+        "Distance is greyed out because it's the computed one. Click Offset's grey lock to \
          compute the Offset instead.",
-        StepAnchor::Ui(UiAnchor::RepeatVar(crate::model::RepeatVar::Distance)),
+        StepAnchor::Ui(UiAnchor::RepeatVarLock(crate::model::RepeatVar::Gap)),
         Some(repeat_gap_is_computed),
         StepAssist {
             label: "Move the lock for me",
@@ -6197,7 +6255,7 @@ static REPEAT_STEPS: &[Step] = &[
     assisted_step(
         "Click the Distance icon. It flips between measuring to the last copy's far end \
          and to its start.",
-        StepAnchor::Ui(UiAnchor::RepeatVar(crate::model::RepeatVar::Distance)),
+        StepAnchor::Ui(UiAnchor::RepeatVarIcon(crate::model::RepeatVar::Distance)),
         Some(repeat_distance_to_start),
         StepAssist {
             label: "Flip it for me",
@@ -6415,15 +6473,18 @@ static SKETCH_MIRROR_STEPS: &[Step] = &[
         StepAnchor::Ui(UiAnchor::Tool(Tool::Mirror)),
         Some(mirror_tool_active),
     ),
-    plain_step(
-        "Click the circle \u{2014} that's what gets reflected.",
-        StepAnchor::World(mirror_circle_edge_guide),
-        Some(mirror_shape_picked),
-    ),
+    // The Mirror tool arms its Mirror-line picker first, so the walkthrough asks in that
+    // order too (#1744) -- pointing at the circle while the line picker was armed sent the
+    // click somewhere the tutorial never noticed.
     plain_step(
         "Click the green Y axis \u{2014} that's the mirror line.",
         StepAnchor::World(mirror_axis_guide),
         Some(mirror_line_picked),
+    ),
+    plain_step(
+        "Click the circle \u{2014} that's what gets reflected.",
+        StepAnchor::World(mirror_circle_edge_guide),
+        Some(mirror_shape_picked),
     ),
     assisted_step(
         "Press Enter. A matching circle lands on the far side.",
@@ -9040,6 +9101,59 @@ mod tests {
         // Disjoint profiles become one extrusion each, so both circles show up as faces.
         let faces: usize = app.doc.extrusions.values().map(|e| e.faces.len()).sum();
         assert_eq!(faces, 2, "both circles extrude, status={}", app.status);
+    }
+
+    /// #1744: the Mirror tool arms its Mirror-line picker first, so the walkthrough asks for
+    /// the line first too -- it used to send the user at the circle while Mirror line was armed.
+    #[test]
+    fn sketch_mirror_tutorial_picks_the_mirror_line_before_the_shape() {
+        let tut = sketch_mirror_tut();
+        let index_of = |needle: &str| {
+            tut.steps
+                .iter()
+                .position(|s| s.narration.contains(needle))
+                .unwrap_or_else(|| panic!("no step saying {needle:?}"))
+        };
+        assert!(
+            index_of("that's the mirror line") < index_of("that's what gets reflected"),
+            "the mirror line is picked first"
+        );
+    }
+
+    /// #1739: the Slice walkthrough ends by hiding one of the two pieces with V.
+    #[test]
+    fn slice_tutorial_ends_by_hiding_a_piece_with_v() {
+        let tut = &TUTORIALS[tutorial_index("slice").unwrap()];
+        assert!(
+            tut.steps
+                .iter()
+                .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::Tool(Tool::Select)))),
+            "it arms the Select tool for the hide"
+        );
+        assert!(
+            tut.steps.iter().any(|s| s.key_hint == Some(("V", "to hide the selected piece"))),
+            "and shows the V keycap"
+        );
+        let mut app = AppState::default();
+        finish_tutorial_via_next(&mut app, "slice");
+        assert!(
+            app.doc.bodies.keys().any(|b| !app
+                .element_visibility
+                .is_visible(crate::hierarchy::SceneElement::Body(b))),
+            "one piece ends up hidden, status={}",
+            app.status
+        );
+    }
+
+    /// #1740: the Repeat intro is one sentence -- how the three fields interlink is what the
+    /// steps themselves teach.
+    #[test]
+    fn repeat_intro_is_one_sentence() {
+        let intro = &repeat_tut().steps[0];
+        assert_eq!(
+            intro.narration,
+            "Repeat stamps copies of a body along an axis."
+        );
     }
 
     fn repeat_tut() -> &'static Tutorial {

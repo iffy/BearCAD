@@ -5018,7 +5018,17 @@ fn checkbox_row(
     changed
 }
 
-fn repeat_var_row_rect_id(var: crate::model::RepeatVar) -> egui::Id {
+/// Which widget on a Repeat row a stored rect belongs to (#1741/#1742): the row itself, the
+/// measure icon at its head, or the lock at its tail. Three separate targets, because three
+/// separate tutorial steps ask for them.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RepeatVarPart {
+    Row,
+    Icon,
+    Lock,
+}
+
+fn repeat_var_row_rect_id(var: crate::model::RepeatVar, part: RepeatVarPart) -> egui::Id {
     egui::Id::new((
         "repeat_var_row_rect",
         match var {
@@ -5026,15 +5036,22 @@ fn repeat_var_row_rect_id(var: crate::model::RepeatVar) -> egui::Id {
             crate::model::RepeatVar::Gap => 1,
             crate::model::RepeatVar::Distance => 2,
         },
+        match part {
+            RepeatVarPart::Row => 0u8,
+            RepeatVarPart::Icon => 1,
+            RepeatVarPart::Lock => 2,
+        },
     ))
 }
 
-/// Where the Repeat tool drew one of its Count / Gap / Distance rows this frame (#1679).
+/// Where the Repeat tool drew part of one of its Count / Gap / Distance rows this frame
+/// (#1679/#1741/#1742).
 pub fn repeat_var_row_rect(
     ctx: &egui::Context,
     var: crate::model::RepeatVar,
+    part: RepeatVarPart,
 ) -> Option<egui::Rect> {
-    ctx.data(|d| d.get_temp::<egui::Rect>(repeat_var_row_rect_id(var)))
+    ctx.data(|d| d.get_temp::<egui::Rect>(repeat_var_row_rect_id(var, part)))
 }
 
 fn checkbox_row_rect_id(label: &str) -> egui::Id {
@@ -7838,7 +7855,16 @@ pub fn show_pane(
                                 // and its label is the same target (#640).
                                 Some((icon, edit)) => {
                                     const TIP: &str = "Click to toggle how this is measured";
-                                    if crate::icons::icon_button_hover_gold(ui, icon, TIP).clicked()
+                                    let icon_resp =
+                                        crate::icons::icon_button_hover_gold(ui, icon, TIP);
+                                    // The tutorial rings this icon on its own (#1741/#1743).
+                                    ui.ctx().data_mut(|d| {
+                                        d.insert_temp(
+                                            repeat_var_row_rect_id(var, RepeatVarPart::Icon),
+                                            icon_resp.rect,
+                                        )
+                                    });
+                                    if icon_resp.clicked()
                                         || clickable_label(ui, label, TIP).clicked()
                                     {
                                         pending = Some(edit);
@@ -7949,6 +7975,10 @@ pub fn show_pane(
                             "Click to compute this from the other two instead"
                         },
                     );
+                    // The tutorial's "click its grey lock" step rings this (#1742).
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(repeat_var_row_rect_id(var, RepeatVarPart::Lock), lock.rect)
+                    });
                     if lock.clicked() && !computed {
                         pending = Some(RepeatEdit::SetComputed(var));
                     }
@@ -7958,8 +7988,9 @@ pub fn show_pane(
                 note_help(ui, label, row.response.rect);
                 // #1679: the Repeat walkthrough's orb points at these rows by variable, so
                 // it survives the label flipping between Gap/Offset and Distance/Angle.
-                ui.ctx()
-                    .data_mut(|d| d.insert_temp(repeat_var_row_rect_id(var), row.response.rect));
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(repeat_var_row_rect_id(var, RepeatVarPart::Row), row.response.rect)
+                });
             };
             var_row(ui, RepeatVar::Count, "Count", &control.count, None, &RepeatEdit::Count);
             let gap_icon = if control.gap_is_offset {
