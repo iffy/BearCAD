@@ -4524,6 +4524,16 @@ pub fn show_pane(
     active_component: Option<crate::model::ComponentKey>,
     on_activate_component: &mut impl FnMut(Option<crate::model::ComponentKey>),
 ) {
+    // The tutorial row anchors below are "first row of its kind, this frame" targets
+    // (#1279/#1647/#1673), and `insert_temp` outlives the frame — so clearing them here is
+    // what makes them per-frame. Without it the rect captured while the Modeling pane held a
+    // longer tree stuck around on the Drawing workbench, parking the orb well below the row
+    // it named (#1702/#1705).
+    ui.ctx().data_mut(|d| {
+        d.remove::<egui::Rect>(elements_sketch_row_rect_id());
+        d.remove::<egui::Rect>(elements_body_row_rect_id());
+        d.remove::<egui::Rect>(elements_plane_row_rect_id());
+    });
     ui.horizontal(|ui| {
         ui.heading(PANE_TITLE);
         // Explicit id so nested RTL auto-ids stay stable across multipass (#1169 / egui#8343).

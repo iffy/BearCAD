@@ -3010,6 +3010,10 @@ enum BubbleTail {
 /// Ring centre and radius for a UI-widget orb. Wide ValueInputs must not puff the
 /// ring to their width — that parks the speech bubble a field-width below, on
 /// Default units instead of Height/Radius (#1308/#1310).
+/// How wide a bare *spot* on the drawing page reads as a click target (#1703) — a toolbar
+/// button's size, so its orb comes out the same size as every other step's.
+const SPOT_ORB_TARGET: f32 = 24.0;
+
 fn ui_anchor_orb(rect: egui::Rect) -> (egui::Pos2, f32) {
     (rect.center(), rect.size().min_elem() * 0.5 + 6.0)
 }
@@ -3700,11 +3704,6 @@ struct App {
     /// In-flight drag of a drawing dimension label (#294): `(drawing, view, edge key, start
     /// offset mm, drag-start pointer)`.
     drawing_dim_label_drag: Option<DrawingDimLabelDrag>,
-    /// The Aligned-view tool's chosen **base** view (#296/#365): the view index within the open
-    /// drawing whose projection a new aligned view lines up with. Seeded from a selected projection
-    /// when the tool is entered, or picked from the "Base view" element picker / by clicking a
-    /// projection.
-    drawing_align_parent: Option<usize>,
     /// The tool active on the previous frame (#365), so entering the Aligned-view tool can seed its
     /// base from the current selection exactly once.
     prev_tool: Tool,
@@ -4652,16 +4651,19 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
     ) {
         let Some(run) = self.state.tutorial else {
             self.state.tutorial_orb_screen = None;
+            self.state.tutorial_orb_radius = None;
             self.state.tutorial_bubble_screen = None;
             return;
         };
         let Some(tut) = tutorial::TUTORIALS.get(run.tutorial) else {
             self.state.tutorial_orb_screen = None;
+            self.state.tutorial_orb_radius = None;
             self.state.tutorial_bubble_screen = None;
             return;
         };
         let Some(step) = tut.steps.get(run.step) else {
             self.state.tutorial_orb_screen = None;
+            self.state.tutorial_orb_radius = None;
             self.state.tutorial_bubble_screen = None;
             return;
         };
@@ -4722,12 +4724,24 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 // A spot on the drawing page, offset from a view's card (#1681).
                 tutorial::UiAnchor::DrawingSpot { view, right, up } => {
                     drawing_view_card_rect(ctx, view).map(|card| {
-                        card.translate(egui::vec2(
-                            card.width() * f32::from(right),
-                            -card.height() * f32::from(up),
-                        ))
+                        let spot = card
+                            .translate(egui::vec2(
+                                card.width() * f32::from(right),
+                                -card.height() * f32::from(up),
+                            ))
+                            .center();
+                        // A ring the size of the whole card swamps the page (#1703). The orb
+                        // marks a *spot* to click, so it wears the same size it does on a
+                        // toolbar button.
+                        egui::Rect::from_center_size(
+                            spot,
+                            egui::Vec2::splat(SPOT_ORB_TARGET),
+                        )
                     })
                 }
+                // A line on a view, for the Dimension step (#1709).
+                tutorial::UiAnchor::DrawingViewEdge { view } => drawing_view_edge_mid(ctx, view)
+                    .map(|p| egui::Rect::from_center_size(p, egui::Vec2::splat(SPOT_ORB_TARGET))),
                 // View-cube bear + home button live in the viewport's top-right (#1269).
                 tutorial::UiAnchor::ViewCube => Some(view_cube::cube_rect_in_viewport(viewport)),
                 tutorial::UiAnchor::ViewHome => {
@@ -4811,6 +4825,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             self.tutorial_orb_goal = Some(goal);
             self.tutorial_orb_key = orb_key;
             self.state.tutorial_orb_screen = Some(pos);
+            self.state.tutorial_orb_radius = Some(base);
             // Bounded by the window rather than the viewport: a step's orb can be pointing
             // at a side pane, and its badges have to follow it there (#781).
             let badge_bounds = ctx.content_rect();
@@ -4884,6 +4899,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             // Keep the last screen position so the next target travels from
             // here instead of apparating (#1346). The ring is not drawn.
             self.state.tutorial_orb_screen = None;
+            self.state.tutorial_orb_radius = None;
         }
 
         // Don't park the bubble at a mid-zoom screen position (#1332). The blue
@@ -5315,7 +5331,6 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             dim_label_drag: None,
             offset_gizmo_drag: false,
             drawing_dim_label_drag: None,
-            drawing_align_parent: None,
             prev_tool: Tool::Select,
             text_tool_anchor: None,
             drawing_text_anchor: None,
@@ -15784,7 +15799,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     if self.state.tool == Tool::DrawingAlign {
                         if let context::DrawingElementRef::Projection(view) = element {
                             if Some(drawing) == self.state.editing_drawing {
-                                self.drawing_align_parent = Some(view);
+                                self.state.drawing_align_parent = Some(view);
                             }
                         }
                     } else {
@@ -16605,7 +16620,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 && self.state.editing_drawing.is_some(),
             drawing_align_active: self.state.tool == Tool::DrawingAlign
                 && self.state.editing_drawing.is_some(),
-            drawing_align_base: self.drawing_align_parent.and_then(|v| {
+            drawing_align_base: self.state.drawing_align_parent.and_then(|v| {
                 let d = self.state.editing_drawing?;
                 Some((v, crate::names::node_label(
                     &self.state.doc,
@@ -17973,7 +17988,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 }
             }
             if drawing_align_clear {
-                self.drawing_align_parent = None;
+                self.state.drawing_align_parent = None;
             }
             if let Some(op) = repeat_edit_begin {
                 self.begin_operation_edit(hierarchy::SceneElement::RepeatOp(op));
@@ -19163,13 +19178,13 @@ impl eframe::App for App {
         // projection (so you needn't re-pick it); leaving the tool clears it.
         if self.state.tool == Tool::DrawingAlign {
             if self.prev_tool != Tool::DrawingAlign {
-                self.drawing_align_parent = match self.state.selected_drawing_view() {
+                self.state.drawing_align_parent = match self.state.selected_drawing_view() {
                     Some((d, v)) if Some(d) == self.state.editing_drawing => Some(v),
                     _ => None,
                 };
             }
         } else {
-            self.drawing_align_parent = None;
+            self.state.drawing_align_parent = None;
         }
         // A half-made free dimension (#1645) belongs to the Dimension tool.
         if self.state.tool != Tool::Dimension {
@@ -25768,9 +25783,24 @@ fn set_drawing_view_card_rect(ctx: &egui::Context, view: usize, rect: egui::Rect
 }
 
 /// Where the drawing page drew a view's card this frame (#1681) — the walkthrough's orb
-/// points at spots on the page by offsetting from a card.
-fn drawing_view_card_rect(ctx: &egui::Context, view: usize) -> Option<egui::Rect> {
+/// points at spots on the page by offsetting from a card, and `bearcad.ui.drawing_view_rect`
+/// reads it back so a script can aim at a view where it really is.
+pub fn drawing_view_card_rect(ctx: &egui::Context, view: usize) -> Option<egui::Rect> {
     ctx.data(|d| d.get_temp::<egui::Rect>(drawing_view_card_rect_id(view)))
+}
+
+fn drawing_view_edge_mid_id(view: usize) -> egui::Id {
+    egui::Id::new(("drawing_view_edge_mid", view))
+}
+
+fn set_drawing_view_edge_mid(ctx: &egui::Context, view: usize, mid: egui::Pos2) {
+    ctx.data_mut(|d| d.insert_temp(drawing_view_edge_mid_id(view), mid));
+}
+
+/// The midpoint of the line a view's Dimension step wants clicked (#1709): the longest edge
+/// the view actually shows, which is the one its assist dimensions.
+fn drawing_view_edge_mid(ctx: &egui::Context, view: usize) -> Option<egui::Pos2> {
+    ctx.data(|d| d.get_temp::<egui::Pos2>(drawing_view_edge_mid_id(view)))
 }
 
 impl App {
@@ -26489,7 +26519,7 @@ impl App {
                 // parent to align a child to (handled after the loop).
                 if drag.clicked() && !exploder_open {
                     if self.state.tool == Tool::DrawingAlign {
-                        self.drawing_align_parent = Some(vi);
+                        self.state.drawing_align_parent = Some(vi);
                         align_parent_set_this_frame = true;
                     } else {
                         let element = context::DrawingElementRef::Projection(vi);
@@ -26519,7 +26549,7 @@ impl App {
                 let selected_here = self
                     .state
                     .is_drawing_element_selected(drawing, context::DrawingElementRef::Projection(vi));
-                let align_parent_here = self.drawing_align_parent == Some(vi)
+                let align_parent_here = self.state.drawing_align_parent == Some(vi)
                     && self.state.tool == Tool::DrawingAlign;
                 // The Select-tool element picker hovering this projection's row highlights it (#328).
                 let picker_hover_here = self.state.hovered_drawing_element
@@ -26729,6 +26759,20 @@ impl App {
                 };
                 // Remember this view's transform for the aligned projection-line pass (#377).
                 view_transforms[vi] = Some((scale, bbox_center, draw_area.center()));
+                // The walkthrough's Dimension step rings a line to click (#1709), not the
+                // middle of the card. Same edge its assist dimensions: the longest one that
+                // isn't edge-on in this view.
+                if let Some(i) = (0..proj.len())
+                    .filter(|&i| (proj[i].1 - proj[i].0).length() > 1e-3)
+                    .max_by(|&x, &y| {
+                        (world_edges[x].1 - world_edges[x].0)
+                            .length()
+                            .total_cmp(&(world_edges[y].1 - world_edges[y].0).length())
+                    })
+                {
+                    let mid = to_screen((proj[i].0 + proj[i].1) * 0.5);
+                    set_drawing_view_edge_mid(ui.ctx(), vi, mid);
+                }
                 let edge_key = |wa: Vec3, wb: Vec3| {
                     let (qa, qb) = (
                         hierarchy::quantize_body_point(wa),
@@ -27764,7 +27808,7 @@ impl App {
             self.state
                 .select_drawing_only(drawing, context::DrawingElementRef::Projection(vi));
             self.state.apply(Action::SetTool(Tool::DrawingAlign));
-            self.drawing_align_parent = Some(vi);
+            self.state.drawing_align_parent = Some(vi);
             align_parent_set_this_frame = true;
         }
 
@@ -27773,10 +27817,10 @@ impl App {
         // up with the parent, and a click commits it.
         if self.state.tool == Tool::DrawingAlign {
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                self.drawing_align_parent = None;
+                self.state.drawing_align_parent = None;
             }
             if let (Some(p), Some(page), Some(pp)) =
-                (self.drawing_align_parent, page_rect, pointer_screen)
+                (self.state.drawing_align_parent, page_rect, pointer_screen)
             {
                 let parent_ok = self
                     .state
@@ -27786,7 +27830,7 @@ impl App {
                     .and_then(|d| d.views.get(p))
                     .is_some();
                 if !parent_ok {
-                    self.drawing_align_parent = None;
+                    self.state.drawing_align_parent = None;
                 } else {
                     let (rpx, rpy) =
                         crate::drawing::resolved_view_pos(&self.state.doc, drawing, p);
@@ -27853,14 +27897,14 @@ impl App {
                                 let vi = self.state.doc.drawings[drawing].views.len() - 1;
                                 self.state
                                     .select_drawing_only(drawing, context::DrawingElementRef::Projection(vi));
-                                self.drawing_align_parent = None;
+                                self.state.drawing_align_parent = None;
                             }
                         }
                     }
                 }
             }
-        } else if self.drawing_align_parent.is_some() {
-            self.drawing_align_parent = None;
+        } else if self.state.drawing_align_parent.is_some() {
+            self.state.drawing_align_parent = None;
         }
 
         // Follow / end an in-flight dimension-label drag (#294/#1228): live-write the offset

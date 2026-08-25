@@ -5203,6 +5203,27 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1709: where the drawing page drew a view's card last frame, in window coordinates
+    // (like `pane_rect` and `tutorial_orb`) — `{ x, y, w, h }`, or `nil` when that view isn't
+    // on screen.
+    api.set(
+        "drawing_view_rect",
+        lua.create_function(|lua, view: usize| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let Some(rect) = crate::drawing_view_card_rect(unsafe { tick.egui_ctx() }, view) else {
+                return Ok(Value::Nil);
+            };
+            let t = lua.create_table()?;
+            t.set("x", rect.min.x)?;
+            t.set("y", rect.min.y)?;
+            t.set("w", rect.width())?;
+            t.set("h", rect.height())?;
+            Ok(Value::Table(t))
+        })?,
+    )?;
+
     // #1619: how far a pane is scrolled, and whether it has anything to scroll. `nil` when
     // the pane is hidden or scrolls nothing of its own.
     api.set(
@@ -6264,6 +6285,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let t = lua.create_table()?;
             t.set("x", p.x)?;
             t.set("y", p.y)?;
+            // Its size too (#1703), so a script can catch a ring that swamps what it marks.
+            if let Some(r) = state.tutorial_orb_radius {
+                t.set("r", r)?;
+            }
             Ok(Value::Table(t))
         })?,
     )?;
@@ -9136,7 +9161,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         -- `bearcad.ui.*` sub-namespace so scripts can focus on modeling (#46).
         bearcad.ui = {}
         local ui_funcs = {
-            "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_calibrate", "focus_dim", "pane", "pane_rect", "pane_scroll", "scroll_pane", "ai_sections", "ai_pane_sections", "ai_mcp", "menu_structure",
+            "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_calibrate", "focus_dim", "pane", "pane_rect", "drawing_view_rect", "pane_scroll", "scroll_pane", "ai_sections", "ai_pane_sections", "ai_mcp", "menu_structure",
             "widget_id_warnings", "palette", "settings",
             "changelog",
             "mcmaster",

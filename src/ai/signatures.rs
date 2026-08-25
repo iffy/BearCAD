@@ -231,6 +231,7 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.ui.pan"                      , "bearcad.ui.pan(dx, dy)"),
     ("bearcad.ui.pane"                     , "bearcad.ui.pane(pane, visible)"),
     ("bearcad.ui.pane_rect"                , "bearcad.ui.pane_rect(pane)"),
+    ("bearcad.ui.drawing_view_rect"        , "bearcad.ui.drawing_view_rect(view)"),
     ("bearcad.ui.pane_scroll"              , "bearcad.ui.pane_scroll(pane)"),
     ("bearcad.ui.picker_focus"             , "bearcad.ui.picker_focus(name)"),
     ("bearcad.ui.reorder_tab"              , "bearcad.ui.reorder_tab(from, to)"),

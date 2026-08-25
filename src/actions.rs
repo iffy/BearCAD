@@ -4587,6 +4587,14 @@ pub struct AppState {
     pub tutorial_anchor_rects: std::collections::HashMap<crate::tutorial::UiAnchor, egui::Rect>,
     /// Last drawn tutorial orb screen position (`bearcad.ui.tutorial_orb`, #1346).
     pub tutorial_orb_screen: Option<egui::Pos2>,
+    /// Last drawn tutorial orb radius in points (#1703), beside its position.
+    pub tutorial_orb_radius: Option<f32>,
+    /// The Aligned-view tool's chosen **base** view (#296/#365): the view index within the open
+    /// drawing whose projection a new aligned view lines up with. Seeded from a selected
+    /// projection when the tool is entered, or picked from the "Base view" element picker / by
+    /// clicking a projection. Lives here rather than on the app so the walkthrough can see the
+    /// pick land (#1704).
+    pub drawing_align_parent: Option<usize>,
     /// Last drawn tutorial speech-bubble screen rect (`bearcad.ui.tutorial_bubble`, #1577).
     pub tutorial_bubble_screen: Option<egui::Rect>,
     /// In-progress slice operation (Slice tool).
@@ -4851,6 +4859,8 @@ impl Default for AppState {
             tutorial: None,
             tutorial_anchor_rects: std::collections::HashMap::new(),
             tutorial_orb_screen: None,
+            tutorial_orb_radius: None,
+            drawing_align_parent: None,
             tutorial_bubble_screen: None,
             creating_slice: None,
             creating_shell: None,

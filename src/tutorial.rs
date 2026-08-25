@@ -79,6 +79,11 @@ pub enum UiAnchor {
         right: i8,
         up: i8,
     },
+    /// A **line** on the named view (#1709): the longest edge the view shows, which is the
+    /// one the Dimension step asks for — the card's centre rings no line at all.
+    DrawingViewEdge {
+        view: usize,
+    },
     /// The toolbar Zoom to Fit (magnifying glass) button (#1583).
     ZoomToFit,
     /// A status-bar pane toggle (phone layout only, #828): Elements / Context / Params.
@@ -3561,6 +3566,8 @@ fn seed_drawing_bracket(app: &mut AppState) {
     if !app.doc.bodies.is_empty() {
         return;
     }
+    // Named, so the Elements row and every view label read "Bracket" — the word the
+    // narration uses — instead of "Body 2" (#1702).
     let planes: Vec<_> = app.doc.construction_planes.keys().collect();
     for index in planes {
         app.apply(Action::DeleteElement {
@@ -3586,6 +3593,12 @@ fn seed_drawing_bracket(app: &mut AppState) {
             b: Vec::new(),
             keep_b: false,
             solid_count: None,
+        });
+    }
+    if let Some(body) = app.doc.bodies.keys().last() {
+        app.apply(Action::CommitElementName {
+            element: crate::hierarchy::SceneElement::Body(body),
+            name: "Bracket".to_string(),
         });
     }
 }
@@ -3656,6 +3669,12 @@ fn aligned_children(app: &AppState) -> usize {
 
 fn drawing_align_ready(app: &AppState) -> bool {
     app.tool == Tool::DrawingAlign || aligned_children(app) >= 1
+}
+
+/// #1704: the Aligned-view tool has its base view. Picked by clicking a projection, or
+/// seeded from a lone selected one when the tool comes up.
+fn drawing_align_base_picked(app: &AppState) -> bool {
+    app.drawing_align_parent.is_some() || aligned_children(app) >= 1
 }
 
 fn drawing_has_one_aligned(app: &AppState) -> bool {
@@ -3903,6 +3922,11 @@ static DRAWING_STEPS: &[Step] = &[
         // The view is parked lower-left first, so "above" and "to the right" have room.
         park_front_view,
     ),
+    plain_step(
+        "Click the front view: that's what the next two views line up with.",
+        StepAnchor::Ui(UiAnchor::DrawingViewEdge { view: 0 }),
+        Some(drawing_align_base_picked),
+    ),
     assisted_step(
         "Click above the front view: that's the top view, lined up with it.",
         StepAnchor::Ui(UiAnchor::DrawingSpot { view: 0, right: 0, up: 1 }),
@@ -3972,7 +3996,7 @@ static DRAWING_STEPS: &[Step] = &[
     ),
     assisted_step(
         "Click a line on the front view to dimension it.",
-        StepAnchor::Ui(UiAnchor::DrawingSpot { view: 0, right: 0, up: 0 }),
+        StepAnchor::Ui(UiAnchor::DrawingViewEdge { view: 0 }),
         Some(drawing_has_a_dimension),
         StepAssist {
             label: "Dimension one for me",
@@ -9057,6 +9081,61 @@ mod tests {
 
     fn sketch_mirror_tut() -> &'static Tutorial {
         &TUTORIALS[tutorial_index("sketch_mirror").expect("sketch_mirror tutorial is registered")]
+    }
+
+    /// #1702: the bracket is named, so the pane row and every view label say "Bracket"
+    /// rather than "Body 2".
+    #[test]
+    fn drawing_tutorial_names_its_body_bracket() {
+        let mut app = AppState::default();
+        super::seed_drawing_bracket(&mut app);
+        // The combine leaves its two inputs behind as shadows; the live result is the last.
+        let live = app.doc.bodies.keys().last().expect("a body");
+        assert_eq!(
+            app.doc.bodies[live].name.as_deref(),
+            Some("Bracket"),
+            "status={}",
+            app.status
+        );
+    }
+
+    /// #1704: the Aligned-view tool wants its base view picked before it can place anything,
+    /// so the walkthrough asks for that click instead of leaving it to a lucky selection.
+    #[test]
+    fn drawing_tutorial_picks_the_base_view_before_aligning() {
+        let tut = &TUTORIALS[tutorial_index("drawing").unwrap()];
+        let index_of = |needle: &str| {
+            tut.steps
+                .iter()
+                .position(|s| s.narration.contains(needle))
+                .unwrap_or_else(|| panic!("no step saying {needle:?}"))
+        };
+        let tool = index_of("Click the Aligned view tool");
+        let base = index_of("what the next two views");
+        let place = index_of("Click above the front view");
+        assert!(tool < base && base < place, "tool {tool}, base {base}, place {place}");
+        assert!(
+            matches!(
+                tut.steps[base].anchor,
+                StepAnchor::Ui(UiAnchor::DrawingViewEdge { view: 0 })
+            ),
+            "the base step rings the front view"
+        );
+    }
+
+    /// #1709: the Dimension step rings a line to click, not the middle of the card.
+    #[test]
+    fn drawing_tutorial_dimension_step_rings_a_line() {
+        let tut = &TUTORIALS[tutorial_index("drawing").unwrap()];
+        let step = tut
+            .steps
+            .iter()
+            .find(|s| s.narration.contains("to dimension it"))
+            .expect("the Dimension step");
+        assert!(matches!(
+            step.anchor,
+            StepAnchor::Ui(UiAnchor::DrawingViewEdge { view: 0 })
+        ));
     }
 
     /// #1680: reflect a sketch circle across the Y axis, then extrude both.
