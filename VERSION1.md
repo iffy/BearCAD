@@ -19,10 +19,10 @@
 [ ] Joints are intuitive and work
 [ ] Node graph is useable
 [ ] Several simple tutorials. One for every tool
-  [ ] Draw
-  [ ] Extrude
-  [ ] Shape
-  [ ] Line
+  [x] Draw
+  [x] Extrude
+  [x] Shape
+  [x] Line
   [ ] Move
     [ ] Free
     [ ] Face snap
@@ -31,14 +31,14 @@
   [ ] Fillet 2D and 3D
   [ ] Chamfer 2D and 3D
   [ ] Offset
-  [ ] Text
+  [x] Text
   [ ] Construction plane
   [ ] Sweep
   [ ] Loft
   [ ] Revolve
-  [ ] Combine
+  [x] Combine
     [ ] Combine
-    [ ] Cut
+    [x] Cut
     [ ] Intersect
     [ ] Difference
   [ ] Mirror
@@ -64,12 +64,12 @@
     [ ] Pin-slot
     [ ] Screw
 
-[ ] Tabs and linked docs
+[x] Tabs and linked docs
 [ ] Cross sections
 [ ] Technical drawing cross-sections
 [ ] Technical drawing zoom-ins
 [ ] Saved views
-[ ] Module params with limits, steps, etc...
+[x] Module params with limits, steps, etc...
 [x] Shell tool
 
 # Later versions

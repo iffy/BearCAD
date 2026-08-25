@@ -4430,9 +4430,15 @@ retina machine renders the same composition at 2x, just sharper.
   with short diagonal legs into each row. A node with consumers reserves **one** lane for all
   of them — its children string down that single trunk instead of fanning out sideways — and a
   lane is reused the moment its last consumer is passed, so a straight chain (sketch → extrude
-  → body) holds its lane rather than drifting right. The graph therefore spills right only as
-  far as the branches actually need, growing **taller** instead: height scrolls vertically and
-  labels truncate at the pane edge (#34). A **constraint** is the exception (#1670): it relates
+  → body) holds its lane rather than drifting right. **One** consumer continues in the node's
+  own lane; **two or more** open a lane to its right, because a shared trunk *in* the node's
+  lane would read as a chain running through the children. The **first lane stays clear across
+  a top-level element's row** — nothing feeds it and it sits under nothing, so a trunk that
+  would cross it steps right instead, and indentation keeps meaning "sits under something".
+  The synthetic **Document root is not shown** here (#1682): "everything hangs off the
+  document" is not a relationship worth a row. The graph therefore spills right only as far as
+  the branches actually need, growing **taller** instead: height scrolls vertically and labels
+  truncate at the pane edge (#34). A **constraint** is the exception (#1670): it relates
   to the geometry it holds rather than being produced by it, so it claims no trunk, drops into
   the leftmost free lane at or right of its sketch's, and ties to each element it constrains
   with a soft dashed **related** leg. Each node draws as its

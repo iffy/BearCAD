@@ -1545,6 +1545,18 @@ pub fn graph_lane_layout(doc: &Document, tree: &[HierarchyEntry]) -> GraphLaneLa
         })
         .collect();
 
+    // The rows of the model's own top-level elements — nothing feeds them and they sit under
+    // nothing. The first lane is kept clear across those rows so a top-level element always
+    // sits flush left and indentation keeps meaning "sits under something" (#1670). A
+    // constraint is not one: it has no input, but it does hang inside its sketch.
+    let root_rows: HashSet<usize> = order
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| !sources.contains_key(node) && !tree_parent.contains_key(node))
+        .map(|(row, _)| row)
+        .collect();
+    let crosses_a_root = |from: usize, to: usize| (from..=to).any(|row| root_rows.contains(&row));
+
     // Lane state: the last row each lane's trunk still runs through.
     let mut busy_until: Vec<Option<usize>> = Vec::new();
     let free_at = |busy: &[Option<usize>], lane: usize, row: usize| {
@@ -1553,6 +1565,22 @@ pub fn graph_lane_layout(doc: &Document, tree: &[HierarchyEntry]) -> GraphLaneLa
     let first_free = |busy: &mut Vec<Option<usize>>, row: usize, min_lane: usize| {
         let mut lane = min_lane;
         while !free_at(busy, lane, row) {
+            lane += 1;
+        }
+        while busy.len() <= lane {
+            busy.push(None);
+        }
+        lane
+    };
+    // A trunk lane must be free for the whole run *and*, in the first lane, must not run
+    // across a top-level element's row.
+    let first_free_trunk = |busy: &mut Vec<Option<usize>>, row: usize, last: usize, min_lane: usize| {
+        let mut lane = min_lane;
+        loop {
+            let usable = free_at(busy, lane, row) && !(lane == 0 && crosses_a_root(row, last));
+            if usable {
+                break;
+            }
             lane += 1;
         }
         while busy.len() <= lane {
@@ -1585,10 +1613,18 @@ pub fn graph_lane_layout(doc: &Document, tree: &[HierarchyEntry]) -> GraphLaneLa
         // Reserve this node's one trunk for every consumer below — its own lane when that is
         // free from here down (the chain case), otherwise the leftmost free lane.
         if let Some(&last) = last_consumer_row.get(node) {
-            let trunk = if free_at(&busy_until, lane, row + 1) {
+            // One consumer is a chain: it carries straight on down this node's own lane. Two
+            // or more fan out, and a shared trunk *in* the node's lane would read as a chain
+            // through them, so the fan opens a lane to the right and each child legs into it.
+            let only_child = consumers.get(node).is_some_and(|list| list.len() == 1);
+            let reuse_own_lane = only_child
+                && free_at(&busy_until, lane, row + 1)
+                && !(lane == 0 && crosses_a_root(row + 1, last));
+            let trunk = if reuse_own_lane {
                 lane
             } else {
-                first_free(&mut busy_until, row + 1, lane)
+                let min_lane = if only_child { lane } else { lane + 1 };
+                first_free_trunk(&mut busy_until, row + 1, last, min_lane)
             };
             let until = busy_until[trunk].map_or(last, |prev| prev.max(last));
             busy_until[trunk] = Some(until);
@@ -2669,7 +2705,7 @@ pub fn filter_hierarchy(tree: &[HierarchyEntry], filter: &ElementFilter) -> Vec<
     out
 }
 
-/// The hierarchy the Graph view lays out: filtered, then pruned of the two things the graph
+/// The hierarchy the Graph view lays out: filtered, then pruned of the three things the graph
 /// shows differently from the List. A unit instance is one opaque node there (#723) — its
 /// contents stay out unless the "Unit contents" toggle lets them in, where the List instead
 /// hides them behind the row's collapse — and shadow bodies follow their own toggle (#1109).
@@ -2687,6 +2723,20 @@ pub fn graph_view_tree(
     if !filter.shadow_bodies {
         prune_shadow_bodies(&mut tree, doc);
     }
+    // The synthetic Document root is a List-view affordance — a place to drop things on and
+    // a handle for the whole model. The graph shows relationships, and "everything hangs off
+    // the document" is not one, so the model's own top-level elements are the roots here
+    // (#1682).
+    tree = tree
+        .into_iter()
+        .flat_map(|entry| {
+            if entry.node == HierarchyNode::Document {
+                entry.children
+            } else {
+                vec![entry]
+            }
+        })
+        .collect();
     tree
 }
 
@@ -8566,12 +8616,78 @@ label_hidden: false,
         }
     }
 
+    /// #1670: a top-level element stays flush in the first lane — a trunk that would run
+    /// across its row steps right instead of pushing the root over, so indentation keeps
+    /// meaning "sits under something".
+    #[test]
+    fn graph_lane_layout_keeps_top_level_elements_in_the_first_lane() {
+        let (mut doc, sketch) = doc_with_plane_sketch_rect_and_extrusion();
+        // A boolean op consuming the extruded body: it sits at the top level, *after* the
+        // XZ/YZ datum planes, so its input lane has to cross their rows.
+        doc.boolean_ops.insert(crate::model::BooleanOperation {
+            kind: crate::model::BooleanOpKind::Cut,
+            a: vec![bkey(0)],
+            b: Vec::new(),
+            keep_b: false,
+            outputs: Vec::new(),
+            name: None,
+        });
+        let tree = graph_view_tree(&doc, Some(SketchSession { sketch }), &ElementFilter::default());
+        let layout = graph_lane_layout(&doc, &tree);
+
+        let planes: Vec<usize> = doc
+            .construction_planes
+            .keys()
+            .filter_map(|pi| lane_of(&layout, HierarchyNode::ConstructionPlane(pi)))
+            .collect();
+        assert_eq!(planes.len(), 3, "all three datum planes are shown");
+        assert!(
+            planes.iter().all(|lane| *lane == 0),
+            "datum planes are top level, so they stay in lane 0: {planes:?}"
+        );
+        let op = lane_of(&layout, HierarchyNode::BooleanOp(bopkey(0))).expect("the op has a row");
+        assert!(op > 0, "the op is fed by the body, so it rides that input's lane");
+    }
+
+    /// #1682: the Graph view drops the synthetic Document root — a model's own top-level
+    /// elements are the roots there. The List view keeps it.
+    #[test]
+    fn graph_view_tree_has_no_document_row() {
+        let (doc, sketch) = doc_with_plane_sketch_rect_and_extrusion();
+        let session = Some(SketchSession { sketch });
+        let tree = graph_view_tree(&doc, session, &ElementFilter::default());
+        let layout = graph_lane_layout(&doc, &tree);
+
+        assert!(
+            !layout.rows.iter().any(|r| r.node == HierarchyNode::Document),
+            "the graph has no Document row"
+        );
+        assert!(
+            !layout
+                .edges
+                .iter()
+                .any(|e| e.from == HierarchyNode::Document || e.to == HierarchyNode::Document),
+            "and no lines to it"
+        );
+        assert!(
+            layout
+                .rows
+                .iter()
+                .any(|r| matches!(r.node, HierarchyNode::ConstructionPlane(_))),
+            "the planes are roots of their own"
+        );
+        assert!(
+            build_element_list(&doc, session).contains(&HierarchyNode::Document),
+            "the List view still shows Document"
+        );
+    }
+
     /// #1670: siblings string down a single lane (short legs, not a fan to the right), and a
     /// one-consumer chain keeps its lane instead of stepping right at every step.
     #[test]
     fn graph_lane_layout_keeps_the_graph_narrow() {
         let (doc, sketch) = doc_with_plane_sketch_rect_and_extrusion();
-        let tree = build_hierarchy(&doc, Some(SketchSession { sketch }));
+        let tree = graph_view_tree(&doc, Some(SketchSession { sketch }), &ElementFilter::default());
         let layout = graph_lane_layout(&doc, &tree);
 
         let lanes: HashSet<usize> = doc
