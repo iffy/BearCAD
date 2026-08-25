@@ -113,7 +113,8 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
         | Tool::Slice
         | Tool::Shell
         | Tool::DrawingAdd
-        | Tool::DrawingAlign => None,
+        | Tool::DrawingAlign
+        | Tool::SectionPlane => None,
         Tool::Select => None,
     }
 }
@@ -172,6 +173,7 @@ pub fn tool_script_name(tool: Tool) -> &'static str {
         Tool::Line => "line",
         Tool::Circle => "circle",
         Tool::ConstructionPlane => "construction_plane",
+        Tool::SectionPlane => "section_plane",
         Tool::Sketch => "sketch",
         Tool::Dimension => "dimension",
         Tool::Project => "project",

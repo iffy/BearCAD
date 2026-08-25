@@ -709,6 +709,9 @@ pub struct PreviewReplacement {
 #[derive(Clone, Debug)]
 pub struct ViewportSceneInput<'a> {
     pub doc: &'a Document,
+    /// The cross-section view being set up (#1687): its cutting planes draw as outlined
+    /// translucent quads so a placed plane is visible while it is adjusted.
+    pub open_cross_section: Option<crate::model::CrossSectionKey>,
     /// In-progress Move, so tracing-image quads preview the live drag (#1611).
     pub creating_move: Option<&'a crate::actions::CreatingMove>,
     pub cam: &'a Camera,
@@ -1881,6 +1884,40 @@ impl ViewportScene {
             } else {
                 mesh.push_line_segment(
                     a, b, input.palette.preview, 1.5, input.cam, input.viewport, &vp,
+                );
+            }
+        }
+        // The open cross-section view's cutting planes (#1687): an outlined translucent quad
+        // per plane, with a short stub along the normal marking the side that survives, so a
+        // placed plane is visible while its offset, turn, and flip are adjusted.
+        if let Some(view) = input
+            .open_cross_section
+            .and_then(|key| input.doc.cross_sections.get(key))
+        {
+            for cut in &view.cuts {
+                let plane = crate::construction::cross_section_cut_plane(cut);
+                let corners = crate::construction::plane_corners(&plane);
+                mesh.push_quad_fill(
+                    corners,
+                    fill_color(input.palette.preview, input.palette.construction_plane_opacity),
+                );
+                mesh.push_quad_outline(
+                    corners,
+                    input.palette.preview,
+                    2.0,
+                    input.cam,
+                    input.viewport,
+                    &vp,
+                );
+                let kept = if cut.flip { -plane.normal } else { plane.normal };
+                mesh.push_line_segment(
+                    plane.origin,
+                    plane.origin + kept * 12.0,
+                    input.palette.preview,
+                    2.0,
+                    input.cam,
+                    input.viewport,
+                    &vp,
                 );
             }
         }
@@ -6298,6 +6335,7 @@ mod tests {
         cam.set_shading_mode(mode);
         ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            open_cross_section: None,
             creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
@@ -7023,6 +7061,7 @@ mod tests {
         let viewport = test_viewport();
         let base = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            open_cross_section: None,
             creating_move: None,
             cam: &cam,
             viewport,
@@ -7072,6 +7111,7 @@ mod tests {
         let preview_plane = state.doc.construction_planes[pkey(0)].clone();
         let with_preview = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            open_cross_section: None,
             creating_move: None,
             cam: &cam,
             viewport,
@@ -7170,6 +7210,7 @@ mod tests {
         let build = |hover: Option<ViewportHoverHighlight>| {
             let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            open_cross_section: None,
             creating_move: None,
             cam: &cam,
             viewport,
@@ -7370,6 +7411,7 @@ mod tests {
         let build = |hover: Option<ViewportHoverHighlight>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                open_cross_section: None,
                 creating_move: None,
                 cam: &state.cam,
                 viewport: test_viewport(),
@@ -7462,6 +7504,7 @@ mod tests {
         let build = |selection: &SceneSelection| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                open_cross_section: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -7644,6 +7687,7 @@ mod tests {
         let build = |hover: Option<ViewportHoverHighlight>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                open_cross_section: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -7767,6 +7811,7 @@ mod tests {
         let build = |hover: Option<ViewportHoverHighlight>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                open_cross_section: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -7882,6 +7927,7 @@ mod tests {
         let viewport = test_viewport();
         ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            open_cross_section: None,
             creating_move: None,
             cam: &cam,
             viewport,
@@ -8030,6 +8076,7 @@ mod tests {
         let viewport = test_viewport();
         let base = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            open_cross_section: None,
             creating_move: None,
             cam: &cam,
             viewport,
@@ -8089,6 +8136,7 @@ mod tests {
         };
         let with_gizmo = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            open_cross_section: None,
             creating_move: None,
             cam: &cam,
             viewport,
@@ -8149,6 +8197,7 @@ mod tests {
         let base = build_scene_for_doc(&state);
         let mut input = ViewportSceneInput {
             doc: &state.doc,
+            open_cross_section: None,
             creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
@@ -8259,6 +8308,7 @@ mod tests {
         let cam = state.cam.clone();
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            open_cross_section: None,
             creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
@@ -9297,6 +9347,7 @@ mod tests {
         let cam = state.cam.clone();
         ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            open_cross_section: None,
             creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
@@ -9475,6 +9526,7 @@ mod tests {
         let build = |editing: Option<crate::model::ExtrusionKey>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                open_cross_section: None,
                 creating_move: None,
                 cam: &cam,
                 viewport: test_viewport(),
@@ -9749,6 +9801,7 @@ mod tests {
         let cam = state.cam.clone();
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            open_cross_section: None,
             creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
@@ -9889,6 +9942,7 @@ mod tests {
         let base = build_scene_for_doc(&state);
         let with_hover = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            open_cross_section: None,
             creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
@@ -10089,6 +10143,7 @@ mod tests {
         // build with the real session so we exercise the in-sketch stroke path.
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            open_cross_section: None,
             creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
@@ -10317,6 +10372,7 @@ mod tests {
         let cam = state.cam.clone();
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            open_cross_section: None,
             creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
@@ -10390,6 +10446,7 @@ mod tests {
         let cam = state.cam.clone();
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            open_cross_section: None,
             creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
@@ -10586,6 +10643,7 @@ mod tests {
 
         let unselected = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            open_cross_section: None,
             creating_move: None,
             cam: &cam,
             viewport,
@@ -10634,6 +10692,7 @@ mod tests {
         });
         let selected_scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            open_cross_section: None,
             creating_move: None,
             cam: &cam,
             viewport,
@@ -10749,6 +10808,7 @@ mod tests {
         let scene_for = |selection: &SceneSelection| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                open_cross_section: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -10855,6 +10915,7 @@ mod tests {
         let build = |hover: Option<ViewportHoverHighlight>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                open_cross_section: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -11014,6 +11075,7 @@ mod tests {
         let build = |hover: Option<ViewportHoverHighlight>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                open_cross_section: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -11104,6 +11166,7 @@ mod tests {
                      extra: Vec<crate::construction::PickTargetKind>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                open_cross_section: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -11215,6 +11278,7 @@ mod tests {
         let build = |session: Option<SketchSession>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                open_cross_section: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -11314,6 +11378,7 @@ mod tests {
         let build = |tint: Vec<(crate::model::BodyKey, Color32)>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                open_cross_section: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -11418,6 +11483,7 @@ mod tests {
         let build = |sel: &SceneSelection| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                open_cross_section: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -11494,6 +11560,7 @@ mod tests {
         let viewport = test_viewport();
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            open_cross_section: None,
             creating_move: None,
             cam: &cam,
             viewport,
@@ -11581,6 +11648,7 @@ mod tests {
         let build = |cut: Vec<crate::model::BodyKey>, sel: &SceneSelection| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                open_cross_section: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -11677,6 +11745,7 @@ mod tests {
         let cam = state.cam.clone();
         let without = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            open_cross_section: None,
             creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
@@ -11725,6 +11794,7 @@ mod tests {
         });
         let with = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            open_cross_section: None,
             creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
@@ -11922,6 +11992,7 @@ mod tests {
         };
         let vertex_count_before = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            open_cross_section: None,
             creating_move: None,
             cam: &cam,
             viewport,
@@ -11974,6 +12045,7 @@ mod tests {
         .len();
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            open_cross_section: None,
             creating_move: None,
             cam: &cam,
             viewport,
@@ -12102,6 +12174,7 @@ mod tests {
         let build = |labels: &[crate::gpu_viewport::ViewportDimLabel]| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                open_cross_section: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -12233,6 +12306,7 @@ mod tests {
         );
         let dashed_scene = ViewportScene::build(&ViewportSceneInput {
             doc: &dashed_doc,
+            open_cross_section: None,
             creating_move: None,
             cam: scene_fields.0,
             viewport: scene_fields.1,
@@ -12281,6 +12355,7 @@ mod tests {
         });
         let solid_scene = ViewportScene::build(&ViewportSceneInput {
             doc: &solid_doc,
+            open_cross_section: None,
             creating_move: None,
             cam: scene_fields.0,
             viewport: scene_fields.1,
@@ -12380,6 +12455,7 @@ mod tests {
         let build = |doc: &crate::model::Document| {
             ViewportScene::build(&ViewportSceneInput {
                 doc,
+                open_cross_section: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -12502,6 +12578,7 @@ mod tests {
         let build = |doc: &crate::model::Document| {
             ViewportScene::build(&ViewportSceneInput {
                 doc,
+                open_cross_section: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -12610,6 +12687,7 @@ mod tests {
         let empty_vis = crate::hierarchy::ElementVisibility::default();
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
+            open_cross_section: None,
             creating_move: None,
             cam: &cam,
             viewport,
@@ -12773,6 +12851,7 @@ mod perf_probe {
         let build = |sel: &SceneSelection| {
             let input = ViewportSceneInput {
                 doc: &state.doc,
+                open_cross_section: None,
                 creating_move: None,
                 cam: &state.cam,
                 viewport,
@@ -12874,6 +12953,7 @@ mod cut_preview_tests {
         let selection = SceneSelection::default();
         let input = ViewportSceneInput {
             doc: &state.doc,
+            open_cross_section: None,
             creating_move: None,
             cam: &state.cam,
             viewport,
@@ -13023,6 +13103,7 @@ mod issue_1141_hole_orbit {
             let selection = SceneSelection::default();
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
+                open_cross_section: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,

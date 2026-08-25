@@ -108,6 +108,7 @@ pub fn tool_label(tool: Tool) -> &'static str {
         Tool::Line => "Line",
         Tool::Circle => "Circle",
         Tool::ConstructionPlane => "Construction plane",
+        Tool::SectionPlane => "Cutting plane",
         Tool::Sketch => "Sketch",
         Tool::Dimension => "Dimension",
         Tool::Constraint => "Constraint",
@@ -412,6 +413,20 @@ impl Operation for ConstructionPlane {
     const INPUTS: &'static [ElementType] =
         &[ElementType::Face, ElementType::Axis, ElementType::Point];
     const OUTPUTS: &'static [ElementType] = &[ElementType::ConstructionPlane];
+    const SHADOWS: &'static [ElementType] = &[];
+    const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::ThreeD;
+}
+
+/// The View workbench's cutting-plane tool (#1671/#1687): a face or plane in, a cutting
+/// plane on the open cross-section view out. It carves no geometry — a view is a way of
+/// looking — so it shadows nothing and leaves host bodies alone.
+pub struct SectionPlane;
+impl Operation for SectionPlane {
+    const TOOL: Tool = Tool::SectionPlane;
+    const VARIANT: &'static str = "";
+    const INPUTS: &'static [ElementType] = &[ElementType::Face, ElementType::ConstructionPlane];
+    const OUTPUTS: &'static [ElementType] = &[];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
     const SPACE: OpSpace = OpSpace::ThreeD;
@@ -801,6 +816,7 @@ pub static ALL_OPERATIONS: &[OpSig] = &[
     sig::<Line>(),
     sig::<Circle>(),
     sig::<ConstructionPlane>(),
+    sig::<SectionPlane>(),
     sig::<Sketch>(),
     sig::<Dimension>(),
     sig::<Constraint>(),

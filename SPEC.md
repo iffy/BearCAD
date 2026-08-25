@@ -2361,6 +2361,17 @@ outside the shape/undo DAG.
 - **Creating one:** the Elements pane's **+ → New cross section**, or **View → Create Cross
   Section**. Scriptable as `bearcad.cross_section{ name? }` (#1671), and readable back with
   `bearcad.count("cross_section")` / `bearcad.get{ kind = "cross_section", index }`.
+- **The cutting-plane tool (#1687):** the View workbench's own tool. A click resolves the
+  same pick the Plane tool does — a face, a construction plane, an edge, an axis — and hangs a
+  cutting plane on that frame straight away: nothing is drafted and nothing is committed.
+  Each further click adds another plane, so one view can cut in several directions at once.
+  The context pane lists the open view's planes, each with **Offset** (along its own normal),
+  **Rotate** (about that normal), **Flip** (which side survives), and a ✕ to drop it. Each
+  plane draws as an outlined translucent quad with a stub along the surviving side, so a
+  placed plane is visible while it is adjusted. Scriptable: `bearcad.section_plane{ view?,
+  plane|origin+normal, offset?, roll?, flip? }`, `bearcad.edit_section_plane{ view?, cut,
+  … }`, `bearcad.delete_section_plane{ view?, cut }`, and `bearcad.section_planes(view?)`
+  reads them back (`roll` in degrees, like every other angle in the API).
 - **The View workbench (#1686):** creating a view — or double-clicking one's row, or its
   right-click **Edit** — opens it in the **View** workbench (`AppState::editing_cross_section`),
   whose toolbar carries the view's own tools plus a **Back to the 3D model** button.

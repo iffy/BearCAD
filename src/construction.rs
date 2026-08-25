@@ -951,6 +951,33 @@ pub fn tracing_image_under_cursor(
 }
 
 /// Corners of the visible plane quad in world space.
+/// The frame a cross-section cut draws as (#1687): its plane slid along its own normal by the
+/// cut's offset and turned by its roll, expressed as a [`ConstructionPlane`] so the same quad
+/// and outline drawing every other plane uses applies to it.
+pub fn cross_section_cut_plane(cut: &crate::model::CrossSectionCut) -> ConstructionPlane {
+    let normal = cut.normal.normalize_or_zero();
+    let normal = if normal.length_squared() < 1e-8 { Vec3::Z } else { normal };
+    // Any pair of axes spanning the plane; the roll turns them about the normal.
+    let seed = if normal.dot(Vec3::Z).abs() > 0.9 { Vec3::X } else { Vec3::Z };
+    let u = seed.cross(normal).normalize_or_zero();
+    let u = if u.length_squared() < 1e-8 { Vec3::X } else { u };
+    let v = normal.cross(u);
+    let (sin, cos) = cut.roll.sin_cos();
+    let u_axis = u * cos + v * sin;
+    let v_axis = v * cos - u * sin;
+    ConstructionPlane {
+        origin: cut.origin + normal * cut.offset_mm,
+        normal,
+        u_axis,
+        v_axis,
+        parent: crate::model::ConstructionPlaneParent::Root,
+        definition: crate::face::default_xy_plane_definition(),
+        repeat_instance: None,
+        name: None,
+        extent: crate::model::PlaneExtent::default(),
+    }
+}
+
 pub fn plane_corners(plane: &ConstructionPlane) -> [Vec3; 4] {
     plane_corners_of(plane, plane.extent)
 }

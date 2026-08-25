@@ -31,6 +31,8 @@ pub struct ContextInput<'a> {
     pub in_drawing_workbench: bool,
     /// The open drawing page (#967), so a drawing item's element can name which page it is on.
     pub open_drawing: Option<crate::model::DrawingKey>,
+    /// The open cross-section view (#1687), so the pane can list and edit its cutting planes.
+    pub open_cross_section: Option<crate::model::CrossSectionKey>,
     pub draw_rect_construction: Option<bool>,
     /// Rectangle anchor mode (#532): `Some` while the Rectangle tool is active.
     pub rect_anchor: Option<crate::actions::RectAnchor>,
@@ -1046,6 +1048,53 @@ pub enum TriState {
     Mixed,
 }
 
+/// The open cross-section view's cutting planes (#1687): one row per plane, each with the
+/// numbers that place it. Shown whenever the View workbench is open.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CrossSectionControl {
+    pub view: crate::model::CrossSectionKey,
+    pub cuts: Vec<CrossSectionCutRow>,
+}
+
+/// One cutting plane's row in the context pane (#1687).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CrossSectionCutRow {
+    /// What the plane is called in the pane — its facing, e.g. "Plane 0 · +Z".
+    pub label: String,
+    pub offset_mm: f32,
+    pub roll_deg: f32,
+    pub flip: bool,
+}
+
+/// How a plane faces, for its row label (#1687): the nearest world axis, or "tilted" when it
+/// doesn't line up with one.
+fn direction_label(normal: glam::Vec3) -> String {
+    let n = normal.normalize_or_zero();
+    for (axis, name) in [
+        (glam::Vec3::X, "X"),
+        (glam::Vec3::Y, "Y"),
+        (glam::Vec3::Z, "Z"),
+    ] {
+        let dot = n.dot(axis);
+        if dot > 0.999 {
+            return format!("+{name}");
+        }
+        if dot < -0.999 {
+            return format!("-{name}");
+        }
+    }
+    "tilted".to_string()
+}
+
+/// An edit made to one of the open view's cutting planes (#1687).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CrossSectionEdit {
+    Offset(usize, f32),
+    Roll(usize, f32),
+    Flip(usize, bool),
+    Remove(usize),
+}
+
 /// What the context pane should display.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ContextPaneContent {
@@ -1161,6 +1210,8 @@ pub struct ContextPaneContent {
     pub drawing_align: Option<Option<(usize, String)>>,
     /// "Edit repeat" entry point.
     pub repeat_edit_start: Option<crate::model::RepeatOpKey>,
+    /// The open cross-section view's cutting planes (#1687).
+    pub cross_section: Option<CrossSectionControl>,
     /// Slice tool controls.
     pub slice_op: Option<SliceControl>,
     /// "Edit slice" button target.
@@ -1807,6 +1858,7 @@ fn tool_context_title(input: &ContextInput<'_>) -> Option<&'static str> {
         Tool::Line => "Line",
         Tool::Circle => "Circle",
         Tool::ConstructionPlane => "Construction plane",
+        Tool::SectionPlane => "Cutting plane",
         Tool::Sketch => "Sketch",
         Tool::Dimension => "Dimension",
         Tool::Constraint => "Constraint",
@@ -3261,6 +3313,24 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let sweep_edit_start = input.sweep_edit_start;
     let calibrate_start = input.calibrate_start;
     let calibrate_pending = input.calibrate_pending;
+    // The open view's cutting planes (#1687): built before the draw tools' early returns so
+    // the View workbench always shows them, whatever tool is active there.
+    let cross_section = input.open_cross_section.and_then(|view| {
+        let cuts = &input.doc.cross_sections.get(view)?.cuts;
+        Some(CrossSectionControl {
+            view,
+            cuts: cuts
+                .iter()
+                .enumerate()
+                .map(|(i, cut)| CrossSectionCutRow {
+                    label: format!("Plane {i} · {}", direction_label(cut.normal)),
+                    offset_mm: cut.offset_mm,
+                    roll_deg: cut.roll.to_degrees(),
+                    flip: cut.flip,
+                })
+                .collect(),
+        })
+    });
     // Built before the draw tools' early returns below: outside a sketch their first click
     // picks the face to sketch on, which is a pick like any other and shows a picker (#958).
     let tool_pickers = tool_picker_views(input);
@@ -3327,6 +3397,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             drawing_align: None,
             drawing_add_active,
             repeat_edit_start,
+            cross_section: cross_section.clone(),
             slice_op: slice_op.clone(),
             slice_edit_start,
             shell_op: shell_op.clone(),
@@ -3393,6 +3464,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             drawing_align: None,
             drawing_add_active,
             repeat_edit_start,
+            cross_section: cross_section.clone(),
             slice_op: slice_op.clone(),
             slice_edit_start,
             shell_op: shell_op.clone(),
@@ -3461,6 +3533,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             drawing_align: None,
             drawing_add_active,
             repeat_edit_start,
+            cross_section: cross_section.clone(),
             slice_op: slice_op.clone(),
             slice_edit_start,
             shell_op: shell_op.clone(),
@@ -3491,6 +3564,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let constraints = (input.tool == Tool::Constraint)
         .then(|| constraint_pane_rows(input.selection));
     ContextPaneContent {
+        cross_section,
         tool_title,
         name,
         unit_instance,
@@ -5579,6 +5653,7 @@ pub fn show_pane(
     on_drawing_selection_edit: &mut impl FnMut(DrawingSelectionEdit),
     on_drawing_align_clear: &mut impl FnMut(),
     on_repeat_edit_start: &mut impl FnMut(crate::model::RepeatOpKey),
+    on_cross_section_edit: &mut impl FnMut(CrossSectionEdit),
     on_slice_edit: &mut impl FnMut(SliceEdit),
     on_slice_edit_start: &mut impl FnMut(crate::model::SliceOpKey),
     on_shell_edit: &mut impl FnMut(ShellEdit),
@@ -8169,6 +8244,61 @@ pub fn show_pane(
         }
     }
 
+    // The open view's cutting planes (#1687): one row each — slide it along its own normal,
+    // turn it in place, flip which side survives, or drop it.
+    if let Some(control) = &content.cross_section {
+        any_control = true;
+        ui.label(egui::RichText::new("Cutting planes").strong());
+        if control.cuts.is_empty() {
+            ui.label(
+                egui::RichText::new("Click a face or plane with the Cutting plane tool")
+                    .weak(),
+            );
+        }
+        let mut pending: Option<CrossSectionEdit> = None;
+        for (i, cut) in control.cuts.iter().enumerate() {
+            ui.push_id(("cross_section_cut", i), |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(&cut.label);
+                    if ui.small_button("✕").on_hover_text("Remove this plane").clicked() {
+                        pending = Some(CrossSectionEdit::Remove(i));
+                    }
+                });
+                labeled_row(ui, "Offset", |ui| {
+                    let mut offset = cut.offset_mm;
+                    if ui
+                        .add_enabled(
+                            controls_enabled,
+                            egui::DragValue::new(&mut offset).speed(0.5).suffix(" mm"),
+                        )
+                        .changed()
+                    {
+                        pending = Some(CrossSectionEdit::Offset(i, offset));
+                    }
+                });
+                labeled_row(ui, "Rotate", |ui| {
+                    let mut roll = cut.roll_deg;
+                    if ui
+                        .add_enabled(
+                            controls_enabled,
+                            egui::DragValue::new(&mut roll).speed(1.0).suffix("°"),
+                        )
+                        .changed()
+                    {
+                        pending = Some(CrossSectionEdit::Roll(i, roll));
+                    }
+                });
+                let mut flip = cut.flip;
+                if checkbox_row(ui, "Flip", &mut flip, None) {
+                    pending = Some(CrossSectionEdit::Flip(i, flip));
+                }
+            });
+        }
+        if let Some(edit) = pending {
+            on_cross_section_edit(edit);
+        }
+    }
+
     if let Some(control) = &content.slice_op {
         any_control = true;
         let mut pending: Option<SliceEdit> = None;
@@ -10653,6 +10783,7 @@ mod tests {
             drawing_align_base: None,
             drawing_add_active: false,
             repeat_edit_start: None,
+            open_cross_section: None,
             slice_op: None,
             slice_edit_start: None,
             shell_op: None,
@@ -11075,6 +11206,7 @@ mod tests {
             drawing_align_base: None,
             drawing_add_active: false,
             repeat_edit_start: None,
+            open_cross_section: None,
             slice_op: None,
             slice_edit_start: None,
             shell_op: None,
@@ -12802,6 +12934,7 @@ mod tests {
             drawing_align: None,
             drawing_add_active: false,
             repeat_edit_start: None,
+            cross_section: None,
             slice_op: None,
             slice_edit_start: None,
             shell_op: None,
@@ -12886,6 +13019,7 @@ mod tests {
             drawing_align_base: None,
             drawing_add_active: false,
             repeat_edit_start: None,
+            open_cross_section: None,
             slice_op: None,
             slice_edit_start: None,
             shell_op: None,
@@ -12961,6 +13095,7 @@ mod tests {
             drawing_align: None,
             drawing_add_active: false,
             repeat_edit_start: None,
+            cross_section: None,
             slice_op: None,
             slice_edit_start: None,
             shell_op: None,
@@ -13045,6 +13180,7 @@ mod tests {
             drawing_align_base: None,
             drawing_add_active: false,
             repeat_edit_start: None,
+            open_cross_section: None,
             slice_op: None,
             slice_edit_start: None,
             shell_op: None,
@@ -13180,6 +13316,7 @@ mod tests {
             drawing_align: None,
             drawing_add_active: false,
             repeat_edit_start: None,
+            cross_section: None,
             slice_op: None,
             slice_edit_start: None,
             shell_op: None,
@@ -13312,6 +13449,7 @@ mod tests {
             drawing_align_base: None,
             drawing_add_active: false,
             repeat_edit_start: None,
+            open_cross_section: None,
             slice_op: None,
             slice_edit_start: None,
             shell_op: None,
@@ -13395,6 +13533,7 @@ mod tests {
             drawing_align_base: None,
             drawing_add_active: false,
             repeat_edit_start: None,
+            open_cross_section: None,
             slice_op: None,
             slice_edit_start: None,
             shell_op: None,
@@ -13480,6 +13619,7 @@ mod tests {
             drawing_align: None,
             drawing_add_active: false,
             repeat_edit_start: None,
+            cross_section: None,
             slice_op: None,
             slice_edit_start: None,
             shell_op: None,
@@ -13555,6 +13695,7 @@ mod tests {
             drawing_align_base: None,
             drawing_add_active: false,
             repeat_edit_start: None,
+            open_cross_section: None,
             slice_op: None,
             slice_edit_start: None,
             shell_op: None,

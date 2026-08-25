@@ -349,6 +349,17 @@ bearcad.ui.workbench("model")                            -- back to the model
 Creating a view (or double-clicking its row) opens the **View workbench**; the toolbar's
 leftmost control names the workbench you're on and switches between them.
 
+In that workbench the **Cutting plane** tool hangs a plane on whatever face you click; each
+further click adds another, so a view can cut in several directions at once.
+
+```lua
+bearcad.section_plane{ plane = 1, offset = 5 }     -- on a construction plane's frame
+bearcad.section_plane{ origin = {0, 0, 10}, normal = {0, 0, 1}, flip = true }
+bearcad.edit_section_plane{ cut = 0, offset = -2, roll = 30 }   -- slide and turn it
+bearcad.delete_section_plane{ cut = 1 }
+local cuts = bearcad.section_planes()              -- { origin, normal, offset, roll, flip }
+```
+
 ## Materials
 
 See [Materials](/docs/materials).

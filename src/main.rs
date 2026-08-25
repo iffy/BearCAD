@@ -14848,6 +14848,12 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     }
                     ui.separator();
                     self.tool_button(ui, icons::IconId::Select, Tool::Select, "Select");
+                    self.tool_button(
+                        ui,
+                        icons::IconId::CrossSection,
+                        Tool::SectionPlane,
+                        "Cutting plane",
+                    );
                     return;
                 }
                 self.tool_button(ui, icons::IconId::Select, Tool::Select, "Select");
@@ -15716,6 +15722,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
         }
         let content = {
         let context_input = context::ContextInput {
+            open_cross_section: self.state.editing_cross_section,
             doc: &self.state.doc,
             selection: &self.state.scene_selection,
             element_visibility: &self.state.element_visibility,
@@ -16656,6 +16663,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             let mut drawing_selection_edit: Option<context::DrawingSelectionEdit> = None;
             let mut drawing_align_clear = false;
             let mut repeat_edit_begin: Option<crate::model::RepeatOpKey> = None;
+            let mut cross_section_edit: Option<context::CrossSectionEdit> = None;
             let mut slice_edit: Option<context::SliceEdit> = None;
             let mut slice_edit_begin: Option<crate::model::SliceOpKey> = None;
             let mut shell_edit: Option<context::ShellEdit> = None;
@@ -16729,6 +16737,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                         &mut |edit| drawing_selection_edit = Some(edit),
                         &mut || drawing_align_clear = true,
                         &mut |op| repeat_edit_begin = Some(op),
+                        &mut |edit| cross_section_edit = Some(edit),
                         &mut |edit| slice_edit = Some(edit),
                         &mut |op| slice_edit_begin = Some(op),
                         &mut |edit| shell_edit = Some(edit),
@@ -17766,6 +17775,38 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             }
             if let Some(op) = repeat_edit_begin {
                 self.begin_operation_edit(hierarchy::SceneElement::RepeatOp(op));
+            }
+            // The open view's cutting planes (#1687).
+            if let Some(edit) = cross_section_edit {
+                let action = match edit {
+                    context::CrossSectionEdit::Offset(cut, offset_mm) => {
+                        Action::SetCrossSectionCut {
+                            view: None,
+                            cut,
+                            offset_mm: Some(offset_mm),
+                            roll_deg: None,
+                            flip: None,
+                        }
+                    }
+                    context::CrossSectionEdit::Roll(cut, roll_deg) => Action::SetCrossSectionCut {
+                        view: None,
+                        cut,
+                        offset_mm: None,
+                        roll_deg: Some(roll_deg),
+                        flip: None,
+                    },
+                    context::CrossSectionEdit::Flip(cut, flip) => Action::SetCrossSectionCut {
+                        view: None,
+                        cut,
+                        offset_mm: None,
+                        roll_deg: None,
+                        flip: Some(flip),
+                    },
+                    context::CrossSectionEdit::Remove(cut) => {
+                        Action::RemoveCrossSectionCut { view: None, cut }
+                    }
+                };
+                self.state.apply(action);
             }
             if let Some(edit) = slice_edit {
                 match edit {
@@ -21566,6 +21607,7 @@ fn plane_gizmo_hover(
 
 fn build_viewport_scene_input<'a>(
     doc: &'a model::Document,
+    open_cross_section: Option<model::CrossSectionKey>,
     cam: &'a camera::Camera,
     viewport: egui::Rect,
     sketch_session: Option<SketchSession>,
@@ -22090,6 +22132,7 @@ fn build_viewport_scene_input<'a>(
 
     gpu_viewport::ViewportSceneInput {
         doc,
+        open_cross_section,
         creating_move,
         cam,
         viewport,
@@ -30480,6 +30523,44 @@ impl App {
             }
         }
 
+        // The View workbench's cutting-plane tool (#1687): a click hangs a plane on whatever
+        // face, plane, or edge it lands on — the same pick the Plane tool resolves — and each
+        // further click adds another, so a view can cut in several directions at once.
+        if self.state.tool == Tool::SectionPlane && self.state.editing_cross_section.is_some() {
+            if let Some(pp) = pointer_screen {
+                if ui.input(|i| i.pointer.primary_pressed()) {
+                    let gp = cam.ground_point(pp, viewport, &vp);
+                    let pick = construction::resolve_plane_pick_target(
+                        pp,
+                        &project,
+                        gp,
+                        &self.state.doc,
+                        cam.eye(),
+                        pick_occlusion,
+                    );
+                    if let Some(target) = pick {
+                        let (origin, normal) = match &target.reference {
+                            construction::PlaneReference::Face { origin, normal, .. } => {
+                                (*origin, *normal)
+                            }
+                            // An axis pick gives a direction, not a face: cut across it.
+                            construction::PlaneReference::Axis { origin, direction, .. } => {
+                                (*origin, *direction)
+                            }
+                        };
+                        self.state.apply(Action::AddCrossSectionCut {
+                            view: None,
+                            cut: model::CrossSectionCut {
+                                origin,
+                                normal: normal.normalize_or_zero(),
+                                ..Default::default()
+                            },
+                        });
+                    }
+                }
+            }
+        }
+
         if self.state.tool == Tool::ConstructionPlane {
             let ground = |p: egui::Pos2| cam.ground_point(p, viewport, &vp);
 
@@ -32147,6 +32228,7 @@ impl App {
         });
         let mut scene_input = build_viewport_scene_input(
             doc,
+            self.state.editing_cross_section,
             &cam,
             viewport,
             sketch_session,
@@ -34002,6 +34084,9 @@ impl App {
             }
             Tool::DrawingAdd => {
                 "Projection — click a body or sketch in the Elements pane, then drag it into place"
+            }
+            Tool::SectionPlane => {
+                "Cutting plane — click a face or plane to cut the view there • click again for another"
             }
             Tool::DrawingAlign => {
                 "Aligned view — click a projection, then move the mouse and click to place a lined-up child view"
@@ -35909,6 +35994,7 @@ mod tests {
 
         let scene_input = build_viewport_scene_input(
             &state.doc,
+            None,
             &cam,
             test_viewport_rect(),
             None,
@@ -36001,6 +36087,7 @@ mod tests {
 
         let scene_input = build_viewport_scene_input(
             &state.doc,
+            None,
             &cam,
             test_viewport_rect(),
             None,
@@ -36080,6 +36167,7 @@ mod tests {
         });
         let scene_input = build_viewport_scene_input(
             &state.doc,
+            None,
             &cam,
             test_viewport_rect(),
             None,
@@ -36139,6 +36227,7 @@ mod tests {
         let ghosts = |cm: Option<&actions::CreatingMove>| {
             build_viewport_scene_input(
                 &state.doc,
+                None,
                 &cam,
                 test_viewport_rect(),
                 None,
@@ -36444,6 +36533,7 @@ mod tests {
         let build = |state: &AppState| {
             build_viewport_scene_input(
                 &state.doc,
+                None,
                 &cam,
                 test_viewport_rect(),
                 None,
@@ -36549,6 +36639,7 @@ mod tests {
 
         let scene_input = build_viewport_scene_input(
             &state.doc,
+            None,
             &cam,
             test_viewport_rect(),
             None,
@@ -36608,6 +36699,7 @@ mod tests {
     ) -> crate::gpu_viewport::ViewportSceneInput<'_> {
         build_viewport_scene_input(
             &state.doc,
+            state.editing_cross_section,
             &state.cam,
             test_viewport_rect(),
             None,

@@ -48,17 +48,20 @@ pub enum ToolSpace {
     Solid,
     /// The drawing workbench's sheet.
     Drawing,
+    /// The View workbench: setting up a cross-section view (#1671).
+    View,
 }
 
 impl ToolSpace {
     /// The space the app is in right now.
-    pub fn current(in_sketch: bool, in_drawing: bool) -> Self {
-        if in_drawing {
-            Self::Drawing
-        } else if in_sketch {
-            Self::Sketch
-        } else {
-            Self::Solid
+    /// The space the app is in, straight off the workbench it is on (#1686).
+    pub fn current(workbench: crate::actions::Workbench) -> Self {
+        use crate::actions::Workbench;
+        match workbench {
+            Workbench::Drawing => Self::Drawing,
+            Workbench::View => Self::View,
+            Workbench::Sketch => Self::Sketch,
+            Workbench::Model => Self::Solid,
         }
     }
 }
@@ -390,7 +393,7 @@ pub fn spaces(tool: Tool) -> &'static [ToolSpace] {
     use ToolSpace::*;
     match tool {
         // Select works everywhere; the drawing workbench's selection is still Select's.
-        Tool::Select => &[Sketch, Solid, Drawing],
+        Tool::Select => &[Sketch, Solid, Drawing, View],
         // Sketch-only tools. Outside a sketch their first click opens one (#1494).
         Tool::Rectangle
         | Tool::Line
@@ -416,6 +419,8 @@ pub fn spaces(tool: Tool) -> &'static [ToolSpace] {
         | Tool::Joint => &[Solid],
         // Drawing workbench only.
         Tool::DrawingAdd | Tool::DrawingAlign => &[Drawing],
+        // View workbench only (#1671).
+        Tool::SectionPlane => &[View],
     }
 }
 
@@ -466,9 +471,8 @@ pub fn workbench_tools(workbench: crate::actions::Workbench) -> Vec<Tool> {
     use crate::actions::Workbench;
     match workbench {
         Workbench::Drawing => visible_toolbar_tools(true, false),
-        // The View workbench sets up cross-section planes (#1671); its cutting-plane tool
-        // lands with #1687.
-        Workbench::View => vec![Tool::Select],
+        // The View workbench sets up cross-section planes (#1671/#1687).
+        Workbench::View => vec![Tool::Select, Tool::SectionPlane],
         Workbench::Model | Workbench::Sketch => visible_toolbar_tools(false, false),
     }
 }
@@ -722,6 +726,7 @@ impl ToolSpace {
             Self::Sketch => "sketch",
             Self::Solid => "solid",
             Self::Drawing => "drawing",
+            Self::View => "view",
         }
     }
 }
@@ -975,6 +980,12 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             prefs: if sketch { SKETCH_REPEAT_PREFS } else { REPEAT_PREFS },
             ..base
         },
+        // The cutting-plane tool (#1687): a click places a plane straight into the open view
+        // — nothing is drafted and nothing is committed, so its row is bare.
+        Tool::SectionPlane => ToolRow {
+            stay_armed: true,
+            ..base
+        },
         Tool::Slice => ToolRow {
             commit_on_enter: true,
             draft: if sketch { Draft::SketchSlice } else { Draft::Slice },
@@ -1056,6 +1067,8 @@ pub fn stored_value_fields(tool: Tool, space: ToolSpace) -> &'static [&'static s
         | Tool::Line
         | Tool::Circle
         | Tool::Sketch
+        // The cutting-plane tool stores its numbers on the cut it places, not on a draft.
+        | Tool::SectionPlane
         | Tool::Dimension
         | Tool::Constraint
         | Tool::Project
@@ -1219,6 +1232,9 @@ mod tests {
                             | Tool::Dimension
                             | Tool::DrawingAdd
                             | Tool::DrawingAlign
+                            // The cutting-plane tool places a plane on the click that
+                            // picks the face (#1687): there is nothing to draft.
+                            | Tool::SectionPlane
                     ),
                     "{:?}/{:?} keeps picks but names no draft",
                     r.tool,
@@ -1359,15 +1375,16 @@ mod tests {
                 is_dual_mode(tool),
                 is_3d_only(tool),
                 matches!(spaces(tool), [ToolSpace::Drawing]),
+                matches!(spaces(tool), [ToolSpace::View]),
                 tool == Tool::Select,
             );
-            let kinds = [flags.0, flags.1, flags.2, flags.3, flags.4]
+            let kinds = [flags.0, flags.1, flags.2, flags.3, flags.4, flags.5]
                 .into_iter()
                 .filter(|b| *b)
                 .count();
             assert_eq!(
                 kinds, 1,
-                "{tool:?} must be exactly one of sketch-only / dual / 3D-only / drawing / Select, got {flags:?}"
+                "{tool:?} must be exactly one of sketch-only / dual / 3D-only / drawing / view / Select, got {flags:?}"
             );
         }
         let sketch_only: HashSet<Tool> = Tool::ALL.iter().copied().filter(|t| is_sketch_only(*t)).collect();

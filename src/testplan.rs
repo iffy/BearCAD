@@ -314,6 +314,7 @@ const FEATURE_SECTIONS: &[Section] = &[
             "Toggle Elements, Context, Parameters, Tutorials panes and the View Bear",
             "Elements pane: hide/show, rename, delete an element",
             "Elements pane: graph view; type filter; Unit contents filter",
+            "Cross-section view: Cutting plane tool places, flips, offsets, and rotates planes",
             "Keyboard Shortcuts window",
             "Settings: library directory",
             "Settings: update channel (release vs pre-release)",

@@ -169,6 +169,10 @@ tools! {
     /// move the mouse to preview an orthographic child view (down/up/left/right) that stays
     /// lined up with the parent; click to commit it.
     DrawingAlign,
+    /// View workbench's cutting-plane tool (#1671/#1687): click a face, plane, or edge to
+    /// hang a cutting plane off it, then slide, turn, or flip it in the context pane. Each
+    /// click adds another plane, so a view can cut in several directions at once.
+    SectionPlane,
 }
 
 
@@ -183,6 +187,7 @@ impl Tool {
                 Some(Tool::ConstructionPlane)
             }
             "sketch" => Some(Tool::Sketch),
+            "section" | "section_plane" | "cross_section" => Some(Tool::SectionPlane),
             "dimension" | "dim" => Some(Tool::Dimension),
             "constraint" | "constraints" => Some(Tool::Constraint),
             "extrude" => Some(Tool::Extrude),
@@ -2936,6 +2941,25 @@ pub enum Action {
     CreateCrossSection { name: Option<String> },
     /// Open a cross-section view in the View workbench, or leave it with `None` (#1686).
     EditCrossSection { view: Option<crate::model::CrossSectionKey> },
+    /// Hang a cutting plane on a view (#1687). `view: None` means the open one.
+    AddCrossSectionCut {
+        view: Option<crate::model::CrossSectionKey>,
+        cut: crate::model::CrossSectionCut,
+    },
+    /// Slide, turn, or flip one of a view's cutting planes (#1687); `None` fields are left
+    /// as they are.
+    SetCrossSectionCut {
+        view: Option<crate::model::CrossSectionKey>,
+        cut: usize,
+        offset_mm: Option<f32>,
+        roll_deg: Option<f32>,
+        flip: Option<bool>,
+    },
+    /// Drop one of a view's cutting planes (#1687).
+    RemoveCrossSectionCut {
+        view: Option<crate::model::CrossSectionKey>,
+        cut: usize,
+    },
     /// Create a new technical drawing of a body and open it with a default view (#1158).
     /// Reuses [`Action::CreateDrawing`] + [`Action::AddDrawingView`].
     CreateDrawingOfBody { body: crate::model::BodyKey },
@@ -9091,6 +9115,15 @@ impl AppState {
         }
     }
 
+    /// Which view a cut action acts on (#1687): the one named, or the open one.
+    fn cross_section_target(
+        &self,
+        view: Option<crate::model::CrossSectionKey>,
+    ) -> Option<crate::model::CrossSectionKey> {
+        let key = view.or(self.editing_cross_section)?;
+        self.doc.cross_sections.contains(key).then_some(key)
+    }
+
     /// Enter (or leave) the View workbench, dropping any tool that bar doesn't carry (#1686)
     /// — the same rule the Drawing workbench follows.
     fn open_cross_section(&mut self, view: Option<crate::model::CrossSectionKey>) {
@@ -10292,6 +10325,9 @@ impl AppState {
                     }
                     Tool::Constraint => "Constraint tool — click a face".to_string(),
                     Tool::ConstructionPlane => "Construction plane tool".to_string(),
+                    Tool::SectionPlane => {
+                        "Cutting plane — click a face or plane to cut the view there".to_string()
+                    }
                     Tool::Extrude => {
                         "Extrude tool — click coplanar faces, then set a distance".to_string()
                     }
@@ -13523,6 +13559,61 @@ impl AppState {
                 });
                 self.status = format!("Added cross section {index}");
                 self.open_cross_section(Some(key));
+                ActionResult::Ok
+            }
+            Action::AddCrossSectionCut { view, cut } => {
+                let Some(key) = self.cross_section_target(view) else {
+                    let e = "No cross-section view to cut".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                let view = &mut self.doc.cross_sections[key];
+                view.cuts.push(cut);
+                self.status = format!("Cutting plane {} added", view.cuts.len() - 1);
+                ActionResult::Ok
+            }
+            Action::SetCrossSectionCut {
+                view,
+                cut,
+                offset_mm,
+                roll_deg,
+                flip,
+            } => {
+                let Some(key) = self.cross_section_target(view) else {
+                    let e = "No cross-section view to edit".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                let Some(plane) = self.doc.cross_sections[key].cuts.get_mut(cut) else {
+                    let e = format!("No cutting plane {cut}");
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                if let Some(offset) = offset_mm {
+                    plane.offset_mm = offset;
+                }
+                if let Some(roll) = roll_deg {
+                    plane.roll = roll.to_radians();
+                }
+                if let Some(flip) = flip {
+                    plane.flip = flip;
+                }
+                ActionResult::Ok
+            }
+            Action::RemoveCrossSectionCut { view, cut } => {
+                let Some(key) = self.cross_section_target(view) else {
+                    let e = "No cross-section view to edit".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                let cuts = &mut self.doc.cross_sections[key].cuts;
+                if cut >= cuts.len() {
+                    let e = format!("No cutting plane {cut}");
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                cuts.remove(cut);
+                self.status = format!("Cutting plane {cut} removed");
                 ActionResult::Ok
             }
             Action::EditCrossSection { view } => {
@@ -19705,10 +19796,7 @@ fn seed_primary_picker(
     tool: Tool,
     handoff: &[crate::hierarchy::SceneElement],
 ) {
-    let space = crate::tooltable::ToolSpace::current(
-        state.sketch_session.is_some(),
-        state.editing_drawing.is_some(),
-    );
+    let space = crate::tooltable::ToolSpace::current(state.workbench());
     let Some(primary) = crate::tooltable::row(tool, space).primary_picker() else {
         return;
     };
@@ -21348,10 +21436,7 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
 impl AppState {
     /// The space the app is in, for looking a tool's row up.
     pub fn tool_space(&self) -> crate::tooltable::ToolSpace {
-        crate::tooltable::ToolSpace::current(
-            self.sketch_session.is_some(),
-            self.editing_drawing.is_some(),
-        )
+        crate::tooltable::ToolSpace::current(self.workbench())
     }
 
     /// The active tool's row.
@@ -38839,6 +38924,80 @@ translate_mode: crate::model::MoveTranslateMode::Free,
     /// #1158: create a drawing of a body in one step (Elements-pane body context menu): a new
     /// drawing opens with a default-orientation view of that body. Named bodies seed the
     /// drawing's name; missing bodies are rejected.
+    /// #1687: the cutting-plane tool hangs planes off faces, and each one slides, turns, and
+    /// flips independently. Several combine to cut in several directions at once.
+    #[test]
+    fn cross_section_cuts_are_placed_and_adjusted() {
+        let mut state = AppState::default();
+        state.apply(Action::CreateCrossSection { name: None });
+        let view = state.doc.cross_sections.keys().next().expect("the view");
+
+        // Placed on the open view, no key needed.
+        assert_eq!(
+            state.apply(Action::AddCrossSectionCut {
+                view: None,
+                cut: crate::model::CrossSectionCut {
+                    origin: glam::Vec3::new(0.0, 0.0, 5.0),
+                    normal: glam::Vec3::Z,
+                    ..Default::default()
+                },
+            }),
+            ActionResult::Ok
+        );
+        state.apply(Action::AddCrossSectionCut {
+            view: None,
+            cut: crate::model::CrossSectionCut {
+                origin: glam::Vec3::ZERO,
+                normal: glam::Vec3::X,
+                ..Default::default()
+            },
+        });
+        assert_eq!(state.doc.cross_sections[view].cuts.len(), 2, "several planes at once");
+
+        // Slide, turn, flip — each field on its own, the others left alone.
+        state.apply(Action::SetCrossSectionCut {
+            view: None,
+            cut: 0,
+            offset_mm: Some(-3.5),
+            roll_deg: None,
+            flip: None,
+        });
+        state.apply(Action::SetCrossSectionCut {
+            view: None,
+            cut: 0,
+            offset_mm: None,
+            roll_deg: Some(90.0),
+            flip: Some(true),
+        });
+        let cut = state.doc.cross_sections[view].cuts[0];
+        assert_eq!(cut.offset_mm, -3.5);
+        assert!((cut.roll - std::f32::consts::FRAC_PI_2).abs() < 1e-5, "roll stored in radians");
+        assert!(cut.flip, "and the kept side flipped");
+        assert_eq!(cut.normal, glam::Vec3::Z, "the plane itself is untouched");
+
+        // Removing one leaves the other.
+        assert_eq!(
+            state.apply(Action::RemoveCrossSectionCut { view: None, cut: 0 }),
+            ActionResult::Ok
+        );
+        assert_eq!(state.doc.cross_sections[view].cuts.len(), 1);
+        assert_eq!(state.doc.cross_sections[view].cuts[0].normal, glam::Vec3::X);
+
+        // Out-of-range and viewless cases refuse rather than panic.
+        assert!(matches!(
+            state.apply(Action::RemoveCrossSectionCut { view: None, cut: 7 }),
+            ActionResult::Err(_)
+        ));
+        state.apply(Action::EditCrossSection { view: None });
+        assert!(matches!(
+            state.apply(Action::AddCrossSectionCut {
+                view: None,
+                cut: Default::default(),
+            }),
+            ActionResult::Err(_)
+        ));
+    }
+
     /// #1671/#1686: creating a cross-section view opens the View workbench; leaving it puts
     /// the app back on the modeling bar.
     #[test]

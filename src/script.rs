@@ -303,6 +303,27 @@ pub enum Instruction {
     CreateCrossSection { name: Option<String> },
     /// #1686: switch workbench, the way the toolbar's picker does.
     SetWorkbench { workbench: crate::actions::Workbench },
+    /// #1687: hang a cutting plane on a cross-section view. The plane comes from a
+    /// construction plane's frame, or from an explicit origin/normal.
+    AddSectionPlane {
+        view: Option<usize>,
+        plane: Option<usize>,
+        origin: Option<[f32; 3]>,
+        normal: Option<[f32; 3]>,
+        offset: Option<f32>,
+        roll_deg: Option<f32>,
+        flip: Option<bool>,
+    },
+    /// #1687: slide, turn, or flip one of a view's cutting planes.
+    EditSectionPlane {
+        view: Option<usize>,
+        cut: usize,
+        offset: Option<f32>,
+        roll_deg: Option<f32>,
+        flip: Option<bool>,
+    },
+    /// #1687: drop one of a view's cutting planes.
+    DeleteSectionPlane { view: Option<usize>, cut: usize },
     /// Set a drawing's page size and margin, in millimetres (#273/#406). `None` keeps the
     /// drawing's current value.
     SetDrawingPage {
@@ -1383,6 +1404,51 @@ impl Instruction {
             Instruction::SetWorkbench { workbench } => {
                 format!("bearcad.ui.workbench({:?})", workbench.script_name())
             }
+            Instruction::AddSectionPlane { view, plane, origin, normal, offset, roll_deg, flip } => {
+                let mut parts: Vec<String> = Vec::new();
+                if let Some(v) = view {
+                    parts.push(format!("view = {v}"));
+                }
+                if let Some(p) = plane {
+                    parts.push(format!("plane = {p}"));
+                }
+                if let Some(o) = origin {
+                    parts.push(format!("origin = {{ {}, {}, {} }}", o[0], o[1], o[2]));
+                }
+                if let Some(n) = normal {
+                    parts.push(format!("normal = {{ {}, {}, {} }}", n[0], n[1], n[2]));
+                }
+                if let Some(o) = offset {
+                    parts.push(format!("offset = {o}"));
+                }
+                if let Some(r) = roll_deg {
+                    parts.push(format!("roll = {r}"));
+                }
+                if let Some(f) = flip {
+                    parts.push(format!("flip = {f}"));
+                }
+                format!("bearcad.section_plane{{ {} }}", parts.join(", "))
+            }
+            Instruction::EditSectionPlane { view, cut, offset, roll_deg, flip } => {
+                let mut parts: Vec<String> = vec![format!("cut = {cut}")];
+                if let Some(v) = view {
+                    parts.insert(0, format!("view = {v}"));
+                }
+                if let Some(o) = offset {
+                    parts.push(format!("offset = {o}"));
+                }
+                if let Some(r) = roll_deg {
+                    parts.push(format!("roll = {r}"));
+                }
+                if let Some(f) = flip {
+                    parts.push(format!("flip = {f}"));
+                }
+                format!("bearcad.edit_section_plane{{ {} }}", parts.join(", "))
+            }
+            Instruction::DeleteSectionPlane { view, cut } => match view {
+                Some(v) => format!("bearcad.delete_section_plane{{ view = {v}, cut = {cut} }}"),
+                None => format!("bearcad.delete_section_plane{{ cut = {cut} }}"),
+            },
             Instruction::ExportDrawingPdf { drawing, path } => {
                 format!("bearcad.export_drawing_pdf{{ drawing = {drawing}, path = {path:?} }}")
             }
@@ -4554,6 +4620,7 @@ fn tool_lua_name(tool: Tool) -> &'static str {
         Tool::Line => "line",
         Tool::Circle => "circle",
         Tool::ConstructionPlane => "construction_plane",
+        Tool::SectionPlane => "section_plane",
         Tool::Sketch => "sketch",
         Tool::Dimension => "dimension",
         Tool::Project => "project",
@@ -5325,6 +5392,23 @@ struct ReplRunner {}
 
 /// egui data key under which a pane records where it landed this frame, so a
 /// scripted screenshot can crop to it (#672). `shell_id` is the pane's panel id.
+/// The view a script's cross-section call names (#1687): the ordinal it gave, or `None` to
+/// mean the open one — which the action then resolves.
+fn cross_section_key(
+    doc: &crate::model::Document,
+    view: Option<usize>,
+) -> Result<Option<crate::model::CrossSectionKey>, String> {
+    match view {
+        None => Ok(None),
+        Some(ordinal) => doc
+            .cross_sections
+            .keys()
+            .nth(ordinal)
+            .map(Some)
+            .ok_or_else(|| format!("No cross-section view {ordinal}")),
+    }
+}
+
 pub fn pane_rect_id(shell_id: &str) -> egui::Id {
     egui::Id::new(("bearcad_pane_rect", shell_id))
 }
@@ -6632,6 +6716,82 @@ impl ScriptRunner {
             }
             Instruction::CreateCrossSection { name } => {
                 let result = state.apply(Action::CreateCrossSection { name });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::AddSectionPlane {
+                view,
+                plane,
+                origin,
+                normal,
+                offset,
+                roll_deg,
+                flip,
+            } => {
+                let view = match cross_section_key(&state.doc, view) {
+                    Ok(key) => key,
+                    Err(e) => {
+                        self.last_action_error = Some(e);
+                        return StepResult::Continue;
+                    }
+                };
+                // A construction plane's own frame is the scriptable anchor; an explicit
+                // origin/normal overrides either half of it.
+                let mut cut = crate::model::CrossSectionCut::default();
+                if let Some(ordinal) = plane {
+                    let Some(key) = state.doc.construction_planes.keys().nth(ordinal) else {
+                        self.last_action_error = Some(format!("No construction plane {ordinal}"));
+                        return StepResult::Continue;
+                    };
+                    let plane = &state.doc.construction_planes[key];
+                    cut.origin = plane.origin;
+                    cut.normal = plane.normal;
+                }
+                if let Some(o) = origin {
+                    cut.origin = glam::Vec3::from(o);
+                }
+                if let Some(n) = normal {
+                    let n = glam::Vec3::from(n);
+                    if n.length_squared() < 1e-8 {
+                        self.last_action_error = Some("normal must not be zero".to_string());
+                        return StepResult::Continue;
+                    }
+                    cut.normal = n.normalize();
+                }
+                cut.offset_mm = offset.unwrap_or(0.0);
+                cut.roll = roll_deg.unwrap_or(0.0).to_radians();
+                cut.flip = flip.unwrap_or(false);
+                let result = state.apply(Action::AddCrossSectionCut { view, cut });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::EditSectionPlane { view, cut, offset, roll_deg, flip } => {
+                let view = match cross_section_key(&state.doc, view) {
+                    Ok(key) => key,
+                    Err(e) => {
+                        self.last_action_error = Some(e);
+                        return StepResult::Continue;
+                    }
+                };
+                let result = state.apply(Action::SetCrossSectionCut {
+                    view,
+                    cut,
+                    offset_mm: offset,
+                    roll_deg,
+                    flip,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::DeleteSectionPlane { view, cut } => {
+                let view = match cross_section_key(&state.doc, view) {
+                    Ok(key) => key,
+                    Err(e) => {
+                        self.last_action_error = Some(e);
+                        return StepResult::Continue;
+                    }
+                };
+                let result = state.apply(Action::RemoveCrossSectionCut { view, cut });
                 self.record_action_error(result);
                 StepResult::Continue
             }

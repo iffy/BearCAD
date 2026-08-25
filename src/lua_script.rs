@@ -7870,6 +7870,103 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             Ok(unsafe { tick.state().doc.cross_sections.len().saturating_sub(1) })
         })?,
     )?;
+    // #1687: a cross-section view's cutting planes. `plane` anchors on a construction
+    // plane's frame; `origin`/`normal` set it outright. `view` defaults to the open one.
+    api.set(
+        "section_plane",
+        lua.create_function(|lua, opts: Table| {
+            check_keys(
+                &opts,
+                "section_plane",
+                &["view", "plane", "origin", "normal", "offset", "roll", "flip"],
+            )?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let view: Option<usize> = opts.get("view")?;
+            let instr = Instruction::AddSectionPlane {
+                view,
+                plane: opts.get("plane")?,
+                origin: match opts.get::<Option<Table>>("origin")? {
+                    Some(_) => Some(parse_xyz(&opts, "origin")?),
+                    None => None,
+                },
+                normal: match opts.get::<Option<Table>>("normal")? {
+                    Some(_) => Some(parse_xyz(&opts, "normal")?),
+                    None => None,
+                },
+                offset: opts.get("offset")?,
+                roll_deg: opts.get("roll")?,
+                flip: opts.get("flip")?,
+            };
+            unsafe { tick.exec(instr)? };
+            let state = unsafe { tick.state() };
+            let key = match view {
+                Some(ordinal) => state.doc.cross_sections.keys().nth(ordinal),
+                None => state.editing_cross_section,
+            };
+            Ok(key
+                .and_then(|k| state.doc.cross_sections.get(k))
+                .map(|v| v.cuts.len().saturating_sub(1))
+                .unwrap_or(0))
+        })?,
+    )?;
+    api.set(
+        "edit_section_plane",
+        lua.create_function(|lua, opts: Table| {
+            check_keys(
+                &opts,
+                "edit_section_plane",
+                &["view", "cut", "offset", "roll", "flip"],
+            )?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let instr = Instruction::EditSectionPlane {
+                view: opts.get("view")?,
+                cut: opts.get("cut")?,
+                offset: opts.get("offset")?,
+                roll_deg: opts.get("roll")?,
+                flip: opts.get("flip")?,
+            };
+            unsafe { tick.exec(instr) }
+        })?,
+    )?;
+    api.set(
+        "delete_section_plane",
+        lua.create_function(|lua, opts: Table| {
+            check_keys(&opts, "delete_section_plane", &["view", "cut"])?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let instr = Instruction::DeleteSectionPlane {
+                view: opts.get("view")?,
+                cut: opts.get("cut")?,
+            };
+            unsafe { tick.exec(instr) }
+        })?,
+    )?;
+    // Read a view's cutting planes back: `{ origin, normal, offset, roll (degrees), flip }`.
+    api.set(
+        "section_planes",
+        lua.create_function(|lua, view: Option<usize>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            let key = match view {
+                Some(ordinal) => state.doc.cross_sections.keys().nth(ordinal),
+                None => state.editing_cross_section,
+            };
+            let out = lua.create_table()?;
+            let Some(view) = key.and_then(|k| state.doc.cross_sections.get(k)) else {
+                return Ok(out);
+            };
+            for (i, cut) in view.cuts.iter().enumerate() {
+                let t = lua.create_table()?;
+                t.set("origin", vec3_lua(lua, cut.origin)?)?;
+                t.set("normal", vec3_lua(lua, cut.normal)?)?;
+                t.set("offset", cut.offset_mm)?;
+                t.set("roll", cut.roll.to_degrees())?;
+                t.set("flip", cut.flip)?;
+                out.set(i + 1, t)?;
+            }
+            Ok(out)
+        })?,
+    )?;
+
     api.set(
         "drawing_view",
         lua.create_function(|lua, opts: Table| {
@@ -16151,6 +16248,46 @@ pub mod tests {
             assert(bearcad.ui.pane_rect("hierarchy") == nil)
             assert(bearcad.ui.pane_rect("context") == nil)
             assert(bearcad.ui.pane_rect("parameters") == nil)
+        "#,
+        );
+    }
+
+    /// #1687: a view's cutting planes — placed on a plane or face, then slid, turned, and
+    /// flipped; several combine to cut in several directions at once.
+    #[test]
+    fn lua_section_planes_are_placed_and_adjusted() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 40, height = 30 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            bearcad.exit_sketch()
+            bearcad.cross_section{ name = "Front half" }
+
+            local a = bearcad.section_plane{ plane = 1 }        -- the XZ datum
+            assert(a == 0, "the first plane is 0, got " .. tostring(a))
+            local b = bearcad.section_plane{ plane = 2, offset = 5, flip = true }
+            assert(b == 1)
+            assert(bearcad.get{ kind = "cross_section", index = 0 }.cuts == 2)
+
+            local cuts = bearcad.section_planes(0)
+            assert(#cuts == 2, "both planes read back")
+            assert(math.abs(cuts[2].offset - 5) < 1e-4, "offset: " .. cuts[2].offset)
+            assert(cuts[2].flip, "flip carried")
+            assert(math.abs(cuts[1].normal[2] + 1) < 1e-3 or math.abs(cuts[1].normal[2] - 1) < 1e-3,
+                   "the XZ plane's normal runs along Y")
+
+            bearcad.edit_section_plane{ cut = 0, offset = -2.5, roll = 90 }
+            cuts = bearcad.section_planes(0)
+            assert(math.abs(cuts[1].offset + 2.5) < 1e-4)
+            assert(math.abs(cuts[1].roll - 90) < 1e-3, "roll reads back in degrees")
+
+            bearcad.delete_section_plane{ cut = 0 }
+            cuts = bearcad.section_planes(0)
+            assert(#cuts == 1 and cuts[1].flip, "the other plane survives")
+
+            local ok = pcall(bearcad.delete_section_plane, { cut = 9 })
+            assert(not ok, "an unknown plane should error")
         "#,
         );
     }
