@@ -5617,6 +5617,22 @@ fn slice_line_guide(app: &AppState, end: usize) -> Option<glam::Vec3> {
     Some(crate::face::local_to_world(&frame, u, v))
 }
 
+/// Where Slice's *body* click should land (#1736): the middle of one half of the block's
+/// top, well clear of the diagonal cutter line running corner to corner -- the block's
+/// centre sits right on that line, so the orb read as pointing at the line, not the block.
+fn slice_block_guide(app: &AppState) -> Option<glam::Vec3> {
+    let prim = app
+        .doc
+        .primitives
+        .values()
+        .find(|p| p.kind == crate::model::PrimitiveKind::Cuboid)?;
+    let r = crate::primitives::resolve(&app.doc, prim)?;
+    let base = r.cuboid_base();
+    let lift = r.normal * r.height;
+    // Centroid of the triangle the diagonal (corner 0 -> corner 2) cuts off.
+    Some((base[0] + base[1] + base[2]) / 3.0 + lift)
+}
+
 fn slice_line_start_guide(app: &AppState) -> Option<glam::Vec3> {
     slice_line_guide(app, 0)
 }
@@ -5793,6 +5809,16 @@ static SLICE_STEPS: &[Step] = &[
         },
         None,
     ),
+    keyed_assist_step(
+        "Press `Esc` to leave the sketch \u{2014} Slice cuts solids.",
+        sketch_exited,
+        "Esc",
+        "to leave the sketch",
+        StepAssist {
+            label: "Leave for me",
+            run: assist_exit_sketch,
+        },
+    ),
     plain_step(
         "Click the Slice tool.",
         StepAnchor::Ui(UiAnchor::Tool(Tool::Slice)),
@@ -5800,7 +5826,7 @@ static SLICE_STEPS: &[Step] = &[
     ),
     plain_step(
         "Click the block \u{2014} that's what gets cut.",
-        StepAnchor::World(cuboid_body_guide),
+        StepAnchor::World(slice_block_guide),
         Some(slice_body_picked),
     ),
     plain_step(
@@ -9050,6 +9076,69 @@ mod tests {
                 "the walkthrough picks {tool:?}"
             );
         }
+    }
+
+    /// #1736: the block orb sits clear of the diagonal cutter line. The block's *centre*
+    /// projects onto the middle of the top face, right where the line runs, so the orb read
+    /// as pointing at the line rather than at the block.
+    #[test]
+    fn slice_tutorial_block_orb_stays_off_the_cutter_line() {
+        let mut app = AppState::default();
+        finish_tutorial_via_next(&mut app, "slice");
+        // Measure in the top face's own plane: the orb's height above it is not what makes
+        // it look on or off the line -- where it lands across the face is.
+        let ends = slice_line_local(&app).expect("cutter line ends");
+        let sketch = app
+            .doc
+            .sketches
+            .iter()
+            .find(|(_, sk)| Some(sk.face.clone()) == slice_top_face(&app))
+            .map(|(k, _)| k)
+            .expect("the top-face sketch");
+        let frame = crate::face::sketch_geometry_frame(&app.doc, sketch).expect("frame");
+        let flat = |p: glam::Vec3| {
+            let (u, v) = crate::face::world_to_local(&frame, p);
+            glam::Vec2::new(u, v)
+        };
+        let (a, b) = (
+            glam::Vec2::new(ends[0].0, ends[0].1),
+            glam::Vec2::new(ends[1].0, ends[1].1),
+        );
+        let dir = (b - a).normalize();
+        let off_line = |p: glam::Vec2| {
+            let d = p - a;
+            (d - dir * d.dot(dir)).length()
+        };
+        assert!(
+            off_line(flat(cuboid_body_guide(&app).expect("block centre"))) < 1.0,
+            "the block's centre lands on the cutter line -- that is the bug"
+        );
+        assert!(
+            off_line(flat(slice_block_guide(&app).expect("block orb"))) > 3.0,
+            "the block orb should sit clear of the cutter line"
+        );
+    }
+
+    /// #1738: Slice cuts solids, so the walkthrough leaves the sketch before picking the
+    /// tool -- inside a sketch the Slice tool takes sketch entities and the block is unpickable.
+    #[test]
+    fn slice_tutorial_leaves_the_sketch_before_the_slice_tool() {
+        let steps = slice_tut().steps;
+        let slice_i = steps
+            .iter()
+            .position(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::Tool(Tool::Slice))))
+            .expect("Slice tool step");
+        let exit_i = steps
+            .iter()
+            .position(|s| {
+                let n = s.narration.to_ascii_lowercase();
+                n.contains("esc") && n.contains("sketch")
+            })
+            .expect("a step that leaves the sketch");
+        assert!(
+            exit_i < slice_i,
+            "leave the sketch (step {exit_i}) before picking Slice (step {slice_i})"
+        );
     }
 
     /// #1678: the assists leave the block split into two fragments by a line cutter.

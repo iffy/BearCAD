@@ -16461,7 +16461,12 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 )))
             }),
             repeat_edit_start: None,
-            slice_op: (self.state.tool == Tool::Slice).then(|| {
+            // The two Slice sections are one per space, never both (#1737): inside a sketch
+            // it is `sketch_slice` above; mounting this one too doubled the Targets/Cutters
+            // rows onto the same widget ids and swallowed the body pick.
+            slice_op: (self.state.tool == Tool::Slice
+                && self.state.sketch_session.is_none())
+            .then(|| {
                 let cs = self.state.creating_slice.as_ref();
                 context::SliceControl {
                     targets: cs.map(|c| c.targets.clone()).unwrap_or_default(),
