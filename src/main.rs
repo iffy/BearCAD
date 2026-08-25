@@ -4704,6 +4704,8 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 tutorial::UiAnchor::ElementsPlane => hierarchy::elements_plane_row_rect(ctx),
                 // A Context-pane tick box, named by its label (#1677).
                 tutorial::UiAnchor::CheckboxRow(label) => context::checkbox_row_rect(ctx, label),
+                // One of the Repeat tool's Count / Gap / Distance rows (#1679).
+                tutorial::UiAnchor::RepeatVar(var) => context::repeat_var_row_rect(ctx, var),
                 // View-cube bear + home button live in the viewport's top-right (#1269).
                 tutorial::UiAnchor::ViewCube => Some(view_cube::cube_rect_in_viewport(viewport)),
                 tutorial::UiAnchor::ViewHome => {

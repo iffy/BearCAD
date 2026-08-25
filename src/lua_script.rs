@@ -10065,6 +10065,7 @@ pub mod tests {
             assert(names.derived_parameter == "Derived parameters")
             assert(names.curves == "Curves")
             assert(names.slice == "Slice")
+            assert(names["repeat"] == "Repeat")
             "#
             .replace("__COUNT__", &crate::tutorial::TUTORIALS.len().to_string()),
         );
@@ -10297,6 +10298,34 @@ pub mod tests {
             -- The two wedges plus the shadowed original: 2 x 8000.
             assert(math.abs(total - 16000) / 16000 < 0.02,
               "pieces should add back up to the block, got " .. total)
+            "#,
+        );
+    }
+
+    /// #1679: the Repeat tutorial walks with assists and leaves five blocks spread over the
+    /// typed distance — count + distance-to-start driving, gap computed.
+    #[test]
+    fn repeat_tutorial_lua_walks_and_patterns_a_block() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.ui.tutorial("repeat")
+            local guard = 0
+            while bearcad.ui.tutorial_step() ~= nil do
+              guard = guard + 1
+              assert(guard < 60, "repeat tutorial should finish")
+              local at = bearcad.ui.tutorial_step()
+              bearcad.ui.tutorial_assist()
+              if bearcad.ui.tutorial_step() == at then
+                bearcad.ui.tutorial_next()
+              end
+            end
+            assert(bearcad.count("repeat") == 1, "one repeat op")
+            local op = bearcad.get{ kind = "repeat", index = 0 }
+            assert(op.axis == "x", "along X, got " .. tostring(op.axis))
+            assert(op.count == "5", "count, got " .. tostring(op.count))
+            assert(op.length == "300", "distance, got " .. tostring(op.length))
+            assert(op.mode == "count_fit_centers", "mode, got " .. tostring(op.mode))
+            assert(op.outputs == 4, "four extra copies, got " .. tostring(op.outputs))
             "#,
         );
     }

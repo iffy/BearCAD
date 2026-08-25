@@ -4961,6 +4961,25 @@ fn checkbox_row(
     changed
 }
 
+fn repeat_var_row_rect_id(var: crate::model::RepeatVar) -> egui::Id {
+    egui::Id::new((
+        "repeat_var_row_rect",
+        match var {
+            crate::model::RepeatVar::Count => 0u8,
+            crate::model::RepeatVar::Gap => 1,
+            crate::model::RepeatVar::Distance => 2,
+        },
+    ))
+}
+
+/// Where the Repeat tool drew one of its Count / Gap / Distance rows this frame (#1679).
+pub fn repeat_var_row_rect(
+    ctx: &egui::Context,
+    var: crate::model::RepeatVar,
+) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<egui::Rect>(repeat_var_row_rect_id(var)))
+}
+
 fn checkbox_row_rect_id(label: &str) -> egui::Id {
     egui::Id::new(("checkbox_row_rect", label))
 }
@@ -7832,6 +7851,10 @@ pub fn show_pane(
                     })
                     .inner;
                 note_help(ui, label, row.response.rect);
+                // #1679: the Repeat walkthrough's orb points at these rows by variable, so
+                // it survives the label flipping between Gap/Offset and Distance/Angle.
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(repeat_var_row_rect_id(var), row.response.rect));
             };
             var_row(ui, RepeatVar::Count, "Count", &control.count, None, &RepeatEdit::Count);
             let gap_icon = if control.gap_is_offset {

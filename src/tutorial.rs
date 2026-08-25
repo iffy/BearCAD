@@ -60,6 +60,9 @@ pub enum UiAnchor {
     ElementsPlane,
     /// A Context-pane checkbox row, by its label (#1677) — e.g. the Line tool's **Curve**.
     CheckboxRow(&'static str),
+    /// One of the Repeat tool's Count / Gap / Distance rows (#1679), named by the variable
+    /// so the orb keeps up when the label flips between Gap and Offset.
+    RepeatVar(crate::model::RepeatVar),
     /// The toolbar Zoom to Fit (magnifying glass) button (#1583).
     ZoomToFit,
     /// A status-bar pane toggle (phone layout only, #828): Elements / Context / Params.
@@ -400,6 +403,12 @@ pub static TUTORIALS: &[Tutorial] = &[
         name: "slice",
         title: "Slice",
         steps: SLICE_STEPS,
+    },
+    // #1679: pattern a block along an axis, working every measure toggle.
+    Tutorial {
+        name: "repeat",
+        title: "Repeat",
+        steps: REPEAT_STEPS,
     },
 ];
 
@@ -5752,6 +5761,298 @@ static SLICE_STEPS: &[Step] = &[
     ),
 ];
 
+// --- Repeat tutorial (#1679) -----------------------------------------------------------
+
+/// The numbers the walkthrough types into the Repeat tool's interlinked fields.
+const REPEAT_COUNT: &str = "5";
+const REPEAT_GAP: &str = "40";
+const REPEAT_DISTANCE: &str = "300";
+
+fn repeat_tool_active(app: &AppState) -> bool {
+    app.tool == Tool::Repeat
+}
+
+fn has_repeat(app: &AppState) -> bool {
+    !app.doc.repeat_ops.is_empty()
+}
+
+fn creating_repeat(app: &AppState) -> Option<&crate::actions::CreatingRepeat> {
+    app.creating_repeat.as_ref()
+}
+
+fn repeat_body_picked(app: &AppState) -> bool {
+    has_repeat(app) || creating_repeat(app).is_some_and(|c| !c.targets.is_empty())
+}
+
+fn repeat_axis_picked(app: &AppState) -> bool {
+    has_repeat(app) || creating_repeat(app).is_some_and(|c| c.axis.is_some())
+}
+
+fn repeat_count_typed(app: &AppState) -> bool {
+    has_repeat(app) || creating_repeat(app).is_some_and(|c| expr_eq(&c.count, REPEAT_COUNT))
+}
+
+fn repeat_gap_typed(app: &AppState) -> bool {
+    has_repeat(app) || creating_repeat(app).is_some_and(|c| expr_eq(&c.spacing, REPEAT_GAP))
+}
+
+fn repeat_gap_is_offset(app: &AppState) -> bool {
+    has_repeat(app) || creating_repeat(app).is_some_and(|c| c.gap_is_offset)
+}
+
+/// Gap has taken the lock, so Count and Distance are the two the user sets.
+fn repeat_gap_is_computed(app: &AppState) -> bool {
+    has_repeat(app)
+        || creating_repeat(app)
+            .is_some_and(|c| c.var_mru[2] == crate::model::RepeatVar::Gap)
+}
+
+fn repeat_distance_typed(app: &AppState) -> bool {
+    has_repeat(app) || creating_repeat(app).is_some_and(|c| expr_eq(&c.length, REPEAT_DISTANCE))
+}
+
+/// The Distance toggle has been worked: it now measures to the last copy's *start*.
+fn repeat_distance_to_start(app: &AppState) -> bool {
+    has_repeat(app) || creating_repeat(app).is_some_and(|c| !c.distance_is_end)
+}
+
+/// A point out along the global X axis, clear of the block.
+fn repeat_axis_guide(app: &AppState) -> Option<glam::Vec3> {
+    let _ = app;
+    Some(glam::Vec3::new(120.0, 0.0, 0.0))
+}
+
+/// Arm the Repeat tool on the block, the way clicking it does.
+fn ensure_repeat_in_progress(app: &mut AppState) {
+    assist_place_cuboid(app);
+    if app.tool != Tool::Repeat {
+        app.apply(Action::SetTool(Tool::Repeat));
+    }
+    let Some(body) = live_body_for_primitive(app, crate::model::PrimitiveKind::Cuboid) else {
+        return;
+    };
+    let cr = app
+        .creating_repeat
+        .get_or_insert_with(crate::actions::CreatingRepeat::default);
+    if cr.targets.is_empty() {
+        cr.targets.push(body);
+    }
+    if cr.axis.is_none() {
+        cr.axis = Some(crate::model::RevolveAxis::X);
+    }
+}
+
+fn assist_repeat_count(app: &mut AppState) {
+    if repeat_count_typed(app) {
+        return;
+    }
+    ensure_repeat_in_progress(app);
+    if let Some(cr) = app.creating_repeat.as_mut() {
+        cr.count = REPEAT_COUNT.into();
+        cr.touch_var(crate::model::RepeatVar::Count);
+    }
+}
+
+fn assist_repeat_gap(app: &mut AppState) {
+    if repeat_gap_typed(app) {
+        return;
+    }
+    assist_repeat_count(app);
+    if let Some(cr) = app.creating_repeat.as_mut() {
+        cr.spacing = REPEAT_GAP.into();
+        cr.touch_var(crate::model::RepeatVar::Gap);
+    }
+}
+
+fn assist_repeat_offset_toggle(app: &mut AppState) {
+    if repeat_gap_is_offset(app) {
+        return;
+    }
+    assist_repeat_gap(app);
+    if let Some(cr) = app.creating_repeat.as_mut() {
+        cr.gap_is_offset = true;
+        cr.recompute_mode();
+    }
+}
+
+fn assist_repeat_lock_gap(app: &mut AppState) {
+    if repeat_gap_is_computed(app) {
+        return;
+    }
+    assist_repeat_offset_toggle(app);
+    if let Some(cr) = app.creating_repeat.as_mut() {
+        cr.set_computed(crate::model::RepeatVar::Gap);
+    }
+}
+
+fn assist_repeat_distance(app: &mut AppState) {
+    if repeat_distance_typed(app) {
+        return;
+    }
+    assist_repeat_lock_gap(app);
+    if let Some(cr) = app.creating_repeat.as_mut() {
+        cr.length = REPEAT_DISTANCE.into();
+        cr.touch_var(crate::model::RepeatVar::Distance);
+        // Distance must stay one of the two the user sets: re-lock Gap.
+        cr.set_computed(crate::model::RepeatVar::Gap);
+    }
+}
+
+fn assist_repeat_distance_toggle(app: &mut AppState) {
+    if repeat_distance_to_start(app) {
+        return;
+    }
+    assist_repeat_distance(app);
+    if let Some(cr) = app.creating_repeat.as_mut() {
+        cr.distance_is_end = false;
+        cr.recompute_mode();
+    }
+}
+
+fn assist_commit_repeat(app: &mut AppState) {
+    if has_repeat(app) {
+        return;
+    }
+    assist_repeat_distance_toggle(app);
+    app.apply(Action::CommitRepeat);
+}
+
+/// #1679: pattern a block along the X axis, working all three interlinked fields and both
+/// of the Repeat tool's measure toggles.
+static REPEAT_STEPS: &[Step] = &[
+    plain_step(
+        "Repeat stamps copies of a body along an axis. Count, Gap and Distance are linked: \
+         set any two and the third works itself out.",
+        StepAnchor::None,
+        None,
+    ),
+    plain_step(
+        "Grab the Shape tool \u{2014} the glowing button, or press `B`.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Shape)),
+        Some(shape_tool_active_or_has_cuboid),
+    ),
+    plain_step(
+        "Click Cuboid in the Context pane (or press `B`).",
+        StepAnchor::Ui(UiAnchor::ShapeKind(crate::model::PrimitiveKind::Cuboid)),
+        Some(cuboid_kind_ready),
+    ),
+    plain_step(
+        "Click a ground corner to anchor the block.",
+        StepAnchor::World(ground_anchor_a),
+        Some(cuboid_anchored),
+    ),
+    plain_step(
+        "Click the opposite corner of the base.",
+        StepAnchor::World(ground_anchor_b),
+        Some(cuboid_base_set),
+    ),
+    assisted_step_enter(
+        "Type the height: `20`, then Enter.",
+        StepAnchor::Ui(UiAnchor::ShapeHeight),
+        Some(has_cuboid),
+        StepAssist {
+            label: "Place it for me",
+            run: assist_place_cuboid,
+        },
+        Some(TypeHint::Fixed("20")),
+        ensure_shape_height_focus,
+    ),
+    plain_step(
+        "Click the Repeat tool.",
+        StepAnchor::Ui(UiAnchor::Tool(Tool::Repeat)),
+        Some(repeat_tool_active),
+    ),
+    plain_step(
+        "Click the block \u{2014} that's what gets copied.",
+        StepAnchor::World(cuboid_body_guide),
+        Some(repeat_body_picked),
+    ),
+    plain_step(
+        "Click the red X axis \u{2014} that's the direction the copies march.",
+        StepAnchor::World(repeat_axis_guide),
+        Some(repeat_axis_picked),
+    ),
+    assisted_step(
+        "Type `5` in the Count field.",
+        StepAnchor::Ui(UiAnchor::RepeatVar(crate::model::RepeatVar::Count)),
+        Some(repeat_count_typed),
+        StepAssist {
+            label: "Type it for me",
+            run: assist_repeat_count,
+        },
+        Some(TypeHint::Fixed(REPEAT_COUNT)),
+    ),
+    assisted_step(
+        "Type `40` in the Gap field \u{2014} the clear space between one copy and the next.",
+        StepAnchor::Ui(UiAnchor::RepeatVar(crate::model::RepeatVar::Gap)),
+        Some(repeat_gap_typed),
+        StepAssist {
+            label: "Type it for me",
+            run: assist_repeat_gap,
+        },
+        Some(TypeHint::Fixed(REPEAT_GAP)),
+    ),
+    assisted_step(
+        "Click the Gap icon. It flips to Offset: the same 40 mm now measures start to \
+         start, so the copies close up.",
+        StepAnchor::Ui(UiAnchor::RepeatVar(crate::model::RepeatVar::Gap)),
+        Some(repeat_gap_is_offset),
+        StepAssist {
+            label: "Flip it for me",
+            run: assist_repeat_offset_toggle,
+        },
+        None,
+    ),
+    assisted_step(
+        "Distance is greyed out because it's the computed one. Click its grey lock to \
+         compute the Offset instead.",
+        StepAnchor::Ui(UiAnchor::RepeatVar(crate::model::RepeatVar::Distance)),
+        Some(repeat_gap_is_computed),
+        StepAssist {
+            label: "Move the lock for me",
+            run: assist_repeat_lock_gap,
+        },
+        None,
+    ),
+    assisted_step(
+        "Type `300` in Distance. The spacing works itself out to fill it.",
+        StepAnchor::Ui(UiAnchor::RepeatVar(crate::model::RepeatVar::Distance)),
+        Some(repeat_distance_typed),
+        StepAssist {
+            label: "Type it for me",
+            run: assist_repeat_distance,
+        },
+        Some(TypeHint::Fixed(REPEAT_DISTANCE)),
+    ),
+    assisted_step(
+        "Click the Distance icon. It flips between measuring to the last copy's far end \
+         and to its start.",
+        StepAnchor::Ui(UiAnchor::RepeatVar(crate::model::RepeatVar::Distance)),
+        Some(repeat_distance_to_start),
+        StepAssist {
+            label: "Flip it for me",
+            run: assist_repeat_distance_toggle,
+        },
+        None,
+    ),
+    assisted_step(
+        "Press Enter. Five blocks, evenly spread over 300 mm.",
+        StepAnchor::None,
+        Some(has_repeat),
+        StepAssist {
+            label: "Repeat it for me",
+            run: assist_commit_repeat,
+        },
+        None,
+    ),
+    plain_step(
+        "Two numbers in, the third out \u{2014} and the little icons say how each one is \
+         measured. Nice work!",
+        StepAnchor::None,
+        None,
+    ),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5925,10 +6226,11 @@ mod tests {
         );
         assert_eq!(tutorial_index("curves"), Some(15), "#1677: curves is sixteenth");
         assert_eq!(tutorial_index("slice"), Some(16), "#1678: slice is seventeenth");
+        assert_eq!(tutorial_index("repeat"), Some(17), "#1679: repeat is eighteenth");
         assert_eq!(tutorial_index("bracket"), None, "#1334: build-a-bracket tutorial is gone");
         assert_eq!(tutorial_index("nope"), None);
-        assert_eq!(TUTORIALS.last().unwrap().name, "slice");
-        assert_eq!(TUTORIALS.len(), 17, "pane lists every remaining walkthrough");
+        assert_eq!(TUTORIALS.last().unwrap().name, "repeat");
+        assert_eq!(TUTORIALS.len(), 18, "pane lists every remaining walkthrough");
         for tut in TUTORIALS {
             assert_ne!(tut.name, "bracket");
             assert_ne!(tut.title, "Build an angle bracket");
@@ -8090,6 +8392,71 @@ mod tests {
             "two sides should be equal, status={}",
             app.status
         );
+    }
+
+    fn repeat_tut() -> &'static Tutorial {
+        &TUTORIALS[tutorial_index("repeat").expect("repeat tutorial is registered")]
+    }
+
+    /// #1679: the Repeat walkthrough works all three interlinked fields and both toggles.
+    #[test]
+    fn repeat_tutorial_is_registered_and_covers_every_toggle() {
+        use crate::model::RepeatVar;
+        let tut = repeat_tut();
+        assert_eq!(tut.name, "repeat");
+        assert_eq!(tut.title, "Repeat");
+        let joined: String = tut
+            .steps
+            .iter()
+            .map(|s| s.narration.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for word in ["count", "gap", "offset", "distance"] {
+            assert!(joined.contains(word), "the walkthrough names {word}: {joined}");
+        }
+        for var in [RepeatVar::Count, RepeatVar::Gap, RepeatVar::Distance] {
+            assert!(
+                tut.steps
+                    .iter()
+                    .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::RepeatVar(v)) if v == var)),
+                "a step points at the {var:?} row"
+            );
+        }
+    }
+
+    /// #1679: the assists leave a committed repeat whose toggles were all exercised — the
+    /// gap reads start-to-start, the distance measures to the far end, and the gap is the
+    /// value the app computes.
+    #[test]
+    fn repeat_tutorial_assists_pattern_a_block_along_an_axis() {
+        let mut app = AppState::default();
+        finish_tutorial_via_next(&mut app, "repeat");
+        assert_eq!(
+            app.doc.repeat_ops.len(),
+            1,
+            "one repeat operation, status={}",
+            app.status
+        );
+        let op = app.doc.repeat_ops.values().next().unwrap();
+        assert_eq!(op.axis, crate::model::RevolveAxis::X);
+        assert_eq!(op.count, REPEAT_COUNT);
+        assert_eq!(op.spacing, REPEAT_GAP, "the typed gap is kept even once computed");
+        assert_eq!(op.length, REPEAT_DISTANCE);
+        assert!(
+            !op.outputs.is_empty(),
+            "the pattern makes copies, status={}",
+            app.status
+        );
+        // Both toggles were worked: Gap holds the lock (so Count + Distance drive the
+        // pattern) and Distance measures to the last copy's *start*.
+        assert_eq!(
+            op.mode,
+            crate::model::RepeatMode::CountFitCenters,
+            "count + distance-to-start drive the pattern"
+        );
+        let (computed, _, distance_is_end) = op.mode.to_repeat_ui();
+        assert_eq!(computed, crate::model::RepeatVar::Gap);
+        assert!(!distance_is_end);
     }
 
     fn slice_tut() -> &'static Tutorial {

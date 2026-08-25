@@ -4016,7 +4016,7 @@ impl RepeatVar {
 
 /// One of the Repeat tool's three interlinked variables (#257): the user sets two and the third
 /// is computed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RepeatVar {
     Count,
