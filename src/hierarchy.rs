@@ -1406,6 +1406,53 @@ impl GraphLaneLayout {
     pub fn row_of(&self, node: HierarchyNode) -> Option<usize> {
         self.rows.iter().position(|r| r.node == node)
     }
+
+    /// The rightmost lane anything is drawn in at each row — the node's own dot, plus every
+    /// line passing through that row (#1683). A row's label starts past this, so no line ever
+    /// runs across a name.
+    pub fn row_line_extents(&self) -> Vec<usize> {
+        let row_of: HashMap<HierarchyNode, usize> = self
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(row, r)| (r.node, row))
+            .collect();
+        let lane_of: HashMap<HierarchyNode, usize> =
+            self.rows.iter().map(|r| (r.node, r.lane)).collect();
+        let mut out: Vec<usize> = self.rows.iter().map(|r| r.lane).collect();
+        let bump = |row: usize, lane: usize, out: &mut Vec<usize>| {
+            if let Some(slot) = out.get_mut(row) {
+                *slot = (*slot).max(lane);
+            }
+        };
+        for edge in &self.edges {
+            let (Some(&from), Some(&to)) = (row_of.get(&edge.from), row_of.get(&edge.to)) else {
+                continue;
+            };
+            let (start, end) = (from.min(to), from.max(to));
+            let from_lane = lane_of.get(&edge.from).copied().unwrap_or(0);
+            let to_lane = lane_of.get(&edge.to).copied().unwrap_or(0);
+            if edge.kind.is_input() {
+                // Down the trunk, with a leg into each end row.
+                bump(from, from_lane.max(edge.lane), &mut out);
+                bump(to, to_lane.max(edge.lane), &mut out);
+                for row in (start + 1)..end {
+                    bump(row, edge.lane, &mut out);
+                }
+            } else {
+                // A constraint's tie runs straight between the two dots, so its lane at each
+                // row is the interpolated one (rounded outward).
+                let span = (end - start).max(1) as f32;
+                let (lo, hi) = (from_lane.min(to_lane), from_lane.max(to_lane));
+                for row in start..=end {
+                    let t = (row - start) as f32 / span;
+                    let lane = from_lane as f32 + (to_lane as f32 - from_lane as f32) * t;
+                    bump(row, (lane.ceil() as usize).clamp(lo, hi), &mut out);
+                }
+            }
+        }
+        out
+    }
 }
 
 /// The line/circle/image node a constraint endpoint refers to, if it has one (#1670).
@@ -1589,46 +1636,61 @@ pub fn graph_lane_layout(doc: &Document, tree: &[HierarchyEntry]) -> GraphLaneLa
         lane
     };
 
+    // `trunk_of` is the lane a node's line runs down; `child_lane_of` is where its consumers'
+    // dots sit — the same lane for a single consumer (a chain carries straight on), one to the
+    // right for a fan, so the shared trunk runs *beside* the children instead of through their
+    // icons (#1683).
     let mut trunk_of: HashMap<HierarchyNode, usize> = HashMap::new();
+    // node -> (lane its consumers' dots sit in, whether that lane is a fan's own reservation
+    // rather than the trunk itself — a fan's children have to check the lane is free).
+    let mut child_lane_of: HashMap<HierarchyNode, (usize, bool)> = HashMap::new();
     let mut rows = Vec::with_capacity(order.len());
     for (row, node) in order.iter().enumerate() {
-        // A node sits in the leftmost trunk that feeds it; anything else (a root, a
-        // constraint) takes the leftmost free lane at or right of its parent's trunk, so it
-        // fits into whatever gap the graph already has.
-        let lane = sources
-            .get(node)
-            .and_then(|list| list.iter().filter_map(|src| trunk_of.get(src).copied()).min())
-            .unwrap_or_else(|| {
+        // A node sits where its **nearest** input puts its consumers — the input just above it,
+        // whose line is shortest. Riding a farther input's lane instead would make the near
+        // line detour out of its lane and back, crossing whatever runs between (#1684). Ties
+        // (two inputs on the same row) go to the leftmost lane. A node with no input at all (a
+        // top-level element, a constraint) takes the leftmost free lane at or right of where
+        // its tree parent puts its children.
+        let nearest_input = sources.get(node).and_then(|list| {
+            list.iter()
+                .filter_map(|src| Some((*row_of.get(src)?, *child_lane_of.get(src)?)))
+                .max_by_key(|(src_row, (lane, _))| (*src_row, std::cmp::Reverse(*lane)))
+                .map(|(_, child_lane)| child_lane)
+        });
+        let lane = match nearest_input {
+            // A chain arrives on its input's own trunk, which is by definition this node's.
+            Some((lane, false)) => lane,
+            Some((lane, true)) if free_at(&busy_until, lane, row) => lane,
+            Some((lane, true)) => first_free(&mut busy_until, row, lane),
+            None => {
                 let min_lane = tree_parent
                     .get(node)
-                    .and_then(|parent| trunk_of.get(parent).copied())
+                    .and_then(|parent| child_lane_of.get(parent).map(|(lane, _)| *lane))
                     .unwrap_or(0);
                 first_free(&mut busy_until, row, min_lane)
-            });
+            }
+        };
         while busy_until.len() <= lane {
             busy_until.push(None);
         }
         rows.push(GraphLaneRow { node: *node, lane });
 
         // Reserve this node's one trunk for every consumer below — its own lane when that is
-        // free from here down (the chain case), otherwise the leftmost free lane.
+        // free from here down, otherwise the leftmost free lane right of it.
         if let Some(&last) = last_consumer_row.get(node) {
-            // One consumer is a chain: it carries straight on down this node's own lane. Two
-            // or more fan out, and a shared trunk *in* the node's lane would read as a chain
-            // through them, so the fan opens a lane to the right and each child legs into it.
-            let only_child = consumers.get(node).is_some_and(|list| list.len() == 1);
-            let reuse_own_lane = only_child
-                && free_at(&busy_until, lane, row + 1)
+            let reuse_own_lane = free_at(&busy_until, lane, row + 1)
                 && !(lane == 0 && crosses_a_root(row + 1, last));
             let trunk = if reuse_own_lane {
                 lane
             } else {
-                let min_lane = if only_child { lane } else { lane + 1 };
-                first_free_trunk(&mut busy_until, row + 1, last, min_lane)
+                first_free_trunk(&mut busy_until, row + 1, last, lane)
             };
             let until = busy_until[trunk].map_or(last, |prev| prev.max(last));
             busy_until[trunk] = Some(until);
             trunk_of.insert(*node, trunk);
+            let fan = consumers.get(node).is_some_and(|list| list.len() > 1);
+            child_lane_of.insert(*node, if fan { (trunk + 1, true) } else { (trunk, false) });
         }
     }
 
@@ -4725,7 +4787,7 @@ const GRAPH_DEPENDENCY_EDGE: Color32 = Color32::from_rgb(224, 168, 96);
 const GRAPH_RELATED_TIE: Color32 = Color32::from_rgb(150, 140, 190);
 
 /// Row pitch, lane pitch, and glyph sizes of the Graph view's one-node-per-line layout (#1670).
-const GRAPH_ROW_H: f32 = 20.0;
+const GRAPH_ROW_H: f32 = 24.0;
 const GRAPH_LANE_W: f32 = 13.0;
 const GRAPH_LEFT_PAD: f32 = 10.0;
 const GRAPH_ICON_SIZE: f32 = 13.0;
@@ -4831,6 +4893,8 @@ fn show_graph_view(
                 )
             };
 
+            let row_extents = layout.row_line_extents();
+
             // Where each on-screen row landed, for scripts driving the pane (#1670).
             let clip = ui.clip_rect();
             set_elements_graph_row_rects(
@@ -4854,19 +4918,31 @@ fn show_graph_view(
                     ui.interact(row_rect(row), id, egui::Sense::click())
                 })
                 .collect();
-            for (row, r) in layout.rows.iter().enumerate() {
-                let selected = scene_element_for_node(r.node)
-                    .is_some_and(|el| row_shows_selection(&el, selection, style_selection));
-                let fill = if selected {
-                    ui.visuals().selection.bg_fill.gamma_multiply(0.55)
-                } else if responses[row].hovered() {
-                    ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.35)
-                } else {
-                    continue;
-                };
-                painter.rect_filled(row_rect(row), 2.0, fill);
+            let row_fills: Vec<Option<Color32>> = layout
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(row, r)| {
+                    let selected = scene_element_for_node(r.node)
+                        .is_some_and(|el| row_shows_selection(&el, selection, style_selection));
+                    if selected {
+                        Some(ui.visuals().selection.bg_fill.gamma_multiply(0.55))
+                    } else if responses[row].hovered() {
+                        Some(ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.35))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            for (row, fill) in row_fills.iter().enumerate() {
+                if let Some(fill) = fill {
+                    painter.rect_filled(row_rect(row), 2.0, *fill);
+                }
             }
 
+            // Every relationship line, cut into segments up front: which one gives way at a
+            // crossing is then a property of the pair, not of paint order (#1683).
+            let mut solid: Vec<GraphLineSegment> = Vec::new();
             for edge in &layout.edges {
                 let (Some(from), Some(to)) = (dot_of(&edge.from), dot_of(&edge.to)) else {
                     continue;
@@ -4875,7 +4951,8 @@ fn show_graph_view(
                     related_nodes.contains(&edge.from) && related_nodes.contains(&edge.to);
                 if !edge.kind.is_input() {
                     // A constraint ties sideways to what it constrains: the shortest dashed
-                    // hop between the two dots, claiming no lane of its own (#1670).
+                    // hop between the two dots, claiming no lane of its own (#1670). Dashes
+                    // already read as "passing under", so these need no crossing gaps.
                     paint_dashed_line(&painter, from, to, GRAPH_RELATED_TIE, highlighted);
                     continue;
                 }
@@ -4895,11 +4972,12 @@ fn show_graph_view(
                 } else {
                     Color32::from_gray(110)
                 };
-                painter.add(egui::Shape::line(
-                    points,
-                    egui::Stroke::new(if highlighted { 2.0 } else { 1.2 }, color),
-                ));
+                let stroke = egui::Stroke::new(if highlighted { 2.0 } else { 1.2 }, color);
+                for pair in points.windows(2) {
+                    solid.push(GraphLineSegment { a: pair[0], b: pair[1], stroke });
+                }
             }
+            paint_graph_lines(&painter, &solid);
 
             for (row, r) in layout.rows.iter().enumerate() {
                 let node = r.node;
@@ -5007,6 +5085,14 @@ fn show_graph_view(
                 // Each node draws as its element's icon (#152) — the same icon the List/Tree
                 // rows use, tinted by selection/health state; only the synthetic Document
                 // root (which has no icon) keeps the plain dot.
+                // An icon is mostly transparent, so a lane running to the dot would show
+                // straight through the glyph: give it the row's own background to sit on, and
+                // the lines disappear behind it instead (#1683).
+                let chip = icon_rect.expand(1.0);
+                painter.rect_filled(chip, 3.0, ui.visuals().panel_fill);
+                if let Some(fill) = row_fills[row] {
+                    painter.rect_filled(chip, 3.0, fill);
+                }
                 if let Some(icon) = icon_for_hierarchy_node(doc, node) {
                     crate::icons::paint_icon(&painter, ui.ctx(), icon, icon_rect, tint);
                 } else {
@@ -5014,8 +5100,11 @@ fn show_graph_view(
                 }
 
                 // The label follows its own dot, so a row's indent shows its place in the
-                // graph; it truncates at the pane edge rather than widening the pane (#34).
-                let label_x = center.x + GRAPH_ICON_SIZE * 0.5 + 4.0;
+                // graph, but never starts before the rightmost line drawn at this row — a
+                // lane running past must not cross a name (#1683). It truncates at the pane
+                // edge rather than widening the pane (#34).
+                let label_x = (center.x + GRAPH_ICON_SIZE * 0.5 + 4.0)
+                    .max(lane_x(row_extents.get(row).copied().unwrap_or(r.lane)) + 5.0);
                 let label = node_label(doc, node);
                 let truncated = truncate_label(&label, (rect.right() - 4.0 - label_x).max(20.0), &painter);
                 painter.text(
@@ -5027,6 +5116,99 @@ fn show_graph_view(
                 );
             }
         });
+}
+
+/// One straight run of a graph relationship line (#1683). Lines are split into these so a
+/// crossing can be resolved by the pair — a vertical run keeps going, the line that meets it
+/// at an angle breaks around it — rather than by whichever happened to paint last.
+#[derive(Clone, Copy)]
+struct GraphLineSegment {
+    a: egui::Pos2,
+    b: egui::Pos2,
+    stroke: egui::Stroke,
+}
+
+impl GraphLineSegment {
+    fn is_vertical(&self) -> bool {
+        (self.a.x - self.b.x).abs() < 0.5
+    }
+
+    /// Where this segment crosses `other`, as a fraction along self, if they cross at all
+    /// (endpoints touching — every line meeting a dot — never count).
+    fn crossing(&self, other: &GraphLineSegment) -> Option<f32> {
+        let r = self.b - self.a;
+        let s = other.b - other.a;
+        let denom = r.x * s.y - r.y * s.x;
+        if denom.abs() < 1e-4 {
+            return None;
+        }
+        let q = other.a - self.a;
+        let t = (q.x * s.y - q.y * s.x) / denom;
+        let u = (q.x * r.y - q.y * r.x) / denom;
+        const EDGE: f32 = 0.02;
+        (t > EDGE && t < 1.0 - EDGE && u > EDGE && u < 1.0 - EDGE).then_some(t)
+    }
+}
+
+/// Paint the graph's relationship lines, breaking the giving-way line at each crossing
+/// (#1683). Vertical runs — the lanes — always keep going; a line that meets one at an angle
+/// breaks around it. Two angled lines that cross settle it the same way every frame: the one
+/// that starts further left keeps going.
+fn paint_graph_lines(painter: &egui::Painter, segments: &[GraphLineSegment]) {
+    // Draw order: the ones that give way first, so the gap sits under a solid neighbour.
+    let mut order: Vec<usize> = (0..segments.len()).collect();
+    order.sort_by_key(|i| (segments[*i].is_vertical(), *i));
+    for &i in &order {
+        let segment = segments[i];
+        let mut gaps: Vec<f32> = Vec::new();
+        for (j, other) in segments.iter().enumerate() {
+            if i == j || wins_the_crossing(&segment, other, i, j) {
+                continue;
+            }
+            if let Some(t) = segment.crossing(other) {
+                gaps.push(t);
+            }
+        }
+        paint_segment_with_gaps(painter, &segment, &mut gaps);
+    }
+}
+
+/// Whether `a` (index `i`) keeps going where it crosses `b` (index `j`).
+fn wins_the_crossing(a: &GraphLineSegment, b: &GraphLineSegment, i: usize, j: usize) -> bool {
+    match (a.is_vertical(), b.is_vertical()) {
+        (true, false) => true,
+        (false, true) => false,
+        // Both angled (or both vertical, which cannot cross): the leftmost start wins, with
+        // the index as a last tiebreak so the choice never flickers.
+        _ => (a.a.x, a.a.y, i) < (b.a.x, b.a.y, j),
+    }
+}
+
+/// Draw one segment, leaving a small gap at each crossing fraction in `gaps`.
+fn paint_segment_with_gaps(painter: &egui::Painter, segment: &GraphLineSegment, gaps: &mut Vec<f32>) {
+    let delta = segment.b - segment.a;
+    let len = delta.length();
+    if gaps.is_empty() || len < 1.0 {
+        painter.line_segment([segment.a, segment.b], segment.stroke);
+        return;
+    }
+    const GAP_PX: f32 = 3.0;
+    let half = (GAP_PX / len).min(0.45);
+    gaps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mut cursor = 0.0f32;
+    for gap in gaps.iter() {
+        let start = gap - half;
+        if start > cursor {
+            painter.line_segment(
+                [segment.a + delta * cursor, segment.a + delta * start],
+                segment.stroke,
+            );
+        }
+        cursor = cursor.max(gap + half);
+    }
+    if cursor < 1.0 {
+        painter.line_segment([segment.a + delta * cursor, segment.b], segment.stroke);
+    }
 }
 
 /// Dashes a straight line between two points — the graph view's constraint "related" tie
@@ -8647,6 +8829,170 @@ label_hidden: false,
         );
         let op = lane_of(&layout, HierarchyNode::BooleanOp(bopkey(0))).expect("the op has a row");
         assert!(op > 0, "the op is fed by the body, so it rides that input's lane");
+    }
+
+    /// Every drawn relationship line, in (lane, row) space — the same polyline the pane
+    /// paints, so the layout invariants below are checked on what is actually on screen.
+    fn lane_polylines(layout: &GraphLaneLayout) -> Vec<Vec<(f32, f32)>> {
+        let row_of: HashMap<HierarchyNode, usize> = layout
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(row, r)| (r.node, row))
+            .collect();
+        let lane_of: HashMap<HierarchyNode, usize> =
+            layout.rows.iter().map(|r| (r.node, r.lane)).collect();
+        let mut out = Vec::new();
+        for edge in &layout.edges {
+            let (Some(&from_row), Some(&to_row)) =
+                (row_of.get(&edge.from), row_of.get(&edge.to))
+            else {
+                continue;
+            };
+            let from = (lane_of[&edge.from] as f32, from_row as f32);
+            let to = (lane_of[&edge.to] as f32, to_row as f32);
+            if !edge.kind.is_input() {
+                out.push(vec![from, to]);
+                continue;
+            }
+            let x = edge.lane as f32;
+            let mut points = vec![from];
+            if (x - from.0).abs() > 0.01 {
+                points.push((x, from.1 + 0.5));
+            }
+            if (x - to.0).abs() > 0.01 {
+                points.push((x, to.1 - 0.5));
+            }
+            points.push(to);
+            out.push(points);
+        }
+        out
+    }
+
+    /// How many pairs of drawn lines cross away from their endpoints (#1684).
+    fn lane_crossings(layout: &GraphLaneLayout) -> usize {
+        let segments: Vec<((f32, f32), (f32, f32))> = lane_polylines(layout)
+            .iter()
+            .flat_map(|line| {
+                line.windows(2).map(|pair| (pair[0], pair[1])).collect::<Vec<_>>()
+            })
+            .collect();
+        let mut crossings = 0;
+        for (i, (a0, a1)) in segments.iter().enumerate() {
+            for (b0, b1) in segments.iter().skip(i + 1) {
+                let r = (a1.0 - a0.0, a1.1 - a0.1);
+                let s = (b1.0 - b0.0, b1.1 - b0.1);
+                let denom = r.0 * s.1 - r.1 * s.0;
+                if denom.abs() < 1e-6 {
+                    continue;
+                }
+                let q = (b0.0 - a0.0, b0.1 - a0.1);
+                let t = (q.0 * s.1 - q.1 * s.0) / denom;
+                let u = (q.0 * r.1 - q.1 * r.0) / denom;
+                const EDGE: f32 = 1e-3;
+                if t > EDGE && t < 1.0 - EDGE && u > EDGE && u < 1.0 - EDGE {
+                    crossings += 1;
+                }
+            }
+        }
+        crossings
+    }
+
+    /// A doc shaped like the one from #1684: a primitive body with two sketches on its faces,
+    /// one of them cut back into the body — so an input line has to run past a whole subtree.
+    fn doc_with_two_sketches_on_a_body() -> (Document, SketchId) {
+        use crate::model::{Body, BodySource, ExtrudeFace, Extrusion};
+        let (mut doc, sketch) = doc_with_plane_sketch_rect_and_extrusion();
+        // A second sketch on the extruded body's cap, extruded in turn.
+        let cap = doc.add_sketch(FaceId::ExtrudeCap {
+            extrusion: xkey(0),
+            profile: ExtrudeFace::Polygon(doc.lines.keys().take(4).collect()),
+            top: true,
+        });
+        let circle = doc.circles.insert(crate::model::Circle::from_local_center_radius(cap, 0.0, 0.0, 2.0, 0.0));
+        doc.extrusions.insert(Extrusion {
+            sketch: cap,
+            faces: vec![ExtrudeFace::Circle(circle)],
+            distance: 3.0,
+            target: None,
+            expression: String::new(),
+            name: None,
+            symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
+            edge_treatments: Vec::new(),
+        });
+        doc.bodies.insert(Body {
+            source: BodySource::Extrusion(xkey(1)),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        (doc, sketch)
+    }
+
+    /// #1684: the lines don't cross when the graph can be drawn without crossings, and
+    /// #1683: no line runs through a row's icon — a shared trunk passes *beside* its children.
+    #[test]
+    fn graph_lane_layout_draws_without_crossings_or_lines_through_icons() {
+        let (doc, sketch) = doc_with_two_sketches_on_a_body();
+        let tree = graph_view_tree(&doc, Some(SketchSession { sketch }), &ElementFilter::default());
+        let layout = graph_lane_layout(&doc, &tree);
+
+        assert_eq!(lane_crossings(&layout), 0, "this graph draws without any crossing");
+
+        let lane_of: HashMap<HierarchyNode, usize> =
+            layout.rows.iter().map(|r| (r.node, r.lane)).collect();
+        for edge in layout.edges.iter().filter(|e| e.kind.is_input()) {
+            let (Some(from), Some(to)) = (layout.row_of(edge.from), layout.row_of(edge.to)) else {
+                continue;
+            };
+            for (row, r) in layout.rows.iter().enumerate() {
+                if row > from && row < to && r.lane == edge.lane {
+                    panic!(
+                        "the line {:?} -> {:?} runs straight through {:?}'s icon",
+                        edge.from, edge.to, r.node
+                    );
+                }
+            }
+            let _ = &lane_of;
+        }
+    }
+
+    /// #1683: a label starts past every line drawn at its row, so nothing runs across a name.
+    #[test]
+    fn graph_lane_row_extents_clear_the_lines_crossing_each_row() {
+        let (mut doc, sketch) = doc_with_plane_sketch_rect_and_extrusion();
+        doc.boolean_ops.insert(crate::model::BooleanOperation {
+            kind: crate::model::BooleanOpKind::Cut,
+            a: vec![bkey(0)],
+            b: Vec::new(),
+            keep_b: false,
+            outputs: Vec::new(),
+            name: None,
+        });
+        let tree = graph_view_tree(&doc, Some(SketchSession { sketch }), &ElementFilter::default());
+        let layout = graph_lane_layout(&doc, &tree);
+        let extents = layout.row_line_extents();
+
+        assert_eq!(extents.len(), layout.rows.len());
+        for (row, r) in layout.rows.iter().enumerate() {
+            assert!(extents[row] >= r.lane, "a row always covers its own dot");
+        }
+        assert!(
+            layout.rows.iter().enumerate().any(|(row, r)| extents[row] > r.lane),
+            "a line passing a row pushes that row's label past it"
+        );
+        // The op's input runs down past the datum planes, so their labels clear that lane.
+        let op_row = layout.row_of(HierarchyNode::BooleanOp(bopkey(0))).expect("op row");
+        let body_row = layout.row_of(HierarchyNode::Body(bkey(0))).expect("body row");
+        for row in (body_row + 1)..op_row {
+            assert!(
+                extents[row] > 0,
+                "row {row} is crossed by the op's input lane, so its label must clear it"
+            );
+        }
     }
 
     /// #1682: the Graph view drops the synthetic Document root — a model's own top-level

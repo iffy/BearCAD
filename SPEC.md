@@ -4428,17 +4428,24 @@ retina machine renders the same composition at 2x, just sharper.
   that holds a node back until every input it depends on is already placed, so a consumer is
   always below its inputs; the relationships are drawn beside them as mostly-vertical **lanes**
   with short diagonal legs into each row. A node with consumers reserves **one** lane for all
-  of them — its children string down that single trunk instead of fanning out sideways — and a
-  lane is reused the moment its last consumer is passed, so a straight chain (sketch → extrude
-  → body) holds its lane rather than drifting right. **One** consumer continues in the node's
-  own lane; **two or more** open a lane to its right, because a shared trunk *in* the node's
-  lane would read as a chain running through the children. The **first lane stays clear across
-  a top-level element's row** — nothing feeds it and it sits under nothing, so a trunk that
-  would cross it steps right instead, and indentation keeps meaning "sits under something".
-  The synthetic **Document root is not shown** here (#1682): "everything hangs off the
-  document" is not a relationship worth a row. The graph therefore spills right only as far as
-  the branches actually need, growing **taller** instead: height scrolls vertically and labels
-  truncate at the pane edge (#34). A **constraint** is the exception (#1670): it relates
+  of them, and a lane is reused the moment its last consumer is passed, so a straight chain
+  (sketch → extrude → body) holds its lane rather than drifting right. **One** consumer
+  carries straight on down that lane; **two or more** sit one lane to its right and leg into
+  the trunk, so a shared trunk runs *beside* its children rather than through their icons
+  (#1683). Each node rides the lane of its **nearest** input — riding a farther one's would
+  make the near line detour out of its lane and back, crossing whatever runs between (#1684).
+  The **first lane stays clear across a top-level element's row** — nothing feeds it and it
+  sits under nothing, so a trunk that would cross it steps right instead, and indentation
+  keeps meaning "sits under something". The synthetic **Document root is not shown** here
+  (#1682): "everything hangs off the document" is not a relationship worth a row. The graph
+  therefore spills right only as far as the branches actually need, growing **taller**
+  instead: height scrolls vertically and labels truncate at the pane edge (#34).
+  Nothing is drawn over anything else it would obscure (#1683): a row's **label starts past
+  the rightmost line at that row** (`row_line_extents`), each **icon sits on a chip of the
+  row's own background** so the lanes disappear behind the glyph instead of showing through
+  it, and where two lines do cross, the **vertical run keeps going and the angled one breaks
+  around it** with a small gap (two angled lines settle it by whichever starts further left,
+  so the choice never flickers). A **constraint** is the exception (#1670): it relates
   to the geometry it holds rather than being produced by it, so it claims no trunk, drops into
   the leftmost free lane at or right of its sketch's, and ties to each element it constrains
   with a soft dashed **related** leg. Each node draws as its
