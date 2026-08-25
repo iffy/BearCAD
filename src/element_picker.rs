@@ -499,13 +499,10 @@ fn element_body(doc: &Document, element: &SceneElement) -> Option<crate::model::
         | SceneElement::BodyVertex { body, .. }
         | SceneElement::BodyFace { body, .. } => Some(*body),
         SceneElement::MovePoint(point) => point.body(),
-        SceneElement::SketchFace(face) => face
-            .extrusion_index()
-            .and_then(|e| crate::model::body_index_for_extrusion(doc, e))
-            .or_else(|| {
-                face.revolution_key()
-                    .and_then(|r| crate::model::body_index_for_revolution(doc, r))
-            }),
+        // Every face that has a body, not just extrusion and revolve ones (#1726): a
+        // primitive's face belongs to the primitive's body, a repeated face to its instance,
+        // a mesh face to the body it was read off.
+        SceneElement::SketchFace(face) => crate::model::body_index_for_face(doc, face),
         SceneElement::ExtrusionEdge { extrusion, .. } => {
             crate::model::body_index_for_extrusion(doc, *extrusion)
         }
@@ -1436,6 +1433,39 @@ pub fn apply_event(picker: &mut ElementPicker, event: PickerEvent) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// #1726: a primitive's face belongs to that primitive's body, so Shell's `OnBodies`
+    /// rule keeps it. It used to resolve only extrusion and revolve faces, so shelling a
+    /// plain cuboid showed an empty Open-faces picker with two faces actually picked.
+    #[test]
+    fn a_primitive_face_belongs_to_its_body() {
+        use crate::model::{Body, BodySource, FaceId, Primitive, PrimitiveFace, PrimitiveKind};
+        let mut doc = Document::default();
+        let mut cuboid = Primitive::new(PrimitiveKind::Cuboid);
+        cuboid.width = "40".to_string();
+        cuboid.depth = "40".to_string();
+        cuboid.height = "20".to_string();
+        let prim = doc.primitives.insert(cuboid);
+        let body = doc.bodies.insert(Body {
+            source: BodySource::Primitive(prim),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let top = SceneElement::from_face_id(FaceId::PrimitiveFace {
+            primitive: prim,
+            face: PrimitiveFace::CuboidTop,
+        });
+        assert_eq!(element_body(&doc, &top), Some(body));
+
+        let mut picker = ElementPicker::new(
+            ElementFilter::kinds(&[ElementKind::Face, ElementKind::Profile])
+                .rule(PickRule::OnBodies(vec![body])),
+            PickLimit::Infinite,
+        );
+        picker.set_picked(&doc, [top]);
+        assert_eq!(picker.picked().len(), 1, "the open face must show in the picker");
+    }
+
     use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::circle_key_for_slot as rkey;
