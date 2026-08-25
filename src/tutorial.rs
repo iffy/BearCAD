@@ -9225,6 +9225,45 @@ mod tests {
         &TUTORIALS[tutorial_index("curves").expect("curves tutorial is registered")]
     }
 
+    /// An open run of lines through `points`, joined end to start -- what a row of Line-tool
+    /// clicks leaves behind, minus the closing side.
+    fn add_line_chain(
+        doc: &mut crate::model::Document,
+        sketch: crate::model::SketchId,
+        points: &[(f32, f32)],
+    ) -> Vec<crate::model::LineKey> {
+        use crate::model::{
+            Constraint, ConstraintEntity, ConstraintKind, ConstraintPoint, Line, LineEnd,
+            ShapeKind,
+        };
+        let mut idx = Vec::new();
+        for pair in points.windows(2) {
+            let ((u0, v0), (u1, v1)) = (pair[0], pair[1]);
+            idx.push(doc.lines.insert(Line::from_local_endpoints(sketch, u0, v0, u1, v1)));
+            doc.shape_order.push(ShapeKind::Line);
+        }
+        for pair in idx.windows(2) {
+            doc.constraints.insert(Constraint {
+                sketch,
+                kind: ConstraintKind::Coincident {
+                    a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                        line: pair[0],
+                        end: LineEnd::End,
+                    }),
+                    b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                        line: pair[1],
+                        end: LineEnd::Start,
+                    }),
+                },
+                expression: String::new(),
+                dim_offset: None,
+                name: None,
+            });
+            doc.shape_order.push(ShapeKind::Constraint);
+        }
+        idx
+    }
+
     /// #1733: a three-sided closed outline *is* a closed outline. The predicate wanted four
     /// lines, so a user who joined three curved sides back to the start went unnoticed.
     #[test]
@@ -9252,7 +9291,7 @@ mod tests {
         ensure_ground_sketch(&mut app);
         let sketch = app.sketch_session.expect("a sketch").sketch;
         // Two sides drawn by hand, chained end to start, left open.
-        crate::construction::add_line_chain(
+        add_line_chain(
             &mut app.doc,
             sketch,
             &[(10.0, 10.0), (60.0, 10.0), (10.0, 50.0)],

@@ -4115,45 +4115,6 @@ fn dist_point_to_quad_edges(p: egui::Pos2, quad: [egui::Pos2; 4]) -> f32 {
         .fold(f32::MAX, f32::min)
 }
 
-/// Drop an **open** chain of plain `Line`s through local (u, v) points, joined end to start
-/// by `Coincident` constraints -- what a run of Line-tool clicks leaves behind, minus the
-/// closing side. `points.len()` must be at least 2.
-///
-/// Returns the line indices, one per segment.
-pub fn add_line_chain(
-    doc: &mut Document,
-    sketch: SketchId,
-    points: &[(f32, f32)],
-) -> Vec<crate::model::LineKey> {
-    use crate::model::{Constraint, ConstraintEntity, ConstraintKind, ShapeKind};
-    let mut idx = Vec::new();
-    for pair in points.windows(2) {
-        let ((u0, v0), (u1, v1)) = (pair[0], pair[1]);
-        idx.push(doc.lines.insert(Line::from_local_endpoints(sketch, u0, v0, u1, v1)));
-        doc.shape_order.push(ShapeKind::Line);
-    }
-    for pair in idx.windows(2) {
-        doc.constraints.insert(Constraint {
-            sketch,
-            kind: ConstraintKind::Coincident {
-                a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: pair[0],
-                    end: LineEnd::End,
-                }),
-                b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: pair[1],
-                    end: LineEnd::Start,
-                }),
-            },
-            expression: String::new(),
-            dim_offset: None,
-            name: None,
-        });
-        doc.shape_order.push(ShapeKind::Constraint);
-    }
-    idx
-}
-
 /// Drop a closed loop of plain `Line`s from local (u, v) points, joined at their shared
 /// corners by `Coincident` constraints — the general (not-necessarily-axis-aligned) form of
 /// [`add_line_rectangle`], e.g. for mirroring an arbitrary body face's exact boundary into a
