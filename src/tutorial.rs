@@ -738,9 +738,14 @@ fn ground_anchor_d(app: &AppState) -> Option<glam::Vec3> {
     ground_local(app, 80.0, 0.0)
 }
 
-/// Extrude face picked (distance field open) or extrusion already committed.
+/// Extrude face picked (distance field open) or extrusion already committed. Picking the
+/// tool arms an *empty* draft (#1499), which doesn't count -- otherwise the "click the
+/// face" step advances the instant the tool button is pressed (#1697).
 fn extrude_face_picked(app: &AppState) -> bool {
-    app.creating_extrusion.is_some() || has_extrusion(app)
+    app.creating_extrusion
+        .as_ref()
+        .is_some_and(|ce| !ce.faces.is_empty())
+        || has_extrusion(app)
 }
 
 fn has_primitive_kind(app: &AppState, kind: crate::model::PrimitiveKind) -> bool {
@@ -6384,6 +6389,23 @@ mod tests {
                 place.narration
             );
         }
+    }
+
+    /// #1697/#1698/#1699/#1724/#1735: picking the Extrude tool arms an empty draft
+    /// (#1499), which must NOT satisfy the "click the face" step — otherwise every
+    /// extruding tutorial skips straight past it.
+    #[test]
+    fn arming_the_extrude_tool_does_not_count_as_picking_a_face() {
+        let mut app = AppState::default();
+        app.apply(Action::SetTool(Tool::Extrude));
+        assert!(
+            app.creating_extrusion.is_some(),
+            "SetTool arms an empty extrude draft (#1499)"
+        );
+        assert!(
+            !extrude_face_picked(&app),
+            "an armed draft with no faces is not a picked face"
+        );
     }
 
     /// Back reviews earlier steps without auto-advance re-firing on their already-
