@@ -10226,9 +10226,11 @@ pub mod tests {
                 bearcad.ui.tutorial_next()
               end
             end
-            assert(bearcad.count("plane") == 4, "three datums plus the tilted one")
+            -- The datums are cleared away at the start (#1722), so the tilted plane is the
+            -- only one left.
+            assert(bearcad.count("plane") == 1, "only the tilted plane, got " .. bearcad.count("plane"))
             assert(bearcad.count("extrusion") == 1, "one solid on the plane")
-            local plane = bearcad.get{ kind = "plane", index = 3 }
+            local plane = bearcad.get{ kind = "plane", index = 0 }
             assert(math.abs(plane.normal[3]) < 0.99,
               "the plane is tilted off the ground, nz=" .. tostring(plane.normal[3]))
             "#,
@@ -10288,11 +10290,12 @@ pub mod tests {
             end
             assert(bearcad.count("shell") == 1, "one shell op")
             local op = bearcad.get{ kind = "shell", index = 0 }
-            assert(op.open_faces == 2, "top and bottom open, got " .. tostring(op.open_faces))
+            assert(op.open_faces == 2, "top and one side open, got " .. tostring(op.open_faces))
             assert(op.thickness == "2", "wall, got " .. tostring(op.thickness))
-            -- Four walls only: 20x20x20 block, 2 mm wall, both caps gone.
+            -- #1727: open at the top and down one side. A 20x20x20 block with a 2 mm wall
+            -- keeps its base and three walls, so the cavity is 16 x 18 x 18.
             local v = bearcad.body_stats(bearcad.count("body") - 1).volume
-            local want = (20 * 20 - 16 * 16) * 20
+            local want = 20 * 20 * 20 - 16 * 18 * 18
             assert(math.abs(v - want) / want < 0.02,
               "box volume " .. v .. " should be about " .. want)
             "#,

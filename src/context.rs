@@ -5057,6 +5057,15 @@ pub fn repeat_var_row_rect(
     ctx.data(|d| d.get_temp::<egui::Rect>(repeat_var_row_rect_id(var, part)))
 }
 
+fn plane_tilt_rect_id() -> egui::Id {
+    egui::Id::new("plane_tilt_rect")
+}
+
+/// Where the Construction Plane tool drew its **Tilt** field this frame (#1723).
+pub fn plane_tilt_rect(ctx: &egui::Context) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<egui::Rect>(plane_tilt_rect_id()))
+}
+
 fn checkbox_row_rect_id(label: &str) -> egui::Id {
     egui::Id::new(("checkbox_row_rect", label))
 }
@@ -6618,6 +6627,9 @@ pub fn show_pane(
                         )
                         .width(90.0)
                         .show(ui, &mut text, doc);
+                        // The angled-plane walkthrough rings this field and hangs its typing
+                        // hint off it (#1723) — the Offset row above is not what it asks for.
+                        ui.ctx().data_mut(|d| d.insert_temp(plane_tilt_rect_id(), resp.rect));
                         if resp.changed() {
                             on_plane_tool_edit(PlaneToolEdit::SetAngle(text));
                         }

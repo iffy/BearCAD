@@ -94,6 +94,9 @@ pub enum UiAnchor {
     CombineKind(crate::model::BooleanOpKind),
     /// The Text tool's string field in the Context pane (#1557).
     TextContent,
+    /// The Construction Plane tool's **Tilt** field in the Context pane (#1723) — the one the
+    /// walkthrough asks for, as opposed to the Offset field above it.
+    PlaneTilt,
     /// The navigation bear in a selected drawing view's Context pane (#1640): where the
     /// view's orientation is picked.
     DrawingViewBear,
@@ -939,6 +942,37 @@ fn first_rect_dim_label(app: &AppState) -> Option<glam::Vec3> {
     ))
 }
 
+/// Keep only the datum planes a walkthrough actually draws on (#1722/#1725). The rest are
+/// big translucent slabs standing in front of the very thing the step points at. `keep` names
+/// them by datum order — 0 = XY (the ground), 1 = XZ, 2 = YZ.
+fn keep_datum_planes(app: &mut AppState, keep: &[usize]) {
+    let planes: Vec<_> = app.doc.construction_planes.keys().collect();
+    for (nth, index) in planes.into_iter().enumerate() {
+        if keep.contains(&nth) {
+            continue;
+        }
+        app.apply(Action::DeleteElement {
+            element: crate::hierarchy::SceneElement::ConstructionPlane(index),
+        });
+    }
+}
+
+/// Every walkthrough but the first sketches on the ground, so XZ and YZ only get in the way.
+fn keep_the_ground_plane(app: &mut AppState) {
+    keep_datum_planes(app, &[0]);
+}
+
+/// The Shapes walkthrough stands its cylinder on the XZ wall (#1273), so that one stays.
+fn keep_the_ground_and_wall_planes(app: &mut AppState) {
+    keep_datum_planes(app, &[0, 1]);
+}
+
+/// The angled-plane walkthrough builds its own plane off an axis and never touches a datum,
+/// so all three go — leaving nothing but the axes it asks you to click (#1722).
+fn keep_no_datum_planes(app: &mut AppState) {
+    keep_datum_planes(app, &[]);
+}
+
 fn ensure_ground_sketch(app: &mut AppState) {
     if app.sketch_session.is_some() {
         return;
@@ -1729,10 +1763,11 @@ static CUBE_STEPS: &[Step] = &[
 /// One action per step (#1253).
 static SHAPES_STEPS: &[Step] = &[
     // #1270: short intro — Next only.
-    plain_step(
+    plain_step_enter(
         "The Shape tool makes solids right in 3D",
         StepAnchor::None,
         None,
+        keep_the_ground_and_wall_planes,
     ),
     plain_step(
         "Grab the Shape tool \u{2014} the glowing button, or press `B`.",
@@ -1852,10 +1887,11 @@ static SHAPES_STEPS: &[Step] = &[
 /// #1240 / #1315–#1318: draw a free rectangle, set sizes with the Dimension tool,
 /// extrude, edit a dimension, then Esc and Zoom to Fit. One action per step (#1253).
 static DIMENSIONED_BOX_STEPS: &[Step] = &[
-    plain_step(
+    plain_step_enter(
         "Hi! We'll make a cube, then change it with dimensions.",
         StepAnchor::None,
         None,
+        keep_the_ground_plane,
     ),
     plain_step(
         "Rectangle tool first \u{2014} glowing button, or `R`.",
@@ -2240,10 +2276,11 @@ fn assist_change_height(app: &mut AppState) {
 /// #1347: create `width`, sketch a `width` × `width*2` rectangle, change `width`,
 /// extrude with inline `height=30mm`, then change `height`. One action per step (#1253).
 static PARAMETERS_STEPS: &[Step] = &[
-    plain_step(
+    plain_step_enter(
         "Hi! Let's drive a box with parameters.",
         StepAnchor::None,
         None,
+        keep_the_ground_plane,
     ),
     plain_step(
         "See the Parameters pane on the right? Tap inside the name box.",
@@ -2680,10 +2717,11 @@ fn assist_parallel(app: &mut AppState) {
 /// #1591: draw a four-sided polygon with the Line tool, then pin it with
 /// horizontal, vertical, and equal constraints.
 static CONSTRAINTS_STEPS: &[Step] = &[
-    plain_step(
+    plain_step_enter(
         "Let's draw a polygon and pin it with constraints.",
         StepAnchor::None,
         None,
+        keep_the_ground_plane,
     ),
     plain_step(
         "Click the Line tool \u{2014} glowing button, or `L`.",
@@ -3258,10 +3296,11 @@ fn sphere_kind_or_placed(app: &AppState) -> bool {
 
 /// #1555: chamfer a rectangle corner, extrude, then chamfer the top of the solid.
 static CHAMFER_STEPS: &[Step] = &[
-    plain_step(
+    plain_step_enter(
         "Let's chamfer!",
         StepAnchor::None,
         None,
+        keep_the_ground_plane,
     ),
     plain_step(
         "Click the Rectangle tool.",
@@ -3353,10 +3392,11 @@ static CHAMFER_STEPS: &[Step] = &[
 
 /// #1556: place a cube and a sphere, then cut the sphere out of the cube.
 static COMBINE_STEPS: &[Step] = &[
-    plain_step(
+    plain_step_enter(
         "Let's learn how to cut shapes with the Combine tool.",
         StepAnchor::None,
         None,
+        keep_the_ground_plane,
     ),
     plain_step(
         "Grab the Shape tool \u{2014} the glowing button, or press `B`.",
@@ -3454,10 +3494,11 @@ static COMBINE_STEPS: &[Step] = &[
 
 /// #1557: sketch letters on a cube and extrude them so they stand proud.
 static RAISED_TEXT_STEPS: &[Step] = &[
-    plain_step(
+    plain_step_enter(
         "Let's stamp raised letters on a cube.",
         StepAnchor::None,
         None,
+        keep_the_ground_plane,
     ),
     plain_step(
         "Grab the Shape tool \u{2014} the glowing button, or press `B`.",
@@ -4112,13 +4153,13 @@ fn ring_body_guide(app: &AppState) -> Option<glam::Vec3> {
     Some(glam::Vec3::new((u0 + u1) * 0.5, 0.0, v1))
 }
 
+/// #1719: any profile the fresh Revolve pick took. The groove circle straddles the square's
+/// outer edge, so a click inside it lands on the **overlap** — a `Boolean` region of circle
+/// and square, not the bare `Circle` this used to insist on, and the walkthrough sat there
+/// with the profile plainly picked in the pane.
 fn groove_profile_picked(app: &AppState) -> bool {
     has_groove_cut(app)
-        || app.creating_revolve.as_ref().is_some_and(|c| {
-            c.faces
-                .iter()
-                .any(|f| matches!(f, crate::model::ExtrudeFace::Circle(_)))
-        })
+        || app.creating_revolve.as_ref().is_some_and(|c| !c.faces.is_empty())
 }
 
 fn revolve_cut_mode_ready(app: &AppState) -> bool {
@@ -4254,10 +4295,11 @@ fn assist_cut_groove(app: &mut AppState) {
 
 /// #1672: spin a square into a ring, then revolve-cut a half-round groove into its face.
 static REVOLVE_STEPS: &[Step] = &[
-    plain_step(
+    plain_step_enter(
         "Revolve spins a flat profile around an axis. Let's make a ring.",
         StepAnchor::None,
         None,
+        keep_the_ground_plane,
     ),
     plain_step(
         "Click the Rectangle tool.",
@@ -4378,6 +4420,14 @@ static REVOLVE_STEPS: &[Step] = &[
 /// The tilt the walkthrough builds with, and the one it moves to.
 const TILT_FIRST: &str = "30";
 const TILT_SECOND: &str = "60";
+
+/// Put the keyboard on **Tilt**, not the Offset field above it (#1723): the step says to
+/// type the tilt, and the plane tool opens with Offset armed.
+fn ensure_plane_tilt_focus(app: &mut AppState) {
+    if app.creating_plane.is_some() {
+        app.apply(Action::FocusPlaneDim { dim: crate::construction::PlaneDim::Angle });
+    }
+}
 
 fn plane_tool_active(app: &AppState) -> bool {
     app.tool == Tool::ConstructionPlane
@@ -4552,10 +4602,11 @@ fn assist_move_tilted_plane(app: &mut AppState) {
 /// #1673: tilt a plane off an axis, build a solid on it, then move the plane and watch the
 /// solid come with it.
 static TILTED_PLANE_STEPS: &[Step] = &[
-    plain_step(
+    plain_step_enter(
         "Sketches live on planes. Tilt the plane and everything on it tilts too.",
         StepAnchor::None,
         None,
+        keep_no_datum_planes,
     ),
     plain_step(
         "Click the Construction Plane tool.",
@@ -4567,15 +4618,16 @@ static TILTED_PLANE_STEPS: &[Step] = &[
         StepAnchor::World(tilt_axis_guide),
         Some(tilt_axis_picked),
     ),
-    assisted_step(
+    assisted_step_enter(
         "Type `30` for the tilt, then Enter.",
-        StepAnchor::None,
+        StepAnchor::Ui(UiAnchor::PlaneTilt),
         Some(has_tilted_plane),
         StepAssist {
             label: "Tilt it for me",
             run: assist_tilt_plane,
         },
         Some(TypeHint::Fixed(TILT_FIRST)),
+        ensure_plane_tilt_focus,
     ),
     plain_step(
         "Click the Sketch tool.",
@@ -4787,10 +4839,11 @@ fn assist_extrude_offset_ring(app: &mut AppState) {
 
 /// #1674: offset a circle to get a parallel copy, then extrude the ring between them.
 static OFFSET_STEPS: &[Step] = &[
-    plain_step(
+    plain_step_enter(
         "Offset copies sketch geometry a set distance away \u{2014} that's how you get a wall.",
         StepAnchor::None,
         None,
+        keep_the_ground_plane,
     ),
     plain_step(
         "Click the Circle tool.",
@@ -4900,31 +4953,38 @@ fn shell_both_ends_opened(app: &AppState) -> bool {
     shell_open_face_count(app) >= 2
 }
 
-/// Looking up from below, so the block's underside is clickable.
-fn camera_under_the_model(app: &AppState) -> bool {
-    let (_, pitch) = crate::camera::StandardView::Bottom.yaw_pitch();
-    shell_both_ends_opened(app) || (app.cam.pitch - pitch).abs() < 0.2
-}
-
-fn cuboid_bottom_guide(app: &AppState) -> Option<glam::Vec3> {
-    let p = app
-        .doc
-        .primitives
-        .values()
-        .find(|p| p.kind == crate::model::PrimitiveKind::Cuboid)?;
-    crate::primitives::resolve(&app.doc, p).map(|r| r.origin)
-}
-
-/// The tutorial's cuboid and its top / bottom face ids.
-fn shell_cuboid_faces(
-    app: &AppState,
-) -> Option<(crate::model::BodyKey, Vec<crate::model::FaceId>)> {
-    let prim = app
+/// Which of the block's four sides the camera is looking at (#1727) — the walkthrough opens
+/// the top and one **side**, so the second face has to be one you can see without turning the
+/// model over. `None` until the block exists.
+fn shell_open_side(app: &AppState) -> Option<(crate::model::PrimitiveKey, u8)> {
+    let (prim, shape) = app
         .doc
         .primitives
         .iter()
-        .find(|(_, p)| p.kind == crate::model::PrimitiveKind::Cuboid)
-        .map(|(k, _)| k)?;
+        .find(|(_, p)| p.kind == crate::model::PrimitiveKind::Cuboid)?;
+    let eye = app.cam.eye();
+    let best = (0u8..4)
+        .filter_map(|edge| {
+            let poly = crate::primitives::face_polygon(
+                &app.doc,
+                shape,
+                crate::model::PrimitiveFace::CuboidSide { edge },
+            )?;
+            let centre: glam::Vec3 =
+                poly.iter().copied().sum::<glam::Vec3>() / poly.len() as f32;
+            // Outward normal of a CCW loop about it: two edges of the quad.
+            let n = (poly[1] - poly[0]).cross(poly[3] - poly[0]).normalize_or_zero();
+            Some((edge, n.dot((eye - centre).normalize_or_zero())))
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1))?;
+    Some((prim, best.0))
+}
+
+/// The tutorial's cuboid and the two faces it leaves open: the top, and the side facing you.
+fn shell_cuboid_faces(
+    app: &AppState,
+) -> Option<(crate::model::BodyKey, Vec<crate::model::FaceId>)> {
+    let (prim, side) = shell_open_side(app)?;
     let body = live_body_for_primitive(app, crate::model::PrimitiveKind::Cuboid)?;
     Some((
         body,
@@ -4935,10 +4995,21 @@ fn shell_cuboid_faces(
             },
             crate::model::FaceId::PrimitiveFace {
                 primitive: prim,
-                face: crate::model::PrimitiveFace::CuboidBottom,
+                face: crate::model::PrimitiveFace::CuboidSide { edge: side },
             },
         ],
     ))
+}
+
+/// The middle of that side, for the orb to ring.
+fn cuboid_near_side_guide(app: &AppState) -> Option<glam::Vec3> {
+    let (prim, side) = shell_open_side(app)?;
+    let poly = crate::primitives::face_polygon(
+        &app.doc,
+        &app.doc.primitives[prim],
+        crate::model::PrimitiveFace::CuboidSide { edge: side },
+    )?;
+    Some(poly.iter().copied().sum::<glam::Vec3>() / poly.len() as f32)
 }
 
 /// Open one more of the block's caps, the way the two click steps do.
@@ -4964,13 +5035,7 @@ fn assist_open_shell_top(app: &mut AppState) {
     assist_open_shell_face(app, 1);
 }
 
-fn assist_look_under_the_model(app: &mut AppState) {
-    let (yaw, pitch) = crate::camera::StandardView::Bottom.yaw_pitch();
-    app.cam.yaw = yaw;
-    app.cam.pitch = pitch;
-}
-
-fn assist_open_shell_bottom(app: &mut AppState) {
+fn assist_open_shell_side(app: &mut AppState) {
     assist_open_shell_face(app, 2);
 }
 
@@ -4991,11 +5056,12 @@ fn assist_shell_the_box(app: &mut AppState) {
 
 /// #1675: shell a block with both caps open, leaving a four-walled box.
 static SHELL_STEPS: &[Step] = &[
-    plain_step(
-        "Shell hollows a solid out to a wall. Open both ends and a block becomes a \
-         four-sided box.",
+    plain_step_enter(
+        "Shell hollows a solid out to a wall. Leave two faces open and a block becomes a \
+         tray you can see into.",
         StepAnchor::None,
         None,
+        keep_the_ground_plane,
     ),
     plain_step(
         "Grab the Shape tool \u{2014} the glowing button, or press `B`.",
@@ -5049,22 +5115,12 @@ static SHELL_STEPS: &[Step] = &[
         None,
     ),
     assisted_step(
-        "The bottom face is hidden. Click the bear's underside to look up from below.",
-        StepAnchor::Ui(UiAnchor::ViewCube),
-        Some(camera_under_the_model),
-        StepAssist {
-            label: "Turn it over for me",
-            run: assist_look_under_the_model,
-        },
-        None,
-    ),
-    assisted_step(
-        "Click the bottom face to open that one too.",
-        StepAnchor::World(cuboid_bottom_guide),
+        "Click the side facing you to open that one too.",
+        StepAnchor::World(cuboid_near_side_guide),
         Some(shell_both_ends_opened),
         StepAssist {
             label: "Open it for me",
-            run: assist_open_shell_bottom,
+            run: assist_open_shell_side,
         },
         None,
     ),
@@ -5079,7 +5135,7 @@ static SHELL_STEPS: &[Step] = &[
         Some(TypeHint::Fixed("2")),
     ),
     plain_step(
-        "Four walls, 2 mm thick, open top and bottom. That's Shell. Nice work!",
+        "Walls 2 mm thick, open at the top and down one side. That's Shell. Nice work!",
         StepAnchor::None,
         None,
     ),
@@ -5221,11 +5277,12 @@ fn assist_change_plate(app: &mut AppState) {
 /// #1676: type one parameter, work a second one out from it, drive a rectangle with both,
 /// then change the source and watch the derived one follow.
 static DERIVED_PARAMETER_STEPS: &[Step] = &[
-    plain_step(
+    plain_step_enter(
         "A derived parameter is worked out from another one. Change the source and \
          everything downstream moves.",
         StepAnchor::None,
         None,
+        keep_the_ground_plane,
     ),
     plain_step(
         "See the Parameters pane? Tap inside the name box.",
@@ -5543,11 +5600,12 @@ fn assist_extrude_curved_outline(app: &mut AppState) {
 /// #1677: draw an outline whose far side bends, using the Line tool's Curve mode, then
 /// extrude it like any other profile.
 static CURVES_STEPS: &[Step] = &[
-    plain_step(
+    plain_step_enter(
         "Curves come from the Line tool: tick Curve and the next point arrives smooth \
          instead of sharp.",
         StepAnchor::None,
         None,
+        keep_the_ground_plane,
     ),
     plain_step(
         "Click the Line tool \u{2014} glowing button, or `L`.",
@@ -5826,11 +5884,12 @@ fn assist_slice_the_block(app: &mut AppState) {
 
 /// #1678: draw a slanted line across a block's top face and use it as a laser cutter.
 static SLICE_STEPS: &[Step] = &[
-    plain_step(
+    plain_step_enter(
         "Slice cuts a solid into pieces. A sketch line works like a laser \u{2014} it cuts \
          straight down through whatever is under it.",
         StepAnchor::None,
         None,
+        keep_the_ground_plane,
     ),
     plain_step(
         "Grab the Shape tool \u{2014} the glowing button, or press `B`.",
@@ -6175,10 +6234,11 @@ fn assist_commit_repeat(app: &mut AppState) {
 /// #1679: pattern a block along the X axis, working all three interlinked fields and both
 /// of the Repeat tool's measure toggles.
 static REPEAT_STEPS: &[Step] = &[
-    plain_step(
+    plain_step_enter(
         "Repeat stamps copies of a body along an axis.",
         StepAnchor::None,
         None,
+        keep_the_ground_plane,
     ),
     plain_step(
         "Grab the Shape tool \u{2014} the glowing button, or press `B`.",
@@ -6467,11 +6527,12 @@ fn assist_extrude_mirrored_pair(app: &mut AppState) {
 
 /// #1680: reflect a sketch circle across the Y axis, then extrude the pair.
 static SKETCH_MIRROR_STEPS: &[Step] = &[
-    plain_step(
+    plain_step_enter(
         "Mirror reflects sketch shapes across a line. Draw one side and the other comes \
          free \u{2014} and stays linked.",
         StepAnchor::None,
         None,
+        keep_the_ground_plane,
     ),
     plain_step(
         "Click the Circle tool.",
@@ -9083,6 +9144,52 @@ mod tests {
         &TUTORIALS[tutorial_index("sketch_mirror").expect("sketch_mirror tutorial is registered")]
     }
 
+    /// #1719: the groove circle straddles the square's outer edge, so a click inside it takes
+    /// the **overlap** — a Boolean of circle and square. The step used to insist on a bare
+    /// `Circle` and sat there with the profile plainly picked in the pane.
+    #[test]
+    fn the_groove_step_notices_a_click_inside_the_circle() {
+        use crate::model::{BooleanOp, ExtrudeFace};
+        let mut app = AppState::default();
+        let overlap = ExtrudeFace::Boolean {
+            op: BooleanOp::Intersection,
+            a: Box::new(ExtrudeFace::Circle(crate::arena::Key::from_bits(0))),
+            b: Box::new(ExtrudeFace::Polygon(Vec::new())),
+        };
+        app.creating_revolve = Some(crate::actions::CreatingRevolve {
+            faces: vec![overlap],
+            ..Default::default()
+        });
+        assert!(super::groove_profile_picked(&app));
+    }
+
+    /// #1722/#1725: every walkthrough but the first clears away the datum planes it does not
+    /// draw on — they are big translucent slabs standing in front of the step's target. The
+    /// first one keeps all three: that is where you meet them.
+    #[test]
+    fn tutorials_clear_the_datum_planes_they_do_not_use() {
+        // Shapes stands its cylinder on the XZ wall (#1273); the angled-plane walkthrough
+        // builds its own plane off an axis and wants nothing but the axes showing (#1722).
+        let expected = |name: &str| match name {
+            "cube" => 3,
+            "shapes" => 2,
+            "navigate" | "drawing" | "tilted_plane" => 0,
+            _ => 1,
+        };
+        for tut in TUTORIALS.iter() {
+            let mut app = AppState::default();
+            app.apply(Action::StartTutorial {
+                index: tutorial_index(tut.name).unwrap(),
+            });
+            assert_eq!(
+                app.doc.construction_planes.len(),
+                expected(tut.name),
+                "{} starts with the wrong datum planes",
+                tut.name
+            );
+        }
+    }
+
     /// #1702: the bracket is named, so the pane row and every view label say "Bracket"
     /// rather than "Body 2".
     #[test]
@@ -9610,7 +9717,8 @@ mod tests {
         &TUTORIALS[tutorial_index("shell").expect("shell tutorial is registered")]
     }
 
-    /// #1675: hollow a block into a four-sided box — open top *and* bottom.
+    /// #1675/#1727: hollow a block into a tray — open at the top and down one side, both of
+    /// which you can see without turning the model over.
     #[test]
     fn shell_tutorial_is_registered_and_opens_two_faces() {
         let tut = shell_tut();
@@ -9623,7 +9731,8 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(joined.contains("top"), "{joined}");
-        assert!(joined.contains("bottom"), "{joined}");
+        assert!(joined.contains("side facing you"), "{joined}");
+        assert!(!joined.contains("bottom"), "no face you have to turn over for: {joined}");
         assert!(
             tut.steps
                 .iter()
@@ -9631,10 +9740,10 @@ mod tests {
             "the walkthrough picks the Shell tool"
         );
         assert!(
-            tut.steps
+            !tut.steps
                 .iter()
                 .any(|s| matches!(s.anchor, StepAnchor::Ui(UiAnchor::ViewCube))),
-            "and turns the model over to reach the bottom face"
+            "and never has to turn the model over"
         );
     }
 

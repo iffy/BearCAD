@@ -4697,6 +4697,8 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 tutorial::UiAnchor::CombineKind(kind) => context::combine_kind_rect(ctx, kind),
                 // Text tool string field in the Context pane (#1557).
                 tutorial::UiAnchor::TextContent => context::text_content_rect(ctx),
+                // The plane tool's Tilt field (#1723).
+                tutorial::UiAnchor::PlaneTilt => context::plane_tilt_rect(ctx),
                 // A selected drawing view's orientation bear and Style row (#1640).
                 tutorial::UiAnchor::DrawingViewBear => context::drawing_view_bear_rect(ctx),
                 tutorial::UiAnchor::DrawingViewStyle => context::drawing_view_style_rect(ctx),

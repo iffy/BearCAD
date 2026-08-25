@@ -9359,6 +9359,37 @@ impl AppState {
         result
     }
 
+    /// Drop every half-made operation (#1696). A new or freshly opened document invalidates
+    /// all of them: they hold keys into the document that just went away, and a preview still
+    /// on screen — a half-placed sphere's ghost, say — belongs to a model that no longer
+    /// exists. One list, so a new tool cannot be forgotten here the way most of these were.
+    fn clear_in_progress_tools(&mut self) {
+        self.creating_rect = None;
+        self.creating_line = None;
+        self.creating_circle = None;
+        self.creating_extrusion = None;
+        self.creating_vertex_treatment = None;
+        self.creating_edge_treatment = None;
+        self.creating_loft = None;
+        self.creating_revolve = None;
+        self.creating_sweep = None;
+        self.creating_boolean = None;
+        self.creating_move = None;
+        self.creating_paste = None;
+        self.creating_joint = None;
+        self.creating_mirror = None;
+        self.creating_sketch_mirror = None;
+        self.creating_repeat = None;
+        self.creating_sketch_repeat = None;
+        self.creating_sketch_offset = None;
+        self.creating_slice = None;
+        self.creating_shell = None;
+        self.creating_sketch_slice = None;
+        self.creating_shape = None;
+        self.creating_plane = None;
+        self.creating_section = None;
+    }
+
     /// Advance the running tutorial past every step whose predicate is now satisfied
     /// (a user who worked ahead skips ahead), stopping at manual steps or the end.
     pub fn advance_tutorial(&mut self) {
@@ -9807,11 +9838,7 @@ impl AppState {
                 self.path = None;
                 self.sketch_session = None;
                 self.cam.set_view_up(None);
-                self.creating_rect = None;
-                self.creating_line = None;
-                self.creating_circle = None;
-                self.creating_plane = None;
-                self.creating_section = None;
+                self.clear_in_progress_tools();
                 self.element_visibility = ElementVisibility::default();
                 self.scene_selection.clear();
                 self.tool = Tool::Select;
@@ -9830,6 +9857,8 @@ impl AppState {
                     self.drop_document_session();
                     self.doc = doc;
                     self.sketch_session = None;
+                    // The opened document invalidates every half-made operation, same as New.
+                    self.clear_in_progress_tools();
                     self.cam.set_view_up(None);
                     self.path = Some(path.clone());
                     self.mark_saved();
@@ -40384,6 +40413,24 @@ translate_mode: crate::model::MoveTranslateMode::Free,
     }
 
     /// #1489: a 3D fillet radius typed as a parameter follows edits on recompute.
+    /// #1696: a half-placed sphere kept drawing its ghost over the next document — New
+    /// cleared five of the two dozen in-progress tool states and left the rest holding keys
+    /// into a document that no longer exists.
+    #[test]
+    fn a_new_document_drops_every_in_progress_tool() {
+        let mut state = AppState::default();
+        state.creating_shape =
+            Some(CreatingShape::new(crate::model::PrimitiveKind::Sphere));
+        state.creating_repeat = Some(CreatingRepeat::default());
+        state.creating_slice = Some(CreatingSlice::default());
+        state.creating_boolean = Some(CreatingBoolean::default());
+        state.apply(Action::NewDocument);
+        assert!(state.creating_shape.is_none(), "the sphere ghost is gone");
+        assert!(state.creating_repeat.is_none());
+        assert!(state.creating_slice.is_none());
+        assert!(state.creating_boolean.is_none());
+    }
+
     #[test]
     fn edge_treatment_amount_as_a_parameter_follows_edits_on_recompute() {
         let mut state = box_extrusion_state();
