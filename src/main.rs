@@ -25634,6 +25634,18 @@ impl App {
             return;
         }
 
+        // A circle has one value field, so Tab has nowhere to go (#1718): re-arm it rather
+        // than letting focus escape to the toolbar, where the next keystroke is lost.
+        if self.state.creating_circle.is_some() {
+            if tab_pressed {
+                ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
+                if let Some(cc) = &mut self.state.creating_circle {
+                    cc.pending_focus = true;
+                }
+            }
+            return;
+        }
+
         if self.state.creating_plane.is_some() {
             if tab_pressed {
                 ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
