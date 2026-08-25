@@ -2393,6 +2393,20 @@ fn has_equal_constraint(app: &AppState) -> bool {
     live_constraints(app).any(|c| matches!(c.kind, ConstraintKind::Equal { .. }))
 }
 
+/// A Parallel between two *lines* (#1700) -- the axis-based Horizontal/Vertical buttons also
+/// store Parallel, but against an `OriginAxis`, so those don't count here.
+fn has_line_parallel_constraint(app: &AppState) -> bool {
+    use crate::model::ConstraintLine;
+    live_constraints(app).any(|c| {
+        matches!(
+            &c.kind,
+            ConstraintKind::Parallel { line_a, line_b }
+                if matches!(line_a, ConstraintLine::Line(_))
+                    && matches!(line_b, ConstraintLine::Line(_))
+        )
+    })
+}
+
 fn has_horizontal_constraint(app: &AppState) -> bool {
     has_axis_parallel(app, crate::model::SketchAxis::X)
 }
@@ -2636,6 +2650,17 @@ fn assist_equal(app: &mut AppState) {
     ));
 }
 
+fn assist_parallel(app: &mut AppState) {
+    if has_line_parallel_constraint(app) {
+        return;
+    }
+    assist_equal(app);
+    select_poly_lines(app, 0, 2);
+    let _ = app.apply(Action::AddGeometricConstraint(
+        crate::geometric_constraints::GeometricConstraintType::Parallel,
+    ));
+}
+
 /// #1591: draw a four-sided polygon with the Line tool, then pin it with
 /// horizontal, vertical, and equal constraints.
 static CONSTRAINTS_STEPS: &[Step] = &[
@@ -2740,6 +2765,19 @@ static CONSTRAINTS_STEPS: &[Step] = &[
         StepAssist {
             label: "Do it for me",
             run: assist_equal,
+        },
+        None,
+    ),
+    assisted_step(
+        "Both are still picked \u{2014} click Parallel (or press `1`). The top swings level \
+         with the bottom.",
+        StepAnchor::Ui(UiAnchor::ConstraintButton(
+            crate::geometric_constraints::GeometricConstraintType::Parallel,
+        )),
+        Some(has_line_parallel_constraint),
+        StepAssist {
+            label: "Do it for me",
+            run: assist_parallel,
         },
         None,
     ),
@@ -8739,6 +8777,36 @@ mod tests {
                 step.narration
             );
         }
+    }
+
+    /// #1700: the walkthrough ends with the quad squared up -- a line-to-line Parallel
+    /// on the top side, so the solver visibly swings it level with the bottom.
+    #[test]
+    fn constraints_tutorial_finishes_by_making_the_top_parallel_to_the_bottom() {
+        let mut app = AppState::default();
+        app.apply(Action::StartTutorial {
+            index: tutorial_index("constraints").unwrap(),
+        });
+        // Run every assist in order; the last one is the Parallel finish.
+        let steps = constraints_tut().steps;
+        for step in steps {
+            if let Some(assist) = &step.assist {
+                (assist.run)(&mut app);
+            }
+        }
+        assert!(
+            has_line_parallel_constraint(&app),
+            "the tutorial should leave a line-to-line Parallel constraint"
+        );
+        let lines = first_sketch_rect_lines(&app);
+        let bottom = app.doc.lines.get(lines[0]).expect("bottom side");
+        let top = app.doc.lines.get(lines[2]).expect("top side");
+        let cross = (bottom.x1 - bottom.x0) * (top.y1 - top.y0)
+            - (bottom.y1 - bottom.y0) * (top.x1 - top.x0);
+        assert!(
+            cross.abs() < 1e-2,
+            "top and bottom should end up parallel (cross = {cross})"
+        );
     }
 
     fn constraints_tut() -> &'static Tutorial {
