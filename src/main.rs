@@ -3049,6 +3049,10 @@ enum BubbleTail {
 /// Ring centre and radius for a UI-widget orb. Wide ValueInputs must not puff the
 /// ring to their width — that parks the speech bubble a field-width below, on
 /// Default units instead of Height/Radius (#1308/#1310).
+/// How far one arrow-key press moves the selection (#1708), in millimetres. Shift multiplies
+/// it by ten — the same coarse/fine pair every other nudge in the app uses.
+const NUDGE_STEP_MM: f32 = 1.0;
+
 /// How wide a bare *spot* on the drawing page reads as a click target (#1703) — a toolbar
 /// button's size, so its orb comes out the same size as every other step's.
 const SPOT_ORB_TARGET: f32 = 24.0;
@@ -7417,6 +7421,33 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 && ctx.input(|i| i.key_pressed(egui::Key::V))
             {
                 self.state.apply(Action::ToggleSelectionVisibility);
+            }
+
+            // Arrows nudge the selection on the Select tool (#1708): a millimetre a press,
+            // ten with Shift held. `consume_key` so the press never also walks egui's focus.
+            if self.state.tool == Tool::Select {
+                let shift = ctx.input(|i| i.modifiers.shift_only());
+                let mods = if shift {
+                    egui::Modifiers::SHIFT
+                } else {
+                    egui::Modifiers::NONE
+                };
+                let step = if shift { NUDGE_STEP_MM * 10.0 } else { NUDGE_STEP_MM };
+                for (key, dx, dy) in [
+                    (egui::Key::ArrowLeft, -1.0, 0.0),
+                    (egui::Key::ArrowRight, 1.0, 0.0),
+                    // Up the page and up the sketch are both +y; the drawing page's own
+                    // fraction grows downward, so `NudgeSelection` flips it there.
+                    (egui::Key::ArrowUp, 0.0, 1.0),
+                    (egui::Key::ArrowDown, 0.0, -1.0),
+                ] {
+                    if ctx.input_mut(|i| i.consume_key(mods, key)) {
+                        self.state.apply(Action::NudgeSelection {
+                            dx: dx * step,
+                            dy: dy * step,
+                        });
+                    }
+                }
             }
 
             // Z: zoom to fit — the selection if anything is selected, else everything (#279).

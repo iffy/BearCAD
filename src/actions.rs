@@ -2901,6 +2901,13 @@ pub enum Action {
     DragSelection { u: f32, v: f32 },
     /// Finish the in-sketch Move gizmo drag (#306).
     EndSelectionDrag,
+    /// Nudge whatever is selected by `(dx, dy)` mm (#1708) — the Select tool's arrow keys.
+    /// On a drawing page that moves the picked views and notes across the sheet; in a sketch
+    /// it slides the picked geometry, constraints and all.
+    NudgeSelection {
+        dx: f32,
+        dy: f32,
+    },
     /// Finish an interactive line drag.
     EndLineDrag,
     /// Move a curved line's tangent handle (`near_start` selects the one near `(x0,y0)` vs.
@@ -12538,6 +12545,80 @@ impl AppState {
             Action::EndSelectionDrag => {
                 self.selection_drag_session = None;
                 ActionResult::Ok
+            }
+            // #1708: the Select tool's arrow keys. Both spaces are millimetres, so a nudge
+            // means the same thing whichever you are looking at; the drawing page stores
+            // positions as page fractions, so the step converts through the sheet's size.
+            Action::NudgeSelection { dx, dy } => {
+                if let Some(drawing) = self.editing_drawing {
+                    let Some(d) = self.doc.drawings.get(drawing) else {
+                        return ActionResult::Err("No drawing open".to_string());
+                    };
+                    // The page's own y grows *downward*, so "up the page" is a smaller
+                    // fraction — the caller passes the world convention (+y up).
+                    let (fx, fy) = (
+                        dx / d.page_width_mm.max(1e-3),
+                        -dy / d.page_height_mm.max(1e-3),
+                    );
+                    let picked = self.selected_drawing_elements.clone();
+                    if picked.is_empty() {
+                        return ActionResult::Ok;
+                    }
+                    for (dk, element) in picked {
+                        if dk != drawing {
+                            continue;
+                        }
+                        match element {
+                            crate::context::DrawingElementRef::Projection(view) => {
+                                let Some(v) = self
+                                    .doc
+                                    .drawings
+                                    .get(drawing)
+                                    .and_then(|d| d.views.get(view))
+                                else {
+                                    continue;
+                                };
+                                let (pos_x, pos_y) = (v.pos_x + fx, v.pos_y + fy);
+                                self.apply(Action::MoveDrawingView { drawing, view, pos_x, pos_y });
+                            }
+                            crate::context::DrawingElementRef::Text(annotation) => {
+                                let Some(a) = self
+                                    .doc
+                                    .drawings
+                                    .get(drawing)
+                                    .and_then(|d| d.annotations.get(annotation))
+                                else {
+                                    continue;
+                                };
+                                let (pos_x, pos_y) = (a.pos_x + fx, a.pos_y + fy);
+                                self.apply(Action::MoveDrawingAnnotation {
+                                    drawing,
+                                    annotation,
+                                    pos_x,
+                                    pos_y,
+                                });
+                            }
+                            // A dimension rides the edge it measures; there is nothing of its
+                            // own to move here (its offset is dragged on the page).
+                            _ => {}
+                        }
+                    }
+                    return ActionResult::Ok;
+                }
+                if self.sketch_session.is_some() {
+                    if self.scene_selection.is_empty() {
+                        return ActionResult::Ok;
+                    }
+                    // Through the Move gizmo's own path, so the solver keeps every
+                    // constraint the selection carries (#306).
+                    self.apply(Action::BeginSelectionDrag { anchor_u: 0.0, anchor_v: 0.0 });
+                    let result = self.apply(Action::DragSelection { u: dx, v: dy });
+                    self.apply(Action::EndSelectionDrag);
+                    return result;
+                }
+                let e = "Open a sketch or a drawing to nudge the selection".to_string();
+                self.status = e.clone();
+                ActionResult::Err(e)
             }
             Action::SetBezierHandle { line, near_start, u, v } => {
                 if let Err(e) =

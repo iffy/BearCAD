@@ -398,6 +398,10 @@ pub fn all_shortcuts() -> Vec<ShortcutSection> {
                 "Toggle visibility of the selection (Select tool)".to_string(),
             ),
             (
+                "← ↑ → ↓".to_string(),
+                "Nudge the selection 1 mm (Select tool); Shift for 10 mm".to_string(),
+            ),
+            (
                 "Tab".to_string(),
                 "Next dimension field while drawing (completes a variable name first)".to_string(),
             ),
