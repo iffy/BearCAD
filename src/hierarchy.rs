@@ -1635,7 +1635,9 @@ pub fn constraint_related_nodes(kind: &ConstraintKind) -> Vec<HierarchyNode> {
 /// inputs haven't been emitted yet — so a node always sits below everything that feeds it.
 /// Each node with consumers reserves **one** lane for all of them: its children string down
 /// that single vertical run rather than fanning out sideways, and a lane is reused as soon as
-/// its last consumer is passed, so a straight history chain never drifts right.
+/// its last consumer is passed, so a straight history chain never drifts right. When that
+/// preferred lane is already carrying another trunk, the node packs **left** into a free
+/// column instead of stepping further right (#1764).
 pub fn graph_lane_layout(doc: &Document, tree: &[HierarchyEntry]) -> GraphLaneLayout {
     let positions = graph_node_positions(tree);
     if positions.is_empty() {
@@ -1704,11 +1706,23 @@ pub fn graph_lane_layout(doc: &Document, tree: &[HierarchyEntry]) -> GraphLaneLa
     let free_at = |busy: &[Option<usize>], lane: usize, row: usize| {
         busy.get(lane).copied().flatten().is_none_or(|until| until < row)
     };
-    let first_free = |busy: &mut Vec<Option<usize>>, row: usize, min_lane: usize| {
-        let mut lane = min_lane;
-        while !free_at(busy, lane, row) {
-            lane += 1;
-        }
+    // A node can sit on a trunk that *ends* at this row (it is the destination) but not on
+    // one that continues through it. Through-traffic uses `free_at` (`until < row`).
+    let can_sit_at = |busy: &[Option<usize>], lane: usize, row: usize| {
+        busy.get(lane).copied().flatten().is_none_or(|until| until <= row)
+    };
+    // Prefer `min_lane` when it is free to sit on. If it is blocked, pack left into the
+    // leftmost sit-able lane rather than only searching to the right (#1764).
+    let first_sit = |busy: &mut Vec<Option<usize>>, row: usize, min_lane: usize| {
+        let lane = if can_sit_at(busy, min_lane, row) {
+            min_lane
+        } else {
+            let mut lane = 0;
+            while !can_sit_at(busy, lane, row) {
+                lane += 1;
+            }
+            lane
+        };
         while busy.len() <= lane {
             busy.push(None);
         }
@@ -1746,7 +1760,8 @@ pub fn graph_lane_layout(doc: &Document, tree: &[HierarchyEntry]) -> GraphLaneLa
         // line detour out of its lane and back, crossing whatever runs between (#1684). Ties
         // (two inputs on the same row) go to the leftmost lane. A node with no input at all (a
         // top-level element, a constraint) takes the leftmost free lane at or right of where
-        // its tree parent puts its children.
+        // its tree parent puts its children. If that preferred lane is already carrying
+        // through-traffic, pack left into a free column instead of drifting right (#1764).
         let nearest_input = sources.get(node).and_then(|list| {
             list.iter()
                 .filter_map(|src| Some((*row_of.get(src)?, *child_lane_of.get(src)?)))
@@ -1756,14 +1771,13 @@ pub fn graph_lane_layout(doc: &Document, tree: &[HierarchyEntry]) -> GraphLaneLa
         let lane = match nearest_input {
             // A chain arrives on its input's own trunk, which is by definition this node's.
             Some((lane, false)) => lane,
-            Some((lane, true)) if free_at(&busy_until, lane, row) => lane,
-            Some((lane, true)) => first_free(&mut busy_until, row, lane),
+            Some((lane, true)) => first_sit(&mut busy_until, row, lane),
             None => {
                 let min_lane = tree_parent
                     .get(node)
                     .and_then(|parent| child_lane_of.get(parent).map(|(lane, _)| *lane))
                     .unwrap_or(0);
-                first_free(&mut busy_until, row, min_lane)
+                first_sit(&mut busy_until, row, min_lane)
             }
         };
         while busy_until.len() <= lane {
@@ -4969,8 +4983,9 @@ const GRAPH_ICON_SIZE: f32 = 13.0;
 /// relationships drawn as mostly-vertical lanes beside them — the way `gitk` draws commits.
 /// Rows come from [`graph_lane_layout`]: a node sits below everything that feeds it, a
 /// parent's children string down one shared lane with short legs into each row, and a lane is
-/// reused the moment its last consumer passes, so the graph never spills right further than
-/// the branches actually need. Height scrolls vertically.
+/// reused the moment its last consumer passes — packing left into a free column when the
+/// preferred lane is already carrying a trunk (#1764) — so the graph never spills right
+/// further than the branches actually need. Height scrolls vertically.
 #[allow(clippy::too_many_arguments)]
 fn show_graph_view(
     ui: &mut egui::Ui,
@@ -9343,6 +9358,127 @@ label_hidden: false,
                 .any(|e| e.kind.is_input() && matches!(e.to, HierarchyNode::Constraint(_))),
             "no sketch → constraint parent line"
         );
+    }
+
+    /// #1764: when a fan sibling's preferred lane is occupied by another child's outgoing
+    /// trunk, pack left into a free lane rather than stepping further right. A shape with a
+    /// shadow body plus a face sketch is the smallest case: the body's trunk occupies lane 1
+    /// at the sketch's row, so the sketch should sit in lane 0 instead of drifting to lane 2.
+    fn doc_with_shape_shadow_body_and_face_sketch() -> (Document, crate::model::SketchId) {
+        use crate::model::{
+            Body, BodySource, ExtrudeFace, Extrusion, FaceId, Primitive, PrimitiveFace,
+            PrimitiveKind, Sketch,
+        };
+        let mut doc = Document::default();
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.width = "40".to_string();
+        shape.depth = "30".to_string();
+        shape.height = "20".to_string();
+        let pi = doc.primitives.insert(shape);
+        doc.bodies.insert(Body {
+            source: BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: true,
+        });
+        let sketch = doc.sketches.insert(Sketch {
+            face: FaceId::PrimitiveFace {
+                primitive: pi,
+                face: PrimitiveFace::CuboidTop,
+            },
+            name: None,
+            length_unit: None,
+            angle_unit: None,
+        });
+        let ei = doc.extrusions.insert(Extrusion {
+            sketch,
+            faces: vec![ExtrudeFace::Polygon(vec![])],
+            distance: 10.0,
+            target: None,
+            expression: String::new(),
+            symmetric: false,
+            name: None,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
+            edge_treatments: Vec::new(),
+        });
+        doc.bodies.insert(Body {
+            source: BodySource::Solid {
+                base: Some(pi),
+                add: vec![ei],
+                cut: Vec::new(),
+            },
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        (doc, sketch)
+    }
+
+    fn graph_with_shadow_bodies(doc: &Document) -> GraphLaneLayout {
+        let mut filter = ElementFilter::default();
+        filter.shadow_bodies = true;
+        filter.sketch_geometry = false;
+        let tree = graph_view_tree(doc, None, &filter);
+        graph_lane_layout(doc, &tree)
+    }
+
+    #[test]
+    fn graph_lane_layout_packs_left_when_the_preferred_lane_is_busy() {
+        let (doc, sketch) = doc_with_shape_shadow_body_and_face_sketch();
+        let layout = graph_with_shadow_bodies(&doc);
+        assert_eq!(
+            lane_of(&layout, HierarchyNode::Sketch(sketch)),
+            Some(0),
+            "the face sketch packs into the unused first lane instead of stepping right of the body's trunk"
+        );
+        assert_eq!(lane_crossings(&layout), 0, "packing left must not introduce crossings");
+    }
+
+    /// #1764: the reported document — two cuboids, a cut, a face sketch, and a slice —
+    /// wastes left columns under Sketch 1 / Slice 0 / Body 4 / Body 5. Pack so Sketch 1
+    /// sits on the far left, Slice 0 moves left, and the slice bodies occupy earlier columns.
+    #[test]
+    fn graph_lane_layout_packs_the_1764_slice_graph_left() {
+        let bytes = include_bytes!("../tests/fixtures/issue_1764.json");
+        let doc = crate::storage::from_json_bytes(bytes).expect("load issue 1764");
+        let layout = graph_with_shadow_bodies(&doc);
+
+        let lane = |name: &str| {
+            layout
+                .rows
+                .iter()
+                .find(|r| node_label(&doc, r.node) == name)
+                .map(|r| r.lane)
+        };
+        assert_eq!(lane("Sketch 1"), Some(0), "Sketch 1's icon sits in the far left column");
+        assert_eq!(lane("Slice 0"), Some(0), "Slice 0 packs left with the sketch that feeds it");
+        assert_eq!(lane("Body 4"), Some(1), "Body 4 sits in the second column");
+        assert_eq!(lane("Body 5"), Some(1), "Body 5 shares that column with its sibling");
+        assert!(
+            layout.lane_count <= 2,
+            "unused left columns are not wasted, got {} lanes",
+            layout.lane_count
+        );
+        assert_eq!(lane_crossings(&layout), 0, "packing left must not introduce crossings");
+
+        let lane_of: HashMap<HierarchyNode, usize> =
+            layout.rows.iter().map(|r| (r.node, r.lane)).collect();
+        for edge in layout.edges.iter().filter(|e| e.kind.is_input()) {
+            let (Some(from), Some(to)) = (layout.row_of(edge.from), layout.row_of(edge.to)) else {
+                continue;
+            };
+            for (row, r) in layout.rows.iter().enumerate() {
+                if row > from && row < to && r.lane == edge.lane {
+                    panic!(
+                        "the line {:?} -> {:?} runs straight through {:?}'s icon",
+                        edge.from, edge.to, r.node
+                    );
+                }
+            }
+            let _ = &lane_of;
+        }
     }
 
 
