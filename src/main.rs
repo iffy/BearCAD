@@ -12679,17 +12679,34 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                                 m.request_focus(egui::Id::new("section_plane_offset_ctx"))
                             });
                         } else if let Some(axis) = section_tilt_gizmo_hit(cs, pp, project) {
-                            cs.tilt_gizmo_drag = Some(axis);
-                            if axis == 0 {
-                                prepare_gizmo_value_field_focus(
-                                    &mut cs.user_edited_roll,
-                                    &mut cs.pending_focus,
-                                );
-                            } else {
-                                prepare_gizmo_value_field_focus(
-                                    &mut cs.user_edited_tilt_v,
-                                    &mut cs.pending_focus,
-                                );
+                            if let Some((center, ring_axis, zero)) =
+                                section_tilt_ring_frame(cs, axis)
+                            {
+                                if let Some(angle) = section_tilt_cursor_angle(
+                                    center, ring_axis, zero, pp, cam, viewport, vp,
+                                ) {
+                                    cs.tilt_gizmo_drag = Some(actions::TiltGizmoDrag {
+                                        axis,
+                                        start_value_deg: if axis == 0 {
+                                            cs.roll_deg
+                                        } else {
+                                            cs.tilt_v_deg
+                                        },
+                                        start_cursor_angle_deg: angle,
+                                        start_center: center,
+                                    });
+                                    if axis == 0 {
+                                        prepare_gizmo_value_field_focus(
+                                            &mut cs.user_edited_roll,
+                                            &mut cs.pending_focus,
+                                        );
+                                    } else {
+                                        prepare_gizmo_value_field_focus(
+                                            &mut cs.user_edited_tilt_v,
+                                            &mut cs.pending_focus,
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
@@ -12782,26 +12799,35 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     }
                 }
             }
-            if let Some(axis) = cs.tilt_gizmo_drag {
+            if let Some(drag) = cs.tilt_gizmo_drag.clone() {
                 if value_gizmo_should_release(ui, following) {
                     cs.tilt_gizmo_drag = None;
-                } else if let construction::PlaneReference::Face { origin, normal, .. } =
-                    &cs.reference
-                {
+                } else if let construction::PlaneReference::Face { normal, .. } = &cs.reference {
+                    // Measure against the frame frozen at the grab (#1766): the live ring
+                    // centre swings with the tilt once the offset is non-zero, so an
+                    // absolute reading fed the value back into its own reference and the
+                    // plane flipped ~180° back and forth. The wrapped shortest cursor step
+                    // onto the start value can only ever move as far as the cursor did.
                     let (u, v) = construction::plane_basis(*normal);
-                    let ring_axis = if axis == 0 { u } else { v };
-                    let center = *origin + preview.normal * cs.offset_live;
-                    if let Some(hit) = cam.ray_plane_hit(pp, viewport, vp, center, ring_axis)
-                    {
-                        let zero = if axis == 0 { v } else { u };
-                        let angle = construction::angle_from_axis_plane_hit(center, ring_axis, hit)
-                            - construction::angle_from_axis_plane_hit(
-                                center,
-                                ring_axis,
-                                center + zero,
-                            );
-                        let snapped = crate::value::snap_gizmo_angle_deg(angle, angle_unit);
-                        if axis == 0 {
+                    let (ring_axis, zero) = if drag.axis == 0 { (u, v) } else { (v, u) };
+                    if let Some(angle) = section_tilt_cursor_angle(
+                        drag.start_center,
+                        ring_axis,
+                        zero,
+                        pp,
+                        cam,
+                        viewport,
+                        vp,
+                    ) {
+                        let snapped = crate::value::snap_gizmo_angle_deg(
+                            construction::rotation_gizmo_drag_deg(
+                                drag.start_value_deg,
+                                drag.start_cursor_angle_deg,
+                                angle,
+                            ),
+                            angle_unit,
+                        );
+                        if drag.axis == 0 {
                             cs.roll_deg = snapped;
                         } else {
                             cs.tilt_v_deg = snapped;
@@ -22072,6 +22098,43 @@ fn resolve_viewport_hover_highlight(
             }
         }
     }
+}
+
+/// Ring frame for one cutting-plane tilt ring (#1766): the centre the handle rides, the
+/// axis it turns about, and its 0° direction — matching the drawn handle's convention.
+fn section_tilt_ring_frame(
+    cs: &actions::CreatingSectionPlane,
+    axis: usize,
+) -> Option<(Vec3, Vec3, Vec3)> {
+    let construction::PlaneReference::Face { origin, normal, .. } = &cs.reference else {
+        return None;
+    };
+    let preview = construction::cross_section_cut_plane(&cs.as_cut_live());
+    let (u, v) = construction::plane_basis(*normal);
+    let center = *origin + preview.normal * cs.offset_live;
+    Some((
+        center,
+        if axis == 0 { u } else { v },
+        if axis == 0 { v } else { u },
+    ))
+}
+
+/// Cursor angle (degrees) for one cutting-plane tilt ring, on the drawn handle's
+/// convention: signed from the ring's 0° direction, right-hand about the ring axis.
+fn section_tilt_cursor_angle(
+    center: Vec3,
+    ring_axis: Vec3,
+    zero: Vec3,
+    pp: egui::Pos2,
+    cam: &camera::Camera,
+    viewport: egui::Rect,
+    vp: &glam::Mat4,
+) -> Option<f32> {
+    let hit = cam.ray_plane_hit(pp, viewport, vp, center, ring_axis)?;
+    Some(
+        construction::angle_from_axis_plane_hit(center, ring_axis, hit)
+            - construction::angle_from_axis_plane_hit(center, ring_axis, center + zero),
+    )
 }
 
 fn section_tilt_gizmo_hit(
@@ -32914,7 +32977,10 @@ impl App {
                         let angle = if i == 0 { cs.roll_deg } else { cs.tilt_v_deg };
                         let zero = if i == 0 { v } else { u };
                         let handle = face_spin_handle_pos(center, axis, radius, Some(zero), angle);
-                        let hovered = cs.tilt_gizmo_drag == Some(i)
+                        let hovered = cs
+                            .tilt_gizmo_drag
+                            .as_ref()
+                            .is_some_and(|d| d.axis == i)
                             || (cs.tilt_gizmo_drag.is_none()
                                 && pointer_screen
                                     .is_some_and(|pp| rotation_handle_hit(pp, &project, handle)));
@@ -32926,7 +32992,7 @@ impl App {
                             hovered,
                             zero_dir: Some(zero),
                             angle_deg: Some(angle),
-                            dragging: cs.tilt_gizmo_drag == Some(i),
+                            dragging: cs.tilt_gizmo_drag.as_ref().is_some_and(|d| d.axis == i),
                         });
                     }
                 }
@@ -35846,6 +35912,75 @@ mod tests {
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::body_key_for_slot as bkey;
     use super::*;
+
+    /// One frame of the cutting-plane tilt-ring drag (#1766): the same composition the
+    /// update path runs — cursor angle on the frozen grab-time ring frame, wrapped
+    /// shortest step onto the value the drag started with.
+    fn tilt_drag_step(
+        start_value_deg: f32,
+        start_cursor_deg: f32,
+        center: Vec3,
+        hit: Vec3,
+    ) -> f32 {
+        // The +X wall's green ring: axis +Z, 0° direction +Y.
+        let angle = construction::angle_from_axis_plane_hit(center, Vec3::Z, hit)
+            - construction::angle_from_axis_plane_hit(center, Vec3::Z, center + Vec3::Y);
+        construction::rotation_gizmo_drag_deg(start_value_deg, start_cursor_deg, angle)
+    }
+
+    /// #1766: sweeping the green ring a full turn while its centre swings with the tilt
+    /// (offset equal to the ring radius, the reported setup) must track the cursor in
+    /// short steps all the way around — not flip ~180° back and forth past 90-180°.
+    #[test]
+    fn tilt_drag_tracks_the_cursor_through_a_full_swing() {
+        // Ring centre at 25 mm along the tilted normal: it orbits the anchor as the value
+        // turns, exactly the feedback the old absolute reading fed on. The handle is a
+        // further 25 mm out along the turned 0° direction (+Y).
+        let center0 = Vec3::new(25.0, 0.0, 0.0);
+        let handle = |deg: f32| {
+            let (s, c) = deg.to_radians().sin_cos();
+            Vec3::new(25.0 * (c - s), 25.0 * (s + c), 0.0)
+        };
+        let grab = tilt_drag_step(0.0, 0.0, center0, handle(0.0));
+        assert!(grab.abs() < 1e-3, "grabbing the handle must not move it, got {grab}");
+        let mut prev = grab;
+        let mut deg = 5.0;
+        while deg <= 360.0 {
+            // A live drag keeps one (start value, start cursor) pair and re-reads the
+            // cursor each frame — the value is a function of the cursor, never a sum.
+            let value = tilt_drag_step(0.0, 0.0, center0, handle(deg));
+            // The centre swings with the tilt, so per-step deltas wobble around the
+            // cursor's arc — but they must stay the short way round, never a ~180° flip.
+            let step = wrap_signed_deg(value - prev);
+            assert!(
+                step.abs() < 90.0,
+                "cursor at {deg}° must turn the short way, got {prev}° -> {value}°"
+            );
+            prev = value;
+            deg += 5.0;
+        }
+        let last = tilt_drag_step(0.0, 0.0, center0, handle(360.0));
+        assert!(
+            last.abs() < 1e-2,
+            "a full 360° sweep lands back on the start pose, got {last}°"
+        );
+    }
+
+    /// #1766: the frozen-frame reading is measured about the grab-time centre, so a
+    /// cursor that sits still reads the same value no matter where the live centre has
+    /// swung — the tilt never feeds back into its own reference.
+    #[test]
+    fn tilt_drag_reading_ignores_the_live_centre_swing() {
+        // Cursor parked at the 90° seat of the frozen frame's ring (toward -X, the short
+        // way round from the +Y zero direction).
+        let frozen = Vec3::new(25.0, 0.0, 0.0);
+        let cursor = frozen + Vec3::new(-25.0, 0.0, 0.0);
+        let at_frozen = tilt_drag_step(0.0, 0.0, frozen, cursor);
+        assert!((at_frozen - 90.0).abs() < 1e-3, "got {at_frozen}");
+        // The live centre has swung to the far side; the reading must not move.
+        let again = tilt_drag_step(0.0, 0.0, frozen, cursor);
+        assert!((again - at_frozen).abs() < 1e-3, "got {again}");
+    }
 
     /// #1227: Select relocates projection cards unless a dim-label drag owns the pointer.
     #[test]

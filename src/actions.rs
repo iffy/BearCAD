@@ -2408,9 +2408,26 @@ pub struct CreatingSectionPlane {
     pub user_edited_tilt_v: bool,
     pub pending_focus: bool,
     pub gizmo_drag: Option<crate::construction::AxisGizmoDrag>,
-    /// Which face-tilt ring is being dragged: `0` = U, `1` = V.
-    pub tilt_gizmo_drag: Option<usize>,
+    /// Which face-tilt ring is being dragged (#1766): `axis` 0 = U, 1 = V, plus the frame
+    /// the drag was grabbed on — the value and cursor angle it started from, measured on
+    /// the ring centre frozen at the grab. The live centre swings with the tilt when the
+    /// offset is non-zero, so measuring against it feeds the tilt back into its own
+    /// reference and the plane flips ~180° back and forth frame to frame.
+    pub tilt_gizmo_drag: Option<TiltGizmoDrag>,
     pub anchor: Option<SceneElement>,
+}
+
+/// One face-tilt ring mid-drag (#1766).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TiltGizmoDrag {
+    /// `0` = U ring (the Tilt field), `1` = V ring (the Turn field).
+    pub axis: usize,
+    /// Ring value when the drag was grabbed, degrees.
+    pub start_value_deg: f32,
+    /// Cursor angle on the ring when the drag was grabbed, degrees.
+    pub start_cursor_angle_deg: f32,
+    /// Ring centre the two angles above were measured on, frozen for the whole drag.
+    pub start_center: Vec3,
 }
 
 impl Default for CreatingSectionPlane {
@@ -21568,19 +21585,28 @@ pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
                         position: None,
                     });
                 }
-                crate::construction::PlaneReference::Face { .. } => {
-                    gizmos.push(GizmoInfo {
-                        kind: "rotate",
-                        name: "tilt_u",
-                        value: cs.roll_deg.to_radians(),
-                        position: None,
-                    });
-                    gizmos.push(GizmoInfo {
-                        kind: "rotate",
-                        name: "tilt_v",
-                        value: cs.tilt_v_deg.to_radians(),
-                        position: None,
-                    });
+                crate::construction::PlaneReference::Face { origin, normal, .. } => {
+                    // Each tilt ring's drag handle, so scripts can aim pointer drags at it
+                    // (#1766): the same seat the viewport draws, zero_dir turned by the
+                    // live tilt about the ring axis, on the offset plane's centre.
+                    let plane = crate::construction::cross_section_cut_plane(&cs.as_cut_live());
+                    let (u, v) = crate::construction::plane_basis(*normal);
+                    let center = *origin + plane.normal * cs.offset_live;
+                    let radius = crate::construction::AXIS_ANGLE_GIZMO_RADIUS_MM;
+                    for (name, axis, zero, angle) in [
+                        ("tilt_u", u, v, cs.roll_deg),
+                        ("tilt_v", v, u, cs.tilt_v_deg),
+                    ] {
+                        let handle = center
+                            + (glam::Quat::from_axis_angle(axis, angle.to_radians()) * zero)
+                                * radius;
+                        gizmos.push(GizmoInfo {
+                            kind: "rotate",
+                            name,
+                            value: angle.to_radians(),
+                            position: Some(handle),
+                        });
+                    }
                 }
             }
         }

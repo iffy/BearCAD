@@ -1,0 +1,1 @@
+Cutting plane: dragging the green Turn ring with an offset off the face no longer flips ~180 degrees back and forth past ~90-180 degrees of tilt - the drag now measures the cursor against the ring frame frozen at the grab and applies the shortest wrapped step, and the tilt gizmos report their handle positions to scripts.
