@@ -6545,6 +6545,15 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
     api.set(
+        "drag_world",
+        lua.create_function(
+            |lua, (x0, y0, z0, x1, y1, z1): (f32, f32, f32, f32, f32, f32)| {
+                let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+                unsafe { tick.exec(Instruction::DragWorld { x0, y0, z0, x1, y1, z1 }) }
+            },
+        )?,
+    )?;
+    api.set(
         "click_ground",
         lua.create_function(|lua, (x, y, opts): (f32, f32, Option<Table>)| {
             let mods = click_mods(opts)?;
@@ -9232,7 +9241,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "os_open",
             "move", "click", "double_click", "repeat_tool", "move_ground", "click_ground",
             "move_world", "click_world",
-            "drag", "drag_ground", "right_drag", "right_drag_pan",
+            "drag", "drag_ground", "drag_world", "right_drag", "right_drag_pan",
             "right_click", "right_click_ground", "context_menu",
             "key", "keydown", "keyup", "type",
             "_view", "_view_home", "_zoom_fit", "_wait", "_wait_ms", "_screenshot",

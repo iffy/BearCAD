@@ -21568,18 +21568,28 @@ pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
                         position: None,
                     });
                 }
-                crate::construction::PlaneReference::Face { .. } => {
+                crate::construction::PlaneReference::Face { origin, normal, .. } => {
+                    // The drawn tilt handles (#1765): scripts aim a real pointer drag at them.
+                    let (u, v) = crate::construction::plane_basis(*normal);
+                    let center =
+                        origin + crate::construction::cross_section_cut_plane(&cs.as_cut_live())
+                            .normal
+                            * cs.offset_live;
                     gizmos.push(GizmoInfo {
                         kind: "rotate",
                         name: "tilt_u",
                         value: cs.roll_deg.to_radians(),
-                        position: None,
+                        position: Some(crate::construction::tilt_handle(
+                            center, u, v, cs.roll_deg,
+                        )),
                     });
                     gizmos.push(GizmoInfo {
                         kind: "rotate",
                         name: "tilt_v",
                         value: cs.tilt_v_deg.to_radians(),
-                        position: None,
+                        position: Some(crate::construction::tilt_handle(
+                            center, v, u, cs.tilt_v_deg,
+                        )),
                     });
                 }
             }
@@ -22850,6 +22860,39 @@ mod tests {
     use crate::model::boolean_op_key_for_slot as bopkey;
     use crate::model::move_op_key_for_slot as mopkey;
     use super::*;
+
+    /// #1765: face-anchored cutting planes expose their tilt-ring handles at the world
+    /// positions the viewport draws, so scripts can aim a real pointer drag at them.
+    #[test]
+    fn gizmos_expose_section_tilt_ring_handles() {
+        let mut state = AppState::default();
+        state.creating_section = Some(CreatingSectionPlane {
+            anchor: Some(crate::hierarchy::SceneElement::ConstructionPlane(pkey(0))),
+            roll_deg: 30.0,
+            tilt_v_deg: 40.0,
+            ..Default::default()
+        });
+        let gizmos = available_gizmos(&state);
+        let tilt_u = gizmos.iter().find(|g| g.name == "tilt_u").expect("tilt_u gizmo");
+        let tilt_v = gizmos.iter().find(|g| g.name == "tilt_v").expect("tilt_v gizmo");
+        let handle = |axis: Vec3, zero: Vec3, angle_deg: f32| {
+            let dir = glam::Quat::from_axis_angle(axis.normalize_or_zero(), angle_deg.to_radians())
+                * zero;
+            Vec3::ZERO + dir * crate::construction::AXIS_ANGLE_GIZMO_RADIUS_MM
+        };
+        let (u, v) = crate::construction::plane_basis(Vec3::Z);
+        let close = |a: Vec3, b: Vec3| (a - b).length() < 1e-3;
+        let tilt_u = tilt_u.position.expect("tilt_u handle position");
+        let tilt_v = tilt_v.position.expect("tilt_v handle position");
+        assert!(
+            close(tilt_u, handle(u, v, 30.0)),
+            "tilt_u handle at the drawn spot, got {tilt_u:?}"
+        );
+        assert!(
+            close(tilt_v, handle(v, u, 40.0)),
+            "tilt_v handle at the drawn spot, got {tilt_v:?}"
+        );
+    }
 
     /// #991: a two-sided joint's parts are picked as two named slots — the **mobile** part and
     /// the **fixed** one it is held against — which `members`/`base` already encode: `base` is

@@ -357,6 +357,7 @@ bearcad.ui.drag(x0, y0, x1, y1)
 bearcad.ui.drag_ground(x0, y0, x1, y1)
 bearcad.ui.drag_line({ … }, anchor_u?, anchor_v?, u?, v?)
 bearcad.ui.drag_vertex({ … }, u?, v?)
+bearcad.ui.drag_world(x0, y0, z0, x1, y1, z1)
 bearcad.ui.drawing_view_rect(view)
 bearcad.ui.elements_graph{ shadow_bodies? }
 bearcad.ui.elements_row_rect(label)

@@ -198,6 +198,7 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.ui.detach_tab"               , "bearcad.ui.detach_tab(index?)"),
     ("bearcad.ui.drag"                     , "bearcad.ui.drag(x0, y0, x1, y1)"),
     ("bearcad.ui.drag_ground"              , "bearcad.ui.drag_ground(x0, y0, x1, y1)"),
+    ("bearcad.ui.drag_world"               , "bearcad.ui.drag_world(x0, y0, z0, x1, y1, z1)"),
     ("bearcad.ui.drag_line"                , "bearcad.ui.drag_line({ … }, anchor_u?, anchor_v?, u?, v?)"),
     ("bearcad.ui.drag_vertex"              , "bearcad.ui.drag_vertex({ … }, u?, v?)"),
     ("bearcad.ui.elements_graph"           , "bearcad.ui.elements_graph{ shadow_bodies? }"),
