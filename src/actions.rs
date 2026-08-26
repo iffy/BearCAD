@@ -2383,38 +2383,58 @@ impl CreatingConstructionPlane {
     }
 }
 
-/// In-progress cutting plane (#1745): a picked anchor plus live offset/roll/flip, committed
-/// by Enter or the blue primary button. Offset and rotate are value gizmos.
+/// In-progress cutting plane (#1745/#1757): the construction-plane pick (face or axis),
+/// plus the two in-plane tilts a face gets and the keep-side flip. Offset / axis-angle
+/// gizmos are the construction-plane ones; face anchors add two tilt rings instead of
+/// spinning around the normal.
 #[derive(Clone, Debug)]
 pub struct CreatingSectionPlane {
-    pub origin: glam::Vec3,
-    pub normal: glam::Vec3,
+    /// When set, commit replaces this hanging plane instead of adding a new one (#1755).
+    pub edit_cut: Option<(crate::model::CrossSectionKey, usize)>,
+    /// Face vs axis — the same reference the construction-plane tool uses (#1757).
+    pub reference: crate::construction::PlaneReference,
     pub offset_live: f32,
+    /// Axis-anchor spin around the edge, or face-anchor tilt around the first in-plane
+    /// axis — degrees (#1752).
     pub roll_deg: f32,
+    /// Face-anchor tilt around the second in-plane axis, degrees (#1752). Unused for an axis.
+    pub tilt_v_deg: f32,
     pub flip: bool,
     pub offset_text: String,
     pub roll_text: String,
+    pub tilt_v_text: String,
     pub user_edited_offset: bool,
     pub user_edited_roll: bool,
+    pub user_edited_tilt_v: bool,
     pub pending_focus: bool,
     pub gizmo_drag: Option<crate::construction::AxisGizmoDrag>,
+    /// Which face-tilt ring is being dragged: `0` = U, `1` = V.
+    pub tilt_gizmo_drag: Option<usize>,
     pub anchor: Option<SceneElement>,
 }
 
 impl Default for CreatingSectionPlane {
     fn default() -> Self {
         Self {
-            origin: glam::Vec3::ZERO,
-            normal: glam::Vec3::Z,
+            edit_cut: None,
+            reference: crate::construction::PlaneReference::Face {
+                origin: glam::Vec3::ZERO,
+                normal: glam::Vec3::Z,
+                label: String::new(),
+            },
             offset_live: 0.0,
             roll_deg: 0.0,
+            tilt_v_deg: 0.0,
             flip: false,
             offset_text: String::new(),
             roll_text: String::new(),
+            tilt_v_text: String::new(),
             user_edited_offset: false,
             user_edited_roll: false,
+            user_edited_tilt_v: false,
             pending_focus: false,
             gizmo_drag: None,
+            tilt_gizmo_drag: None,
             anchor: None,
         }
     }
@@ -2422,23 +2442,25 @@ impl Default for CreatingSectionPlane {
 
 impl CreatingSectionPlane {
     pub fn from_element(doc: &crate::model::Document, element: &SceneElement) -> Option<Self> {
-        let (origin, normal) = crate::construction::plane_frame_from_element(doc, element)?;
+        let reference = crate::construction::plane_reference_from_element(doc, element)?;
         Some(Self {
-            origin,
-            normal,
+            reference,
             anchor: Some(element.clone()),
             pending_focus: true,
             ..Self::default()
         })
     }
 
-    #[cfg(test)]
     pub fn from_cut(cut: &crate::model::CrossSectionCut) -> Self {
         Self {
-            origin: cut.origin,
-            normal: cut.normal,
+            reference: crate::construction::PlaneReference::Face {
+                origin: cut.origin,
+                normal: cut.normal,
+                label: String::new(),
+            },
             offset_live: cut.offset_mm,
             roll_deg: cut.roll.to_degrees(),
+            tilt_v_deg: cut.tilt_v.to_degrees(),
             flip: cut.flip,
             offset_text: if cut.offset_expression.is_empty() {
                 format!("{}", cut.offset_mm)
@@ -2450,8 +2472,15 @@ impl CreatingSectionPlane {
             } else {
                 cut.roll_expression.clone()
             },
+            tilt_v_text: if cut.tilt_v_expression.is_empty() {
+                format!("{}", cut.tilt_v.to_degrees())
+            } else {
+                cut.tilt_v_expression.clone()
+            },
             user_edited_offset: !cut.offset_expression.is_empty(),
             user_edited_roll: !cut.roll_expression.is_empty(),
+            user_edited_tilt_v: !cut.tilt_v_expression.is_empty(),
+            pending_focus: true,
             ..Self::default()
         }
     }
@@ -2462,39 +2491,117 @@ impl CreatingSectionPlane {
         } else {
             self.offset_live
         };
-        let roll_deg = if self.user_edited_roll {
-            crate::value::eval_angle_rad_in_doc(&self.roll_text, doc)
-                .map(|r| r.to_degrees())
-                .unwrap_or(self.roll_deg)
-                .rem_euclid(360.0)
-        } else {
-            self.roll_deg
+        let angle_deg = |edited, text: &str, live| {
+            if edited {
+                crate::value::eval_angle_rad_in_doc(text, doc)
+                    .map(|r| r.to_degrees())
+                    .unwrap_or(live)
+                    .rem_euclid(360.0)
+            } else {
+                live
+            }
         };
-        crate::model::CrossSectionCut {
-            name: None,
-            origin: self.origin,
-            normal: self.normal,
-            offset_mm: offset,
-            offset_expression: if self.user_edited_offset {
-                self.offset_text.trim().to_string()
-            } else {
-                String::new()
-            },
-            flip: self.flip,
-            roll: roll_deg.to_radians(),
-            roll_expression: if self.user_edited_roll {
-                self.roll_text.trim().to_string()
-            } else {
-                String::new()
-            },
+        match &self.reference {
+            crate::construction::PlaneReference::Axis {
+                origin, direction, ..
+            } => {
+                let angle = angle_deg(self.user_edited_roll, &self.roll_text, self.roll_deg);
+                let plane = crate::construction::plane_from_axis(0.0, angle, *origin, *direction);
+                crate::model::CrossSectionCut {
+                    name: None,
+                    origin: *origin,
+                    normal: plane.normal,
+                    offset_mm: offset,
+                    offset_expression: if self.user_edited_offset {
+                        self.offset_text.trim().to_string()
+                    } else {
+                        String::new()
+                    },
+                    flip: self.flip,
+                    roll: 0.0,
+                    roll_expression: String::new(),
+                    tilt_v: 0.0,
+                    tilt_v_expression: String::new(),
+                }
+            }
+            crate::construction::PlaneReference::Face { origin, normal, .. } => {
+                let tilt_u = angle_deg(self.user_edited_roll, &self.roll_text, self.roll_deg);
+                let tilt_v = angle_deg(self.user_edited_tilt_v, &self.tilt_v_text, self.tilt_v_deg);
+                crate::model::CrossSectionCut {
+                    name: None,
+                    origin: *origin,
+                    normal: *normal,
+                    offset_mm: offset,
+                    offset_expression: if self.user_edited_offset {
+                        self.offset_text.trim().to_string()
+                    } else {
+                        String::new()
+                    },
+                    flip: self.flip,
+                    roll: tilt_u.to_radians(),
+                    roll_expression: if self.user_edited_roll {
+                        self.roll_text.trim().to_string()
+                    } else {
+                        String::new()
+                    },
+                    tilt_v: tilt_v.to_radians(),
+                    tilt_v_expression: if self.user_edited_tilt_v {
+                        self.tilt_v_text.trim().to_string()
+                    } else {
+                        String::new()
+                    },
+                }
+            }
         }
     }
 
+    /// The frame the offset/axis gizmos ride — construction-plane style (#1757). Face
+    /// tilts are applied so the offset handle follows the cutting plane.
     pub fn gizmo_reference(&self) -> crate::construction::PlaneReference {
-        crate::construction::PlaneReference::Face {
-            origin: self.origin,
-            normal: self.normal,
-            label: String::new(),
+        match &self.reference {
+            crate::construction::PlaneReference::Axis { .. } => self.reference.clone(),
+            crate::construction::PlaneReference::Face { origin, label, .. } => {
+                let plane = crate::construction::cross_section_cut_plane(&self.as_cut_live());
+                crate::construction::PlaneReference::Face {
+                    origin: *origin,
+                    normal: plane.normal,
+                    label: label.clone(),
+                }
+            }
+        }
+    }
+
+    /// Live cut without re-evaluating typed expressions — used by gizmos and the preview.
+    pub fn as_cut_live(&self) -> crate::model::CrossSectionCut {
+        match &self.reference {
+            crate::construction::PlaneReference::Axis {
+                origin, direction, ..
+            } => {
+                let plane = crate::construction::plane_from_axis(
+                    0.0,
+                    self.roll_deg,
+                    *origin,
+                    *direction,
+                );
+                crate::model::CrossSectionCut {
+                    origin: *origin,
+                    normal: plane.normal,
+                    offset_mm: self.offset_live,
+                    flip: self.flip,
+                    ..Default::default()
+                }
+            }
+            crate::construction::PlaneReference::Face { origin, normal, .. } => {
+                crate::model::CrossSectionCut {
+                    origin: *origin,
+                    normal: *normal,
+                    offset_mm: self.offset_live,
+                    flip: self.flip,
+                    roll: self.roll_deg.to_radians(),
+                    tilt_v: self.tilt_v_deg.to_radians(),
+                    ..Default::default()
+                }
+            }
         }
     }
 }
@@ -3101,6 +3208,11 @@ pub enum Action {
     },
     /// Commit the cutting-plane tool's draft onto the open view (#1745).
     CommitSectionPlane,
+    /// Re-open a hanging cutting plane in the cutting-plane tool (#1755).
+    BeginEditSectionPlane {
+        view: crate::model::CrossSectionKey,
+        cut: usize,
+    },
     /// Slide, turn, or flip one of a view's cutting planes (#1687); `None` fields are left
     /// as they are.
     SetCrossSectionCut {
@@ -13946,13 +14058,27 @@ impl AppState {
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 };
-                if draft.anchor.is_none() {
+                if draft.anchor.is_none() && draft.edit_cut.is_none() {
                     self.creating_section = Some(draft);
                     let e = "Pick a face or plane to cut".to_string();
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
                 let cut = draft.as_cut(&self.doc);
+                if let Some((view, idx)) = draft.edit_cut {
+                    let Some(plane) = self.doc.cross_sections.get_mut(view).and_then(|v| v.cuts.get_mut(idx)) else {
+                        let e = format!("No cutting plane {idx}");
+                        self.status = e.clone();
+                        self.creating_section = Some(draft);
+                        return ActionResult::Err(e);
+                    };
+                    let name = plane.name.take();
+                    *plane = cut;
+                    plane.name = name;
+                    self.status = format!("Cutting plane {idx} updated");
+                    self.finish_commit_of(Tool::SectionPlane);
+                    return ActionResult::Ok;
+                }
                 let result = self.apply_inner(Action::AddCrossSectionCut { view: None, cut });
                 if matches!(result, ActionResult::Ok) {
                     self.finish_commit_of(Tool::SectionPlane);
@@ -13960,6 +14086,23 @@ impl AppState {
                     self.creating_section = Some(draft);
                 }
                 result
+            }
+            Action::BeginEditSectionPlane { view, cut } => {
+                let Some(plane) = self.doc.cross_sections.get(view).and_then(|v| v.cuts.get(cut)) else {
+                    let e = format!("No cutting plane {cut}");
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                let mut draft = CreatingSectionPlane::from_cut(plane);
+                draft.edit_cut = Some((view, cut));
+                draft.anchor = Some(crate::hierarchy::SceneElement::SectionPlane { view, cut });
+                self.creating_section = Some(draft);
+                self.tool = Tool::SectionPlane;
+                self.editing_cross_section = Some(view);
+                self.picker_focus = None;
+                self.status = "Edit cutting plane — drag offset/rotate • Enter: apply • Esc: cancel"
+                    .to_string();
+                ActionResult::Ok
             }
             Action::SetCrossSectionCut {
                 view,
@@ -21024,6 +21167,8 @@ pub fn apply_pick(
                 return false;
             };
             state.creating_section = Some(draft);
+            // #1750: the offset field takes the keyboard; gizmos, not another pick.
+            state.picker_focus = None;
             true
         }
         _ => false,
@@ -21405,18 +21550,38 @@ pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
         gizmos.push(GizmoInfo { kind: "offset", name: "offset", value: cp.offset_live, position: None });
     }
     if let Some(cs) = &state.creating_section {
-        gizmos.push(GizmoInfo {
-            kind: "offset",
-            name: "offset",
-            value: cs.offset_live,
-            position: None,
-        });
-        gizmos.push(GizmoInfo {
-            kind: "rotate",
-            name: "roll",
-            value: cs.roll_deg.to_radians(),
-            position: None,
-        });
+        if cs.anchor.is_some() {
+            gizmos.push(GizmoInfo {
+                kind: "offset",
+                name: "offset",
+                value: cs.offset_live,
+                position: None,
+            });
+            match &cs.reference {
+                crate::construction::PlaneReference::Axis { .. } => {
+                    gizmos.push(GizmoInfo {
+                        kind: "rotate",
+                        name: "angle",
+                        value: cs.roll_deg.to_radians(),
+                        position: None,
+                    });
+                }
+                crate::construction::PlaneReference::Face { .. } => {
+                    gizmos.push(GizmoInfo {
+                        kind: "rotate",
+                        name: "tilt_u",
+                        value: cs.roll_deg.to_radians(),
+                        position: None,
+                    });
+                    gizmos.push(GizmoInfo {
+                        kind: "rotate",
+                        name: "tilt_v",
+                        value: cs.tilt_v_deg.to_radians(),
+                        position: None,
+                    });
+                }
+            }
+        }
     }
     // Sketch Offset (#939/#1502): signed-distance push/pull once something is picked.
     if let Some(co) = &state.creating_sketch_offset {
@@ -21872,7 +22037,7 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
                 false
             }
         }
-        "roll" => {
+        "roll" | "angle" | "tilt_u" => {
             if let Some(cs) = state.creating_section.as_mut() {
                 cs.roll_deg = value.to_degrees().rem_euclid(360.0);
                 cs.user_edited_roll = false;
@@ -21880,6 +22045,20 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
                     cs.user_edited_roll,
                     &mut cs.roll_text,
                     format!("{:.0}", cs.roll_deg),
+                );
+                true
+            } else {
+                false
+            }
+        }
+        "tilt_v" => {
+            if let Some(cs) = state.creating_section.as_mut() {
+                cs.tilt_v_deg = value.to_degrees().rem_euclid(360.0);
+                cs.user_edited_tilt_v = false;
+                crate::tooltable::refresh_gizmo_field_text(
+                    cs.user_edited_tilt_v,
+                    &mut cs.tilt_v_text,
+                    format!("{:.0}", cs.tilt_v_deg),
                 );
                 true
             } else {
@@ -39675,6 +39854,29 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         );
     }
 
+    /// #1756: a cutting plane coplanar with a face of the body, with nothing on the keep
+    /// side, must not leave that face behind.
+    #[test]
+    fn coplanar_cut_with_no_keep_side_hides_the_face() {
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        let body = state.doc.bodies.keys().next().expect("a body");
+        let whole = crate::extrude::body_solid_mesh(&state.doc, body).expect("the body's mesh");
+        let (min, max) = whole.bounds().expect("bounds");
+        // Keep pointing away from the body: origin on the bottom face, normal down.
+        let cut = crate::model::CrossSectionCut {
+            origin: glam::Vec3::new(0.0, 0.0, min.z),
+            normal: -glam::Vec3::Z,
+            ..Default::default()
+        };
+        let mesh = crate::extrude::cross_section_body_mesh(&state.doc, body, &[cut]);
+        assert!(
+            mesh.is_none() || mesh.as_ref().is_some_and(|m| m.triangles.is_empty()),
+            "no keep-side volume means the coplanar face is gone, got {mesh:?}"
+        );
+        let _ = max;
+    }
+
     /// #1687: the cutting-plane tool hangs planes off faces, and each one slides, turns, and
     /// flips independently. Several combine to cut in several directions at once.
     #[test]
@@ -39773,6 +39975,111 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert_eq!(state.doc.cross_sections[view].cuts.len(), 1);
         assert!(state.creating_section.is_none(), "accept empties the draft");
         assert_eq!(state.tool, Tool::SectionPlane, "and stays armed");
+    }
+
+    /// #1757: a body's edge (or a world axis) is an axis anchor, the way the construction
+    /// plane tool treats it — the line lies *in* the cutting plane, it is not the plane's
+    /// normal.
+    #[test]
+    fn cutting_plane_edge_pick_is_an_axis_anchor() {
+        use crate::construction::{GlobalAxis, PlaneReference};
+        use crate::hierarchy::SceneElement;
+        let mut state = AppState::default();
+        state.apply(Action::CreateCrossSection { name: None });
+        state.tool = Tool::SectionPlane;
+        assert!(apply_pick(
+            &mut state,
+            crate::context::PickerTarget::SectionPlaneAnchor,
+            &SceneElement::GlobalAxis(GlobalAxis::X),
+        ));
+        let cs = state.creating_section.as_ref().expect("the pick starts a draft");
+        assert!(
+            matches!(cs.reference, PlaneReference::Axis { direction, .. } if direction.dot(glam::Vec3::X).abs() > 0.99),
+            "an axis/edge pick must be an axis reference, got {:?}",
+            cs.reference
+        );
+        let gizmos = available_gizmos(&state);
+        assert!(
+            gizmos.iter().any(|g| g.name == "offset"),
+            "axis anchors get the offset gizmo, got {gizmos:?}"
+        );
+        assert!(
+            gizmos.iter().any(|g| g.kind == "rotate" && g.name != "tilt_v"),
+            "axis anchors rotate around the edge, got {gizmos:?}"
+        );
+        assert!(
+            !gizmos.iter().any(|g| g.name == "tilt_v"),
+            "an axis is one rotation, not two face tilts"
+        );
+    }
+
+    /// #1750/#1752/#1753: after a face pick the offset field takes focus, the picker lets
+    /// go, one offset gizmo and two tilt gizmos show — not a spin around the face normal.
+    #[test]
+    fn cutting_plane_face_pick_focuses_offset_and_exposes_two_tilts() {
+        use crate::construction::PlaneReference;
+        use crate::hierarchy::SceneElement;
+        let mut state = AppState::default();
+        state.apply(Action::CreateCrossSection { name: None });
+        state.tool = Tool::SectionPlane;
+        let plane = SceneElement::ConstructionPlane(pkey(0));
+        assert!(apply_pick(
+            &mut state,
+            crate::context::PickerTarget::SectionPlaneAnchor,
+            &plane
+        ));
+        let cs = state.creating_section.as_ref().expect("the pick starts a draft");
+        assert!(matches!(cs.reference, PlaneReference::Face { .. }));
+        assert!(cs.pending_focus, "the offset field takes the keyboard");
+        assert!(
+            state.picker_focus != Some(crate::context::PickerTarget::SectionPlaneAnchor),
+            "the Anchor picker must lose focus so a gizmo grab is not another pick"
+        );
+        let gizmos = available_gizmos(&state);
+        let names: Vec<_> = gizmos.iter().map(|g| g.name).collect();
+        assert_eq!(
+            gizmos.iter().filter(|g| g.name == "offset").count(),
+            1,
+            "one offset gizmo, got {names:?}"
+        );
+        assert!(
+            gizmos.iter().any(|g| g.name == "tilt_u") && gizmos.iter().any(|g| g.name == "tilt_v"),
+            "two tilts around the in-plane axes, got {names:?}"
+        );
+        assert!(
+            !gizmos.iter().any(|g| g.name == "roll"),
+            "rotation is not around the face normal, got {names:?}"
+        );
+    }
+
+    /// #1755: double-clicking a hanging cutting plane reopens the same draft.
+    #[test]
+    fn begin_edit_section_plane_reopens_the_draft() {
+        let mut state = AppState::default();
+        state.apply(Action::CreateCrossSection { name: None });
+        let view = state.doc.cross_sections.keys().next().expect("the view");
+        state.apply(Action::AddCrossSectionCut {
+            view: None,
+            cut: crate::model::CrossSectionCut {
+                origin: glam::Vec3::ZERO,
+                normal: glam::Vec3::Z,
+                offset_mm: 4.0,
+                flip: true,
+                ..Default::default()
+            },
+        });
+        assert_eq!(
+            state.apply(Action::BeginEditSectionPlane { view, cut: 0 }),
+            ActionResult::Ok
+        );
+        assert_eq!(state.tool, Tool::SectionPlane);
+        let cs = state.creating_section.as_ref().expect("the plane reopens");
+        assert!((cs.offset_live - 4.0).abs() < 1e-4);
+        assert!(cs.flip);
+        assert_eq!(cs.edit_cut, Some((view, 0)));
+        assert_eq!(state.apply(Action::CommitSectionPlane), ActionResult::Ok);
+        assert_eq!(state.doc.cross_sections[view].cuts.len(), 1, "edit replaces, it does not stack");
+        assert!((state.doc.cross_sections[view].cuts[0].offset_mm - 4.0).abs() < 1e-4);
     }
 
     /// #1671/#1686: creating a cross-section view opens the View workbench; leaving it puts
@@ -40519,8 +40826,6 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 add_param(&mut state, "off", "12.5");
                 state.apply(Action::CreateCrossSection { name: None });
                 state.creating_section = Some(CreatingSectionPlane {
-                    origin: glam::Vec3::ZERO,
-                    normal: glam::Vec3::Z,
                     offset_text: "off".to_string(),
                     user_edited_offset: true,
                     anchor: Some(crate::hierarchy::SceneElement::ConstructionPlane(pkey(0))),
@@ -40541,8 +40846,6 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 let mut state = AppState::default();
                 state.apply(Action::CreateCrossSection { name: None });
                 state.creating_section = Some(CreatingSectionPlane {
-                    origin: glam::Vec3::ZERO,
-                    normal: glam::Vec3::Z,
                     roll_text: "37.5".to_string(),
                     user_edited_roll: true,
                     anchor: Some(crate::hierarchy::SceneElement::ConstructionPlane(pkey(0))),
@@ -40560,6 +40863,25 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                     restored.roll_text, "37.5",
                     "re-edit must not reformat 37.5° to 38"
                 );
+            }
+            (Tool::SectionPlane, _, "tilt_v") => {
+                let mut state = AppState::default();
+                state.apply(Action::CreateCrossSection { name: None });
+                state.creating_section = Some(CreatingSectionPlane {
+                    tilt_v_text: "12.5".to_string(),
+                    user_edited_tilt_v: true,
+                    anchor: Some(crate::hierarchy::SceneElement::ConstructionPlane(pkey(0))),
+                    ..CreatingSectionPlane::default()
+                });
+                assert!(
+                    matches!(state.apply(Action::CommitSectionPlane), ActionResult::Ok),
+                    "{}",
+                    state.status
+                );
+                let cut = &state.doc.cross_sections.values().next().unwrap().cuts[0];
+                assert_eq!(cut.tilt_v_expression, "12.5");
+                let restored = CreatingSectionPlane::from_cut(cut);
+                assert_eq!(restored.tilt_v_text, "12.5");
             }
             other => panic!("no expression round-trip for {other:?}"),
         }

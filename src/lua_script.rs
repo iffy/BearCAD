@@ -5098,11 +5098,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
             let state = unsafe { tick.state() };
-            let tree = crate::hierarchy::graph_view_tree(
+            let mut tree = crate::hierarchy::graph_view_tree(
                 &state.doc,
                 state.sketch_session,
                 &crate::hierarchy::ElementFilter::default(),
             );
+            if state.workbench() != crate::actions::Workbench::View {
+                crate::hierarchy::prune_section_planes(&mut tree);
+            }
             let layout = crate::hierarchy::graph_lane_layout(&state.doc, &tree);
             // Last-frame screen position of each row, for scripts that click the pane; absent
             // for a row that was scrolled out or while another view is showing.

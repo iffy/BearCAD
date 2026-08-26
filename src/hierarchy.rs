@@ -1057,6 +1057,17 @@ fn is_section_node(node: HierarchyNode) -> bool {
     matches!(node, HierarchyNode::Drawings | HierarchyNode::Views)
 }
 
+/// Drop cutting-plane rows so they only appear while the View workbench is open (#1761).
+pub(crate) fn prune_section_planes(tree: &mut [HierarchyEntry]) {
+    for entry in tree {
+        if matches!(entry.node, HierarchyNode::CrossSection(_)) {
+            entry.children.clear();
+        } else {
+            prune_section_planes(&mut entry.children);
+        }
+    }
+}
+
 /// A hierarchy entry with optional children (used to derive parent links).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HierarchyEntry {
@@ -4536,6 +4547,9 @@ pub fn show_pane(
     section_collapsed: &mut SectionCollapse,
     on_add_component: &mut impl FnMut(Option<crate::model::ComponentKey>),
     on_add_cross_section: &mut impl FnMut(),
+    on_add_drawing: &mut impl FnMut(),
+    // Cutting planes of views are Elements-pane children only in the View workbench (#1761).
+    show_section_planes: bool,
     on_move_to_component: &mut impl FnMut(SceneElement, Option<crate::model::ComponentKey>),
     active_component: Option<crate::model::ComponentKey>,
     on_activate_component: &mut impl FnMut(Option<crate::model::ComponentKey>),
@@ -4587,6 +4601,10 @@ pub fn show_pane(
                     }
                     // A cross-section view (#1671): a way of looking at the model, kept with
                     // the other views at the bottom of the pane.
+                    if ui.button("New drawing").clicked() {
+                        on_add_drawing();
+                        ui.close();
+                    }
                     if ui.button("New cross section").clicked() {
                         on_add_cross_section();
                         ui.close();
@@ -4666,13 +4684,16 @@ pub fn show_pane(
             set_elements_graph_row_rects(ui.ctx(), Vec::new());
             let mut list_rows: Vec<(String, egui::Rect)> = Vec::new();
             let tree = filter_hierarchy(&build_hierarchy(doc, sketch_session), filter);
-            let tree = if filter.shadow_bodies {
+            let mut tree = if filter.shadow_bodies {
                 tree
             } else {
                 let mut t = tree;
                 prune_shadow_bodies(&mut t, doc);
                 t
             };
+            if !show_section_planes {
+                prune_section_planes(&mut tree);
+            }
             let mut rows = component_list_rows(
                 &tree,
                 doc,
@@ -4818,7 +4839,10 @@ pub fn show_pane(
             });
         }
         HierarchyViewMode::Graph => {
-            let tree = graph_view_tree(doc, sketch_session, filter);
+            let mut tree = graph_view_tree(doc, sketch_session, filter);
+            if !show_section_planes {
+                prune_section_planes(&mut tree);
+            }
             show_graph_view(
                 ui,
                 doc,
@@ -5503,11 +5527,22 @@ fn component_list_rows(
         for entry in sections {
             out.push((entry.node, base));
             if !sections_collapsed.collapsed(entry.node) {
-                // Each drawing (and its projections/notes when the filter keeps them) sits
-                // one level under the section header.
-                for child in &entry.children {
-                    for node in element_list_from_tree(std::slice::from_ref(child), doc) {
-                        out.push((node, base + 1));
+                if matches!(entry.node, HierarchyNode::Views) {
+                    // Cutting planes nest under the view they belong to (#1754), not as
+                    // siblings of it.
+                    for child in &entry.children {
+                        out.push((child.node, base + 1));
+                        for plane in &child.children {
+                            out.push((plane.node, base + 2));
+                        }
+                    }
+                } else {
+                    // Each drawing (and its projections/notes when the filter keeps them) sits
+                    // one level under the section header.
+                    for child in &entry.children {
+                        for node in element_list_from_tree(std::slice::from_ref(child), doc) {
+                            out.push((node, base + 1));
+                        }
                     }
                 }
             }
@@ -6178,6 +6213,16 @@ fn show_row(
                     RowAction::None => {}
                 }
             }
+            HierarchyNode::SectionPlane { view, cut } => {
+                let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
+                match row_click_action(row.double_clicked, row.clicked, additive) {
+                    RowAction::Edit => on_edit_operation(SceneElement::SectionPlane { view, cut }),
+                    RowAction::Select { additive } => {
+                        on_click_element(element.clone(), additive)
+                    }
+                    RowAction::None => {}
+                }
+            }
             HierarchyNode::Extrusion(index) => {
                 if row.double_clicked {
                     on_edit_extrusion(index);
@@ -6337,6 +6382,12 @@ pub(crate) fn element_context_menu(
             }
             if ui.button("Import image on this plane…").clicked() {
                 on_import_image_on_plane(index);
+                ui.close();
+            }
+        }
+        HierarchyNode::SectionPlane { view, cut } => {
+            if ui.button("Edit cutting plane").clicked() {
+                on_edit_operation(SceneElement::SectionPlane { view, cut });
                 ui.close();
             }
         }
@@ -7793,6 +7844,8 @@ label_hidden: false,
             &mut section_collapsed,
             &mut |_| {},
             &mut || {},
+            &mut || {},
+            true,
             &mut |_, _| {},
             None,
             &mut |_| {},
@@ -9250,6 +9303,44 @@ label_hidden: false,
             scene_element_for_node(HierarchyNode::CrossSection(key)),
             Some(SceneElement::CrossSection(key)),
             "a view is selectable, deletable and renameable like any element"
+        );
+
+        let rows = component_list_rows(
+            &tree,
+            &doc,
+            &HashSet::new(),
+            SectionCollapse::default(),
+        );
+        let plane_row = rows
+            .iter()
+            .find(|(n, _)| matches!(n, HierarchyNode::SectionPlane { .. }))
+            .expect("the cutting plane is listed");
+        let view_row = rows
+            .iter()
+            .find(|(n, _)| matches!(n, HierarchyNode::CrossSection(_)))
+            .expect("the view is listed");
+        assert!(
+            plane_row.1 > view_row.1,
+            "the cutting plane sits indented under its view, got plane depth {} view depth {}",
+            plane_row.1,
+            view_row.1
+        );
+
+        let mut hidden = tree.clone();
+        prune_section_planes(&mut hidden);
+        let views = hidden[0]
+            .children
+            .iter()
+            .find(|e| e.node == HierarchyNode::Views)
+            .expect("Views");
+        let view_row = views
+            .children
+            .iter()
+            .find(|e| e.node == HierarchyNode::CrossSection(key))
+            .expect("the view");
+        assert!(
+            view_row.children.is_empty(),
+            "modeling workbench hides cutting planes under the view"
         );
 
         // Without any view there is no empty section.

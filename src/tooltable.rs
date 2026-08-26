@@ -614,6 +614,7 @@ const PLANE_FIELDS: &[ToolField] = &[
 const SECTION_PLANE_FIELDS: &[ToolField] = &[
     ToolField::Named("section_plane_offset_ctx"),
     ToolField::Named("section_plane_roll_ctx"),
+    ToolField::Named("section_plane_tilt_v_ctx"),
 ];
 
 // ── Picker groups (#1485) ───────────────────────────────────────────────────
@@ -1094,7 +1095,7 @@ pub fn stored_value_fields(tool: Tool, space: ToolSpace) -> &'static [&'static s
         | Tool::DrawingAdd
         | Tool::DrawingAlign => &[],
         Tool::ConstructionPlane => &["offset", "angle"],
-        Tool::SectionPlane => &["offset", "roll"],
+        Tool::SectionPlane => &["offset", "roll", "tilt_v"],
         Tool::Extrude => &["distance", "taper"],
         Tool::Chamfer | Tool::Fillet => &["amount"],
         Tool::Offset => &["distance"],
