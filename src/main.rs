@@ -2058,9 +2058,9 @@ fn crowd_type_rank(kind: &construction::PickTargetKind) -> u8 {
         K::BodyFace { .. } | K::SketchFace(_) | K::SketchText(_) | K::BodyCylinder { .. } => 1,
         // Edges: sketch line segments and body feature edges are one "edges" group — a sketch line
         // and a shape edge are the same kind of thing for the exploder's grouping.
-        K::BodyEdge { .. } | K::Line(_) => 2,
+        K::BodyEdge { .. } | K::Line(_) | K::ProjectedEdge { .. } => 2,
         K::Circle(_) => 3,
-        K::Point(_) | K::BodyVertex { .. } => 4, // vertices (sketch points + body corners)
+        K::Point(_) | K::BodyVertex { .. } | K::ProjectedCorner { .. } => 4, // vertices (sketch points + body corners)
         K::ConstructionPlane(_) | K::TracingImage(_) => 5,
         K::GlobalAxis(_) | K::OriginAxis(_) | K::BodyAxis { .. } => 6,
         K::Ground(_) => 7,
@@ -2613,8 +2613,10 @@ fn pick_target_loupe_wireframe(
                 .unwrap_or_default(),
             Vec::new(),
         ),
-        // A drawing-page item (#1641) carries its own page-space outline.
-        PK::DrawingElement { outline, .. } => (polyline(outline.clone()), Vec::new()),
+        // A drawing-page item (#1641/#1714) carries its own page-space outline.
+        PK::DrawingElement { outline, .. }
+        | PK::ProjectedEdge { outline, .. }
+        | PK::ProjectedCorner { outline, .. } => (polyline(outline.clone()), Vec::new()),
         // A sketch text's loupe draws its glyph outlines (#1701).
         PK::SketchText(ti) => (
             (0..doc
@@ -3013,9 +3015,11 @@ fn draw_pick_target_loupe(
                 crate::icons::paint_icon(painter, painter.ctx(), icon, rect, color);
             }
         }
-        // A drawing-page item (#1641): its own page-space outline, magnified like any other
-        // geometry — an edge's line, a dimension's line, a view card's rectangle.
-        PK::DrawingElement { outline, .. } => {
+        // A drawing-page item (#1641/#1714): its own page-space outline, magnified like any
+        // other geometry — an edge's line, a dimension's line, a view card's rectangle.
+        PK::DrawingElement { outline, .. }
+        | PK::ProjectedEdge { outline, .. }
+        | PK::ProjectedCorner { outline, .. } => {
             for w in outline.windows(2) {
                 seg(w[0], w[1]);
             }
@@ -3925,9 +3929,10 @@ struct App {
     /// Ephemeral view state; reset (fit) by the Zoom tool / `Z`.
     drawing_zoom: f32,
     drawing_pan: egui::Vec2,
-    /// The first point of a half-made free dimension (#1645): the view it is on and the point
-    /// in that view's projected millimetres. Esc or a tool change clears it.
-    drawing_point_dim_pick: Option<(usize, egui::Vec2)>,
+    /// The first point of a half-made free dimension (#1645/#1714): the view it is on, the
+    /// point in that view's projected millimetres, and the body it came from (when known).
+    /// Esc or a tool change clears it.
+    drawing_point_dim_pick: Option<(usize, egui::Vec2, Option<model::BodyKey>)>,
     /// The page Exploder took a press (#1641) and the release is still to come — egui reports
     /// a click on release, a frame after the fan already acted and closed, so the page must
     /// keep ignoring that click.
@@ -7232,6 +7237,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     self.exploder = None;
                 } else if self.drawing_point_dim_pick.take().is_some() {
                     // A half-made free dimension (#1645) drops its first point.
+                    self.state.scene_selection.clear();
                     self.state.status = "Cancelled".to_string();
                 } else {
                     self.state.apply(Action::CancelOperation);
@@ -18533,6 +18539,14 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     }
                     context::SelectionEdit::Clear => self.state.scene_selection.clear(),
                 }
+                if self.state.tool == Tool::Dimension
+                    && self.state.editing_drawing.is_some()
+                    && !self.state.scene_selection.ordered().iter().any(|e| {
+                        matches!(e, SceneElement::ProjectedCorner { .. })
+                    })
+                {
+                    self.drawing_point_dim_pick = None;
+                }
                 // Keep multi-vertex chamfer/fillet in sync with the picker (#492).
                 if matches!(self.state.tool, Tool::Chamfer | Tool::Fillet) {
                     if let Some(cvt) = self.state.creating_vertex_treatment.as_mut() {
@@ -26032,7 +26046,12 @@ impl App {
     fn exploder_is_page_fan(&self) -> bool {
         self.exploder.as_ref().is_some_and(|ex| {
             ex.items.iter().any(|i| {
-                matches!(i.target, construction::PickTargetKind::DrawingElement { .. })
+                matches!(
+                    i.target,
+                    construction::PickTargetKind::DrawingElement { .. }
+                        | construction::PickTargetKind::ProjectedEdge { .. }
+                        | construction::PickTargetKind::ProjectedCorner { .. }
+                )
             })
         })
     }
@@ -26053,8 +26072,14 @@ impl App {
         ui: &mut egui::Ui,
         area: egui::Rect,
         drawing: model::DrawingKey,
-        candidates: Vec<construction::CrowdCandidate>,
+        mut candidates: Vec<construction::CrowdCandidate>,
     ) {
+        // The fan holds what the armed picker can take (#957/#1714), on the page as in 3D.
+        if let Some(focused) = self.state.tool_pickers.iter().find(|v| v.picker.is_focused()) {
+            exploder_keep_for_picker(&self.state.doc, &focused.picker, &mut candidates);
+        } else {
+            candidates.clear();
+        }
         let project = |v: Vec3| Some(egui::pos2(v.x, v.y));
         let pointer_screen = ui.input(|i| i.pointer.hover_pos());
         let space = !ui.ctx().egui_wants_keyboard_input()
@@ -26075,8 +26100,8 @@ impl App {
                 self.tick_open_exploder(ui, &project, pointer_screen, area, space);
             if pressed {
                 self.drawing_exploder_owns_click = true;
-                if let Some(construction::PickTargetKind::DrawingElement { element, .. }) = picked {
-                    self.act_on_drawing_element(ui, drawing, element);
+                if let Some(target) = picked {
+                    self.act_on_drawing_pick(ui, drawing, target);
                 }
             }
             if close_after {
@@ -26104,7 +26129,9 @@ impl App {
                     // the anchors all collapse onto the cursor — for a page item that is the
                     // far end of its own outline.
                     let reach = match &c.kind {
-                        construction::PickTargetKind::DrawingElement { outline, .. } => outline
+                        construction::PickTargetKind::DrawingElement { outline, .. }
+                        | construction::PickTargetKind::ProjectedEdge { outline, .. }
+                        | construction::PickTargetKind::ProjectedCorner { outline, .. } => outline
                             .iter()
                             .copied()
                             .max_by(|a, b| {
@@ -26148,6 +26175,112 @@ impl App {
         self.draw_exploder(ui.painter(), &project, hint, area);
         self.state.exploder_leaves = Vec::new();
         self.state.exploder_loupe_positions = Vec::new();
+    }
+
+    /// What a click on a fanned-out page item does (#1641/#1714): the Dimension tool toggles
+    /// an edge or arms/finishes a corner; anything else selects the item.
+    fn act_on_drawing_pick(
+        &mut self,
+        ui: &egui::Ui,
+        drawing: model::DrawingKey,
+        target: construction::PickTargetKind,
+    ) {
+        match target {
+            construction::PickTargetKind::ProjectedEdge { view, body, a, b, .. } => {
+                if self.state.tool == Tool::Dimension {
+                    let (a, b) = if a <= b { (a, b) } else { (b, a) };
+                    self.state.apply(Action::ToggleDrawingDimension { drawing, view, a, b });
+                    self.state.scene_selection.clear();
+                    self.state.scene_selection.insert(SceneElement::ProjectedEdge {
+                        drawing,
+                        view,
+                        body,
+                        a,
+                        b,
+                    });
+                    self.drawing_point_dim_pick = None;
+                    return;
+                }
+            }
+            construction::PickTargetKind::ProjectedCorner { view, body, p, .. } => {
+                if self.state.tool == Tool::Dimension {
+                    let element = SceneElement::ProjectedCorner {
+                        drawing,
+                        view,
+                        body,
+                        p,
+                    };
+                    let page_uv = self.projected_drawing_uv(drawing, view, p).unwrap_or_default();
+                    if let Some((a, b)) =
+                        self.pick_drawing_dimension_corner(drawing, view, element, page_uv)
+                    {
+                        self.state.apply(Action::AddDrawingPointDim {
+                            drawing,
+                            view,
+                            a: (a.x, a.y),
+                            b: (b.x, b.y),
+                            axis: model::PointDimAxis::Direct,
+                        });
+                    }
+                    return;
+                }
+            }
+            construction::PickTargetKind::DrawingElement { element, .. } => {
+                self.act_on_drawing_element(ui, drawing, element);
+                return;
+            }
+            _ => {}
+        }
+    }
+
+    /// Arm or finish a free point-to-point dimension from a projected corner (#1645/#1714).
+    /// Returns the two projected points when the second pick completes, so the caller can
+    /// commit without mutating the document mid-frame.
+    fn pick_drawing_dimension_corner(
+        &mut self,
+        _drawing: model::DrawingKey,
+        view: usize,
+        element: SceneElement,
+        page_uv: egui::Vec2,
+    ) -> Option<(egui::Vec2, egui::Vec2)> {
+        let SceneElement::ProjectedCorner { body, .. } = &element else {
+            return None;
+        };
+        let body = *body;
+        match self.drawing_point_dim_pick {
+            Some((v, first, first_body)) if v == view => {
+                let same_body = match (first_body, body) {
+                    (Some(a), Some(b)) => a == b,
+                    (Some(_), None) => false,
+                    (None, _) => true,
+                };
+                if same_body {
+                    self.drawing_point_dim_pick = None;
+                    self.state.scene_selection.clear();
+                    return Some((first, page_uv));
+                }
+            }
+            _ => {}
+        }
+        self.drawing_point_dim_pick = Some((view, page_uv, body));
+        self.state.scene_selection.clear();
+        self.state.scene_selection.insert(element);
+        self.state.status = "Click the second point to measure to • Esc cancels".to_string();
+        None
+    }
+
+    /// A quantized world point as this view's projected millimetres (#1714).
+    fn projected_drawing_uv(
+        &self,
+        drawing: model::DrawingKey,
+        view: usize,
+        p: [i32; 3],
+    ) -> Option<egui::Vec2> {
+        let d = self.state.doc.drawings.get(drawing)?;
+        let v = d.views.get(view)?;
+        let (right, up) = crate::drawing::resolved_view_axes(&d.views, v);
+        let w = hierarchy::dequantize_body_point(p);
+        Some(egui::vec2(w.dot(right), w.dot(up)))
     }
 
     /// What a click on a fanned-out page item does (#1641): the Dimension tool toggles an
@@ -27014,39 +27147,78 @@ impl App {
                     })
                     .flatten()
                     .unwrap_or((None, None));
+                // Once a point is armed, only other corners are pickable (#1714).
+                let (hovered_edge, hovered_circle) = if self.drawing_point_dim_pick.is_some() {
+                    (None, None)
+                } else {
+                    (hovered_edge, hovered_circle)
+                };
 
-                // Everything on this card the cursor is over joins the Exploder's crowd (#1641):
-                // each dimensionable edge (what the Dimension tool toggles) and the card itself.
-                // Coincident projected edges are exactly what the fan is for — two lines of a
-                // body can land on top of each other in an orthographic view.
+                // Everything on this card the cursor is over joins the Exploder's crowd (#1641/#1714):
+                // each projected edge and corner, and the card itself. Coincident projected edges
+                // are exactly what the fan is for — two lines of a body can land on top of each
+                // other in an orthographic view. The armed picker then keeps only what it takes.
+                let vertex_bodies =
+                    crate::drawing::drawing_view_vertex_bodies(&self.state.doc, view);
                 if let Some(pp) = pointer_screen.filter(|p| area.contains(*p)) {
                     let reach = exploder::hitbox_radius();
                     let screen_pt = |p: egui::Pos2| Vec3::new(p.x, p.y, 0.0);
+                    let mut seen_corners: std::collections::HashSet<(Option<model::BodyKey>, [i32; 3])> =
+                        std::collections::HashSet::new();
                     for (i, (a, b)) in proj.iter().enumerate() {
                         let (sa, sb) = (to_screen(*a), to_screen(*b));
                         // An edge-on edge projects to a point: nothing to dimension (#294).
                         if (sb - sa).length() < 1.0 || on_circle(*a, *b) {
                             continue;
                         }
-                        let d = dist_point_to_segment(pp, sa, sb);
-                        if d > reach {
-                            continue;
-                        }
                         let (wa, wb) = world_edges[i];
                         let (qa, qb) = edge_key(wa, wb);
-                        fan_candidates.push(construction::CrowdCandidate {
-                            kind: construction::PickTargetKind::DrawingElement {
-                                drawing,
-                                element: context::DrawingElementRef::Dimension {
+                        let body = crate::drawing::drawing_view_edge_body(&vertex_bodies, wa, wb);
+                        let d = dist_point_to_segment(pp, sa, sb);
+                        if d <= reach {
+                            fan_candidates.push(construction::CrowdCandidate {
+                                kind: construction::PickTargetKind::ProjectedEdge {
+                                    drawing,
                                     view: vi,
+                                    body,
                                     a: qa,
                                     b: qb,
+                                    outline: vec![screen_pt(sa), screen_pt(sb)],
                                 },
-                                outline: vec![screen_pt(sa), screen_pt(sb)],
-                            },
-                            anchor: screen_pt(closest_point_on_segment(pp, sa, sb)),
-                            dist_px: d,
-                        });
+                                anchor: screen_pt(closest_point_on_segment(pp, sa, sb)),
+                                dist_px: d,
+                            });
+                        }
+                        for (world, screen, uv) in [(wa, sa, *a), (wb, sb, *b)] {
+                            let qp = hierarchy::quantize_body_point(world);
+                            let cbody = vertex_bodies.get(&qp).copied();
+                            if !seen_corners.insert((cbody, qp)) {
+                                continue;
+                            }
+                            let cd = (screen - pp).length();
+                            if cd > reach {
+                                continue;
+                            }
+                            let _ = uv;
+                            let r = 5.0;
+                            fan_candidates.push(construction::CrowdCandidate {
+                                kind: construction::PickTargetKind::ProjectedCorner {
+                                    drawing,
+                                    view: vi,
+                                    body: cbody,
+                                    p: qp,
+                                    outline: vec![
+                                        screen_pt(screen + egui::vec2(-r, 0.0)),
+                                        screen_pt(screen + egui::vec2(r, 0.0)),
+                                        screen_pt(screen),
+                                        screen_pt(screen + egui::vec2(0.0, -r)),
+                                        screen_pt(screen + egui::vec2(0.0, r)),
+                                    ],
+                                },
+                                anchor: screen_pt(screen),
+                                dist_px: cd,
+                            });
+                        }
                     }
                     if cell.contains(pp) {
                         let corners = [
@@ -27107,11 +27279,26 @@ impl App {
                                 _ => pending_angle = Some((vi, key)),
                             }
                         } else {
-                            toggle_dim = Some((
-                                vi,
+                            let body = crate::drawing::drawing_view_edge_body(
+                                &crate::drawing::drawing_view_vertex_bodies(&self.state.doc, view),
+                                wa,
+                                wb,
+                            );
+                            let (qa, qb) = (
                                 hierarchy::quantize_body_point(wa),
                                 hierarchy::quantize_body_point(wb),
-                            ));
+                            );
+                            let (qa, qb) = if qa <= qb { (qa, qb) } else { (qb, qa) };
+                            self.state.scene_selection.clear();
+                            self.state.scene_selection.insert(SceneElement::ProjectedEdge {
+                                drawing,
+                                view: vi,
+                                body,
+                                a: qa,
+                                b: qb,
+                            });
+                            self.drawing_point_dim_pick = None;
+                            toggle_dim = Some((vi, qa, qb));
                         }
                     } else if let Some(ci) = hovered_circle {
                         // A detected circle toggles its diameter dimension (#373).
@@ -27120,42 +27307,69 @@ impl App {
                             hierarchy::quantize_body_point(world_circles[ci].center),
                         ));
                     } else if let Some(pp) = pointer_screen {
-                        // Nothing pickable under the cursor: this is a free point-to-point
-                        // dimension (#1645). The first click sets a point, the second finishes
-                        // it. Both snap to a nearby projected corner so "corner to corner"
-                        // measures exactly.
+                        // A free point-to-point dimension (#1645/#1714). Prefer a nearby
+                        // projected corner so "corner to corner" measures exactly; once a
+                        // point is armed, only other corners of the same body are taken.
+                        let vertex_bodies =
+                            crate::drawing::drawing_view_vertex_bodies(&self.state.doc, view);
+                        let mut best: Option<(f32, egui::Vec2, [i32; 3], Option<model::BodyKey>)> =
+                            None;
+                        for (i, (a, b)) in proj.iter().enumerate() {
+                            let (wa, wb) = world_edges[i];
+                            for (world, uv) in [(wa, *a), (wb, *b)] {
+                                let d = (to_screen(uv) - pp).length();
+                                if d > crate::drawing::POINT_DIM_SNAP_PX {
+                                    continue;
+                                }
+                                if best.as_ref().is_some_and(|(bd, ..)| d >= *bd) {
+                                    continue;
+                                }
+                                let qp = hierarchy::quantize_body_point(world);
+                                let cbody = vertex_bodies.get(&qp).copied();
+                                best = Some((d, uv, qp, cbody));
+                            }
+                        }
                         let from_screen = |sp: egui::Pos2| {
                             let d = sp - draw_area.center();
                             bbox_center + egui::vec2(d.x, -d.y) / scale
                         };
-                        let mut point = from_screen(pp);
-                        let mut best = crate::drawing::POINT_DIM_SNAP_PX;
-                        for (a, b) in proj.iter() {
-                            for corner in [*a, *b] {
-                                let d = (to_screen(corner) - pp).length();
-                                if d < best {
-                                    best = d;
-                                    point = corner;
-                                }
+                        if let Some((_, point, qp, cbody)) = best {
+                            let element = SceneElement::ProjectedCorner {
+                                drawing,
+                                view: vi,
+                                body: cbody,
+                                p: qp,
+                            };
+                            if let Some((a, b)) =
+                                self.pick_drawing_dimension_corner(drawing, vi, element, point)
+                            {
+                                add_point_dim = Some((vi, a, b));
                             }
-                        }
-                        match self.drawing_point_dim_pick {
-                            Some((v, first)) if v == vi => {
-                                add_point_dim = Some((vi, first, point));
+                        } else if let Some((v, first, first_body)) =
+                            self.drawing_point_dim_pick.filter(|(v, ..)| *v == vi)
+                        {
+                            // Second click missed a corner: finish only when the first pick
+                            // wasn't a body corner (#1714 — an armed body corner stays
+                            // restricted to other corners of that body).
+                            if first_body.is_none() {
+                                add_point_dim = Some((vi, first, from_screen(pp)));
                                 self.drawing_point_dim_pick = None;
+                                self.state.scene_selection.clear();
                             }
-                            _ => {
-                                self.drawing_point_dim_pick = Some((vi, point));
-                                self.state.status =
-                                    "Click the second point to measure to • Esc cancels"
-                                        .to_string();
-                            }
+                            let _ = v;
+                        } else {
+                            // Nothing nearby: still measure between two arbitrary spots.
+                            let point = from_screen(pp);
+                            self.drawing_point_dim_pick = Some((vi, point, None));
+                            self.state.scene_selection.clear();
+                            self.state.status =
+                                "Click the second point to measure to • Esc cancels".to_string();
                         }
                     }
                 }
                 // The armed first point of a free dimension (#1645), so it is clear one is
                 // half-made.
-                if let Some((v, first)) = self.drawing_point_dim_pick.filter(|(v, _)| *v == vi) {
+                if let Some((v, first, _)) = self.drawing_point_dim_pick.filter(|(v, ..)| *v == vi) {
                     let _ = v;
                     let sp = to_screen(first);
                     painter.circle_stroke(
@@ -28224,7 +28438,7 @@ impl App {
         // Half of a point-to-point dimension is armed (#1645/#1714): both of its points have
         // to come off the same view, so the fan only offers that view's geometry — clicking a
         // loupe from another card would toggle a dimension there instead of finishing this one.
-        if let Some((pending, _)) = self.drawing_point_dim_pick {
+        if let Some((pending, ..)) = self.drawing_point_dim_pick {
             fan_candidates.retain(|c| match &c.kind {
                 construction::PickTargetKind::DrawingElement { element, .. } => {
                     match element {
@@ -28234,6 +28448,8 @@ impl App {
                         context::DrawingElementRef::Text(_) => false,
                     }
                 }
+                construction::PickTargetKind::ProjectedEdge { view, .. }
+                | construction::PickTargetKind::ProjectedCorner { view, .. } => *view == pending,
                 _ => true,
             });
         }

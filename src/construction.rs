@@ -130,7 +130,9 @@ pub fn plane_anchor_source_from_pick(kind: &PickTargetKind) -> PlaneAnchorSource
         PickTargetKind::SketchText(_)
         | PickTargetKind::Constraint(_)
         | PickTargetKind::Body(_)
-        | PickTargetKind::DrawingElement { .. } => PlaneAnchorSource::Point,
+        | PickTargetKind::DrawingElement { .. }
+        | PickTargetKind::ProjectedEdge { .. }
+        | PickTargetKind::ProjectedCorner { .. } => PlaneAnchorSource::Point,
     }
 }
 
@@ -806,6 +808,8 @@ pub fn sketch_from_pick_target(doc: &Document, kind: PickTargetKind) -> Option<S
         | PickTargetKind::OriginAxis(_)
         | PickTargetKind::TracingImage(_)
         | PickTargetKind::DrawingElement { .. }
+        | PickTargetKind::ProjectedEdge { .. }
+        | PickTargetKind::ProjectedCorner { .. }
         | PickTargetKind::Ground(_) => None,
     }
 }
@@ -1656,6 +1660,25 @@ pub enum PickTargetKind {
         /// The element's page-space outline (mm, z = 0), drawn inside its loupe.
         outline: Vec<Vec3>,
     },
+    /// A projected edge on a drawing page (#1714). `a`/`b` are quantized world endpoints;
+    /// `outline` is the page-space segment drawn in the loupe.
+    ProjectedEdge {
+        drawing: crate::model::DrawingKey,
+        view: usize,
+        body: Option<crate::model::BodyKey>,
+        a: [i32; 3],
+        b: [i32; 3],
+        outline: Vec<Vec3>,
+    },
+    /// A projected corner on a drawing page (#1714). `p` is the quantized world point;
+    /// `outline` is a small page-space cross drawn in the loupe.
+    ProjectedCorner {
+        drawing: crate::model::DrawingKey,
+        view: usize,
+        body: Option<crate::model::BodyKey>,
+        p: [i32; 3],
+        outline: Vec<Vec3>,
+    },
 }
 
 /// A resolved pick target with its plane reference and screen-space distance.
@@ -1798,6 +1821,8 @@ impl PickOcclusion {
             | PickTargetKind::OriginAxis(_)
             // A drawing-page item's visibility is the page's own (#1641).
             | PickTargetKind::DrawingElement { .. }
+            | PickTargetKind::ProjectedEdge { .. }
+            | PickTargetKind::ProjectedCorner { .. }
             | PickTargetKind::Ground(_) => true,
         }
     }
@@ -2304,6 +2329,24 @@ pub fn scene_element_from_pick(kind: &PickTargetKind) -> Option<SceneElement> {
         PickTargetKind::DrawingElement { drawing, element, .. } => {
             Some(SceneElement::DrawingElement { drawing: *drawing, element: element.clone() })
         }
+        PickTargetKind::ProjectedEdge { drawing, view, body, a, b, .. } => {
+            let (a, b) = if *a <= *b { (*a, *b) } else { (*b, *a) };
+            Some(SceneElement::ProjectedEdge {
+                drawing: *drawing,
+                view: *view,
+                body: *body,
+                a,
+                b,
+            })
+        }
+        PickTargetKind::ProjectedCorner { drawing, view, body, p, .. } => {
+            Some(SceneElement::ProjectedCorner {
+                drawing: *drawing,
+                view: *view,
+                body: *body,
+                p: *p,
+            })
+        }
         _ => None,
     }
 }
@@ -2510,7 +2553,9 @@ pub fn draw_pick_highlight(
         }
         // A drawing-page item (#1641): its page-space outline, drawn through the page's own
         // transform (which is what `project` is on the drawing workbench).
-        PickTargetKind::DrawingElement { outline, .. } => {
+        PickTargetKind::DrawingElement { outline, .. }
+        | PickTargetKind::ProjectedEdge { outline, .. }
+        | PickTargetKind::ProjectedCorner { outline, .. } => {
             for w in outline.windows(2) {
                 draw_segment_highlight(painter, project, w[0], w[1], color);
             }

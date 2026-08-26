@@ -49,7 +49,7 @@ for dy = -160, 160, 6 do
   bearcad.ui.key("space")
   bearcad.ui.wait(5)
   for _, l in ipairs(bearcad.exploder()) do
-    if l.kind == "drawing_dimension" and l.x then hit = l end
+    if (l.kind == "projected_edge" or l.kind == "drawing_dimension") and l.x then hit = l end
   end
   if hit then break end
   bearcad.ui.key("space")

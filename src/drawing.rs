@@ -1004,6 +1004,39 @@ pub fn drawing_view_silhouette_edges(
     crate::gpu_viewport::solid_mesh_silhouette_edges(&mesh, right.cross(up))
 }
 
+/// Quantized world vertices of this view, mapped to the body they sit on (#1714).
+/// First body wins at a coincident vertex.
+pub fn drawing_view_vertex_bodies(
+    doc: &Document,
+    view: &DrawingView,
+) -> std::collections::HashMap<[i32; 3], crate::model::BodyKey> {
+    let mut map = std::collections::HashMap::new();
+    for &bi in &view.bodies {
+        let Some(mesh) = drawing_view_body_mesh(doc, view, bi) else {
+            continue;
+        };
+        for tri in &mesh.triangles {
+            for p in tri {
+                map.entry(crate::hierarchy::quantize_body_point(*p)).or_insert(bi);
+            }
+        }
+    }
+    map
+}
+
+/// The body of this view that owns both endpoints of a world edge, if any (#1714).
+pub fn drawing_view_edge_body(
+    vertex_bodies: &std::collections::HashMap<[i32; 3], crate::model::BodyKey>,
+    a: Vec3,
+    b: Vec3,
+) -> Option<crate::model::BodyKey> {
+    let qa = crate::hierarchy::quantize_body_point(a);
+    let qb = crate::hierarchy::quantize_body_point(b);
+    let ba = vertex_bodies.get(&qa)?;
+    let bb = vertex_bodies.get(&qb)?;
+    (ba == bb).then_some(*ba)
+}
+
 /// The edges a view can dimension (#334): its crease/feature edges plus the view-dependent
 /// silhouette edges (a cylinder's straight sides), so the **length** of a smooth extrusion — which
 /// has no crease edge down its side — can be dimensioned like any straight edge. Silhouette edges

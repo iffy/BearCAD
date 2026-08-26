@@ -3098,6 +3098,41 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
             render: PickerRender::Inline,
         });
     }
+    if input.in_drawing_workbench && input.tool == Tool::Dimension {
+        // A real ElementPicker over projected edges and corners (#1714), the page analogue
+        // of the modelling Dimension tool's Line/Vertex/Edge picker. Once a corner is armed,
+        // the second pick is other corners on the same body (and the same view).
+        let mut filter = ElementFilter::kinds(&[ElementKind::Edge, ElementKind::Vertex]);
+        let picked: Vec<SceneElement> = input.selection.ordered().to_vec();
+        let corners: Vec<&SceneElement> = picked
+            .iter()
+            .filter(|e| matches!(e, SceneElement::ProjectedCorner { .. }))
+            .collect();
+        let has_edge = picked
+            .iter()
+            .any(|e| matches!(e, SceneElement::ProjectedEdge { .. }));
+        if !has_edge && corners.len() == 1 {
+            if let SceneElement::ProjectedCorner { drawing, view, body, .. } = corners[0] {
+                filter = ElementFilter::kind(ElementKind::Vertex).rule(PickRule::OnDrawingView {
+                    drawing: *drawing,
+                    view: *view,
+                });
+                if let Some(b) = body {
+                    filter = filter.rule(PickRule::OnBodies(vec![*b]));
+                }
+            }
+        }
+        let mut picker = ElementPicker::new(filter, PickLimit::Finite(2));
+        picker.set_focused(true);
+        picker.set_picked(input.doc, picked);
+        tool_pickers.push(ToolPickerView {
+            heading: "Selection",
+            picker,
+            target: PickerTarget::Selection,
+            separator_above: true,
+            render: PickerRender::Inline,
+        });
+    }
     if input.in_drawing_workbench && input.tool == Tool::Select {
         let rows = &input.drawing_selection;
         // The drawing workbench's Select tool (#346/#967): its page items are ordinary
@@ -11217,6 +11252,124 @@ mod tests {
         assert!(
             picker.picked().iter().any(|e| *e == SceneElement::Line(lkey(0))),
             "pre-selected line should appear in the Dimension picker"
+        );
+    }
+
+    /// #1714: the drawing Dimension tool shows a real ElementPicker over projected
+    /// edges and corners, like the modelling one.
+    #[test]
+    fn drawing_dimension_tool_shows_an_element_picker() {
+        use crate::model::drawing_key_for_slot as dkey;
+        let doc = Document::default();
+        let selection = SceneSelection::default();
+        let content = context_pane_content(&ContextInput {
+            tool: Tool::Dimension,
+            in_drawing_workbench: true,
+            open_drawing: Some(dkey(0)),
+            ..input(&doc, &selection)
+        });
+        let picker = content
+            .selection_picker
+            .expect("drawing Dimension tool should show a selection picker");
+        assert!(picker.is_focused(), "the dimension picker is armed");
+        let kinds = picker.filter().accepted_kinds();
+        assert!(
+            kinds.contains(&ElementKind::Edge),
+            "takes projected edges, got {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&ElementKind::Vertex),
+            "takes projected corners, got {kinds:?}"
+        );
+        assert!(
+            !kinds.contains(&ElementKind::Body),
+            "a page dimension does not pick model bodies"
+        );
+        assert!(
+            !kinds.contains(&ElementKind::Projection),
+            "the view card is not a dimension target"
+        );
+    }
+
+    /// #1714: once a projected corner is armed, the picker only takes other corners
+    /// on the same body.
+    #[test]
+    fn drawing_dimension_second_point_is_same_body_only() {
+        use crate::model::{body_key_for_slot as bkey, drawing_key_for_slot as dkey};
+        let doc = Document::default();
+        let drawing = dkey(0);
+        let body_a = bkey(0);
+        let body_b = bkey(1);
+        let first = SceneElement::ProjectedCorner {
+            drawing,
+            view: 0,
+            body: Some(body_a),
+            p: [0, 0, 0],
+        };
+        let mut selection = SceneSelection::default();
+        click_scene_selection(&mut selection, first.clone(), false);
+        let content = context_pane_content(&ContextInput {
+            tool: Tool::Dimension,
+            in_drawing_workbench: true,
+            open_drawing: Some(drawing),
+            ..input(&doc, &selection)
+        });
+        let picker = content
+            .selection_picker
+            .expect("drawing Dimension tool should show a selection picker");
+        assert!(
+            picker.picked().iter().any(|e| *e == first),
+            "the armed first point shows in the picker"
+        );
+        let active = picker.active_filter();
+        assert!(
+            active.accepts_kind(ElementKind::Vertex),
+            "the second pick is still a corner"
+        );
+        assert!(
+            !active.accepts_kind(ElementKind::Edge),
+            "an armed point must not still take edges"
+        );
+        let same_body = SceneElement::ProjectedCorner {
+            drawing,
+            view: 0,
+            body: Some(body_a),
+            p: [10_000, 0, 0],
+        };
+        let other_body = SceneElement::ProjectedCorner {
+            drawing,
+            view: 0,
+            body: Some(body_b),
+            p: [30_000, 0, 0],
+        };
+        let other_view = SceneElement::ProjectedCorner {
+            drawing,
+            view: 1,
+            body: Some(body_a),
+            p: [0, 0, 0],
+        };
+        let edge = SceneElement::ProjectedEdge {
+            drawing,
+            view: 0,
+            body: Some(body_a),
+            a: [0, 0, 0],
+            b: [10_000, 0, 0],
+        };
+        assert!(
+            picker.accepts(&doc, &same_body),
+            "another corner of the same body on this view is the second pick"
+        );
+        assert!(
+            !picker.accepts(&doc, &other_body),
+            "a corner of a different body is refused"
+        );
+        assert!(
+            !picker.accepts(&doc, &other_view),
+            "a corner on another view is refused"
+        );
+        assert!(
+            !picker.accepts(&doc, &edge),
+            "an edge is refused once a point is armed"
         );
     }
 

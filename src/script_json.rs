@@ -141,6 +141,8 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
         SceneElement::GlobalAxis(_) => "axis",
         SceneElement::BodyEdge { .. } => "body_edge",
         SceneElement::BodyVertex { .. } => "body_vertex",
+        SceneElement::ProjectedEdge { .. } => "projected_edge",
+        SceneElement::ProjectedCorner { .. } => "projected_corner",
         SceneElement::BodyFace { .. } => "body_face",
         SceneElement::BodyCylinder { .. } => "cylinder",
         SceneElement::BodyAxis { .. } => "body_axis",
@@ -277,7 +279,9 @@ pub fn scene_element_selection_index(
         SceneElement::Joint(key) => doc.joints.keys().position(|k| k == *key),
         SceneElement::Origin
         | SceneElement::BodyEdge { .. }
-        | SceneElement::BodyVertex { .. } => Some(0),
+        | SceneElement::BodyVertex { .. }
+        | SceneElement::ProjectedEdge { .. }
+        | SceneElement::ProjectedCorner { .. } => Some(0),
     }
 }
 

@@ -244,6 +244,23 @@ pub enum SceneElement {
     /// A corner of a body's solid mesh, selectable in 3D select mode (#156); quantized like
     /// [`SceneElement::BodyEdge`].
     BodyVertex { body: crate::model::BodyKey, p: [i32; 3] },
+    /// A projected edge on a drawing view (#1714): the page analogue of [`BodyEdge`].
+    /// Keyed by its quantized world endpoints inside a view, plus the body it came from
+    /// when the view is of bodies rather than a sketch.
+    ProjectedEdge {
+        drawing: crate::model::DrawingKey,
+        view: usize,
+        body: Option<crate::model::BodyKey>,
+        a: [i32; 3],
+        b: [i32; 3],
+    },
+    /// A projected corner on a drawing view (#1714): the page analogue of [`BodyVertex`].
+    ProjectedCorner {
+        drawing: crate::model::DrawingKey,
+        view: usize,
+        body: Option<crate::model::BodyKey>,
+        p: [i32; 3],
+    },
     /// A planar face of a body's solid mesh, selectable in 3D select mode (#555/#557). A face
     /// has no stable index, so — like [`SceneElement::BodyEdge`] — its identity is its quantized
     /// geometry: the average of its triangle vertices (`centroid`) plus its `normal`, both
@@ -813,8 +830,10 @@ impl ElementVisibility {
             }
         }
         match element {
-            // A drawing's items are shown on the page, not hidden through the scene (#967).
-            SceneElement::DrawingElement { .. } => true,
+            // A drawing's items are shown on the page, not hidden through the scene (#967/#1714).
+            SceneElement::DrawingElement { .. }
+            | SceneElement::ProjectedEdge { .. }
+            | SceneElement::ProjectedCorner { .. } => true,
             // A cross-section view is a way of looking, not a thing in the scene (#1671).
             SceneElement::CrossSection(_) => true,
             SceneElement::SectionPlane { view, .. } => {
@@ -1998,6 +2017,8 @@ pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNod
         | SceneElement::GlobalAxis(_)
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
+        | SceneElement::ProjectedEdge { .. }
+        | SceneElement::ProjectedCorner { .. }
         | SceneElement::BodyFace { .. }
         | SceneElement::BodyCylinder { .. }
         | SceneElement::BodyAxis { .. }
@@ -2024,6 +2045,9 @@ pub fn visibility_target_for_element(element: &SceneElement) -> Option<SceneElem
         | SceneElement::BodyFace { body, .. }
         | SceneElement::BodyCylinder { body, .. }
         | SceneElement::BodyAxis { body, .. } => Some(SceneElement::Body(*body)),
+        SceneElement::ProjectedEdge { body: Some(body), .. }
+        | SceneElement::ProjectedCorner { body: Some(body), .. } => Some(SceneElement::Body(*body)),
+        SceneElement::ProjectedEdge { .. } | SceneElement::ProjectedCorner { .. } => None,
         SceneElement::ExtrusionEdge { extrusion, .. } => Some(SceneElement::Extrusion(*extrusion)),
         SceneElement::PrimitiveEdge { primitive, .. } => Some(SceneElement::Shape(*primitive)),
         SceneElement::FaceEdge(line) => match line {
@@ -3207,6 +3231,8 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
         // Body sub-elements (#156/#555) likewise aren't pane nodes of their own.
         SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
+        | SceneElement::ProjectedEdge { .. }
+        | SceneElement::ProjectedCorner { .. }
         | SceneElement::BodyFace { .. }
         | SceneElement::BodyCylinder { .. }
         | SceneElement::BodyAxis { .. }
@@ -3381,6 +3407,8 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         | SceneElement::GlobalAxis(_)
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
+        | SceneElement::ProjectedEdge { .. }
+        | SceneElement::ProjectedCorner { .. }
         | SceneElement::BodyFace { .. }
         | SceneElement::BodyCylinder { .. }
         | SceneElement::BodyAxis { .. }
@@ -9934,6 +9962,8 @@ label_hidden: false,
             | SceneElement::FaceEdge(_)
             | SceneElement::BodyEdge { .. }
             | SceneElement::BodyVertex { .. }
+            | SceneElement::ProjectedEdge { .. }
+            | SceneElement::ProjectedCorner { .. }
             | SceneElement::BodyFace { .. }
             | SceneElement::BodyCylinder { .. }
             | SceneElement::BodyAxis { .. }
@@ -9977,6 +10007,19 @@ label_hidden: false,
             SceneElement::Constraint(nkey(0)),
             SceneElement::Extrusion(xkey(0)),
             SceneElement::Body(bkey(0)),
+            SceneElement::ProjectedEdge {
+                drawing: dkey(0),
+                view: 0,
+                body: Some(bkey(0)),
+                a: [0; 3],
+                b: [1; 3],
+            },
+            SceneElement::ProjectedCorner {
+                drawing: dkey(0),
+                view: 0,
+                body: Some(bkey(0)),
+                p: [0; 3],
+            },
             SceneElement::FaceEdge(ConstraintLine::Line(lkey(0))),
             SceneElement::BodyEdge {
                 body: bkey(0),

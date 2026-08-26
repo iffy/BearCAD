@@ -64,6 +64,11 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
         | SceneElement::BodyFace { body, .. }
         | SceneElement::BodyCylinder { body, .. }
         | SceneElement::BodyAxis { body, .. } => body_alive(doc, body),
+        SceneElement::ProjectedEdge { drawing, body, .. }
+        | SceneElement::ProjectedCorner { drawing, body, .. } => {
+            doc.drawings.get(drawing).is_some()
+                && body.is_none_or(|b| body_alive(doc, b))
+        }
         // An analytic face (#952) is alive while its plane still resolves — the same check the
         // geometry code makes before using one.
         SceneElement::SketchFace(face) => crate::face::sketch_frame(doc, face).is_some(),
@@ -283,6 +288,8 @@ pub fn delete_element(doc: &mut Document, element: SceneElement) -> bool {
         | SceneElement::GlobalAxis(_)
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
+        | SceneElement::ProjectedEdge { .. }
+        | SceneElement::ProjectedCorner { .. }
         | SceneElement::BodyFace { .. }
         | SceneElement::BodyCylinder { .. }
         | SceneElement::BodyAxis { .. }
