@@ -5261,9 +5261,53 @@ fn show_graph_view(
                 }
                 if let Some(element) = element {
                     paint_pick_affordance(ui, doc, armed, &element, response.hovered(), icon_rect);
-                    if response.clicked() {
-                        let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
-                        on_click_element(element.clone(), additive);
+                    // Double-click edits where the List/Tree rows do (#546/#1691/#1755), a
+                    // plain click selects — the same dispatch, one node per graph row (#1770).
+                    // The double-click goes through `row_primary_double_clicked`, which also
+                    // catches one egui attributes to the pointer rather than the row.
+                    let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
+                    let double_clicked = row_primary_double_clicked(response, ui);
+                    match node {
+                        HierarchyNode::Sketch(sketch) => {
+                            if double_clicked {
+                                on_edit_sketch(sketch);
+                            } else if response.clicked() {
+                                on_click_element(element.clone(), additive);
+                            }
+                        }
+                        HierarchyNode::ConstructionPlane(index) => {
+                            if double_clicked {
+                                on_edit_plane(index);
+                            } else if response.clicked() {
+                                on_click_element(element.clone(), additive);
+                            }
+                        }
+                        HierarchyNode::Extrusion(index) => {
+                            if double_clicked {
+                                on_edit_extrusion(index);
+                            } else if response.clicked() {
+                                on_click_element(element.clone(), additive);
+                            }
+                        }
+                        HierarchyNode::EdgeTreatmentOp(index) => {
+                            if double_clicked {
+                                on_edit_edge_treatment_op(index);
+                            } else if response.clicked() {
+                                on_click_element(element.clone(), additive);
+                            }
+                        }
+                        _ if node_editable_operation(node).is_some() => {
+                            if double_clicked {
+                                on_edit_operation(element.clone());
+                            } else if response.clicked() {
+                                on_click_element(element.clone(), additive);
+                            }
+                        }
+                        _ => {
+                            if response.clicked() {
+                                on_click_element(element.clone(), additive);
+                            }
+                        }
                     }
                     // The same context menu the List/Tree row shows (#623).
                     response.context_menu(|ui| {
