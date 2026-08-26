@@ -2399,9 +2399,13 @@ outside the shape/undo DAG.
   hangs it on the open view. Double-click a hanging plane (or right-click **Edit**) to
   reopen the same inputs with a live preview. Cutting planes nest under their view in the
   Elements pane and are hidden from that pane in the modeling workbench.
-  Scriptable: `bearcad.section_plane{ view?, plane|origin+normal, offset?, roll?, flip? }`,
-  `bearcad.edit_section_plane{ view?, cut, … }`, `bearcad.delete_section_plane{ view?, cut }`,
-  and `bearcad.section_planes(view?)` reads them back (`roll` in degrees).
+  Scriptable: `bearcad.section_plane{ view?, plane|origin+normal, offset?, roll?, flip?,
+  bodies?, exclude_bodies? }`, `bearcad.edit_section_plane{ view?, cut, …, bodies?,
+  exclude_bodies? }`, `bearcad.delete_section_plane{ view?, cut }`,
+  and `bearcad.section_planes(view?)` reads them back (`roll` in degrees; `bodies` is
+  `"all"` or body indices, `excludes` the spared ones). A scope is a `bodies` list and an
+  `exclude_bodies` list (#1769): a pane picker each, each with an All-bodies switch — a
+  body is cut when it is listed (or all) **and** not excluded.
 - **The View workbench (#1686):** creating a view — or double-clicking one's row, or its
   right-click **Edit** — opens it in the **View** workbench (`AppState::editing_cross_section`),
   whose toolbar carries the view's own tools plus a **Back to the 3D model** button.

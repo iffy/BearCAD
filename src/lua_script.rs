@@ -649,6 +649,28 @@ fn parse_quantized_ints(table: &Table, key: &str) -> mlua::Result<[i32; 3]> {
     Ok([x.round() as i32, y.round() as i32, z.round() as i32])
 }
 
+/// A cutting plane's `bodies` / `exclude_bodies` option (#1769). Outer `None` is the key
+/// being absent (leave-alone on edit; "every body" on create). Inner `None` is every body
+/// — the string `"all"` or `true`. A table lists body ordinals (`false` and an empty table
+/// both come back as an empty list).
+fn section_plane_body_scope(
+    opts: &Table,
+    key: &str,
+) -> mlua::Result<Option<Option<Vec<usize>>>> {
+    Ok(match opts.get::<Value>(key)? {
+        Value::Nil => None,
+        Value::Boolean(true) => Some(None),
+        Value::String(ref s) if s.to_str()? == "all" => Some(None),
+        Value::Boolean(false) => Some(Some(Vec::new())),
+        Value::Table(_) => Some(Some(opts.get(key)?)),
+        other => {
+            return Err(mlua::Error::external(format!(
+                "{key} takes \"all\" or a table of body indices, got {other:?}"
+            )))
+        }
+    })
+}
+
 /// World millimetres (what `body_faces` writes for `face`), quantized on the way in.
 fn parse_world_mm(table: &Table, key: &str) -> mlua::Result<[i32; 3]> {
     let [x, y, z] = parse_xyz(table, key)?;
@@ -8282,18 +8304,31 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             Ok(unsafe { tick.state().doc.cross_sections.len().saturating_sub(1) })
         })?,
     )?;
-    // #1687: a cross-section view's cutting planes. `plane` anchors on a construction
+    // #1687/#1769: a cross-section view's cutting planes. `plane` anchors on a construction
     // plane's frame; `origin`/`normal` set it outright. `view` defaults to the open one.
+    // `bodies` scopes the cut (`"all"`, the default, or a list of body indices); so does
+    // `exclude_bodies`, whose list is spared even when the cut covers them.
     api.set(
         "section_plane",
         lua.create_function(|lua, opts: Table| {
             check_keys(
                 &opts,
                 "section_plane",
-                &["view", "plane", "origin", "normal", "offset", "roll", "flip"],
+                &["view", "plane", "origin", "normal", "offset", "roll", "flip", "bodies", "exclude_bodies"],
             )?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let view: Option<usize> = opts.get("view")?;
+            let cut_bodies =
+                section_plane_body_scope(&opts, "bodies")?.unwrap_or(None);
+            let exclude_bodies = match section_plane_body_scope(&opts, "exclude_bodies")? {
+                None => Vec::new(),
+                Some(None) => {
+                    return Err(mlua::Error::external(
+                        "exclude_bodies takes \"none\" or a table of body indices",
+                    ))
+                }
+                Some(Some(list)) => list,
+            };
             let instr = Instruction::AddSectionPlane {
                 view,
                 plane: opts.get("plane")?,
@@ -8308,6 +8343,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 offset: opts.get("offset")?,
                 roll_deg: opts.get("roll")?,
                 flip: opts.get("flip")?,
+                cut_bodies,
+                exclude_bodies,
             };
             unsafe { tick.exec(instr)? };
             let state = unsafe { tick.state() };
@@ -8351,7 +8388,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "edit_section_plane",
-                &["view", "cut", "offset", "roll", "flip"],
+                &["view", "cut", "offset", "roll", "flip", "bodies", "exclude_bodies"],
             )?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let instr = Instruction::EditSectionPlane {
@@ -8360,6 +8397,15 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 offset: opts.get("offset")?,
                 roll_deg: opts.get("roll")?,
                 flip: opts.get("flip")?,
+                // `bodies` is left alone when absent; `"all"`/`true` restores every body;
+                // a table restricts the cut to those bodies (#1769).
+                cut_bodies: section_plane_body_scope(&opts, "bodies")?,
+                // `exclude_bodies` likewise; `false`/an empty table clears the exclusions.
+                exclude_bodies: match section_plane_body_scope(&opts, "exclude_bodies")? {
+                    None => None,
+                    Some(None) => Some(Vec::new()),
+                    Some(Some(list)) => Some(list),
+                },
             };
             unsafe { tick.exec(instr) }
         })?,
@@ -8376,7 +8422,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             unsafe { tick.exec(instr) }
         })?,
     )?;
-    // Read a view's cutting planes back: `{ origin, normal, offset, roll (degrees), flip }`.
+    // Read a view's cutting planes back: `{ origin, normal, offset, roll (degrees), flip,
+    // bodies ("all" or body indices), excludes (body indices) }`.
     api.set(
         "section_planes",
         lua.create_function(|lua, view: Option<usize>| {
@@ -8397,6 +8444,22 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 t.set("offset", cut.offset_mm)?;
                 t.set("roll", cut.roll.to_degrees())?;
                 t.set("flip", cut.flip)?;
+                match &cut.cut_bodies {
+                    None => t.set("bodies", "all")?,
+                    Some(list) => {
+                        let bodies: Vec<usize> = list
+                            .iter()
+                            .map(|&k| state.doc.bodies.keys().position(|b| b == k).unwrap_or(0))
+                            .collect();
+                        t.set("bodies", bodies)?;
+                    }
+                }
+                let excludes: Vec<usize> = cut
+                    .exclude_bodies
+                    .iter()
+                    .map(|&k| state.doc.bodies.keys().position(|b| b == k).unwrap_or(0))
+                    .collect();
+                t.set("excludes", excludes)?;
                 out.set(i + 1, t)?;
             }
             Ok(out)

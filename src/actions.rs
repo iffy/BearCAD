@@ -2411,6 +2411,10 @@ pub struct CreatingSectionPlane {
     /// Which face-tilt ring is being dragged: `0` = U, `1` = V.
     pub tilt_gizmo_drag: Option<usize>,
     pub anchor: Option<SceneElement>,
+    /// Which bodies this plane cuts (#1769): `None` is every body, `Some` the explicit list.
+    pub cut_bodies: Option<Vec<crate::model::BodyKey>>,
+    /// Bodies this plane spares even so (#1769).
+    pub exclude_bodies: Vec<crate::model::BodyKey>,
 }
 
 impl Default for CreatingSectionPlane {
@@ -2436,6 +2440,8 @@ impl Default for CreatingSectionPlane {
             gizmo_drag: None,
             tilt_gizmo_drag: None,
             anchor: None,
+            cut_bodies: None,
+            exclude_bodies: Vec::new(),
         }
     }
 }
@@ -2481,6 +2487,8 @@ impl CreatingSectionPlane {
             user_edited_roll: !cut.roll_expression.is_empty(),
             user_edited_tilt_v: !cut.tilt_v_expression.is_empty(),
             pending_focus: true,
+            cut_bodies: cut.cut_bodies.clone(),
+            exclude_bodies: cut.exclude_bodies.clone(),
             ..Self::default()
         }
     }
@@ -2522,6 +2530,8 @@ impl CreatingSectionPlane {
                     roll_expression: String::new(),
                     tilt_v: 0.0,
                     tilt_v_expression: String::new(),
+                    cut_bodies: self.cut_bodies.clone(),
+                    exclude_bodies: self.exclude_bodies.clone(),
                 }
             }
             crate::construction::PlaneReference::Face { origin, normal, .. } => {
@@ -2550,6 +2560,8 @@ impl CreatingSectionPlane {
                     } else {
                         String::new()
                     },
+                    cut_bodies: self.cut_bodies.clone(),
+                    exclude_bodies: self.exclude_bodies.clone(),
                 }
             }
         }
@@ -2583,25 +2595,29 @@ impl CreatingSectionPlane {
                     *origin,
                     *direction,
                 );
-                crate::model::CrossSectionCut {
-                    origin: *origin,
-                    normal: plane.normal,
-                    offset_mm: self.offset_live,
-                    flip: self.flip,
-                    ..Default::default()
-                }
+            crate::model::CrossSectionCut {
+                origin: *origin,
+                normal: plane.normal,
+                offset_mm: self.offset_live,
+                flip: self.flip,
+                cut_bodies: self.cut_bodies.clone(),
+                exclude_bodies: self.exclude_bodies.clone(),
+                ..Default::default()
             }
-            crate::construction::PlaneReference::Face { origin, normal, .. } => {
-                crate::model::CrossSectionCut {
-                    origin: *origin,
-                    normal: *normal,
-                    offset_mm: self.offset_live,
-                    flip: self.flip,
-                    roll: self.roll_deg.to_radians(),
-                    tilt_v: self.tilt_v_deg.to_radians(),
-                    ..Default::default()
-                }
+        }
+        crate::construction::PlaneReference::Face { origin, normal, .. } => {
+            crate::model::CrossSectionCut {
+                origin: *origin,
+                normal: *normal,
+                offset_mm: self.offset_live,
+                flip: self.flip,
+                roll: self.roll_deg.to_radians(),
+                tilt_v: self.tilt_v_deg.to_radians(),
+                cut_bodies: self.cut_bodies.clone(),
+                exclude_bodies: self.exclude_bodies.clone(),
+                ..Default::default()
             }
+        }
         }
     }
 }
@@ -3221,6 +3237,11 @@ pub enum Action {
         offset_mm: Option<f32>,
         roll_deg: Option<f32>,
         flip: Option<bool>,
+        /// Scope the plane's cut (#1769): the outer `None` leaves it alone, an inner `None`
+        /// means every body, and a list restricts the cut to those bodies.
+        cut_bodies: Option<Option<Vec<crate::model::BodyKey>>>,
+        /// Replace the plane's exclusion list (#1769); `None` leaves it as it is.
+        exclude_bodies: Option<Vec<crate::model::BodyKey>>,
     },
     /// Drop one of a view's cutting planes (#1687).
     RemoveCrossSectionCut {
@@ -14112,6 +14133,8 @@ impl AppState {
                 offset_mm,
                 roll_deg,
                 flip,
+                cut_bodies,
+                exclude_bodies,
             } => {
                 let Some(key) = self.cross_section_target(view) else {
                     let e = "No cross-section view to edit".to_string();
@@ -14131,6 +14154,12 @@ impl AppState {
                 }
                 if let Some(flip) = flip {
                     plane.flip = flip;
+                }
+                if let Some(scope) = cut_bodies {
+                    plane.cut_bodies = scope;
+                }
+                if let Some(exclude) = exclude_bodies {
+                    plane.exclude_bodies = exclude;
                 }
                 ActionResult::Ok
             }
@@ -21156,6 +21185,23 @@ pub fn apply_pick(
             // unit (#1406) instead of producing a detached Moved output body.
             let cm = state.creating_move.get_or_insert_with(CreatingMove::default);
             crate::element_picker::toggle_picked(&mut cm.instance_targets, *ui);
+            true
+        }
+        // The cutting plane tool's body scopes (#1769): viewport clicks feed whichever of
+        // the two pickers is armed — the cut list (starting it explicitly on first pick)
+        // or the exclusion list.
+        (P::SectionPlaneCutBodies, SceneElement::Body(bi)) => {
+            let Some(cs) = state.creating_section.as_mut() else {
+                return false;
+            };
+            crate::element_picker::toggle_picked(cs.cut_bodies.get_or_insert_with(Vec::new), *bi);
+            true
+        }
+        (P::SectionPlaneExcludeBodies, SceneElement::Body(bi)) => {
+            let Some(cs) = state.creating_section.as_mut() else {
+                return false;
+            };
+            crate::element_picker::toggle_picked(&mut cs.exclude_bodies, *bi);
             true
         }
         (_, SceneElement::Body(bi)) => toggle_body_in_active_tool(state, *bi),
@@ -39879,6 +39925,149 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         let _ = max;
     }
 
+    /// #1769: a plane only cuts the bodies it lists, and never the excluded ones — an
+    /// exclusion wins even over an explicit list.
+    #[test]
+    fn cutting_planes_cut_only_listed_bodies_and_skip_excluded_ones() {
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        let keys: Vec<_> = state.doc.bodies.keys().collect();
+        assert!(keys.len() >= 2, "two bodies to scope between");
+        let (a, b) = (keys[0], keys[1]);
+        let whole_a = crate::extrude::body_solid_mesh(&state.doc, a).expect("mesh a");
+        let whole_b = crate::extrude::body_solid_mesh(&state.doc, b).expect("mesh b");
+        let volume = |m: &crate::extrude::SolidMesh| {
+            crate::extrude::mesh_signed_volume(m).abs()
+        };
+        let (_, max) = whole_a.bounds().expect("bounds");
+        let mid_z = max.z * 0.5;
+        let cut = crate::model::CrossSectionCut {
+            origin: glam::Vec3::new(0.0, 0.0, mid_z),
+            normal: glam::Vec3::Z,
+            cut_bodies: Some(vec![a]),
+            exclude_bodies: Vec::new(),
+            ..Default::default()
+        };
+        // The listed body is halved; the unlisted one draws whole.
+        let sectioned_a = crate::extrude::sectioned_body_mesh(&state.doc, a, &[cut.clone()])
+            .expect("the scoped mesh");
+        let sectioned_b =
+            crate::extrude::sectioned_body_mesh(&state.doc, b, &[cut.clone()])
+                .expect("the unscoped mesh stays whole");
+        assert!(
+            (volume(&sectioned_a) - volume(&whole_a) / 2.0).abs() < volume(&whole_a) * 0.05,
+            "a listed body is half: {} of {}",
+            volume(&sectioned_a),
+            volume(&whole_a)
+        );
+        assert!(
+            (volume(&sectioned_b) - volume(&whole_b)).abs() < volume(&whole_b) * 1e-4,
+            "an unlisted body is untouched"
+        );
+        // An exclusion wins over All.
+        let excluding = crate::model::CrossSectionCut {
+            origin: glam::Vec3::new(0.0, 0.0, mid_z),
+            normal: glam::Vec3::Z,
+            exclude_bodies: vec![b],
+            ..Default::default()
+        };
+        let spared =
+            crate::extrude::sectioned_body_mesh(&state.doc, b, &[excluding.clone()])
+                .expect("the spared mesh");
+        assert!(
+            (volume(&spared) - volume(&whole_b)).abs() < volume(&whole_b) * 1e-4,
+            "an excluded body is spared even under All"
+        );
+        let still_cut =
+            crate::extrude::sectioned_body_mesh(&state.doc, a, &[excluding.clone()])
+                .expect("mesh");
+        assert!(
+            (volume(&still_cut) - volume(&whole_a) / 2.0).abs() < volume(&whole_a) * 0.05,
+            "and everybody else still feels it"
+        );
+        // Directly on the model: exclusions win over an explicit list too.
+        let mut both_ways = excluding.clone();
+        both_ways.cut_bodies = Some(vec![a, b]);
+        assert!(
+            !both_ways.cut_applies_to(b),
+            "exclusion beats an explicit listing"
+        );
+        assert!(both_ways.cut_applies_to(a));
+    }
+
+    /// #1769: the tool's draft carries the scopes — BeginEdit restores them from the
+    /// hanging plane, commit writes them back, and pane picks fill them.
+    #[test]
+    fn cutting_plane_scope_round_trips_through_edit_and_pick() {
+        use crate::hierarchy::SceneElement;
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        let keys: Vec<_> = state.doc.bodies.keys().collect();
+        assert!(keys.len() >= 2, "two bodies to scope between");
+        let (a, b) = (keys[0], keys[1]);
+
+        state.apply(Action::CreateCrossSection { name: None });
+        let view = state.doc.cross_sections.keys().next().expect("the view");
+        state.apply(Action::AddCrossSectionCut {
+            view: None,
+            cut: crate::model::CrossSectionCut {
+                origin: glam::Vec3::ZERO,
+                normal: glam::Vec3::Z,
+                cut_bodies: Some(vec![b]),
+                exclude_bodies: vec![a],
+                ..Default::default()
+            },
+        });
+
+        // Reopening the plane (#1755) brings its scopes back with everything else.
+        assert_eq!(
+            state.apply(Action::BeginEditSectionPlane { view, cut: 0 }),
+            ActionResult::Ok
+        );
+        let cs = state.creating_section.as_ref().expect("the draft");
+        assert_eq!(cs.cut_bodies, Some(vec![b]));
+        assert_eq!(cs.exclude_bodies, vec![a]);
+
+        // Pane picks extend them while editing: a cut-list pick lands in the explicit list,
+        // an exclude pick in the exclusions.
+        assert!(apply_pick(
+            &mut state,
+            crate::context::PickerTarget::SectionPlaneCutBodies,
+            &SceneElement::Body(a)
+        ));
+        let cs = state.creating_section.as_ref().expect("the draft");
+        assert_eq!(
+            cs.cut_bodies.as_deref(),
+            Some([b, a].as_slice()),
+            "the pick joined the explicit list"
+        );
+        // A partial edit rescopes without touching anything else (#1769).
+        state.apply(Action::SetCrossSectionCut {
+            view: Some(view),
+            cut: 0,
+            offset_mm: None,
+            roll_deg: None,
+            flip: None,
+            cut_bodies: Some(Some(vec![b])),
+            exclude_bodies: None,
+        });
+        let stored = &state.doc.cross_sections[view].cuts[0];
+        assert_eq!(stored.cut_bodies.as_deref(), Some([b].as_slice()));
+        assert_eq!(stored.exclude_bodies, &[a]);
+
+        // Commit replaces the hanging plane with the draft's scopes intact.
+        let cs = state.creating_section.take().expect("still editing");
+        state.creating_section = Some(cs);
+        assert_eq!(state.apply(Action::CommitSectionPlane), ActionResult::Ok);
+        let stored = &state.doc.cross_sections[view].cuts[0];
+        assert_eq!(
+            stored.cut_bodies.as_deref(),
+            Some([b, a].as_slice()),
+            "commit keeps the edited scope"
+        );
+        assert_eq!(stored.exclude_bodies, &[a]);
+    }
+
     /// #1687: the cutting-plane tool hangs planes off faces, and each one slides, turns, and
     /// flips independently. Several combine to cut in several directions at once.
     #[test]
@@ -39916,6 +40105,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             offset_mm: Some(-3.5),
             roll_deg: None,
             flip: None,
+            cut_bodies: None,
+            exclude_bodies: None,
         });
         state.apply(Action::SetCrossSectionCut {
             view: None,
@@ -39923,6 +40114,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             offset_mm: None,
             roll_deg: Some(90.0),
             flip: Some(true),
+            cut_bodies: None,
+            exclude_bodies: None,
         });
         let cut = state.doc.cross_sections[view].cuts[0].clone();
         assert_eq!(cut.offset_mm, -3.5);

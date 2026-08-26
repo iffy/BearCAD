@@ -278,8 +278,9 @@ pub enum PlaneToolEdit {
 }
 
 /// The Cutting plane tool's in-progress draft (#1745): the picked anchor, live offset/roll,
-/// and whether Enter / the blue button can hang it.
-#[derive(Clone, Debug, PartialEq)]
+/// and whether Enter / the blue button can hang it — plus which bodies the plane takes
+/// (#1769), as a cut list (with an All-bodies switch) and an exclusion list.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SectionPlaneControl {
     pub anchor: Option<SceneElement>,
     pub offset_text: String,
@@ -292,6 +293,12 @@ pub struct SectionPlaneControl {
     pub show_tilts: bool,
     pub pending_focus: bool,
     pub editing: bool,
+    /// The explicit bodies-to-cut list; `None` is every body — the All-bodies switch on.
+    pub cut_bodies: Option<Vec<crate::model::BodyKey>>,
+    /// The bodies-to-exclude list.
+    pub exclude_bodies: Vec<crate::model::BodyKey>,
+    /// The exclusion list currently covers every live body (its own All-bodies switch).
+    pub all_excluded: bool,
 }
 
 /// One edit from the Cutting plane tool's context section (#1745).
@@ -301,6 +308,12 @@ pub enum SectionPlaneEdit {
     SetRoll(String),
     SetTiltV(String),
     SetFlip(bool),
+    /// The All-bodies switch on the cut picker (#1769): on is every body, off starts an
+    /// explicit (initially empty) list for individual picks.
+    SetCutAll(bool),
+    /// The All-bodies switch on the exclude picker (#1769): on excludes every live body,
+    /// off clears the list.
+    SetExcludeAll(bool),
     FocusConsumed,
     Commit,
 }
@@ -1588,6 +1601,12 @@ pub enum PickerTarget {
     /// The Cutting plane tool's anchor (`CreatingSectionPlane::anchor`, #1745): a face,
     /// construction plane, edge, or axis — the same kinds the Plane tool's Anchor takes.
     SectionPlaneAnchor,
+    /// The cutting plane tool's bodies-to-cut scope (`CreatingSectionPlane::cut_bodies`,
+    /// #1769): picking here turns "All bodies" into an explicit list.
+    SectionPlaneCutBodies,
+    /// The cutting plane tool's bodies-to-exclude scope
+    /// (`CreatingSectionPlane::exclude_bodies`, #1769): these are spared even when listed.
+    SectionPlaneExcludeBodies,
 }
 
 /// An interaction with a [`ToolPickerView`] to apply to its backing tool set (#213).
@@ -2196,6 +2215,8 @@ pub fn picker_filter(target: PickerTarget) -> ElementFilter {
         | PickerTarget::RevolveCut
         | PickerTarget::SweepCut
         | PickerTarget::LoftCut
+        | PickerTarget::SectionPlaneCutBodies
+        | PickerTarget::SectionPlaneExcludeBodies
         | PickerTarget::MirrorTargets => {
             ElementFilter::kind(K::Body).rule(PickRule::LiveBody)
         }
@@ -3231,6 +3252,34 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
             separator_above: true,
             render: PickerRender::Shared,
         });
+        if p.has_anchor {
+            // #1769: which bodies the plane takes. The two scopes draw inline among the
+            // plane's own controls, each with its All-bodies switch. Neither starts armed —
+            // after an anchor pick the offset field has the keyboard (#1750) — so arming
+            // either is a pane click (or a script) away.
+            let mut cut = body_tool_picker(
+                input.doc,
+                "Cut bodies",
+                PickerTarget::SectionPlaneCutBodies,
+                p.cut_bodies.as_deref().unwrap_or(&[]),
+                None,
+                false,
+            );
+            cut.render = PickerRender::Inline;
+            cut.separator_above = false;
+            tool_pickers.push(cut);
+            let mut exclude = body_tool_picker(
+                input.doc,
+                "Exclude",
+                PickerTarget::SectionPlaneExcludeBodies,
+                &p.exclude_bodies,
+                Some(crate::theme::CUT_ACCENT),
+                false,
+            );
+            exclude.render = PickerRender::Inline;
+            exclude.separator_above = false;
+            tool_pickers.push(exclude);
+        }
     }
     if let Some(b) = input.boolean_op.as_ref() {
         // Combine mode uses one picker (side A only); Cut/Intersect/Difference use two sides.
@@ -6784,6 +6833,52 @@ pub fn show_pane(
             let mut flip = control.flip;
             if checkbox_row(ui, "Flip", &mut flip, None) {
                 on_section_plane_edit(SectionPlaneEdit::SetFlip(flip));
+            }
+            // Which bodies the plane takes (#1769): a cut list — every body until its own
+            // All-bodies switch is switched off — minus the exclusion list. Exclusions win
+            // over both All and the list, so "everything except these" is the default flow.
+            let dummy_scopes = ElementPicker::new(
+                ElementFilter::kind(ElementKind::Body).rule(PickRule::LiveBody),
+                PickLimit::Infinite,
+            );
+            let mut show_scope_picker = |ui: &mut egui::Ui, heading: &'static str, id: &'static str, target: PickerTarget| {
+                let picker = content
+                    .tool_pickers
+                    .iter()
+                    .find(|v| v.target == target)
+                    .map(|v| &v.picker)
+                    .unwrap_or(&dummy_scopes);
+                labeled_row_top(ui, heading, |ui| {
+                    ui.add_enabled_ui(controls_enabled, |ui| {
+                        if let Some(event) = crate::element_picker::show(ui, picker, doc, id) {
+                            match event {
+                                crate::element_picker::PickerEvent::Focus => {
+                                    on_tool_picker_edit(target, ToolPickerAction::Focus)
+                                }
+                                crate::element_picker::PickerEvent::Remove(i) => {
+                                    on_tool_picker_edit(target, ToolPickerAction::Remove(i))
+                                }
+                                crate::element_picker::PickerEvent::Clear => {
+                                    on_tool_picker_edit(target, ToolPickerAction::Clear)
+                                }
+                            }
+                        }
+                    });
+                });
+            };
+            show_scope_picker(ui, "Cut bodies", "section_plane_cut_bodies", PickerTarget::SectionPlaneCutBodies);
+            let mut all_cut = control.cut_bodies.is_none();
+            if labeled_row_salted(ui, Some("section_plane_cut_all"), "All bodies", |ui| {
+                ui.checkbox(&mut all_cut, "").changed()
+            }) {
+                on_section_plane_edit(SectionPlaneEdit::SetCutAll(all_cut));
+            }
+            show_scope_picker(ui, "Exclude", "section_plane_exclude_bodies", PickerTarget::SectionPlaneExcludeBodies);
+            let mut all_excluded = control.all_excluded;
+            if labeled_row_salted(ui, Some("section_plane_exclude_all"), "All bodies", |ui| {
+                ui.checkbox(&mut all_excluded, "").changed()
+            }) {
+                on_section_plane_edit(SectionPlaneEdit::SetExcludeAll(all_excluded));
             }
             if primary_button(
                 ui,
@@ -12594,6 +12689,7 @@ mod tests {
                         show_tilts: true,
                         pending_focus: true,
                         editing: false,
+                        ..Default::default()
                     }),
                     plane_tool: (tool == Tool::ConstructionPlane).then_some(PlaneToolControl {
                         anchor_labels: vec!["Origin".to_string()],
@@ -12751,6 +12847,7 @@ mod tests {
                 show_tilts: true,
                 pending_focus: true,
                 editing: false,
+                ..Default::default()
             }),
             ..input(&doc, &selection)
         };
@@ -12772,6 +12869,53 @@ mod tests {
         assert!(accepts.contains(&ElementKind::Edge));
         assert!(!accepts.contains(&ElementKind::Body));
         assert_eq!(anchor.render, PickerRender::Shared);
+    }
+
+    #[test]
+    fn the_cutting_plane_scopes_are_two_real_body_pickers() {
+        // #1769: with an anchor set, the tool registers Cut bodies and Exclude pickers so
+        // pane clicks, hover and scripts see them; neither starts armed.
+        use crate::hierarchy::SceneElement;
+        let doc = doc_with_bodies(2);
+        let selection = SceneSelection::default();
+        let face = SceneElement::ConstructionPlane(pkey(0));
+        let excluded = SceneElement::Body(crate::model::BodyKey::from_bits(0));
+        let input = ContextInput {
+            tool: Tool::SectionPlane,
+            section_plane: Some(SectionPlaneControl {
+                anchor: Some(face),
+                has_anchor: true,
+                cut_bodies: None,
+                exclude_bodies: vec![crate::model::BodyKey::from_bits(0)],
+                all_excluded: false,
+                ..Default::default()
+            }),
+            ..input(&doc, &selection)
+        };
+        let pickers = context_pane_content(&input).tool_pickers;
+        let cut = pickers
+            .iter()
+            .find(|v| v.target == PickerTarget::SectionPlaneCutBodies)
+            .expect("the cutting plane tool registers its Cut bodies picker");
+        let exclude = pickers
+            .iter()
+            .find(|v| v.target == PickerTarget::SectionPlaneExcludeBodies)
+            .expect("the cutting plane tool registers its Exclude picker");
+        assert!(cut.render == PickerRender::Inline && exclude.render == PickerRender::Inline);
+        assert!(
+            !cut.picker.is_focused() && !exclude.picker.is_focused(),
+            "neither scope starts armed — the offset field holds focus (#1750)"
+        );
+        assert!(
+            cut.picker.is_empty(),
+            "with All bodies on, the explicit list reads empty"
+        );
+        assert_eq!(exclude.picker.picked(), &[excluded]);
+        for view in [&cut, &exclude] {
+            let accepts = view.picker.filter().accepted_kinds();
+            assert!(accepts.contains(&ElementKind::Body), "scopes take bodies");
+            assert!(!accepts.contains(&ElementKind::Face));
+        }
     }
 
     #[test]

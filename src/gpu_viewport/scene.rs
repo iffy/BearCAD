@@ -1068,8 +1068,10 @@ impl ViewportScene {
                 // the cut face is real geometry to hatch.
                 let mesh = match (visible, section_cuts) {
                     (false, _) => None,
+                    // Each plane's cut/exclude scope decides whether it takes this body
+                    // (#1769); an untouched body keeps its whole solid.
                     (true, Some(cuts)) if !cuts.is_empty() => {
-                        crate::extrude::cross_section_body_mesh(input.doc, bi, cuts)
+                        crate::extrude::sectioned_body_mesh(input.doc, bi, cuts)
                     }
                     (true, _) => crate::extrude::body_solid_mesh(input.doc, bi),
                 };

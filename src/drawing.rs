@@ -855,8 +855,9 @@ pub fn drawing_view_cuts<'a>(
         .unwrap_or(&[])
 }
 
-/// One body's mesh as this view shows it (#1689): cut by the view's cross-section planes when
-/// it has any, whole otherwise.
+/// One body's mesh as this view shows it (#1689): cut by the view's cross-section planes
+/// when it has any — each only where its cut/exclude scope takes this body (#1769) — and
+/// whole otherwise.
 fn drawing_view_body_mesh(
     doc: &Document,
     view: &DrawingView,
@@ -864,7 +865,7 @@ fn drawing_view_body_mesh(
 ) -> Option<crate::extrude::SolidMesh> {
     match drawing_view_cuts(doc, view) {
         [] => crate::extrude::body_solid_mesh(doc, body),
-        cuts => crate::extrude::cross_section_body_mesh(doc, body, cuts),
+        cuts => crate::extrude::sectioned_body_mesh(doc, body, cuts),
     }
 }
 

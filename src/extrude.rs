@@ -7361,6 +7361,24 @@ pub fn cross_section_body_mesh(
     mesh
 }
 
+/// A body's mesh as the open section shows it (#1769): only the planes whose cut/exclude
+/// scope takes this body apply to it — an unlisted or excluded body draws whole.
+pub fn sectioned_body_mesh(
+    doc: &Document,
+    body: crate::model::BodyKey,
+    cuts: &[crate::model::CrossSectionCut],
+) -> Option<SolidMesh> {
+    let applied: Vec<crate::model::CrossSectionCut> = cuts
+        .iter()
+        .filter(|cut| cut.cut_applies_to(body))
+        .cloned()
+        .collect();
+    match applied.as_slice() {
+        [] => body_solid_mesh(doc, body),
+        cuts => cross_section_body_mesh(doc, body, cuts),
+    }
+}
+
 fn cross_section_body_mesh_uncached(
     doc: &Document,
     body: crate::model::BodyKey,
