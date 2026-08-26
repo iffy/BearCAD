@@ -1358,6 +1358,21 @@ pub fn offset_along_normal_from_cursor(
     Some((hit - origin).dot(normal))
 }
 
+/// Growth direction and positive height from a signed free-cursor offset (#1763).
+///
+/// The Shape tool's height step tracks the pointer along the placement-face
+/// normal. A negative offset means the cursor is behind that face: flip the
+/// normal so the cuboid (or cylinder) grows that way, keeping height positive
+/// (negative dimensions are errors — see #1663).
+pub fn shape_growth_from_height_offset(normal: Vec3, offset: f32) -> (Vec3, f32) {
+    let n = normal.normalize_or_zero();
+    if offset < 0.0 {
+        (-n, -offset)
+    } else {
+        (n, offset)
+    }
+}
+
 /// Which axis gizmo handle is under the cursor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AxisGizmoHit {
@@ -6143,7 +6158,7 @@ mod tests {
         let vp = cam.view_proj(viewport);
         let origin = Vec3::ZERO;
         let normal = Vec3::Z;
-        for want in [10.0_f32, 25.0, 40.0, 80.0] {
+        for want in [10.0_f32, 25.0, 40.0, 80.0, -10.0, -40.0] {
             let tip = origin + normal * want;
             let screen = cam
                 .project(tip, viewport, &vp)
@@ -6155,6 +6170,51 @@ mod tests {
                 "pointing at tip z={want} should yield ~{want}, got {got}"
             );
         }
+    }
+
+    /// #1763: free-cursor height is signed on a vertical face too (the YZ report).
+    #[test]
+    fn offset_along_normal_from_cursor_is_signed_on_yz() {
+        let mut cam = crate::camera::Camera::default();
+        cam.distance = 280.0;
+        cam.target = Vec3::new(0.0, 40.0, 30.0);
+        let viewport = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(1280.0, 800.0));
+        let vp = cam.view_proj(viewport);
+        let origin = Vec3::new(0.0, 40.0, 30.0);
+        let normal = Vec3::X;
+        for want in [25.0_f32, -25.0] {
+            let tip = origin + normal * want;
+            let screen = cam
+                .project(tip, viewport, &vp)
+                .expect("tip should project");
+            let got = offset_along_normal_from_cursor(origin, normal, &cam, screen, viewport, &vp)
+                .expect("cursor on the tip should resolve a height");
+            assert!(
+                (got - want).abs() < 0.5,
+                "YZ height {want} got {got} (tip {tip:?})"
+            );
+        }
+    }
+
+    /// #1763: a cursor behind the placement face is a negative offset, and the Shape
+    /// tool turns that into a flipped growth normal with a positive height.
+    #[test]
+    fn shape_growth_from_height_offset_follows_either_side_of_the_face() {
+        let (n, h) = shape_growth_from_height_offset(Vec3::Z, 12.0);
+        assert!((h - 12.0).abs() < 1e-5);
+        assert!(n.dot(Vec3::Z) > 0.99);
+
+        let (n, h) = shape_growth_from_height_offset(Vec3::Z, -12.0);
+        assert!((h - 12.0).abs() < 1e-5, "height stays positive, got {h}");
+        assert!(
+            n.dot(-Vec3::Z) > 0.99,
+            "behind the face flips the growth normal, got {n:?}"
+        );
+
+        // The reported case: a cuboid on YZ (normal +X), cursor at −X.
+        let (n, h) = shape_growth_from_height_offset(Vec3::X, -25.0);
+        assert!((h - 25.0).abs() < 1e-5);
+        assert!(n.dot(-Vec3::X) > 0.99, "grows −X, got {n:?}");
     }
 
     /// #1196: the old screen-delta measurement from an off-centre base click leaves the tip
