@@ -22085,13 +22085,13 @@ fn section_tilt_gizmo_hit(
     let preview = construction::cross_section_cut_plane(&cs.as_cut_live());
     let (u, v) = construction::plane_basis(normal);
     let center = origin + preview.normal * cs.offset_live;
+    // The grab target is the handle the viewport draws (#1765): zero is the other
+    // in-plane axis, not the axis reference `axis_angle_handle` would pick.
     for (i, axis) in [u, v].into_iter().enumerate() {
         let angle = if i == 0 { cs.roll_deg } else { cs.tilt_v_deg };
-        let handle = construction::axis_angle_handle(center, axis, angle);
-        if construction::rotation_handle_hit(pp, project, handle)
-            || construction::axis_gizmo_hit(pp, project, center, axis, 0.0, angle)
-                == Some(AxisGizmoHit::Angle)
-        {
+        let zero = if i == 0 { v } else { u };
+        let handle = construction::tilt_handle(center, axis, zero, angle);
+        if construction::rotation_handle_hit(pp, project, handle) {
             return Some(i);
         }
     }
@@ -32913,7 +32913,7 @@ impl App {
                     for (i, axis) in [u, v].into_iter().enumerate() {
                         let angle = if i == 0 { cs.roll_deg } else { cs.tilt_v_deg };
                         let zero = if i == 0 { v } else { u };
-                        let handle = face_spin_handle_pos(center, axis, radius, Some(zero), angle);
+                        let handle = construction::tilt_handle(center, axis, zero, angle);
                         let hovered = cs.tilt_gizmo_drag == Some(i)
                             || (cs.tilt_gizmo_drag.is_none()
                                 && pointer_screen
@@ -37552,6 +37552,58 @@ mod tests {
         assert!(r.dot(u).abs() < 1e-6, "right ⟂ up");
         assert!(r.z.abs() < 1e-6, "iso right stays horizontal");
         assert!(u.z > 0.0, "iso up points upward");
+    }
+
+    /// #1765: a face-anchored cutting plane's tilt gizmo grabs at the handle the viewport
+    /// draws — the ring point rotated from the other in-plane axis by the live angle — not
+    /// at the axis-reference handle mirrored to the far side of the ring.
+    #[test]
+    fn section_tilt_gizmo_grabs_at_the_drawn_handle() {
+        let project = |p: Vec3| Some(egui::pos2(p.x, -p.y));
+        let radius = construction::AXIS_ANGLE_GIZMO_RADIUS_MM;
+        let drawn_handle = |axis: Vec3, zero: Vec3, angle_deg: f32| {
+            face_spin_handle_pos(Vec3::ZERO, axis, radius, Some(zero), angle_deg)
+        };
+        let (u, v) = construction::plane_basis(Vec3::Z);
+
+        // The report's state: Turn ≈ 353°, cursor on the drawn Turn (U-ring) handle.
+        let cs = actions::CreatingSectionPlane {
+            roll_deg: 353.0,
+            ..Default::default()
+        };
+        let drawn = drawn_handle(u, v, cs.roll_deg);
+        assert_eq!(
+            section_tilt_gizmo_hit(&cs, project(drawn).unwrap(), &project),
+            Some(0),
+            "the drawn Turn handle must grab the U tilt ring"
+        );
+        let mirrored = construction::axis_angle_handle(Vec3::ZERO, u, cs.roll_deg);
+        assert!(
+            (drawn - mirrored).length() > 2.0 * radius * 0.8,
+            "setup: the drawn handle and the axis-reference spot are distinct"
+        );
+        assert_eq!(
+            section_tilt_gizmo_hit(&cs, project(mirrored).unwrap(), &project),
+            None,
+            "the mirrored far-side spot is not a grab target"
+        );
+
+        // The V ring grabs at its own drawn handle, and the ring centre grabs nothing.
+        let cs = actions::CreatingSectionPlane {
+            tilt_v_deg: 30.0,
+            ..Default::default()
+        };
+        let drawn_v = drawn_handle(v, u, cs.tilt_v_deg);
+        assert_eq!(
+            section_tilt_gizmo_hit(&cs, project(drawn_v).unwrap(), &project),
+            Some(1),
+            "the drawn Tilt handle must grab the V tilt ring"
+        );
+        assert_eq!(
+            section_tilt_gizmo_hit(&cs, project(Vec3::ZERO).unwrap(), &project),
+            None,
+            "the ring centre (away from every handle) grabs no tilt ring"
+        );
     }
 
     /// #203: while the Loft tool is collecting cross sections, the scene shows a live ghost of

@@ -690,6 +690,7 @@ fn is_native_only_verb(name: &str) -> bool {
             | "click"
             | "move_ground"
             | "click_ground"
+            | "drag_world"
             | "drag"
             | "right_drag"
             | "right_drag_pan"

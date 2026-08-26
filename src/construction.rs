@@ -1246,6 +1246,17 @@ pub fn axis_angle_handle(origin: Vec3, direction: Vec3, angle_deg: f32) -> Vec3 
     origin + axis_normal(direction, angle_deg) * AXIS_ANGLE_GIZMO_RADIUS_MM
 }
 
+/// World position of a tilt-ring handle that spins from `zero` by `angle_deg` about
+/// `axis` (#1765). The grab target, the drawn handle, and the scripted handle position
+/// all share this one spot: deriving it from [`axis_reference_perp`] instead put the hit
+/// test on the far side of the ring from the visible handle.
+pub fn tilt_handle(origin: Vec3, axis: Vec3, zero: Vec3, angle_deg: f32) -> Vec3 {
+    let dir =
+        (Quat::from_axis_angle(axis.normalize_or_zero(), angle_deg.to_radians()) * zero)
+            .normalize_or_zero();
+    origin + dir * AXIS_ANGLE_GIZMO_RADIUS_MM
+}
+
 /// Angle (degrees) from a ray hit on the plane perpendicular to the axis through `origin`.
 pub fn angle_from_axis_plane_hit(origin: Vec3, direction: Vec3, hit: Vec3) -> f32 {
     let axis = direction.normalize_or_zero();

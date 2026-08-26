@@ -1044,6 +1044,9 @@ pub enum Instruction {
     ClickWorld { x: f32, y: f32, z: f32, mods: ClickMods },
     /// Primary-drag between two ground-plane points (world mm), like [`Self::Drag`].
     DragGround { x0: f32, y0: f32, x1: f32, y1: f32 },
+    /// Primary-drag between two points in world space (mm) — how a script grabs a gizmo
+    /// handle that floats above the ground plane (#1765).
+    DragWorld { x0: f32, y0: f32, z0: f32, x1: f32, y1: f32, z1: f32 },
     Drag {
         x0: f32,
         y0: f32,
@@ -2463,6 +2466,9 @@ impl Instruction {
             }
             Instruction::DragGround { x0, y0, x1, y1 } => {
                 format!("bearcad.ui.drag_ground({x0}, {y0}, {x1}, {y1})")
+            }
+            Instruction::DragWorld { x0, y0, z0, x1, y1, z1 } => {
+                format!("bearcad.ui.drag_world({x0}, {y0}, {z0}, {x1}, {y1}, {z1})")
             }
             Instruction::Drag { x0, y0, x1, y1 } => {
                 format!("bearcad.ui.drag({x0}, {y0}, {x1}, {y1})")
@@ -8721,6 +8727,23 @@ impl ScriptRunner {
                 let (Some(a), Some(b)) = (
                     state.cam.project(Vec3::new(x0, y0, 0.0), vp, &mat),
                     state.cam.project(Vec3::new(x1, y1, 0.0), vp, &mat),
+                ) else {
+                    return StepResult::Continue;
+                };
+                synthetic.drag(vp, a.x - vp.min.x, a.y - vp.min.y, b.x - vp.min.x, b.y - vp.min.y);
+                StepResult::Continue
+            }
+            Instruction::DragWorld { x0, y0, z0, x1, y1, z1 } => {
+                if state.cam.is_transitioning() {
+                    return StepResult::Wait;
+                }
+                let Some(vp) = viewport else {
+                    return StepResult::Wait;
+                };
+                let mat = state.cam.view_proj(vp);
+                let (Some(a), Some(b)) = (
+                    state.cam.project(Vec3::new(x0, y0, z0), vp, &mat),
+                    state.cam.project(Vec3::new(x1, y1, z1), vp, &mat),
                 ) else {
                     return StepResult::Continue;
                 };
