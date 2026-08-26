@@ -7315,6 +7315,46 @@ pub fn section_hatch_segments(
 /// The spacing the hatch is drawn at, in millimetres (#1688).
 pub const SECTION_HATCH_SPACING_MM: f32 = 3.0;
 
+/// The solid outline around each cut face (#1768): stroked in the hatch colour but slightly
+/// thicker than the hatch lines, so a cut face reads as one bounded surface.
+pub fn section_face_perimeter_segments(
+    mesh: &SolidMesh,
+    cut: &crate::model::CrossSectionCut,
+) -> Vec<(Vec3, Vec3)> {
+    const ON_PLANE_EPS: f32 = 1e-3;
+    let plane = crate::construction::cross_section_cut_plane(cut);
+    let (o, n) = (plane.origin, plane.normal);
+    type EdgeKey = ((i64, i64, i64), (i64, i64, i64));
+    // Count how many in-plane triangles use each edge: an edge of the cut face's rim borders
+    // exactly one in-plane triangle (its other side is a wall leaving the plane), while the
+    // cap's internal triangulation diagonals are shared by two.
+    let mut edges: std::collections::HashMap<EdgeKey, ((Vec3, Vec3), usize)> =
+        std::collections::HashMap::new();
+    for tri in &mesh.triangles {
+        if tri.iter().any(|p| (*p - o).dot(n).abs() > ON_PLANE_EPS) {
+            continue;
+        }
+        for &(i, j) in &[(0usize, 1usize), (1, 2), (2, 0)] {
+            let (a, b) = (tri[i], tri[j]);
+            let (ka, kb) = (
+                crate::gpu_viewport::quantize_vertex(a),
+                crate::gpu_viewport::quantize_vertex(b),
+            );
+            let key = if ka <= kb { (ka, kb) } else { (kb, ka) };
+            let entry = edges.entry(key).or_insert_with(|| ((a, b), 0));
+            entry.1 += 1;
+        }
+    }
+    // Sorted by edge key so the draw order is stable across runs (`HashMap` isn't).
+    let mut out: Vec<(EdgeKey, (Vec3, Vec3))> = edges
+        .into_iter()
+        .filter(|(_, (_, count))| *count == 1)
+        .map(|(key, (segment, _))| (key, segment))
+        .collect();
+    out.sort_by_key(|(key, _)| *key);
+    out.into_iter().map(|(_, segment)| segment).collect()
+}
+
 /// A body's mesh with a cross-section view's planes taken out of it (#1688): what the View
 /// workbench draws instead of the whole body. Each plane hides what is on its far side, and
 /// the openings come back as real cut faces — the kernel closes them — which is what the
@@ -17260,6 +17300,87 @@ mod tests {
             occt_body_shape(&state.doc, out).is_some(),
             "combined result must be kernel-representable"
         );
+    }
+
+    /// The cut-face perimeter (#1768) is the boundary of the face a cutting plane opened:
+    /// closed (a square's worth of length), in the cutting plane, and on the face's rim —
+    /// never the hatch's interior lines or the coplanar cap's tessellation diagonals.
+    #[test]
+    fn section_face_perimeter_walks_the_cut_boundary() {
+        let (mut doc, _sketch, ext) = box_doc(); // 10x10 footprint, 5 tall
+        doc.extrusions.insert(ext);
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(xkey(0)),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let cut = crate::model::CrossSectionCut {
+            origin: glam::Vec3::new(0.0, 0.0, 2.5),
+            normal: -glam::Vec3::Z,
+            ..Default::default()
+        };
+        let mesh = cross_section_body_mesh(&doc, bkey(0), std::slice::from_ref(&cut))
+            .expect("half of the box survives");
+        let perimeter = section_face_perimeter_segments(&mesh, &cut);
+
+        assert!(!perimeter.is_empty(), "the cut face has a boundary");
+        const TOL: f32 = 2e-3;
+        for (a, b) in &perimeter {
+            for p in [a, b] {
+                assert!(
+                    (p.z - 2.5).abs() < TOL,
+                    "perimeter point lies in the cutting plane, got {p:?}"
+                );
+                let on_rim = (p.x).abs() < TOL
+                    || (p.x - 10.0).abs() < TOL
+                    || p.y.abs() < TOL
+                    || (p.y - 10.0).abs() < TOL;
+                assert!(on_rim, "perimeter point sits on the face's rim, got {p:?}");
+            }
+        }
+        // A closed square 10 across per side: one full lap of the rim.
+        let total: f32 = perimeter.iter().map(|(a, b)| (*b - *a).length()).sum();
+        assert!(
+            (total - 40.0).abs() < 1e-2,
+            "the perimeter traces the whole rim once, got {total}"
+        );
+    }
+
+    /// #1768: a curved cut face's perimeter comes back as the short facet segments along its
+    /// edge, so it can be stroked as one solid outline.
+    #[test]
+    fn section_face_perimeter_follows_a_round_cut_face() {
+        let mut state = crate::actions::AppState::default();
+        let mut shape = crate::model::Primitive::new(crate::model::PrimitiveKind::Cylinder);
+        shape.origin = [0.0, 0.0, 0.0];
+        shape.normal = [0.0, 0.0, 1.0];
+        shape.radius = "20".into();
+        shape.height = "30".into();
+        state.apply(crate::actions::Action::CreateShape { shape });
+        let cut = crate::model::CrossSectionCut {
+            origin: glam::Vec3::new(0.0, 0.0, 15.0),
+            normal: -glam::Vec3::Z,
+            ..Default::default()
+        };
+        let mesh = cross_section_body_mesh(&state.doc, bkey(0), std::slice::from_ref(&cut))
+            .expect("most of the cylinder survives");
+        let perimeter = section_face_perimeter_segments(&mesh, &cut);
+        assert!(
+            perimeter.len() >= 32,
+            "the round rim is faceted, not one segment: {}",
+            perimeter.len()
+        );
+        // Every segment lies in the plane and its endpoints sit on r ≈ 20.
+        for (a, b) in &perimeter {
+            for p in [a, b] {
+                assert!((p.z - 15.0).abs() < 1e-3, "in-plane, got {p:?}");
+                assert!(
+                    ((p.x * p.x + p.y * p.y).sqrt() - 20.0).abs() < 1e-2,
+                    "on the cylinder wall, got {p:?}"
+                );
+            }
+        }
     }
 }
 
