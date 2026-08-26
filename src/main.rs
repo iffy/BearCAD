@@ -13362,7 +13362,8 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                         _ => {
                             next.phase = ShapePhase::Height;
                             self.state.status =
-                                "Drag away from the plane to set the height, or type it".to_string();
+                                "Drag off the plane in either direction to set the height, or type it"
+                                    .to_string();
                         }
                     }
                 }
@@ -13370,6 +13371,8 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             // The height: absolute free-cursor offset along the anchor normal so the tip
             // (yellow top point) stays even with the pointer (#1196). A screen-delta from
             // phase_screen under-reads under perspective / off-centre base clicks.
+            // A negative offset is the cursor behind the face (#1763): flip the growth
+            // normal and keep height positive.
             (ShapePhase::Height, _) => {
                 if next.follows_cursor(D::Height) {
                     let origin = Vec3::from_array(next.shape.origin);
@@ -13381,7 +13384,10 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                         viewport,
                         vp,
                     ) {
-                        next.shape.height = fmt(offset);
+                        let (growth, height) =
+                            construction::shape_growth_from_height_offset(anchor_normal, offset);
+                        next.shape.normal = growth.to_array();
+                        next.shape.height = fmt(height);
                     }
                 }
                 if pressed {
@@ -13421,7 +13427,8 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 creating.phase_screen = None;
                 creating.pending_focus = true;
                 self.state.status =
-                    "Drag away from the plane to set the height, or type it".to_string();
+                    "Drag off the plane in either direction to set the height, or type it"
+                        .to_string();
             }
             (ShapePhase::Height, _) => {
                 creating.phase = ShapePhase::Done;

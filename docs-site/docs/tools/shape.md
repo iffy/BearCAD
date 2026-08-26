@@ -32,13 +32,14 @@ profile. The toolbar button shows the shape you used last.
 Every dimension is an expression, so a shape follows [parameters](/docs/parameters) like
 anything else. The shape sits **on** the plane it's placed on and grows along that plane's
 normal: a cuboid and a cylinder from the middle of their base, a sphere from the point it
-rests on.
+rests on. Height follows the cursor off the plane in either direction.
 
 ## Placing one
 
 The shape follows your cursor until you click — a cuboid by its corner, a cylinder and a
 sphere by their centre. The **first click** puts it down — on a face or plane under the
-cursor, otherwise on the ground — and it grows away from there.
+cursor, otherwise on the ground. The last click sets how far it grows, either way off
+that plane.
 
 | Shape | Click 1 | Click 2 | Click 3 |
 |---|---|---|---|
