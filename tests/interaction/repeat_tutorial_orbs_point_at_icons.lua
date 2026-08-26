@@ -5,11 +5,13 @@ bearcad.ui.tool("select")
 bearcad.ui.tutorial("repeat")
 bearcad.ui.wait(8)
 
--- The orb glides to its target over many frames, so read it only once it has stopped moving.
+-- The orb glides to its target, so read it once it has stopped moving. Kept to a tight frame
+-- budget: this walkthrough draws a live ghost of every copy, and the settling is only needed
+-- for the handful of steps under test.
 local function settled_orb()
   local last = bearcad.ui.tutorial_orb()
-  for _ = 1, 40 do
-    bearcad.ui.wait(12)
+  for _ = 1, 12 do
+    bearcad.ui.wait(6)
     local now = bearcad.ui.tutorial_orb()
     if not now then return nil end
     if last and math.abs(now.x - last.x) < 1 and math.abs(now.y - last.y) < 1 then
@@ -27,9 +29,11 @@ while bearcad.ui.tutorial_step() ~= nil do
   assert(guard < 60, "the walkthrough should finish")
   bearcad.ui.wait(5)
   local text = bearcad.ui.tutorial_narration()
-  -- Settling the orb costs frames, so only do it for the rows under test.
-  local pointed = text and
-    (text:find("Gap") or text:find("lock") or text:find("Distance"))
+  -- Settling the orb costs frames, so only do it for the four steps under test.
+  local pointed = text and (
+    text:find("in the Gap field") or text:find("Click the Gap icon") or
+    text:find("grey lock") or text:find("in Distance") or
+    text:find("Click the Distance icon"))
   steps[#steps + 1] = {
     text = text,
     orb = pointed and settled_orb() or bearcad.ui.tutorial_orb(),
