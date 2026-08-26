@@ -4014,8 +4014,10 @@ impl<'a> SceneMesh<'a> {
         let restore = self.index_layer;
         self.set_index_layer(MeshIndexLayer::Wireframe);
         match element {
-            // Nothing on a drawing page draws in the 3D viewport (#967).
-            SceneElement::DrawingElement { .. } => {}
+            // Nothing on a drawing page draws in the 3D viewport (#967/#1714).
+            SceneElement::DrawingElement { .. }
+            | SceneElement::ProjectedEdge { .. }
+            | SceneElement::ProjectedCorner { .. } => {}
             // A cross-section view has no geometry of its own to highlight (#1671).
             SceneElement::CrossSection(_) => {}
             SceneElement::SectionPlane { view, cut } => {
@@ -4568,9 +4570,11 @@ impl<'a> SceneMesh<'a> {
             PickTargetKind::SketchText(_) => {}
             // A whole body (#902) recolors in the main pass, like a hovered body row.
             PickTargetKind::Body(_) => {}
-            // A drawing-page item (#1641) lives on the drawing workbench, which paints with
-            // egui rather than this 3D scene.
-            PickTargetKind::DrawingElement { .. } => {}
+            // A drawing-page item (#1641/#1714) lives on the drawing workbench, which paints
+            // with egui rather than this 3D scene.
+            PickTargetKind::DrawingElement { .. }
+            | PickTargetKind::ProjectedEdge { .. }
+            | PickTargetKind::ProjectedCorner { .. } => {}
             // An analytic sketchable face (#625): same fill + border a face-picking tool's own
             // hover uses. Body-coplanar fills + borders are depth-disabled (#1139); the
             // PickTarget arm already sets Wireframe for all kinds, but ConstructionPlane

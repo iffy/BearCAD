@@ -2718,6 +2718,16 @@ fn element_script_tokens(
             index: 0,
             point: None,
         },
+        SceneElement::ProjectedEdge { .. } => ElementScriptTokens {
+            kind: "projected_edge",
+            index: 0,
+            point: None,
+        },
+        SceneElement::ProjectedCorner { .. } => ElementScriptTokens {
+            kind: "projected_corner",
+            index: 0,
+            point: None,
+        },
         SceneElement::SketchFace(_) => ElementScriptTokens {
             kind: "face",
             index: 0,

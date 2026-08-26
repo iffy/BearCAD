@@ -9021,6 +9021,8 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::FaceEdge(_) => "Face edge".to_string(),
         SceneElement::BodyEdge { .. } => "Body edge".to_string(),
         SceneElement::BodyVertex { .. } => "Body vertex".to_string(),
+        SceneElement::ProjectedEdge { .. } => "Projected edge".to_string(),
+        SceneElement::ProjectedCorner { .. } => "Projected corner".to_string(),
         SceneElement::BodyFace { body, .. } => format!("Face of Body {}", body.index()),
         SceneElement::BodyCylinder { body, .. } => format!("Cylinder of Body {}", body.index()),
         SceneElement::BodyAxis { body, .. } => format!("Axis of Body {}", body.index()),

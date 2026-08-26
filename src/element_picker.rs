@@ -120,7 +120,10 @@ impl ElementKind {
             SceneElement::Sketch(_) => ElementKind::Sketch,
             SceneElement::Line(_) => ElementKind::Line,
             SceneElement::Circle(_) => ElementKind::Circle,
-            SceneElement::Point(_) | SceneElement::BodyVertex { .. } | SceneElement::Origin => {
+            SceneElement::Point(_)
+            | SceneElement::BodyVertex { .. }
+            | SceneElement::ProjectedCorner { .. }
+            | SceneElement::Origin => {
                 ElementKind::Vertex
             }
             SceneElement::GlobalAxis(_) => ElementKind::Axis,
@@ -137,7 +140,9 @@ impl ElementKind {
             // plane, translated, not any mesh in the document.
             SceneElement::RepeatedFace { .. } => ElementKind::Profile,
 
-            SceneElement::FaceEdge(_) | SceneElement::BodyEdge { .. } => ElementKind::Edge,
+            SceneElement::FaceEdge(_)
+            | SceneElement::BodyEdge { .. }
+            | SceneElement::ProjectedEdge { .. } => ElementKind::Edge,
             SceneElement::Constraint(_) => ElementKind::Constraint,
             // A drawing's three item types keep their own kinds (#363/#967), so a picker can
             // say "projections only" — which is exactly what the Aligned-view tool's base
@@ -373,6 +378,9 @@ OffBodies(Vec<crate::model::BodyKey>),
     Straight,
     /// Only construction geometry (`true`) or only real geometry (`false`).
     Construction(bool),
+    /// Only projected geometry on this drawing view (#1714) — the second point of a page
+    /// dimension has to come off the same card as the first.
+    OnDrawingView { drawing: crate::model::DrawingKey, view: usize },
     /// Excludes what a sibling picker already holds — Combine's B side against its A side.
     NotIn(Vec<SceneElement>),
     /// Only points lying **on** this face (#1075) — the second half of a Face Snap pick.
@@ -441,6 +449,13 @@ impl PickRule {
                 }
                 _ => true,
             },
+            PickRule::OnDrawingView { drawing, view } => match element {
+                SceneElement::ProjectedEdge { drawing: d, view: v, .. }
+                | SceneElement::ProjectedCorner { drawing: d, view: v, .. } => {
+                    d == drawing && v == view
+                }
+                _ => false,
+            },
             PickRule::OnBodies(bodies) => {
                 element_body(doc, element).is_some_and(|b| bodies.contains(&b))
             }
@@ -500,6 +515,9 @@ fn element_body(doc: &Document, element: &SceneElement) -> Option<crate::model::
         SceneElement::BodyEdge { body, .. }
         | SceneElement::BodyVertex { body, .. }
         | SceneElement::BodyFace { body, .. } => Some(*body),
+        SceneElement::ProjectedEdge { body, .. } | SceneElement::ProjectedCorner { body, .. } => {
+            *body
+        },
         SceneElement::MovePoint(point) => point.body(),
         // Every face that has a body, not just extrusion and revolve ones (#1726): a
         // primitive's face belongs to the primitive's body, a repeated face to its instance,
@@ -1470,6 +1488,7 @@ mod tests {
 
     use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
+    use crate::model::drawing_key_for_slot as dkey;
     use crate::model::circle_key_for_slot as rkey;
     use crate::model::sketch_key_for_slot as skey;
     use crate::model::constraint_key_for_slot as nkey;
@@ -2334,6 +2353,19 @@ mod tests {
             SceneElement::Circle(rkey(0)),
             SceneElement::Origin,
             SceneElement::BodyEdge { body: bkey(0), a: [0; 3], b: [1; 3] },
+            SceneElement::ProjectedEdge {
+                drawing: dkey(0),
+                view: 0,
+                body: Some(bkey(0)),
+                a: [0; 3],
+                b: [1; 3],
+            },
+            SceneElement::ProjectedCorner {
+                drawing: dkey(0),
+                view: 0,
+                body: Some(bkey(0)),
+                p: [0; 3],
+            },
             body_face(0),
             SceneElement::Constraint(nkey(0)),
             SceneElement::Body(bkey(0)),

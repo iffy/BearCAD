@@ -148,6 +148,8 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::GlobalAxis(_) => "axis",
         SceneElement::BodyEdge { .. } => "body_edge",
         SceneElement::BodyVertex { .. } => "body_vertex",
+        SceneElement::ProjectedEdge { .. } => "projected_edge",
+        SceneElement::ProjectedCorner { .. } => "projected_corner",
         SceneElement::BodyFace { .. } | SceneElement::SketchFace(_) => "face",
         SceneElement::BodyCylinder { .. } => "cylinder",
         SceneElement::BodyAxis { .. } => "body_axis",
@@ -277,6 +279,8 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         | SceneElement::Origin
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
+        | SceneElement::ProjectedEdge { .. }
+        | SceneElement::ProjectedCorner { .. }
         | SceneElement::BodyFace { .. }
         | SceneElement::BodyCylinder { .. }
         | SceneElement::BodyAxis { .. }

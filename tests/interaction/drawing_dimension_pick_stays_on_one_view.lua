@@ -23,13 +23,25 @@ local function fan_at(x, y)
   bearcad.ui.key("space")
   bearcad.ui.wait(6)
   local n = #bearcad.exploder()
-  bearcad.ui.key("escape")
-  bearcad.ui.wait(4)
+  -- Esc with the fan closed leaves the Dimension tool.
+  if n > 0 then
+    bearcad.ui.key("escape")
+    bearcad.ui.wait(4)
+  end
   return n
 end
 
-local cx1, cy1 = card1.x + card1.w / 2, card1.y + card1.h / 2
-assert(fan_at(cx1, cy1) > 0, "the second card fans something with nothing armed")
+-- The Dimension picker takes projected edges and corners, not the card, so scan the
+-- second card for geometry rather than fanning its empty middle.
+local hit_x, hit_y
+for dy = -160, 160, 8 do
+  local n = fan_at(card1.x + card1.w / 2, card1.y + card1.h / 2 + dy)
+  if n > 0 then
+    hit_x, hit_y = card1.x + card1.w / 2, card1.y + card1.h / 2 + dy
+    break
+  end
+end
+assert(hit_x, "the second card fans projected geometry with nothing armed")
 
 -- Arm the first point of a free dimension on the *first* card: click empty paper inside it.
 bearcad.ui.click(card0.x + card0.w / 2 - vp.x, card0.y + card0.h / 2 - vp.y)
@@ -38,7 +50,7 @@ bearcad.ui.wait(8)
 assert(bearcad.status():find("second point"),
   "the first point is armed, status=" .. tostring(bearcad.status()))
 -- Now the fan over the second card offers nothing: the pending pick owns view 0.
-assert(fan_at(cx1, cy1) == 0,
+assert(fan_at(hit_x, hit_y) == 0,
   "with a point armed on the front view, the side view should offer nothing")
 
 print("ok: a half-made point dimension keeps the fan on its own view")

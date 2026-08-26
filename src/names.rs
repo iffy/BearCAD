@@ -47,6 +47,8 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::GlobalAxis(_)
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
+        | SceneElement::ProjectedEdge { .. }
+        | SceneElement::ProjectedCorner { .. }
         | SceneElement::BodyFace { .. }
         | SceneElement::BodyCylinder { .. }
         | SceneElement::BodyAxis { .. }
@@ -195,6 +197,8 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         | SceneElement::GlobalAxis(_)
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
+        | SceneElement::ProjectedEdge { .. }
+        | SceneElement::ProjectedCorner { .. }
         | SceneElement::BodyFace { .. }
         | SceneElement::BodyCylinder { .. }
         | SceneElement::BodyAxis { .. }
@@ -476,6 +480,8 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
         }
         SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
+        | SceneElement::ProjectedEdge { .. }
+        | SceneElement::ProjectedCorner { .. }
         | SceneElement::BodyFace { .. }
         | SceneElement::BodyCylinder { .. }
         | SceneElement::BodyAxis { .. }
@@ -871,6 +877,14 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::BodyVertex { body, .. } => {
             format!("Corner of {}", body_label(doc, *body))
         }
+        SceneElement::ProjectedEdge { body: Some(body), .. } => {
+            format!("Projected edge of {}", body_label(doc, *body))
+        }
+        SceneElement::ProjectedEdge { .. } => "Projected edge".to_string(),
+        SceneElement::ProjectedCorner { body: Some(body), .. } => {
+            format!("Projected corner of {}", body_label(doc, *body))
+        }
+        SceneElement::ProjectedCorner { .. } => "Projected corner".to_string(),
         SceneElement::BodyFace { body, .. } => format!("Face of {}", body_label(doc, *body)),
         // A hole, a boss, a shaft (#1013) — and its centre line.
         SceneElement::BodyCylinder { body, .. } => format!("Cylinder of {}", body_label(doc, *body)),
