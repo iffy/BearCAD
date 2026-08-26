@@ -177,6 +177,11 @@ const FADED_BODY_OPACITY: f32 = 0.22;
 /// `SOLID_FILL` body color (solid+wireframe).
 pub const WIREFRAME_LINE_COLOR: Color32 = Color32::from_rgb(230, 235, 242);
 const WIREFRAME_LINE_WIDTH_PX: f32 = 1.2;
+/// Cross-section hatch stroke width (#1688).
+pub const SECTION_HATCH_WIDTH_PX: f32 = 2.5;
+/// Cut-face perimeter outline width (#1768): the hatch colour, slightly thicker than the
+/// hatch, so each cut face reads as one bounded surface.
+pub const SECTION_FACE_OUTLINE_WIDTH_PX: f32 = 3.5;
 pub const SHAPE_FILL_DEPTH_BIAS_BASE: f32 = 0.04;
 /// Per-shape increment so coplanar overlaps resolve stably (higher index wins).
 pub const SHAPE_FILL_DEPTH_BIAS_STEP: f32 = 0.008;
@@ -3108,7 +3113,9 @@ impl<'a> SceneMesh<'a> {
 
     /// Hatch the faces a cutting plane opened (#1688): the lined pattern that says "you are
     /// looking at cut material". The segments themselves come from
-    /// [`crate::extrude::section_hatch_segments`], shared with the drawing page.
+    /// [`crate::extrude::section_hatch_segments`], shared with the drawing page. Each cut
+    /// face is also outlined in the same colour, slightly thicker (#1768), so it reads as one
+    /// bounded surface.
     #[allow(clippy::too_many_arguments)]
     fn push_section_hatch(
         &mut self,
@@ -3124,7 +3131,18 @@ impl<'a> SceneMesh<'a> {
             cut,
             crate::extrude::SECTION_HATCH_SPACING_MM,
         ) {
-            self.push_line_segment(a, b, color, 2.5, cam, viewport, view_proj);
+            self.push_line_segment(a, b, color, SECTION_HATCH_WIDTH_PX, cam, viewport, view_proj);
+        }
+        for (a, b) in crate::extrude::section_face_perimeter_segments(solid, cut) {
+            self.push_line_segment(
+                a,
+                b,
+                color,
+                SECTION_FACE_OUTLINE_WIDTH_PX,
+                cam,
+                viewport,
+                view_proj,
+            );
         }
     }
 
@@ -9998,6 +10016,64 @@ mod tests {
             "the hatch is dark grey, not yellow (grey {hatch_grey}, yellow {hatch_yellow})"
         );
         assert_eq!(hatch_yellow, 0, "the hatch is not thin yellow");
+    }
+
+    /// #1768: each cut face is outlined with a solid line in the hatch colour, slightly
+    /// thicker than the hatch, so the cut material reads as one bounded face.
+    #[test]
+    fn cross_section_view_outlines_each_cut_face() {
+        use crate::model::{Primitive, PrimitiveKind};
+        let mut state = AppState::default();
+        retain_ground_plane_only(&mut state.doc);
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.origin = [0.0, 0.0, 0.0];
+        shape.width = "40".into();
+        shape.depth = "40".into();
+        shape.height = "40".into();
+        state.apply(crate::actions::Action::CreateShape { shape });
+        state.apply(crate::actions::Action::CreateCrossSection { name: None });
+        let view = state.doc.cross_sections.keys().next().expect("the view");
+        state.apply(crate::actions::Action::AddCrossSectionCut {
+            view: Some(view),
+            cut: crate::model::CrossSectionCut {
+                origin: glam::Vec3::new(0.0, 0.0, 20.0),
+                normal: -glam::Vec3::Z,
+                ..Default::default()
+            },
+        });
+        let cut_scene = build_scene_for_doc_in_view(&state, Some(view));
+        let palette = ViewportPalette::default();
+        // Endpoints of every section-hatch-coloured stroke on the cut face's plane.
+        let target = color32_to_gpu(palette.section_hatch);
+        let mut plane_points = Vec::new();
+        for v in cut_scene.vertices.iter().chain(cut_scene.stroke_vertices.iter()) {
+            if v.color == target {
+                let p = Vec3::from(v.position);
+                if (p.z - 20.0).abs() < 0.2 {
+                    plane_points.push(p);
+                }
+            }
+        }
+        assert!(!plane_points.is_empty(), "the face is hatched in the plane");
+        // Hatch lines end mid-face or mid-rim; only the perimeter outline (#1768) is stroked
+        // right into the face's four corners.
+        // A 40-wide cuboid anchored at the origin is centred in x/y: its cap runs
+        // [-20, 20] across both axes.
+        let corners = [(-20.0f32, -20.0), (20.0, -20.0), (-20.0, 20.0), (20.0, 20.0)];
+        for (cx, cy) in corners {
+            assert!(
+                plane_points
+                    .iter()
+                    .any(|p| (p.x - cx).abs() < 0.25 && (p.y - cy).abs() < 0.25),
+                "the cut face's rim reaches corner ({cx}, {cy}) in the hatch colour"
+            );
+        }
+    }
+
+    /// The cut-face outline (#1768) strokes slightly thicker than the hatch it bounds.
+    #[test]
+    fn section_face_outline_is_thicker_than_the_hatch() {
+        assert!(SECTION_FACE_OUTLINE_WIDTH_PX > SECTION_HATCH_WIDTH_PX);
     }
 
     /// #1758: the yellow cutting-plane quad is only drawn while the plane is selected.
