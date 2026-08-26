@@ -16025,8 +16025,10 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 } else if let SceneElement::CrossSection(view) = element {
                     // A view "opens" rather than reloading into a tool (#1671/#1686).
                     self.state.apply(Action::EditCrossSection { view: Some(view) });
-                } else if let SceneElement::SectionPlane { view, .. } = element {
-                    self.state.apply(Action::EditCrossSection { view: Some(view) });
+                } else if let SceneElement::SectionPlane { view, cut } = element {
+                    // The plane itself reopens in the cutting-plane tool (#1755) — only its
+                    // parent view takes the View workbench.
+                    self.state.apply(Action::BeginEditSectionPlane { view, cut });
                 } else {
                     self.begin_operation_edit(element);
                 }

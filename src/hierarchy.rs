@@ -724,7 +724,8 @@ pub fn node_editable_operation(node: HierarchyNode) -> Option<SceneElement> {
         // A cross-section view opens the View workbench (#1671) — a double-click or the
         // row's Edit entry, the same universal path every operation uses.
         HierarchyNode::CrossSection(i) => Some(SceneElement::CrossSection(i)),
-        // Double-click / Edit opens the parent view so the plane can be adjusted.
+        // Double-click / Edit reopens the plane in the cutting-plane tool (#1755) — its
+        // live offset/tilt draft — not just the parent view's workbench (#1767).
         HierarchyNode::SectionPlane { view, cut } => {
             Some(SceneElement::SectionPlane { view, cut })
         }
