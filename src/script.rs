@@ -313,14 +313,22 @@ pub enum Instruction {
         offset: Option<f32>,
         roll_deg: Option<f32>,
         flip: Option<bool>,
+        /// Which bodies the plane cuts (#1769): `None` is every body.
+        cut_bodies: Option<Vec<usize>>,
+        /// Bodies spared even so (#1769).
+        exclude_bodies: Vec<usize>,
     },
-    /// #1687: slide, turn, or flip one of a view's cutting planes.
+    /// #1687/#1769: slide, turn, flip, or re-scope one of a view's cutting planes.
     EditSectionPlane {
         view: Option<usize>,
         cut: usize,
         offset: Option<f32>,
         roll_deg: Option<f32>,
         flip: Option<bool>,
+        /// `None` leaves the scope; `Some(None)` is every body again (#1769).
+        cut_bodies: Option<Option<Vec<usize>>>,
+        /// `None` leaves the exclusions; a list replaces them (#1769).
+        exclude_bodies: Option<Vec<usize>>,
     },
     /// #1687: drop one of a view's cutting planes.
     DeleteSectionPlane { view: Option<usize>, cut: usize },
@@ -1438,7 +1446,7 @@ impl Instruction {
             Instruction::SetWorkbench { workbench } => {
                 format!("bearcad.ui.workbench({:?})", workbench.script_name())
             }
-            Instruction::AddSectionPlane { view, plane, origin, normal, offset, roll_deg, flip } => {
+            Instruction::AddSectionPlane { view, plane, origin, normal, offset, roll_deg, flip, cut_bodies, exclude_bodies } => {
                 let mut parts: Vec<String> = Vec::new();
                 if let Some(v) = view {
                     parts.push(format!("view = {v}"));
@@ -1461,9 +1469,15 @@ impl Instruction {
                 if let Some(f) = flip {
                     parts.push(format!("flip = {f}"));
                 }
+                if let Some(bodies) = cut_bodies {
+                    parts.push(format!("bodies = {{{}}}", list_ords(bodies)));
+                }
+                if !exclude_bodies.is_empty() {
+                    parts.push(format!("exclude_bodies = {{{}}}", list_ords(exclude_bodies)));
+                }
                 format!("bearcad.section_plane{{ {} }}", parts.join(", "))
             }
-            Instruction::EditSectionPlane { view, cut, offset, roll_deg, flip } => {
+            Instruction::EditSectionPlane { view, cut, offset, roll_deg, flip, cut_bodies, exclude_bodies } => {
                 let mut parts: Vec<String> = vec![format!("cut = {cut}")];
                 if let Some(v) = view {
                     parts.insert(0, format!("view = {v}"));
@@ -1476,6 +1490,18 @@ impl Instruction {
                 }
                 if let Some(f) = flip {
                     parts.push(format!("flip = {f}"));
+                }
+                if let Some(bodies) = cut_bodies {
+                    parts.push(match bodies {
+                        None => "bodies = \"all\"".to_string(),
+                        Some(list) => format!("bodies = {{{}}}", list_ords(list)),
+                    });
+                }
+                if let Some(exclude) = exclude_bodies {
+                    parts.push(match exclude.as_slice() {
+                        [] => "exclude_bodies = false".to_string(),
+                        many => format!("exclude_bodies = {{{}}}", list_ords(many)),
+                    });
                 }
                 format!("bearcad.edit_section_plane{{ {} }}", parts.join(", "))
             }
@@ -3161,6 +3187,23 @@ fn body_key(doc: &crate::model::Document, ordinal: usize) -> Option<crate::model
 /// The same for a whole list, dropping ordinals that name nothing.
 fn body_keys(doc: &crate::model::Document, ordinals: &[usize]) -> Vec<crate::model::BodyKey> {
     ordinals.iter().filter_map(|o| body_key(doc, *o)).collect()
+}
+
+/// The same, but `None` when **any** ordinal names nothing — so a cutting plane's body
+/// scope fails loudly instead of silently losing a body (#1769).
+fn body_scope(
+    doc: &crate::model::Document,
+    ordinals: &[usize],
+) -> Option<Vec<crate::model::BodyKey>> {
+    ordinals.iter().map(|&b| body_key(doc, b)).collect()
+}
+
+/// The first ordinal in a scriptable list that names no body, if any (#1769).
+fn bad_body_ordinal(
+    doc: &crate::model::Document,
+    ordinals: &[usize],
+) -> Option<usize> {
+    ordinals.iter().copied().find(|&b| body_key(doc, b).is_none())
 }
 
 /// Split Move targets into body `targets` and unit `instance_targets` (#1406): a unit's
@@ -5538,6 +5581,14 @@ fn cross_section_key(
     }
 }
 
+/// A scriptable body list as Lua table text: `{0, 3}`.
+fn list_ords(list: &[usize]) -> String {
+    list.iter()
+        .map(|b| b.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 pub fn pane_rect_id(shell_id: &str) -> egui::Id {
     egui::Id::new(("bearcad_pane_rect", shell_id))
 }
@@ -6856,6 +6907,8 @@ impl ScriptRunner {
                 offset,
                 roll_deg,
                 flip,
+                cut_bodies,
+                exclude_bodies,
             } => {
                 let view = match cross_section_key(&state.doc, view) {
                     Ok(key) => key,
@@ -6890,11 +6943,34 @@ impl ScriptRunner {
                 cut.offset_mm = offset.unwrap_or(0.0);
                 cut.roll = roll_deg.unwrap_or(0.0).to_radians();
                 cut.flip = flip.unwrap_or(false);
+                // Body scopes resolve eagerly so a bad index fails loudly rather than being
+                // silently dropped from the plane's cut (#1769).
+                let resolved_cut = match cut_bodies.as_deref() {
+                    Some(list) => body_scope(&state.doc, list),
+                    None => Some(Vec::new()),
+                };
+                let resolved_exclude = body_scope(&state.doc, &exclude_bodies);
+                if resolved_cut.is_none() || resolved_exclude.is_none() {
+                    let ordinal = cut_bodies
+                        .into_iter()
+                        .flatten()
+                        .chain(exclude_bodies)
+                        .find(|&b| body_key(&state.doc, b).is_none())
+                        .unwrap_or(0);
+                    self.last_action_error = Some(format!("No body {ordinal}"));
+                    return StepResult::Continue;
+                }
+                cut.cut_bodies = match cut_bodies {
+                    Some(_) => resolved_cut,
+                    None => None,
+                };
+                cut.exclude_bodies =
+                    resolved_exclude.expect("resolved above");
                 let result = state.apply(Action::AddCrossSectionCut { view, cut });
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::EditSectionPlane { view, cut, offset, roll_deg, flip } => {
+            Instruction::EditSectionPlane { view, cut, offset, roll_deg, flip, cut_bodies, exclude_bodies } => {
                 let view = match cross_section_key(&state.doc, view) {
                     Ok(key) => key,
                     Err(e) => {
@@ -6902,12 +6978,36 @@ impl ScriptRunner {
                         return StepResult::Continue;
                     }
                 };
+                // Scopes resolve eagerly so a bad body index fails loudly rather than being
+                // silently dropped from the plane's cut (#1769). An absent field just leaves
+                // its scope alone.
+                let list_fails = |list: &Vec<usize>| {
+                    list.iter().any(|&b| body_key(&state.doc, b).is_none())
+                };
+                let missing = match (&cut_bodies, &exclude_bodies) {
+                    (Some(Some(list)), _) if list_fails(list) => {
+                        bad_body_ordinal(&state.doc, list)
+                    }
+                    (_, Some(list)) if !list.is_empty() && list_fails(list) => {
+                        bad_body_ordinal(&state.doc, list)
+                    }
+                    _ => None,
+                };
+                if let Some(ordinal) = missing {
+                    self.last_action_error = Some(format!("No body {ordinal}"));
+                    return StepResult::Continue;
+                }
                 let result = state.apply(Action::SetCrossSectionCut {
                     view,
                     cut,
                     offset_mm: offset,
                     roll_deg,
                     flip,
+                    // Outer `None` leaves the scope; inner `None` is every body again.
+                    cut_bodies: cut_bodies
+                        .map(|scope| scope.map(|list| body_keys(&state.doc, &list))),
+                    exclude_bodies: exclude_bodies
+                        .map(|list| body_keys(&state.doc, &list)),
                 });
                 self.record_action_error(result);
                 StepResult::Continue

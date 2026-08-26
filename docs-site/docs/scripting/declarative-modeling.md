@@ -361,7 +361,18 @@ bearcad.section_plane{ plane = 1, offset = 5 }     -- on a construction plane's 
 bearcad.section_plane{ origin = {0, 0, 10}, normal = {0, 0, 1}, flip = true }
 bearcad.edit_section_plane{ cut = 0, offset = -2, roll = 30 }   -- slide and turn it
 bearcad.delete_section_plane{ cut = 1 }
-local cuts = bearcad.section_planes()              -- { origin, normal, offset, roll, flip }
+local cuts = bearcad.section_planes()              -- { origin, normal, offset, roll, flip,
+                                                   --   bodies ("all" or indices), excludes }
+```
+
+A plane takes every body unless you scope it (#1769): the tool's **Cut bodies** picker
+turns All into an explicit list, and its **Exclude** picker spares bodies even so — each
+picker has an **All bodies** switch. Scripts use `bodies` and `exclude_bodies`:
+
+```lua
+bearcad.edit_section_plane{ cut = 0, bodies = {1} }          -- cut only body 1
+bearcad.edit_section_plane{ cut = 0, exclude_bodies = {1} }  -- or: everything but body 1
+bearcad.edit_section_plane{ cut = 0, bodies = "all", exclude_bodies = false }  -- back to all
 ```
 
 A technical drawing can import a view — the whole model cut, or just some bodies:

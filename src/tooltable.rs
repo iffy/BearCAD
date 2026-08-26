@@ -623,8 +623,11 @@ use crate::context::PickerTarget as P;
 
 const SELECTION: &[ToolPicker] = &[ToolPicker { target: P::Selection, heading: "Selection" }];
 const PLANE_PICKERS: &[ToolPicker] = &[ToolPicker { target: P::PlaneAnchor, heading: "Anchor" }];
-const SECTION_PLANE_PICKERS: &[ToolPicker] =
-    &[ToolPicker { target: P::SectionPlaneAnchor, heading: "Anchor" }];
+const SECTION_PLANE_PICKERS: &[ToolPicker] = &[
+    ToolPicker { target: P::SectionPlaneAnchor, heading: "Anchor" },
+    ToolPicker { target: P::SectionPlaneCutBodies, heading: "Cut bodies" },
+    ToolPicker { target: P::SectionPlaneExcludeBodies, heading: "Exclude" },
+];
 const EXTRUDE_PICKERS: &[ToolPicker] = &[
     ToolPicker { target: P::ExtrudeProfile, heading: "Faces" },
     ToolPicker { target: P::ExtrudeUpTo, heading: "Up to" },

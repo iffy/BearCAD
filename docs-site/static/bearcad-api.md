@@ -238,7 +238,7 @@ bearcad.edit_mirror{ index, plane, bodies, output }
 bearcad.edit_move{ index, bodies, images, flip, from, to, from_b, to_b, from_c, to_c, origin, image, anchor, body, vertex, on_edge, on_face, face_center, normal, uv, edge }
 bearcad.edit_plane(index)
 bearcad.edit_repeat{ index, bodies, axis, around, flip, mode, count, spacing, gap, length, to }
-bearcad.edit_section_plane{ view, cut, offset, roll, flip }
+bearcad.edit_section_plane{ view, cut, offset, roll, flip, bodies, exclude_bodies }
 bearcad.edit_shape{ index, shape, at, normal, u_axis, width, depth, height, radius, name }
 bearcad.edit_shell{ index, bodies, faces, thickness }
 bearcad.edit_sketch_mirror{ index, sketch, line, lines, circles }
@@ -303,7 +303,7 @@ bearcad.revert_joint(op)
 bearcad.revert_joints()
 bearcad.revolve{ circle, circles, polygon, axis, symmetric, bodies, body, line, revolutions, angle, pitch, offset, gap, name }
 bearcad.save(path?)
-bearcad.section_plane{ view, plane, origin, normal, offset, roll, flip }
+bearcad.section_plane{ view, plane, origin, normal, offset, roll, flip, bodies, exclude_bodies }
 bearcad.section_planes(view)
 bearcad.select(…)
 bearcad.selection()

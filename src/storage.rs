@@ -1587,6 +1587,9 @@ mod tests {
                     offset_mm: 4.5,
                     flip: true,
                     roll: 0.25,
+                    // Body scopes round-trip too (#1769).
+                    cut_bodies: Some(vec![crate::model::BodyKey::from_bits(7)]),
+                    exclude_bodies: vec![crate::model::BodyKey::from_bits(3)],
                     ..Default::default()
                 },
                 crate::model::CrossSectionCut::default(),

@@ -5429,6 +5429,14 @@ pub struct CrossSectionCut {
     /// Typed second-tilt expression in degrees.
     #[serde(default)]
     pub tilt_v_expression: String,
+    /// Which bodies this plane cuts (#1769): `None` is every body in the model. A body has
+    /// to be listed here **and** not excluded below to feel the plane at all.
+    #[serde(default)]
+    pub cut_bodies: Option<Vec<BodyKey>>,
+    /// Bodies this plane spares even so (#1769): an exclusion wins over both All and an
+    /// explicit cut list, so "every body except these" is All plus a few exclusions.
+    #[serde(default)]
+    pub exclude_bodies: Vec<BodyKey>,
 }
 
 impl Default for CrossSectionCut {
@@ -5444,7 +5452,20 @@ impl Default for CrossSectionCut {
             roll_expression: String::new(),
             tilt_v: 0.0,
             tilt_v_expression: String::new(),
+            cut_bodies: None,
+            exclude_bodies: Vec::new(),
         }
+    }
+}
+
+impl CrossSectionCut {
+    /// Whether this plane takes `body` (#1769): it is listed (or the plane has no explicit
+    /// list, meaning all), and it is not excluded. Exclusions win over both.
+    pub fn cut_applies_to(&self, body: BodyKey) -> bool {
+        self.cut_bodies
+            .as_ref()
+            .is_none_or(|list| list.contains(&body))
+            && !self.exclude_bodies.contains(&body)
     }
 }
 

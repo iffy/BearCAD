@@ -12856,9 +12856,22 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             return;
         }
         // #1750: after an anchor is picked the picker is unfocused, so a click is a
-        // gizmo grab, not another plane. Re-arm the picker to pick again.
+        // gizmo grab, not another plane. Re-arm the picker to pick again — or arm one
+        // of the body scopes (#1769), whose picks the click feeds instead.
         let picker_armed = tool_pickers.iter().any(|v| {
-            v.target == context::PickerTarget::SectionPlaneAnchor && v.picker.is_focused()
+            matches!(
+                v.target,
+                context::PickerTarget::SectionPlaneAnchor
+                    | context::PickerTarget::SectionPlaneCutBodies
+                    | context::PickerTarget::SectionPlaneExcludeBodies
+            ) && v.picker.is_focused()
+        });
+        let body_scope_armed = tool_pickers.iter().any(|v| {
+            matches!(
+                v.target,
+                context::PickerTarget::SectionPlaneCutBodies
+                    | context::PickerTarget::SectionPlaneExcludeBodies
+            ) && v.picker.is_focused()
         });
         if self
             .state
@@ -12867,6 +12880,11 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             .is_some_and(|c| c.anchor.is_some())
             && !picker_armed
         {
+            return;
+        }
+        // A body scope is armed: the click lands in that picker, not on the plane (#1769).
+        if body_scope_armed {
+            self.click_into_focused_picker(tool_pickers, pp, project, pick_occlusion);
             return;
         }
         let gp = cam.ground_point(pp, viewport, vp);
@@ -16898,6 +16916,14 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             section_plane: (self.state.tool == Tool::SectionPlane).then(|| {
                 let cs = self.state.creating_section.as_ref();
                 let is_axis = cs.is_some_and(|c| c.reference.is_axis());
+                let exclude_all = cs
+                    .map(|c| {
+                        // The exclusion switch reads on when every live body is in it.
+                        self.state.doc.bodies.iter().all(|(bi, body)| {
+                            body.shadow || c.exclude_bodies.contains(&bi)
+                        })
+                    })
+                    .unwrap_or(false);
                 context::SectionPlaneControl {
                     anchor: cs.and_then(|c| c.anchor.clone()),
                     offset_text: cs.map(|c| c.offset_text.clone()).unwrap_or_default(),
@@ -16910,6 +16936,9 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                         && !is_axis,
                     pending_focus: cs.is_some_and(|c| c.pending_focus),
                     editing: cs.is_some_and(|c| c.edit_cut.is_some()),
+                    cut_bodies: cs.and_then(|c| c.cut_bodies.clone()),
+                    exclude_bodies: cs.map(|c| c.exclude_bodies.clone()).unwrap_or_default(),
+                    all_excluded: exclude_all,
                 }
             }),
             plane_tool: (self.state.tool == Tool::ConstructionPlane).then(|| {
@@ -17366,6 +17395,19 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     context::SectionPlaneEdit::SetFlip(flip) => {
                         if let Some(cs) = self.state.creating_section.as_mut() {
                             cs.flip = flip;
+                        }
+                    }
+                    context::SectionPlaneEdit::SetCutAll(all) => {
+                        if let Some(cs) = self.state.creating_section.as_mut() {
+                            // Off starts an explicit list the picks fill; on is every body
+                            // again (exclusions still win, #1769).
+                            cs.cut_bodies = if all { None } else { Some(Vec::new()) };
+                        }
+                    }
+                    context::SectionPlaneEdit::SetExcludeAll(all) => {
+                        let all_bodies: Vec<_> = self.state.doc.bodies.keys().collect();
+                        if let Some(cs) = self.state.creating_section.as_mut() {
+                            cs.exclude_bodies = if all { all_bodies } else { Vec::new() };
                         }
                     }
                     context::SectionPlaneEdit::SetTiltV(value) => {
@@ -18247,6 +18289,8 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                             offset_mm: Some(offset_mm),
                             roll_deg: None,
                             flip: None,
+                            cut_bodies: None,
+                            exclude_bodies: None,
                         }
                     }
                     context::CrossSectionEdit::Roll(cut, roll_deg) => Action::SetCrossSectionCut {
@@ -18255,6 +18299,8 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                         offset_mm: None,
                         roll_deg: Some(roll_deg),
                         flip: None,
+                        cut_bodies: None,
+                        exclude_bodies: None,
                     },
                     context::CrossSectionEdit::Flip(cut, flip) => Action::SetCrossSectionCut {
                         view: None,
@@ -18262,6 +18308,8 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                         offset_mm: None,
                         roll_deg: None,
                         flip: Some(flip),
+                        cut_bodies: None,
+                        exclude_bodies: None,
                     },
                     context::CrossSectionEdit::Remove(cut) => {
                         Action::RemoveCrossSectionCut { view: None, cut }
@@ -18417,6 +18465,20 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     context::PickerTarget::LoftCut => {
                         if let Some(cl) = self.state.creating_loft.as_mut() {
                             remove_or_clear(&mut cl.cut_bodies, edit);
+                        }
+                    }
+                    // The cutting plane tool's body scopes (#1769): removing the last row of
+                    // the cut list leaves an explicit (empty) list — "cut nothing" until a
+                    // pick or the All-bodies switch says otherwise.
+                    context::PickerTarget::SectionPlaneCutBodies => {
+                        if let Some(cs) = self.state.creating_section.as_mut() {
+                            let list = cs.cut_bodies.get_or_insert_with(Vec::new);
+                            remove_or_clear(list, edit);
+                        }
+                    }
+                    context::PickerTarget::SectionPlaneExcludeBodies => {
+                        if let Some(cs) = self.state.creating_section.as_mut() {
+                            remove_or_clear(&mut cs.exclude_bodies, edit);
                         }
                     }
                     context::PickerTarget::MoveTargets => {
