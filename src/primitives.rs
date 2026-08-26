@@ -379,6 +379,27 @@ pub fn face_frame(doc: &Document, shape: &Primitive, face: crate::model::Primiti
     })
 }
 
+/// In-plane width direction the Shape tool uses for a hover/preview cuboid (#1748).
+///
+/// A construction plane keeps its authored `plane_u`. Every other surface — a primitive
+/// face, an extrusion cap, a mesh wall — uses [`plane_u_axis`] so two picks of the **same**
+/// plane cannot hang the ghost from opposite corners. A cuboid side's analytic frame
+/// follows the polygon's first edge, which on the +Y / −X walls runs *against* the world
+/// axis [`plane_u_axis`] returns for the mesh pick; as the pointer moved along that wall
+/// the nearer of the two hits jittered and the preview flopped.
+pub fn shape_preview_u_axis(normal: Vec3, plane_u: Vec3, construction_plane: bool) -> Vec3 {
+    if !construction_plane {
+        return plane_u_axis(normal);
+    }
+    let n = normal.normalize_or_zero();
+    let u = (plane_u - n * plane_u.dot(n)).normalize_or_zero();
+    if u.length_squared() < 0.5 {
+        plane_u_axis(normal)
+    } else {
+        u
+    }
+}
+
 /// A **stable** in-plane axis for a face's frame (#1050).
 ///
 /// `Vec3::any_orthonormal_vector` is free to return any perpendicular, and does not agree
@@ -526,6 +547,86 @@ mod tests {
                     face + jitter
                 );
             }
+        }
+    }
+
+    /// #1748: a cuboid's +Y wall has two in-plane frames — polygon first-edge (−X) from
+    /// the analytic pick, world +X from the mesh pick. The Shape preview must pick one
+    /// (the world axis) so the ghost does not swap corners as the pointer moves.
+    #[test]
+    fn shape_preview_u_axis_is_the_world_axis_on_a_body_face() {
+        let n = Vec3::Y;
+        let analytic_u = -Vec3::X;
+        let mesh_u = plane_u_axis(n);
+        assert!(
+            (mesh_u - Vec3::X).length() < 1e-5,
+            "plane_u_axis(+Y) is +X, got {mesh_u:?}"
+        );
+        let from_analytic = shape_preview_u_axis(n, analytic_u, false);
+        let from_mesh = shape_preview_u_axis(n, mesh_u, false);
+        assert!(
+            (from_analytic - from_mesh).length() < 1e-5,
+            "analytic {from_analytic:?} and mesh {from_mesh:?} must agree"
+        );
+        assert!(
+            (from_analytic - Vec3::X).length() < 1e-5,
+            "body faces use the world axis, got {from_analytic:?}"
+        );
+    }
+
+    /// #1748: hanging the cuboid ghost from opposite in-plane axes is the visual flop
+    /// (up-right vs down-left). After `shape_preview_u_axis` both picks share a corner.
+    #[test]
+    fn shape_preview_ghost_does_not_swap_corners_on_a_cuboid_side() {
+        let n = Vec3::Y;
+        let cursor = Vec3::new(10.0, 20.0, 30.0);
+        let (w, d) = (50.0, 40.0);
+        let u1 = shape_preview_u_axis(n, -Vec3::X, false);
+        let u2 = shape_preview_u_axis(n, Vec3::X, false);
+        let o1 = ghost_origin(K::Cuboid, cursor, u1, n.cross(u1), w, d);
+        let o2 = ghost_origin(K::Cuboid, cursor, u2, n.cross(u2), w, d);
+        assert!(
+            (o1 - o2).length() < 1e-4,
+            "ghost jumped from {o1:?} to {o2:?}"
+        );
+    }
+
+    /// A construction plane keeps the axes the user drew it with, even when those are
+    /// not the world-axis convention — a 45° plane should still line a cuboid up with it.
+    #[test]
+    fn shape_preview_u_axis_keeps_a_construction_plane_frame() {
+        let n = Vec3::new(1.0, 1.0, 0.0).normalize();
+        let u = Vec3::new(-1.0, 1.0, 0.0).normalize();
+        let got = shape_preview_u_axis(n, u, true);
+        assert!(
+            (got - u).length() < 1e-5,
+            "construction-plane u is authored, got {got:?}"
+        );
+        // And it is *not* silently replaced by the world-axis fallback.
+        let world = plane_u_axis(n);
+        assert!(
+            (got - world).length() > 0.5,
+            "the authored u should differ from plane_u_axis here"
+        );
+    }
+
+    /// Every cuboid face: analytic first-edge and mesh `plane_u_axis` must produce the
+    /// same preview axis, so a pointer sliding across that face cannot flop the ghost.
+    #[test]
+    fn every_cuboid_face_has_one_shape_preview_axis() {
+        let mut shape = sized(K::Cuboid, "40", "30", "50", "");
+        shape.origin = [0.0, 0.0, 0.0];
+        let doc = doc_with(shape.clone());
+        for face in flat_faces(&shape) {
+            let frame = face_frame(&doc, &shape, face).expect("flat cuboid faces have a frame");
+            let mesh_u = plane_u_axis(frame.normal);
+            let a = shape_preview_u_axis(frame.normal, frame.u_axis, false);
+            let b = shape_preview_u_axis(frame.normal, mesh_u, false);
+            assert!(
+                (a - b).length() < 1e-4,
+                "{face:?}: analytic u={:?} and mesh u={mesh_u:?} previewed as {a:?} vs {b:?}",
+                frame.u_axis
+            );
         }
     }
 

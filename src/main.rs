@@ -13604,9 +13604,11 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
     /// Both kinds of face are considered and the nearer one wins: an analytic face or a
     /// construction plane (which brings its own frame, so a cuboid's width lines up with the
     /// plane's directions) and any body's flat **mesh** face — which is how a shape lands on
-    /// another shape, since primitives have no analytic faces of their own. Taking the
-    /// analytic one outright put shapes on a construction plane *behind* the body under the
-    /// cursor (#932).
+    /// another shape. A body's analytic frame follows the polygon's first edge, which on
+    /// some cuboid walls runs against `plane_u_axis`; the preview uses
+    /// [`primitives::shape_preview_u_axis`] so those two picks of the same wall cannot
+    /// hang the ghost from opposite corners (#1748). Taking the analytic one outright put
+    /// shapes on a construction plane *behind* the body under the cursor (#932).
     fn shape_anchor_frame(
         &self,
         pp: egui::Pos2,
@@ -13615,24 +13617,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
         viewport: egui::Rect,
         vp: &glam::Mat4,
     ) -> Option<(Vec3, Vec3, Vec3)> {
-        let analytic = face::pick_sketch_face(pp, project, &self.state.doc, cam.eye())
-            .and_then(|f| face::sketch_frame(&self.state.doc, f))
-            .and_then(|frame| {
-                cam.ray_plane_hit(pp, viewport, vp, frame.origin, frame.normal)
-                    .map(|hit| (hit, frame.normal, frame.u_axis))
-            });
-        let mesh = match face::pick_body_face(pp, project, &self.state.doc, cam.eye()) {
-            Some(construction::PickTargetKind::BodyFace { triangles, normal, .. }) => {
-                let center = extrude::face_group_center(&triangles);
-                cam.ray_plane_hit(pp, viewport, vp, center, normal)
-                    .map(|hit| (hit, normal, primitives::plane_u_axis(normal)))
-            }
-            _ => None,
-        };
-        nearest_anchor(cam.eye(), analytic, mesh).or_else(|| {
-            let ground = cam.ground_point(pp, viewport, vp)?;
-            Some((ground, Vec3::Z, Vec3::X))
-        })
+        shape_anchor_frame_for(&self.state.doc, pp, project, cam, viewport, vp)
     }
 
     /// The in-progress shape's dimensions, mirrored **in the 3D view** beside the edges they
@@ -20492,15 +20477,69 @@ fn face_spin_handle_pos(
 }
 
 
+/// The plane a shape click lands on (#912/#932/#1748). See [`App::shape_anchor_frame`].
+fn shape_anchor_frame_for(
+    doc: &model::Document,
+    pp: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    cam: &camera::Camera,
+    viewport: egui::Rect,
+    vp: &glam::Mat4,
+) -> Option<(Vec3, Vec3, Vec3)> {
+    let analytic = face::pick_sketch_face(pp, project, doc, cam.eye()).and_then(|f| {
+        let construction = f.is_construction_plane();
+        let frame = face::sketch_frame(doc, f)?;
+        let hit = cam.ray_plane_hit(pp, viewport, vp, frame.origin, frame.normal)?;
+        let u = primitives::shape_preview_u_axis(frame.normal, frame.u_axis, construction);
+        Some((hit, frame.normal, u))
+    });
+    let mesh = match face::pick_body_face(pp, project, doc, cam.eye()) {
+        Some(construction::PickTargetKind::BodyFace { triangles, normal, .. }) => {
+            let center = extrude::face_group_center(&triangles);
+            cam.ray_plane_hit(pp, viewport, vp, center, normal)
+                .map(|hit| (hit, normal, primitives::plane_u_axis(normal)))
+        }
+        _ => None,
+    };
+    nearest_anchor(cam.eye(), analytic, mesh).or_else(|| {
+        let ground = cam.ground_point(pp, viewport, vp)?;
+        Some((ground, Vec3::Z, Vec3::X))
+    })
+}
+
+/// True when two shape-anchor candidates lie on the same (or opposite-wound) plane.
+/// Used so analytic/mesh hits of one cuboid wall are not treated as two surfaces
+/// just because their ray hits differ by a fraction of a millimetre (#1748).
+fn same_anchor_plane(a: (Vec3, Vec3, Vec3), b: (Vec3, Vec3, Vec3)) -> bool {
+    let na = a.1.normalize_or_zero();
+    let nb = b.1.normalize_or_zero();
+    if na.dot(nb).abs() < 0.99 {
+        return false;
+    }
+    (b.0 - a.0).dot(na).abs() < 0.5 && (b.0 - a.0).dot(nb).abs() < 0.5
+}
+
 /// Whichever anchor candidate is nearer the eye (#932) — what the cursor is actually
 /// pointing at, rather than whatever kind of face was looked for first.
+///
+/// Same-plane ties keep the analytic frame (#1748): a mesh face and a primitive's
+/// analytic face of the same wall disagree on in-plane axis, and ray-plane hits
+/// jitter which is closer, which made the cuboid ghost flop as the pointer moved.
 fn nearest_anchor(
     eye: Vec3,
     a: Option<(Vec3, Vec3, Vec3)>,
     b: Option<(Vec3, Vec3, Vec3)>,
 ) -> Option<(Vec3, Vec3, Vec3)> {
     match (a, b) {
-        (Some(a), Some(b)) => Some(if (a.0 - eye).length() <= (b.0 - eye).length() { a } else { b }),
+        (Some(a), Some(b)) => {
+            if same_anchor_plane(a, b) {
+                Some(a)
+            } else if (a.0 - eye).length() <= (b.0 - eye).length() {
+                Some(a)
+            } else {
+                Some(b)
+            }
+        }
         (Some(a), None) => Some(a),
         (None, b) => b,
     }
@@ -36245,6 +36284,99 @@ mod tests {
         assert_eq!(nearest_anchor(eye, None, Some(far)), Some(far));
         assert_eq!(nearest_anchor(eye, Some(near), None), Some(near));
         assert_eq!(nearest_anchor(eye, None, None), None);
+    }
+
+    /// #1748: analytic and mesh picks of the *same* cuboid wall disagree on in-plane
+    /// axis (polygon first-edge vs `plane_u_axis`). Their ray hits jitter which is
+    /// a hair closer, so nearest-to-eye swapped the ghost's hanging corner every
+    /// few millimetres. Same plane → keep the analytic frame.
+    #[test]
+    fn nearest_anchor_keeps_the_analytic_frame_on_the_same_plane() {
+        use super::nearest_anchor;
+        let eye = Vec3::new(0.0, 100.0, 25.0);
+        let hit = Vec3::new(0.0, 15.0, 25.0);
+        let n = Vec3::Y;
+        let analytic = (hit, n, -Vec3::X);
+        // Mesh hit a hundredth of a millimetre closer to the eye, opposite in-plane axis.
+        let mesh = (hit + Vec3::new(0.0, 0.01, 0.0), n, Vec3::X);
+        let got = nearest_anchor(eye, Some(analytic), Some(mesh)).expect("a pick");
+        assert!(
+            (got.2 - analytic.2).length() < 1e-5,
+            "same-plane mesh noise must not swap u_axis, got {:?}",
+            got.2
+        );
+        assert!(
+            got.1.dot(analytic.1) > 0.99,
+            "and must keep the analytic (outward) normal, got {:?}",
+            got.1
+        );
+    }
+
+    fn cuboid_on_ground(width: &str, depth: &str, height: &str) -> crate::model::Document {
+        use crate::model::{Body, BodySource, Primitive, PrimitiveKind};
+        let mut doc = crate::model::Document::default();
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.width = width.into();
+        shape.depth = depth.into();
+        shape.height = height.into();
+        let pi = doc.primitives.insert(shape);
+        doc.bodies.insert(Body {
+            source: BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        doc
+    }
+
+    /// #1748: sliding the pointer along one cuboid wall must not change the preview's
+    /// in-plane axis or growth normal. The reported case was the +Y face under the
+    /// default isometric camera, where analytic first-edge (−X) and mesh `plane_u_axis`
+    /// (+X) used to take turns hanging the ghost.
+    #[test]
+    fn shape_preview_orientation_holds_along_a_cuboid_face() {
+        use super::shape_anchor_frame_for;
+        let doc = cuboid_on_ground("40", "30", "50");
+        let mut cam = crate::camera::Camera::default();
+        cam.target = Vec3::new(0.0, 0.0, 25.0);
+        cam.distance = 250.0;
+        let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        let vp = cam.view_proj(viewport);
+        let project = |p: Vec3| cam.project(p, viewport, &vp);
+
+        let mut first: Option<(Vec3, Vec3)> = None;
+        // Interior of the +Y wall (y = 15), clear of edges so the pick stays on that face.
+        for x in [-10.0, -5.0, 0.0, 5.0, 10.0] {
+            for z in [12.0, 20.0, 28.0, 36.0] {
+                let world = Vec3::new(x, 15.0, z);
+                let pp = project(world).expect("the +Y face is on screen");
+                let (_hit, n, u) = shape_anchor_frame_for(&doc, pp, &project, &cam, viewport, &vp)
+                    .unwrap_or_else(|| panic!("no shape anchor at {world:?}"));
+                assert!(
+                    n.dot(Vec3::Y).abs() > 0.9,
+                    "expected the +Y wall at {world:?}, normal {n:?}"
+                );
+                let want = crate::primitives::plane_u_axis(n);
+                assert!(
+                    u.dot(want) > 0.99,
+                    "preview u at {world:?} should be the world axis {want:?}, got {u:?}"
+                );
+                match first {
+                    None => first = Some((n, u)),
+                    Some((n0, u0)) => {
+                        assert!(
+                            n.dot(n0) > 0.99,
+                            "normal flipped along the face at {world:?}: {n0:?} vs {n:?}"
+                        );
+                        assert!(
+                            u.dot(u0) > 0.99,
+                            "u_axis flipped along the face at {world:?}: {u0:?} vs {u:?}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(first.is_some(), "at least one point on the +Y wall was pickable");
     }
 
     /// #902: with the Select tool a click on a body's flat face selects the **whole body** —
