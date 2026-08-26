@@ -2168,8 +2168,13 @@ const PLANE_ANCHOR_PRIORITY: &[ElementKind] = &[
 pub fn picker_filter(target: PickerTarget) -> ElementFilter {
     use ElementKind as K;
     match target {
-        PickerTarget::ExtrudeProfile
-        | PickerTarget::RevolveProfile
+        // Extrude alone also takes a whole sketch text (#285/#1701) — every glyph of the
+        // string as one pick. It stays an `Operation` (that is how the Elements pane files
+        // its row), so this names it by its operation sub-kind rather than reclassifying it
+        // and offering it to Revolve, Sweep and Loft, which cannot use it.
+        PickerTarget::ExtrudeProfile => ElementFilter::kind(K::Profile)
+            .operations(&[crate::element_picker::OperationKind::SketchText]),
+        PickerTarget::RevolveProfile
         | PickerTarget::SweepProfile
         | PickerTarget::LoftSections => ElementFilter::kind(K::Profile),
         PickerTarget::TreatmentEdges => ElementFilter::kind(K::Edge),
@@ -2582,8 +2587,12 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         // empty or not, and focused unless the "Up to" picker is armed — exactly one picker
         // wears the focus ring (#962).
         let target_armed = input.extrude.as_ref().is_some_and(|e| e.target_focused);
-        let mut profile =
-            ElementPicker::new(ElementFilter::kind(ElementKind::Profile), PickLimit::Infinite);
+        // One filter, from `picker_filter` — a second copy written out inline is a copy that
+        // drifts (#1701).
+        let mut profile = ElementPicker::new(
+            picker_filter(PickerTarget::ExtrudeProfile),
+            PickLimit::Infinite,
+        );
         profile.set_focused(!target_armed);
         profile.set_picked(
             input.doc,

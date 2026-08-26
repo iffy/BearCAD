@@ -63,5 +63,13 @@ for _, p in ipairs(bearcad.pickers()) do
 end
 assert(picked >= 1, "picking the loupe should feed the Extrude tool the letters, got " .. picked)
 
+-- But only to the tool that can use it: Revolve, Sweep and Loft take a profile, not a
+-- string, so their fan must not offer a loupe that would do nothing.
+bearcad.ui.tool("revolve")
+bearcad.ui.wait(5)
+for _, k in ipairs(fan_at(found.x, 6)) do
+  assert(k ~= "sketch_text", "Revolve cannot extrude letters, so its fan must not offer them")
+end
+
 print("ok: the exploder offers the sketch text the Extrude tool takes")
 bearcad.quit()
