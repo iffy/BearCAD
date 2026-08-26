@@ -4506,6 +4506,8 @@ retina machine renders the same composition at 2x, just sharper.
   the trunk, so a shared trunk runs *beside* its children rather than through their icons
   (#1683). Each node rides the lane of its **nearest** input — riding a farther one's would
   make the near line detour out of its lane and back, crossing whatever runs between (#1684).
+  If that preferred lane is already carrying another trunk through this row, the node
+  packs **left** into a free column rather than stepping further right.
   The **first lane stays clear across a top-level element's row** — nothing feeds it and it
   sits under nothing, so a trunk that would cross it steps right instead, and indentation
   keeps meaning "sits under something". The synthetic **Document root is not shown** here

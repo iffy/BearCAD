@@ -5092,20 +5092,27 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // | "related" },
     // ... } }`, with `from`/`to` as 1-based row numbers and an edge kind of "parent",
     // "dependency", or "related". Rows come out in the order the pane
-    // draws them, with the pane's default element filter; `x/y/w/h` are where the row was drawn
-    // last frame, in the coordinates the pointer calls take (relative to the viewport origin,
-    // so a pane row's `x` is negative) — absent unless the Graph view painted that row.
+    // draws them, with the pane's default element filter; pass `{ shadow_bodies = true }` to
+    // include shadow bodies the way the filter toggle does. `x/y/w/h` are where the row was
+    // drawn last frame, in the coordinates the pointer calls take (relative to the viewport
+    // origin, so a pane row's `x` is negative) — absent unless the Graph view painted that row.
     api.set(
         "elements_graph",
-        lua.create_function(|lua, ()| {
+        lua.create_function(|lua, opts: Option<mlua::Table>| {
             let tick = lua
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
             let state = unsafe { tick.state() };
+            let mut filter = crate::hierarchy::ElementFilter::default();
+            if let Some(opts) = opts {
+                if let Some(show) = opts.get::<Option<bool>>("shadow_bodies")? {
+                    filter.shadow_bodies = show;
+                }
+            }
             let mut tree = crate::hierarchy::graph_view_tree(
                 &state.doc,
                 state.sketch_session,
-                &crate::hierarchy::ElementFilter::default(),
+                &filter,
             );
             if state.workbench() != crate::actions::Workbench::View {
                 crate::hierarchy::prune_section_planes(&mut tree);
@@ -17263,6 +17270,30 @@ pub mod tests {
             assert(related > 0, "the rectangle's constraints tie to the lines they hold")
         "#,
         );
+    }
+
+    /// #1764: scripts can ask the graph to include shadow bodies, and descendants pack
+    /// left into unused columns instead of drifting right of a busy trunk.
+    #[test]
+    fn lua_elements_graph_packs_left_with_shadow_bodies() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/issue_1764.json");
+        let path_s = path.to_string_lossy().replace('\\', "\\\\");
+        run_lua_expect_ok(&format!(
+            r#"
+            bearcad.open("{path_s}")
+            local g = bearcad.ui.elements_graph{{ shadow_bodies = true }}
+            local lane = {{}}
+            for _, row in ipairs(g.rows) do
+                lane[row.name] = row.lane
+            end
+            assert(lane["Sketch 1"] == 0, "Sketch 1 packs to the far left, got " .. tostring(lane["Sketch 1"]))
+            assert(lane["Slice 0"] == 0, "Slice 0 packs left, got " .. tostring(lane["Slice 0"]))
+            assert(lane["Body 4"] == 1, "Body 4 sits in the second column, got " .. tostring(lane["Body 4"]))
+            assert(lane["Body 5"] == 1, "Body 5 shares that column, got " .. tostring(lane["Body 5"]))
+            assert(g.lanes <= 2, "unused left columns are not wasted, got " .. tostring(g.lanes))
+            "#
+        ));
     }
 
     #[test]

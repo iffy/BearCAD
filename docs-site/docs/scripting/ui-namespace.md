@@ -80,6 +80,7 @@ bearcad.ui.elements_view("graph")       -- Elements-pane layout: "list" | "tree"
 bearcad.ui.workbench()                  -- "model" | "sketch" | "drawing" | "view"
 bearcad.ui.workbench("view")            -- switch, opening the most recent view/drawing/sketch
 local g = bearcad.ui.elements_graph()   -- the graph view's one-node-per-line layout
+bearcad.ui.elements_graph{ shadow_bodies = true }  -- include shadow bodies
 -- g.lanes                              -- how many lanes wide it is
 -- g.rows[i]  = { name=, kind=, lane=, x=, y=, w=, h= }   -- x/y/w/h: where the row was drawn
 --                                                          last frame, in click coordinates
