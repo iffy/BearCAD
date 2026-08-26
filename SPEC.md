@@ -2355,14 +2355,15 @@ outside the shape/undo DAG.
 - **Model:** `Document::cross_sections` is an `arena::Arena<CrossSection>`; a view is named by
   a `CrossSectionKey` (`SceneElement::CrossSection`, `HierarchyNode::CrossSection`). Each
   view holds a name and its `cuts`: a `CrossSectionCut` per plane — the frame it was placed on
-  (`origin`/`normal`), how far it has slid along its own normal (`offset_mm`), its turn about
-  that normal (`roll`), and which side survives (`flip`).
+  (`origin`/`normal`), how far it has slid along its own normal (`offset_mm`), its two
+  in-plane tilts (`roll` / `tilt_v`), and which side survives (`flip`).
 - **Where they live:** views group under a **Views** section at the bottom of the Elements
   pane, the way drawings group under Drawings (#1205) — with their own filter toggle. The
   section collapses; the views inside are ordinary elements (selectable, renameable,
   deletable). Each cutting plane is its own element nested under its view
   (`HierarchyNode::SectionPlane` / `SceneElement::SectionPlane`): selectable, renameable,
-  deletable, and hideable (a hidden plane does not cut). Scriptable as
+  deletable, and hideable (a hidden plane does not cut). The modeling workbench shows the
+  views but not their cutting planes. Scriptable as
   `bearcad.count("section_plane")` / `bearcad.get{ kind = "section_plane", index }` /
   `bearcad.select{ kind = "section_plane", index }`.
 - **Creating one:** the Elements pane's **+ → New cross section**, or **View → Create Cross
@@ -2385,13 +2386,18 @@ outside the shape/undo DAG.
   open shell — and it is **hatched**: parallel lines at 3 mm, phased from the plane's own
   origin so they run unbroken across the whole face rather than restarting per triangle.
   The kept side is the one the plane's normal points toward; **Flip** keeps the other.
-- **The cutting-plane tool (#1687/#1745):** the View workbench's own tool, on the same
-  picker / value-gizmo / blue-accept path as every other tool. The **Anchor** picker takes
-  a face, construction plane, edge, or axis (hover-highlights what a click would take).
-  Offset and rotate gizmos then place it; **Enter** or the blue primary button hangs it on
-  the open view. Each further pick+accept adds another plane. The context pane lists the
-  open view's planes, each with **Offset**, **Rotate**, **Flip**, and a ✕ to drop it. Each
-  plane draws as an outlined translucent quad with a stub along the surviving side.
+  A face coplanar with a cutting plane is drawn only if some of the body sits on the keep
+  side. Visible views cut the model in every workbench — hide a view to lift its cut.
+  The hatch is thick dark grey. The yellow plane quad draws only while the plane is selected
+  (or while its draft is up).
+- **The cutting-plane tool (#1687/#1745/#1757):** the View workbench's own tool, on the same
+  picker / gizmo path as the construction-plane tool. The **Anchor** picker takes a face,
+  construction plane, edge, or axis. A face gets one offset gizmo and two in-plane tilt
+  rings; an edge gets the construction-plane offset + angle gizmos. After a pick the
+  Anchor loses focus and Offset takes the keyboard. **Enter** or the blue primary button
+  hangs it on the open view. Double-click a hanging plane (or right-click **Edit**) to
+  reopen the same inputs with a live preview. Cutting planes nest under their view in the
+  Elements pane and are hidden from that pane in the modeling workbench.
   Scriptable: `bearcad.section_plane{ view?, plane|origin+normal, offset?, roll?, flip? }`,
   `bearcad.edit_section_plane{ view?, cut, … }`, `bearcad.delete_section_plane{ view?, cut }`,
   and `bearcad.section_planes(view?)` reads them back (`roll` in degrees).

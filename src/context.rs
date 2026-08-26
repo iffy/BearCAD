@@ -31,7 +31,9 @@ pub struct ContextInput<'a> {
     pub in_drawing_workbench: bool,
     /// The open drawing page (#967), so a drawing item's element can name which page it is on.
     pub open_drawing: Option<crate::model::DrawingKey>,
-    /// The open cross-section view (#1687), so the pane can list and edit its cutting planes.
+    /// The open cross-section view (#1687). Cutting planes are edited by selecting them,
+    /// not listed here (#1749/#1754).
+    #[allow(dead_code)]
     pub open_cross_section: Option<crate::model::CrossSectionKey>,
     pub draw_rect_construction: Option<bool>,
     /// Rectangle anchor mode (#532): `Some` while the Rectangle tool is active.
@@ -282,8 +284,14 @@ pub struct SectionPlaneControl {
     pub anchor: Option<SceneElement>,
     pub offset_text: String,
     pub roll_text: String,
+    pub tilt_v_text: String,
     pub flip: bool,
     pub has_anchor: bool,
+    /// Axis/edge anchors show one angle; face anchors show two tilts (#1752/#1757).
+    pub show_angle: bool,
+    pub show_tilts: bool,
+    pub pending_focus: bool,
+    pub editing: bool,
 }
 
 /// One edit from the Cutting plane tool's context section (#1745).
@@ -291,7 +299,9 @@ pub struct SectionPlaneControl {
 pub enum SectionPlaneEdit {
     SetOffset(String),
     SetRoll(String),
+    SetTiltV(String),
     SetFlip(bool),
+    FocusConsumed,
     Commit,
 }
 
@@ -1090,6 +1100,7 @@ pub struct CrossSectionCutRow {
 
 /// How a plane faces, for its row label (#1687): the nearest world axis, or "tilted" when it
 /// doesn't line up with one.
+#[allow(dead_code)]
 fn direction_label(normal: glam::Vec3) -> String {
     let n = normal.normalize_or_zero();
     for (axis, name) in [
@@ -3207,11 +3218,11 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         });
     }
     if let Some(p) = input.section_plane.as_ref() {
-        // #1745: the cutting-plane tool's Anchor is a real picker, so hover, the Exploder,
-        // a pane click and `bearcad.pickers()` all see the same set as a viewport click.
-        let mut anchor = ElementPicker::new(plane_anchor_filter(), PickLimit::Finite(1))
+        // #1745/#1750: the Anchor is a real picker. After a pick it loses focus so a
+        // gizmo grab is not another plane; click the picker to re-arm it.
+        let mut anchor = ElementPicker::new(plane_anchor_filter(), PickLimit::Finite(2))
             .with_priority(PLANE_ANCHOR_PRIORITY);
-        anchor.set_focused(true);
+        anchor.set_focused(!p.has_anchor);
         anchor.set_picked(input.doc, p.anchor.iter().cloned());
         tool_pickers.push(ToolPickerView {
             heading: "Anchor",
@@ -3417,24 +3428,9 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let sweep_edit_start = input.sweep_edit_start;
     let calibrate_start = input.calibrate_start;
     let calibrate_pending = input.calibrate_pending;
-    // The open view's cutting planes (#1687): built before the draw tools' early returns so
-    // the View workbench always shows them, whatever tool is active there.
-    let cross_section = input.open_cross_section.and_then(|view| {
-        let cuts = &input.doc.cross_sections.get(view)?.cuts;
-        Some(CrossSectionControl {
-            view,
-            cuts: cuts
-                .iter()
-                .enumerate()
-                .map(|(i, cut)| CrossSectionCutRow {
-                    label: format!("Plane {i} · {}", direction_label(cut.normal)),
-                    offset_mm: cut.offset_mm,
-                    roll_deg: cut.roll.to_degrees(),
-                    flip: cut.flip,
-                })
-                .collect(),
-        })
-    });
+    // Cutting planes live under their View in the Elements pane (#1754/#1749). The
+    // context pane no longer lists them — edit one by double-clicking it.
+    let cross_section = None;
     // Built before the draw tools' early returns below: outside a sketch their first click
     // picks the face to sketch on, which is a pick like any other and shows a picker (#958).
     let tool_pickers = tool_picker_views(input);
@@ -6732,6 +6728,7 @@ pub fn show_pane(
         // The Anchor picker draws in the shared block above. Offset, rotate, flip, and
         // the blue accept live here — the same controls every other value-gizmo tool uses.
         if control.has_anchor {
+            let mut pending_focus_consumed = false;
             labeled_row(ui, "Offset", |ui| {
                 ui.add_enabled_ui(controls_enabled, |ui| {
                     let mut text = control.offset_text.clone();
@@ -6741,25 +6738,49 @@ pub fn show_pane(
                     )
                     .width(90.0)
                     .show(ui, &mut text, doc);
+                    if control.pending_focus && !resp.has_focus() {
+                        resp.request_focus();
+                    }
+                    if control.pending_focus && resp.gained_focus() {
+                        pending_focus_consumed = true;
+                    }
                     if resp.changed() {
                         on_section_plane_edit(SectionPlaneEdit::SetOffset(text));
                     }
                 });
             });
-            labeled_row(ui, "Rotate", |ui| {
-                ui.add_enabled_ui(controls_enabled, |ui| {
-                    let mut text = control.roll_text.clone();
-                    let resp = crate::expression_input::ValueInput::new(
-                        "section_plane_roll_ctx",
-                        crate::expression_input::ValueKind::Angle,
-                    )
-                    .width(90.0)
-                    .show(ui, &mut text, doc);
-                    if resp.changed() {
-                        on_section_plane_edit(SectionPlaneEdit::SetRoll(text));
-                    }
+            if control.show_angle || control.show_tilts {
+                labeled_row(ui, if control.show_tilts { "Tilt" } else { "Angle" }, |ui| {
+                    ui.add_enabled_ui(controls_enabled, |ui| {
+                        let mut text = control.roll_text.clone();
+                        let resp = crate::expression_input::ValueInput::new(
+                            "section_plane_roll_ctx",
+                            crate::expression_input::ValueKind::Angle,
+                        )
+                        .width(90.0)
+                        .show(ui, &mut text, doc);
+                        if resp.changed() {
+                            on_section_plane_edit(SectionPlaneEdit::SetRoll(text));
+                        }
+                    });
                 });
-            });
+            }
+            if control.show_tilts {
+                labeled_row(ui, "Turn", |ui| {
+                    ui.add_enabled_ui(controls_enabled, |ui| {
+                        let mut text = control.tilt_v_text.clone();
+                        let resp = crate::expression_input::ValueInput::new(
+                            "section_plane_tilt_v_ctx",
+                            crate::expression_input::ValueKind::Angle,
+                        )
+                        .width(90.0)
+                        .show(ui, &mut text, doc);
+                        if resp.changed() {
+                            on_section_plane_edit(SectionPlaneEdit::SetTiltV(text));
+                        }
+                    });
+                });
+            }
             let mut flip = control.flip;
             if checkbox_row(ui, "Flip", &mut flip, None) {
                 on_section_plane_edit(SectionPlaneEdit::SetFlip(flip));
@@ -6767,9 +6788,12 @@ pub fn show_pane(
             if primary_button(
                 ui,
                 controls_enabled,
-                crate::tooltable::commit_label(Tool::SectionPlane, false),
+                crate::tooltable::commit_label(Tool::SectionPlane, control.editing),
             ) {
                 on_section_plane_edit(SectionPlaneEdit::Commit);
+            }
+            if pending_focus_consumed {
+                on_section_plane_edit(SectionPlaneEdit::FocusConsumed);
             }
         }
     }
@@ -12563,8 +12587,13 @@ mod tests {
                         anchor: Some(crate::hierarchy::SceneElement::Origin),
                         offset_text: String::new(),
                         roll_text: String::new(),
+                        tilt_v_text: String::new(),
                         flip: false,
                         has_anchor: true,
+                        show_angle: false,
+                        show_tilts: true,
+                        pending_focus: true,
+                        editing: false,
                     }),
                     plane_tool: (tool == Tool::ConstructionPlane).then_some(PlaneToolControl {
                         anchor_labels: vec!["Origin".to_string()],
@@ -12715,8 +12744,13 @@ mod tests {
                 anchor: Some(face.clone()),
                 offset_text: String::new(),
                 roll_text: String::new(),
+                tilt_v_text: String::new(),
                 flip: false,
                 has_anchor: true,
+                show_angle: false,
+                show_tilts: true,
+                pending_focus: true,
+                editing: false,
             }),
             ..input(&doc, &selection)
         };
@@ -12726,9 +12760,12 @@ mod tests {
             .find(|v| v.target == PickerTarget::SectionPlaneAnchor)
             .expect("the cutting plane tool registers its Anchor picker");
         assert_eq!(anchor.heading, "Anchor");
-        assert!(anchor.picker.is_focused(), "the anchor is what the tool picks");
+        assert!(
+            !anchor.picker.is_focused(),
+            "after a pick the offset field holds focus, not the Anchor"
+        );
         assert_eq!(anchor.picker.picked(), &[face]);
-        assert_eq!(anchor.picker.limit(), PickLimit::Finite(1));
+        assert_eq!(anchor.picker.limit(), PickLimit::Finite(2));
         let accepts = anchor.picker.filter().accepted_kinds();
         assert!(accepts.contains(&ElementKind::Face));
         assert!(accepts.contains(&ElementKind::Plane));

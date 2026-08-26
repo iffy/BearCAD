@@ -7373,8 +7373,38 @@ fn cross_section_body_mesh_uncached(
         };
         shape = shape.boolean(&half, crate::kernel::BoolOp::Cut)?;
     }
-    let tris = shape.tessellate(OCCT_DEFLECTION as f64);
+    let mut tris = shape.tessellate(OCCT_DEFLECTION as f64);
+    // #1756: a face coplanar with a cutting plane is only drawn when some of the body
+    // sits on the keep side. If the plane is the far face of the body, drop it.
+    const ON_PLANE_EPS: f32 = 1e-3;
+    for cut in cuts {
+        if body_has_keep_side_of_cut(doc, body, cut) {
+            continue;
+        }
+        let plane = crate::construction::cross_section_cut_plane(cut);
+        tris.retain(|tri| {
+            tri.iter()
+                .any(|p| (*p - plane.origin).dot(plane.normal).abs() > ON_PLANE_EPS)
+        });
+    }
     (!tris.is_empty()).then_some(SolidMesh { triangles: tris })
+}
+
+fn body_has_keep_side_of_cut(
+    doc: &Document,
+    body: crate::model::BodyKey,
+    cut: &crate::model::CrossSectionCut,
+) -> bool {
+    const EPS: f32 = 1e-3;
+    let Some(mesh) = body_solid_mesh(doc, body) else {
+        return true;
+    };
+    let plane = crate::construction::cross_section_cut_plane(cut);
+    let keep = if cut.flip { -plane.normal } else { plane.normal };
+    mesh.triangles
+        .iter()
+        .flatten()
+        .any(|p| (*p - plane.origin).dot(keep) > EPS)
 }
 
 /// A body's kernel solid **with its joint pose applied** (#893) — what STEP export and

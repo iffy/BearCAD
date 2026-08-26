@@ -5416,13 +5416,19 @@ pub struct CrossSectionCut {
     /// Flipping keeps the other side instead.
     #[serde(default)]
     pub flip: bool,
-    /// Turn of the plane about its own normal — kept so a placed plane can be rotated
-    /// in place rather than re-anchored (degrees are the UI's business; this is radians).
+    /// Face-anchor tilt around the first in-plane axis, or unused when the hanging plane
+    /// was baked from an edge (radians). Not a spin about the normal (#1752).
     #[serde(default)]
     pub roll: f32,
-    /// Typed roll expression in degrees, when the user typed one (#1745).
+    /// Typed roll / first-tilt expression in degrees, when the user typed one (#1745).
     #[serde(default)]
     pub roll_expression: String,
+    /// Face-anchor tilt around the second in-plane axis (radians) (#1752).
+    #[serde(default)]
+    pub tilt_v: f32,
+    /// Typed second-tilt expression in degrees.
+    #[serde(default)]
+    pub tilt_v_expression: String,
 }
 
 impl Default for CrossSectionCut {
@@ -5436,6 +5442,8 @@ impl Default for CrossSectionCut {
             flip: false,
             roll: 0.0,
             roll_expression: String::new(),
+            tilt_v: 0.0,
+            tilt_v_expression: String::new(),
         }
     }
 }

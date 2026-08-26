@@ -496,6 +496,8 @@ pub struct ViewportPalette {
     pub dim_edge_highlight: Color32,
     pub construction_plane_fill: Color32,
     pub construction_plane_opacity: f32,
+    /// Lined pattern on a cutting plane's opened face (#1759): thick dark grey.
+    pub section_hatch: Color32,
 }
 
 impl Default for ViewportPalette {
@@ -517,6 +519,7 @@ impl Default for ViewportPalette {
             dim_edge_highlight: Color32::from_rgb(255, 205, 88),
             construction_plane_fill: PLANE_FILL_RGBA,
             construction_plane_opacity: DEFAULT_CONSTRUCTION_PLANE_OPACITY,
+            section_hatch: Color32::from_rgb(70, 70, 70),
         }
     }
 }
@@ -712,9 +715,12 @@ pub struct PreviewReplacement {
 #[derive(Clone, Debug)]
 pub struct ViewportSceneInput<'a> {
     pub doc: &'a Document,
-    /// The cross-section view being set up (#1687): its cutting planes draw as outlined
-    /// translucent quads so a placed plane is visible while it is adjusted.
+    /// The cross-section view being set up (#1687). Visible views cut regardless of which
+    /// workbench is open (#1762); this still names the one being edited.
+    #[allow(dead_code)]
     pub open_cross_section: Option<crate::model::CrossSectionKey>,
+    /// In-progress cutting plane (#1751): preview the cut before it hangs on the view.
+    pub preview_section_cut: Option<crate::model::CrossSectionCut>,
     /// In-progress Move, so tracing-image quads preview the live drag (#1611).
     pub creating_move: Option<&'a crate::actions::CreatingMove>,
     pub cam: &'a Camera,
@@ -1016,26 +1022,30 @@ impl ViewportScene {
                     .collect(),
                 _ => Default::default(),
             };
-        // The open cross-section view's planes, if any (#1688). Hidden planes don't cut.
-        let visible_section_cuts: Vec<crate::model::CrossSectionCut> = input
-            .open_cross_section
-            .and_then(|key| input.doc.cross_sections.get(key).map(|view| (key, view)))
-            .map(|(key, view)| {
-                view.cuts
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| {
-                        input.element_visibility.is_visible(SceneElement::SectionPlane {
-                            view: key,
-                            cut: *i,
-                        })
-                    })
-                    .map(|(_, c)| c.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
+        // Visible cross-section views cut the model in every workbench (#1762). Hidden
+        // views (and hidden planes) do not. An in-progress draft previews its cut (#1751).
+        let mut visible_section_cuts: Vec<crate::model::CrossSectionCut> = Vec::new();
+        for (key, view) in input.doc.cross_sections.iter() {
+            if !input
+                .element_visibility
+                .is_visible(SceneElement::CrossSection(key))
+            {
+                continue;
+            }
+            for (i, cut) in view.cuts.iter().enumerate() {
+                if input
+                    .element_visibility
+                    .is_visible(SceneElement::SectionPlane { view: key, cut: i })
+                {
+                    visible_section_cuts.push(cut.clone());
+                }
+            }
+        }
+        if let Some(preview) = input.preview_section_cut.clone() {
+            visible_section_cuts.push(preview);
+        }
         let section_cuts: Option<&[crate::model::CrossSectionCut]> =
-            input.open_cross_section.map(|_| visible_section_cuts.as_slice());
+            (!visible_section_cuts.is_empty()).then_some(visible_section_cuts.as_slice());
         let cut_away = section_cuts.is_some_and(|cuts| !cuts.is_empty());
         let body_meshes: std::collections::HashMap<crate::model::BodyKey, Option<crate::extrude::SolidMesh>> = input
             .doc
@@ -1928,53 +1938,57 @@ impl ViewportScene {
                 );
             }
         }
-        // The open cross-section view's cutting planes (#1687): an outlined translucent quad
-        // per plane, with a short stub along the normal marking the side that survives, so a
-        // placed plane is visible while its offset, turn, and flip are adjusted.
-        if let Some(key) = input.open_cross_section {
-            if let Some(view) = input.doc.cross_sections.get(key) {
-                for (i, cut) in view.cuts.iter().enumerate() {
-                    if !input
-                        .element_visibility
-                        .is_visible(SceneElement::SectionPlane { view: key, cut: i })
-                    {
-                        continue;
-                    }
-                    let plane = crate::construction::cross_section_cut_plane(cut);
-                    let corners = crate::construction::plane_corners(&plane);
-                    mesh.push_quad_fill(
-                        corners,
-                        fill_color(input.palette.preview, input.palette.construction_plane_opacity),
-                    );
-                    mesh.push_quad_outline(
-                        corners,
-                        input.palette.preview,
-                        2.0,
-                        input.cam,
-                        input.viewport,
-                        &vp,
-                    );
-                    let kept = if cut.flip { -plane.normal } else { plane.normal };
-                    mesh.push_line_segment(
-                        plane.origin,
-                        plane.origin + kept * 12.0,
-                        input.palette.preview,
-                        2.0,
-                        input.cam,
-                        input.viewport,
-                        &vp,
-                    );
+        // Cutting planes draw as outlined translucent quads only while selected (or while
+        // the draft is up) (#1758).
+        let mut selected_cuts: Vec<crate::model::CrossSectionCut> = Vec::new();
+        for (key, view) in input.doc.cross_sections.iter() {
+            for (i, cut) in view.cuts.iter().enumerate() {
+                let el = SceneElement::SectionPlane { view: key, cut: i };
+                if input.selection.is_selected(el.clone())
+                    && input.element_visibility.is_visible(el)
+                {
+                    selected_cuts.push(cut.clone());
                 }
             }
         }
-        // The lined pattern on the faces the planes opened (#1688).
+        if let Some(preview) = input.preview_section_cut.as_ref() {
+            selected_cuts.push(preview.clone());
+        }
+        for cut in &selected_cuts {
+            let plane = crate::construction::cross_section_cut_plane(cut);
+            let corners = crate::construction::plane_corners(&plane);
+            mesh.push_quad_fill(
+                corners,
+                fill_color(input.palette.preview, input.palette.construction_plane_opacity),
+            );
+            mesh.push_quad_outline(
+                corners,
+                input.palette.preview,
+                2.0,
+                input.cam,
+                input.viewport,
+                &vp,
+            );
+            let kept = if cut.flip { -plane.normal } else { plane.normal };
+            mesh.push_line_segment(
+                plane.origin,
+                plane.origin + kept * 12.0,
+                input.palette.preview,
+                2.0,
+                input.cam,
+                input.viewport,
+                &vp,
+            );
+        }
+        // The lined pattern on the faces the planes opened (#1688): thick dark grey, not
+        // thin yellow (#1759).
         if let Some(cuts) = section_cuts {
             for cut in cuts {
                 for solid in body_meshes.values().flatten() {
                     mesh.push_section_hatch(
                         solid,
                         cut,
-                        input.palette.dim_edge_highlight,
+                        input.palette.section_hatch,
                         input.cam,
                         input.viewport,
                         &vp,
@@ -3110,7 +3124,7 @@ impl<'a> SceneMesh<'a> {
             cut,
             crate::extrude::SECTION_HATCH_SPACING_MM,
         ) {
-            self.push_line_segment(a, b, color, 1.0, cam, viewport, view_proj);
+            self.push_line_segment(a, b, color, 2.5, cam, viewport, view_proj);
         }
     }
 
@@ -6462,6 +6476,7 @@ mod tests {
         ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
@@ -7188,6 +7203,7 @@ mod tests {
         let base = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: &cam,
             viewport,
@@ -7238,6 +7254,7 @@ mod tests {
         let with_preview = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: &cam,
             viewport,
@@ -7337,6 +7354,7 @@ mod tests {
             let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: &cam,
             viewport,
@@ -7538,6 +7556,7 @@ mod tests {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
                 open_cross_section: None,
+            preview_section_cut: None,
                 creating_move: None,
                 cam: &state.cam,
                 viewport: test_viewport(),
@@ -7631,6 +7650,7 @@ mod tests {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
                 open_cross_section: None,
+            preview_section_cut: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -7814,6 +7834,7 @@ mod tests {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
                 open_cross_section: None,
+            preview_section_cut: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -7938,6 +7959,7 @@ mod tests {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
                 open_cross_section: None,
+            preview_section_cut: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -8054,6 +8076,7 @@ mod tests {
         ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: &cam,
             viewport,
@@ -8203,6 +8226,7 @@ mod tests {
         let base = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: &cam,
             viewport,
@@ -8264,6 +8288,7 @@ mod tests {
         let with_gizmo = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: &cam,
             viewport,
@@ -8325,6 +8350,7 @@ mod tests {
         let mut input = ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
@@ -8436,6 +8462,7 @@ mod tests {
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
@@ -9483,6 +9510,7 @@ mod tests {
         ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             open_cross_section,
+            preview_section_cut: None,
             creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
@@ -9662,6 +9690,7 @@ mod tests {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
                 open_cross_section: None,
+            preview_section_cut: None,
                 creating_move: None,
                 cam: &cam,
                 viewport: test_viewport(),
@@ -9958,6 +9987,171 @@ mod tests {
             hatched > 12,
             "the cut face is hatched with lines in its plane, got {hatched} vertices there"
         );
+
+        let palette = ViewportPalette::default();
+        let hatch_grey = count_wireframe_vertices_with_color(&cut_scene, palette.section_hatch)
+            + count_stroke_indices_with_color(&cut_scene, palette.section_hatch);
+        let hatch_yellow = count_wireframe_vertices_with_color(&cut_scene, palette.dim_edge_highlight)
+            + count_stroke_indices_with_color(&cut_scene, palette.dim_edge_highlight);
+        assert!(
+            hatch_grey > 0,
+            "the hatch is dark grey, not yellow (grey {hatch_grey}, yellow {hatch_yellow})"
+        );
+        assert_eq!(hatch_yellow, 0, "the hatch is not thin yellow");
+    }
+
+    /// #1758: the yellow cutting-plane quad is only drawn while the plane is selected.
+    #[test]
+    fn cutting_plane_quad_draws_only_when_selected() {
+        use crate::model::{Primitive, PrimitiveKind};
+        let mut state = AppState::default();
+        retain_ground_plane_only(&mut state.doc);
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.origin = [0.0, 0.0, 0.0];
+        shape.width = "40".into();
+        shape.depth = "40".into();
+        shape.height = "40".into();
+        state.apply(crate::actions::Action::CreateShape { shape });
+        state.apply(crate::actions::Action::CreateCrossSection { name: None });
+        let view = state.doc.cross_sections.keys().next().expect("the view");
+        state.apply(crate::actions::Action::AddCrossSectionCut {
+            view: Some(view),
+            cut: crate::model::CrossSectionCut {
+                origin: glam::Vec3::new(0.0, 0.0, 20.0),
+                normal: -glam::Vec3::Z,
+                ..Default::default()
+            },
+        });
+        let hidden = build_scene_for_doc(&state);
+        state.scene_selection.insert(crate::hierarchy::SceneElement::SectionPlane {
+            view,
+            cut: 0,
+        });
+        let shown = build_scene_for_doc(&state);
+        assert!(
+            shown.vertices.len() > hidden.vertices.len(),
+            "selecting the plane adds its quad, unselected {} selected {}",
+            hidden.vertices.len(),
+            shown.vertices.len()
+        );
+    }
+
+    /// #1762: a visible cross-section view cuts even when the modeling workbench is open.
+    #[test]
+    fn visible_cross_section_cuts_in_the_modeling_view() {
+        use crate::model::{Primitive, PrimitiveKind};
+        let mut state = AppState::default();
+        retain_ground_plane_only(&mut state.doc);
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.origin = [0.0, 0.0, 0.0];
+        shape.width = "40".into();
+        shape.depth = "40".into();
+        shape.height = "40".into();
+        state.apply(crate::actions::Action::CreateShape { shape });
+        state.apply(crate::actions::Action::CreateCrossSection { name: None });
+        let view = state.doc.cross_sections.keys().next().expect("the view");
+        state.apply(crate::actions::Action::AddCrossSectionCut {
+            view: Some(view),
+            cut: crate::model::CrossSectionCut {
+                origin: glam::Vec3::new(0.0, 0.0, 20.0),
+                normal: -glam::Vec3::Z,
+                ..Default::default()
+            },
+        });
+        state.editing_cross_section = None;
+        let cut_scene = build_scene_for_doc(&state);
+        let cut_top = cut_scene
+            .vertices
+            .iter()
+            .filter(|v| v.position[2] > 20.5)
+            .count();
+        assert_eq!(cut_top, 0, "a visible view still cuts in the modeling workbench");
+
+        state
+            .element_visibility
+            .set_visible(crate::hierarchy::SceneElement::CrossSection(view), false);
+        let whole = build_scene_for_doc(&state);
+        let top = whole
+            .vertices
+            .iter()
+            .filter(|v| v.position[2] > 20.5)
+            .count();
+        assert!(top > 0, "hiding the view restores the whole body");
+    }
+
+    /// #1751: the in-progress draft previews the cut before it is committed.
+    #[test]
+    fn draft_cutting_plane_previews_the_cut() {
+        use crate::model::{Primitive, PrimitiveKind};
+        let mut state = AppState::default();
+        retain_ground_plane_only(&mut state.doc);
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.origin = [0.0, 0.0, 0.0];
+        shape.width = "40".into();
+        shape.depth = "40".into();
+        shape.height = "40".into();
+        state.apply(crate::actions::Action::CreateShape { shape });
+        let cam = state.cam.clone();
+        let scene = ViewportScene::build(&ViewportSceneInput {
+            doc: &state.doc,
+            open_cross_section: None,
+            preview_section_cut: Some(crate::model::CrossSectionCut {
+                origin: glam::Vec3::new(0.0, 0.0, 20.0),
+                normal: -glam::Vec3::Z,
+                ..Default::default()
+            }),
+            creating_move: None,
+            cam: &cam,
+            viewport: test_viewport(),
+            palette: ViewportPalette::default(),
+            sketch_session: None,
+            selection: &state.scene_selection,
+            cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
+            sketch_repeat_ghost: Vec::new(),
+            sketch_ghost_lines: Vec::new(),
+            edit_preview_meshes: std::collections::HashMap::new(),
+            element_visibility: &state.element_visibility,
+            preview_rect: None,
+            preview_line: None,
+            preview_circle: None,
+            preview_extrusion: None,
+            preview_solid: None,
+            repeat_ghosts: Vec::new(),
+            cut_surface_ghosts: Vec::new(),
+            preview_cut_body: None,
+            preview_replacement: PreviewReplacement::default(),
+            highlighted_bezier_handles: Vec::new(),
+            editing_extrusion: None,
+            plane_preview: None,
+            active_sketch_face: None,
+            dimension_labels: &[],
+            dim_label_view: None,
+            plane_gizmo: None,
+            extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
+            arrow_gizmos: Vec::new(),
+            move_rotation_gizmos: Vec::new(),
+            revolve_arc_gizmo: None,
+            vertex_treatment_preview: None,
+            hover_highlight: None,
+            extra_pick_highlights: Vec::new(),
+            colored_pick_highlights: Vec::new(),
+            colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
+            colored_segments: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
+            hover_color: Color32::WHITE,
+            document_health: &crate::document_health::DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
+        });
+        let cut_top = scene
+            .vertices
+            .iter()
+            .filter(|v| v.position[2] > 20.5)
+            .count();
+        assert_eq!(cut_top, 0, "the draft cut previews before commit");
     }
 
     #[test]
@@ -9994,6 +10188,7 @@ mod tests {
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
@@ -10135,6 +10330,7 @@ mod tests {
         let with_hover = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
@@ -10336,6 +10532,7 @@ mod tests {
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
@@ -10565,6 +10762,7 @@ mod tests {
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
@@ -10639,6 +10837,7 @@ mod tests {
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
@@ -10836,6 +11035,7 @@ mod tests {
         let unselected = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: &cam,
             viewport,
@@ -10885,6 +11085,7 @@ mod tests {
         let selected_scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: &cam,
             viewport,
@@ -11001,6 +11202,7 @@ mod tests {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
                 open_cross_section: None,
+            preview_section_cut: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -11108,6 +11310,7 @@ mod tests {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
                 open_cross_section: None,
+            preview_section_cut: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -11268,6 +11471,7 @@ mod tests {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
                 open_cross_section: None,
+            preview_section_cut: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -11359,6 +11563,7 @@ mod tests {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
                 open_cross_section: None,
+            preview_section_cut: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -11471,6 +11676,7 @@ mod tests {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
                 open_cross_section: None,
+            preview_section_cut: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -11571,6 +11777,7 @@ mod tests {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
                 open_cross_section: None,
+            preview_section_cut: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -11676,6 +11883,7 @@ mod tests {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
                 open_cross_section: None,
+            preview_section_cut: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -11753,6 +11961,7 @@ mod tests {
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: &cam,
             viewport,
@@ -11841,6 +12050,7 @@ mod tests {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
                 open_cross_section: None,
+            preview_section_cut: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -11938,6 +12148,7 @@ mod tests {
         let without = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
@@ -11987,6 +12198,7 @@ mod tests {
         let with = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: &cam,
             viewport: test_viewport(),
@@ -12185,6 +12397,7 @@ mod tests {
         let vertex_count_before = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: &cam,
             viewport,
@@ -12238,6 +12451,7 @@ mod tests {
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: &cam,
             viewport,
@@ -12367,6 +12581,7 @@ mod tests {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
                 open_cross_section: None,
+            preview_section_cut: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -12499,6 +12714,7 @@ mod tests {
         let dashed_scene = ViewportScene::build(&ViewportSceneInput {
             doc: &dashed_doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: scene_fields.0,
             viewport: scene_fields.1,
@@ -12548,6 +12764,7 @@ mod tests {
         let solid_scene = ViewportScene::build(&ViewportSceneInput {
             doc: &solid_doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: scene_fields.0,
             viewport: scene_fields.1,
@@ -12648,6 +12865,7 @@ mod tests {
             ViewportScene::build(&ViewportSceneInput {
                 doc,
                 open_cross_section: None,
+            preview_section_cut: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -12771,6 +12989,7 @@ mod tests {
             ViewportScene::build(&ViewportSceneInput {
                 doc,
                 open_cross_section: None,
+            preview_section_cut: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -12881,6 +13100,7 @@ mod tests {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
                 open_cross_section: None,
+            preview_section_cut: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,
@@ -12966,6 +13186,7 @@ mod tests {
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: &cam,
             viewport,
@@ -13130,6 +13351,7 @@ mod perf_probe {
             let input = ViewportSceneInput {
                 doc: &state.doc,
                 open_cross_section: None,
+            preview_section_cut: None,
                 creating_move: None,
                 cam: &state.cam,
                 viewport,
@@ -13232,6 +13454,7 @@ mod cut_preview_tests {
         let input = ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
+            preview_section_cut: None,
             creating_move: None,
             cam: &state.cam,
             viewport,
@@ -13382,6 +13605,7 @@ mod issue_1141_hole_orbit {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
                 open_cross_section: None,
+            preview_section_cut: None,
                 creating_move: None,
                 cam: &cam,
                 viewport,

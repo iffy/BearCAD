@@ -957,6 +957,60 @@ pub fn tracing_image_under_cursor(
     }
 }
 
+/// Construction-plane-style reference a cutting plane hangs on from a picked element
+/// (#1757). Faces and construction planes are Face anchors; an edge, sketch line, or
+/// world axis is an Axis (the line lies *in* the plane). `None` if this element cannot
+/// anchor a plane.
+pub fn plane_reference_from_element(
+    doc: &Document,
+    element: &SceneElement,
+) -> Option<PlaneReference> {
+    match element {
+        SceneElement::Line(i) => {
+            let line = doc.lines.get(*i)?;
+            let (a, b) = crate::face::line_world_endpoints(doc, line)?;
+            let direction = (b - a).normalize_or_zero();
+            (direction.length_squared() >= 1e-8).then_some(PlaneReference::Axis {
+                origin: a,
+                direction,
+                label: crate::names::scene_element_label(doc, element),
+            })
+        }
+        SceneElement::BodyEdge { a, b, .. } => {
+            let a = crate::hierarchy::dequantize_body_point(*a);
+            let b = crate::hierarchy::dequantize_body_point(*b);
+            let direction = (b - a).normalize_or_zero();
+            (direction.length_squared() >= 1e-8).then_some(PlaneReference::Axis {
+                origin: a,
+                direction,
+                label: crate::names::scene_element_label(doc, element),
+            })
+        }
+        SceneElement::GlobalAxis(axis) => Some(PlaneReference::Axis {
+            origin: Vec3::ZERO,
+            direction: axis.direction(),
+            label: crate::names::scene_element_label(doc, element),
+        }),
+        SceneElement::BodyAxis { origin, dir, .. } => {
+            let origin = crate::hierarchy::dequantize_body_point(*origin);
+            let direction = crate::hierarchy::dequantize_body_point(*dir).normalize_or_zero();
+            (direction.length_squared() >= 1e-8).then_some(PlaneReference::Axis {
+                origin,
+                direction,
+                label: crate::names::scene_element_label(doc, element),
+            })
+        }
+        _ => {
+            let (origin, normal) = plane_frame_from_element(doc, element)?;
+            Some(PlaneReference::Face {
+                origin,
+                normal,
+                label: crate::names::scene_element_label(doc, element),
+            })
+        }
+    }
+}
+
 /// Origin and normal a cutting plane hangs on from a picked element (#1745).
 /// Faces and construction planes contribute their own frame; an edge or axis cuts across
 /// it (the direction is the plane's normal). `None` if this element cannot anchor a plane.
@@ -1011,19 +1065,17 @@ pub fn plane_frame_from_element(
 /// cut's offset and turned by its roll, expressed as a [`ConstructionPlane`] so the same quad
 /// and outline drawing every other plane uses applies to it.
 pub fn cross_section_cut_plane(cut: &crate::model::CrossSectionCut) -> ConstructionPlane {
-    let normal = cut.normal.normalize_or_zero();
-    let normal = if normal.length_squared() < 1e-8 { Vec3::Z } else { normal };
-    // Any pair of axes spanning the plane; the roll turns them about the normal.
-    let seed = if normal.dot(Vec3::Z).abs() > 0.9 { Vec3::X } else { Vec3::Z };
-    let u = seed.cross(normal).normalize_or_zero();
-    let u = if u.length_squared() < 1e-8 { Vec3::X } else { u };
-    let v = normal.cross(u);
-    let (sin, cos) = cut.roll.sin_cos();
-    let u_axis = u * cos + v * sin;
-    let v_axis = v * cos - u * sin;
+    let n0 = cut.normal.normalize_or_zero();
+    let n0 = if n0.length_squared() < 1e-8 { Vec3::Z } else { n0 };
+    // Face tilts around the two in-plane axes, not a spin about the normal (#1752).
+    let (u0, v0) = plane_basis(n0);
+    let n = (Quat::from_axis_angle(u0, cut.roll) * Quat::from_axis_angle(v0, cut.tilt_v) * n0)
+        .normalize_or_zero();
+    let n = if n.length_squared() < 1e-8 { n0 } else { n };
+    let (u_axis, v_axis) = plane_basis(n);
     ConstructionPlane {
-        origin: cut.origin + normal * cut.offset_mm,
-        normal,
+        origin: cut.origin + n * cut.offset_mm,
+        normal: n,
         u_axis,
         v_axis,
         parent: crate::model::ConstructionPlaneParent::Root,

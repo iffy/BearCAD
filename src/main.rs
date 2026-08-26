@@ -12658,47 +12658,65 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
         let angle_unit = self.state.doc.default_angle_unit;
 
         if let Some(cs) = self.state.creating_section.as_mut() {
-            let origin = cs.origin;
-            let normal = cs.normal;
-            let offset = cs.offset_live;
-            let roll = cs.roll_deg;
-            let following = cs.gizmo_drag.is_some();
+            let following = cs.gizmo_drag.is_some() || cs.tilt_gizmo_drag.is_some();
+            let preview = crate::construction::cross_section_cut_plane(&cs.as_cut_live());
             if !following && primary_pressed {
-                if offset_gizmo_hit(pp, project, origin, normal, offset) {
-                    cs.gizmo_drag = Some(construction::AxisGizmoDrag {
-                        hit: AxisGizmoHit::Offset,
-                        start_offset: offset,
-                        start_angle_deg: roll,
-                        start_screen: pp,
-                    });
-                    prepare_gizmo_value_field_focus(
-                        &mut cs.user_edited_offset,
-                        &mut cs.pending_focus,
-                    );
-                    ui.ctx()
-                        .memory_mut(|m| m.request_focus(egui::Id::new("section_plane_offset_ctx")));
-                } else {
-                    let ring_origin = origin + normal.normalize_or_zero() * offset;
-                    if construction::axis_gizmo_hit(pp, project, ring_origin, normal, 0.0, roll)
-                        == Some(AxisGizmoHit::Angle)
-                        || construction::rotation_handle_hit(
+                match &cs.reference {
+                    construction::PlaneReference::Face { origin, .. } => {
+                        if offset_gizmo_hit(pp, project, *origin, preview.normal, cs.offset_live)
+                        {
+                            cs.gizmo_drag = Some(construction::AxisGizmoDrag {
+                                hit: AxisGizmoHit::Offset,
+                                start_offset: cs.offset_live,
+                                start_angle_deg: cs.roll_deg,
+                                start_screen: pp,
+                            });
+                            prepare_gizmo_value_field_focus(
+                                &mut cs.user_edited_offset,
+                                &mut cs.pending_focus,
+                            );
+                            ui.ctx().memory_mut(|m| {
+                                m.request_focus(egui::Id::new("section_plane_offset_ctx"))
+                            });
+                        } else if let Some(axis) = section_tilt_gizmo_hit(cs, pp, project) {
+                            cs.tilt_gizmo_drag = Some(axis);
+                            if axis == 0 {
+                                prepare_gizmo_value_field_focus(
+                                    &mut cs.user_edited_roll,
+                                    &mut cs.pending_focus,
+                                );
+                            } else {
+                                prepare_gizmo_value_field_focus(
+                                    &mut cs.user_edited_tilt_v,
+                                    &mut cs.pending_focus,
+                                );
+                            }
+                        }
+                    }
+                    construction::PlaneReference::Axis {
+                        origin, direction, ..
+                    } => {
+                        if let Some(hit) = construction::axis_gizmo_hit(
                             pp,
                             project,
-                            construction::axis_angle_handle(ring_origin, normal, roll),
-                        )
-                    {
-                        cs.gizmo_drag = Some(construction::AxisGizmoDrag {
-                            hit: AxisGizmoHit::Angle,
-                            start_offset: offset,
-                            start_angle_deg: roll,
-                            start_screen: pp,
-                        });
-                        prepare_gizmo_value_field_focus(
-                            &mut cs.user_edited_roll,
-                            &mut cs.pending_focus,
-                        );
-                        ui.ctx()
-                            .memory_mut(|m| m.request_focus(egui::Id::new("section_plane_roll_ctx")));
+                            *origin,
+                            *direction,
+                            cs.offset_live,
+                            cs.roll_deg,
+                        ) {
+                            cs.gizmo_drag = Some(construction::AxisGizmoDrag {
+                                hit,
+                                start_offset: cs.offset_live,
+                                start_angle_deg: cs.roll_deg,
+                                start_screen: pp,
+                            });
+                            let edited = if hit == AxisGizmoHit::Offset {
+                                &mut cs.user_edited_offset
+                            } else {
+                                &mut cs.user_edited_roll
+                            };
+                            prepare_gizmo_value_field_focus(edited, &mut cs.pending_focus);
+                        }
                     }
                 }
             }
@@ -12707,12 +12725,15 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 if value_gizmo_should_release(ui, following) {
                     cs.gizmo_drag = None;
                 } else {
-                    match drag.hit {
-                        AxisGizmoHit::Offset => {
+                    match (&cs.reference, drag.hit) {
+                        (
+                            construction::PlaneReference::Face { origin, .. },
+                            AxisGizmoHit::Offset,
+                        ) => {
                             cs.offset_live = crate::value::snap_gizmo_length_mm(
                                 offset_from_normal_drag(
-                                    origin,
-                                    normal.normalize_or_zero(),
+                                    *origin,
+                                    preview.normal,
                                     project,
                                     drag.start_offset,
                                     drag.start_screen,
@@ -12721,18 +12742,69 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                                 length_unit,
                             );
                         }
-                        AxisGizmoHit::Angle => {
-                            let ring_origin = origin + normal.normalize_or_zero() * cs.offset_live;
+                        (
+                            construction::PlaneReference::Axis {
+                                origin, direction, ..
+                            },
+                            AxisGizmoHit::Offset,
+                        ) => {
+                            let n = construction::axis_normal(*direction, cs.roll_deg);
+                            cs.offset_live = crate::value::snap_gizmo_length_mm(
+                                offset_from_normal_drag(
+                                    *origin,
+                                    n,
+                                    project,
+                                    drag.start_offset,
+                                    drag.start_screen,
+                                    pp,
+                                ),
+                                length_unit,
+                            );
+                        }
+                        (
+                            construction::PlaneReference::Axis {
+                                origin, direction, ..
+                            },
+                            AxisGizmoHit::Angle,
+                        ) => {
                             if let Some(hit) =
-                                cam.ray_plane_hit(pp, viewport, vp, ring_origin, normal)
+                                cam.ray_plane_hit(pp, viewport, vp, *origin, *direction)
                             {
                                 cs.roll_deg = crate::value::snap_gizmo_angle_deg(
                                     construction::angle_from_axis_plane_hit(
-                                        ring_origin, normal, hit,
+                                        *origin, *direction, hit,
                                     ),
                                     angle_unit,
                                 );
                             }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if let Some(axis) = cs.tilt_gizmo_drag {
+                if value_gizmo_should_release(ui, following) {
+                    cs.tilt_gizmo_drag = None;
+                } else if let construction::PlaneReference::Face { origin, normal, .. } =
+                    &cs.reference
+                {
+                    let (u, v) = construction::plane_basis(*normal);
+                    let ring_axis = if axis == 0 { u } else { v };
+                    let center = *origin + preview.normal * cs.offset_live;
+                    if let Some(hit) = cam.ray_plane_hit(pp, viewport, vp, center, ring_axis)
+                    {
+                        let zero = if axis == 0 { v } else { u };
+                        let angle = construction::angle_from_axis_plane_hit(center, ring_axis, hit)
+                            - construction::angle_from_axis_plane_hit(
+                                center,
+                                ring_axis,
+                                center + zero,
+                            );
+                        let snapped = crate::value::snap_gizmo_angle_deg(angle, angle_unit);
+                        if axis == 0 {
+                            cs.roll_deg = snapped;
+                        } else {
+                            cs.tilt_v_deg = snapped;
                         }
                     }
                 }
@@ -12746,13 +12818,48 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             if !cs.user_edited_roll {
                 cs.roll_text = format!("{:.0}", cs.roll_deg);
             }
-            if cs.gizmo_drag.is_some() {
+            if !cs.user_edited_tilt_v {
+                cs.tilt_v_text = format!("{:.0}", cs.tilt_v_deg);
+            }
+            if cs.gizmo_drag.is_some() || cs.tilt_gizmo_drag.is_some() {
                 return;
             }
         }
 
         if !primary_pressed {
             return;
+        }
+        // #1750: after an anchor is picked the picker is unfocused, so a click is a
+        // gizmo grab, not another plane. Re-arm the picker to pick again.
+        let picker_armed = tool_pickers.iter().any(|v| {
+            v.target == context::PickerTarget::SectionPlaneAnchor && v.picker.is_focused()
+        });
+        if self
+            .state
+            .creating_section
+            .as_ref()
+            .is_some_and(|c| c.anchor.is_some())
+            && !picker_armed
+        {
+            return;
+        }
+        let gp = cam.ground_point(pp, viewport, vp);
+        if let Some(target) = construction::resolve_plane_pick_target(
+            pp,
+            project,
+            gp,
+            &self.state.doc,
+            cam.eye(),
+            pick_occlusion,
+        ) {
+            if let Some(element) = construction::scene_element_from_pick(&target.kind) {
+                actions::apply_pick(
+                    &mut self.state,
+                    context::PickerTarget::SectionPlaneAnchor,
+                    &element,
+                );
+                return;
+            }
         }
         self.click_into_focused_picker(tool_pickers, pp, project, pick_occlusion);
     }
@@ -15483,6 +15590,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             let mut pane_hovered_element: Option<SceneElement> = None;
             let mut add_component: Option<Option<model::ComponentKey>> = None;
             let mut add_cross_section = false;
+            let mut add_drawing = false;
             let mut move_to_component: Option<(SceneElement, Option<model::ComponentKey>)> = None;
             let mut activate_component: Option<Option<model::ComponentKey>> = None;
             // Timeline rollback marker set/cleared from the pane (#524), applied after it closes.
@@ -15612,6 +15720,11 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     let mut queue_add_cross_section = || {
                         add_cross_section = true;
                     };
+                    let mut queue_add_drawing = || {
+                        add_drawing = true;
+                    };
+                    let in_view_workbench =
+                        self.state.workbench() == actions::Workbench::View;
                     let mut queue_add_component = |parent: Option<model::ComponentKey>| {
                         add_component = Some(parent);
                     };
@@ -15708,6 +15821,8 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                         &mut self.section_collapsed,
                         &mut queue_add_component,
                         &mut queue_add_cross_section,
+                        &mut queue_add_drawing,
+                        in_view_workbench,
                         &mut queue_move_to_component,
                         self.state.active_component,
                         &mut queue_activate_component,
@@ -15719,6 +15834,9 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             }
             if add_cross_section {
                 self.state.apply(Action::CreateCrossSection { name: None });
+            }
+            if add_drawing {
+                self.state.apply(Action::CreateDrawing { name: None });
             }
             if let Some(component) = activate_component {
                 self.state.active_component = component;
@@ -16744,12 +16862,19 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             }),
             section_plane: (self.state.tool == Tool::SectionPlane).then(|| {
                 let cs = self.state.creating_section.as_ref();
+                let is_axis = cs.is_some_and(|c| c.reference.is_axis());
                 context::SectionPlaneControl {
                     anchor: cs.and_then(|c| c.anchor.clone()),
                     offset_text: cs.map(|c| c.offset_text.clone()).unwrap_or_default(),
                     roll_text: cs.map(|c| c.roll_text.clone()).unwrap_or_default(),
+                    tilt_v_text: cs.map(|c| c.tilt_v_text.clone()).unwrap_or_default(),
                     flip: cs.map(|c| c.flip).unwrap_or(false),
-                    has_anchor: cs.is_some_and(|c| c.anchor.is_some()),
+                    has_anchor: cs.is_some_and(|c| c.anchor.is_some() || c.edit_cut.is_some()),
+                    show_angle: is_axis,
+                    show_tilts: cs.is_some_and(|c| c.anchor.is_some() || c.edit_cut.is_some())
+                        && !is_axis,
+                    pending_focus: cs.is_some_and(|c| c.pending_focus),
+                    editing: cs.is_some_and(|c| c.edit_cut.is_some()),
                 }
             }),
             plane_tool: (self.state.tool == Tool::ConstructionPlane).then(|| {
@@ -17206,6 +17331,23 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     context::SectionPlaneEdit::SetFlip(flip) => {
                         if let Some(cs) = self.state.creating_section.as_mut() {
                             cs.flip = flip;
+                        }
+                    }
+                    context::SectionPlaneEdit::SetTiltV(value) => {
+                        if let Some(cs) = self.state.creating_section.as_mut() {
+                            cs.tilt_v_text = value;
+                            cs.user_edited_tilt_v = true;
+                            cs.tilt_v_deg = crate::value::eval_angle_rad_in_doc(
+                                &cs.tilt_v_text,
+                                &self.state.doc,
+                            )
+                            .map(|r| r.to_degrees())
+                            .unwrap_or(cs.tilt_v_deg);
+                        }
+                    }
+                    context::SectionPlaneEdit::FocusConsumed => {
+                        if let Some(cs) = self.state.creating_section.as_mut() {
+                            cs.pending_focus = false;
                         }
                     }
                     context::SectionPlaneEdit::Commit => {
@@ -19881,6 +20023,7 @@ pub(crate) mod col {
     pub const DIM_INPUT_BORDER_FOCUS: Color32 = crate::expression_input::boxed::BORDER_FOCUS;
     /// Highlight for the dimension edge/segment tied to the focused input.
     pub const DIM_EDGE_HIGHLIGHT: Color32 = DIM_INPUT_BORDER_FOCUS;
+    pub const SECTION_HATCH: Color32 = Color32::from_rgb(70, 70, 70);
     /// Committed sketch dimension lines and labels in edit mode.
     pub const DIM_ANNOTATION: Color32 = Color32::from_rgb(180, 188, 204);
     /// All construction geometry (planes, etc.) shares this colour.
@@ -21924,6 +22067,30 @@ fn resolve_viewport_hover_highlight(
     }
 }
 
+fn section_tilt_gizmo_hit(
+    cs: &actions::CreatingSectionPlane,
+    pp: egui::Pos2,
+    project: &impl Fn(glam::Vec3) -> Option<egui::Pos2>,
+) -> Option<usize> {
+    let construction::PlaneReference::Face { origin, normal, .. } = cs.reference.clone() else {
+        return None;
+    };
+    let preview = construction::cross_section_cut_plane(&cs.as_cut_live());
+    let (u, v) = construction::plane_basis(normal);
+    let center = origin + preview.normal * cs.offset_live;
+    for (i, axis) in [u, v].into_iter().enumerate() {
+        let angle = if i == 0 { cs.roll_deg } else { cs.tilt_v_deg };
+        let handle = construction::axis_angle_handle(center, axis, angle);
+        if construction::rotation_handle_hit(pp, project, handle)
+            || construction::axis_gizmo_hit(pp, project, center, axis, 0.0, angle)
+                == Some(AxisGizmoHit::Angle)
+        {
+            return Some(i);
+        }
+    }
+    None
+}
+
 fn plane_gizmo_hover(
     cp: &CreatingConstructionPlane,
     pointer_screen: Option<egui::Pos2>,
@@ -22481,6 +22648,7 @@ fn build_viewport_scene_input<'a>(
     gpu_viewport::ViewportSceneInput {
         doc,
         open_cross_section,
+        preview_section_cut: None,
         creating_move,
         cam,
         viewport,
@@ -22501,6 +22669,7 @@ fn build_viewport_scene_input<'a>(
             dim_edge_highlight: col::DIM_EDGE_HIGHLIGHT,
             construction_plane_fill: construction::PLANE_FILL_RGBA,
             construction_plane_opacity: gpu_viewport::DEFAULT_CONSTRUCTION_PLANE_OPACITY,
+            section_hatch: col::SECTION_HATCH,
         },
         sketch_session,
         selection,
@@ -30266,8 +30435,8 @@ impl App {
                     }
                 } else if let SceneElement::CrossSection(view) = element {
                     self.state.apply(Action::EditCrossSection { view: Some(view) });
-                } else if let SceneElement::SectionPlane { view, .. } = element {
-                    self.state.apply(Action::EditCrossSection { view: Some(view) });
+                } else if let SceneElement::SectionPlane { view, cut } = element {
+                    self.state.apply(Action::BeginEditSectionPlane { view, cut });
                 } else {
                     self.begin_operation_edit(element);
                 }
@@ -31701,37 +31870,34 @@ impl App {
                 rotate_about_normal: false,
             })
             .or_else(|| {
-                self.state.creating_section.as_ref().map(|cs| {
-                    let hover = {
-                        let pp = pointer_screen;
-                        if let Some(pp) = pp {
-                            if offset_gizmo_hit(pp, &project, cs.origin, cs.normal, cs.offset_live)
-                            {
-                                Some(AxisGizmoHit::Offset)
-                            } else {
-                                let ring = cs.origin
-                                    + cs.normal.normalize_or_zero() * cs.offset_live;
-                                construction::axis_gizmo_hit(
-                                    pp,
-                                    &project,
-                                    ring,
-                                    cs.normal,
-                                    0.0,
-                                    cs.roll_deg,
-                                )
-                                .filter(|h| *h == AxisGizmoHit::Angle)
-                            }
-                        } else {
-                            None
+                self.state.creating_section.as_ref().filter(|cs| {
+                    cs.anchor.is_some() || cs.edit_cut.is_some()
+                }).map(|cs| {
+                    let hover = pointer_screen.and_then(|pp| match &cs.reference {
+                        construction::PlaneReference::Face { origin, .. } => {
+                            let preview =
+                                construction::cross_section_cut_plane(&cs.as_cut_live());
+                            offset_gizmo_hit(pp, &project, *origin, preview.normal, cs.offset_live)
+                                .then_some(AxisGizmoHit::Offset)
                         }
-                    };
+                        construction::PlaneReference::Axis {
+                            origin, direction, ..
+                        } => construction::axis_gizmo_hit(
+                            pp,
+                            &project,
+                            *origin,
+                            *direction,
+                            cs.offset_live,
+                            cs.roll_deg,
+                        ),
+                    });
                     gpu_viewport::ViewportPlaneGizmo {
                         reference: cs.gizmo_reference(),
                         offset: cs.offset_live,
                         angle_deg: cs.roll_deg,
                         color: col::PREVIEW,
                         hover,
-                        rotate_about_normal: true,
+                        rotate_about_normal: false,
                     }
                 })
             });
@@ -32727,6 +32893,37 @@ impl App {
                     }
                 }
             }
+        } else if let Some(cs) = self.state.creating_section.as_ref() {
+            if matches!(cs.reference, construction::PlaneReference::Face { .. })
+                && (cs.anchor.is_some() || cs.edit_cut.is_some())
+            {
+                if let construction::PlaneReference::Face { origin, normal, .. } = &cs.reference {
+                    let preview = construction::cross_section_cut_plane(&cs.as_cut_live());
+                    let (u, v) = construction::plane_basis(*normal);
+                    let center = *origin + preview.normal * cs.offset_live;
+                    let radius = construction::AXIS_ANGLE_GIZMO_RADIUS_MM;
+                    let colors = [col::X_AXIS, col::Y_AXIS];
+                    for (i, axis) in [u, v].into_iter().enumerate() {
+                        let angle = if i == 0 { cs.roll_deg } else { cs.tilt_v_deg };
+                        let zero = if i == 0 { v } else { u };
+                        let handle = face_spin_handle_pos(center, axis, radius, Some(zero), angle);
+                        let hovered = cs.tilt_gizmo_drag == Some(i)
+                            || (cs.tilt_gizmo_drag.is_none()
+                                && pointer_screen
+                                    .is_some_and(|pp| rotation_handle_hit(pp, &project, handle)));
+                        move_rotation_gizmos.push(gpu_viewport::MoveRotationGizmo {
+                            center,
+                            axis,
+                            radius,
+                            color: colors[i],
+                            hovered,
+                            zero_dir: Some(zero),
+                            angle_deg: Some(angle),
+                            dragging: cs.tilt_gizmo_drag == Some(i),
+                        });
+                    }
+                }
+            }
         }
         // Live ghost of the in-progress in-sketch repeat's duplicates (#232): dashed copies of
         // the picked lines/circles at every computed offset, so the result previews before commit.
@@ -32994,15 +33191,17 @@ impl App {
             sketch_ghost_lines,
             edit_preview_meshes,
         );
-        if scene_input.plane_preview.is_none() {
-            if let Some(cs) = self.state.creating_section.as_ref() {
-                if cs.anchor.is_some() {
+        if let Some(cs) = self.state.creating_section.as_ref() {
+            if cs.anchor.is_some() || cs.edit_cut.is_some() {
+                let cut = cs.as_cut_live();
+                if scene_input.plane_preview.is_none() {
                     scene_input.plane_preview = Some(gpu_viewport::ViewportPlanePreview {
-                        plane: construction::cross_section_cut_plane(&cs.as_cut(doc)),
+                        plane: construction::cross_section_cut_plane(&cut),
                         dependents: None,
                         dim_outline: false,
                     });
                 }
+                scene_input.preview_section_cut = Some(cut);
             }
         }
         // Paste preview (#1236): cyan semi-transparent ghosts of the clipboard at the
@@ -34050,44 +34249,52 @@ impl App {
             }
         }
         if let Some(cs) = &self.state.creating_section {
-            if cs.anchor.is_some() && !gpu_drawn {
-                let preview = construction::cross_section_cut_plane(&cs.as_cut(&self.state.doc));
+            if (cs.anchor.is_some() || cs.edit_cut.is_some()) && !gpu_drawn {
+                let preview = construction::cross_section_cut_plane(&cs.as_cut_live());
                 draw_construction_plane(&painter, &project, &preview, col::PREVIEW, false);
-                let ring = cs.origin + cs.normal.normalize_or_zero() * cs.offset_live;
-                let hover = pointer_screen.and_then(|pp| {
-                    if offset_gizmo_hit(pp, &project, cs.origin, cs.normal, cs.offset_live) {
-                        Some(AxisGizmoHit::Offset)
-                    } else {
-                        construction::axis_gizmo_hit(
-                            pp,
-                            &project,
-                            ring,
-                            cs.normal,
-                            0.0,
-                            cs.roll_deg,
-                        )
-                        .filter(|h| *h == AxisGizmoHit::Angle)
+                let hover = pointer_screen.and_then(|pp| match &cs.reference {
+                    construction::PlaneReference::Face { origin, .. } => {
+                        offset_gizmo_hit(pp, &project, *origin, preview.normal, cs.offset_live)
+                            .then_some(AxisGizmoHit::Offset)
                     }
+                    construction::PlaneReference::Axis {
+                        origin, direction, ..
+                    } => construction::axis_gizmo_hit(
+                        pp,
+                        &project,
+                        *origin,
+                        *direction,
+                        cs.offset_live,
+                        cs.roll_deg,
+                    ),
                 });
-                draw_offset_gizmo(
-                    &painter,
-                    &project,
-                    cs.origin,
-                    cs.normal,
-                    cs.offset_live,
-                    col::PREVIEW,
-                    hover == Some(AxisGizmoHit::Offset),
-                );
-                draw_axis_plane_gizmo(
-                    &painter,
-                    &project,
-                    ring,
-                    cs.normal,
-                    0.0,
-                    cs.roll_deg,
-                    col::PREVIEW,
-                    hover,
-                );
+                match &cs.reference {
+                    construction::PlaneReference::Face { origin, .. } => {
+                        draw_offset_gizmo(
+                            &painter,
+                            &project,
+                            *origin,
+                            preview.normal,
+                            cs.offset_live,
+                            col::PREVIEW,
+                            hover == Some(AxisGizmoHit::Offset),
+                        );
+                    }
+                    construction::PlaneReference::Axis {
+                        origin, direction, ..
+                    } => {
+                        draw_axis_plane_gizmo(
+                            &painter,
+                            &project,
+                            *origin,
+                            *direction,
+                            cs.offset_live,
+                            cs.roll_deg,
+                            col::PREVIEW,
+                            hover,
+                        );
+                    }
+                }
             }
         }
 

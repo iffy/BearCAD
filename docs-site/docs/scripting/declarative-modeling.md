@@ -351,8 +351,10 @@ Creating a view (or double-clicking its row) opens the **View workbench**; the t
 leftmost control names the workbench you're on and switches between them.
 
 In that workbench the **Cutting plane** tool's Anchor picker hangs a plane on a face, plane,
-edge, or axis; drag offset/rotate, then **Enter** or the blue button to add it. Each further
-pick+accept adds another, so a view can cut in several directions at once.
+edge, or axis — the same picks as a construction plane. A face gets an offset gizmo and two
+in-plane tilts; an edge rotates around the edge. After a pick, Offset takes the keyboard.
+**Enter** or the blue button hangs it on the open view. Double-click a hanging plane to edit
+it. Visible views cut the model even in the modeling workbench; hide a view to lift its cut.
 
 ```lua
 bearcad.section_plane{ plane = 1, offset = 5 }     -- on a construction plane's frame
