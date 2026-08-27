@@ -656,6 +656,14 @@ fn resolve_element(v: &Value, doc: &Document) -> Result<SceneElement, String> {
                 .get("kind")
                 .and_then(Value::as_str)
                 .ok_or("element requires a `kind` or `name`")?;
+            // A drawing's page item (#1747): a projection, a text annotation, or a shown
+            // dimension, keyed by the drawing ordinal the other drawing verbs take.
+            match kind.to_ascii_lowercase().as_str() {
+                "projection" | "annotation" | "dimension" | "drawing_dimension" => {
+                    return drawing_element_from_json(o, kind, doc)
+                }
+                _ => {}
+            }
             let index = o
                 .get("index")
                 .and_then(Value::as_u64)
@@ -665,6 +673,65 @@ fn resolve_element(v: &Value, doc: &Document) -> Result<SceneElement, String> {
         }
         _ => Err("expected an element (name string or {kind, index})".to_string()),
     }
+}
+
+/// A drawing's page item from a `{ kind, drawing, … }` object (#1747) — the web mirror of
+/// `lua_script::parse_drawing_element_table`.
+fn drawing_element_from_json(
+    o: &Value,
+    kind: &str,
+    doc: &Document,
+) -> Result<SceneElement, String> {
+    use crate::context::DrawingElementRef as D;
+    let drawing_ordinal = o
+        .get("drawing")
+        .and_then(Value::as_u64)
+        .ok_or("a drawing element requires a `drawing`")? as usize;
+    let key = doc.drawings.keys().nth(drawing_ordinal)
+        .ok_or_else(|| format!("no drawing {drawing_ordinal}"))?;
+    let element = match kind.to_ascii_lowercase().as_str() {
+        "projection" => D::Projection(
+            o.get("view")
+                .or_else(|| o.get("index"))
+                .and_then(Value::as_u64)
+                .ok_or("a projection requires a `view`")? as usize,
+        ),
+        "annotation" => {
+            let ordinal =
+                o.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+            D::Text(
+                doc.drawings
+                    .get(key)
+                    .and_then(|d| d.annotations.keys().nth(ordinal))
+                    .ok_or_else(|| format!("no annotation {ordinal} in drawing {drawing_ordinal}"))?,
+            )
+        }
+        _ => {
+            if o.contains_key("a") || o.contains_key("b") {
+                let q = |k: &str| -> Result<[i32; 3], String> {
+                    let p = o
+                        .get(k)
+                        .and_then(|v| v.as_array())
+                        .ok_or_else(|| format!("dimension `{k}` must be a {{x, y, z}} point"))?;
+                    let n = |i: usize| p.get(i).and_then(Value::as_f64).unwrap_or(0.0) as f32;
+                    Ok(crate::hierarchy::quantize_body_point(glam::Vec3::new(
+                        n(0), n(1), n(2),
+                    )))
+                };
+                D::Dimension {
+                    view: o.get("view").and_then(Value::as_u64).unwrap_or(0) as usize,
+                    a: q("a")?,
+                    b: q("b")?,
+                }
+            } else {
+                D::PointDim {
+                    view: o.get("view").and_then(Value::as_u64).unwrap_or(0) as usize,
+                    index: o.get("index").and_then(Value::as_u64).unwrap_or(0) as usize,
+                }
+            }
+        }
+    };
+    Ok(SceneElement::DrawingElement { drawing: key, element })
 }
 
 /// A `visible` argument → `Some(true|false)` (show/hide) or `None` (toggle).

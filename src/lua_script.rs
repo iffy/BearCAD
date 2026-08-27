@@ -613,6 +613,16 @@ fn parse_element_table(lua: &Lua, table: Table) -> mlua::Result<SceneElement> {
     if kind.eq_ignore_ascii_case("image") && table.contains_key("edge")? {
         return Ok(SceneElement::FaceEdge(parse_constraint_line_table(lua, table)?));
     }
+    // A drawing's page items (#1747): a projection (`{ kind = "projection", drawing = d,
+    // view = v }`), a text annotation (`{ kind = "annotation", drawing = d, index = i }`),
+    // or a shown dimension (`{ kind = "dimension", drawing = d, view = v }` with world
+    // points `a`/`b` for an edge dimension, or `index = i` for a point dimension).
+    if matches!(
+        kind.to_ascii_lowercase().as_str(),
+        "projection" | "annotation" | "dimension" | "drawing_dimension"
+    ) {
+        return parse_drawing_element_table(lua, table, &kind);
+    }
     let index: usize = table.get("index")?;
     // Point-level selector (#68): a line endpoint (`end = "start"|"end"`), or an explicit
     // `point = true` (e.g. a circle's center) — otherwise
@@ -632,6 +642,66 @@ fn parse_element_table(lua: &Lua, table: Table) -> mlua::Result<SceneElement> {
         .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
     scene_element_from_kind(unsafe { &tick.state().doc }, &kind, index)
         .ok_or_else(|| mlua::Error::external(format!("unknown element kind '{kind}'")))
+}
+
+/// Resolve a drawing page item's `{ kind, drawing, … }` table (#1747) — the inverse of
+/// `element_script_tokens`'s `DrawingElement` case. Drawings and annotations index by their
+/// ordinal among the live ones, like every other drawing verb.
+fn parse_drawing_element_table(lua: &Lua, table: Table, kind: &str) -> mlua::Result<SceneElement> {
+    use crate::context::DrawingElementRef as D;
+    let tick = lua
+        .app_data_ref::<ScriptTickData>()
+        .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+    let drawing_ordinal: usize = table.get("drawing")?;
+    unsafe {
+        let doc = &tick.state().doc;
+        let drawing = doc
+            .drawings
+            .keys()
+            .nth(drawing_ordinal)
+            .ok_or_else(|| mlua::Error::external(format!("no drawing {drawing_ordinal}")))?;
+        let element = match kind.to_ascii_lowercase().as_str() {
+            "projection" => {
+                let view: usize = table.get("view").or_else(|_| table.get("index"))?;
+                D::Projection(view)
+            }
+            "annotation" => {
+                let ordinal: usize = table.get("index")?;
+                let key = doc
+                    .drawings
+                    .get(drawing)
+                    .and_then(|d| d.annotations.keys().nth(ordinal))
+                    .ok_or_else(|| {
+                        mlua::Error::external(format!(
+                            "no annotation {ordinal} in drawing {drawing_ordinal}"
+                        ))
+                    })?;
+                D::Text(key)
+            }
+            _ => {
+                // A dimension: world points (`a`/`b`) name an edge dimension; an `index`
+                // names a free point-to-point dimension by its place in the view's list.
+                if matches!(table.get::<Value>("a")?, Value::Table(_))
+                    || matches!(table.get::<Value>("b")?, Value::Table(_))
+                {
+                    let quantize = |p: [f32; 3]| {
+                        crate::hierarchy::quantize_body_point(glam::Vec3::new(p[0], p[1], p[2]))
+                    };
+                    D::Dimension {
+                        view: table.get("view")?,
+                        a: quantize(parse_xyz(&table, "a")?),
+                        b: quantize(parse_xyz(&table, "b")?),
+                    }
+                } else {
+                    D::PointDim {
+                        view: table.get("view")?,
+                        index: table.get("index")?,
+                    }
+                }
+            }
+        };
+        Ok(SceneElement::DrawingElement { drawing, element })
+    }
 }
 
 /// Read a `{x, y, z}` / `{1,2,3}` triple as floats.
@@ -839,7 +909,7 @@ fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
             })
         }
         _ => {
-            let index: usize = table.get("index")?;
+    let index: usize = table.get("index")?;
             let tick = lua
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
@@ -9356,6 +9426,7 @@ pub mod tests {
     use crate::model::sketch_text_key_for_slot as tkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::drawing_key_for_slot as dkey;
+    use crate::model::annotation_key_for_slot as akey;
     use crate::model::body_key_for_slot as bkey;
     use crate::model::joint_key_for_slot as jkey;
     use crate::model::sketch_op_key_for_slot as skop;
@@ -15211,6 +15282,57 @@ pub mod tests {
             assert(sel[1].kind == "line")
             assert(sel[1].index == 0)
         "#,
+        );
+    }
+
+    /// #1747: `bearcad.select` can name a drawing's page items — a projection, a text
+    /// annotation, an edge dimension, and a free point-to-point dimension — by
+    /// `{ kind, drawing, view/index }` tables, the same ordinals the other drawing verbs take.
+    #[test]
+    fn lua_select_names_drawing_page_items() {
+        // The projection.
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 30, depth = 20, height = 20 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
+            bearcad.ui.tool("select")
+            bearcad.select{ kind = "projection", drawing = d, view = 0 }
+            "#,
+        );
+        assert_eq!(
+            state.selected_drawing_elements,
+            vec![(dkey(0), crate::context::DrawingElementRef::Projection(0))],
+            "the projection is what the script selected"
+        );
+
+        // The text annotation and the point-to-point dimension, additively.
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 30, depth = 20, height = 20 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
+            bearcad.drawing_text{ drawing = d, text = "note", x = 0.1, y = 0.2 }
+            bearcad.drawing_point_dimension{ drawing = d, view = 0,
+                                             a = {0, 0}, b = {10, 0} }
+            bearcad.ui.tool("select")
+            bearcad.select{ kind = "annotation", drawing = d, index = 0 }
+            bearcad.select({ kind = "dimension", drawing = d, view = 0, index = 0 },
+                           { additive = true })
+            "#,
+        );
+        assert_eq!(
+            state.selected_drawing_elements,
+            vec![
+                (dkey(0), crate::context::DrawingElementRef::Text(akey(0))),
+                (
+                    dkey(0),
+                    crate::context::DrawingElementRef::PointDim { view: 0, index: 0 }
+                ),
+            ],
+            "annotation + point dimension selected together"
         );
     }
 

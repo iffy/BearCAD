@@ -1954,7 +1954,39 @@ impl Instruction {
                     Some(c) => c.to_string(),
                     None => "false".to_string(),
                 };
-                let tokens = element_script_tokens(element.clone(), doc);
+    // A drawing's page item (#1747): round-trips through the same `{ kind, drawing, … }`
+    // tables `parse_element_table` resolves, with world points for an edge dimension.
+    if let SceneElement::DrawingElement { drawing, element } = element {
+        use crate::context::DrawingElementRef as D;
+        let dord = ordinal_or_slot(
+            doc.map(|d| d.drawings.keys().position(|k| k == *drawing)),
+            drawing.index(),
+        );
+        return match element {
+            D::Projection(v) => {
+                format!(r#"{{ kind = "projection", drawing = {dord}, view = {v} }}"#)
+            }
+            D::Text(a) => {
+                let aord = ordinal_or_slot(
+                    doc.and_then(|d| d.drawings.get(*drawing))
+                        .map(|dr| dr.annotations.keys().position(|k| k == *a)),
+                    a.index(),
+                );
+                format!(r#"{{ kind = "annotation", drawing = {dord}, index = {aord} }}"#)
+            }
+            D::Dimension { view, a, b } => {
+                format!(
+                    r#"{{ kind = "dimension", drawing = {dord}, view = {view}, a = {}, b = {} }}"#,
+                    mm_point_lua(*a),
+                    mm_point_lua(*b)
+                )
+            }
+            D::PointDim { view, index } => {
+                format!(r#"{{ kind = "dimension", drawing = {dord}, view = {view}, index = {index} }}"#)
+            }
+        };
+    }
+    let tokens = element_script_tokens(element.clone(), doc);
                 format!(
                     "bearcad.move_to_component{{ kind = {:?}, index = {}, component = {target} }}",
                     tokens.kind, tokens.index

@@ -17272,6 +17272,21 @@ op,
                 if pick_into_focused_picker(self, &element, chain) {
                     return ActionResult::Ok;
                 }
+                // A drawing's page item (#1747): a projection, text note, or shown dimension
+                // selects into the drawing workbench's own multi-selection (#346), mirroring
+                // an Elements-pane row click — opening that drawing's page first when needed,
+                // a plain click replacing, Shift/Cmd-click toggling.
+                if let SceneElement::DrawingElement { drawing, element } = element {
+                    if self.editing_drawing != Some(drawing) {
+                        let _ = self.apply(Action::EditDrawing { drawing: Some(drawing) });
+                    }
+                    if additive {
+                        self.toggle_drawing_element(drawing, element);
+                    } else {
+                        self.select_drawing_only(drawing, element);
+                    }
+                    return ActionResult::Ok;
+                }
                 let consumed_by_tool = match &element {
                     // The Add-view tool (#289): a body, sketch, or component clicked (Elements
                     // pane) drops a projection on the open drawing page and selects it so the

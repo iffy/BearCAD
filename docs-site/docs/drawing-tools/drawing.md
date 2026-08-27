@@ -88,3 +88,15 @@ bearcad.export_drawing_svg{ drawing = d, path = "plate.svg" }
 `body`, `bodies`, `component`, or `sketch`. `orientation` defaults to `"front"`;
 accepts `front`/`back`/`left`/`right`/`top`/`bottom`/`iso` or a diagonal like
 `front-right`. `bearcad.count("drawing")` returns the number of drawings.
+
+`bearcad.select` also names page items — selecting one opens the drawing and puts it in
+the page selection, like clicking it in the Elements pane:
+
+```lua
+bearcad.select{ kind = "projection", drawing = d, view = 0 }
+bearcad.select{ kind = "annotation", drawing = d, index = 0 }
+-- An edge dimension is named by its two world endpoints; a point dimension by its place
+-- in the view's point-dimension list.
+bearcad.select{ kind = "dimension", drawing = d, view = 0, a = {0, 0, 0}, b = {40, 0, 0} }
+bearcad.select{ kind = "dimension", drawing = d, view = 0, index = 0 }
+```

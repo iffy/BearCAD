@@ -118,6 +118,8 @@ Shape-tool cuboids use the same edge calls with `kind = "vertical"` etc. on the 
 bearcad.parameter("add", "w", "24")
 bearcad.parameter("value", i, "30")
 bearcad.select{ kind, index }                          -- second arg true = add
+                                                       -- drawing page items: kind "projection"|"annotation"|"dimension"
+                                                       --   + drawing (+ view / a,b / index); selecting opens the drawing
 bearcad.add_constraint({ kind = "line", index = i }, "25mm")
 bearcad.add_geometric_constraint("parallel"|"perpendicular"|"equal"|"coincident"|"midpoint"|"horizontal"|"vertical")
 bearcad.add_angle_constraint{ a = i, b = i, value }
