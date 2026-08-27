@@ -663,8 +663,7 @@ fn resolve_element(v: &Value, doc: &Document) -> Result<SceneElement, String> {
                     return drawing_element_from_json(o, kind, doc)
                 }
                 _ => {}
-            }
-            let index = o
+            }            let index = o
                 .get("index")
                 .and_then(Value::as_u64)
                 .ok_or("element requires an `index`")? as usize;
@@ -678,7 +677,7 @@ fn resolve_element(v: &Value, doc: &Document) -> Result<SceneElement, String> {
 /// A drawing's page item from a `{ kind, drawing, … }` object (#1747) — the web mirror of
 /// `lua_script::parse_drawing_element_table`.
 fn drawing_element_from_json(
-    o: &Value,
+    o: &serde_json::Map<String, Value>,
     kind: &str,
     doc: &Document,
 ) -> Result<SceneElement, String> {
