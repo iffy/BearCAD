@@ -717,6 +717,17 @@ pub struct PreviewReplacement {
     pub solids: Vec<crate::extrude::SolidMesh>,
 }
 
+/// An in-progress cutting plane (#1751): a brand-new draft, or the live edit of an
+/// already-hung one.
+#[derive(Clone, Debug)]
+pub struct PreviewSectionCut {
+    pub cut: crate::model::CrossSectionCut,
+    /// The committed plane this preview stands in for while it is being edited (#1783):
+    /// the section applies the preview *instead of* this plane, not on top of it. `None`
+    /// for a new plane that isn't hung anywhere yet.
+    pub editing: Option<(crate::model::CrossSectionKey, usize)>,
+}
+
 #[derive(Clone, Debug)]
 pub struct ViewportSceneInput<'a> {
     pub doc: &'a Document,
@@ -725,7 +736,7 @@ pub struct ViewportSceneInput<'a> {
     #[allow(dead_code)]
     pub open_cross_section: Option<crate::model::CrossSectionKey>,
     /// In-progress cutting plane (#1751): preview the cut before it hangs on the view.
-    pub preview_section_cut: Option<crate::model::CrossSectionCut>,
+    pub preview_section_cut: Option<PreviewSectionCut>,
     /// In-progress Move, so tracing-image quads preview the live drag (#1611).
     pub creating_move: Option<&'a crate::actions::CreatingMove>,
     pub cam: &'a Camera,
@@ -1030,6 +1041,12 @@ impl ViewportScene {
         // Visible cross-section views cut the model in every workbench (#1762). Hidden
         // views (and hidden planes) do not. An in-progress draft previews its cut (#1751).
         let mut visible_section_cuts: Vec<crate::model::CrossSectionCut> = Vec::new();
+        // A plane being edited previews *in place of* its committed self (#1783): the two
+        // never compound.
+        let editing = input
+            .preview_section_cut
+            .as_ref()
+            .and_then(|p| p.editing);
         for (key, view) in input.doc.cross_sections.iter() {
             if !input
                 .element_visibility
@@ -1038,6 +1055,9 @@ impl ViewportScene {
                 continue;
             }
             for (i, cut) in view.cuts.iter().enumerate() {
+                if editing == Some((key, i)) {
+                    continue;
+                }
                 if input
                     .element_visibility
                     .is_visible(SceneElement::SectionPlane { view: key, cut: i })
@@ -1046,8 +1066,8 @@ impl ViewportScene {
                 }
             }
         }
-        if let Some(preview) = input.preview_section_cut.clone() {
-            visible_section_cuts.push(preview);
+        if let Some(preview) = &input.preview_section_cut {
+            visible_section_cuts.push(preview.cut.clone());
         }
         let section_cuts: Option<&[crate::model::CrossSectionCut]> =
             (!visible_section_cuts.is_empty()).then_some(visible_section_cuts.as_slice());
@@ -1952,10 +1972,14 @@ impl ViewportScene {
             }
         }
         // Cutting planes draw as outlined translucent quads only while selected (or while
-        // the draft is up) (#1758).
+        // the draft is up) (#1758). A plane being edited draws only its preview quad
+        // (#1783) — the committed pose it stands in for stays hidden.
         let mut selected_cuts: Vec<crate::model::CrossSectionCut> = Vec::new();
         for (key, view) in input.doc.cross_sections.iter() {
             for (i, cut) in view.cuts.iter().enumerate() {
+                if editing == Some((key, i)) {
+                    continue;
+                }
                 let el = SceneElement::SectionPlane { view: key, cut: i };
                 if input.selection.is_selected(el.clone())
                     && input.element_visibility.is_visible(el)
@@ -1965,7 +1989,7 @@ impl ViewportScene {
             }
         }
         if let Some(preview) = input.preview_section_cut.as_ref() {
-            selected_cuts.push(preview.clone());
+            selected_cuts.push(preview.cut.clone());
         }
         for cut in &selected_cuts {
             let plane = crate::construction::cross_section_cut_plane(cut);
@@ -10216,10 +10240,13 @@ mod tests {
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
-            preview_section_cut: Some(crate::model::CrossSectionCut {
-                origin: glam::Vec3::new(0.0, 0.0, 20.0),
-                normal: -glam::Vec3::Z,
-                ..Default::default()
+            preview_section_cut: Some(PreviewSectionCut {
+                cut: crate::model::CrossSectionCut {
+                    origin: glam::Vec3::new(0.0, 0.0, 20.0),
+                    normal: -glam::Vec3::Z,
+                    ..Default::default()
+                },
+                editing: None,
             }),
             creating_move: None,
             cam: &cam,
@@ -10273,6 +10300,125 @@ mod tests {
             .filter(|v| v.position[2] > 20.5)
             .count();
         assert_eq!(cut_top, 0, "the draft cut previews before commit");
+    }
+
+    /// #1783: while a committed cutting plane is being edited, its live preview *replaces*
+    /// that plane in the section — the body is cut once, at the preview's pose — instead of
+    /// compounding on top of the plane's committed state, which drew two cuts for one plane.
+    #[test]
+    fn editing_a_cut_replaces_it_rather_than_compounding() {
+        use crate::model::{Primitive, PrimitiveKind};
+        let mut state = AppState::default();
+        retain_ground_plane_only(&mut state.doc);
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.origin = [0.0, 0.0, 0.0];
+        shape.width = "40".into();
+        shape.depth = "40".into();
+        shape.height = "40".into();
+        state.apply(crate::actions::Action::CreateShape { shape });
+        state.apply(crate::actions::Action::CreateCrossSection { name: None });
+        let view = state.doc.cross_sections.keys().next().expect("the view");
+        state.apply(crate::actions::Action::AddCrossSectionCut {
+            view: Some(view),
+            cut: crate::model::CrossSectionCut {
+                origin: glam::Vec3::new(0.0, 0.0, 20.0),
+                normal: -glam::Vec3::Z,
+                ..Default::default()
+            },
+        });
+        // The edit drags the plane down to z = 10.
+        let moved = crate::model::CrossSectionCut {
+            origin: glam::Vec3::new(0.0, 0.0, 10.0),
+            normal: -glam::Vec3::Z,
+            ..Default::default()
+        };
+        fn build(
+            state: &AppState,
+            cam: &Camera,
+            selection: &SceneSelection,
+            preview: Option<PreviewSectionCut>,
+        ) -> ViewportScene {
+            ViewportScene::build(&ViewportSceneInput {
+                doc: &state.doc,
+                open_cross_section: None,
+                preview_section_cut: preview,
+                creating_move: None,
+                cam,
+                viewport: test_viewport(),
+                palette: ViewportPalette::default(),
+                sketch_session: None,
+                selection,
+                cut_highlight_bodies: Vec::new(),
+                faded_bodies: Vec::new(),
+                sketch_repeat_ghost: Vec::new(),
+                sketch_ghost_lines: Vec::new(),
+                edit_preview_meshes: std::collections::HashMap::new(),
+                element_visibility: &state.element_visibility,
+                preview_rect: None,
+                preview_line: None,
+                preview_circle: None,
+                preview_extrusion: None,
+                preview_solid: None,
+                repeat_ghosts: Vec::new(),
+                cut_surface_ghosts: Vec::new(),
+                preview_cut_body: None,
+                preview_replacement: PreviewReplacement::default(),
+                highlighted_bezier_handles: Vec::new(),
+                editing_extrusion: None,
+                plane_preview: None,
+                active_sketch_face: None,
+                dimension_labels: &[],
+                dim_label_view: None,
+                plane_gizmo: None,
+                extrude_gizmo: None,
+                vertex_treatment_gizmo: None,
+                arrow_gizmos: Vec::new(),
+                move_rotation_gizmos: Vec::new(),
+                revolve_arc_gizmo: None,
+                vertex_treatment_preview: None,
+                hover_highlight: None,
+                extra_pick_highlights: Vec::new(),
+                colored_pick_highlights: Vec::new(),
+                colored_element_highlights: Vec::new(),
+                tinted_bodies: Vec::new(),
+                colored_segments: Vec::new(),
+                parameter_highlight_elements: Vec::new(),
+                hover_color: Color32::WHITE,
+                document_health: &crate::document_health::DocumentHealth::default(),
+                constraint_graphics: None,
+                constraint_connector_color: None,
+            })
+        }
+        let cam = state.cam.clone();
+        // The plane being edited is selected, so its card draws; give both builds the same
+        // selection so the only difference is the section's cut list.
+        let mut selection = SceneSelection::default();
+        selection.insert(SceneElement::SectionPlane { view, cut: 0 });
+        let editing = build(&state, &cam, &selection, Some(PreviewSectionCut {
+            cut: moved.clone(),
+            editing: Some((view, 0)),
+        }));
+        // Nothing above the preview's plane: the preview is the cut in effect.
+        let above = editing
+            .vertices
+            .iter()
+            .filter(|v| v.position[2] > 10.5)
+            .count();
+        assert_eq!(above, 0, "the preview's pose is what cuts the body");
+        // And the section is what committing the edited pose would give — one cut, not the
+        // committed pose compounded with the preview.
+        state.doc.cross_sections[view].cuts[0] = moved;
+        let committed = build(&state, &cam, &selection, None);
+        assert_eq!(
+            editing.vertices.len(),
+            committed.vertices.len(),
+            "the edited plane cuts once, like its own commit"
+        );
+        assert_eq!(
+            editing.stroke_vertices.len(),
+            committed.stroke_vertices.len(),
+            "one cut face hatched, not two"
+        );
     }
 
     #[test]
@@ -13876,7 +14022,10 @@ mod issue_1772_section_cut_shading {
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             open_cross_section: None,
-            preview_section_cut: Some(cut),
+            preview_section_cut: Some(PreviewSectionCut {
+                cut,
+                editing: None,
+            }),
             creating_move: None,
             cam: &cam,
             viewport,

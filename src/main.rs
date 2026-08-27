@@ -33613,7 +33613,12 @@ impl App {
                         dim_outline: false,
                     });
                 }
-                scene_input.preview_section_cut = Some(cut);
+                scene_input.preview_section_cut = Some(gpu_viewport::PreviewSectionCut {
+                    cut,
+                    // An edit stands in for the plane it edits instead of compounding
+                    // with it (#1783).
+                    editing: cs.edit_cut,
+                });
             }
         }
         // Paste preview (#1236): cyan semi-transparent ghosts of the clipboard at the
