@@ -14510,6 +14510,9 @@ impl AppState {
                 view.size_y = pv.size_y;
                 view.scale = pv.scale.clone();
                 view.style = pv.style;
+                // A sectioned base's child shows the same cut (#1779) — sketch children are
+                // never sectioned, and this inherits only from a body base anyway.
+                view.cross_section = pv.cross_section;
                 view.aligned_parent = Some(parent);
                 view.aligned_dir = Some(dir);
                 // Showing the alignment is the point of an aligned view, so its dashed
@@ -31527,6 +31530,39 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             cross_section: None,
         });
         assert_eq!(sections(&state), vec![None, None]);
+    }
+
+    /// #1779: an aligned view made from a sectioned base view is born sectioned — the child
+    /// inherits the base's cross section the way it inherits its scale and style.
+    #[test]
+    fn an_aligned_view_inherits_its_base_view_cross_section() {
+        use crate::model::{AlignDir, DrawingOrientation};
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::AddDrawingView {
+            drawing: dkey(0),
+            bodies: vec![bkey(0)],
+            orientation: DrawingOrientation::Front,
+        });
+        state.apply(Action::CreateCrossSection { name: Some("Half".into()) });
+        let section = state.doc.cross_sections.keys().next().expect("the view");
+        state.apply(Action::SetDrawingViewCrossSection {
+            drawing: dkey(0),
+            view: 0,
+            cross_section: Some(section),
+        });
+        state.apply(Action::AddAlignedDrawingView {
+            drawing: dkey(0),
+            parent: 0,
+            dir: AlignDir::Right,
+            pos: 0.7,
+        });
+        assert_eq!(
+            state.doc.drawings[dkey(0)].views[1].cross_section,
+            Some(section),
+            "the new aligned view shows the same cut as its base"
+        );
     }
 
     /// #1642: an aligned child is *for* showing how it lines up with its base, so it draws the
