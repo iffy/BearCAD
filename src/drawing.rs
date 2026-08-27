@@ -885,6 +885,10 @@ pub const MODEL_STROKE: f32 = 1.6;
 /// than [`MODEL_STROKE`] so annotations sit visually beneath the model outline.
 pub const DIM_STROKE: f32 = 0.6;
 
+/// Section-hatch stroke width in a drawing (#1784): half the model edges', so the hatch
+/// reads as a fill texture on the cut faces rather than lines competing with the outline.
+pub const HATCH_STROKE: f32 = MODEL_STROKE * 0.5;
+
 /// Combined solid mesh of every body a view projects (#1190/#1191). Empty/`None` for sketch
 /// views or when no body still has geometry.
 /// The cutting planes a view is sectioned by (#1689): those of the cross-section view it was
@@ -1732,6 +1736,9 @@ pub struct StyledViewGeometry {
     /// The edge segments to stroke: every feature edge for `Wireframe`; only the visible
     /// runs (hidden lines removed) for `Visible`/`Shaded`.
     pub segments: Vec<(glam::Vec2, glam::Vec2)>,
+    /// A sectioned view's hatch lines (#1689), kept apart from the edges so they can stroke
+    /// thinner than them (#1784) — the hatch is a fill texture, not geometry.
+    pub hatch: Vec<(glam::Vec2, glam::Vec2)>,
 }
 
 /// One coplanar run of a shaded view's front faces, with the grey it's painted in
@@ -1757,13 +1764,18 @@ pub fn styled_view_geometry(
     // only, so the silhouette here doesn't affect them.
     let mut edges = drawing_view_world_edges(doc, view);
     edges.extend(drawing_view_silhouette_edges(doc, views, view));
-    // A sectioned view hatches the faces its planes opened (#1689). The lines join the
-    // stroked edges *here* rather than in `drawing_view_world_edges`, so dimensioning and
-    // circle detection still see only real geometry.
-    edges.extend(section_hatch_world_segments(doc, view));
+    // A sectioned view hatches the faces its planes opened (#1689). The hatch travels in its
+    // own field rather than with the stroked edges (#1784) — it draws thinner — and apart
+    // from `drawing_view_world_edges`, so dimensioning and circle detection still see only
+    // real geometry.
+    let hatch: Vec<(glam::Vec2, glam::Vec2)> = section_hatch_world_segments(doc, view)
+        .iter()
+        .map(|(a, b)| (project(*a), project(*b)))
+        .collect();
     let wireframe = || StyledViewGeometry {
         faces: Vec::new(),
         segments: edges.iter().map(|(a, b)| (project(*a), project(*b))).collect(),
+        hatch: hatch.clone(),
     };
     if view.sketch.is_some() || view.style == DrawingViewStyle::Wireframe {
         return wireframe();
@@ -1882,7 +1894,7 @@ pub fn styled_view_geometry(
             .collect();
     }
 
-    StyledViewGeometry { faces: fills, segments }
+    StyledViewGeometry { faces: fills, segments, hatch }
 }
 
 /// An 8-bit RGB paint.
@@ -2269,6 +2281,12 @@ fn render_view_geometry<C: Canvas>(
         }
         let (sa, sb) = (to_screen(*a), to_screen(*b));
         canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, MODEL_STROKE);
+    }
+    // The section hatch strokes thinner than the edges (#1784): a fill texture, not
+    // geometry.
+    for (a, b) in &styled.hatch {
+        let (sa, sb) = (to_screen(*a), to_screen(*b));
+        canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, HATCH_STROKE);
     }
     // Smooth detected circles (round) or their foreshortened diameter line (edge-on).
     for pc in &pcircles {
@@ -4150,5 +4168,51 @@ label_hidden: false,
             svg.contains(&needle) && svg.contains("text-anchor=\"end\""),
             "bottom-right label anchors at the card corner ({needle})"
         );
+    }
+
+    /// #1784: a sectioned view's hatch strokes separately from its edges — the hatch is a
+    /// fill texture, not geometry, and draws at the thinner [`HATCH_STROKE`].
+    #[test]
+    fn section_hatch_is_stroked_separately_from_edges() {
+        let mut state = crate::actions::AppState::default();
+        let mut shape = crate::model::Primitive::new(crate::model::PrimitiveKind::Cuboid);
+        shape.origin = [0.0, 0.0, 0.0];
+        shape.width = "40".into();
+        shape.depth = "40".into();
+        shape.height = "40".into();
+        state.apply(crate::actions::Action::CreateShape { shape });
+        state.apply(crate::actions::Action::CreateCrossSection { name: None });
+        let section = state.doc.cross_sections.keys().next().expect("the view");
+        state.apply(crate::actions::Action::AddCrossSectionCut {
+            view: Some(section),
+            cut: crate::model::CrossSectionCut {
+                origin: glam::Vec3::new(0.0, 0.0, 20.0),
+                normal: -glam::Vec3::Z,
+                ..Default::default()
+            },
+        });
+        state.apply(crate::actions::Action::CreateDrawing { name: None });
+        let drawing = state.doc.drawings.keys().next().expect("the drawing");
+        state.apply(crate::actions::Action::AddDrawingView {
+            drawing,
+            bodies: vec![bkey(0)],
+            orientation: crate::model::DrawingOrientation::Top,
+        });
+        state.apply(crate::actions::Action::SetDrawingViewCrossSection {
+            drawing,
+            view: 0,
+            cross_section: Some(section),
+        });
+        let views = state.doc.drawings[drawing].views.clone();
+        let geo = styled_view_geometry(&state.doc, &views, &views[0]);
+        assert!(!geo.hatch.is_empty(), "the cut face is hatched");
+        assert!(!geo.segments.is_empty(), "the edges still stroke");
+        for h in &geo.hatch {
+            assert!(
+                !geo.segments.contains(h),
+                "hatch segment {h:?} must not ride with the edges"
+            );
+        }
+        assert!(HATCH_STROKE < MODEL_STROKE, "the hatch draws thinner than edges");
     }
 }

@@ -27804,6 +27804,16 @@ impl App {
                             egui::Stroke::new(crate::drawing::MODEL_STROKE, INK),
                         );
                     }
+                    // The section hatch strokes thinner than the edges (#1784).
+                    for (a, b) in &sty.hatch {
+                        painter.line_segment(
+                            [
+                                to_screen(egui::vec2(a.x, a.y)),
+                                to_screen(egui::vec2(b.x, b.y)),
+                            ],
+                            egui::Stroke::new(crate::drawing::HATCH_STROKE, INK),
+                        );
+                    }
                 }
                 // A rotated label drawn centred at a screen point (#314/#320).
                 let draw_rot_label = |painter: &egui::Painter, text: String, at: egui::Pos2, ang: f32| {
