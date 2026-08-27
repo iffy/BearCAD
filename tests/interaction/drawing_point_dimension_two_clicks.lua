@@ -1,6 +1,8 @@
 -- #1645: with the Dimension tool on a drawing, clicking two spots that aren't on an edge
 -- measures between them. The dimension starts as the direct distance and can be re-measured
--- along one page axis.
+-- along one page axis. The two spots are found by a fine vertical scan out from the card's
+-- centre — the blank bands just above and below the projected body are where a click arms a
+-- free measurement — so the test holds at any window size.
 bearcad.new()
 bearcad.rect{ width = 40, height = 30 }
 bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15 }
@@ -19,18 +21,49 @@ local cx, cy = vp.width / 2, vp.height / 2
 
 bearcad.ui.tool("dimension")
 bearcad.ui.wait(4)
--- Two spots inside the card but off its edges: the body's front face is a 40x15 rectangle,
--- so points a little way in from the middle land on blank paper inside the card.
-bearcad.ui.move(cx - 30, cy - 40)
+
+-- Click up (or down) the page from the centre until a click arms a free measurement, then
+-- cancel. Runs only while nothing is armed, so the status readout is meaningful: a spot on
+-- an edge toggles that edge's dimension instead, and every miss re-arms the Dimension tool
+-- (Esc cancels back to Select).
+local function find_arming_spot(sign, dx0)
+  for k = 2, 40 do
+    local x, y = math.floor(cx + dx0), math.floor(cy + sign * k * 8)
+    bearcad.ui.move(x, y)
+    bearcad.ui.wait(2)
+    bearcad.ui.click(x, y)
+    bearcad.ui.wait(4)
+    if bearcad.status():find("second point") then
+      bearcad.ui.key("escape")
+      bearcad.ui.wait(3)
+      bearcad.ui.tool("dimension")
+      bearcad.ui.wait(3)
+      return { x, y }
+    end
+    bearcad.ui.key("escape")
+    bearcad.ui.wait(2)
+    bearcad.ui.tool("dimension")
+    bearcad.ui.wait(2)
+  end
+  return nil
+end
+
+-- Offset in x too, so the pair measures a real horizontal separation for the axis switch.
+local first = find_arming_spot(-1, -30)
+assert(first, "expected a spot above the body that arms a free measurement")
+local second = find_arming_spot(1, 0)
+assert(second, "expected a spot below the body that arms a free measurement")
+
+bearcad.ui.move(first[1], first[2])
 bearcad.ui.wait(3)
-bearcad.ui.click(cx - 30, cy - 40)
+bearcad.ui.click(first[1], first[2])
 bearcad.ui.wait(5)
 assert(bearcad.status():find("second point"),
   "the first click should arm the second, got: " .. bearcad.status())
 
-bearcad.ui.move(cx + 30, cy - 60)
+bearcad.ui.move(second[1], second[2])
 bearcad.ui.wait(3)
-bearcad.ui.click(cx + 30, cy - 60)
+bearcad.ui.click(second[1], second[2])
 bearcad.ui.wait(6)
 assert(bearcad.status():find("dimension"),
   "the second click should add the dimension, got: " .. bearcad.status())
@@ -55,12 +88,14 @@ bearcad.ui.wait(5)
 local sel = selection_picker()
 assert(sel and #sel.items == 0, "clicking blank paper clears the selection")
 -- The dimension's label sits between the two picked points, pushed clear of them.
+local mx = (first[1] + second[1]) / 2
+local my = (first[2] + second[2]) / 2
 local picked = false
-for dx = -60, 60, 10 do
-  for dy = -40, 40, 10 do
-    bearcad.ui.move(cx + dx, cy - 50 + dy)
+for dx = -80, 80, 10 do
+  for dy = -60, 60, 10 do
+    bearcad.ui.move(mx + dx, my + dy)
     bearcad.ui.wait(2)
-    bearcad.ui.click(cx + dx, cy - 50 + dy)
+    bearcad.ui.click(mx + dx, my + dy)
     bearcad.ui.wait(4)
     local s = selection_picker()
     if s and #s.items == 1 and s.items[1].kind == "drawing_dimension" then
@@ -76,16 +111,19 @@ bearcad.ui.tool("dimension")
 bearcad.ui.wait(4)
 
 -- Esc must drop a half-made one rather than leaving it armed forever.
-bearcad.ui.move(cx - 30, cy - 40)
+bearcad.ui.move(first[1], first[2])
 bearcad.ui.wait(3)
-bearcad.ui.click(cx - 30, cy - 40)
+bearcad.ui.click(first[1], first[2])
 bearcad.ui.wait(4)
 assert(bearcad.status():find("second point"), "armed again")
 bearcad.ui.key("escape")
 bearcad.ui.wait(4)
-bearcad.ui.move(cx + 30, cy - 60)
+bearcad.ui.tool("dimension")   -- Esc cancelled back to Select; keep dimensioning
+bearcad.ui.wait(4)
+-- The second spot arms again: Esc dropped the half-made pick entirely.
+bearcad.ui.move(second[1], second[2])
 bearcad.ui.wait(3)
-bearcad.ui.click(cx + 30, cy - 60)
+bearcad.ui.click(second[1], second[2])
 bearcad.ui.wait(5)
 assert(bearcad.status():find("second point"),
   "after Esc the next click starts a fresh dimension, got: " .. bearcad.status())
