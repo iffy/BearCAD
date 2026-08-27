@@ -27287,9 +27287,15 @@ impl App {
                 let project = |p: Vec3| egui::vec2(p.dot(right), p.dot(up));
                 // Crease edges drive circle detection (#319); the dimensionable set also carries
                 // silhouette edges so a smooth extrusion's length can be dimensioned (#334).
+                // Picks and dimensions see the *logical* edges (#1780/#1781): straight runs as
+                // one edge, a curve's facets dropped entirely.
                 let crease_edges = crate::drawing::drawing_view_world_edges(&self.state.doc, view);
-                let world_edges =
+                let raw_edges =
                     crate::drawing::drawing_view_dimensionable_edges(&self.state.doc, &views, view);
+                let world_edges =
+                    crate::drawing::logical_pick_edges(&raw_edges, &|p: Vec3| {
+                        glam::vec2(p.dot(right), p.dot(up))
+                    });
                 if world_edges.is_empty() {
                     continue;
                 }

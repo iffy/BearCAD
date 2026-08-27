@@ -1115,6 +1115,251 @@ pub fn drawing_view_dimensionable_edges(
     merge_collinear_runs(&edges)
 }
 
+/// A curve's tessellation turns by less than this at every joint; a real corner turns by
+/// more. Between the two sits a band of ambiguity no threshold resolves — a coarse facet
+/// chain reads as corners, a very shallow kink reads as a curve — and these values split the
+/// difference the way technical drawings draw: facets from the kernel tessellation turn by a
+/// few degrees at most, while feature corners are sharp.
+const PICK_SHARP_TURN_COS: f32 = 0.906_307_8; // cos 25°
+/// Two facets this parallel are the same straight run; anything more is the curve turning.
+const PICK_STRAIGHT_RUN_COS: f32 = 0.999_998_5; // within ~0.1°
+
+/// The *logical* pick edges of a view (#1780/#1781): [`merge_collinear_runs`] makes each
+/// straight model edge one edge; what is left that turns is a curve's tessellation — and
+/// those facets (and their faux vertices) are rendering artifacts, not geometry to pick or
+/// dimension. A connected run of ≥ 3 segments whose joints turn, none sharply, is therefore
+/// dropped whole; corners (sharp turns) and short 1–2 segment chains — two real edges
+/// meeting at a shallow angle — survive untouched.
+///
+/// `project` gives a segment's view projection; the turn test runs on it, because that is
+/// what the reader of the drawing sees.
+pub fn logical_pick_edges(
+    world_edges: &[(Vec3, Vec3)],
+    project: &impl Fn(Vec3) -> glam::Vec2,
+) -> Vec<(Vec3, Vec3)> {
+    let world_edges = merge_collinear_runs(world_edges);
+    let projected: Vec<glam::Vec2> =
+        world_edges.iter().flat_map(|(a, b)| [project(*a), project(*b)]).collect();
+    assert_eq!(projected.len(), world_edges.len() * 2, "2 projected points per edge");
+    // Weld segment endpoints by quantized world position, so chains follow the geometry
+    // rather than the projection (an edge-on curve projects straight but still turns).
+    let mut node_of: std::collections::HashMap<[i32; 3], usize> = Default::default();
+    let mut nodes: Vec<Vec3> = Vec::new();
+    let mut node_proj: Vec<glam::Vec2> = Vec::new();
+    let node = |p: Vec3,
+                proj: glam::Vec2,
+                node_of: &mut std::collections::HashMap<[i32; 3], usize>,
+                nodes: &mut Vec<Vec3>,
+                node_proj: &mut Vec<glam::Vec2>|
+     -> usize {
+        *node_of.entry(crate::hierarchy::quantize_body_point(p)).or_insert_with(|| {
+            nodes.push(p);
+            node_proj.push(proj);
+            nodes.len() - 1
+        })
+    };
+    let ends: Vec<(usize, usize)> = world_edges
+        .iter()
+        .enumerate()
+        .map(|(i, (a, b))| {
+            (
+                node(*a, projected[2 * i], &mut node_of, &mut nodes, &mut node_proj),
+                node(*b, projected[2 * i + 1], &mut node_of, &mut nodes, &mut node_proj),
+            )
+        })
+        .collect();
+    let mut adjacency: Vec<Vec<(usize, usize)>> = vec![Vec::new(); nodes.len()];
+    for (i, &(na, nb)) in ends.iter().enumerate() {
+        adjacency[na].push((i, nb));
+        adjacency[nb].push((i, na));
+    }
+    let dir = |from: usize, to: usize| -> glam::Vec2 {
+        (node_proj[to] - node_proj[from]).normalize_or_zero()
+    };
+    // Walk every unvisited segment out in both directions through degree-2 joints, stopping
+    // at junctions and sharp turns, to collect the maximal facet chains.
+    let mut visited = vec![false; world_edges.len()];
+    let mut out = Vec::new();
+    for i in 0..world_edges.len() {
+        if visited[i] {
+            continue;
+        }
+        visited[i] = true;
+        let mut chain = vec![i];
+        for &(first, first_dir) in &[(ends[i].1, 1usize), (ends[i].0, 0usize)] {
+            let mut at = first;
+            // Direction of travel into `at`: along segment `i`, toward `at`.
+            let mut incoming = if first_dir == 1 {
+                dir(ends[i].0, ends[i].1)
+            } else {
+                dir(ends[i].1, ends[i].0)
+            };
+            loop {
+                let others: Vec<(usize, usize)> =
+                    adjacency[at].iter().copied().filter(|(s, _)| !visited[*s]).collect();
+                if others.len() != 1 {
+                    break;
+                }
+                let (next, beyond) = others[0];
+                let outgoing = dir(at, beyond);
+                if incoming.dot(outgoing) < PICK_SHARP_TURN_COS {
+                    break;
+                }
+                visited[next] = true;
+                chain.push(next);
+                incoming = outgoing;
+                at = beyond;
+            }
+        }
+        // Classify the chain by how it projects. A run of ≥ 3 facets is a curve's
+        // tessellation: when it turns anywhere on the page it is a rendering artifact —
+        // dropped whole; when it projects dead straight (a curve seen edge-on) it reads as
+        // one line, so it merges to one edge spanning its extremes. Short chains stay —
+        // two segments can be two real edges meeting at a shallow angle, and a lone
+        // segment is geometry in its own right.
+        if chain.len() >= 3 {
+            let straight = chain.windows(2).all(|w| {
+                let (a, b) = (w[0], w[1]);
+                let (shared, a_other) = if ends[a].0 == ends[b].0 || ends[a].0 == ends[b].1 {
+                    (ends[a].0, ends[a].1)
+                } else {
+                    (ends[a].1, ends[a].0)
+                };
+                let b_other = if ends[b].0 == shared { ends[b].1 } else { ends[b].0 };
+                dir(a_other, shared).dot(dir(shared, b_other)) >= PICK_STRAIGHT_RUN_COS
+            });
+            if straight {
+                // The chain's extreme nodes along its own projected direction.
+                let axis = dir(ends[chain[0]].0, ends[chain[0]].1);
+                let (mut lo, mut hi) = (ends[chain[0]].0, ends[chain[0]].0);
+                let (mut lo_t, mut hi_t) = (f32::MAX, f32::MIN);
+                for &s in &chain {
+                    for n in [ends[s].0, ends[s].1] {
+                        let t = node_proj[n].dot(axis);
+                        if t < lo_t {
+                            lo_t = t;
+                            lo = n;
+                        }
+                        if t > hi_t {
+                            hi_t = t;
+                            hi = n;
+                        }
+                    }
+                }
+                if lo != hi {
+                    out.push((nodes[lo], nodes[hi]));
+                }
+            }
+        } else {
+            for &s in &chain {
+                out.push(world_edges[s]);
+            }
+        }
+    }
+    // One line on the page, one pick: a body's rim often comes back twice — the cap and the
+    // wall each tessellate it — and an edge-on curve's fold-back legs retrace the same line,
+    // so collinear edges whose projected spans overlap collapse to the one line they draw
+    // (#1780). Spans that merely touch merge too; a real gap keeps them apart, like
+    // [`merge_collinear_runs`] does in 3D.
+    collapse_overlapping_projected_spans(out, project)
+}
+
+/// Collapse groups of collinear, overlapping projected spans into one edge per stretch,
+/// keeping the world endpoints that reach farthest along the line.
+fn collapse_overlapping_projected_spans(
+    edges: Vec<(Vec3, Vec3)>,
+    project: &impl Fn(Vec3) -> glam::Vec2,
+) -> Vec<(Vec3, Vec3)> {
+    const COLLINEAR_DOT: f32 = 1.0 - 1e-4;
+    const OFFSET_TOL: f32 = 0.05; // mm on the page
+    const GAP_TOL: f32 = 0.05; // mm on the page
+    let pts: Vec<[glam::Vec2; 2]> = edges
+        .iter()
+        .map(|(a, b)| [project(*a), project(*b)])
+        .collect();
+    let n = edges.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(parent: &mut Vec<usize>, i: usize) -> usize {
+        let mut r = i;
+        while parent[r] != r {
+            r = parent[r];
+        }
+        let mut j = i;
+        while parent[j] != j {
+            let next = parent[j];
+            parent[j] = r;
+            j = next;
+        }
+        r
+    }
+    let unit = |a: glam::Vec2, b: glam::Vec2| (b - a).normalize_or_zero();
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let (di, dj) = (unit(pts[i][0], pts[i][1]), unit(pts[j][0], pts[j][1]));
+            if di.dot(dj).abs() < COLLINEAR_DOT || di.length_squared() < 0.5 {
+                continue;
+            }
+            // Same infinite line: j's endpoints close to i's line.
+            let offset = ((pts[j][0] - pts[i][0]).perp_dot(di)).abs();
+            if offset > OFFSET_TOL {
+                continue;
+            }
+            // Overlapping or nearly touching intervals along i's direction.
+            let ti = (
+                (pts[i][0] - pts[i][0]).dot(di),
+                (pts[i][1] - pts[i][0]).dot(di),
+            );
+            let (ta, tb) = (
+                (pts[j][0] - pts[i][0]).dot(di),
+                (pts[j][1] - pts[i][0]).dot(di),
+            );
+            let (i_lo, i_hi) = (ti.0.min(ti.1), ti.0.max(ti.1));
+            let (j_lo, j_hi) = (ta.min(tb), ta.max(tb));
+            if j_lo > i_hi + GAP_TOL || i_lo > j_hi + GAP_TOL {
+                continue;
+            }
+            let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
+            if ri != rj {
+                parent[ri] = rj;
+            }
+        }
+    }
+    let mut groups: std::collections::HashMap<usize, Vec<usize>> = Default::default();
+    for i in 0..n {
+        groups.entry(find(&mut parent, i)).or_default().push(i);
+    }
+    let mut out = Vec::new();
+    for members in groups.values() {
+        if members.len() == 1 {
+            out.push(edges[members[0]]);
+            continue;
+        }
+        // Union interval along the first member's direction, carrying the world points
+        // that sit at the two extremes.
+        let base = members[0];
+        let dir = unit(pts[base][0], pts[base][1]);
+        let (mut lo_p, mut hi_p) = (edges[base].0, edges[base].1);
+        let (mut lo_t, mut hi_t) = (f32::MAX, f32::MIN);
+        for &m in members {
+            for p in [edges[m].0, edges[m].1] {
+                let t = project(p).dot(dir);
+                if t < lo_t {
+                    lo_t = t;
+                    lo_p = p;
+                }
+                if t > hi_t {
+                    hi_t = t;
+                    hi_p = p;
+                }
+            }
+        }
+        if lo_p != hi_p {
+            out.push((lo_p, hi_p));
+        }
+    }
+    out
+}
+
 /// Join every run of touching, collinear edges into one (#1644). A straight line on a body is
 /// broken into a segment per face that meets it, and dimensioning one 20 mm piece of an 80 mm
 /// edge is not what anyone is after — so the dimension surface sees the whole run.
@@ -1959,13 +2204,17 @@ fn render_view_geometry<C: Canvas>(
     unit: crate::value::LengthUnit,
 ) {
     // Crease edges drive circle detection (#319); the dimensionable set also carries silhouette
-    // edges so a smooth extrusion's length can be dimensioned (#334).
+    // edges so a smooth extrusion's length can be dimensioned (#334). Dimensions draw against
+    // the *logical* edges (#1780/#1781) — the same ones picking offers — so a dimension made
+    // on a merged straight run finds its line here, and a curve's facets offer nothing.
     let crease_edges = drawing_view_world_edges(doc, view);
-    let world_edges = drawing_view_dimensionable_edges(doc, views, view);
+    let raw_edges = drawing_view_dimensionable_edges(doc, views, view);
+    let (right, up) = resolved_view_axes(views, view);
+    let world_edges =
+        logical_pick_edges(&raw_edges, &|p: Vec3| glam::Vec2::new(p.dot(right), p.dot(up)));
     if world_edges.is_empty() {
         return;
     }
-    let (right, up) = resolved_view_axes(views, view);
     let project = |p: Vec3| glam::Vec2::new(p.dot(right), p.dot(up));
     let proj: Vec<(glam::Vec2, glam::Vec2)> = world_edges
         .iter()
@@ -2602,6 +2851,137 @@ mod tests {
     use crate::model::body_key_for_slot as bkey;
     use super::*;
     use crate::model::{Drawing, DrawingView};
+
+    /// #1780/#1781: a drawing view's pick edges are *logical* edges. Straight tessellation
+    /// chains merge into the one edge they represent — so a cursor picks "the vertical line",
+    /// not its pieces — and chains that turn (a curve's facets) drop out entirely: the
+    /// divisions are a rendering artifact, and circles are picked whole by their own
+    /// detection. Corners — where the direction genuinely changes — keep their endpoints.
+    #[test]
+    fn pick_edges_merge_straight_runs_and_drop_curve_facets() {
+        let flat = |p: Vec3| glam::vec2(p.x, p.y);
+        let run = |from: Vec3, to: Vec3, pieces: usize| -> Vec<(Vec3, Vec3)> {
+            // `pieces` collinear segments from `from` to `to`, sharing endpoints.
+            (0..pieces)
+                .map(|i| {
+                    let t0 = i as f32 / pieces as f32;
+                    let t1 = (i + 1) as f32 / pieces as f32;
+                    (
+                        from + (to - from) * t0,
+                        from + (to - from) * t1,
+                    )
+                })
+                .collect()
+        };
+        let arc = |center: Vec3, radius: f32| -> Vec<(Vec3, Vec3)> {
+            // A quarter-circle's facets: every joint turns.
+            (0..24)
+                .map(|i| {
+                    let a0 = i as f32 / 24.0 * std::f32::consts::FRAC_PI_2;
+                    let a1 = (i + 1) as f32 / 24.0 * std::f32::consts::FRAC_PI_2;
+                    (
+                        center + Vec3::new(radius * a0.cos(), radius * a0.sin(), 0.0),
+                        center + Vec3::new(radius * a1.cos(), radius * a1.sin(), 0.0),
+                    )
+                })
+                .collect()
+        };
+        // A straight run split into 5 pieces, an L corner of two whole edges, and a curved
+        // arc — the Front view of a cut cylinder has exactly these.
+        let mut edges = run(Vec3::new(0.0, 0.0, 5.0), Vec3::new(0.0, 0.0, 30.0), 5);
+        edges.push((Vec3::new(0.0, 0.0, 30.0), Vec3::new(10.0, 0.0, 30.0)));
+        edges.extend(arc(Vec3::new(10.0, 0.0, 30.0), 4.0));
+        let logical = logical_pick_edges(&edges, &flat);
+        // The straight run merges into one edge spanning its true ends, and the L's two
+        // edges stay whole. The arc's facets are gone.
+        assert_eq!(
+            logical.len(),
+            2,
+            "one merged run + one corner edge, no arc facets: {logical:?}"
+        );
+        assert!(
+            logical.iter().any(|(a, b)| {
+                (a - Vec3::new(0.0, 0.0, 5.0)).length() < 1e-3
+                    && (b - Vec3::new(0.0, 0.0, 30.0)).length() < 1e-3
+            }),
+            "the split run merges to its true endpoints: {logical:?}"
+        );
+        assert!(
+            logical.iter().any(|(a, b)| {
+                (a - Vec3::new(0.0, 0.0, 30.0)).length() < 1e-3
+                    && (b - Vec3::new(10.0, 0.0, 30.0)).length() < 1e-3
+            }),
+            "the corner edge survives whole: {logical:?}"
+        );
+    }
+
+    /// #1780: pick edges are order-independent — a run's pieces can arrive in any order and
+    /// either direction, as mesh extraction produces them.
+    #[test]
+    fn pick_edges_merge_regardless_of_segment_order() {
+        let flat = |p: Vec3| glam::vec2(p.x, p.y);
+        let ends = [
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(3.0, 1.0, 0.0),
+            Vec3::new(5.0, 1.0, 0.0),
+        ];
+        let mut edges = vec![
+            (ends[1], ends[2]),
+            (ends[0], ends[1]),
+        ];
+        let logical = logical_pick_edges(&edges, &flat);
+        assert_eq!(logical.len(), 1, "one merged edge: {logical:?}");
+        let (a, b) = logical[0];
+        assert!((a - ends[0]).length() < 1e-3 && (b - ends[2]).length() < 1e-3);
+
+        // A single piece is its own logical edge, unchanged.
+        edges = vec![(ends[0], ends[1])];
+        assert_eq!(logical_pick_edges(&edges, &flat).len(), 1);
+    }
+
+    /// #1780: a closed chain of turning facets — a full circle (or any closed curve) — drops
+    /// out rather than coming back as pieces.
+    #[test]
+    fn pick_edges_drop_a_closed_chain_of_turning_facets() {
+        let flat = |p: Vec3| glam::vec2(p.x, p.y);
+        let edges: Vec<(Vec3, Vec3)> = (0..32)
+            .map(|i| {
+                let a0 = i as f32 / 32.0 * std::f32::consts::TAU;
+                let a1 = (i + 1) as f32 / 32.0 * std::f32::consts::TAU;
+                (
+                    Vec3::new(5.0 + a0.cos(), 5.0 + a0.sin(), 0.0),
+                    Vec3::new(5.0 + a1.cos(), 5.0 + a1.sin(), 0.0),
+                )
+            })
+            .collect();
+        assert!(logical_pick_edges(&edges, &flat).is_empty());
+    }
+
+    /// #1780: a curve seen edge-on projects dead straight (a circle rim in a front view, a
+    /// cut edge in a side view) — its facets read as one line, so they merge to a single
+    /// edge spanning the curve's projected extremes instead of a heap of slivers.
+    #[test]
+    fn pick_edges_merge_an_edge_on_curve_to_one_spanning_edge() {
+        let flat = |p: Vec3| glam::vec2(p.x, p.z);
+        // A semicircular rim in the XY plane, seen edge-on from X: every facet projects
+        // onto the same vertical line.
+        let edges: Vec<(Vec3, Vec3)> = (0..24)
+            .map(|i| {
+                let a0 = i as f32 / 24.0 * std::f32::consts::PI;
+                let a1 = (i + 1) as f32 / 24.0 * std::f32::consts::PI;
+                (
+                    Vec3::new(0.0, 5.0 + a0.cos() * 4.0, 5.0 + a0.sin() * 4.0),
+                    Vec3::new(0.0, 5.0 + a1.cos() * 4.0, 5.0 + a1.sin() * 4.0),
+                )
+            })
+            .collect();
+        let logical = logical_pick_edges(&edges, &flat);
+        assert_eq!(logical.len(), 1, "one spanning edge: {logical:?}");
+        let (a, b) = logical[0];
+        // The span runs between the arc's two extreme points on the page (either order).
+        let (lo, hi) = if a.z <= b.z { (a.z, b.z) } else { (b.z, a.z) };
+        assert!((lo - 5.0).abs() < 1e-3 && (hi - 9.0).abs() < 1e-3, "{a:?} – {b:?}");
+    }
 
     /// #1652: an angle dimension draws as an arc between the two edges, centred on the corner
     /// they share, with an arrowhead at each end and the degree label just outside the arc.
@@ -3772,5 +4152,3 @@ label_hidden: false,
         );
     }
 }
-
-
