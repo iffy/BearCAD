@@ -7419,6 +7419,67 @@ pub fn sectioned_body_mesh(
     }
 }
 
+thread_local! {
+    /// Per-thread memo for smooth normals of **sectioned** meshes (#1772): keyed by the pose
+    /// fingerprint like [`BODY_NORMALS_CACHE`], plus a hash of body + applied cuts like
+    /// [`CROSS_SECTION_MESH_CACHE`] — an idle section view is a refcount bump per frame, and
+    /// only a dragged cutting plane recomputes.
+    static SECTIONED_NORMALS_CACHE: std::cell::RefCell<(u64, HashMap<u64, Option<std::rc::Rc<Vec<[Vec3; 3]>>>>)> =
+        std::cell::RefCell::new((0, HashMap::new()));
+}
+
+/// Smooth per-vertex normals for a body's mesh **as the open section shows it** (#1772):
+/// computed off the same cut mesh the viewport draws, so the shaded modes keep their smooth
+/// walls under a section cut instead of falling back to flat facets. Bodies no cut applies
+/// to get [`body_smooth_normals`] unchanged.
+pub fn body_sectioned_smooth_normals(
+    doc: &Document,
+    body: crate::model::BodyKey,
+    cuts: &[crate::model::CrossSectionCut],
+) -> Option<std::rc::Rc<Vec<[Vec3; 3]>>> {
+    let applied: Vec<crate::model::CrossSectionCut> = cuts
+        .iter()
+        .filter(|cut| cut.cut_applies_to(body))
+        .cloned()
+        .collect();
+    let cuts = match applied.as_slice() {
+        [] => return body_smooth_normals(doc, body),
+        cuts => cuts,
+    };
+    let fingerprint = document_pose_fingerprint(doc);
+    let hash = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        format!("{body:?}{cuts:?}").hash(&mut h);
+        h.finish()
+    };
+    let cached = SECTIONED_NORMALS_CACHE.with(|cache| match cache.try_borrow_mut() {
+        Ok(mut cache) => {
+            if cache.0 != fingerprint {
+                cache.0 = fingerprint;
+                cache.1.clear();
+            }
+            cache.1.get(&hash).cloned()
+        }
+        Err(_) => None,
+    });
+    if let Some(hit) = cached {
+        return hit;
+    }
+    let normals = cross_section_body_mesh(doc, body, cuts)
+        .map(|m| std::rc::Rc::new(smooth_normals(&m)));
+    SECTIONED_NORMALS_CACHE.with(|cache| {
+        if let Ok(mut cache) = cache.try_borrow_mut() {
+            if cache.0 != fingerprint {
+                cache.0 = fingerprint;
+                cache.1.clear();
+            }
+            cache.1.insert(hash, normals.clone());
+        }
+    });
+    normals
+}
+
 fn cross_section_body_mesh_uncached(
     doc: &Document,
     body: crate::model::BodyKey,
@@ -17362,6 +17423,53 @@ mod tests {
         assert!(
             (total - 40.0).abs() < 1e-2,
             "the perimeter traces the whole rim once, got {total}"
+        );
+    }
+
+    /// #1772: a sectioned body keeps smooth shading — its normals come off the *cut* mesh
+    /// (one per corner of every triangle actually drawn), and the curved wall still shades
+    /// smooth rather than falling back to flat facets.
+    #[test]
+    fn sectioned_cylinder_gets_smooth_normals_off_the_cut_mesh() {
+        let mut state = crate::actions::AppState::default();
+        let mut shape = crate::model::Primitive::new(crate::model::PrimitiveKind::Cylinder);
+        shape.origin = [0.0, 0.0, 0.0];
+        shape.normal = [0.0, 0.0, 1.0];
+        shape.radius = "20".into();
+        shape.height = "30".into();
+        state.apply(crate::actions::Action::CreateShape { shape });
+        let cut = crate::model::CrossSectionCut {
+            origin: glam::Vec3::new(0.0, 0.0, 15.0),
+            normal: -glam::Vec3::Z,
+            ..Default::default()
+        };
+        let cuts = std::slice::from_ref(&cut);
+        let mesh = sectioned_body_mesh(&state.doc, bkey(0), cuts)
+            .expect("most of the cylinder survives the cut");
+        let normals = body_sectioned_smooth_normals(&state.doc, bkey(0), cuts)
+            .expect("the sectioned body has normals");
+        assert_eq!(
+            normals.len(),
+            mesh.triangles.len(),
+            "one normal triple per triangle of the drawn (cut) mesh"
+        );
+        // The curved wall is smoothed: some triangle's corner normals differ from its own
+        // flat geometric normal.
+        let smoothed = mesh
+            .triangles
+            .iter()
+            .zip(normals.iter())
+            .any(|(tri, corners)| {
+                let flat = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
+                corners.iter().any(|n| (*n - flat).length() > 1e-3)
+            });
+        assert!(smoothed, "the cut cylinder's wall shades smooth, not flat");
+        // A repeat read hits the cache (same shared allocation).
+        let again = body_sectioned_smooth_normals(&state.doc, bkey(0), cuts)
+            .expect("normals again");
+        assert!(
+            std::rc::Rc::ptr_eq(&normals, &again),
+            "second read must hit the normals cache"
         );
     }
 

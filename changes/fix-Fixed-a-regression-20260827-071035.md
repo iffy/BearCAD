@@ -1,0 +1,1 @@
+Fixed a regression from the section-cut work: opening a cutting plane made every body render with flat, faceted shading — curved walls now keep their smooth per-vertex normals under a section cut (#1772).

@@ -1051,7 +1051,6 @@ impl ViewportScene {
         }
         let section_cuts: Option<&[crate::model::CrossSectionCut]> =
             (!visible_section_cuts.is_empty()).then_some(visible_section_cuts.as_slice());
-        let cut_away = section_cuts.is_some_and(|cuts| !cuts.is_empty());
         let body_meshes: std::collections::HashMap<crate::model::BodyKey, Option<crate::extrude::SolidMesh>> = input
             .doc
             .bodies
@@ -1085,8 +1084,9 @@ impl ViewportScene {
             .collect();
         // Smooth per-vertex normals for the shaded modes (#1037), shared out of the same
         // kind of per-document cache the meshes use, so this is a refcount bump per frame
-        // rather than a rebuild.
-        let shaded = !cut_away && matches!(
+        // rather than a rebuild. Under a section cut the normals come off the *cut* mesh
+        // (#1772) — the uncut body's normals would not match the drawn triangles.
+        let shaded = matches!(
             input.cam.shading_mode(),
             crate::camera::ShadingMode::Solid
                 | crate::camera::ShadingMode::SolidWireframe
@@ -1097,7 +1097,13 @@ impl ViewportScene {
                 .iter()
                 .map(|(bi, mesh)| {
                     let normals = (shaded && mesh.is_some())
-                        .then(|| crate::extrude::body_smooth_normals(input.doc, *bi))
+                        .then(|| {
+                            crate::extrude::body_sectioned_smooth_normals(
+                                input.doc,
+                                *bi,
+                                section_cuts.unwrap_or(&[]),
+                            )
+                        })
                         .flatten();
                     (*bi, normals)
                 })
@@ -13740,5 +13746,120 @@ mod issue_1141_hole_orbit {
             );
             assert!(!scene.vertices.is_empty());
         }
+    }
+}
+
+/// #1772: opening a section cut must not strip the smooth per-vertex shading — the
+/// cylinders keep their smooth walls under the cut instead of falling back to flat facets.
+#[cfg(test)]
+mod issue_1772_section_cut_shading {
+    use super::*;
+    use crate::actions::AppState;
+    use crate::hierarchy::ElementVisibility;
+    use crate::selection::SceneSelection;
+
+    fn cylinder_state() -> AppState {
+        let mut state = AppState::default();
+        let mut shape = crate::model::Primitive::new(crate::model::PrimitiveKind::Cylinder);
+        shape.origin = [0.0, 0.0, 0.0];
+        shape.normal = [0.0, 0.0, 1.0];
+        shape.radius = "20".into();
+        shape.height = "30".into();
+        state.apply(crate::actions::Action::CreateShape { shape });
+        state
+    }
+
+    /// Lambert-lit triangles in `indices` whose corner normals all equal the triangle's own
+    /// geometric normal are flat shaded; a smoothed wall has corners that differ.
+    fn smoothed_lit_triangles(scene: &ViewportScene) -> usize {
+        scene
+            .indices
+            .chunks_exact(3)
+            .filter(|idx| {
+                let tri: Vec<GpuVertex> = idx
+                    .iter()
+                    .map(|i| scene.vertices[*i as usize])
+                    .collect();
+                let lit = tri
+                    .iter()
+                    .all(|v| (v.normal[3] - ShadingModel::Lambert as u8 as f32).abs() < 1e-6);
+                if !lit {
+                    return false;
+                }
+                let p: [Vec3; 3] = std::array::from_fn(|i| Vec3::from(tri[i].position));
+                let flat = (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero();
+                tri.iter()
+                    .any(|v| (Vec3::from_slice(&v.normal[..3]) - flat).length() > 1e-4)
+            })
+            .count()
+    }
+
+    #[test]
+    fn a_section_cut_keeps_the_smooth_shading() {
+        let state = cylinder_state();
+        let cut = crate::model::CrossSectionCut {
+            origin: glam::Vec3::new(0.0, 0.0, 15.0),
+            normal: -glam::Vec3::Z,
+            ..Default::default()
+        };
+        let mut cam = state.cam.clone();
+        cam.set_shading_mode(crate::camera::ShadingMode::Solid);
+        let viewport = UiRect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0));
+        let selection = SceneSelection::default();
+        let scene = ViewportScene::build(&ViewportSceneInput {
+            doc: &state.doc,
+            open_cross_section: None,
+            preview_section_cut: Some(cut),
+            creating_move: None,
+            cam: &cam,
+            viewport,
+            sketch_session: None,
+            element_visibility: &ElementVisibility::default(),
+            selection: &selection,
+            cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
+            sketch_repeat_ghost: Vec::new(),
+            sketch_ghost_lines: Vec::new(),
+            edit_preview_meshes: std::collections::HashMap::new(),
+            preview_rect: None,
+            preview_line: None,
+            preview_circle: None,
+            preview_extrusion: None,
+            preview_solid: None,
+            repeat_ghosts: Vec::new(),
+            cut_surface_ghosts: Vec::new(),
+            editing_extrusion: None,
+            preview_cut_body: None,
+            preview_replacement: PreviewReplacement::default(),
+            highlighted_bezier_handles: Vec::new(),
+            plane_preview: None,
+            active_sketch_face: None,
+            palette: ViewportPalette::default(),
+            dimension_labels: &[],
+            dim_label_view: None,
+            plane_gizmo: None,
+            extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
+            arrow_gizmos: Vec::new(),
+            move_rotation_gizmos: Vec::new(),
+            revolve_arc_gizmo: None,
+            vertex_treatment_preview: None,
+            hover_highlight: None,
+            extra_pick_highlights: Vec::new(),
+            colored_pick_highlights: Vec::new(),
+            colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
+            colored_segments: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
+            hover_color: Color32::WHITE,
+            document_health: &crate::document_health::DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
+        });
+        let smoothed = smoothed_lit_triangles(&scene);
+        assert!(
+            smoothed > 10,
+            "the cut cylinder's wall shades smooth, got {smoothed} smoothed triangles"
+        );
     }
 }
