@@ -14422,18 +14422,33 @@ impl AppState {
                         return ActionResult::Err(format!("No cross section {}", key.index()));
                     }
                 }
-                let Some(page_view) = self
-                    .doc
-                    .drawings
-                    .get_mut(drawing)
-                    .and_then(|d| d.views.get_mut(view))
-                else {
+                let Some(d) = self.doc.drawings.get_mut(drawing) else {
+                    return ActionResult::Err(format!("No drawing {}", drawing.index()));
+                };
+                let Some(page_view) = d.views.get_mut(view) else {
                     return ActionResult::Err(format!("No view {view} on drawing {}", drawing.index()));
                 };
                 if page_view.sketch.is_some() {
                     return ActionResult::Err("A sketch projection has nothing to section".into());
                 }
                 page_view.cross_section = cross_section;
+                // An aligned child shows the same body from a turned view (#296): a section
+                // dropped on the base sections the children with it, and clearing the base
+                // clears them too. A child can be cleared on its own (#1776).
+                let children: Vec<usize> = d
+                    .views
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, v)| v.aligned_parent == Some(view))
+                    .map(|(i, _)| i)
+                    .collect();
+                for ci in children {
+                    if let Some(child) = d.views.get_mut(ci) {
+                        if child.sketch.is_none() {
+                            child.cross_section = cross_section;
+                        }
+                    }
+                }
                 self.status = match cross_section {
                     Some(key) => format!("View {view} sectioned by cross section {}", key.index()),
                     None => format!("View {view} shows the whole body"),
@@ -31453,6 +31468,65 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             }),
             ActionResult::Err(_)
         ));
+    }
+
+    /// #1776: applying a cross section to a projection sections its aligned children too —
+    /// they show the same cut — while clearing on a child spares the base and clearing on the
+    /// base takes the children with it.
+    #[test]
+    fn sectioning_a_projection_sections_its_aligned_children() {
+        use crate::model::{AlignDir, DrawingOrientation};
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::AddDrawingView {
+            drawing: dkey(0),
+            bodies: vec![bkey(0)],
+            orientation: DrawingOrientation::Front,
+        });
+        state.apply(Action::AddAlignedDrawingView {
+            drawing: dkey(0),
+            parent: 0,
+            dir: AlignDir::Right,
+            pos: 0.7,
+        });
+        state.apply(Action::CreateCrossSection { name: Some("Half".into()) });
+        let section = state.doc.cross_sections.keys().next().expect("the view");
+        let sections = |state: &AppState| -> Vec<Option<_>> {
+            state.doc.drawings[dkey(0)]
+                .views
+                .iter()
+                .map(|v| v.cross_section)
+                .collect()
+        };
+        assert_eq!(sections(&state), vec![None, None]);
+        assert!(matches!(
+            state.apply(Action::SetDrawingViewCrossSection {
+                drawing: dkey(0),
+                view: 0,
+                cross_section: Some(section),
+            }),
+            ActionResult::Ok
+        ));
+        assert_eq!(
+            sections(&state),
+            vec![Some(section), Some(section)],
+            "the aligned child sections with its base"
+        );
+        // Clearing on the child spares the base.
+        state.apply(Action::SetDrawingViewCrossSection {
+            drawing: dkey(0),
+            view: 1,
+            cross_section: None,
+        });
+        assert_eq!(sections(&state), vec![Some(section), None]);
+        // Clearing on the base takes the child with it.
+        state.apply(Action::SetDrawingViewCrossSection {
+            drawing: dkey(0),
+            view: 0,
+            cross_section: None,
+        });
+        assert_eq!(sections(&state), vec![None, None]);
     }
 
     /// #1642: an aligned child is *for* showing how it lines up with its base, so it draws the

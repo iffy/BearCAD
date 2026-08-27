@@ -26845,6 +26845,11 @@ impl App {
         // #1225: right-click → "Create aligned view" arms the Aligned-view tool with this
         // card as the base (instead of dumping every orientation into the menu).
         let mut create_aligned_from: Option<usize> = None;
+        // A cross-section view dragged from Elements hovers over this card (#1776): the drop
+        // sections it (and its aligned children).
+        let mut section_drop_target: Option<usize> = None;
+        // Right-click → "Remove cross section N" on a sectioned projection (#1776).
+        let mut remove_section: Option<usize> = None;
         let mut toggle_dim: Option<(usize, [i32; 3], [i32; 3])> = None;
         // A finished free point-to-point dimension (#1645): (view, first point, second point)
         // in the view's projected millimetres.
@@ -27086,8 +27091,16 @@ impl App {
                 }
                 // #1225: don't dump every orientation — the context pane's navigation bear
                 // handles that. Offer Create aligned view (when this card can be a base) and
-                // Remove.
+                // Remove. An applied cross section lists below with its own remove entry
+                // (#1776) — on the base and on each aligned child.
+                let section_applied = view.cross_section.map(|k| k.index());
                 drag.context_menu(|ui| {
+                    if let Some(index) = section_applied {
+                        if ui.button(format!("Remove cross section {index}")).clicked() {
+                            remove_section = Some(vi);
+                            ui.close();
+                        }
+                    }
                     for action in crate::drawing::projection_card_context_actions(view.orientation) {
                         if ui.button(action).clicked() {
                             match action {
@@ -27099,6 +27112,21 @@ impl App {
                         }
                     }
                 });
+                // A cross-section view dragged from Elements over this card previews the
+                // section it will apply (#1776).
+                let section_drop_here = bg
+                    .dnd_hover_payload::<hierarchy::DrawingDragPayload>()
+                    .is_some_and(|p| matches!(p.0, SceneElement::CrossSection(_)))
+                    && pointer_screen.is_some_and(|pp| cell.contains(pp));
+                if section_drop_here {
+                    section_drop_target = Some(vi);
+                    painter.rect_stroke(
+                        cell.shrink(2.0),
+                        2.0,
+                        egui::Stroke::new(2.0, egui::Color32::from_rgb(90, 200, 170)),
+                        egui::StrokeKind::Inside,
+                    );
+                }
                 // Selected / hovered cards get a border (#289/#316); idle cards stay bare (#1229).
                 let selected_here = self
                     .state
@@ -28883,6 +28911,36 @@ impl App {
                                 .apply(Action::AddDrawingSketchView { drawing, sketch, orientation }),
                             actions::ActionResult::Ok
                         ),
+                        // A cross-section view dropped on a projection sections that view —
+                        // its aligned children with it (#1776). Dropped on blank paper there
+                        // is nothing to section.
+                        SceneElement::CrossSection(key) => {
+                            match section_drop_target {
+                                Some(vi) => {
+                                    let ok = matches!(
+                                        self.state.apply(Action::SetDrawingViewCrossSection {
+                                            drawing,
+                                            view: vi,
+                                            cross_section: Some(key),
+                                        }),
+                                        actions::ActionResult::Ok
+                                    );
+                                    if ok {
+                                        self.state.select_drawing_only(
+                                            drawing,
+                                            context::DrawingElementRef::Projection(vi),
+                                        );
+                                    }
+                                    ok
+                                }
+                                None => {
+                                    self.state.status =
+                                        "Drop the cross section onto a projection to section it"
+                                            .to_string();
+                                    false
+                                }
+                            }
+                        }
                         _ => false,
                     };
                     if added {
@@ -28907,6 +28965,13 @@ impl App {
         }
         if let Some(view) = remove_view {
             self.state.apply(Action::RemoveDrawingView { drawing, view });
+        }
+        if let Some(view) = remove_section {
+            self.state.apply(Action::SetDrawingViewCrossSection {
+                drawing,
+                view,
+                cross_section: None,
+            });
         }
         // Never relocate a projection while a dim label is being dragged (#1227).
         if self.drawing_dim_label_drag.is_some() {

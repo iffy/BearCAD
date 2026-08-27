@@ -6249,13 +6249,17 @@ fn show_row(
             row_rect,
         );
         // With a drawing open, body, sketch, and component rows drag onto the page (#290/#1190):
-        // the drop places a projection at the pointer. Both the name label and the type icon
-        // are grab handles (#368). Re-sensed for drag so the payload arms; plain clicks still
-        // select as usual.
+        // the drop places a projection at the pointer. A cross-section view row drags too
+        // (#1776): dropping it on a projection sections that view (and its aligned children).
+        // Both the name label and the type icon are grab handles (#368). Re-sensed for drag so
+        // the payload arms; plain clicks still select as usual.
         if active_drawing.is_some()
             && matches!(
                 node,
-                HierarchyNode::Body(_) | HierarchyNode::Sketch(_) | HierarchyNode::Component(_)
+                HierarchyNode::Body(_)
+                    | HierarchyNode::Sketch(_)
+                    | HierarchyNode::Component(_)
+                    | HierarchyNode::CrossSection(_)
             )
         {
             response

@@ -8982,6 +8982,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 if let Some(parent) = view.aligned_parent {
                     t.set("aligned_to", parent)?;
                 }
+                // The cross section this projection shows, if any (#1776).
+                if let Some(key) = view.cross_section {
+                    t.set("cross_section", key.index())?;
+                }
                 out.set(i + 1, t)?;
             }
             Ok(Value::Table(out))
