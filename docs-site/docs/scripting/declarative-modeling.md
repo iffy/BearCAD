@@ -359,6 +359,7 @@ it. Visible views cut the model even in the modeling workbench; hide a view to l
 ```lua
 bearcad.section_plane{ plane = 1, offset = 5 }     -- on a construction plane's frame
 bearcad.section_plane{ origin = {0, 0, 10}, normal = {0, 0, 1}, flip = true }
+bearcad.begin_edit_section_plane{ cut = 0 }        -- the live edit draft (Esc/Enter ends it)
 bearcad.edit_section_plane{ cut = 0, offset = -2, roll = 30 }   -- slide and turn it
 bearcad.delete_section_plane{ cut = 1 }
 local cuts = bearcad.section_planes()              -- { origin, normal, offset, roll, flip,

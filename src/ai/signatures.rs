@@ -20,6 +20,7 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.apply_construction"          , "bearcad.apply_construction(construction)"),
     ("bearcad.apply_visibility"            , "bearcad.apply_visibility(visible)"),
     ("bearcad.begin_combine"               , "bearcad.begin_combine{ op, a, b, keep_b, keep_leftovers }"),
+    ("bearcad.begin_edit_section_plane"    , "bearcad.begin_edit_section_plane{ view, cut }"),
     ("bearcad.begin_joint"                 , "bearcad.begin_joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin, frame_axis, frame_axis2, position, position2, position3, slide_min, slide_max, slide_min_to, slide_max_to, turn_min, turn_max, name }   -- face = { moving, fixed, flip?, offset?, spin? }"),
     ("bearcad.begin_move"                  , "bearcad.begin_move{ bodies, images, flip, from, to, from_b, to_b, from_c, to_c, origin, image, anchor, body, vertex, on_edge, on_face, face_center, normal, uv, edge }"),
     ("bearcad.begin_sketch"                , "bearcad.begin_sketch(…)"),

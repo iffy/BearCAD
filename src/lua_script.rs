@@ -8547,6 +8547,21 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             unsafe { tick.exec(instr) }
         })?,
     )?;
+    // Open the live edit draft of a cutting plane (#1787): the offset/tilt gizmos preview
+    // in place of the plane being edited (#1783) until Enter commits or Esc cancels.
+    // `bearcad.begin_edit_section_plane{ view?, cut }`.
+    api.set(
+        "begin_edit_section_plane",
+        lua.create_function(|lua, opts: Table| {
+            check_keys(&opts, "begin_edit_section_plane", &["view", "cut"])?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let instr = Instruction::BeginEditSectionPlane {
+                view: opts.get("view")?,
+                cut: opts.get("cut")?,
+            };
+            unsafe { tick.exec(instr) }
+        })?,
+    )?;
     // Read a view's cutting planes back: `{ origin, normal, offset, roll (degrees), flip,
     // bodies ("all" or body indices), excludes (body indices) }`.
     api.set(
@@ -17379,6 +17394,43 @@ pub mod tests {
             assert(not ok, "an unknown plane should error")
         "#,
         );
+    }
+
+    /// #1787: a script can open the live edit draft of a cutting plane — the path where the
+    /// offset/tilt preview stands in for the plane being edited (#1783).
+    #[test]
+    fn lua_begin_edit_section_plane_opens_the_edit_draft() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 30, depth = 20, height = 20 }
+            bearcad.cross_section{}
+            bearcad.section_plane{ origin = {0, 0, 0}, normal = {0, 0, 1}, offset = 5 }
+            bearcad.begin_edit_section_plane{ cut = 0 }
+            "#,
+        );
+        let view = state.doc.cross_sections.keys().next().expect("the view");
+        let cs = state
+            .creating_section
+            .as_ref()
+            .expect("begin_edit_section_plane opens the edit draft");
+        assert_eq!(cs.edit_cut, Some((view, 0)), "editing plane 0 of the view");
+        assert!(
+            state.status.contains("Edit cutting plane"),
+            "the status names the edit: {}",
+            state.status
+        );
+        // An unknown plane errors instead of opening a draft.
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cross_section{}
+            bearcad.section_plane{ origin = {0, 0, 0}, normal = {0, 0, 1} }
+            local ok = pcall(bearcad.begin_edit_section_plane, { cut = 3 })
+            assert(not ok, "an unknown plane should error")
+            "#,
+        );
+        assert!(state.creating_section.is_none(), "no draft for a bad pick");
     }
 
     /// A cutting plane is its own element: it shows in the Views section, and a script

@@ -332,6 +332,9 @@ pub enum Instruction {
     },
     /// #1687: drop one of a view's cutting planes.
     DeleteSectionPlane { view: Option<usize>, cut: usize },
+    /// #1787: open the live edit draft of an existing cutting plane — the offset/tilt
+    /// preview stands in for the plane until Enter commits or Esc cancels (#1783).
+    BeginEditSectionPlane { view: Option<usize>, cut: usize },
     /// #1689: section a projection already on the page (or clear its section).
     SetDrawingViewCrossSection {
         drawing: usize,
@@ -1515,6 +1518,10 @@ impl Instruction {
             Instruction::DeleteSectionPlane { view, cut } => match view {
                 Some(v) => format!("bearcad.delete_section_plane{{ view = {v}, cut = {cut} }}"),
                 None => format!("bearcad.delete_section_plane{{ cut = {cut} }}"),
+            },
+            Instruction::BeginEditSectionPlane { view, cut } => match view {
+                Some(v) => format!("bearcad.begin_edit_section_plane{{ view = {v}, cut = {cut} }}"),
+                None => format!("bearcad.begin_edit_section_plane{{ cut = {cut} }}"),
             },
             Instruction::SetDrawingViewCrossSection { drawing, view, cross_section } => {
                 match cross_section {
@@ -7110,6 +7117,25 @@ impl ScriptRunner {
                     }
                 };
                 let result = state.apply(Action::RemoveCrossSectionCut { view, cut });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::BeginEditSectionPlane { view, cut } => {
+                let view = match cross_section_key(&state.doc, view) {
+                    Ok(Some(key)) => key,
+                    Ok(None) => match state.doc.cross_sections.keys().next() {
+                        Some(key) => key,
+                        None => {
+                            self.last_action_error = Some("No cross-section view".to_string());
+                            return StepResult::Continue;
+                        }
+                    },
+                    Err(e) => {
+                        self.last_action_error = Some(e);
+                        return StepResult::Continue;
+                    }
+                };
+                let result = state.apply(Action::BeginEditSectionPlane { view, cut });
                 self.record_action_error(result);
                 StepResult::Continue
             }
