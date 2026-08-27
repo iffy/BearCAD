@@ -1,0 +1,1 @@
+Fixed angled drawing views of round features: a corner view of a cylinder drew its cap rims as full-radius circles floating past the silhouette — angled circles now project to their true ellipses, with the Ø dimension running along the ellipse's major axis (#1775).

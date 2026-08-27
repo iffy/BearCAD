@@ -27437,6 +27437,25 @@ impl App {
                                         to_screen(egui::vec2(b.x, b.y)),
                                     )
                                 }
+                                crate::drawing::ProjectedCircle::Angled { center, major, minor } => {
+                                    // Distance to the sampled ellipse outline.
+                                    let pts = crate::drawing::angled_circle_points(
+                                        *center,
+                                        *major,
+                                        *minor,
+                                        48,
+                                    );
+                                    pts.iter()
+                                        .map(|p| to_screen(egui::vec2(p.x, p.y)))
+                                        .chain(std::iter::once(to_screen(egui::vec2(
+                                            pts[0].x,
+                                            pts[0].y,
+                                        ))))
+                                        .collect::<Vec<_>>()
+                                        .windows(2)
+                                        .map(|w| dist_point_to_segment(pp, w[0], w[1]))
+                                        .fold(f32::MAX, f32::min)
+                                }
                             };
                             if best_circle.is_none_or(|(bd, _)| d < bd) {
                                 best_circle = Some((d, ci));
@@ -27944,6 +27963,105 @@ impl App {
                                                 .map(|(_, o)| *o),
                                             start_pointer: pp,
                                             outward_screen: egui::vec2(out_screen.x, out_screen.y),
+                                            mm_per_px: if scale.abs() > 1e-6 {
+                                                1.0 / scale
+                                            } else {
+                                                0.0
+                                            },
+                                        });
+                                        if self.drawing_view_drag == Some((drawing, vi)) {
+                                            self.drawing_view_drag = None;
+                                        }
+                                        pan_suppressed_by_card = true;
+                                    }
+                                }
+                            }
+                        }
+                        crate::drawing::ProjectedCircle::Angled { center, major, minor } => {
+                            // The true ellipse, as a closed polyline (#1775).
+                            let pts = crate::drawing::angled_circle_points(
+                                *center,
+                                *major,
+                                *minor,
+                                48,
+                            );
+                            let screen: Vec<egui::Pos2> =
+                                pts.iter().map(|p| to_screen(egui::vec2(p.x, p.y))).collect();
+                            painter.add(egui::Shape::line(screen, outline));
+                            if !show_dim {
+                                continue;
+                            }
+                            // The diameter line runs along the major axis — the one direction
+                            // that still spans the true diameter — with the label offset along
+                            // the minor axis (a circle_dim_offsets override).
+                            let circle_key = hierarchy::quantize_body_point(wc.center);
+                            let extra = view
+                                .circle_dim_offsets
+                                .iter()
+                                .find(|(k, _)| *k == circle_key)
+                                .map(|(_, o)| *o)
+                                .unwrap_or(0.0);
+                            let minor_dir = minor.normalize_or_zero();
+                            let (sa, sb) = (
+                                to_screen(egui::vec2(center.x - major.x, center.y - major.y)),
+                                to_screen(egui::vec2(center.x + major.x, center.y + major.y)),
+                            );
+                            painter.line_segment(
+                                [sa, sb],
+                                egui::Stroke::new(crate::drawing::DIM_STROKE, INK),
+                            );
+                            let label_screen = to_screen(egui::vec2(
+                                center.x + minor_dir.x * extra,
+                                center.y + minor_dir.y * extra,
+                            ));
+                            let label_w =
+                                crate::drawing::text_device_width(dim_font, &label) + 12.0;
+                            draw_rot_label(&painter, label, label_screen, 0.0);
+                            if matches!(self.state.tool, Tool::Select | Tool::Dimension) {
+                                let label_rect = egui::Rect::from_center_size(
+                                    label_screen,
+                                    egui::vec2(label_w, 18.0),
+                                );
+                                let lr = ui.interact(
+                                    label_rect,
+                                    ui.make_persistent_id((
+                                        "drawing_circle_dim_label",
+                                        drawing,
+                                        vi,
+                                        circle_key,
+                                    )),
+                                    egui::Sense::click_and_drag(),
+                                );
+                                if lr.hovered()
+                                    || self
+                                        .drawing_dim_label_drag
+                                        .is_some_and(|d| d.kind == DimLabelKind::Circle(circle_key))
+                                {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                                }
+                                // Press-start so card grab can't steal the drag (#1227).
+                                if self.drawing_dim_label_drag.is_none()
+                                    && primary_down
+                                    && press_origin.is_some_and(|o| label_rect.contains(o))
+                                {
+                                    if let Some(pp) = pointer_screen.or(lr.interact_pointer_pos()) {
+                                        // The label slides along the ellipse's minor axis.
+                                        let out_screen = (to_screen(egui::vec2(
+                                            minor_dir.x,
+                                            minor_dir.y,
+                                        )) - to_screen(egui::Vec2::ZERO))
+                                        .normalized();
+                                        self.drawing_dim_label_drag = Some(DrawingDimLabelDrag {
+                                            drawing,
+                                            view: vi,
+                                            kind: DimLabelKind::Circle(circle_key),
+                                            start_offset: view
+                                                .circle_dim_offsets
+                                                .iter()
+                                                .find(|(k, _)| *k == circle_key)
+                                                .map(|(_, o)| *o),
+                                            start_pointer: pp,
+                                            outward_screen: out_screen.normalized(),
                                             mm_per_px: if scale.abs() > 1e-6 {
                                                 1.0 / scale
                                             } else {

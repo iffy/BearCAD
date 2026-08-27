@@ -657,6 +657,10 @@ pub enum ProjectedCircle {
     Round { center: glam::Vec2, radius: f32 },
     /// The circle is (near) edge-on: it projects to a line — the foreshortened diameter.
     EdgeOn { a: glam::Vec2, b: glam::Vec2 },
+    /// The circle is seen at an angle (#1775): an ellipse, carried as its two semi-axis
+    /// vectors from `center` — `major` is always the full radius, `minor` the foreshortened
+    /// one, so the outline matches the body's silhouette instead of floating past it.
+    Angled { center: glam::Vec2, major: glam::Vec2, minor: glam::Vec2 },
 }
 
 /// Classify a view's world feature edges (#313): find tessellated circles (clean degree-2
@@ -790,14 +794,42 @@ pub fn project_world_circle(c: &WorldCircle, right: Vec3, up: Vec3) -> Projected
     let project = |p: Vec3| glam::Vec2::new(p.dot(right), p.dot(up));
     let c2 = project(c.center);
     let d = right.cross(up).normalize_or_zero();
-    if c.normal.dot(d).abs() < 0.15 {
+    let nd = c.normal.dot(d);
+    if nd.abs() < 0.15 {
         // Edge-on: the major axis is the in-plane direction perpendicular to the view.
         let w = d.cross(c.normal).normalize_or_zero();
         let major = glam::Vec2::new(w.dot(right), w.dot(up)) * c.radius;
         ProjectedCircle::EdgeOn { a: c2 - major, b: c2 + major }
-    } else {
+    } else if nd.abs() > 0.99 {
         ProjectedCircle::Round { center: c2, radius: c.radius }
+    } else {
+        // Angled (#1775): the ellipse's major semi-axis is the rim's horizon — the in-plane
+        // direction perpendicular to the tilt — at the full radius; the minor one runs along
+        // the tilt (the normal's own projection) foreshortened to r·|n·d|.
+        let w = d.cross(c.normal).normalize_or_zero();
+        let major = glam::Vec2::new(w.dot(right), w.dot(up)) * c.radius;
+        let minor = project(c.normal).normalize_or_zero() * (c.radius * nd.abs());
+        ProjectedCircle::Angled { center: c2, major, minor }
     }
+}
+
+/// The closed polyline tracing an angled circle's ellipse (#1775): `segments` points,
+/// starting at the major semi-axis end and stepping round through the minor one. Everything
+/// that strokes an angled circle — the editor, the export canvas, hover picking — samples
+/// this so they all draw the same outline.
+pub fn angled_circle_points(
+    center: glam::Vec2,
+    major: glam::Vec2,
+    minor: glam::Vec2,
+    segments: usize,
+) -> Vec<glam::Vec2> {
+    let segments = segments.max(4);
+    (0..segments)
+        .map(|i| {
+            let t = std::f32::consts::TAU * i as f32 / segments as f32;
+            center + major * t.cos() + minor * t.sin()
+        })
+        .collect()
 }
 
 /// Whether a projected 2D segment lies on one of the projected circles (#313), so it's drawn as
@@ -816,6 +848,18 @@ pub fn projected_segment_on_circle(a: glam::Vec2, b: glam::Vec2, pcs: &[Projecte
             let on = |p: glam::Vec2| {
                 let t = ((p - *la).dot(d) / len2).clamp(0.0, 1.0);
                 (p - (*la + d * t)).length() < tol
+            };
+            on(a) && on(b)
+        }
+        ProjectedCircle::Angled { center, major, minor } => {
+            // Map into ellipse space: a point on the ellipse lands on the unit circle. The
+            // approximate distance scales the radial miss by the smaller semi-axis, which is
+            // plenty for the few-percent tolerance here.
+            let m = glam::Mat2::from_cols(*major, *minor).inverse();
+            let on = |p: glam::Vec2| {
+                let q = m * (p - *center);
+                let semi = major.length().min(minor.length());
+                ((q.length() - 1.0) * semi).abs() < major.length() * 0.08 + 1e-2
             };
             on(a) && on(b)
         }
@@ -1988,6 +2032,14 @@ fn render_view_geometry<C: Canvas>(
                 let (sa, sb) = (to_screen(*a), to_screen(*b));
                 canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, MODEL_STROKE);
             }
+            ProjectedCircle::Angled { center, major, minor } => {
+                // The true ellipse, as a closed polyline (#1775).
+                let pts = angled_circle_points(*center, *major, *minor, 48);
+                for i in 0..pts.len() {
+                    let (sa, sb) = (to_screen(pts[i]), to_screen(pts[(i + 1) % pts.len()]));
+                    canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, MODEL_STROKE);
+                }
+            }
         }
     }
 
@@ -2049,6 +2101,16 @@ fn render_view_geometry<C: Canvas>(
                     (to_screen(geom.line.0 + outward) - to_screen(geom.line.0)).normalize_or_zero();
                 let (lp, ang) = dimension_label_layout(sla, slb, out_screen, text_device_width(11.0, &label), 11.0, 5.0);
                 canvas.text_rot(lp.x, lp.y, 11.0, Anchor::Middle, &label, ang);
+            }
+            // Angled (#1775): the diameter line runs along the ellipse's major axis — the one
+            // direction that still spans the true diameter — with the label offset along the
+            // minor axis by the per-circle override.
+            ProjectedCircle::Angled { center, major, minor } => {
+                let (a, b) = (*center - *major, *center + *major);
+                let (sa, sb) = (to_screen(a), to_screen(b));
+                canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, DIM_STROKE);
+                let lp = to_screen(*center + minor.normalize_or_zero() * extra);
+                canvas.text_rot(lp.x, lp.y, 11.0, Anchor::Middle, &label, 0.0);
             }
         }
     }
@@ -3283,6 +3345,106 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
             }
             other => panic!("45° edge view of a flat circle should be EdgeOn, got {other:?}"),
         }
+        // A corner view of the same flat circle (#1775, the reported bug) is angled: its
+        // normal meets the view direction at ~54.7°, so the caps project to ellipses —
+        // neither a full-radius circle nor an edge-on line.
+        let (right, up) = view_axes(DrawingOrientation::Corner(
+            crate::model::CornerView::FrontRightTop,
+        ));
+        match project_world_circle(&circles[0], right, up) {
+            ProjectedCircle::Angled { major, minor, .. } => {
+                assert!((major.length() - r).abs() < 0.3, "major semi-axis is the radius");
+                let expect = r * right.cross(up).normalize().dot(circles[0].normal).abs();
+                assert!(
+                    (minor.length() - expect).abs() < 0.3,
+                    "minor semi-axis foreshortens by |n·d|, got {} vs {}",
+                    minor.length(),
+                    expect
+                );
+            }
+            other => panic!("a corner view should project the caps Angled, got {other:?}"),
+        }
+    }
+
+    /// #1775: an angled (corner) view projects a circle to its true **ellipse** — major
+    /// semi-axis `r` along the rim's horizon, minor `r·|n·d|` along the tilt — not a
+    /// full-radius circle floating past the body's silhouette.
+    #[test]
+    fn an_angled_view_projects_a_circle_to_an_ellipse() {
+        let s = 45f32.to_radians();
+        // A Z-normal circle seen from a 45°-tilted direction (n·d = cos 45°).
+        let n = Vec3::new(0.0, -s.sin(), s.cos());
+        let c = WorldCircle { center: Vec3::ZERO, radius: 10.0, normal: n };
+        match project_world_circle(&c, Vec3::X, Vec3::Y) {
+            ProjectedCircle::Angled { major, minor, .. } => {
+                assert!((major.length() - 10.0).abs() < 1e-3, "major semi-axis is r");
+                assert!(
+                    (minor.length() - 10.0 * s.cos()).abs() < 1e-3,
+                    "minor semi-axis is r·|n·d|, got {}",
+                    minor.length()
+                );
+                assert!(
+                    (major.x * minor.x + major.y * minor.y).abs() < 1e-3,
+                    "the axes are perpendicular"
+                );
+                // The major axis runs along the rim's horizon: horizontal here.
+                assert!(major.y.abs() < 1e-3, "major axis along X, got {major:?}");
+            }
+            other => panic!("an angled circle should project Angled, got {other:?}"),
+        }
+        // Face-on stays Round and edge-on stays EdgeOn — the new case only covers between.
+        let face = WorldCircle { center: Vec3::ZERO, radius: 10.0, normal: Vec3::Z };
+        assert!(matches!(
+            project_world_circle(&face, Vec3::X, Vec3::Y),
+            ProjectedCircle::Round { .. }
+        ));
+        let edge = WorldCircle { center: Vec3::ZERO, radius: 10.0, normal: Vec3::Y };
+        assert!(matches!(
+            project_world_circle(&edge, Vec3::X, Vec3::Y),
+            ProjectedCircle::EdgeOn { .. }
+        ));
+    }
+
+    /// #1775: the ellipse helper traces a closed loop through the semi-axis endpoints, and
+    /// rim segments of an angled circle lie on the projected ellipse — so they're covered by
+    /// the single Ø dimension instead of being dimensioned as straight segments.
+    #[test]
+    fn angled_rim_segments_lie_on_the_projected_ellipse() {
+        let s = 45f32.to_radians();
+        let n = Vec3::new(0.0, -s.sin(), s.cos());
+        // In-plane basis for the tilted circle.
+        let u = Vec3::X;
+        let v = n.cross(u).normalize();
+        let c = WorldCircle { center: Vec3::ZERO, radius: 10.0, normal: n };
+        let pc = project_world_circle(&c, Vec3::X, Vec3::Y);
+        let ProjectedCircle::Angled { major, minor, .. } = &pc else {
+            panic!("expected Angled");
+        };
+        // The loop passes through the semi-axis endpoints and closes.
+        let pts = angled_circle_points(glam::Vec2::ZERO, *major, *minor, 32);
+        assert_eq!(pts.len(), 32);
+        assert!(pts[0].distance(*major) < 1e-3, "starts at the major end");
+        assert!(pts[8].distance(*minor) < 1e-3, "quarter way round hits the minor end");
+        // Two consecutive rim points 10° apart project onto the ellipse.
+        let world = |deg: f32| {
+            let t = deg.to_radians();
+            u * (10.0 * t.cos()) + v * (10.0 * t.sin())
+        };
+        let proj = |p: Vec3| glam::Vec2::new(p.dot(Vec3::X), p.dot(Vec3::Y));
+        let a = proj(world(0.0));
+        let b = proj(world(10.0));
+        assert!(
+            projected_segment_on_circle(a, b, std::slice::from_ref(&pc)),
+            "a rim chord lies on the projected ellipse"
+        );
+        assert!(
+            !projected_segment_on_circle(
+                a + glam::Vec2::new(0.0, 5.0),
+                b + glam::Vec2::new(0.0, 5.0),
+                std::slice::from_ref(&pc)
+            ),
+            "a chord pushed off the rim does not"
+        );
     }
 
     /// #1225: a projection card's right-click menu no longer dumps every orientation — it offers
