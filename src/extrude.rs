@@ -17508,9 +17508,70 @@ mod tests {
             }
         }
     }
+
+    /// #1777: the hatch lines on a cut face run unbroken — every segment a line picks up
+    /// across the triangulation joins its neighbours end to end, with no gaps where one
+    /// triangle's clip ends and the next one's begins.
+    #[test]
+    fn section_hatch_lines_run_unbroken_across_the_cut_face() {
+        let mut state = crate::actions::AppState::default();
+        let mut shape = crate::model::Primitive::new(crate::model::PrimitiveKind::Cylinder);
+        shape.origin = [0.0, 0.0, 0.0];
+        shape.normal = [0.0, 0.0, 1.0];
+        shape.radius = "20".into();
+        shape.height = "30".into();
+        state.apply(crate::actions::Action::CreateShape { shape });
+        let cut = crate::model::CrossSectionCut {
+            origin: glam::Vec3::new(0.0, 0.0, 0.0),
+            normal: glam::Vec3::new(0.0, -1.0, 0.0),
+            ..Default::default()
+        };
+        let mesh = cross_section_body_mesh(&state.doc, bkey(0), std::slice::from_ref(&cut))
+            .expect("half of the cylinder survives");
+        let segments =
+            section_hatch_segments(&mesh, &cut, SECTION_HATCH_SPACING_MM);
+        assert!(!segments.is_empty(), "the cut face is hatched");
+
+        // Group the segments by the hatch line they sit on: the lines are u + v = k·spacing
+        // in the cut plane's own basis, so run along u − v.
+        let plane = crate::construction::cross_section_cut_plane(&cut);
+        let (o, u, v) = (plane.origin, plane.u_axis, plane.v_axis);
+        let along = (u - v).normalize();
+        let mut lines: std::collections::BTreeMap<i32, Vec<(f32, f32)>> = Default::default();
+        for (a, b) in &segments {
+            let (ka, kb) = ((a - o).dot(u) + (a - o).dot(v), (b - o).dot(u) + (b - o).dot(v));
+            let level = ((ka + kb) * 0.5 / SECTION_HATCH_SPACING_MM).round() as i32;
+            assert!(
+                (ka - kb).abs() < 1e-3,
+                "both ends of a segment sit on one hatch line"
+            );
+            let (sa, sb) = ((a - o).dot(along), (b - o).dot(along));
+            lines.entry(level).or_default().push((sa.min(sb), sa.max(sb)));
+        }
+        // Merge each line's intervals: abutting or overlapping runs join; anything left
+        // split is a visible gap in the stroke.
+        const GAP_TOL: f32 = 1e-2;
+        for (level, mut intervals) in lines {
+            intervals.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let mut merged: Vec<(f32, f32)> = vec![intervals[0]];
+            for &(s, e) in &intervals[1..] {
+                let last = merged.last_mut().expect("seeded");
+                if s <= last.1 + GAP_TOL {
+                    last.1 = last.1.max(e);
+                } else {
+                    merged.push((s, e));
+                }
+            }
+            assert_eq!(
+                merged.len(),
+                1,
+                "hatch line {level} is drawn in {} pieces with gaps: {:?}",
+                merged.len(),
+                &merged[..]
+            );
+        }
+    }
 }
-
-
 
 /// The sketch-local loop of an [`ExtrudeFace::SketchRegion`] (#993): the region of the hosted
 /// sketch's plane that contains the profile's seed point. `None` when the sketch's lines no

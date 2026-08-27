@@ -1,0 +1,1 @@
+Cut-away face hatch lines and their outline no longer break into dashes at some zooms: the strokes lift toward the camera in proportion to depth-buffer precision so the cut face's fill cannot speckle through them (#1777)

@@ -3123,7 +3123,9 @@ impl<'a> SceneMesh<'a> {
     /// looking at cut material". The segments themselves come from
     /// [`crate::extrude::section_hatch_segments`], shared with the drawing page. Each cut
     /// face is also outlined in the same colour, slightly thicker (#1768), so it reads as one
-    /// bounded surface.
+    /// bounded surface. Both lift toward the camera by [`face_stroke_depth_lift`] on top of
+    /// the usual stroke bias (#1777): they lie exactly on the cut face's fill, and a fixed
+    /// lift is within depth-buffer noise of it, which speckled the lines into dashes.
     #[allow(clippy::too_many_arguments)]
     fn push_section_hatch(
         &mut self,
@@ -3134,15 +3136,28 @@ impl<'a> SceneMesh<'a> {
         viewport: UiRect,
         view_proj: &Mat4,
     ) {
+        let eye = cam.eye();
+        let bias = |a: Vec3, b: Vec3| {
+            STROKE_DEPTH_BIAS + face_stroke_depth_lift(eye, (a + b) * 0.5)
+        };
         for (a, b) in crate::extrude::section_hatch_segments(
             solid,
             cut,
             crate::extrude::SECTION_HATCH_SPACING_MM,
         ) {
-            self.push_line_segment(a, b, color, SECTION_HATCH_WIDTH_PX, cam, viewport, view_proj);
+            self.push_line_segment_with_bias(
+                a,
+                b,
+                color,
+                SECTION_HATCH_WIDTH_PX,
+                cam,
+                viewport,
+                view_proj,
+                bias(a, b),
+            );
         }
         for (a, b) in crate::extrude::section_face_perimeter_segments(solid, cut) {
-            self.push_line_segment(
+            self.push_line_segment_with_bias(
                 a,
                 b,
                 color,
@@ -3150,6 +3165,7 @@ impl<'a> SceneMesh<'a> {
                 cam,
                 viewport,
                 view_proj,
+                bias(a, b),
             );
         }
     }
@@ -4769,6 +4785,19 @@ fn offset_segment_toward_camera(a: Vec3, b: Vec3, eye: Vec3, bias: f32) -> (Vec3
     let mid = (a + b) * 0.5;
     let to_cam = (eye - mid).normalize_or_zero();
     (a + to_cam * bias, b + to_cam * bias)
+}
+
+/// Extra toward-camera lift for strokes that lie *on* a face — the section hatch and its
+/// perimeter (#1777). The depth buffer's world-space precision is proportional to z²
+/// (`camera.rs` perspectives from near = 0.1), so [`STROKE_DEPTH_BIAS`]'s fixed 0.1 mm is
+/// about one depth LSB at ordinary zooms and the face fill speckles through the stroke as
+/// dashes. Lifting by `FACE_STROKE_LIFT_SLOPE · z²` — the ray toward the eye, so the stroke
+/// stays on the same pixels — holds a comfortable margin at every distance; the cap keeps a
+/// zoomed-out view from floating the pattern in front of genuinely occluding geometry.
+fn face_stroke_depth_lift(eye: Vec3, mid: Vec3) -> f32 {
+    const FACE_STROKE_LIFT_SLOPE: f32 = 6e-6;
+    const FACE_STROKE_LIFT_MAX_MM: f32 = 10.0;
+    (FACE_STROKE_LIFT_SLOPE * (eye - mid).length_squared()).min(FACE_STROKE_LIFT_MAX_MM)
 }
 
 /// Whether every vertex of `tri` lies (within tolerance) on the plane through `origin`
@@ -10051,14 +10080,22 @@ mod tests {
         });
         let cut_scene = build_scene_for_doc_in_view(&state, Some(view));
         let palette = ViewportPalette::default();
-        // Endpoints of every section-hatch-coloured stroke on the cut face's plane.
+        // Endpoints of every section-hatch-coloured stroke on the cut face's plane. The
+        // strokes lift toward the camera along the view ray to clear the face fill in the
+        // depth buffer (#1777), so each endpoint is projected back onto the plane first.
         let target = color32_to_gpu(palette.section_hatch);
+        let eye = state.cam.eye();
         let mut plane_points = Vec::new();
         for v in cut_scene.vertices.iter().chain(cut_scene.stroke_vertices.iter()) {
             if v.color == target {
                 let p = Vec3::from(v.position);
-                if (p.z - 20.0).abs() < 0.2 {
-                    plane_points.push(p);
+                let ray = (p - eye).normalize_or_zero();
+                if ray.z.abs() < 1e-6 {
+                    continue;
+                }
+                let on_plane = p - ray * ((p.z - 20.0) / ray.z);
+                if (on_plane.z - 20.0).abs() < 0.2 {
+                    plane_points.push(on_plane);
                 }
             }
         }
@@ -11012,6 +11049,36 @@ mod tests {
     fn stroke_depth_bias_beats_shape_fill_bias() {
         assert!(STROKE_DEPTH_BIAS > shape_fill_depth_bias(0));
         assert!(STROKE_DEPTH_BIAS > plane_fill_depth_bias(pkey(0)));
+    }
+
+    /// #1777: strokes that lie on a face (the section hatch and its perimeter) lift toward
+    /// the camera by an amount that grows with distance — the depth buffer's precision is
+    /// proportional to z², so a fixed world lift is a single depth LSB at ordinary zooms and
+    /// the face fill speckles through the stroke as dashes. The lift is bounded so a far-out
+    /// view never lets the pattern jump in front of nearby occluders.
+    #[test]
+    fn face_stroke_lift_grows_with_distance_to_beat_the_depth_buffer() {
+        let eye = Vec3::ZERO;
+        // At the eye the lift is nothing; it grows with distance…
+        assert_eq!(face_stroke_depth_lift(eye, eye), 0.0);
+        let at_260 = face_stroke_depth_lift(eye, Vec3::new(260.0, 0.0, 0.0));
+        let at_900 = face_stroke_depth_lift(eye, Vec3::new(900.0, 0.0, 0.0));
+        assert!(at_900 > at_260, "lift must grow with distance");
+        // …fast enough to clear several depth LSBs (z²/(near·2²⁴) each) at every distance.
+        let lsbs = |z: f32, lift: f32| lift / (z * z * 0.1 / (1u64 << 24) as f32);
+        for (z, lift) in [(260.0, at_260), (900.0, at_900)] {
+            assert!(
+                lsbs(z, lift) > 6.0,
+                "lift at {z}mm is {lift}mm, only {} depth LSBs",
+                lsbs(z, lift)
+            );
+        }
+        // …but stays bounded, so a far-out view can't float the hatch in front of
+        // genuinely occluding geometry.
+        assert!(
+            face_stroke_depth_lift(eye, Vec3::new(50_000.0, 0.0, 0.0)) <= 10.0,
+            "the lift must be capped"
+        );
     }
 
     /// #143: the committed shape-fill band must stay strictly below both the hover fill and the
