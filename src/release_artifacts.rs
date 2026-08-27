@@ -59,7 +59,7 @@ mod tests {
     }
 
     /// #1328: release identity and notes come from `changer bump`, not Cargo.toml +
-    /// GitHub-generated notes. The existing YYMMDD-### build number is still appended.
+    /// GitHub-generated notes. The abbreviated-SHA build number is still appended.
     #[test]
     fn ci_uses_changer_bump_for_release_version_and_notes() {
         let workflow = include_str!("../.github/workflows/ci.yml");
@@ -224,74 +224,21 @@ mod tests {
         );
     }
 
-    /// #1129: release build numbers are YYMMDD-### (per UTC day), not GITHUB_RUN_NUMBER.
-    /// Runs only on Unix: Windows CI has no reliable bash for this script, and release-id
-    /// only invokes it on ubuntu-latest.
+    /// #1788: release build numbers are the abbreviated commit SHA, not a date sequence
+    /// and not GITHUB_RUN_NUMBER.
     #[test]
-    #[cfg(unix)]
-    fn next_build_number_is_yymmdd_sequence_per_day() {
-        let script = concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/next-build-number.sh");
-        let run = |date: &str, tags: &str| {
-            let out = std::process::Command::new("bash")
-                .args([script, "--date", date])
-                // Don't inherit GITHUB_REPOSITORY — a TTY-ish stdin would otherwise make
-                // the script call `gh` instead of reading the piped tags.
-                .env_remove("GITHUB_REPOSITORY")
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .and_then(|mut child| {
-                    use std::io::Write;
-                    if let Some(mut stdin) = child.stdin.take() {
-                        stdin.write_all(tags.as_bytes())?;
-                    }
-                    child.wait_with_output()
-                })
-                .expect("run next-build-number.sh");
-            assert!(
-                out.status.success(),
-                "script failed (status {:?}): stderr={} stdout={}",
-                out.status.code(),
-                String::from_utf8_lossy(&out.stderr),
-                String::from_utf8_lossy(&out.stdout),
-            );
-            String::from_utf8(out.stdout)
-                .expect("utf8")
-                .trim()
-                .to_string()
-        };
-
-        assert_eq!(run("260812", ""), "260812-001");
-        assert_eq!(
-            run(
-                "260812",
-                "v0.1.0-build.260812-001\nv0.1.0-build.260812-002\nv0.1.0-build.260811-009\n"
-            ),
-            "260812-003"
-        );
-        // Legacy GITHUB_RUN_NUMBER tags must not be mistaken for today's sequence.
-        assert_eq!(run("260812", "v0.1.0-build.628\nv0.1.0-build.591\n"), "260812-001");
-        // Zero-padding: sequence 10 → next is 011.
-        assert_eq!(
-            run("260808", "v0.1.0-build.260808-009\nv0.1.0-build.260808-010\n"),
-            "260808-011"
-        );
-    }
-
-    #[test]
-    fn ci_uses_date_style_build_numbers() {
+    fn ci_uses_git_sha_build_numbers() {
         let workflow = include_str!("../.github/workflows/ci.yml");
         assert!(
-            workflow.contains("next-build-number.sh"),
-            "CI should compute build numbers via next-build-number.sh"
+            workflow.contains("git rev-parse --short HEAD"),
+            "CI should take the build number from the abbreviated commit SHA"
         );
         assert!(
-            !workflow.contains("github.run_number"),
-            "CI should not use GITHUB_RUN_NUMBER as the release build number"
+            !workflow.contains("next-build-number.sh"),
+            "CI should not compute a date-sequence build number any more"
         );
         assert!(
-            !workflow.contains("GITHUB_RUN_NUMBER"),
+            !workflow.contains("github.run_number") && !workflow.contains("GITHUB_RUN_NUMBER"),
             "CI should not use GITHUB_RUN_NUMBER as the release build number"
         );
     }

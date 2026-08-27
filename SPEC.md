@@ -5426,10 +5426,10 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
 ### 11.x Auto-update (#427)
 - **Build identity (#460, #1129):** `build.rs` bakes `git describe --tags` and the short
   SHA into the binary. `full_version()` reports the release tag verbatim when built from
-  an exactly-tagged checkout (`v0.1.0-build.YYMMDD-###`), else `v0.1.0 (<sha>)`; the About
+  an exactly-tagged checkout (`v0.1.0-build.<short-sha>`), else `v0.1.0 (<sha>)`; the About
   dialog (native menu metadata and the in-app Help → About status line, web included)
-  shows it. Release build numbers are date-style `YYMMDD-###` (UTC day + per-day sequence;
-  `scripts/next-build-number.sh`). The update check compares the latest release tag against
+  shows it. Release build numbers are the abbreviated commit SHA of the released commit
+  (`vX.Y.Z-build.<short-sha>`; #1788). The update check compares the latest release tag against
   the baked describe — so a release build knows its own build number and never offers
   itself as an update. A **dev build** (debug assertions, or a describe carrying commits
   past the tag — `updater::is_dev_build`) is treated as **ahead of every release**: it
@@ -5559,8 +5559,8 @@ baked into this build — the full `changelog.md` `changer bump` produced when t
 was built. Scriptable as `bearcad.ui.changelog("show"|"hide"|"toggle")`;
 `bearcad.ui.changelog("text")` returns the markdown.
 
-GitHub draft releases take their version from `changer next-version` plus the existing
-`YYMMDD-###` build number (`vX.Y.Z-build.YYMMDD-###`), and their notes from
+GitHub draft releases take their version from `changer next-version` plus the abbreviated
+commit SHA as the build number (`vX.Y.Z-build.<short-sha>`; #1788), and their notes from
 `changer bump -n`. Publishing a draft runs `changer bump` so the repo CHANGELOG matches
 that release, leaves later snippets for the next draft, tags the released commit
 `vX.Y.Z`, and dispatches a website rebuild so the landing page shows the new version.

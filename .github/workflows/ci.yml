@@ -206,8 +206,8 @@ jobs:
       - name: cargo test (occt)
         run: cargo test
 
-  # Shared release identity for this workflow run (#1129): one YYMMDD-### build
-  # number so every matrix platform bakes the same tag the publish step will create.
+  # Shared release identity for this workflow run (#1129): one abbreviated commit SHA as
+  # the build number, so every matrix platform bakes the same tag the publish step creates.
   release-id:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
@@ -240,7 +240,7 @@ jobs:
           mkdir -p dist-release
           bash scripts/release-changelog.sh notes > dist-release/notes.md
           bash scripts/release-changelog.sh full dist-release/changelog.md
-          build_number="$(bash scripts/next-build-number.sh --from-github)"
+          build_number="$(git rev-parse --short HEAD)"
           tag="v${version}-build.${build_number}"
           {
             echo "version=${version}"
@@ -353,7 +353,7 @@ jobs:
           ${{ matrix.occt_build }}
 
       # Bake the exact release tag into the binary (todoer #466, #1129): the `release`
-      # job tags v{version}-build.YYMMDD-### *after* this build, and the shallow checkout
+      # job tags v{version}-build.<short-sha> *after* this build, and the shallow checkout
       # has no tags for `git describe` — without this the shipped binary only knows its
       # crate version and the update badge offers the very build being run.
       # Changelog (#1328): the full changer-bump preview produced by release-id.
@@ -526,7 +526,7 @@ jobs:
           git -C third_party/solvespace submodule update --init --depth 1 extlib/eigen extlib/mimalloc
 
       # Same bake as the desktop release jobs (#466, #1129, #1546): the `release`
-      # job tags v{version}-build.YYMMDD-### *after* this build, and the shallow
+      # job tags v{version}-build.<short-sha> *after* this build, and the shallow
       # checkout has no tags for `git describe`.
       - name: Download changelog
         uses: actions/download-artifact@v7
@@ -570,7 +570,7 @@ jobs:
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v3
         with:
-          # Version is changer bump's next version; build number is YYMMDD-### (#1328, #1129).
+          # Version is changer bump's next version; build number is the abbreviated SHA (#1328, #1788).
           tag_name: ${{ needs.release-id.outputs.tag }}
           name: ${{ needs.release-id.outputs.release_name }}
           draft: true

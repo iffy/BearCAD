@@ -20603,7 +20603,7 @@ fn show_changelog_markdown(ui: &mut egui::Ui, markdown: &str) {
 }
 
 /// The build's full identity (About, web and native alike): the release tag when this
-/// binary was built from an exactly-tagged checkout (`v0.1.0-build.YYMMDD-###`), otherwise the
+/// binary was built from an exactly-tagged checkout (`v0.1.0-build.<short-sha>`), otherwise the
 /// crate version plus the git commit it was built from.
 pub fn full_version() -> String {
     let describe = env!("BEARCAD_GIT_DESCRIBE");
@@ -20670,6 +20670,11 @@ mod full_version_tests {
             split_version("v0.5.1-build.260818-002", "abc123456", "0.1.0"),
             ("0.5.1".to_string(), "build 260818-002".to_string()),
             "a release build quotes its version and names its build"
+        );
+        assert_eq!(
+            split_version("v0.5.1-build.abc1234", "abc123456", "0.1.0"),
+            ("0.5.1".to_string(), "build abc1234".to_string()),
+            "a SHA-numbered release reads the same way (#1788)"
         );
         assert_eq!(
             split_version("v0.5.1", "abc123456", "0.1.0"),

@@ -484,7 +484,9 @@ mod tests_release_identity {
     use super::*;
 
     /// #460: a release build baked with its own tag must not see itself as an update.
-    /// Build numbers are YYMMDD-### per day (#1129).
+    /// Build numbers were YYMMDD-### per day (#1129); they are the abbreviated commit SHA
+    /// now (#1788), which carries no ordering — within one version, a different SHA is
+    /// just a different build, never an update.
     #[test]
     fn own_build_number_is_not_an_update() {
         assert!(!is_newer(
@@ -500,6 +502,15 @@ mod tests_release_identity {
         assert!(is_newer("0.1.0-build.260813-001", "0.1.0-build.260812-999"));
         // Legacy run_number tags still order under the date-style numbers.
         assert!(is_newer("0.1.0-build.260812-001", "0.1.0-build.628"));
+
+        // SHA build numbers: identical is identical, and SHAs can't order — the semver
+        // alone decides, so a re-release within one version never prompts (#1788).
+        assert!(!is_newer("0.1.0-build.abc1234", "0.1.0-build.abc1234"));
+        assert!(!is_newer("0.1.0-build.def5678", "0.1.0-build.abc1234"));
+        assert!(!is_newer("0.1.0-build.abc1234", "0.1.0-build.def5678"));
+        // A bumped semver is newer whatever the build identifiers look like.
+        assert!(is_newer("0.2.0-build.abc1234", "0.1.0-build.def5678"));
+        assert!(is_newer("0.1.0-build.abc1234", "0.1.0-build.260812-001-3-gabc1234") == false);
     }
 
     /// #466: a dev build sitting on commits past the latest tag (`git describe` appends
