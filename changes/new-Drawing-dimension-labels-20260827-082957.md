@@ -1,0 +1,1 @@
+Drawing dimension labels are all draggable now: a free point-to-point dimension's label moves its dimension line like edge and Ø labels already could, and every label's grab area covers its whole text instead of a small patch at its centre (#1774).

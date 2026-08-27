@@ -1218,16 +1218,23 @@ struct EdgeTreatmentGizmoDrag {
     start_amount: f32,
 }
 
+/// Which dimension a label drag moves (#1774): an edge length keyed by its quantized
+/// endpoints, a circle Ø keyed by the quantized centre, or a free point-to-point dimension
+/// keyed by its place in the view's list.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum DimLabelKind {
+    Edge(([i32; 3], [i32; 3])),
+    Circle([i32; 3]),
+    Point(usize),
+}
+
 /// An in-flight drag of a drawing dimension label (#294): the label rides the pointer's
 /// perpendicular offset from its edge, written back as a `dimension_offsets` override.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct DrawingDimLabelDrag {
     drawing: model::DrawingKey,
     view: usize,
-    key: ([i32; 3], [i32; 3]),
-    /// A circle Ø-label drag (#397): `key.0` is the circle's quantized centre and the offset
-    /// writes through `SetDrawingCircleDimOffset` instead of the edge-keyed action.
-    circle: bool,
+    kind: DimLabelKind,
     /// Offset at grab time. `None` means the dim had no override (auto-placed).
     start_offset: Option<f32>,
     start_pointer: egui::Pos2,
@@ -27775,13 +27782,17 @@ impl App {
                                 .map(|(_, o)| *o)
                                 .unwrap_or(0.0);
                             let label_screen = to_screen(cv + egui::vec2(0.0, extra));
+                            let label_w =
+                                crate::drawing::text_device_width(dim_font, &label) + 12.0;
                             draw_rot_label(&painter, label, label_screen, 0.0);
                             // The label drags up/down with Select or Dimension (#397),
-                            // mirroring the edge dims' label drag.
+                            // mirroring the edge dims' label drag. The hit rect covers the
+                            // whole label, not a fixed sliver, so grabbing either end of the
+                            // text drags the label instead of the card beneath it (#1774).
                             if matches!(self.state.tool, Tool::Select | Tool::Dimension) {
                                 let label_rect = egui::Rect::from_center_size(
                                     label_screen,
-                                    egui::vec2(46.0, 18.0),
+                                    egui::vec2(label_w, 18.0),
                                 );
                                 let lr = ui.interact(
                                     label_rect,
@@ -27796,7 +27807,7 @@ impl App {
                                 if lr.hovered()
                                     || self
                                         .drawing_dim_label_drag
-                                        .is_some_and(|d| d.circle && d.key.0 == circle_key)
+                                        .is_some_and(|d| d.kind == DimLabelKind::Circle(circle_key))
                                 {
                                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                                 }
@@ -27811,8 +27822,7 @@ impl App {
                                         self.drawing_dim_label_drag = Some(DrawingDimLabelDrag {
                                             drawing,
                                             view: vi,
-                                            key: (circle_key, circle_key),
-                                            circle: true,
+                                            kind: DimLabelKind::Circle(circle_key),
                                             start_offset: view
                                                 .circle_dim_offsets
                                                 .iter()
@@ -27889,13 +27899,16 @@ impl App {
                                 5.0 * px_per_pt,
                             );
                             let label_screen = egui::pos2(lp.x, lp.y);
+                            let label_w =
+                                crate::drawing::text_device_width(dim_font, &label) + 12.0;
                             draw_rot_label(&painter, label, label_screen, ang);
                             // Draggable like the edge dims (#397): slides the linear dim
-                            // nearer/further via the circle's offset override.
+                            // nearer/further via the circle's offset override. The hit rect
+                            // covers the whole label (#1774).
                             if matches!(self.state.tool, Tool::Select | Tool::Dimension) {
                                 let label_rect = egui::Rect::from_center_size(
                                     label_screen,
-                                    egui::vec2(46.0, 18.0),
+                                    egui::vec2(label_w, 18.0),
                                 );
                                 let lr = ui.interact(
                                     label_rect,
@@ -27910,7 +27923,7 @@ impl App {
                                 if lr.hovered()
                                     || self
                                         .drawing_dim_label_drag
-                                        .is_some_and(|d| d.circle && d.key.0 == circle_key)
+                                        .is_some_and(|d| d.kind == DimLabelKind::Circle(circle_key))
                                 {
                                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                                 }
@@ -27923,8 +27936,7 @@ impl App {
                                         self.drawing_dim_label_drag = Some(DrawingDimLabelDrag {
                                             drawing,
                                             view: vi,
-                                            key: (circle_key, circle_key),
-                                            circle: true,
+                                            kind: DimLabelKind::Circle(circle_key),
                                             start_offset: view
                                                 .circle_dim_offsets
                                                 .iter()
@@ -28029,6 +28041,8 @@ impl App {
                             5.0 * px_per_pt,
                         );
                         let label_screen = egui::pos2(lp.x, lp.y);
+                        let label_w =
+                            crate::drawing::text_device_width(dim_font, &label_text) + 12.0;
                         let galley = painter.layout_no_wrap(
                             label_text,
                             egui::FontId::proportional(dim_font),
@@ -28041,11 +28055,13 @@ impl App {
                         let mut shape = egui::epaint::TextShape::new(pos, galley, INK);
                         shape.angle = ang;
                         painter.add(shape);
-                        // The label is draggable with Select or Dimension (#294): a small
-                        // interact rect at the label repositions the whole dimension line.
+                        // The label is draggable with Select or Dimension (#294): an interact
+                        // rect covering the whole label (#1774) repositions the dimension line.
                         if matches!(self.state.tool, Tool::Select | Tool::Dimension) {
-                            let label_rect =
-                                egui::Rect::from_center_size(label_screen, egui::vec2(46.0, 18.0));
+                            let label_rect = egui::Rect::from_center_size(
+                                label_screen,
+                                egui::vec2(label_w, 18.0),
+                            );
                             let lr = ui.interact(
                                 label_rect,
                                 ui.make_persistent_id(("drawing_dim_label", drawing, vi, key)),
@@ -28078,7 +28094,8 @@ impl App {
                                 });
                             let active = lr.hovered()
                                 || picker_hover_dim
-                                || self.drawing_dim_label_drag.map(|d| d.key) == Some(key);
+                                || self.drawing_dim_label_drag.map(|d| d.kind)
+                                    == Some(DimLabelKind::Edge(key));
                             if active {
                                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                             }
@@ -28118,8 +28135,7 @@ impl App {
                                     self.drawing_dim_label_drag = Some(DrawingDimLabelDrag {
                                         drawing,
                                         view: vi,
-                                        key,
-                                        circle: false,
+                                        kind: DimLabelKind::Edge(key),
                                         start_offset: view
                                             .dimension_offsets
                                             .iter()
@@ -28191,18 +28207,60 @@ impl App {
                         5.0 * px_per_pt,
                     );
                     let label_screen = egui::pos2(lp.x, lp.y);
+                    let label_w = crate::drawing::text_device_width(dim_font, &label) + 12.0;
                     draw_rot_label(&painter, label, label_screen, ang);
-                    if self.state.tool == Tool::Select {
-                        let lr = ui.interact(
-                            egui::Rect::from_center_size(label_screen, egui::vec2(46.0, 18.0)),
-                            ui.make_persistent_id(("drawing_point_dim", drawing, vi, pi)),
-                            egui::Sense::click(),
+                    // The label is the click target that selects one (#1645), so its Measure
+                    // control (and Delete) can reach it — and it drags the dimension line
+                    // nearer/further like every other label (#1774).
+                    if matches!(self.state.tool, Tool::Select | Tool::Dimension) {
+                        let label_rect = egui::Rect::from_center_size(
+                            label_screen,
+                            egui::vec2(label_w, 18.0),
                         );
-                        if lr.clicked() && !exploder_open {
+                        let lr = ui.interact(
+                            label_rect,
+                            ui.make_persistent_id(("drawing_point_dim", drawing, vi, pi)),
+                            egui::Sense::click_and_drag(),
+                        );
+                        if lr.clicked() && self.state.tool == Tool::Select && !exploder_open {
                             if ui.input(|i| selection::additive_click_modifiers(&i.modifiers)) {
                                 self.state.toggle_drawing_element(drawing, element);
                             } else {
                                 self.state.select_drawing_only(drawing, element);
+                            }
+                        }
+                        if lr.hovered()
+                            || self
+                                .drawing_dim_label_drag
+                                .is_some_and(|d| d.kind == DimLabelKind::Point(pi))
+                        {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                        }
+                        // Press-start so the card grab can't relocate the view under the
+                        // label drag (#1227), the same as the other labels.
+                        if self.drawing_dim_label_drag.is_none()
+                            && primary_down
+                            && press_origin.is_some_and(|o| label_rect.contains(o))
+                        {
+                            if let Some(pp) = pointer_screen.or(lr.interact_pointer_pos()) {
+                                let om = sp(pa + out) - sp(pa);
+                                self.drawing_dim_label_drag = Some(DrawingDimLabelDrag {
+                                    drawing,
+                                    view: vi,
+                                    kind: DimLabelKind::Point(pi),
+                                    start_offset: Some(dim.offset),
+                                    start_pointer: pp,
+                                    outward_screen: om.normalized(),
+                                    mm_per_px: if scale.abs() > 1e-6 {
+                                        1.0 / scale
+                                    } else {
+                                        0.0
+                                    },
+                                });
+                                if self.drawing_view_drag == Some((drawing, vi)) {
+                                    self.drawing_view_drag = None;
+                                }
+                                pan_suppressed_by_card = true;
                             }
                         }
                     }
@@ -28585,69 +28643,80 @@ impl App {
             } else {
                 d.start_offset
             };
-            if ui.input(|i| i.pointer.primary_down()) {
-                if moved {
-                    if d.circle {
+            let write = |state: &mut actions::AppState, offset: Option<f32>| {
+                match d.kind {
+                    DimLabelKind::Circle(center) => {
                         let _ = actions::set_drawing_circle_dim_offset(
-                            &mut self.state.doc,
+                            &mut state.doc,
                             d.drawing,
                             d.view,
-                            d.key.0,
-                            live_offset,
-                        );
-                    } else {
-                        let _ = actions::set_drawing_dimension_offset(
-                            &mut self.state.doc,
-                            d.drawing,
-                            d.view,
-                            d.key.0,
-                            d.key.1,
-                            live_offset,
+                            center,
+                            offset,
                         );
                     }
+                    DimLabelKind::Edge((a, b)) => {
+                        let _ = actions::set_drawing_dimension_offset(
+                            &mut state.doc,
+                            d.drawing,
+                            d.view,
+                            a,
+                            b,
+                            offset,
+                        );
+                    }
+                    // A point dim always has an offset (its default gap); a tiny motion
+                    // restores the grab-time value rather than clearing anything (#1774).
+                    DimLabelKind::Point(index) => {
+                        let _ = actions::set_drawing_point_dim_offset(
+                            &mut state.doc,
+                            d.drawing,
+                            d.view,
+                            index,
+                            offset.unwrap_or(base),
+                        );
+                    }
+                }
+            };
+            if ui.input(|i| i.pointer.primary_down()) {
+                if moved {
+                    write(&mut self.state, live_offset);
                 }
                 pan_suppressed_by_card = true;
             } else {
                 // Release: restore the pre-drag value, then apply the landed offset once.
-                if d.circle {
-                    let _ = actions::set_drawing_circle_dim_offset(
-                        &mut self.state.doc,
-                        d.drawing,
-                        d.view,
-                        d.key.0,
-                        d.start_offset,
-                    );
-                } else {
-                    let _ = actions::set_drawing_dimension_offset(
-                        &mut self.state.doc,
-                        d.drawing,
-                        d.view,
-                        d.key.0,
-                        d.key.1,
-                        d.start_offset,
-                    );
-                }
+                write(&mut self.state, d.start_offset);
                 let changed = match (d.start_offset, live_offset) {
                     (None, None) => false,
                     (Some(a), Some(b)) => (a - b).abs() > 1e-6,
                     _ => true,
                 };
                 if changed {
-                    if d.circle {
-                        self.state.apply(Action::SetDrawingCircleDimOffset {
-                            drawing: d.drawing,
-                            view: d.view,
-                            center: d.key.0,
-                            offset: live_offset,
-                        });
-                    } else {
-                        self.state.apply(Action::SetDrawingDimensionOffset {
-                            drawing: d.drawing,
-                            view: d.view,
-                            a: d.key.0,
-                            b: d.key.1,
-                            offset: live_offset,
-                        });
+                    match d.kind {
+                        DimLabelKind::Circle(center) => {
+                            self.state.apply(Action::SetDrawingCircleDimOffset {
+                                drawing: d.drawing,
+                                view: d.view,
+                                center,
+                                offset: live_offset,
+                            });
+                        }
+                        DimLabelKind::Edge((a, b)) => {
+                            self.state.apply(Action::SetDrawingDimensionOffset {
+                                drawing: d.drawing,
+                                view: d.view,
+                                a,
+                                b,
+                                offset: live_offset,
+                            });
+                        }
+                        DimLabelKind::Point(index) => {
+                            self.state.apply(Action::SetDrawingPointDimOffset {
+                                drawing: d.drawing,
+                                view: d.view,
+                                index,
+                                offset: live_offset.unwrap_or(base),
+                            });
+                        }
                     }
                 }
                 self.drawing_dim_label_drag = None;

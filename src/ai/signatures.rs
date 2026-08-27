@@ -61,6 +61,7 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.drawing_page"                , "bearcad.drawing_page{ drawing, width, height, margin }"),
     ("bearcad.drawing_point_dimension"     , "bearcad.drawing_point_dimension{ drawing, view, a, b, axis }"),
     ("bearcad.drawing_point_dimension_axis" , "bearcad.drawing_point_dimension_axis{ drawing, view, index, axis }"),
+    ("bearcad.drawing_point_dim_offset"    , "bearcad.drawing_point_dim_offset{ drawing, view, index, offset }"),
     ("bearcad.drawing_text"                , "bearcad.drawing_text{ drawing, text, x, y, wrap? }   -- x/y are page fractions (0–1)"),
     ("bearcad.drawing_view"                , "bearcad.drawing_view{ drawing, body, bodies, component, sketch, cross_section, orientation }"),
     ("bearcad.drawing_view_section"        , "bearcad.drawing_view_section{ drawing, view, cross_section }"),

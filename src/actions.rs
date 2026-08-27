@@ -3365,6 +3365,15 @@ pub enum Action {
         center: [i32; 3],
         offset: Option<f32>,
     },
+    /// Move a free point-to-point dimension's label off its auto-placed gap (#1774) — the
+    /// point-dim analogue of [`Self::SetDrawingDimensionOffset`]. `index` names the view's
+    /// dimension; `offset` is the signed projected-mm past the default gap.
+    SetDrawingPointDimOffset {
+        drawing: crate::model::DrawingKey,
+        view: usize,
+        index: usize,
+        offset: f32,
+    },
     /// Add an aligned child projection of an existing view (#296): a new view of the same
     /// body, oriented per the glass-box unfolding for `dir`, placed adjacent to `parent` and
     /// kept lined up with it. `pos` is the free-axis fraction (the shared axis follows parent).
@@ -4229,6 +4238,28 @@ pub fn set_drawing_circle_dim_offset(
     if let Some(o) = offset {
         v.circle_dim_offsets.push((center, o));
     }
+    Ok(())
+}
+
+/// Write a free point-to-point dimension's label offset without going through undo (#1774).
+/// The live label-drag path uses this every frame; the final commit still runs
+/// [`Action::SetDrawingPointDimOffset`] once so the gesture is a single undo step.
+pub fn set_drawing_point_dim_offset(
+    doc: &mut Document,
+    drawing: crate::model::DrawingKey,
+    view: usize,
+    index: usize,
+    offset: f32,
+) -> Result<(), String> {
+    let Some(dim) = doc
+        .drawings
+        .get_mut(drawing)
+        .and_then(|d| d.views.get_mut(view))
+        .and_then(|v| v.point_dims.get_mut(index))
+    else {
+        return Err(format!("No point dimension {index} in view {view}"));
+    };
+    dim.offset = offset;
     Ok(())
 }
 
@@ -14852,6 +14883,12 @@ impl AppState {
             }
             Action::SetDrawingCircleDimOffset { drawing, view, center, offset } => {
                 match set_drawing_circle_dim_offset(&mut self.doc, drawing, view, center, offset) {
+                    Ok(()) => ActionResult::Ok,
+                    Err(e) => ActionResult::Err(e),
+                }
+            }
+            Action::SetDrawingPointDimOffset { drawing, view, index, offset } => {
+                match set_drawing_point_dim_offset(&mut self.doc, drawing, view, index, offset) {
                     Ok(()) => ActionResult::Ok,
                     Err(e) => ActionResult::Err(e),
                 }
@@ -31363,6 +31400,59 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             dkey(0),
             crate::context::DrawingElementRef::PointDim { view: 0, index: 0 }
         )));
+    }
+
+    /// #1774: a free point-to-point dimension's label can be dragged — the offset override
+    /// lands as one undoable step, and an index that names no dimension is refused.
+    #[test]
+    fn a_point_dim_label_drag_sets_its_offset() {
+        use crate::model::{DrawingOrientation, PointDimAxis};
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::AddDrawingView {
+            drawing: dkey(0),
+            bodies: vec![bkey(0)],
+            orientation: DrawingOrientation::Front,
+        });
+        state.apply(Action::AddDrawingPointDim {
+            drawing: dkey(0),
+            view: 0,
+            a: (0.0, 0.0),
+            b: (30.0, 40.0),
+            axis: PointDimAxis::Direct,
+        });
+        assert_eq!(
+            state.doc.drawings[dkey(0)].views[0].point_dims[0].offset,
+            0.0,
+            "a fresh dimension sits at its default gap"
+        );
+        assert!(matches!(
+            state.apply(Action::SetDrawingPointDimOffset {
+                drawing: dkey(0),
+                view: 0,
+                index: 0,
+                offset: 12.5,
+            }),
+            ActionResult::Ok
+        ));
+        assert!(
+            (state.doc.drawings[dkey(0)].views[0].point_dims[0].offset - 12.5).abs() < 1e-4,
+            "the dragged offset lands on the dimension"
+        );
+        // The drag is one undo step.
+        state.apply(Action::UndoLast);
+        assert_eq!(state.doc.drawings[dkey(0)].views[0].point_dims[0].offset, 0.0);
+        // An index that names no dimension is refused, not silently ignored.
+        assert!(matches!(
+            state.apply(Action::SetDrawingPointDimOffset {
+                drawing: dkey(0),
+                view: 0,
+                index: 3,
+                offset: 1.0,
+            }),
+            ActionResult::Err(_)
+        ));
     }
 
     /// #1642: an aligned child is *for* showing how it lines up with its base, so it draws the

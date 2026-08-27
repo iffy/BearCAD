@@ -447,6 +447,13 @@ pub enum Instruction {
         center: (f32, f32, f32),
         offset: Option<f32>,
     },
+    /// Move a free point-to-point dimension's label off its auto-placed gap (#1774).
+    SetDrawingPointDimOffset {
+        drawing: usize,
+        view: usize,
+        index: usize,
+        offset: f32,
+    },
     /// Set a placed view's display style (#1651): `"visible"` / `"wireframe"` / `"shaded"`.
     SetDrawingViewStyle {
         drawing: usize,
@@ -1642,6 +1649,12 @@ impl Instruction {
                     "bearcad.drawing_circle_dim_offset{{ drawing = {drawing}, view = {view}, \
                      center = {{ {}, {}, {} }}, offset = {off} }}",
                     center.0, center.1, center.2
+                )
+            }
+            Instruction::SetDrawingPointDimOffset { drawing, view, index, offset } => {
+                format!(
+                    "bearcad.drawing_point_dim_offset{{ drawing = {drawing}, view = {view}, \
+                     index = {index}, offset = {offset} }}"
                 )
             }
             Instruction::SetDrawingViewStyle { drawing, view, style } => format!(
@@ -7368,6 +7381,20 @@ impl ScriptRunner {
                     drawing,
                     view,
                     center,
+                    offset,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::SetDrawingPointDimOffset { drawing, view, index, offset } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
+                let result = state.apply(Action::SetDrawingPointDimOffset {
+                    drawing,
+                    view,
+                    index,
                     offset,
                 });
                 self.record_action_error(result);

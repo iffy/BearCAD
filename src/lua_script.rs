@@ -3994,6 +3994,52 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         t.set("name", name.as_str())?;
                     }
                 }
+                "circle_dimension" => {
+                    // A drawing view's circle Ø dimension (#1774): where its label was dragged
+                    // to — `0.0` is the auto-placed default. `index` is the ordinal among the
+                    // view's shown circle dimensions.
+                    let drawing: usize = opts.get("drawing")?;
+                    let view: usize = opts.get("view")?;
+                    let offset = doc
+                        .drawings
+                        .values()
+                        .nth(drawing)
+                        .and_then(|d| d.views.get(view))
+                        .and_then(|v| {
+                            let center = v.dimensioned_circles.get(index)?;
+                            v.circle_dim_offsets
+                                .iter()
+                                .find(|(k, _)| k == center)
+                                .map(|(_, o)| *o)
+                        })
+                        .unwrap_or(0.0);
+                    t.set("offset", offset)?;
+                }
+                "point_dimension" => {
+                    // A drawing view's free point-to-point dimension (#1774): what it measures
+                    // and where its label was dragged to.
+                    let drawing: usize = opts.get("drawing")?;
+                    let view: usize = opts.get("view")?;
+                    let Some(dim) = doc
+                        .drawings
+                        .values()
+                        .nth(drawing)
+                        .and_then(|d| d.views.get(view))
+                        .and_then(|v| v.point_dims.get(index))
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    let ab = |p: (f32, f32)| -> mlua::Result<mlua::Table> {
+                        let pt = lua.create_table()?;
+                        pt.set(1, p.0)?;
+                        pt.set(2, p.1)?;
+                        Ok(pt)
+                    };
+                    t.set("a", ab(dim.a)?)?;
+                    t.set("b", ab(dim.b)?)?;
+                    t.set("axis", dim.axis.name())?;
+                    t.set("offset", dim.offset)?;
+                }
                 "section_plane" | "cutting_plane" => {
                     let Some((view_key, cut)) = crate::model::nth_section_plane(doc, index) else {
                         return Ok(Value::Nil);
@@ -9009,6 +9055,27 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     index,
                     axis,
                 })
+            }
+        })?,
+    )?;
+
+    // #1774: move a free point-to-point dimension's label off its auto-placed gap — the
+    // point-dim analogue of `drawing_dim_offset`.
+    api.set(
+        "drawing_point_dim_offset",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "drawing_point_dim_offset",
+                &["drawing", "view", "index", "offset"],
+            )?;
+            let drawing: usize = opts.get("drawing")?;
+            let view: usize = opts.get("view")?;
+            let index: usize = opts.get("index")?;
+            let offset: f32 = opts.get("offset")?;
+            unsafe {
+                tick.exec(Instruction::SetDrawingPointDimOffset { drawing, view, index, offset })
             }
         })?,
     )?;
@@ -18617,6 +18684,58 @@ pub mod tests {
         assert!(
             hidden.doc.drawings[dkey(0)].views[0].dimensioned_circles.is_empty(),
             "toggling the same circle twice hides it again"
+        );
+    }
+
+    /// #1774: `bearcad.drawing_point_dim_offset{}` moves a free point-to-point dimension's
+    /// label off its auto-placed gap, and `bearcad.get{kind = "point_dimension"}` reads it
+    /// back with what the dimension measures.
+    #[test]
+    fn lua_drawing_point_dim_offset_sets_and_gets() {
+        let script = r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 40, height = 25 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
+            bearcad.drawing_point_dimension{ drawing = d, view = 0, a = {0, 0}, b = {30, 40} }
+            local before = bearcad.get{ kind = "point_dimension", drawing = d, view = 0, index = 0 }
+            assert(before.offset == 0.0, "a fresh dimension sits at its default gap")
+            bearcad.drawing_point_dim_offset{ drawing = d, view = 0, index = 0, offset = 7.5 }
+            local dim = bearcad.get{ kind = "point_dimension", drawing = d, view = 0, index = 0 }
+            assert(math.abs(dim.offset - 7.5) < 1e-4, "the offset round-trips")
+            assert(dim.axis == "direct", "the axis reads back")
+        "#;
+        let state = run_lua(script);
+        assert!(
+            (state.doc.drawings[dkey(0)].views[0].point_dims[0].offset - 7.5).abs() < 1e-4,
+            "the offset landed on the dimension"
+        );
+    }
+
+    /// #1774: `bearcad.get{kind = "circle_dimension"}` reads a circle Ø dimension's dragged
+    /// offset — `0.0` while the label sits at its auto-placed default.
+    #[test]
+    fn lua_get_reads_a_circle_dimension_offset() {
+        let script = r#"
+            bearcad.new()
+            bearcad.circle{ x = 10, y = 5, r = 8 }
+            bearcad.exit_sketch()
+            bearcad.extrude{ circle = 0, distance = 20 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front-right" }
+            bearcad.drawing_circle_dimension{ drawing = d, view = 0, center = {10, 5, 0} }
+            local before = bearcad.get{ kind = "circle_dimension", drawing = d, view = 0, index = 0 }
+            assert(before.offset == 0.0, "no override yet")
+            bearcad.drawing_circle_dim_offset{ drawing = d, view = 0, center = {10, 5, 0}, offset = 4.25 }
+            local dim = bearcad.get{ kind = "circle_dimension", drawing = d, view = 0, index = 0 }
+            assert(math.abs(dim.offset - 4.25) < 1e-4, "the offset round-trips")
+        "#;
+        let state = run_lua(script);
+        assert_eq!(
+            state.doc.drawings[dkey(0)].views[0].circle_dim_offsets.len(),
+            1,
+            "one override"
         );
     }
 

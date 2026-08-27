@@ -1114,6 +1114,16 @@ pub fn instruction_from_json(
             center: xyz(o, "center")?,
             offset: opt_f32(o, "offset")?,
         }),
+        "drawing_point_dim_offset" => Ok(Instruction::SetDrawingPointDimOffset {
+            drawing: req_usize(o, "drawing", "drawing_point_dim_offset")?,
+            view: req_usize(o, "view", "drawing_point_dim_offset")?,
+            index: req_usize(o, "index", "drawing_point_dim_offset")?,
+            offset: o
+                .get("offset")
+                .and_then(|v| v.as_f64())
+                .map(|v| v as f32)
+                .ok_or("drawing_point_dim_offset requires `offset`")?,
+        }),
         "drawing_view_align_lines" => Ok(Instruction::SetDrawingViewAlignLines {
             drawing: req_usize(o, "drawing", "drawing_view_align_lines")?,
             view: req_usize(o, "view", "drawing_view_align_lines")?,

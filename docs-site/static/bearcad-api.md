@@ -220,6 +220,7 @@ bearcad.drawing_dim_offset{ drawing, view, offset, a, b }
 bearcad.drawing_dimension{ drawing, view, a, b }
 bearcad.drawing_move_view{ drawing, view, x, y }
 bearcad.drawing_page{ drawing, width, height, margin }
+bearcad.drawing_point_dim_offset{ drawing, view, index, offset }
 bearcad.drawing_point_dimension{ drawing, view, a, b, axis }
 bearcad.drawing_point_dimension_axis{ drawing, view, index, axis }
 bearcad.drawing_text{ drawing, text, x, y, wrap? }   -- x/y are page fractions (0–1)
