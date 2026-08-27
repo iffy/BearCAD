@@ -1,1 +1,0 @@
-Technical-drawing picks offer logical geometry only: straight runs pick as one edge, an edge-on curve merges to the single line it draws, and a curve's tessellation facets and their faux vertices are no longer pickable at all (#1780, #1781)

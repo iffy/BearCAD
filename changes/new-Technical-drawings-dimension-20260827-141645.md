@@ -1,1 +1,0 @@
-Technical drawings dimension a smooth curve as a whole: clicking the curve on the Dimension tool — or bearcad.drawing_curve_dimension — shows its measured length; its tessellation facets stay unpickable (#1785, #1781)

@@ -1,1 +1,0 @@
-Cutting plane tilt gizmos now grab at the handles the viewport draws (the hit test used to sit mirrored on the far side of the ring, so pulling the visible Turn handle did nothing), and the tilt handles are exposed to scripts along with a new bearcad.ui.drag_world verb.

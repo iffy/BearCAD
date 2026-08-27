@@ -1,1 +1,0 @@
-The Elements pane's graph view is now one element per line, with the relationships drawn beside them as vertical lanes the way gitk draws commits, so it grows downward instead of spilling to the right; constraints tie sideways to the geometry they hold, and scripts can read the layout back with bearcad.ui.elements_graph().

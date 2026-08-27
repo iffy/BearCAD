@@ -1,3 +1,106 @@
+# v0.7.0 - 2026-08-27
+
+- **BREAKING CHANGE:** Re-entering a drawing from the Elements pane takes a double-click, the same as reopening a sketch.
+- **BREAKING CHANGE:** The Derived parameters walkthrough now teaches the real thing: measure an edge with the Dimension tool and press Derive parameter.
+- **BREAKING CHANGE:** The Elements pane's graph view is now one element per line, with the relationships drawn beside them as vertical lanes the way gitk draws commits, so it grows downward instead of spilling to the right; constraints tie sideways to the geometry they hold, and scripts can read the layout back with bearcad.ui.elements_graph().
+- **NEW:** Added a Derived parameters tutorial that types one parameter, works a second one out from it with an expression, drives a rectangle with both, and then changes the source so the derived value follows.
+- **NEW:** The drawing Dimension tool now has an element picker for projected edges and corners, and after the first point only other corners of the same body are pickable.
+- **NEW:** In the View workbench, the Cutting plane tool hangs a cutting plane on any face you click, with Offset, Rotate, and Flip in the context pane, and several planes combine to cut a view in more than one direction.
+- **NEW:** The Elements pane's plus menu now includes New drawing.
+- **NEW:** Added a Mirror in a sketch tutorial that reflects a circle across the Y axis and extrudes the matching pair into two posts.
+- **NEW:** Cross-section views now outline each cut face with a solid line in the hatch colour, slightly thicker than the hash marks, so cut material reads as one bounded face.
+- **NEW:** Added a Repeat tutorial that patterns a block along the X axis and works all three interlinked fields plus the Gap/Offset and Distance start/end toggles.
+- **NEW:** Cutting planes in cross-section views take a body scope: a "Bodies to cut" picker and an "Exclude" picker, each with an All-bodies switch; scripts scope them with the new bodies / exclude_bodies keys of bearcad.section_plane and bearcad.edit_section_plane, and bearcad.section_planes reads them back.
+- **NEW:** Added a Slice tutorial that draws a slanted line across a block's top face and uses it as a laser cutter to split the block in two.
+- **NEW:** A cross-section view now chops the bodies where its planes cut them, hiding what's behind each plane and hatching the faces it opens.
+- **NEW:** Scripts can now drive the Repeat tool's Count, Gap and Distance fields, its Offset/Gap and start/end measure toggles, and which of the three the app computes, through bearcad.ui.repeat_tool.
+- **NEW:** Dragging a cross-section view from the Elements pane onto a drawing projection now sections that projection — its aligned children with it — and sectioned projections (base and aligned) offer "Remove cross section N" in their right-click menu (#1776).
+- **NEW:** The toolbar now names the workbench you're on — Modeling, Sketch, Drawing, or View — and switches between them; opening a cross-section view puts you on the new View workbench.
+- **NEW:** Scripts can measure the current selection into a parameter with bearcad.derive_parameter{ from = "selection" }.
+- **NEW:** With the Select tool, the arrow keys nudge the selection a millimetre at a time — ten with Shift — on a drawing page and in a sketch.
+- **NEW:** A technical drawing can import a cross-section view — the whole model cut by its planes, or individual bodies shown cut by it — with the opened faces hatched on the page.
+- **NEW:** Technical drawings dimension a smooth curve as a whole: clicking the curve on the Dimension tool — or bearcad.drawing_curve_dimension — shows its measured length; its tessellation facets stay unpickable (#1785, #1781)
+- **NEW:** bearcad.select can name drawing page items: a projection ({ kind = "projection", drawing, view }), a text annotation ({ kind = "annotation", drawing, index }), an edge dimension ({ kind = "dimension", drawing, view, a, b }) or a point dimension ({ kind = "dimension", drawing, view, index }). Selecting one opens the drawing and takes it into the page selection, like an Elements-pane click.
+- **NEW:** The Constraints tutorial now finishes by making the top side parallel to the bottom, so the quad visibly squares up.
+- **NEW:** Scripts can read where the Elements pane drew a row with bearcad.ui.elements_row_rect.
+- **NEW:** Scripts can now send a double-click with bearcad.ui.double_click, read back the armed tool with bearcad.ui.tool(), and find where the viewport sits in the window from bearcad.ui.viewport().
+- **NEW:** The Slice walkthrough ends by showing you how to select a piece and hide it with V.
+- **NEW:** Cross-section views: create one from View → Create Cross Section or the Elements pane's + menu, and find it under the new Views section of the Elements pane.
+- **NEW:** Cutting planes are elements of their own, listed under their view in the Views section of the Elements pane.
+- **NEW:** Added a Revolve tutorial that spins a square into a ring around the X axis and then revolve-cuts a half-round groove into its outer face.
+- **NEW:** Added a Shell tutorial that hollows a block into a four-sided box, opening both the top and the bottom face at a 2 mm wall.
+- **NEW:** Scripts can now count and read back every feature a tool builds — revolutions, sweeps, lofts, combines, moves, mirrors, repeats, slices, shells, edge treatments and the in-sketch offset/mirror/repeat/slice/chamfer operations.
+- **NEW:** A drawing projection's context pane lists the cross section applied to it, with a Remove button, so a view can be un-sectioned from the pane and not only the card's context menu (#1778)
+- **NEW:** Scripts can open a cutting plane's live edit draft with bearcad.begin_edit_section_plane, so the edit-preview path is scriptable (#1787)
+- **NEW:** Every dimensional option in the Lua scripting API — a shape's placement point, a plane offset, text rotation and wrap width, extrude_face distance, edit_extrusion by, and a drawing page size and margin — now accepts a parameter or unit expression string ("leg / 2", "5in", "45deg") wherever it previously took only a plain millimetre number.
+- **NEW:** Added an Angled plane tutorial that tilts a construction plane off the Y axis, builds a solid on it, then moves the plane and shows the solid swing with it.
+- **NEW:** Added a Curves tutorial that draws a closed outline with the Line tool's Curve mode, bending two of its sides, then extrudes it.
+- **NEW:** The Dimension tool's Derive parameter block is available inside a sketch, not just in 3D.
+- **NEW:** Added an Offset tutorial that offsets a circle 5 mm outward and extrudes the ring between the two into a walled tube.
+- **NEW:** Scripts can read where a drawing view's card was drawn with bearcad.ui.drawing_view_rect, and the tutorial orb reports its radius.
+- **NEW:** The Cutting plane tool now uses the same Anchor picker, offset and rotate gizmos, and blue accept button as other tools, and hover-highlights the face or plane a click would hang the cut on.
+- **NEW:** A new projection follows the cursor across the page until you click or press Enter to drop it, and Escape takes it back off the sheet.
+- **NEW:** Drawing dimension labels are all draggable now: a free point-to-point dimension's label moves its dimension line like edge and Ø labels already could, and every label's grab area covers its whole text instead of a small patch at its centre (#1774).
+- **FIX:** Shell's Open faces picker now lists the faces you picked on a plain cuboid or other primitive body instead of showing nothing.
+- **FIX:** The drawing walkthrough names its body Bracket, the word the narration uses.
+- **FIX:** The Elements graph packs nodes left into unused columns when their preferred lane is already carrying a trunk.
+- **FIX:** The Slice tool inside an open sketch no longer mounts its 3D section as well, which had doubled the Targets and Cutters rows and painted widget-id errors over the pane.
+- **FIX:** Cutting plane tilt gizmos now grab at the handles the viewport draws (the hit test used to sit mirrored on the far side of the ring, so pulling the visible Turn handle did nothing), and the tilt handles are exposed to scripts along with a new bearcad.ui.drag_world verb.
+- **FIX:** In the Elements graph view, lines no longer run across element icons or names, and where two lines cross the vertical one now stays whole while the other breaks around it.
+- **FIX:** Cutting plane: dragging the green Turn ring with an offset off the face no longer flips ~180 degrees back and forth past ~90-180 degrees of tilt - the drag now measures the cursor against the ring frame frozen at the grab and applies the shortest wrapped step, and the tilt gizmos report their handle positions to scripts.
+- **FIX:** Cut-away face hatch lines and their outline no longer break into dashes at some zooms: the strokes lift toward the camera in proportion to depth-buffer precision so the cut face's fill cannot speckle through them (#1777)
+- **FIX:** The Elements graph view lays its lines out without needless crossings: each element now rides the lane of its nearest input instead of detouring across the graph to a farther one.
+- **FIX:** Technical drawings stroke section hatching at half the model-edge line weight, so it reads as a fill texture instead of competing with the outline (#1784)
+- **FIX:** The drawing walkthrough's Dimension step rings a real line on the front view.
+- **FIX:** A tutorial step naming a parameter now rings that parameter's row instead of whichever row the Parameters pane drew last.
+- **FIX:** After you pick a cutting-plane anchor, the offset field takes focus so you can drag gizmos without choosing another plane.
+- **FIX:** The Selection Exploder offers the letters of a sketch text, so a click on a loupe picks the whole string for the Extrude tool.
+- **FIX:** Moving a cutting plane previews the cut live, and double-clicking a hanging plane reopens the same inputs to edit it.
+- **FIX:** The line, rectangle or circle you're drawing in a sketch shows through bodies, instead of being cut off by whatever stands in front.
+- **FIX:** Pressing Tab while drawing a circle now keeps the keyboard on the diameter field instead of handing focus to the toolbar.
+- **FIX:** The Revolve walkthrough notices a click inside the groove circle even where it overlaps the square.
+- **FIX:** A visible cross-section view cuts the model even in the modeling workbench; hide the view to lift the cut.
+- **FIX:** The Dimension tool's Context pane no longer shows the Name field or the Construction toggle for whatever is selected.
+- **FIX:** Drawing dimension labels now clear their dimension line by half a glyph more, so vertical and slanted labels no longer sit on the stroke.
+- **FIX:** Technical-drawing picks offer logical geometry only: straight runs pick as one edge, an edge-on curve merges to the single line it draws, and a curve's tessellation facets and their faux vertices are no longer pickable at all (#1780, #1781)
+- **FIX:** The cutting plane tool now reuses the construction-plane picker and gizmos, so a face gets one offset handle and two in-plane tilts and an edge hangs the plane the way a construction plane does.
+- **FIX:** The Shape cuboid's height follows the cursor on either side of the placement face, including behind it.
+- **FIX:** Dragging where two projections overlap now moves the one you selected, or the one on top, instead of the card behind.
+- **FIX:** The Shape cuboid preview no longer flops between opposite corners as the pointer moves along one face.
+- **FIX:** The Repeat walkthrough's opening line is one sentence.
+- **FIX:** Double-clicking an element row in the Elements pane's Graph view now opens it for editing the same way List-view rows do — sketches, planes, extrusions, and every editable operation.
+- **FIX:** Every walkthrough after the first clears away the datum planes it doesn't draw on, so nothing stands in front of what the step points at.
+- **FIX:** Every tutorial step now asks for exactly one action and points its orb at a real target: the shape and parameter walkthroughs no longer combine typing with Tab, the drawing walkthrough calls the Projection tool by its toolbar name and shows an orb for its page clicks, and the Slice and Mirror orbs sit on the line and the circle's rim where the click has to land.
+- **FIX:** Every tutorial that extrudes now waits for you to click the face instead of skipping that step the moment the Extrude tool is picked.
+- **FIX:** An aligned drawing view created from a sectioned base view is born with the base's cross section applied (#1779)
+- **FIX:** Double-clicking a construction plane in the Elements pane now reopens it in the Plane tool, matching sketches, extrusions and every other operation.
+- **FIX:** The Repeat tool takes a body edge as its path again where a sketch's origin axis crosses it, instead of the click landing on nothing.
+- **FIX:** Editing a cutting plane previews in place of the plane being edited instead of compounding with its committed state, so one plane no longer draws two cuts (#1783)
+- **FIX:** Lengths no longer show a pointless trailing zero, so a dimension reads 50 mm instead of 50.0 mm.
+- **FIX:** The Shell walkthrough opens the top and the side facing you, so you never have to turn the model over.
+- **FIX:** The Curves tutorial now notices a three-sided closed outline, and its "Close it for me" button joins up the sides you drew instead of stamping a fresh box over them.
+- **FIX:** The web build compiles again — its JSON scripting bridge reached for a module only the desktop build has.
+- **FIX:** Fixed a regression from the section-cut work: opening a cutting plane made every body render with flat, faceted shading — curved walls now keep their smooth per-vertex normals under a section cut (#1772).
+- **FIX:** The workbench picker now lists only the workbenches you can switch to, and stands as tall as the toolbar buttons beside it.
+- **FIX:** The web (wasm) build compiles again: drawing-element scripting arguments (#1747) had a type error only the wasm32 build could see (#1789)
+- **FIX:** Double-clicking a cutting plane in the Elements pane now reopens it in the cutting-plane tool with its offset and tilt handles, instead of just reopening the cross-section view.
+- **FIX:** The world and sketch origin axes can now be clicked wherever they are drawn, even where a solid stands in front of them, so tools like Revolve can take an axis that runs through a body.
+- **FIX:** The tutorial orb no longer sticks to a row rect captured on an earlier screen, so the drawing walkthrough rings the body row it names.
+- **FIX:** A cutting plane's yellow overlay draws only while it is selected, and the cut hatch uses thicker dark grey lines.
+- **FIX:** The sketch Mirror walkthrough asks for the mirror line first, matching the order the Mirror tool picks in.
+- **FIX:** If a cutting plane is coplanar with a face and nothing of the body sits on the keep side, that face is hidden.
+- **FIX:** With half of a point-to-point dimension armed on a drawing, the Selection Exploder only offers the view that pick belongs to.
+- **FIX:** The Slice tutorial now has you leave the sketch before picking the Slice tool, and points its block orb clear of the cutter line.
+- **FIX:** A tutorial orb pointing at a Context-pane tick box now sits on the box instead of the gap beside it.
+- **FIX:** Fixed angled drawing views of round features: a corner view of a cylinder drew its cap rims as full-radius circles floating past the silhouette — angled circles now project to their true ellipses, with the Ø dimension running along the ellipse's major axis (#1775).
+- **FIX:** The angled-plane walkthrough puts the keyboard on the Tilt field and shows its typing hint there.
+- **FIX:** The Repeat walkthrough now rings the Gap and Distance icons and the Offset lock the steps name, instead of the value field beside them.
+- **FIX:** Cutting planes nest under their view in the Elements pane, no longer list in the context pane, and hide from that pane while you are modeling.
+- **FIX:** A shaded drawing view no longer shows a stub of a hidden line poking out of the solid.
+- **FIX:** A new or opened document now clears every half-made operation, so a leftover preview like a half-placed sphere no longer floats over the new model.
+- GitHub release build numbers are the abbreviated commit SHA (vX.Y.Z-build.<sha>) instead of the per-day YYMMDD-### sequence (#1788)
+- The Elements graph view drops the Document row: a model's own top-level elements are the roots there, and they always sit flush in the first lane.
+
 # v0.6.0 - 2026-08-24
 
 - **BREAKING CHANGE:** Every angle in the script API is now degrees, including bearcad.ui.camera, rotation gizmos and angle parameters read back with bearcad.parameter("get", …).

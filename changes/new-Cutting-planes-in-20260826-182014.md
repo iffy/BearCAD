@@ -1,1 +1,0 @@
-Cutting planes in cross-section views take a body scope: a "Bodies to cut" picker and an "Exclude" picker, each with an All-bodies switch; scripts scope them with the new bodies / exclude_bodies keys of bearcad.section_plane and bearcad.edit_section_plane, and bearcad.section_planes reads them back.

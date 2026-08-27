@@ -1,1 +1,0 @@
-Every tutorial step now asks for exactly one action and points its orb at a real target: the shape and parameter walkthroughs no longer combine typing with Tab, the drawing walkthrough calls the Projection tool by its toolbar name and shows an orb for its page clicks, and the Slice and Mirror orbs sit on the line and the circle's rim where the click has to land.

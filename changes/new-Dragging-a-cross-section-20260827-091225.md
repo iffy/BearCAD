@@ -1,1 +1,0 @@
-Dragging a cross-section view from the Elements pane onto a drawing projection now sections that projection — its aligned children with it — and sectioned projections (base and aligned) offer "Remove cross section N" in their right-click menu (#1776).

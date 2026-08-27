@@ -1,1 +1,0 @@
-Scripts can now count and read back every feature a tool builds — revolutions, sweeps, lofts, combines, moves, mirrors, repeats, slices, shells, edge treatments and the in-sketch offset/mirror/repeat/slice/chamfer operations.
