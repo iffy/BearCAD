@@ -60,6 +60,11 @@ bearcad.drawing_dimension{ drawing = d, view = 0, a = {0, 0, 0}, b = {40, 0, 0} 
 -- Toggle a circle's diameter dimension by its world centre.
 bearcad.drawing_circle_dimension{ drawing = d, view = 0, center = {20, 10, 10} }
 
+-- Toggle a smooth curve's length dimension by its world polyline (a cut edge, say).
+-- Clicking the curve on the page does the same: the whole curve toggles together.
+bearcad.drawing_curve_dimension{ drawing = d, view = 0,
+  points = { {0, 0, 10}, {5, 0, 14}, {12, 0, 15} } }
+
 -- Display style and which way a placed view faces.
 bearcad.drawing_view_style{ drawing = d, view = 0, style = "shaded" }  -- visible/wireframe/shaded
 bearcad.drawing_view_orientation{ drawing = d, view = 0, orientation = "front-right-top" }

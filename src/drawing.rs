@@ -1128,19 +1128,20 @@ const PICK_SHARP_TURN_COS: f32 = 0.906_307_8; // cos 25°
 /// Two facets this parallel are the same straight run; anything more is the curve turning.
 const PICK_STRAIGHT_RUN_COS: f32 = 0.999_998_5; // within ~0.1°
 
-/// The *logical* pick edges of a view (#1780/#1781): [`merge_collinear_runs`] makes each
-/// straight model edge one edge; what is left that turns is a curve's tessellation — and
-/// those facets (and their faux vertices) are rendering artifacts, not geometry to pick or
-/// dimension. A connected run of ≥ 3 segments whose joints turn, none sharply, is therefore
-/// dropped whole; corners (sharp turns) and short 1–2 segment chains — two real edges
-/// meeting at a shallow angle — survive untouched.
+/// The *logical* pick geometry of a view (#1780/#1781/#1785): [`merge_collinear_runs`]
+/// makes each straight model edge one edge; what is left that turns is a curve's
+/// tessellation — those facets (and their faux vertices) are rendering artifacts, not line
+/// geometry to pick or dimension, so a turning chain of ≥ 3 segments comes back as one
+/// curve polyline (a whole-curve pick, #1785) instead of line picks. Corners (sharp turns)
+/// and short 1–2 segment chains — two real edges meeting at a shallow angle — survive as
+/// untouched line picks.
 ///
 /// `project` gives a segment's view projection; the turn test runs on it, because that is
 /// what the reader of the drawing sees.
-pub fn logical_pick_edges(
+fn logical_pick_geometry(
     world_edges: &[(Vec3, Vec3)],
     project: &impl Fn(Vec3) -> glam::Vec2,
-) -> Vec<(Vec3, Vec3)> {
+) -> (Vec<(Vec3, Vec3)>, Vec<Vec<Vec3>>) {
     let world_edges = merge_collinear_runs(world_edges);
     let projected: Vec<glam::Vec2> =
         world_edges.iter().flat_map(|(a, b)| [project(*a), project(*b)]).collect();
@@ -1184,12 +1185,16 @@ pub fn logical_pick_edges(
     // at junctions and sharp turns, to collect the maximal facet chains.
     let mut visited = vec![false; world_edges.len()];
     let mut out = Vec::new();
+    let mut curves: Vec<Vec<Vec3>> = Vec::new();
     for i in 0..world_edges.len() {
         if visited[i] {
             continue;
         }
         visited[i] = true;
         let mut chain = vec![i];
+        // The chain's nodes in walk order: [na, nb, then right-walk appends, left-walk
+        // prepends] — the curve polyline when the chain turns out to be a curve.
+        let mut walk: Vec<usize> = vec![ends[i].0, ends[i].1];
         for &(first, first_dir) in &[(ends[i].1, 1usize), (ends[i].0, 0usize)] {
             let mut at = first;
             // Direction of travel into `at`: along segment `i`, toward `at`.
@@ -1211,16 +1216,21 @@ pub fn logical_pick_edges(
                 }
                 visited[next] = true;
                 chain.push(next);
+                if first_dir == 1 {
+                    walk.push(beyond);
+                } else {
+                    walk.insert(0, beyond);
+                }
                 incoming = outgoing;
                 at = beyond;
             }
         }
         // Classify the chain by how it projects. A run of ≥ 3 facets is a curve's
-        // tessellation: when it turns anywhere on the page it is a rendering artifact —
-        // dropped whole; when it projects dead straight (a curve seen edge-on) it reads as
-        // one line, so it merges to one edge spanning its extremes. Short chains stay —
-        // two segments can be two real edges meeting at a shallow angle, and a lone
-        // segment is geometry in its own right.
+        // tessellation: when it turns anywhere on the page it is one curve — not line
+        // picks, but a whole-curve pick of its own (#1785); when it projects dead straight
+        // (a curve seen edge-on) it reads as one line, so it merges to one edge spanning
+        // its extremes. Short chains stay — two segments can be two real edges meeting at
+        // a shallow angle, and a lone segment is geometry in its own right.
         if chain.len() >= 3 {
             let straight = chain.windows(2).all(|w| {
                 let (a, b) = (w[0], w[1]);
@@ -1253,6 +1263,10 @@ pub fn logical_pick_edges(
                 if lo != hi {
                     out.push((nodes[lo], nodes[hi]));
                 }
+            } else {
+                // The curve's world points in walk order; a closed cycle (the walk arrived
+                // back at its own start) already ends where it began.
+                curves.push(walk.iter().map(|&n| nodes[n]).collect());
             }
         } else {
             for &s in &chain {
@@ -1260,12 +1274,54 @@ pub fn logical_pick_edges(
             }
         }
     }
-    // One line on the page, one pick: a body's rim often comes back twice — the cap and the
-    // wall each tessellate it — and an edge-on curve's fold-back legs retrace the same line,
-    // so collinear edges whose projected spans overlap collapse to the one line they draw
-    // (#1780). Spans that merely touch merge too; a real gap keeps them apart, like
-    // [`merge_collinear_runs`] does in 3D.
-    collapse_overlapping_projected_spans(out, project)
+    let lines = collapse_overlapping_projected_spans(out, project);
+    (lines, curves)
+}
+
+/// The *logical* pick edges of a view (#1780/#1781): see [`logical_pick_geometry`].
+pub fn logical_pick_edges(
+    world_edges: &[(Vec3, Vec3)],
+    project: &impl Fn(Vec3) -> glam::Vec2,
+) -> Vec<(Vec3, Vec3)> {
+    logical_pick_geometry(world_edges, project).0
+}
+
+/// The *logical* curve picks of a view (#1785): the tessellation chains that turn — a cut
+/// ellipse, a fillet run — each as one ordered world polyline. A curve toggles and
+/// dimensions as a whole; its facets are never picks (#1781).
+pub fn logical_pick_curves(
+    world_edges: &[(Vec3, Vec3)],
+    project: &impl Fn(Vec3) -> glam::Vec2,
+) -> Vec<Vec<Vec3>> {
+    logical_pick_geometry(world_edges, project).1
+}
+
+/// A curve dimension's stored identity (#1785): the polyline rotated to start at its
+/// lexicographically smallest point and, if the reversed walk sorts earlier, reversed — so
+/// the same curve picked from either end toggles the same entry.
+pub fn canonical_curve_key(points: &[[i32; 3]]) -> Vec<[i32; 3]> {
+    let n = points.len();
+    let mut best = points.to_vec();
+    for reversed in [false, true] {
+        let seq: Vec<[i32; 3]> = if reversed {
+            points.iter().rev().copied().collect()
+        } else {
+            points.to_vec()
+        };
+        for start in 0..n {
+            let rotated: Vec<[i32; 3]> = (0..n).map(|i| seq[(start + i) % n]).collect();
+            if rotated < best {
+                best = rotated;
+            }
+        }
+    }
+    best
+}
+
+/// A curve chain's world length (#1785): the sum of its tessellation chords — the polyline
+/// is the kernel's own tessellation, fine enough to read as the arc itself.
+pub fn curve_chain_length(world: &[Vec3]) -> f32 {
+    world.windows(2).map(|w| (w[1] - w[0]).length()).sum()
 }
 
 /// Collapse groups of collinear, overlapping projected spans into one edge per stretch,
@@ -2433,6 +2489,37 @@ fn render_view_geometry<C: Canvas>(
         canvas.text_rot(lp.x, lp.y, 11.0, Anchor::Middle, &label, ang);
     }
 
+    // Curve length dimensions (#1785): the whole polyline strokes with the edges and its
+    // measured length labels the middle, pushed outward from the view's centre.
+    let curves = logical_pick_curves(&raw_edges, &project);
+    for key in &view.dimensioned_curves {
+        let matches = |chain: &Vec<Vec3>| {
+            canonical_curve_key(
+                &chain.iter().map(|p| crate::hierarchy::quantize_body_point(*p)).collect::<Vec<_>>(),
+            ) == *key
+        };
+        let Some(chain) = curves.iter().find(|c| matches(c)) else {
+            continue;
+        };
+        let pts: Vec<glam::Vec2> = chain.iter().map(|p| project(*p)).collect();
+        for w in pts.windows(2) {
+            if projected_segment_on_circle(w[0], w[1], &pcircles) {
+                continue;
+            }
+            let (sa, sb) = (to_screen(w[0]), to_screen(w[1]));
+            canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, MODEL_STROKE);
+        }
+        let mid = pts[pts.len() / 2];
+        let outward = {
+            let v = mid - bbox_center;
+            let n = v.normalize_or_zero();
+            if n.length_squared() < 0.5 { glam::vec2(0.0, -1.0) } else { n }
+        };
+        let label = crate::value::format_length_display_in(curve_chain_length(chain), unit);
+        let lp = to_screen(mid + outward * default_gap);
+        canvas.text_rot(lp.x, lp.y, 11.0, Anchor::Middle, &label, 0.0);
+    }
+
     // Free point-to-point dimensions (#1645): two picked points, measured straight between
     // them or along one page axis.
     for dim in &view.point_dims {
@@ -3426,7 +3513,7 @@ mod tests {
             cross_section: None,
             bodies: vec![bkey(0)], sketch: None, orientation: O::Top,
             dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
-            dimensioned_circles: Vec::new(),
+            dimensioned_circles: Vec::new(), dimensioned_curves: Vec::new(),
 circle_dim_offsets: Vec::new(), point_dims: Vec::new(), aligned_parent: None, aligned_dir: None,
             scale: None, style: Default::default(), pos_x: 0.5, pos_y: 0.5,
             size_x: CELL_FRAC, size_y: CELL_FRAC,
@@ -3493,7 +3580,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
             cross_section: None,
             bodies: vec![bkey(0)], sketch: None, orientation: O::Front,
             dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
-            dimensioned_circles: Vec::new(),
+            dimensioned_circles: Vec::new(), dimensioned_curves: Vec::new(),
 circle_dim_offsets: Vec::new(), point_dims: Vec::new(), aligned_parent: None, aligned_dir: None,
             scale: None, style: Default::default(), pos_x: 0.5, pos_y: 0.5,
             size_x: CELL_FRAC, size_y: CELL_FRAC,
@@ -3921,7 +4008,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
                 dimensioned_edges: Vec::new(),
                 angle_dims: Vec::new(),
                 dimension_offsets: Vec::new(),
-                dimensioned_circles: Vec::new(),
+                dimensioned_circles: Vec::new(), dimensioned_curves: Vec::new(),
 circle_dim_offsets: Vec::new(), point_dims: Vec::new(),
                 aligned_parent: None,
                 aligned_dir: None,
@@ -4214,5 +4301,133 @@ label_hidden: false,
             );
         }
         assert!(HATCH_STROKE < MODEL_STROKE, "the hatch draws thinner than edges");
+    }
+
+    /// #1785: a curve's length dimension renders in the export — the polyline strokes with
+    /// the edges and the measured arc length labels it.
+    #[test]
+    fn curve_length_dimension_renders_in_the_export() {
+        let mut state = crate::actions::AppState::default();
+        let mut shape = crate::model::Primitive::new(crate::model::PrimitiveKind::Cylinder);
+        shape.origin = [0.0, 0.0, 0.0];
+        shape.normal = [0.0, 0.0, 1.0];
+        shape.radius = "20".into();
+        shape.height = "40".into();
+        state.apply(crate::actions::Action::CreateShape { shape });
+        state.apply(crate::actions::Action::CreateCrossSection { name: None });
+        let section = state.doc.cross_sections.keys().next().expect("the view");
+        state.apply(crate::actions::Action::AddCrossSectionCut {
+            view: Some(section),
+            cut: crate::model::CrossSectionCut {
+                origin: glam::Vec3::new(0.0, 0.0, 0.0),
+                normal: glam::Vec3::new(0.0, 1.0, 0.0),
+                offset_mm: 5.0,
+                flip: true,
+                roll: 25f32.to_radians(),
+                ..Default::default()
+            },
+        });
+        state.apply(crate::actions::Action::CreateDrawing { name: None });
+        let drawing = state.doc.drawings.keys().next().expect("the drawing");
+        state.apply(crate::actions::Action::AddDrawingView {
+            drawing,
+            bodies: vec![bkey(0)],
+            orientation: crate::model::DrawingOrientation::Front,
+        });
+        state.apply(crate::actions::Action::SetDrawingViewCrossSection {
+            drawing,
+            view: 0,
+            cross_section: Some(section),
+        });
+        // The sectioned view offers a curve — the tilted cut's edge — and toggling it
+        // stores the canonical polyline.
+        let views = state.doc.drawings[drawing].views.clone();
+        let view = &views[0];
+        let curves = logical_pick_curves(
+            &drawing_view_dimensionable_edges(&state.doc, &views, view),
+            &|p: Vec3| glam::vec2(p.x, p.z),
+        );
+        assert!(!curves.is_empty(), "the tilted cut's edge is a curve pick");
+        let key = canonical_curve_key(
+            &curves[0]
+                .iter()
+                .map(|p| crate::hierarchy::quantize_body_point(*p))
+                .collect::<Vec<_>>(),
+        );
+        state.apply(crate::actions::Action::ToggleDrawingCurveDimension {
+            drawing,
+            view: 0,
+            points: key,
+        });
+        let svg = drawing_to_svg(&state.doc, drawing).expect("svg");
+        let length = curve_chain_length(&curves[0]);
+        let needle = crate::value::format_length_display_in(length, crate::value::LengthUnit::Mm);
+        assert!(
+            svg.contains(&needle),
+            "the exported drawing shows the curve's length {needle}"
+        );
+    }
+
+    /// #1785: the pick surface exposes a curve as one chain with its world points in walk
+    /// order — the same polyline the click toggles and the dimension measures.
+    #[test]
+    fn pick_curves_come_out_as_ordered_chains_with_length() {
+        let flat = |p: Vec3| glam::vec2(p.x, p.y);
+        let edges: Vec<(Vec3, Vec3)> = (0..24)
+            .map(|i| {
+                let a0 = i as f32 / 24.0 * std::f32::consts::FRAC_PI_2;
+                let a1 = (i + 1) as f32 / 24.0 * std::f32::consts::FRAC_PI_2;
+                (
+                    Vec3::new(10.0 + 5.0 * a0.cos(), 10.0 + 5.0 * a0.sin(), 0.0),
+                    Vec3::new(10.0 + 5.0 * a1.cos(), 10.0 + 5.0 * a1.sin(), 0.0),
+                )
+            })
+            .collect();
+        let lines = logical_pick_edges(&edges, &flat);
+        assert!(lines.is_empty(), "the arc's facets are not line picks");
+        let curves = logical_pick_curves(&edges, &flat);
+        assert_eq!(curves.len(), 1, "the arc is one curve pick");
+        let chain = &curves[0];
+        // Consecutive points share a facet endpoint: the chain is in walk order.
+        for w in chain.windows(2) {
+            assert!(
+                crate::hierarchy::quantize_body_point(w[0]) != crate::hierarchy::quantize_body_point(w[1]),
+                "the chain visits distinct points in order"
+            );
+        }
+        // The chain runs from one arc end to the other (the internal merge may reorder
+        // segments, so either end may come first).
+        let q = |p: Vec3| crate::hierarchy::quantize_body_point(p);
+        let arc_ends = [
+            q(edges.first().expect("facets").0),
+            q(edges.last().expect("facets").1),
+        ];
+        let chain_ends = [q(chain[0]), q(*chain.last().expect("points"))];
+        assert!(
+            (chain_ends[0] == arc_ends[0] && chain_ends[1] == arc_ends[1])
+                || (chain_ends[0] == arc_ends[1] && chain_ends[1] == arc_ends[0]),
+            "the chain spans the arc's two ends: {chain_ends:?} vs {arc_ends:?}"
+        );
+        // And its length approximates the arc: a quarter of a radius-5 circle.
+        let length: f32 = chain.windows(2).map(|w| (w[1] - w[0]).length()).sum();
+        let true_length = std::f32::consts::FRAC_PI_2 * 5.0;
+        assert!(
+            (length - true_length).abs() < true_length * 0.01,
+            "chord sum {length} approximates arc {true_length}"
+        );
+    }
+
+    /// #1785: a curve dimension's stored key is canonical — the same curve toggles to the
+    /// same entry whichever end it was walked from.
+    #[test]
+    fn canonical_curve_key_is_rotation_and_direction_independent() {
+        let a: [i32; 3] = [0, 0, 0];
+        let b: [i32; 3] = [100, 0, 0];
+        let c: [i32; 3] = [100, 100, 0];
+        let forward = vec![a, b, c];
+        let reversed = vec![c, b, a];
+        let rotated = vec![b, c, a];
+        assert_eq!(canonical_curve_key(&forward), canonical_curve_key(&reversed));
+        assert_eq!(canonical_curve_key(&forward), canonical_curve_key(&rotated));
     }
 }

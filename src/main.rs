@@ -26872,6 +26872,7 @@ impl App {
         // in the view's projected millimetres.
         let mut add_point_dim: Option<(usize, egui::Vec2, egui::Vec2)> = None;
         let mut toggle_circle_dim: Option<(usize, [i32; 3])> = None;
+        let mut toggle_curve_dim: Option<(usize, Vec<[i32; 3]>)> = None;
         let mut toggle_angle: Option<(usize, model::DrawingEdgeKey, model::DrawingEdgeKey)> = None;
         // First edge of an in-progress angle pick (Shift+click), kept across frames per drawing.
         let pending_angle_id = ui.make_persistent_id(("drawing_angle_pending", drawing));
@@ -27303,6 +27304,16 @@ impl App {
                     .iter()
                     .map(|(a, b)| (project(*a), project(*b)))
                     .collect();
+                // Whole-curve picks (#1785): the tessellation chains, in world space and
+                // projected.
+                let pick_curves_world =
+                    crate::drawing::logical_pick_curves(&raw_edges, &|p: Vec3| {
+                        glam::vec2(p.dot(right), p.dot(up))
+                    });
+                let pick_curves: Vec<Vec<egui::Vec2>> = pick_curves_world
+                    .iter()
+                    .map(|c| c.iter().map(|p| project(*p)).collect())
+                    .collect();
                 let (mut min, mut max) = (egui::vec2(f32::MAX, f32::MAX), egui::vec2(f32::MIN, f32::MIN));
                 for (a, b) in &proj {
                     for p in [a, b] {
@@ -27455,7 +27466,8 @@ impl App {
                 // Detected circles are pickable the same way (#373) — their outline (round
                 // face-on, the foreshortened line edge-on) toggles the Ø dimension — so their
                 // tessellation segments are excluded from the edge candidates.
-                let (hovered_edge, hovered_circle) = (self.state.tool == Tool::Dimension)
+                let (hovered_edge, hovered_circle, hovered_curve) =
+                    (self.state.tool == Tool::Dimension)
                     .then(|| {
                         let pp = pointer_screen?;
                         if !draw_area.contains(pp) {
@@ -27514,25 +27526,42 @@ impl App {
                         }
                         let best_edge = best_edge.filter(|(d, _)| *d <= 8.0);
                         let best_circle = best_circle.filter(|(d, _)| *d <= 8.0);
-                        Some(match (best_edge, best_circle) {
+                        // A smooth curve (#1785): the whole chain picks together — the
+                        // nearest facet stands for every one of them.
+                        let mut best_curve: Option<(f32, usize)> = None;
+                        for (ci, chain) in pick_curves.iter().enumerate() {
+                            let d = chain
+                                .windows(2)
+                                .map(|w| dist_point_to_segment(pp, to_screen(w[0]), to_screen(w[1])))
+                                .fold(f32::MAX, f32::min);
+                            if best_curve.is_none_or(|(bd, _)| d < bd) {
+                                best_curve = Some((d, ci));
+                            }
+                        }
+                        let best_curve = best_curve.filter(|(d, _)| *d <= 8.0);
+                        let pick = match (best_edge, best_circle) {
                             (Some((de, i)), Some((dc, ci))) => {
                                 if dc <= de {
-                                    (None, Some(ci))
-                                } else {
                                     (Some(i), None)
+                                } else {
+                                    (None, Some(ci))
                                 }
                             }
-                            (e, c) => (e.map(|(_, i)| i), c.map(|(_, ci)| ci)),
-                        })
+                            (Some((_, i)), None) => (Some(i), None),
+                            (None, Some((_, ci))) => (None, Some(ci)),
+                            (None, None) => (None, None),
+                        };
+                        Some((pick.0, pick.1, best_curve))
                     })
                     .flatten()
-                    .unwrap_or((None, None));
+                    .unwrap_or((None, None, None));
                 // Once a point is armed, only other corners are pickable (#1714).
-                let (hovered_edge, hovered_circle) = if self.drawing_point_dim_pick.is_some() {
-                    (None, None)
-                } else {
-                    (hovered_edge, hovered_circle)
-                };
+                let (hovered_edge, hovered_circle, hovered_curve) =
+                    if self.drawing_point_dim_pick.is_some() {
+                        (None, None, None)
+                    } else {
+                        (hovered_edge, hovered_circle, hovered_curve)
+                    };
 
                 // Everything on this card the cursor is over joins the Exploder's crowd (#1641/#1714):
                 // each projected edge and corner, and the card itself. Coincident projected edges
@@ -27686,6 +27715,17 @@ impl App {
                             vi,
                             hierarchy::quantize_body_point(world_circles[ci].center),
                         ));
+                    } else if let Some((_, ci)) = hovered_curve {
+                        // A smooth curve toggles its whole length dimension (#1785): the
+                        // chain's own world points, quantized, key the toggle.
+                        toggle_curve_dim = Some((
+                            vi,
+                            pick_curves_world[ci]
+                                .iter()
+                                .map(|p| hierarchy::quantize_body_point(*p))
+                                .collect(),
+                        ));
+                        self.drawing_point_dim_pick = None;
                     } else if let Some(pp) = pointer_screen {
                         // A free point-to-point dimension (#1645/#1714). Prefer a nearby
                         // projected corner so "corner to corner" measures exactly; once a
@@ -28136,6 +28176,63 @@ impl App {
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+                // Whole-curve length dimensions (#1785): a dimensioned curve's polyline
+                // strokes with the edges and its measured length labels the middle; on the
+                // Dimension tool the hovered curve previews (#1785).
+                {
+                    let raw_edges = crate::drawing::drawing_view_dimensionable_edges(
+                        &self.state.doc,
+                        &views,
+                        view,
+                    );
+                    let curves = crate::drawing::logical_pick_curves(&raw_edges, &|p: Vec3| {
+                        glam::vec2(p.dot(right), p.dot(up))
+                    });
+                    for (ci, chain) in curves.iter().enumerate() {
+                        let key = crate::drawing::canonical_curve_key(
+                            &chain
+                                .iter()
+                                .map(|p| hierarchy::quantize_body_point(*p))
+                                .collect::<Vec<_>>(),
+                        );
+                        let shown = view.dimensioned_curves.contains(&key);
+                        let hovered = self.state.tool == Tool::Dimension
+                            && hovered_curve.as_ref().is_some_and(|(_, i)| *i == ci);
+                        if !shown && !hovered {
+                            continue;
+                        }
+                        let stroke = if hovered {
+                            egui::Stroke::new(2.4, egui::Color32::from_rgb(90, 150, 230))
+                        } else {
+                            egui::Stroke::new(crate::drawing::MODEL_STROKE, INK)
+                        };
+                        let proj_pts: Vec<egui::Pos2> = chain
+                            .iter()
+                            .map(|p| to_screen(egui::vec2(p.dot(right), p.dot(up))))
+                            .collect();
+                        for w in proj_pts.windows(2) {
+                            painter.line_segment([w[0], w[1]], stroke);
+                        }
+                        if shown {
+                            let length = crate::drawing::curve_chain_length(chain);
+                            let label =
+                                crate::value::format_length_display_in(length, unit);
+                            let mid_world = chain[chain.len() / 2];
+                            let pv = egui::vec2(mid_world.dot(right), mid_world.dot(up));
+                            let outward = {
+                                let v = pv - bbox_center;
+                                let n = v.normalized();
+                                if n.length_sq() < 0.5 {
+                                    egui::vec2(0.0, -1.0)
+                                } else {
+                                    n
+                                }
+                            };
+                            let at = to_screen(pv + outward * default_gap);
+                            draw_rot_label(&painter, label, at, 0.0);
                         }
                     }
                 }
@@ -29070,6 +29167,10 @@ impl App {
         if let Some((view, center)) = toggle_circle_dim {
             self.state
                 .apply(Action::ToggleDrawingCircleDimension { drawing, view, center });
+        }
+        if let Some((view, points)) = toggle_curve_dim {
+            self.state
+                .apply(Action::ToggleDrawingCurveDimension { drawing, view, points });
         }
         if let Some((view, edge1, edge2)) = toggle_angle {
             self.state

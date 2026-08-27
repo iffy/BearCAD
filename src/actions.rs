@@ -3432,6 +3432,14 @@ pub enum Action {
         view: usize,
         center: [i32; 3],
     },
+    /// Show or hide a smooth curve's **length** dimension (#1785): the curve is its
+    /// quantized world polyline, and the whole curve toggles together — never its
+    /// tessellation facets (#1781).
+    ToggleDrawingCurveDimension {
+        drawing: crate::model::DrawingKey,
+        view: usize,
+        points: Vec<[i32; 3]>,
+    },
     /// Show or hide the dashed projection lines from an aligned child to its base view (#377).
     SetDrawingViewAlignLines {
         drawing: crate::model::DrawingKey,
@@ -14811,6 +14819,28 @@ impl AppState {
                 } else {
                     v.dimensioned_circles.push(center);
                     self.status = "Showed diameter dimension".to_string();
+                }
+                ActionResult::Ok
+            }
+            Action::ToggleDrawingCurveDimension { drawing, view, points } => {
+                if points.len() < 2 {
+                    return ActionResult::Err("A curve is at least two points".to_string());
+                }
+                let Some(v) = self
+                    .doc
+                    .drawings
+                    .get_mut(drawing)
+                    .and_then(|d| d.views.get_mut(view))
+                else {
+                    return ActionResult::Err(format!("No view {view} in drawing {}", drawing.index()));
+                };
+                let key = crate::drawing::canonical_curve_key(&points);
+                if let Some(pos) = v.dimensioned_curves.iter().position(|c| *c == key) {
+                    v.dimensioned_curves.remove(pos);
+                    self.status = "Hid curve length dimension".to_string();
+                } else {
+                    v.dimensioned_curves.push(key);
+                    self.status = "Showed curve length dimension".to_string();
                 }
                 ActionResult::Ok
             }

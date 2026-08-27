@@ -8987,6 +8987,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 t.set("orientation", view.orientation.label())?;
                 t.set("style", view.style.label())?;
                 t.set("dimensions", view.dimensioned_edges.len())?;
+                t.set("curve_dimensions", view.dimensioned_curves.len())?;
                 t.set("point_dimensions", view.point_dims.len())?;
                 t.set("align_lines", view.align_lines)?;
                 // Where the card sits on the page, and how big it is (page fractions, #1648).
@@ -9226,6 +9227,46 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     drawing,
                     view,
                     center: (v[0], v[1], v[2]),
+                })
+            }
+        })?,
+    )?;
+
+    // Toggle a smooth curve's **length** dimension (#1785): `points` is the curve's world
+    // polyline (each a {x, y, z} in millimetres), toggled as one whole curve.
+    // `bearcad.drawing_curve_dimension{ drawing, view, points = {{x,y,z}, …} }`.
+    api.set(
+        "drawing_curve_dimension",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(&opts, "drawing_curve_dimension", &["drawing", "view", "points"])?;
+            let drawing: usize = opts.get("drawing")?;
+            let view: usize = opts.get("view")?;
+            let raw: Vec<Vec<f32>> = opts.get("points")?;
+            if raw.len() < 2 {
+                return Err(mlua::Error::external(
+                    "drawing_curve_dimension `points` needs at least two points",
+                ));
+            }
+            let q = |v: Vec<f32>| -> mlua::Result<[i32; 3]> {
+                if v.len() != 3 {
+                    return Err(mlua::Error::external(
+                        "drawing_curve_dimension `points` entries must be {x, y, z}",
+                    ));
+                }
+                Ok([
+                    (v[0] * 100.0).round() as i32,
+                    (v[1] * 100.0).round() as i32,
+                    (v[2] * 100.0).round() as i32,
+                ])
+            };
+            let points: Vec<[i32; 3]> =
+                raw.into_iter().map(q).collect::<mlua::Result<_>>()?;
+            unsafe {
+                tick.exec(Instruction::ToggleDrawingCurveDimension {
+                    drawing,
+                    view,
+                    points,
                 })
             }
         })?,

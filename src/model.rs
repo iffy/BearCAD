@@ -5071,6 +5071,12 @@ pub struct DrawingView {
     /// pushes the linear dimension further out, like `dimension_offsets`. Projected mm.
     #[serde(default)]
     pub circle_dim_offsets: Vec<([i32; 3], f32)>,
+    /// Smooth curves (a cut ellipse, a fillet run) whose **length** is shown (#1785), each
+    /// stored as the curve's quantized world polyline. Clicks toggle the whole curve — its
+    /// tessellation facets are not individually dimensionable (#1781). Like the other
+    /// dimension sets, a new view starts empty.
+    #[serde(default)]
+    pub dimensioned_curves: Vec<Vec<[i32; 3]>>,
     /// Free point-to-point dimensions on this view (#1645): two points picked anywhere on the
     /// page, measured straight between them or along one axis. Stored in the view's own
     /// **projected** millimetres — the same `(right, up)` space the geometry projects into —
@@ -5179,6 +5185,7 @@ impl DrawingView {
             dimension_offsets: Vec::new(),
             dimensioned_circles: Vec::new(),
             circle_dim_offsets: Vec::new(),
+            dimensioned_curves: Vec::new(),
             point_dims: Vec::new(),
             aligned_parent: None,
             aligned_dir: None,
@@ -5207,6 +5214,7 @@ impl DrawingView {
             dimension_offsets: Vec::new(),
             dimensioned_circles: Vec::new(),
             circle_dim_offsets: Vec::new(),
+            dimensioned_curves: Vec::new(),
             point_dims: Vec::new(),
             aligned_parent: None,
             aligned_dir: None,

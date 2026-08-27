@@ -56,6 +56,7 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.drawing_angle"               , "bearcad.drawing_angle{ drawing, view, edge1, edge2 }"),
     ("bearcad.drawing_circle_dim_offset"   , "bearcad.drawing_circle_dim_offset{ drawing, view, center, offset }"),
     ("bearcad.drawing_circle_dimension"    , "bearcad.drawing_circle_dimension{ drawing, view, center }"),
+    ("bearcad.drawing_curve_dimension"     , "bearcad.drawing_curve_dimension{ drawing, view, points }"),
     ("bearcad.drawing_dim_offset"          , "bearcad.drawing_dim_offset{ drawing, view, offset, a, b }"),
     ("bearcad.drawing_dimension"           , "bearcad.drawing_dimension{ drawing, view, a, b }"),
     ("bearcad.drawing_move_view"           , "bearcad.drawing_move_view{ drawing, view, x, y }"),

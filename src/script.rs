@@ -332,6 +332,13 @@ pub enum Instruction {
     },
     /// #1687: drop one of a view's cutting planes.
     DeleteSectionPlane { view: Option<usize>, cut: usize },
+    /// #1785: show or hide a smooth curve's length dimension — the curve is its quantized
+    /// world polyline, toggled whole.
+    ToggleDrawingCurveDimension {
+        drawing: usize,
+        view: usize,
+        points: Vec<[i32; 3]>,
+    },
     /// #1787: open the live edit draft of an existing cutting plane — the offset/tilt
     /// preview stands in for the plane until Enter commits or Esc cancels (#1783).
     BeginEditSectionPlane { view: Option<usize>, cut: usize },
@@ -1519,6 +1526,14 @@ impl Instruction {
                 Some(v) => format!("bearcad.delete_section_plane{{ view = {v}, cut = {cut} }}"),
                 None => format!("bearcad.delete_section_plane{{ cut = {cut} }}"),
             },
+            Instruction::ToggleDrawingCurveDimension { drawing, view, points } => {
+                let pts: Vec<String> =
+                    points.iter().map(|p| format!("{{{},{},{}}}", p[0], p[1], p[2])).collect();
+                format!(
+                    "bearcad.drawing_curve_dimension{{ drawing = {drawing}, view = {view}, points = {{{}}} }}",
+                    pts.join(", ")
+                )
+            }
             Instruction::BeginEditSectionPlane { view, cut } => match view {
                 Some(v) => format!("bearcad.begin_edit_section_plane{{ view = {v}, cut = {cut} }}"),
                 None => format!("bearcad.begin_edit_section_plane{{ cut = {cut} }}"),
@@ -7117,6 +7132,19 @@ impl ScriptRunner {
                     }
                 };
                 let result = state.apply(Action::RemoveCrossSectionCut { view, cut });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::ToggleDrawingCurveDimension { drawing, view, points } => {
+                let Some(key) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
+                let result = state.apply(Action::ToggleDrawingCurveDimension {
+                    drawing: key,
+                    view,
+                    points,
+                });
                 self.record_action_error(result);
                 StepResult::Continue
             }
