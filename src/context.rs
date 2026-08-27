@@ -915,6 +915,10 @@ pub struct DrawingViewControl {
     pub label_text: String,
     /// The automatic caption ("Body 0 — Front (1:20)"), hinted in the empty text field.
     pub auto_label: String,
+    /// The cross section applied to this projection (#1776), by display name — listed in the
+    /// pane so it can be seen and removed there too, not only in the card's context menu
+    /// (#1778). `None` when the projection is un-sectioned.
+    pub cross_section: Option<String>,
 }
 
 /// Editor for a selected drawing text annotation (#312).
@@ -975,6 +979,8 @@ pub enum DrawingViewEdit {
     LabelPos(crate::model::DrawingLabelPos),
     /// Override the caption text (#372); `None` returns to the automatic caption.
     LabelText(Option<String>),
+    /// Un-section this projection: drop the cross section applied to it (#1778).
+    RemoveCrossSection,
     Remove,
 }
 
@@ -9109,6 +9115,17 @@ pub fn show_pane(
                 on_drawing_view_edit(DrawingViewEdit::SetAllDimensions(false));
             }
         });
+        // The applied cross section (#1778): named here, with a remove button, so the pane
+        // alone tells the whole story of the projection — the card's context menu offers the
+        // same removal (#1776).
+        if let Some(section) = &control.cross_section {
+            labeled_row(ui, "Section", |ui| {
+                ui.label(egui::RichText::new(section).color(egui::Color32::from_gray(200)));
+                if ui.button("Remove").clicked() {
+                    on_drawing_view_edit(DrawingViewEdit::RemoveCrossSection);
+                }
+            });
+        }
         labeled_row(ui, "", |ui| {
             if ui.button("Remove view").clicked() {
                 on_drawing_view_edit(DrawingViewEdit::Remove);
@@ -11317,6 +11334,7 @@ mod tests {
             label_pos: Default::default(),
             label_text: String::new(),
             auto_label: "Body 0 — Front".to_string(),
+            cross_section: None,
         };
         // Dimension tool: keeps the projection editor, but the Default-units section is now
         // suppressed like the other modeling/transform tools (#585).

@@ -16781,6 +16781,15 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                             "{source} — {}{scale_suffix}",
                             view.orientation.label()
                         );
+                        // The applied cross section's display name, for the pane's Section
+                        // row (#1778).
+                        let cross_section = view.cross_section.and_then(|k| {
+                            self.state.doc.cross_sections.get(k).map(|cs| {
+                                cs.name
+                                    .clone()
+                                    .unwrap_or_else(|| format!("Section {}", k.index()))
+                            })
+                        });
                         Some(context::DrawingViewControl {
                             view: v,
                             source,
@@ -16794,6 +16803,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                             label_pos: view.label_pos,
                             label_text: view.label_text.clone().unwrap_or_default(),
                             auto_label,
+                            cross_section,
                         })
                     })
             },
@@ -18245,6 +18255,13 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                                 hidden: None,
                                 pos: None,
                                 text: Some(text),
+                            });
+                        }
+                        context::DrawingViewEdit::RemoveCrossSection => {
+                            self.state.apply(Action::SetDrawingViewCrossSection {
+                                drawing,
+                                view,
+                                cross_section: None,
                             });
                         }
                         context::DrawingViewEdit::Remove => {
