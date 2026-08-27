@@ -3914,7 +3914,15 @@ fn assist_dimension_front(app: &mut AppState) {
         return;
     };
     let views = app.doc.drawings[drawing].views.clone();
-    let edges = crate::drawing::drawing_view_dimensionable_edges(&app.doc, &views, &view);
+    // Dimension a *logical* pick edge (#1780): a raw tessellation facet's key has nothing
+    // to draw on, so the ring and the dimension both key off the merged line.
+    let edges = crate::drawing::logical_pick_edges(
+        &crate::drawing::drawing_view_dimensionable_edges(&app.doc, &views, &view),
+        &|p: glam::Vec3| {
+            let (right, up) = crate::drawing::resolved_view_axes(&views, &view);
+            glam::Vec2::new(p.dot(right), p.dot(up))
+        },
+    );
     let (right, up) = crate::drawing::resolved_view_axes(&views, &view);
     // The longest edge that isn't edge-on in this view: the one the drawing shows off.
     let best = edges

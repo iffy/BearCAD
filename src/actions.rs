@@ -7467,9 +7467,15 @@ fn default_dimensioned_edges(
     // dimension instead (#313).
     let (right, up) = crate::drawing::resolved_view_axes(views, view);
     // Circle detection stays on crease-only edges (#319); the candidate set adds silhouette edges
-    // so a smooth extrusion's length is dimensioned too (#334).
+    // so a smooth extrusion's length is dimensioned too (#334). The candidates are the view's
+    // *logical* pick edges (#1780): a dimension keyed to a curve facet or to one piece of a
+    // merged line has nothing to draw on.
     let creases = crate::drawing::drawing_view_world_edges(doc, view);
-    let world = crate::drawing::drawing_view_dimensionable_edges(doc, views, view);
+    let raw = crate::drawing::drawing_view_dimensionable_edges(doc, views, view);
+    let world = crate::drawing::logical_pick_edges(
+        &raw,
+        &|p: glam::Vec3| glam::Vec2::new(p.dot(right), p.dot(up)),
+    );
     let world_circles = crate::drawing::classify_world_circles(&creases);
     let pcircles: Vec<crate::drawing::ProjectedCircle> = world_circles
         .iter()
@@ -40037,6 +40043,71 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             ActionResult::Ok
         );
         assert_eq!(state.doc.lines[lkey(0)].name.as_deref(), Some("Guide"));
+    }
+
+    /// #1782/#1780: "Show all dimensions" keys every dimension to a *logical* pick edge, so
+    /// each one actually renders — a sectioned cylinder's cut curve offers no facet keys,
+    /// and the edge-on rim collapses to the single line it draws.
+    #[test]
+    fn show_all_dimensions_keys_only_logical_edges() {
+        use crate::model::DrawingOrientation;
+        let mut state = AppState::default();
+        let mut shape = crate::model::Primitive::new(crate::model::PrimitiveKind::Cylinder);
+        shape.origin = [0.0, 0.0, 0.0];
+        shape.normal = [0.0, 0.0, 1.0];
+        shape.radius = "20".into();
+        shape.height = "40".into();
+        state.apply(Action::CreateShape { shape });
+        state.apply(Action::CreateCrossSection { name: None });
+        let section = state.doc.cross_sections.keys().next().expect("the view");
+        state.apply(Action::AddCrossSectionCut {
+            view: Some(section),
+            cut: crate::model::CrossSectionCut {
+                origin: glam::Vec3::new(0.0, 0.0, 0.0),
+                normal: glam::Vec3::new(0.0, 1.0, 0.0),
+                offset_mm: 5.0,
+                flip: true,
+                roll: 14f32.to_radians(),
+                ..Default::default()
+            },
+        });
+        state.apply(Action::CreateDrawing { name: None });
+        let drawing = state.doc.drawings.keys().next().expect("the drawing");
+        state.apply(Action::AddDrawingView {
+            drawing,
+            bodies: vec![bkey(0)],
+            orientation: DrawingOrientation::Front,
+        });
+        state.apply(Action::SetDrawingViewCrossSection {
+            drawing,
+            view: 0,
+            cross_section: Some(section),
+        });
+        state.apply(Action::SetAllDrawingDimensions { drawing, view: 0, show: true });
+        let view = &state.doc.drawings[drawing].views[0];
+        assert!(!view.dimensioned_edges.is_empty(), "the straight lines dimension");
+        // Every stored key must be a key the dimension renderer can find: one of the
+        // view's logical pick edges.
+        let views = &state.doc.drawings[drawing].views.clone();
+        let logical = crate::drawing::logical_pick_edges(
+            &crate::drawing::drawing_view_dimensionable_edges(&state.doc, views, view),
+            &|p: glam::Vec3| glam::vec2(p.x, p.z),
+        );
+        let logical_keys: std::collections::HashSet<_> = logical
+            .iter()
+            .map(|(a, b)| {
+                crate::model::normalized_edge_key(
+                    crate::hierarchy::quantize_body_point(*a),
+                    crate::hierarchy::quantize_body_point(*b),
+                )
+            })
+            .collect();
+        for key in &view.dimensioned_edges {
+            assert!(
+                logical_keys.contains(key),
+                "dimension key {key:?} has no logical edge to draw on"
+            );
+        }
     }
 
     /// #335: a new drawing arrives with its title as a normal, deletable text annotation
