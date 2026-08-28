@@ -905,6 +905,61 @@ pub fn deletion_dependents(doc: &Document, element: &SceneElement) -> Option<Str
                 format!("it is still used by {}", deps.join(", ")),
             )
         }
+        SceneElement::Body(b) => {
+            // Boolean/move/mirror/repeat/slice/shell/edge-treatment results are live
+            // recomputations of their inputs (#1792): deleting an input would silently
+            // gut every output body built from it.
+            let mut dependent_bodies: Vec<crate::model::BodyKey> = Vec::new();
+            let collect = |inputs: &[crate::model::BodyKey],
+                               outputs: &[crate::model::BodyKey],
+                               out: &mut Vec<crate::model::BodyKey>| {
+                if inputs.contains(b) {
+                    out.extend(outputs.iter().copied());
+                }
+            };
+            for op in doc.boolean_ops.values() {
+                collect(&op.a, &op.outputs, &mut dependent_bodies);
+                collect(&op.b, &op.outputs, &mut dependent_bodies);
+            }
+            for op in doc.move_ops.values() {
+                collect(&op.targets, &op.outputs, &mut dependent_bodies);
+            }
+            for op in doc.mirror_ops.values() {
+                collect(&op.targets, &op.outputs, &mut dependent_bodies);
+            }
+            for op in doc.repeat_ops.values() {
+                collect(&op.targets, &op.outputs, &mut dependent_bodies);
+            }
+            for op in doc.slice_ops.values() {
+                collect(&op.targets, &op.outputs, &mut dependent_bodies);
+            }
+            for op in doc.shell_ops.values() {
+                collect(&op.targets, &op.outputs, &mut dependent_bodies);
+            }
+            for op in doc.edge_treatment_ops.values() {
+                collect(&op.targets, &op.outputs, &mut dependent_bodies);
+            }
+            let mut ordinals: Vec<usize> = dependent_bodies
+                .iter()
+                .filter(|k| doc.bodies.contains(**k) && **k != *b)
+                .map(|k| doc.bodies.keys().position(|x| x == *k).unwrap_or(0))
+                .collect();
+            ordinals.sort_unstable();
+            ordinals.dedup();
+            if ordinals.is_empty() {
+                return None;
+            }
+            let list = ordinals
+                .iter()
+                .map(|i| format!("body {i}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let ordinal = doc.bodies.keys().position(|k| k == *b).unwrap_or(0);
+            refuse(
+                format!("body {ordinal}"),
+                format!("{} {} built from it", list, if ordinals.len() == 1 { "is" } else { "are" }),
+            )
+        }
         _ => None,
     }
 }

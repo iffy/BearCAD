@@ -13257,6 +13257,46 @@ pub mod tests {
         assert_eq!(state.doc.lines.len(), 0, "its lines go with it");
     }
 
+    /// #1792: a combine result is a live recomputation of its inputs, so deleting an
+    /// input must be refused (naming the dependent body) instead of silently gutting it.
+    #[test]
+    fn lua_deleting_a_combine_input_is_refused_and_the_result_survives() {
+        let state = run_lua(
+            r#"
+            bearcad.cylinder{ radius = 47.5, height = 7 }
+            bearcad.cylinder{ radius = 44.5, height = 7 }
+            bearcad.combine{ op = "difference", a = {0}, b = {1} }   -- ring
+            bearcad.cylinder{ radius = 47.5, height = 4 }            -- base
+            bearcad.combine{ op = "combine", a = {2}, b = {3} }      -- coaster
+            local vol = bearcad.body_stats(2).volume
+            bearcad.select{ kind = "body", index = 0 }
+            bearcad.select({ kind = "body", index = 1 }, true)
+            local ok, err = pcall(bearcad.delete_selection)
+            assert(not ok, "deleting a combine input must be refused")
+            err = tostring(err)
+            assert(err:find("body 2") or err:find("body 3"),
+              "the error should name the dependent body: " .. err)
+            assert(math.abs(bearcad.body_stats(2).volume - vol) < 1e-3,
+              "the coaster must survive intact")
+        "#,
+        );
+        assert_eq!(state.doc.bodies.len(), 5, "no body was deleted");
+    }
+
+    /// A body no op depends on deletes normally.
+    #[test]
+    fn lua_deleting_an_unreferenced_body_still_works() {
+        let state = run_lua(
+            r#"
+            bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            bearcad.cuboid{ at = {50, 0, 0}, width = 5, depth = 5, height = 5 }
+            bearcad.select{ kind = "body", index = 1 }
+            bearcad.delete_selection()
+        "#,
+        );
+        assert_eq!(state.doc.bodies.len(), 1);
+    }
+
     /// #77: `bearcad.chamfer_edge`/`fillet_edge` chamfer/fillet an analytic edge of an
     /// extrusion's 3D solid — declared directly (extrusion index + structured edge reference),
     /// not via screen-space picking.
