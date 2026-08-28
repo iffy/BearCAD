@@ -4542,6 +4542,8 @@ retina machine renders the same composition at 2x, just sharper.
   shows (#623)** — the shared `element_context_menu` (edit entries, Create drawing / Add to
   drawing, Make shadow body / Make live body (#1218), exports, Move-to-component, Rollback,
   Delete), plus the drawing rename menu and edge-treatment Edit on their display-only nodes.
+  **With a drawing open, a body/sketch/component/cross-section node drags onto the page just
+  like its List row (#1819)** — same `DrawingDragPayload`, same drop.
   **Right-clicking already-selected geometry in the 3D viewport opens that same menu
   (#1224).**
   This is a per-session UI preference, not saved with the document.

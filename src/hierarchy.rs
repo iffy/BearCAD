@@ -5261,6 +5261,24 @@ fn show_graph_view(
                 }
                 if let Some(element) = element {
                     paint_pick_affordance(ui, doc, armed, &element, response.hovered(), icon_rect);
+                    // With a drawing open, the same rows the List view drags onto the page drag
+                    // from here too (#1819): the drop places a projection at the pointer. Whole
+                    // row, like the click. Re-sensed for drag so the payload arms; plain clicks
+                    // still select as usual.
+                    if active_drawing.is_some()
+                        && matches!(
+                            node,
+                            HierarchyNode::Body(_)
+                                | HierarchyNode::Sketch(_)
+                                | HierarchyNode::Component(_)
+                                | HierarchyNode::CrossSection(_)
+                        )
+                    {
+                        response
+                            .clone()
+                            .interact(egui::Sense::drag())
+                            .dnd_set_drag_payload(DrawingDragPayload(element.clone()));
+                    }
                     // Double-click edits where the List/Tree rows do (#546/#1691/#1755), a
                     // plain click selects — the same dispatch, one node per graph row (#1770).
                     // The double-click goes through `row_primary_double_clicked`, which also
