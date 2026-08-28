@@ -4632,6 +4632,12 @@ retina machine renders the same composition at 2x, just sharper.
   writes nothing to disk. A **panic hook** (`diag::install_panic_hook`) puts panics in the log
   too, above everything the run did beforehand — a panic is exactly the failure you cannot
   reproduce on demand.
+- **A warning carries what the app was doing (#1823).** egui's multipass id-clash warning
+  arrives as a rect and two id hashes, which nobody can act on. The app republishes a
+  `diag::UiContext` every frame — frame number, workbench, tool, the pane rects and the open
+  windows — and `diag::annotate_warning` appends the frame, the workbench/tool, **which pane
+  the warned rect lies in**, what else was open, and where to report it. Other warnings are
+  logged exactly as they came.
 - **Every action is logged** from the one funnel it goes through (`AppState::apply`): its
   variant name at trace level, and its **refusal reason at info level**. A refusal previously
   only reached the status bar, where the next action overwrote it — which is precisely the

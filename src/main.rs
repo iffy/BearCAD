@@ -19519,6 +19519,41 @@ impl eframe::App for App {
         {
             let size = ui.max_rect().size();
             diag::frame((size.x, size.y), self.gpu_viewport);
+            // What the app is in the middle of, for any warning logged this frame (#1823).
+            // An egui id clash arrives as a rect and two hashes; on its own it is not a bug
+            // report, so the warning is annotated with this. Pane rects are last frame's —
+            // they are published as each pane draws — which is what the rect is measured
+            // against anyway.
+            {
+                let regions: Vec<(String, [f32; 4])> = actions::Pane::ALL
+                    .iter()
+                    .filter_map(|&pane| {
+                        let r = crate::script::pane_rect(ui.ctx(), pane)?;
+                        Some((
+                            format!("{} pane", pane.label()),
+                            [r.min.x, r.min.y, r.max.x, r.max.y],
+                        ))
+                    })
+                    .collect();
+                let regions = self
+                    .last_viewport
+                    .map(|r| {
+                        let mut regions = regions.clone();
+                        regions.push((
+                            "3D viewport".into(),
+                            [r.min.x, r.min.y, r.max.x, r.max.y],
+                        ));
+                        regions
+                    })
+                    .unwrap_or(regions);
+                diag::set_ui_context(diag::UiContext {
+                    frame: diag::frames_drawn(),
+                    workbench: self.state.workbench().script_name(),
+                    tool: shortcuts::tool_script_name(self.state.tool),
+                    regions,
+                    windows: self.state.script_cycle_windows(),
+                });
+            }
             // What the window believes about itself, left where the watchdog can find it
             // (#1032). A grey window whose own inner rect is zero, or which the platform
             // reports as minimized or on a monitor that isn't there, says so only here.

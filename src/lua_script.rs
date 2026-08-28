@@ -20401,6 +20401,14 @@ pub mod tests {
             local rows = 0
             for _ in log:gmatch("\n") do rows = rows + 1 end
             assert(rows > 3, "a session is more than a line or two, got " .. rows)
+            -- #1823: an egui id-clash warning that reaches the log has to say when and where
+            -- it happened, or nobody reading the log can turn it into a bug report.
+            for line in log:gmatch("[^\n]+") do
+              if line:find("changed id between passes", 1, true) then
+                assert(line:find("frame ", 1, true),
+                       "an id-clash warning must carry its context: " .. line)
+              end
+            end
         "#,
         );
         assert_eq!(state.doc.lines.len(), 4);

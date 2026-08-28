@@ -182,9 +182,91 @@ pub fn warn(message: impl std::fmt::Display) {
     if message.contains("changed id between passes") {
         WIDGET_ID_CHANGE_WARNINGS.fetch_add(1, Ordering::Relaxed);
     }
+    // An egui id clash reaches us as a rect and two hashes; on its own nobody can act on it,
+    // so the line carries what the app was doing when it happened (#1823).
+    let message = annotate_warning(&message).unwrap_or(message);
     eprintln!("bearcad: warning: {message}");
     write_line("WARN", &message);
 }
+
+/// What the app was doing when a log line was written (#1823).
+///
+/// An egui id-clash warning on its own is a rect and two hashes — nothing anyone can act on.
+/// The app republishes this every frame so a warning can say *when* it happened, what the app
+/// was in the middle of, and which part of the window the rect it names actually lies in.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UiContext {
+    pub frame: u64,
+    /// Workbench script name ("model" | "sketch" | "drawing" | "view").
+    pub workbench: &'static str,
+    /// Active tool's script name.
+    pub tool: &'static str,
+    /// Named regions of the window as `(name, [min_x, min_y, max_x, max_y])`, so a warning
+    /// carrying a rect can name the pane it landed in.
+    pub regions: Vec<(String, [f32; 4])>,
+    /// Windows and dialogs open at the time.
+    pub windows: Vec<String>,
+}
+
+static UI_CONTEXT: Mutex<Option<UiContext>> = Mutex::new(None);
+
+/// Publish what the app is doing, for any warning logged from here on (#1823).
+pub fn set_ui_context(context: UiContext) {
+    if let Ok(mut slot) = UI_CONTEXT.lock() {
+        *slot = Some(context);
+    }
+}
+
+/// The `[[x y] - [x y]]` rect an egui widget warning names.
+fn warned_rect(message: &str) -> Option<[f32; 4]> {
+    let open = message.find("[[")?;
+    let close = message[open..].find("]]")? + open;
+    let numbers: Vec<f32> = message[open..close + 2]
+        .split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == 'e'))
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    (numbers.len() == 4).then(|| [numbers[0], numbers[1], numbers[2], numbers[3]])
+}
+
+/// Turn an egui id-clash warning into a line someone can file (#1823): the bare rect and
+/// hashes, plus the frame, the workbench and tool the app was in, which pane the rect lies in,
+/// and what else was open. `None` for every other warning — they are logged as they came.
+pub fn annotate_warning(message: &str) -> Option<String> {
+    if !message.contains("changed id between passes") {
+        return None;
+    }
+    let context = UI_CONTEXT.lock().ok()?.clone()?;
+    let mut parts = vec![format!("frame {}", context.frame)];
+    if !context.workbench.is_empty() {
+        parts.push(format!("{} workbench", context.workbench));
+    }
+    if !context.tool.is_empty() {
+        parts.push(format!("{} tool", context.tool));
+    }
+    if let Some(rect) = warned_rect(message) {
+        let inside = context.regions.iter().find(|(_, r)| {
+            rect[0] >= r[0] - 0.5
+                && rect[1] >= r[1] - 0.5
+                && rect[2] <= r[2] + 0.5
+                && rect[3] <= r[3] + 0.5
+        });
+        parts.push(match inside {
+            Some((name, _)) => format!("in the {name}"),
+            None => "not inside any named pane".to_string(),
+        });
+    }
+    if !context.windows.is_empty() {
+        parts.push(format!("open: {}", context.windows.join(", ")));
+    }
+    Some(format!(
+        "{message} — {} (please report this line at {ISSUE_URL})",
+        parts.join(", ")
+    ))
+}
+
+/// Where a warning tells the reader to take it.
+const ISSUE_URL: &str = "https://github.com/iffy/BearCAD/issues";
 
 /// How many egui "Widget rect … changed id between passes" warnings this process has logged.
 ///
@@ -598,6 +680,45 @@ mod tests {
         unsafe { std::env::set_var("BEARCAD_LOG_FILE", "") };
         assert_eq!(default_log_path().file_name().unwrap(), "bearcad.log");
         unsafe { std::env::remove_var("BEARCAD_LOG_FILE") };
+    }
+
+    /// #1823: an egui id-clash warning on its own says nothing anyone can act on — a rect and
+    /// two hashes. The line has to carry what the app was doing and which part of the window
+    /// the rect landed in, or it can't be turned into a bug report.
+    #[test]
+    fn a_widget_id_warning_says_where_and_when_it_happened() {
+        set_ui_context(UiContext {
+            frame: 512,
+            workbench: "drawing",
+            tool: "select",
+            regions: vec![
+                ("Elements pane".into(), [0.0, 40.0, 260.0, 800.0]),
+                ("Context pane".into(), [660.0, 40.0, 900.0, 800.0]),
+            ],
+            windows: vec!["main".into(), "report_issue".into()],
+        });
+        let line = annotate_warning(
+            "egui::context: Widget rect [[673.8 187.3] - [699.8 207.3]] changed id between \
+             passes: prev ids: [\"3982\"], new ids: [\"CFD1\"]",
+        )
+        .expect("an id-clash warning is annotated");
+        assert!(line.contains("frame 512"), "when it happened: {line}");
+        assert!(line.contains("drawing"), "which workbench: {line}");
+        assert!(line.contains("select"), "which tool: {line}");
+        assert!(line.contains("Context pane"), "which part of the window: {line}");
+        assert!(!line.contains("Elements pane"), "and not one the rect misses: {line}");
+        assert!(line.contains("report_issue"), "what else was open: {line}");
+
+        // A rect in no named region still gets the rest of the context.
+        let elsewhere = annotate_warning(
+            "egui::context: Widget rect [[400.0 900.0] - [420.0 920.0]] changed id between passes",
+        )
+        .expect("annotated");
+        assert!(elsewhere.contains("frame 512"), "{elsewhere}");
+
+        // Other warnings are left exactly as they came.
+        assert_eq!(annotate_warning("wgpu: surface lost"), None);
+        set_ui_context(UiContext::default());
     }
 
     /// #1614: the egui multipass id-clash line is counted so a script can fail on it.
