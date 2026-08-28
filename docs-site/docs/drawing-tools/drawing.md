@@ -66,7 +66,8 @@ bearcad.drawing_curve_dimension{ drawing = d, view = 0,
   points = { {0, 0, 10}, {5, 0, 14}, {12, 0, 15} } }
 
 -- Display style and which way a placed view faces.
-bearcad.drawing_view_style{ drawing = d, view = 0, style = "shaded" }  -- visible/wireframe/shaded
+bearcad.drawing_view_style{ drawing = d, view = 0, style = "shaded" }
+-- visible | wireframe | shaded | colorful | loose_pencil
 bearcad.drawing_view_orientation{ drawing = d, view = 0, orientation = "front-right-top" }
 
 -- Edit a view's caption label: hide it, move it, or set custom text ("" = automatic).

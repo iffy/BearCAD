@@ -9646,7 +9646,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             if crate::model::DrawingViewStyle::from_name(&style).is_none() {
                 return Err(mlua::Error::external(format!(
                     "drawing_view_style: unknown style {style:?} \
-                     (visible / wireframe / shaded)"
+                     (visible / wireframe / shaded / colorful / loose_pencil)"
                 )));
             }
             unsafe { tick.exec(Instruction::SetDrawingViewStyle { drawing, view, style }) }

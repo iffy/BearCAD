@@ -933,6 +933,33 @@ pub fn drawing_view_solid_mesh(
     (!mesh.is_empty()).then_some(mesh)
 }
 
+/// The view's bodies as separate meshes, each with the colour it should paint in (#1807):
+/// its material's colour for the `Colorful` style, white — a colourless tint — for the grey
+/// `Shaded` one. Ordering matches [`drawing_view_solid_mesh`], which merges the same meshes.
+fn drawing_view_body_meshes(
+    doc: &Document,
+    view: &DrawingView,
+) -> Vec<(crate::extrude::SolidMesh, [u8; 3])> {
+    if view.sketch.is_some() {
+        return Vec::new();
+    }
+    let colorful = view.style == crate::model::DrawingViewStyle::Colorful;
+    view.bodies
+        .iter()
+        .filter_map(|&bi| {
+            let solid = drawing_view_body_mesh(doc, view, bi)?;
+            let tint = match (colorful, doc.bodies.get(bi)) {
+                (true, Some(body)) => {
+                    let c = crate::gpu_viewport::body_material_fill(doc, body);
+                    [c.r(), c.g(), c.b()]
+                }
+                _ => [255, 255, 255],
+            };
+            Some((solid, tint))
+        })
+        .collect()
+}
+
 /// Caption source label for a view: sketch name, single body name, component name when all
 /// bodies belong to one component (#1190), otherwise a short multi-body summary (#1191).
 pub fn drawing_view_source_label(doc: &Document, view: &DrawingView) -> String {
@@ -1803,6 +1830,9 @@ pub struct ShadedFace {
     /// Projected 2D triangles, all sharing one plane of the solid.
     pub tris: Vec<[glam::Vec2; 3]>,
     pub shade: f32,
+    /// The colour `shade` scales (#1807). White for `Shaded`, which is how it stays grey;
+    /// the body's own material colour for `Colorful`.
+    pub tint: [u8; 3],
 }
 
 /// Project a view's geometry under its display style (#301). Sketch views have no solid to
@@ -1836,6 +1866,12 @@ pub fn styled_view_geometry(
     if view.sketch.is_some() || view.style == DrawingViewStyle::Wireframe {
         return wireframe();
     }
+    // Both shaded styles fill faces; the pencil style draws the same visible edges as
+    // `Visible`, by hand (#1809).
+    let shades_faces = matches!(view.style, DrawingViewStyle::Shaded | DrawingViewStyle::Colorful);
+    // Per body, so `Colorful` can keep each one's material colour (#1807); the merged mesh
+    // is what the occlusion test and the grey styles work from, exactly as before.
+    let bodies = drawing_view_body_meshes(doc, view);
     let Some(mesh) = drawing_view_solid_mesh(doc, view) else {
         return wireframe();
     };
@@ -1887,7 +1923,7 @@ pub fn styled_view_geometry(
 
     // Sample each edge and keep the visible runs (hidden-line removal).
     const SAMPLES: usize = 32;
-    let mut segments = Vec::new();
+    let mut segments: Vec<(glam::Vec2, glam::Vec2)> = Vec::new();
     for (a, b) in &edges {
         let mut run_start: Option<f32> = None;
         let mut push_run = |from: f32, to: f32| {
@@ -1918,27 +1954,31 @@ pub fn styled_view_geometry(
     // face (#1651) so a renderer paints each flat as a single surface — drawn one by one
     // they leave the tessellation's diagonals showing between them.
     let mut fills = Vec::new();
-    if view.style == DrawingViewStyle::Shaded {
+    if shades_faces {
         let light = (toward * 1.2 - right * 0.35 + up * 0.55).normalize();
         // Plane key: the outward normal and the plane's distance from the origin, both
         // quantized so a tessellator's per-triangle rounding still lands on one flat.
-        let mut planes: Vec<([i32; 4], f32, f32, Vec<[glam::Vec2; 3]>)> = Vec::new();
-        for t in &mesh.triangles {
-            let n = (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero();
-            if n == Vec3::ZERO || n.dot(toward) <= 0.0 {
-                continue; // back or degenerate face
-            }
-            let q = |v: f32| (v * 1000.0).round() as i32;
-            let key = [q(n.x), q(n.y), q(n.z), q(n.dot(t[0]) * 0.1)];
-            let shade = 0.62 + 0.33 * n.dot(light).max(0.0);
-            let depth = (t[0] + t[1] + t[2]).dot(toward) / 3.0;
-            let tri = [project(t[0]), project(t[1]), project(t[2])];
-            match planes.iter_mut().find(|(k, ..)| *k == key) {
-                Some((_, d, _, tris)) => {
-                    *d = d.min(depth);
-                    tris.push(tri);
+        // The plane key carries the tint, so two bodies that happen to share a plane still
+        // paint as two faces in their own colours (#1807).
+        let mut planes: Vec<(([i32; 4], [u8; 3]), f32, f32, Vec<[glam::Vec2; 3]>)> = Vec::new();
+        for (body_mesh, tint) in &bodies {
+            for t in &body_mesh.triangles {
+                let n = (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero();
+                if n == Vec3::ZERO || n.dot(toward) <= 0.0 {
+                    continue; // back or degenerate face
                 }
-                None => planes.push((key, depth, shade, vec![tri])),
+                let q = |v: f32| (v * 1000.0).round() as i32;
+                let key = ([q(n.x), q(n.y), q(n.z), q(n.dot(t[0]) * 0.1)], *tint);
+                let shade = 0.62 + 0.33 * n.dot(light).max(0.0);
+                let depth = (t[0] + t[1] + t[2]).dot(toward) / 3.0;
+                let tri = [project(t[0]), project(t[1]), project(t[2])];
+                match planes.iter_mut().find(|(k, ..)| *k == key) {
+                    Some((_, d, _, tris)) => {
+                        *d = d.min(depth);
+                        tris.push(tri);
+                    }
+                    None => planes.push((key, depth, shade, vec![tri])),
+                }
             }
         }
         // Farthest flat first: coplanar triangles never occlude each other, so one depth
@@ -1946,8 +1986,22 @@ pub fn styled_view_geometry(
         planes.sort_by(|a, b| a.1.total_cmp(&b.1));
         fills = planes
             .into_iter()
-            .map(|(_, _, shade, tris)| ShadedFace { tris, shade })
+            .map(|((_, tint), _, shade, tris)| ShadedFace { tris, shade, tint })
             .collect();
+    }
+
+    // Loose pencil (#1809): the same visible edges, drawn the way a hand draws them —
+    // overshooting each corner, bowing along the way, and gone over twice. The wobble is
+    // keyed to the segment's own endpoints, so a view redraws identically every time.
+    if view.style == DrawingViewStyle::LoosePencil {
+        let mut drawn = Vec::with_capacity(segments.len() * crate::pencil::PENCIL_PASSES * 5);
+        for (a, b) in &segments {
+            for pass in 0..crate::pencil::PENCIL_PASSES {
+                let points = crate::pencil::stroke_2d(*a, *b, pass);
+                drawn.extend(points.windows(2).map(|w| (w[0], w[1])));
+            }
+        }
+        segments = drawn;
     }
 
     StyledViewGeometry { faces: fills, segments, hatch }
@@ -2317,8 +2371,10 @@ fn render_view_geometry<C: Canvas>(
     // always uses the full wireframe bbox so switching styles never re-scales the view.
     let styled = styled_view_geometry(doc, views, view);
     for face in &styled.faces {
-        let level = (face.shade.clamp(0.0, 1.0) * 255.0) as u8;
-        let fill = Rgb(level, level, level);
+        // `shade` scales the face's tint (#1807): white for the grey Shaded style, the body's
+        // own material colour for Colorful.
+        let lit = |c: u8| (c as f32 * face.shade.clamp(0.0, 1.0)).round().clamp(0.0, 255.0) as u8;
+        let fill = Rgb(lit(face.tint[0]), lit(face.tint[1]), lit(face.tint[2]));
         for pts in &face.tris {
             let s: Vec<(f32, f32)> = pts
                 .iter()

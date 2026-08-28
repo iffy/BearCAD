@@ -89,6 +89,7 @@ mod headless;
 mod release_artifacts;
 #[cfg(not(target_arch = "wasm32"))]
 mod updater;
+mod pencil;
 mod script;
 // Always compiled: `AppSettings` types are shared with the action/script path. Persistence
 // (`AppSettings::load`/`save`) is still only wired up on native.
@@ -27964,13 +27965,21 @@ impl App {
                     .then(|| crate::drawing::styled_view_geometry(&self.state.doc, &views, view));
                 if let Some(sty) = &styled {
                     for face in &sty.faces {
-                        // The editor sheet is dark; map the print greys down so shading reads
-                        // without blowing out (exports keep the light print greys).
-                        let level = (face.shade.clamp(0.0, 1.0) * 110.0) as u8 + 30;
+                        // The editor sheet is dark; map the print tones down so shading reads
+                        // without blowing out (exports keep the light print values). The
+                        // face's tint is white for the grey Shaded style and the body's own
+                        // material colour for Colorful (#1807), so one formula serves both.
+                        let level = |c: u8| {
+                            (c as f32 / 255.0 * face.shade.clamp(0.0, 1.0) * 110.0) as u8 + 30
+                        };
                         // One raw mesh per coplanar face (#1651): its triangles meet without
                         // the feathered edges a per-triangle fill would leave, so the
                         // tessellation's diagonals don't show as faint seams.
-                        let color = egui::Color32::from_gray(level);
+                        let color = egui::Color32::from_rgb(
+                            level(face.tint[0]),
+                            level(face.tint[1]),
+                            level(face.tint[2]),
+                        );
                         let mut mesh = egui::epaint::Mesh::default();
                         for pts in &face.tris {
                             let base = mesh.vertices.len() as u32;

@@ -31939,6 +31939,146 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         }
     }
 
+    /// #1807: the Colorful style shades the same faces as Shaded, but keeps each body's
+    /// material colour instead of flattening everything to grey.
+    #[test]
+    fn colorful_drawing_view_keeps_the_material_colour() {
+        use crate::model::{DrawingOrientation, DrawingViewStyle};
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        state.apply(Action::AddMaterial {
+            name: Some("Ruby".to_string()),
+            color: Some([200, 60, 60]),
+            bodies: vec![bkey(0)],
+        });
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::AddDrawingView {
+            drawing: dkey(0),
+            bodies: vec![bkey(0)],
+            orientation: DrawingOrientation::Isometric,
+        });
+
+        let geometry = |state: &AppState| {
+            crate::drawing::styled_view_geometry(
+                &state.doc,
+                &state.doc.drawings[dkey(0)].views,
+                &state.doc.drawings[dkey(0)].views[0],
+            )
+        };
+        state.apply(Action::SetDrawingViewStyle {
+            drawing: dkey(0),
+            view: 0,
+            style: DrawingViewStyle::Shaded,
+        });
+        let shaded = geometry(&state);
+        // Grey shading is a colourless tint: every channel the same.
+        for face in &shaded.faces {
+            let [r, g, b] = face.tint;
+            assert_eq!((r, g), (g, b), "the Shaded style stays grey");
+        }
+
+        state.apply(Action::SetDrawingViewStyle {
+            drawing: dkey(0),
+            view: 0,
+            style: DrawingViewStyle::Colorful,
+        });
+        let colorful = geometry(&state);
+        assert_eq!(
+            colorful.faces.len(),
+            shaded.faces.len(),
+            "Colorful shades the same faces as Shaded"
+        );
+        assert!(
+            colorful.faces.iter().all(|f| f.tint == [200, 60, 60]),
+            "every face carries the body's own colour, got {:?}",
+            colorful.faces.iter().map(|f| f.tint).collect::<Vec<_>>()
+        );
+        // Two bodies in one view keep two colours.
+        state.apply(Action::AddMaterial {
+            name: Some("Leaf".to_string()),
+            color: Some([40, 140, 80]),
+            bodies: vec![bkey(1)],
+        });
+        state.doc.drawings[dkey(0)].views[0].bodies = vec![bkey(0), bkey(1)];
+        let tints: std::collections::HashSet<[u8; 3]> =
+            geometry(&state).faces.iter().map(|f| f.tint).collect();
+        assert!(
+            tints.contains(&[200, 60, 60]) && tints.contains(&[40, 140, 80]),
+            "each body keeps its own colour, got {tints:?}"
+        );
+    }
+
+    /// #1809: the Loose pencil style draws the visible edges by hand — the same edges the
+    /// Visible style strokes, but wobbled and overshot, so a projection reads as a sketch.
+    #[test]
+    fn loose_pencil_drawing_view_draws_the_visible_edges_by_hand() {
+        use crate::model::{DrawingOrientation, DrawingViewStyle};
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::AddDrawingView {
+            drawing: dkey(0),
+            bodies: vec![bkey(0)],
+            orientation: DrawingOrientation::Isometric,
+        });
+        let geometry = |state: &AppState| {
+            crate::drawing::styled_view_geometry(
+                &state.doc,
+                &state.doc.drawings[dkey(0)].views,
+                &state.doc.drawings[dkey(0)].views[0],
+            )
+        };
+        state.apply(Action::SetDrawingViewStyle {
+            drawing: dkey(0),
+            view: 0,
+            style: DrawingViewStyle::Visible,
+        });
+        let visible = geometry(&state);
+        state.apply(Action::SetDrawingViewStyle {
+            drawing: dkey(0),
+            view: 0,
+            style: DrawingViewStyle::LoosePencil,
+        });
+        let pencil = geometry(&state);
+
+        assert!(pencil.faces.is_empty(), "a pencil drawing is lines, not fills");
+        // Each straight run becomes a many-jointed stroke, drawn more than once.
+        assert!(
+            pencil.segments.len() > visible.segments.len() * 4,
+            "{} pencil segments for {} visible edges",
+            pencil.segments.len(),
+            visible.segments.len()
+        );
+        // But it is still the same drawing: the strokes stay within a stone's throw of the
+        // edges they stand for.
+        let bounds = |g: &crate::drawing::StyledViewGeometry| {
+            g.segments.iter().flat_map(|(a, b)| [*a, *b]).fold(
+                (f32::MAX, f32::MIN, f32::MAX, f32::MIN),
+                |(x0, x1, y0, y1), p| (x0.min(p.x), x1.max(p.x), y0.min(p.y), y1.max(p.y)),
+            )
+        };
+        let (vx0, vx1, vy0, vy1) = bounds(&visible);
+        let (px0, px1, py0, py1) = bounds(&pencil);
+        let slack = ((vx1 - vx0) + (vy1 - vy0)) * 0.05;
+        assert!(
+            px0 > vx0 - slack && px1 < vx1 + slack && py0 > vy0 - slack && py1 < vy1 + slack,
+            "the pencil drawing wandered off its subject"
+        );
+        // And the hand is steady between renders: the same view redraws the same strokes.
+        // (Compared as a set — the underlying edge list comes back in an unspecified order,
+        // which the rendered page is indifferent to.)
+        let key = |g: &crate::drawing::StyledViewGeometry| {
+            let mut k: Vec<[u32; 4]> = g
+                .segments
+                .iter()
+                .map(|(a, b)| [a.x.to_bits(), a.y.to_bits(), b.x.to_bits(), b.y.to_bits()])
+                .collect();
+            k.sort_unstable();
+            k
+        };
+        assert_eq!(key(&pencil), key(&geometry(&state)), "the hand wavered between renders");
+    }
+
     /// #296: an aligned child projection shares its parent's axis (stays lined up) and follows
     /// the parent when the parent moves; the child only slides on its free axis.
     #[test]

@@ -21,7 +21,8 @@ a placed view to reopen its editor. Options:
 - **Label:** show/hide the caption, position it, or replace its text — `{parameter}`
   fields update with the model; clear the field to restore the automatic caption.
 - **Scale:** type a print scale like `1:20` (page mm : model mm). Clear to auto-fit.
-- **Style:** Visible edges, Wireframe (default), or Shaded.
+- **Style:** Visible edges, Wireframe (default), Shaded (grey), Colorful (shaded in each
+  body's material colour), or Loose pencil (the visible edges drawn by hand).
 
 ## Help
 

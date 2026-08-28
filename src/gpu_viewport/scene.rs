@@ -219,119 +219,14 @@ pub const GROUND_SHADOW_FILL: Color32 = Color32::from_rgba_premultiplied(0, 0, 0
 /// Extra world-mm around the caster AABB when framing the directional shadow map.
 const SHADOW_MAP_PADDING: f32 = 8.0;
 
-// ---------------------------------------------------------------------------------------
-// Loose pencil (#1805)
-// ---------------------------------------------------------------------------------------
-
-/// Paper the `LoosePencil` scene is drawn on: warm white, not the theme's near-black.
-pub const PENCIL_PAPER: Color32 = Color32::from_rgb(250, 249, 245);
-/// Graphite: a soft blue-black, never pure black — pure black reads as ink, not pencil.
-pub const PENCIL_GRAPHITE: Color32 = Color32::from_rgb(58, 60, 68);
-/// The faint tone inside a body, so a near edge hides a far one without the fill reading as
-/// paint. A hair off the paper, which is what a pencil drawing's enclosed areas look like.
-pub const PENCIL_BODY_FILL: Color32 = Color32::from_rgb(240, 239, 234);
-/// Ruled guide lines on the paper: the ground grid, barely there.
-pub const PENCIL_GRID: Color32 = Color32::from_rgb(222, 220, 212);
-const PENCIL_GRID_AXIS: Color32 = Color32::from_rgb(196, 193, 184);
-/// Coloured pencil for the world axes: the same three hues, muted to sit on paper.
-const PENCIL_X_AXIS: Color32 = Color32::from_rgb(184, 96, 92);
-const PENCIL_Y_AXIS: Color32 = Color32::from_rgb(104, 152, 104);
-const PENCIL_Z_AXIS: Color32 = Color32::from_rgb(96, 122, 176);
-/// A pencil outline carries the drawing, so it is heavier than the thin technical wireframe
-/// overlay (#1810).
-const PENCIL_LINE_WIDTH_PX: f32 = 2.1;
-/// How many times a stroke is gone over. Two is the hand-drawn tell; more turns to mud.
-const PENCIL_PASSES: usize = 2;
-/// Joints along one stroke. Each one is nudged sideways, so the line bows rather than bends.
-const PENCIL_STROKE_STEPS: usize = 5;
-/// Sideways wobble, as a fraction of the stroke's own length, capped so a long edge bows the
-/// same visible amount as a short one rather than swinging wildly.
-const PENCIL_WOBBLE: f32 = 0.02;
-const PENCIL_WOBBLE_MAX_MM: f32 = 0.9;
-/// How far a stroke runs past the corner it should stop at — the other hand-drawn tell.
-const PENCIL_OVERSHOOT: f32 = 0.035;
-const PENCIL_OVERSHOOT_MAX_MM: f32 = 1.6;
-/// Spacing of the hatch strokes that stand in for a contact shadow, in world mm.
-const PENCIL_HATCH_SPACING_MM: f32 = 2.2;
-/// Hatch strokes run at this angle in the ground plane — off-axis, the way a hand shades.
-const PENCIL_HATCH_ANGLE_RAD: f32 = 0.6;
-const PENCIL_HATCH_WIDTH_PX: f32 = 1.3;
-/// Graphite laid down lightly — premultiplied, so it composites as a ~45%-coverage stroke.
-const PENCIL_HATCH_COLOR: Color32 = Color32::from_rgba_premultiplied(26, 27, 31, 118);
-
-/// How a body's own colour reads in coloured pencil (#1812): the fill it is laid on with,
-/// and the darker tone of the same colour its outline is drawn in.
-///
-/// A coloured pencil does not cover the paper — the fill is the body colour let a long way
-/// down toward [`PENCIL_PAPER`]. The outline is the same colour pressed harder, mixed toward
-/// graphite so it still reads as a drawn line rather than a bright edge.
-fn colour_pencil_tones(base: Color32) -> (Color32, Color32) {
-    let mix = |a: Color32, b: Color32, t: f32| {
-        let lerp = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round().clamp(0.0, 255.0) as u8;
-        Color32::from_rgb(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()))
-    };
-    (mix(base, PENCIL_PAPER, 0.72), mix(base, PENCIL_GRAPHITE, 0.55))
-}
-
-/// A repeatable number in `-1..1` from an integer seed. The point is repeatability: a wobble
-/// re-rolled every frame would make the whole drawing crawl as the camera moved, which is
-/// unusable. Keying it to the stroke's own endpoints means the same edge wobbles the same way
-/// from every angle, and two edges that meet at a corner wobble differently.
-fn pencil_noise(seed: u32) -> f32 {
-    // A cheap integer hash (Wang/xorshift finalizer), then map the top bits into -1..1.
-    let mut h = seed.wrapping_mul(0x9E37_79B9);
-    h ^= h >> 15;
-    h = h.wrapping_mul(0x85EB_CA6B);
-    h ^= h >> 13;
-    h = h.wrapping_mul(0xC2B2_AE35);
-    h ^= h >> 16;
-    (h as f32 / u32::MAX as f32) * 2.0 - 1.0
-}
-
-/// A seed for one joint of one stroke: the segment's endpoints (quantized to a micron so
-/// floating-point noise doesn't reseed it), the joint index, and which pass this is.
-fn pencil_seed(a: Vec3, b: Vec3, joint: usize, pass: usize) -> u32 {
-    let q = |v: f32| (v * 1000.0).round() as i32 as u32;
-    let mut h = 0x811C_9DC5u32;
-    for value in [a.x, a.y, a.z, b.x, b.y, b.z] {
-        h = (h ^ q(value)).wrapping_mul(0x0100_0193);
-    }
-    (h ^ (joint as u32).wrapping_mul(0x27D4_EB2F)).wrapping_add((pass as u32).wrapping_mul(0x165667B1))
-}
-
-/// One hand-drawn pass over the segment `a`–`b`: overshot at both ends and bowed along its
-/// length, as a polyline to stroke.
-fn pencil_stroke(a: Vec3, b: Vec3, pass: usize) -> Vec<Vec3> {
-    let along = b - a;
-    let length = along.length();
-    if length < 1e-6 {
-        return vec![a, b];
-    }
-    let dir = along / length;
-    // Two perpendiculars, so the wobble can go any way around the segment and still read
-    // from whatever angle the camera is at.
-    let helper = if dir.z.abs() < 0.9 { Vec3::Z } else { Vec3::X };
-    let u = dir.cross(helper).normalize_or_zero();
-    let v = dir.cross(u);
-
-    let wobble = (length * PENCIL_WOBBLE).min(PENCIL_WOBBLE_MAX_MM);
-    let overshoot = (length * PENCIL_OVERSHOOT).min(PENCIL_OVERSHOOT_MAX_MM);
-    let start = -overshoot * pencil_noise(pencil_seed(a, b, usize::MAX, pass)).abs();
-    let end = length + overshoot * pencil_noise(pencil_seed(b, a, usize::MAX, pass)).abs();
-
-    (0..=PENCIL_STROKE_STEPS)
-        .map(|joint| {
-            let t = joint as f32 / PENCIL_STROKE_STEPS as f32;
-            let point = a + dir * (start + (end - start) * t);
-            // The ends stay put (a corner is a corner); the middle is free to bow.
-            let bow = (std::f32::consts::PI * t).sin();
-            let seed = pencil_seed(a, b, joint, pass);
-            point
-                + u * (pencil_noise(seed) * wobble * bow)
-                + v * (pencil_noise(seed ^ 0x5BF0_3635) * wobble * bow)
-        })
-        .collect()
-}
+// The pencil views' strokes, tones and hatching live in `crate::pencil` — the drawings
+// workbench draws with the same hand (#1809).
+use crate::pencil::{
+    colour_tones as colour_pencil_tones, hatch_segments as pencil_hatch_segments,
+    stroke as pencil_stroke, PENCIL_BODY_FILL, PENCIL_GRAPHITE, PENCIL_GRID, PENCIL_GRID_AXIS,
+    PENCIL_HATCH_COLOR, PENCIL_HATCH_WIDTH_PX, PENCIL_LINE_WIDTH_PX, PENCIL_PAPER, PENCIL_PASSES,
+    PENCIL_X_AXIS, PENCIL_Y_AXIS, PENCIL_Z_AXIS,
+};
 
 /// A body's shadow on the ground, as triangles on z = 0 (#1811): its own triangles projected
 /// along the scene light, minus the ones below the plane (a half-buried part shadows only the
@@ -354,86 +249,6 @@ fn ground_shadow_footprint(solid: &crate::extrude::SolidMesh, cam: &Camera) -> V
         .collect()
 }
 
-/// Where the hatch strokes standing in for a body's contact shadow start and end (#1805).
-/// The caster's ground-plane footprint is scanned by parallel lines `PENCIL_HATCH_SPACING_MM`
-/// apart; each line's span across the footprint becomes one stroke, so the hatch fills the
-/// shadow's shape rather than a box around it.
-fn pencil_hatch_segments(footprint: &[[Vec3; 3]]) -> Vec<(Vec3, Vec3)> {
-    if footprint.is_empty() {
-        return Vec::new();
-    }
-    let (sin, cos) = PENCIL_HATCH_ANGLE_RAD.sin_cos();
-    // Hatch direction and the axis the scan lines advance along.
-    let along = glam::Vec2::new(cos, sin);
-    let across = glam::Vec2::new(-sin, cos);
-    let project = |p: Vec3| glam::Vec2::new(p.x, p.y);
-
-    let (mut lo, mut hi) = (f32::MAX, f32::MIN);
-    for tri in footprint {
-        for p in tri {
-            let d = project(*p).dot(across);
-            lo = lo.min(d);
-            hi = hi.max(d);
-        }
-    }
-    if !lo.is_finite() || !hi.is_finite() {
-        return Vec::new();
-    }
-    // Scan lines sit on a world lattice, not on wherever this footprint happens to start
-    // (#1811) — so a shadow that grows, moves or merges with another keeps to the same ruled
-    // lines instead of drifting into a moiré against its neighbour.
-    let first = (lo / PENCIL_HATCH_SPACING_MM).ceil();
-    // A degenerate or enormous footprint would ask for an unbounded number of strokes.
-    let count = (((hi - lo) / PENCIL_HATCH_SPACING_MM).ceil() as i32 + 1).clamp(0, 600);
-
-    let mut out = Vec::new();
-    for i in 0..count {
-        let offset = (first + i as f32) * PENCIL_HATCH_SPACING_MM;
-        if offset > hi {
-            break;
-        }
-        // Every crossing of this scan line with the footprint's triangles, as distances
-        // along the hatch direction; consecutive pairs bound the covered spans.
-        let mut spans: Vec<(f32, f32)> = Vec::new();
-        for tri in footprint {
-            let mut hits: Vec<f32> = Vec::new();
-            for e in 0..3 {
-                let (p, q) = (project(tri[e]), project(tri[(e + 1) % 3]));
-                let (dp, dq) = (p.dot(across) - offset, q.dot(across) - offset);
-                if (dp > 0.0) == (dq > 0.0) || (dp - dq).abs() < 1e-9 {
-                    continue;
-                }
-                let t = dp / (dp - dq);
-                hits.push((p + (q - p) * t).dot(along));
-            }
-            if hits.len() >= 2 {
-                hits.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                spans.push((hits[0], hits[hits.len() - 1]));
-            }
-        }
-        if spans.is_empty() {
-            continue;
-        }
-        // Merge the per-triangle spans so a stroke crosses the whole footprint in one go
-        // rather than restarting at every internal triangle edge.
-        spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        let mut merged = vec![spans[0]];
-        for &(s, e) in &spans[1..] {
-            let last = merged.last_mut().expect("seeded above");
-            if s <= last.1 + 1e-3 {
-                last.1 = last.1.max(e);
-            } else {
-                merged.push((s, e));
-            }
-        }
-        let point = |d: f32| {
-            let p = across * offset + along * d;
-            Vec3::new(p.x, p.y, 0.0)
-        };
-        out.extend(merged.into_iter().map(|(s, e)| (point(s), point(e))));
-    }
-    out
-}
 /// On-screen width of the origin X/Y/Z axes, in pixels (#1072).
 pub const ORIGIN_AXIS_WIDTH_PX: f32 = 2.0;
 /// Hover thickness for a world origin axis (#1124) — same as [`push_segment_hover`].
@@ -14425,6 +14240,10 @@ mod issue_1772_section_cut_shading {
 #[cfg(test)]
 mod loose_pencil_tests {
     use super::*;
+    use crate::pencil::{
+        PENCIL_HATCH_ANGLE_RAD, PENCIL_HATCH_SPACING_MM, PENCIL_OVERSHOOT, PENCIL_OVERSHOOT_MAX_MM,
+        PENCIL_STROKE_STEPS, PENCIL_WOBBLE, PENCIL_WOBBLE_MAX_MM,
+    };
 
     /// #1805: the wobble has to be repeatable. Re-rolling it per frame would make the whole
     /// drawing crawl as the camera moved.

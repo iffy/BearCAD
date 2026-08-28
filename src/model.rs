@@ -5312,13 +5312,21 @@ pub enum DrawingViewStyle {
     Wireframe,
     /// Grey-shaded faces with the visible edges on top.
     Shaded,
+    /// [`Self::Shaded`] with each body's material colour kept instead of flattened to grey
+    /// (#1807) — an assembly reads as its parts rather than as one grey mass.
+    Colorful,
+    /// The visible edges drawn by hand (#1809): wobbled, overshot at the corners, gone over
+    /// twice — the drawings-page counterpart of the `LoosePencil` viewport shading mode.
+    LoosePencil,
 }
 
 impl DrawingViewStyle {
-    pub const ALL: [DrawingViewStyle; 3] = [
+    pub const ALL: [DrawingViewStyle; 5] = [
         DrawingViewStyle::Visible,
         DrawingViewStyle::Wireframe,
         DrawingViewStyle::Shaded,
+        DrawingViewStyle::Colorful,
+        DrawingViewStyle::LoosePencil,
     ];
 
     pub fn label(self) -> &'static str {
@@ -5326,6 +5334,8 @@ impl DrawingViewStyle {
             Self::Visible => "Visible edges",
             Self::Wireframe => "Wireframe",
             Self::Shaded => "Shaded",
+            Self::Colorful => "Colorful",
+            Self::LoosePencil => "Loose pencil",
         }
     }
 
@@ -5335,6 +5345,8 @@ impl DrawingViewStyle {
             "visible" | "visible edges" | "visible-edges" => Some(Self::Visible),
             "wireframe" | "wire" => Some(Self::Wireframe),
             "shaded" | "solid" => Some(Self::Shaded),
+            "colorful" | "colourful" | "color" | "colour" => Some(Self::Colorful),
+            "loose_pencil" | "pencil" | "sketchy" => Some(Self::LoosePencil),
             _ => None,
         }
     }
