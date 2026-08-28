@@ -197,7 +197,7 @@ bearcad.ui.tool("select"|"rectangle"|…)
 bearcad.ui.view("front"|"top"|"iso"|…)
 bearcad.ui.zoom_fit()
 bearcad.ui.screenshot("shot.png")            -- viewport; "window" / a pane name for others
-bearcad.ui.camera{ yaw?, pitch?, distance?, target? }
+bearcad.ui.camera{ yaw?, pitch?, distance?, target?, projection?, shading?, ground? }
 bearcad.ui.camera{}                          -- read it back, shading and ground included
 bearcad.ui.shading("loose_pencil")           -- …|realistic|loose_pencil|colour_pencil
 bearcad.ui.pane("ai"|"hierarchy"|"context"|"parameters"|…, "show"|"hide"|"toggle")

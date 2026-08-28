@@ -5545,9 +5545,21 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // #108: absolute camera control. `bearcad.ui.camera{}` (no args / no pose keys) is a pure
-    // read of the live pose; passing any subset of `yaw`/`pitch`/`distance`/`target = {x, y, z}`
-    // sets those fields instantly (no transition animation — deterministic for screenshots).
+    // #108: absolute camera control. `bearcad.ui.camera{}` (no args / no keys) is a pure read of
+    // the live view; passing any subset of `yaw`/`pitch`/`distance`/`target = {x, y, z}` sets
+    // those fields instantly (no transition animation — deterministic for screenshots).
+    // `projection`/`shading`/`ground` set the three settings the read already reports (#1771) —
+    // they used to be dropped on the floor, so a script asking for an orthographic camera went
+    // on running perspective. Any other key is an error, for the same reason.
+    const CAMERA_KEYS: &[&str] = &[
+        "yaw",
+        "pitch",
+        "distance",
+        "target",
+        "projection",
+        "shading",
+        "ground",
+    ];
     api.set(
         "camera",
         lua.create_function(|lua, opts: Option<Table>| {
@@ -5556,8 +5568,21 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
             // Angles are degrees here like everywhere else in the API (#1657); an
             // expression string may name its own unit ("1.2rad").
-            let (yaw, pitch, distance, target) = match &opts {
+            let (yaw, pitch, distance, target, projection, shading, ground) = match &opts {
                 Some(t) => {
+                    for pair in t.clone().pairs::<Value, Value>() {
+                        let (key, _) = pair?;
+                        let name = match &key {
+                            Value::String(s) => s.to_str()?.to_string(),
+                            other => format!("{other:?}"),
+                        };
+                        if !CAMERA_KEYS.contains(&name.as_str()) {
+                            return Err(mlua::Error::external(format!(
+                                "camera: unknown key '{name}' (try {})",
+                                CAMERA_KEYS.join(", ")
+                            )));
+                        }
+                    }
                     let doc = unsafe { &tick.state().doc };
                     (
                         angle_deg_opt(lua, doc, t, "camera", "yaw")?,
@@ -5567,10 +5592,58 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                             Some(v) => Some((v.get(1)?, v.get(2)?, v.get(3)?)),
                             None => None,
                         },
+                        match t.get::<Option<String>>("projection")? {
+                            Some(name) => Some(ProjectionMode::from_name(&name).ok_or_else(
+                                || {
+                                    mlua::Error::external(format!(
+                                        "camera: unknown projection '{name}'                                          (try perspective, orthographic)"
+                                    ))
+                                },
+                            )?),
+                            None => None,
+                        },
+                        match t.get::<Option<String>>("shading")? {
+                            Some(name) => Some(ShadingMode::from_name(&name).ok_or_else(|| {
+                                let known: Vec<&str> = crate::camera::SHADING_MODES
+                                    .iter()
+                                    .map(|m| m.script_name())
+                                    .collect();
+                                mlua::Error::external(format!(
+                                    "camera: unknown shading mode '{name}' (try {})",
+                                    known.join(", ")
+                                ))
+                            })?),
+                            None => None,
+                        },
+                        match t.get::<Option<String>>("ground")? {
+                            Some(name) => Some(GroundDisplay::from_name(&name).ok_or_else(
+                                || {
+                                    mlua::Error::external(format!(
+                                        "camera: unknown ground display '{name}'"
+                                    ))
+                                },
+                            )?),
+                            None => None,
+                        },
                     )
                 }
-                None => (None, None, None, None),
+                None => (None, None, None, None, None, None, None),
             };
+            if let Some(mode) = projection {
+                unsafe { tick.exec(Instruction::ProjectionMode(mode))? };
+            }
+            if let Some(mode) = shading {
+                unsafe { tick.exec(Instruction::ShadingMode(mode))? };
+            }
+            if let Some(mode) = ground {
+                unsafe { tick.exec(Instruction::GroundDisplay(mode))? };
+            }
+            if projection.is_some() || shading.is_some() || ground.is_some() {
+                // A settings-only call is a write, not the read below.
+                if yaw.is_none() && pitch.is_none() && distance.is_none() && target.is_none() {
+                    return Ok(Value::Nil);
+                }
+            }
             if yaw.is_none() && pitch.is_none() && distance.is_none() && target.is_none() {
                 let cam = unsafe { &tick.state().cam };
                 let t = lua.create_table()?;
@@ -12227,6 +12300,53 @@ pub mod tests {
             runner.tick(&mut state, &mut synthetic, Some(vp), &ctx);
         }
         assert!(runner.error.is_some(), "unknown shading mode should error");
+    }
+
+    /// #1771: `camera{}` read every view setting back but only *wrote* the pose — a
+    /// `projection`/`shading`/`ground` key was silently dropped, so a script that asked for an
+    /// orthographic camera quietly kept running perspective.
+    #[test]
+    fn lua_camera_sets_the_view_settings_it_reports() {
+        let state = run_lua(
+            r#"
+            bearcad.ui.camera{ projection = "orthographic" }
+            local c = bearcad.ui.camera{}
+            assert(c.projection == "orthographic", "projection, got " .. tostring(c.projection))
+            -- and alongside the pose, in one call
+            bearcad.ui.camera{ distance = 250, projection = "perspective",
+                               shading = "loose_pencil", ground = "off" }
+            c = bearcad.ui.camera{}
+            assert(c.projection == "perspective", "projection, got " .. tostring(c.projection))
+            assert(c.distance == 250, "distance, got " .. tostring(c.distance))
+            assert(c.shading == "loose_pencil", "shading, got " .. tostring(c.shading))
+            assert(c.ground == "off", "ground, got " .. tostring(c.ground))
+            "#,
+        );
+        assert_eq!(state.cam.projection_mode(), ProjectionMode::Natural);
+        assert_eq!(state.cam.shading_mode(), ShadingMode::LoosePencil);
+        assert_eq!(state.cam.distance, 250.0);
+    }
+
+    /// #1771: and a key `camera{}` does not understand is an error, not a silent no-op —
+    /// a misspelled setting used to leave the script running against the wrong view.
+    #[test]
+    fn lua_camera_rejects_unknown_keys() {
+        for source in [
+            r#"bearcad.ui.camera{ projection = "isometric" }"#,
+            r#"bearcad.ui.camera{ shading = "nonsense" }"#,
+            r#"bearcad.ui.camera{ zoom = 2 }"#,
+        ] {
+            let mut runner = ScriptRunner::from_lua_source(source).unwrap();
+            runner.verbose = false;
+            let mut state = AppState::default();
+            let mut synthetic = SyntheticInput::default();
+            let ctx = egui::Context::default();
+            let vp = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0));
+            while !runner.done {
+                runner.tick(&mut state, &mut synthetic, Some(vp), &ctx);
+            }
+            assert!(runner.error.is_some(), "{source} should error, not be ignored");
+        }
     }
 
     /// #1477: Report issue and the window-cycle list are scriptable.

@@ -190,7 +190,7 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.ui.animate_joints"           , "bearcad.ui.animate_joints(on?)"),
     ("bearcad.ui.animate_zoom_to_fit"      , "bearcad.ui.animate_zoom_to_fit(on?)"),
     ("bearcad.ui.auto_zoom"                , "bearcad.ui.auto_zoom(on?)"),
-    ("bearcad.ui.camera"                   , "bearcad.ui.camera{ yaw, pitch, distance, target }?   -- no fields = read { …, projection, shading, ground }"),
+    ("bearcad.ui.camera"                   , "bearcad.ui.camera{ yaw, pitch, distance, target, projection, shading, ground }?   -- no fields = read"),
     ("bearcad.ui.changelog"                , "bearcad.ui.changelog(verb?)"),
     ("bearcad.ui.click"                    , "bearcad.ui.click(x, y, { shift?, ctrl?, cmd? }?)"),
     ("bearcad.ui.click_ground"             , "bearcad.ui.click_ground(x, y, { shift?, ctrl?, cmd? }?)"),
