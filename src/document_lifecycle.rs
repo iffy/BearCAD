@@ -758,6 +758,187 @@ pub fn delete_elements(doc: &mut Document, elements: &[SceneElement]) -> usize {
     count
 }
 
+/// Whether a face's profile geometry lives on `sketch` (recursively for boolean faces).
+fn face_uses_sketch(doc: &Document, face: &crate::model::ExtrudeFace, sketch: SketchId) -> bool {
+    use crate::model::ExtrudeFace;
+    match face {
+        ExtrudeFace::Circle(i) => doc
+            .circles
+            .get(*i)
+            .is_some_and(|c| c.sketch == sketch),
+        ExtrudeFace::Polygon(lines) => lines
+            .iter()
+            .any(|l| doc.lines.get(*l).is_some_and(|l| l.sketch == sketch)),
+        ExtrudeFace::Boolean { a, b, .. } => {
+            face_uses_sketch(doc, a, sketch) || face_uses_sketch(doc, b, sketch)
+        }
+        ExtrudeFace::TextGlyph { text, .. } => doc
+            .sketch_texts
+            .get(*text)
+            .is_some_and(|t| t.sketch == sketch),
+        ExtrudeFace::SketchRegion { sketch: s, .. } => *s == sketch,
+    }
+}
+
+/// A user-facing label for a feature that depends on geometry about to be deleted:
+/// `extrusion 2`, or `extrusion 2 (Base)` when it carries a name.
+fn dependent_label(kind: &str, ordinal: usize, name: &Option<String>) -> String {
+    match name {
+        Some(n) if !n.is_empty() => format!("{kind} {ordinal} ({n})"),
+        _ => format!("{kind} {ordinal}"),
+    }
+}
+
+/// The solid features that would silently lose their profile if `sketch` were deleted
+/// (#1796): extrusions/revolutions/sweeps hosted on it or eating its geometry, sweeps
+/// tracing along its lines, and loft sections living on it.
+pub fn sketch_feature_dependents(doc: &Document, sketch: SketchId) -> Vec<String> {
+    let mut out = Vec::new();
+    for (key, e) in doc.extrusions.iter() {
+        let used = e.sketch == sketch || e.faces.iter().any(|f| face_uses_sketch(doc, f, sketch));
+        if used {
+            let ordinal = doc.extrusions.keys().position(|k| k == key).unwrap_or(0);
+            out.push(dependent_label("extrusion", ordinal, &e.name));
+        }
+    }
+    for (key, r) in doc.revolutions.iter() {
+        let axis_uses = matches!(&r.axis, crate::model::RevolveAxis::Line(l)
+            if doc.lines.get(*l).is_some_and(|l| l.sketch == sketch));
+        let used = r.sketch == sketch
+            || axis_uses
+            || r.faces.iter().any(|f| face_uses_sketch(doc, f, sketch));
+        if used {
+            let ordinal = doc.revolutions.keys().position(|k| k == key).unwrap_or(0);
+            out.push(dependent_label("revolution", ordinal, &r.name));
+        }
+    }
+    for (key, s) in doc.sweeps.iter() {
+        let path_uses = s.path.iter().any(|l| {
+            doc.lines.get(*l).is_some_and(|l| l.sketch == sketch)
+        });
+        let used = s.sketch == sketch
+            || path_uses
+            || s.faces.iter().any(|f| face_uses_sketch(doc, f, sketch));
+        if used {
+            let ordinal = doc.sweeps.keys().position(|k| k == key).unwrap_or(0);
+            out.push(dependent_label("sweep", ordinal, &s.name));
+        }
+    }
+    for (key, l) in doc.lofts.iter() {
+        let used = l.sections.iter().any(|sec| {
+            sec.sketch == sketch || face_uses_sketch(doc, &sec.face, sketch)
+        });
+        if used {
+            let ordinal = doc.lofts.keys().position(|k| k == key).unwrap_or(0);
+            out.push(dependent_label("loft", ordinal, &l.name));
+        }
+    }
+    out
+}
+
+/// Why deleting `element` would silently break dependent features (#1796), or `None`
+/// when the delete is safe. Guards sketches (and the construction planes hosting them),
+/// plus lines/circles that features directly eat.
+pub fn deletion_dependents(doc: &Document, element: &SceneElement) -> Option<String> {
+    let refuse = |subject: String, why: String| Some(format!("Cannot delete {subject}: {why}. Delete those features first."));
+    match element {
+        SceneElement::Sketch(sk) => {
+            let deps = sketch_feature_dependents(doc, *sk);
+            if deps.is_empty() {
+                return None;
+            }
+            let ordinal = doc.sketches.keys().position(|k| k == *sk).unwrap_or(0);
+            refuse(
+                format!("sketch {ordinal}"),
+                format!("it is still used by {}", deps.join(", ")),
+            )
+        }
+        SceneElement::ConstructionPlane(plane) => {
+            // A plane delete cascades into every sketch hosted on it (#1796).
+            let face = crate::model::FaceId::ConstructionPlane(*plane);
+            let mut deps: Vec<String> = Vec::new();
+            for sk in doc.sketches_on_face(face) {
+                deps.extend(sketch_feature_dependents(doc, sk));
+            }
+            if deps.is_empty() {
+                return None;
+            }
+            let ordinal = doc
+                .construction_planes
+                .keys()
+                .position(|k| k == *plane)
+                .unwrap_or(0);
+            refuse(
+                format!("construction plane {ordinal}"),
+                format!("its sketches are still used by {}", deps.join(", ")),
+            )
+        }
+        SceneElement::Line(l) => {
+            let deps = line_feature_dependents(doc, *l);
+            if deps.is_empty() {
+                return None;
+            }
+            let ordinal = doc.lines.keys().position(|k| k == *l).unwrap_or(0);
+            refuse(
+                format!("line {ordinal}"),
+                format!("it is still used by {}", deps.join(", ")),
+            )
+        }
+        SceneElement::Circle(c) => {
+            let mut deps = Vec::new();
+            for (key, e) in doc.extrusions.iter() {
+                let uses = e
+                    .faces
+                    .iter()
+                    .any(|f| matches!(f, crate::model::ExtrudeFace::Circle(i) if *i == *c));
+                if uses {
+                    let ordinal = doc.extrusions.keys().position(|k| k == key).unwrap_or(0);
+                    deps.push(dependent_label("extrusion", ordinal, &e.name));
+                }
+            }
+            if deps.is_empty() {
+                return None;
+            }
+            let ordinal = doc.circles.keys().position(|k| k == *c).unwrap_or(0);
+            refuse(
+                format!("circle {ordinal}"),
+                format!("it is still used by {}", deps.join(", ")),
+            )
+        }
+        _ => None,
+    }
+}
+
+/// Features directly eating `line` — as a profile edge, a sweep path segment, or a
+/// revolve axis.
+fn line_feature_dependents(doc: &Document, line: crate::model::LineKey) -> Vec<String> {
+    let mut out = Vec::new();
+    for (key, e) in doc.extrusions.iter() {
+        if e.faces.iter().any(
+            |f| matches!(f, crate::model::ExtrudeFace::Polygon(lines) if lines.contains(&line)),
+        ) {
+            let ordinal = doc.extrusions.keys().position(|k| k == key).unwrap_or(0);
+            out.push(dependent_label("extrusion", ordinal, &e.name));
+        }
+    }
+    for (key, r) in doc.revolutions.iter() {
+        let uses = matches!(&r.axis, crate::model::RevolveAxis::Line(l) if *l == line);
+        if uses {
+            let ordinal = doc.revolutions.keys().position(|k| k == key).unwrap_or(0);
+            out.push(dependent_label("revolution", ordinal, &r.name));
+        }
+    }
+    for (key, s) in doc.sweeps.iter() {
+        if s.path.contains(&line) {
+            let ordinal = doc.sweeps.keys().position(|k| k == key).unwrap_or(0);
+            out.push(dependent_label("sweep", ordinal, &s.name));
+        }
+    }
+    out
+}
+
+
+
 fn delete_construction_plane(
     doc: &mut Document,
     index: crate::model::ConstructionPlaneKey,

@@ -8800,7 +8800,8 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::DeleteSelection => {
-                state.apply(Action::DeleteSelection);
+                let result = state.apply(Action::DeleteSelection);
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::SetCommandPalette { open } => {

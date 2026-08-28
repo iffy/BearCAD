@@ -12452,6 +12452,12 @@ impl AppState {
             }
             Action::DeleteElement { element } => {
                 let target = crate::document_lifecycle::delete_target_for_element(element);
+                // #1796: refuse deletes that would silently break dependent features.
+                if let Some(e) = crate::document_lifecycle::deletion_dependents(&self.doc, &target)
+                {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
                 let changed = crate::document_lifecycle::delete_element(&mut self.doc, target);
                 if !changed {
                     return ActionResult::Ok;
@@ -12474,6 +12480,15 @@ impl AppState {
                     return ActionResult::Ok;
                 }
                 let targets = delete_targets_from_selection(&self.scene_selection);
+                // #1796: refuse deletes that would silently break dependent features.
+                for target in &targets {
+                    if let Some(e) =
+                        crate::document_lifecycle::deletion_dependents(&self.doc, target)
+                    {
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                }
                 let count = delete_elements(&mut self.doc, &targets);
                 if let Some(session) = self.sketch_session {
                     if !crate::document_lifecycle::sketch_alive(&self.doc, session.sketch) {

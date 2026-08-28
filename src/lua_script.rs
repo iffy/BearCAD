@@ -13195,6 +13195,68 @@ pub mod tests {
         assert_eq!(state.doc.revolutions.len(), 0);
     }
 
+    /// #1796/#1797: deleting a sketch that a feature depends on is refused, naming the
+    /// dependent — the feature must not silently revert (nor leave `body_stats` nil).
+    #[test]
+    fn lua_deleting_a_sketch_a_feature_depends_on_is_refused() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            local vol = bearcad.body_stats(0).volume
+            bearcad.select{ kind = "sketch", index = 0 }
+            local ok, err = pcall(bearcad.delete_selection)
+            assert(not ok, "deleting a sketch a feature uses must be refused")
+            err = tostring(err)
+            assert(err:find("extrusion"), "the error should name the dependent: " .. err)
+        "#,
+        );
+        assert_eq!(state.doc.extrusions.len(), 1, "the extrusion must survive");
+        let mesh = crate::extrude::body_solid_mesh(&state.doc, state.doc.bodies.keys().nth(0).unwrap()).unwrap();
+        assert!(mesh.triangles.len() > 0, "the body still meshes");
+    }
+
+    /// #1796: the pocket repro — a cut sketched on a face; deleting that sketch is refused.
+    #[test]
+    fn lua_deleting_the_pocket_sketch_is_refused() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.circle{ x = 0, y = 0, r = 20 }
+            bearcad.extrude{ circle = 0, distance = 7 }
+            bearcad.begin_sketch{ kind = "extrude_cap", extrusion = 0, profile = "circle", top = true }
+            bearcad.circle{ x = 0, y = 0, r = 10 }
+            bearcad.extrude{ circle = 1, distance = 3, body = "cut" }
+            bearcad.exit_sketch()
+            local vol = bearcad.body_stats(0).volume
+            bearcad.select{ kind = "sketch", index = 1 }
+            local ok, err = pcall(bearcad.delete_selection)
+            assert(not ok, "deleting the pocket's sketch must be refused")
+            assert(tostring(err):find("extrusion"), "unexpected error: " .. tostring(err))
+            assert(math.abs(bearcad.body_stats(0).volume - vol) < 1e-3,
+              "the cut must survive intact")
+        "#,
+        );
+        assert_eq!(state.doc.extrusions.len(), 2);
+    }
+
+    /// A sketch no feature depends on deletes normally.
+    #[test]
+    fn lua_deleting_an_unreferenced_sketch_still_works() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 10, height = 10 }
+            bearcad.line{ x = 50, y = 50, x1 = 60, y1 = 60 }
+            bearcad.select{ kind = "sketch", index = 0 }
+            bearcad.delete_selection()
+        "#,
+        );
+        assert_eq!(state.doc.sketches.len(), 0, "the sketch deletes");
+        assert_eq!(state.doc.lines.len(), 0, "its lines go with it");
+    }
+
     /// #77: `bearcad.chamfer_edge`/`fillet_edge` chamfer/fillet an analytic edge of an
     /// extrusion's 3D solid — declared directly (extrusion index + structured edge reference),
     /// not via screen-space picking.
