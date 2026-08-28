@@ -67,69 +67,66 @@ pub fn single_nameable_from_selection(
     selection.single().and_then(nameable_element)
 }
 
-fn name_matches(stored: Option<&str>, query: &str) -> bool {
-    stored
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .is_some_and(|s| s == query)
+/// Every element in the document that can carry a custom name, in the order [`find_element_by_name`]
+/// searches them (#1806). Sketch geometry and features come before the bodies and operations
+/// they produce, so a name shared between a feature and its result resolves to the feature —
+/// the order this list has always searched in.
+///
+/// The set matches [`nameable_element`]: anything you can name is something you can look up.
+pub fn nameable_elements(doc: &Document) -> Vec<SceneElement> {
+    let mut out = Vec::new();
+    macro_rules! push {
+        ($arena:expr, $variant:expr) => {
+            out.extend($arena.keys().map($variant))
+        };
+    }
+    push!(doc.construction_planes, SceneElement::ConstructionPlane);
+    push!(doc.sketches, SceneElement::Sketch);
+    push!(doc.lines, SceneElement::Line);
+    push!(doc.circles, SceneElement::Circle);
+    push!(doc.constraints, SceneElement::Constraint);
+    push!(doc.extrusions, SceneElement::Extrusion);
+    push!(doc.unit_instances, SceneElement::UnitInstance);
+    push!(doc.joints, SceneElement::Joint);
+    for (view, v) in doc.cross_sections.iter() {
+        out.extend((0..v.cuts.len()).map(|cut| SceneElement::SectionPlane { view, cut }));
+    }
+    push!(doc.sketch_texts, SceneElement::SketchText);
+    push!(doc.revolutions, SceneElement::Revolution);
+    push!(doc.sweeps, SceneElement::SweepOp);
+    push!(doc.lofts, SceneElement::Loft);
+    push!(doc.primitives, SceneElement::Shape);
+    push!(doc.boolean_ops, SceneElement::BooleanOp);
+    push!(doc.move_ops, SceneElement::MoveOp);
+    push!(doc.mirror_ops, SceneElement::MirrorOp);
+    push!(doc.repeat_ops, SceneElement::RepeatOp);
+    push!(doc.slice_ops, SceneElement::SliceOp);
+    push!(doc.shell_ops, SceneElement::ShellOp);
+    push!(doc.edge_treatment_ops, SceneElement::EdgeTreatmentOp);
+    push!(doc.sketch_repeat_ops, SceneElement::SketchRepeatOp);
+    push!(doc.sketch_offset_ops, SceneElement::SketchOffsetOp);
+    push!(doc.sketch_mirror_ops, SceneElement::SketchMirrorOp);
+    push!(doc.sketch_vertex_treatment_ops, SceneElement::SketchVertexTreatmentOp);
+    push!(doc.sketch_slice_ops, SceneElement::SketchSliceOp);
+    push!(doc.bodies, SceneElement::Body);
+    push!(doc.tracing_images, SceneElement::Image);
+    push!(doc.drawings, SceneElement::Drawing);
+    push!(doc.cross_sections, SceneElement::CrossSection);
+    push!(doc.components, SceneElement::Component);
+    out
 }
 
-/// Find the first scene element with the given custom name (case-sensitive).
+/// Find the first scene element with the given custom name (case-sensitive). Every kind that
+/// can be named is searched (#1806) — the two used to be separate lists, and a named body
+/// (the commonest thing to name) was missing from this one.
 pub fn find_element_by_name(doc: &Document, name: &str) -> Option<SceneElement> {
     let query = name.trim();
     if query.is_empty() {
         return None;
     }
-    for (index, plane) in doc.construction_planes.iter() {
-        if name_matches(plane.name.as_deref(), query) {
-            return Some(SceneElement::ConstructionPlane(index));
-        }
-    }
-    for (index, sketch) in doc.sketches.iter() {
-        if name_matches(sketch.name.as_deref(), query) {
-            return Some(SceneElement::Sketch(index));
-        }
-    }
-    for (index, line) in doc.lines.iter() {
-        if name_matches(line.name.as_deref(), query) {
-            return Some(SceneElement::Line(index));
-        }
-    }
-    for (index, circle) in doc.circles.iter() {
-        if name_matches(circle.name.as_deref(), query) {
-            return Some(SceneElement::Circle(index));
-        }
-    }
-    for (index, constraint) in doc.constraints.iter() {
-        if name_matches(constraint.name.as_deref(), query) {
-            return Some(SceneElement::Constraint(index));
-        }
-    }
-    for (index, extrusion) in doc.extrusions.iter() {
-        if name_matches(extrusion.name.as_deref(), query) {
-            return Some(SceneElement::Extrusion(index));
-        }
-    }
-    // Imported unit instances (#728): findable/selectable by their instance name.
-    for (index, instance) in doc.unit_instances.iter() {
-        if name_matches(instance.name.as_deref(), query) {
-            return Some(SceneElement::UnitInstance(index));
-        }
-    }
-    // Joints (#891): findable/selectable by name like any operation.
-    for (index, joint) in doc.joints.iter() {
-        if name_matches(joint.name.as_deref(), query) {
-            return Some(SceneElement::Joint(index));
-        }
-    }
-    for (view, v) in doc.cross_sections.iter() {
-        for (cut, plane) in v.cuts.iter().enumerate() {
-            if name_matches(plane.name.as_deref(), query) {
-                return Some(SceneElement::SectionPlane { view, cut });
-            }
-        }
-    }
-    None
+    nameable_elements(doc)
+        .into_iter()
+        .find(|element| element_name(doc, element.clone()) == Some(query))
 }
 
 /// How a picked [`crate::model::RevolveAxis`] reads in a context pane's axis picker — the
@@ -1059,5 +1056,37 @@ mod tests {
         set_element_name(&mut doc, SceneElement::Loft(loft_key), "Horn".to_string()).unwrap();
         assert_eq!(node_label(&doc, HierarchyNode::Loft(loft_key)), "Horn");
         assert_eq!(element_name(&doc, SceneElement::Loft(loft_key)), Some("Horn"));
+        // #1806: a name you can set is a name you can look up.
+        assert_eq!(find_element_by_name(&doc, "Horn"), Some(SceneElement::Loft(loft_key)));
+    }
+
+    /// #1806: `find` searches every kind that can carry a name, not the handful it used to.
+    /// A body is the obvious one — naming it succeeded while looking it up returned nothing.
+    #[test]
+    fn every_nameable_kind_is_findable_by_its_name() {
+        let mut doc = Document::default();
+        let body = doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(crate::model::extrusion_key_for_slot(0)),
+            name: None,
+            material: None,
+            shadow: false,
+        });
+        set_element_name(&mut doc, SceneElement::Body(body), "Plate".to_string()).unwrap();
+        assert_eq!(find_element_by_name(&doc, "Plate"), Some(SceneElement::Body(body)));
+
+        // Every nameable element the document holds answers to the name it was given.
+        for (i, element) in nameable_elements(&doc).into_iter().enumerate() {
+            let label = format!("Name {i}");
+            set_element_name(&mut doc, element.clone(), label.clone()).unwrap();
+            assert_eq!(
+                find_element_by_name(&doc, &label),
+                Some(element.clone()),
+                "{element:?} is nameable but not findable"
+            );
+        }
+
+        // An unnamed element, an empty query, and a name nothing carries all read as nothing.
+        assert_eq!(find_element_by_name(&doc, "  "), None);
+        assert_eq!(find_element_by_name(&doc, "nothing is called this"), None);
     }
 }

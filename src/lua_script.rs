@@ -12573,11 +12573,13 @@ pub mod tests {
             local ok = pcall(bearcad.element, id)
             assert(not ok, "a retired id resolves to nothing")
 
-            -- Names still resolve, alongside handles and ids.
+            -- Names still resolve, alongside handles and ids — including a body's (#1806).
             local edge = bearcad.element("line", 0)
             bearcad.set_name(edge, "Front")
             assert(bearcad.find("Front"):id() == edge:id(), "find still works")
             assert(bearcad.id("Front") == edge:id(), "a name resolves to the same id")
+            bearcad.set_name(again, "Plate")
+            assert(bearcad.find("Plate"):id() == again:id(), "a named body is findable")
         "#,
         );
         assert_eq!(state.doc.bodies.len(), 1);
