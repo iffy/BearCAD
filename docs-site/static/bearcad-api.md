@@ -182,7 +182,7 @@ bearcad.apply_visibility(visible)
 bearcad.begin_combine{ op, a, b, keep_b, keep_leftovers }
 bearcad.begin_edit_section_plane{ view, cut }
 bearcad.begin_joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin, frame_axis, frame_axis2, position, position2, position3, slide_min, slide_max, slide_min_to, slide_max_to, turn_min, turn_max, name }   -- face = { moving, fixed, flip?, offset?, spin? }
-bearcad.begin_move{ bodies, images, flip, from, to, from_b, to_b, from_c, to_c, origin, image, anchor, body, vertex, on_edge, on_face, face_center, normal, uv, edge }
+bearcad.begin_move{ bodies, images, x, y, z, rx, ry, rz, roll, flip, spin, gap, from, to, from_b, to_b, from_c, to_c }   -- from/to are { body = i, vertex = {x,y,z} } | { body = i, edge = {{x,y,z},{x,y,z}} } | { origin = true }
 bearcad.begin_sketch(…)
 bearcad.body_cylinders(index)
 bearcad.body_edges(index)
@@ -240,7 +240,7 @@ bearcad.edit_dim(axis)
 bearcad.edit_extrusion{ extrusion, distance, by, to }
 bearcad.edit_joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin, frame_axis, frame_axis2, position, position2, position3, slide_min, slide_max, slide_min_to, slide_max_to, turn_min, turn_max, name }   -- face = { moving, fixed, flip?, offset?, spin? }
 bearcad.edit_mirror{ index, plane, bodies, output }
-bearcad.edit_move{ index, bodies, images, flip, from, to, from_b, to_b, from_c, to_c, origin, image, anchor, body, vertex, on_edge, on_face, face_center, normal, uv, edge }
+bearcad.edit_move{ index, bodies, images, x, y, z, rx, ry, rz, roll, flip, spin, gap, from, to, from_b, to_b, from_c, to_c }   -- from/to are { body = i, vertex = {x,y,z} } | { body = i, edge = {{x,y,z},{x,y,z}} } | { origin = true }
 bearcad.edit_plane(index)
 bearcad.edit_repeat{ index, bodies, axis, around, flip, mode, count, spacing, gap, length, to }
 bearcad.edit_section_plane{ view, cut, offset, roll, flip, bodies, exclude_bodies }
@@ -284,7 +284,7 @@ bearcad.material{ name, color, bodies }
 bearcad.mesh_cache()
 bearcad.mirror_bodies{ plane, bodies, output, name }
 bearcad.mirror_sketch{ sketch, line, lines, circles }
-bearcad.move_bodies{ bodies, images, flip, from, to, from_b, to_b, from_c, to_c, origin, image, anchor, body, vertex, on_edge, on_face, face_center, normal, uv, edge, name }
+bearcad.move_bodies{ bodies, images, x, y, z, rx, ry, rz, roll, flip, spin, gap, from, to, from_b, to_b, from_c, to_c, name }   -- from/to are { body = i, vertex = {x,y,z} } | { body = i, edge = {{x,y,z},{x,y,z}} } | { origin = true }
 bearcad.move_preview()
 bearcad.move_to_component{ kind, index, component }
 bearcad.new()

@@ -1423,7 +1423,15 @@ fn parse_revolve_axis(
 }
 
 /// Parses `bearcad.move_bodies{}`/`bearcad.edit_move{}` arguments. Numbers are accepted
-/// for the expression fields and stringified.
+/// for the expression fields and stringified. Unknown keys are rejected (#1798) so a
+/// typo like `dy` can't silently move nothing.
+/// Options every move-op call shares. `name` only on the committed `move_bodies`;
+/// `index` only on `edit_move`.
+const MOVE_OP_KEYS: &[&str] = &[
+    "bodies", "images", "x", "y", "z", "rx", "ry", "rz", "roll", "flip", "spin", "gap", "from",
+    "to", "from_b", "to_b", "from_c", "to_c",
+];
+
 #[allow(clippy::type_complexity)]
 fn parse_move_op_args(
     lua: &Lua,
@@ -7817,6 +7825,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "move_bodies",
         lua.create_function(|lua, opts: Table| {
+            check_keys(
+                &opts,
+                "move_bodies",
+                &[MOVE_OP_KEYS, &["name"]].concat(),
+            )?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let (targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
                  face_offset, start_point_a, end_point_a, start_point_b, end_point_b,
@@ -7847,6 +7860,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "begin_move",
         lua.create_function(|lua, opts: Table| {
+            check_keys(&opts, "begin_move", MOVE_OP_KEYS)?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let (targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
                  face_offset, start_point_a, end_point_a, start_point_b, end_point_b,
@@ -7866,6 +7880,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "edit_move",
         lua.create_function(|lua, opts: Table| {
+            check_keys(
+                &opts,
+                "edit_move",
+                &[MOVE_OP_KEYS, &["index"]].concat(),
+            )?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let op: usize = opts.get("index")?;
             let (targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
@@ -9912,6 +9931,38 @@ pub mod tests {
         ));
         let img = state.doc.tracing_images.values().next().unwrap();
         assert!((img.opacity - 0.5).abs() < 1e-6);
+    }
+
+    /// #1798: a typo'd move key (`dy` instead of `y`) must fail the call — listing the
+    /// accepted keys — instead of silently moving nothing.
+    #[test]
+    fn lua_move_bodies_rejects_unknown_option_keys() {
+        let state = run_lua(
+            r#"
+            bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            local ok, err = pcall(bearcad.move_bodies, { bodies = {0}, dy = -2 })
+            assert(not ok, "an unknown move key must error")
+            err = tostring(err)
+            assert(err:find("dy"), "the error should name the bad key: " .. err)
+            assert(err:find("accepted keys"), "the error should list the accepted keys: " .. err)
+        "#,
+        );
+        assert_eq!(state.doc.move_ops.len(), 0, "no move op may be created");
+    }
+
+    /// #1798: `edit_move` rejects unknown keys the same way.
+    #[test]
+    fn lua_edit_move_rejects_unknown_option_keys() {
+        let state = run_lua(
+            r#"
+            bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            bearcad.move_bodies{ bodies = {0}, x = 5 }
+            local ok, err = pcall(bearcad.edit_move, { index = 0, bodies = {0}, dz = 2 })
+            assert(not ok, "an unknown edit_move key must error")
+            assert(tostring(err):find("dz"), "unexpected error: " .. tostring(err))
+        "#,
+        );
+        assert_eq!(state.doc.move_ops.len(), 1, "only the original op exists");
     }
 
     /// #1587: `move_bodies{ images = {0}, x = … }` slides a tracing image on its host plane.
