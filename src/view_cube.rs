@@ -1346,16 +1346,7 @@ fn ground_display_tooltip(mode: crate::camera::GroundDisplay) -> &'static str {
 }
 
 fn shading_mode_tooltip(mode: crate::camera::ShadingMode) -> &'static str {
-    use crate::camera::ShadingMode;
-    match mode {
-        ShadingMode::Wireframe => "Wireframe",
-        ShadingMode::TransparentSolid => "Transparent solid",
-        ShadingMode::Solid => "Solid",
-        ShadingMode::SolidWireframe => "Solid + wireframe",
-        ShadingMode::Realistic => "Realistic",
-        ShadingMode::LoosePencil => "Loose pencil",
-        ShadingMode::ColourPencil => "Coloured pencil",
-    }
+    mode.label()
 }
 
 /// Gear button (where the projection toggle used to be) that opens a popup with two

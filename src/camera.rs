@@ -191,6 +191,19 @@ impl ShadingMode {
         }
     }
 
+    /// How the mode reads in the UI and the docs — the one place its name is spelled.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Wireframe => "Wireframe",
+            Self::TransparentSolid => "Transparent solid",
+            Self::Solid => "Solid",
+            Self::SolidWireframe => "Solid + wireframe",
+            Self::Realistic => "Realistic",
+            Self::LoosePencil => "Loose pencil",
+            Self::ColourPencil => "Coloured pencil",
+        }
+    }
+
     pub fn script_name(self) -> &'static str {
         match self {
             Self::Wireframe => "wireframe",
@@ -2081,6 +2094,50 @@ mod tests {
             SHADING_MODE_ROWS[SHADING_MODE_ROWS.len() - 1],
             &[ShadingMode::LoosePencil, ShadingMode::ColourPencil]
         );
+    }
+
+    /// #1813: the View styles page shows one picture per shading mode, and names every
+    /// projection style a drawing can take. Add or remove a style without updating the page
+    /// and this fails — including in the "removed" direction, since the counts have to match.
+    #[test]
+    fn the_view_styles_page_documents_every_style() {
+        const PAGE: &str = include_str!("../docs-site/docs/view-styles.md");
+        const CAPTURE: &str = include_str!("../docs-site/screenshots/view-styles.lua");
+
+        for mode in SHADING_MODES {
+            let shot = format!("/img/screenshots/view-styles-{}.png", mode.script_name());
+            assert!(
+                PAGE.contains(&shot),
+                "the page has no picture of {:?} — expected {shot}",
+                mode
+            );
+            assert!(
+                PAGE.contains(mode.label()),
+                "the page never names {:?} ({})",
+                mode,
+                mode.label()
+            );
+            assert!(
+                CAPTURE.contains(&format!("\"{}\"", mode.script_name())),
+                "docs-site/screenshots/view-styles.lua never captures {:?}",
+                mode
+            );
+        }
+        // The other direction: a style that has gone away must not leave a picture behind.
+        assert_eq!(
+            PAGE.matches("/img/screenshots/view-styles-").count(),
+            SHADING_MODES.len(),
+            "the page shows a different number of styles than there are"
+        );
+
+        // Drawing projections have their own style list, named on the same page.
+        for style in crate::model::DrawingViewStyle::ALL {
+            assert!(
+                PAGE.contains(style.label()),
+                "the page never names the {:?} projection style",
+                style
+            );
+        }
     }
 
     #[test]
