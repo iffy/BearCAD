@@ -8,7 +8,7 @@
 --
 -- Output dir: $BEARCAD_SCREENSHOT_OUT (set by scripts/gen-doc-screenshots.sh),
 -- falling back to ".". PNGs are only written where a real GPU frame renders
--- (a display, or CI Linux with xvfb + software Vulkan); otherwise the capture
+-- (a GPU, or CI Linux with the software Vulkan driver); otherwise the capture
 -- never resolves and --timeout force-exits without a PNG, which is expected.
 
 local dir = os.getenv("BEARCAD_SCREENSHOT_OUT") or "."

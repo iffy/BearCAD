@@ -18,11 +18,10 @@
 #   BEARCAD_SCREENSHOT_LIST_ONLY=1            # print selected scenes and exit
 #   BEARCAD_SCREENSHOT_BASE=origin/master     # git base for affected mode
 #
-# Rendering requirements: capturing a screenshot needs a real rendered GPU
-# frame. This works on a normal desktop (a machine with a working display/GPU)
-# and on CI Linux runners that provide a software Vulkan driver under xvfb
-# (mesa-vulkan-drivers + xvfb, as the CI smoke test uses). In a headless
-# environment without any of that the capture never resolves and the per-script
+# Rendering requirements: scripts run in **headless** mode (offscreen wgpu, no
+# window, no X server — #1804). A GPU (or a software driver such as
+# mesa-vulkan-drivers on CI Linux runners) is still needed for the offscreen
+# render. Where none exists the capture never resolves and the per-script
 # timeout force-exits with no PNG; this script then reports that script as
 # failed and exits non-zero.
 set -uo pipefail
@@ -63,23 +62,6 @@ if command -v timeout >/dev/null 2>&1; then
 elif command -v gtimeout >/dev/null 2>&1; then
   TIMEOUT_CMD="gtimeout"
 fi
-
-# --- Wrap the run in xvfb on Linux so it renders headlessly --------------------
-# The virtual screen has to be roomier than the pinned window, otherwise the
-# window is clipped to xvfb's 1280x1024 default and the framing drifts again.
-WINDOW_SIZE="${BEARCAD_WINDOW%%@*}"   # BEARCAD_WINDOW may carry an @x,y position
-SCREEN_W=$(( ${WINDOW_SIZE%%x*} + 128 ))
-SCREEN_H=$(( ${WINDOW_SIZE##*x} + 128 ))
-XVFB_PREFIX=()
-case "$(uname -s)" in
-  Linux)
-    if command -v xvfb-run >/dev/null 2>&1; then
-      XVFB_PREFIX=(xvfb-run -a -s "-screen 0 ${SCREEN_W}x${SCREEN_H}x24")
-    else
-      echo "warning: xvfb-run not found on Linux; rendering will likely fail." >&2
-    fi
-    ;;
-esac
 
 # --- Build the app (release) unless told to reuse an existing binary -----------
 BIN="target/release/bearcad"
@@ -269,7 +251,7 @@ for name in "${selected[@]}"; do
   # its own where possible (cleaner than an external kill).
   app_timeout=$(( PER_SHOT_TIMEOUT > 10 ? PER_SHOT_TIMEOUT - 5 : PER_SHOT_TIMEOUT ))
 
-  run=("${XVFB_PREFIX[@]}" "$BIN" --script "$script" --exit --timeout "$app_timeout")
+  run=("$BIN" --script "$script" --exit --timeout "$app_timeout")
   if [[ -n "$TIMEOUT_CMD" ]]; then
     BEARCAD_SCREENSHOT_OUT="$OUT_DIR" "$TIMEOUT_CMD" "$PER_SHOT_TIMEOUT" "${run[@]}" || true
   else
@@ -302,8 +284,8 @@ fi
 if [[ ${#failed[@]} -gt 0 ]]; then
   echo "  failed: ${failed[*]}" >&2
   echo "One or more screenshots were not produced (needs a render-capable" >&2
-  echo "environment: a real display/GPU, or CI Linux with xvfb + a software" >&2
-  echo "Vulkan driver)." >&2
+  echo "environment: headless mode still needs a GPU, or CI Linux with a" >&2
+  echo "software Vulkan driver)." >&2
   exit 1
 fi
 

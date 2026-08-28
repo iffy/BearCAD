@@ -16,7 +16,7 @@ bearcad.rect{ x = 0, y = 0, width = 20, height = 14, name = "Block" }
 bearcad.exit_sketch()
 bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 8, name = "Block" }
 
-bearcad.move_bodies{ bodies = {0}, x = "30", axis = "z", angle = "30", name = "Shifted" }
+bearcad.move_bodies{ bodies = {0}, x = "30", rz = "30", name = "Shifted" }
 
 -- Hide the three datum planes a new document opens with.
 for i = 0, 2 do bearcad.set_visible({ kind = "construction_plane", index = i }, "hide") end
