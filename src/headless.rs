@@ -5,7 +5,7 @@
 //! eframe can't do this itself (its wgpu backend is welded to a window surface), so
 //! this module re-implements the thin backend layer eframe normally provides:
 //!
-//! 1. build a surfaceless [`egui_wgpu::RenderState`] (adapter + device + egui renderer,
+//! 1. build a surfaceless [`eframe::egui_wgpu::RenderState`] (adapter + device + egui renderer,
 //!    `compatible_surface: None` — egui falls back to `Rgba8Unorm`, a gamma-space
 //!    format, which is what egui prefers);
 //! 2. each frame, assemble [`egui::RawInput`] (fixed screen rect, no OS events), run
@@ -67,20 +67,20 @@ pub fn run(script_opts: ScriptOptions) -> Result<(), String> {
     // Surfaceless GPU setup: the same construction eframe runs for a window, minus the
     // surface. Without one, egui falls back to `Rgba8Unorm` — a gamma-space format,
     // which is the format egui prefers, so UI and viewport colors match the window.
-    let config = egui_wgpu::WgpuConfiguration::default();
+    let config = eframe::egui_wgpu::WgpuConfiguration::default();
     // The default setup's descriptor is the env-driven, display-less one; build the
     // instance from it directly (InstanceDescriptor isn't Clone).
     let instance = match &config.wgpu_setup {
-        egui_wgpu::WgpuSetup::CreateNew(_) => {
+        eframe::egui_wgpu::WgpuSetup::CreateNew(_) => {
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env())
         }
-        egui_wgpu::WgpuSetup::Existing(existing) => existing.instance.clone(),
+        eframe::egui_wgpu::WgpuSetup::Existing(existing) => existing.instance.clone(),
     };
-    let render_state = pollster::block_on(egui_wgpu::RenderState::create(
+    let render_state = pollster::block_on(eframe::egui_wgpu::RenderState::create(
         &config,
         &instance,
         None,
-        egui_wgpu::RendererOptions::default(),
+        eframe::egui_wgpu::RendererOptions::default(),
     ))
     .map_err(|e| format!("headless GPU initialization failed: {e}"))?;
     {
@@ -246,14 +246,14 @@ pub fn run(script_opts: ScriptOptions) -> Result<(), String> {
 
 /// The offscreen render target and the painting half of a minimal egui-wgpu backend.
 struct Offscreen {
-    render_state: egui_wgpu::RenderState,
+    render_state: eframe::egui_wgpu::RenderState,
     texture: wgpu::Texture,
     /// Physical pixel size of the target.
     size_px: [u32; 2],
 }
 
 impl Offscreen {
-    fn new(render_state: &egui_wgpu::RenderState, size_points: [f32; 2]) -> Self {
+    fn new(render_state: &eframe::egui_wgpu::RenderState, size_points: [f32; 2]) -> Self {
         // 1 point = 1 pixel: screenshots come out at CSS scale, like CI's Xvfb runs.
         let size_px = [size_points[0] as u32, size_points[1] as u32];
         let texture = Self::create_texture(&render_state.device, render_state.target_format, size_px);
@@ -303,7 +303,7 @@ impl Offscreen {
             }
         }
 
-        let screen = egui_wgpu::ScreenDescriptor {
+        let screen = eframe::egui_wgpu::ScreenDescriptor {
             size_in_pixels: self.size_px,
             pixels_per_point: full.pixels_per_point,
         };
