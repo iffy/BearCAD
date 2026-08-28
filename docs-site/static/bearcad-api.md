@@ -303,7 +303,7 @@ bearcad.joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin
 bearcad.line{ x, y, x1, y1, length, angle, bezier, dimension, name }
 bearcad.line_endpoints(index)
 bearcad.loft{ circle, circles, polygon, polygons, bodies, body, name }
-bearcad.material{ name, color, bodies }
+bearcad.material{ name, color, bodies }   -- no colour + an existing name applies that material
 bearcad.mesh_cache()
 bearcad.mirror_bodies{ plane, bodies, output, name }
 bearcad.mirror_sketch{ sketch, line, lines, circles }

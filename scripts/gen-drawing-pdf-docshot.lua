@@ -15,6 +15,8 @@ local pdf = "/tmp/bearcad-doc-drawing.pdf"
 
 bearcad.new()
 bearcad.cylinder{ at = {56.772964, 14.691696, 0}, radius = 44.774, height = 80.79 }
+-- Blue, so the Colorful three-quarter view below shows what a material does (#1822).
+bearcad.material{ name = "Blue", bodies = {0} }
 bearcad.cross_section{}
 bearcad.section_plane{ origin = {0, 0, 0}, normal = {0, 1, 0}, offset = 23.6, flip = true }
 bearcad.edit_section_plane{ cut = 0, roll = 25 }
@@ -25,7 +27,9 @@ bearcad.drawing_align_view{ drawing = d, parent = 0, dir = "below" }
 bearcad.drawing_align_view{ drawing = d, parent = 0, dir = "right" }
 bearcad.drawing_view{ drawing = d, body = 0, orientation = "back-right-top" }
 bearcad.drawing_view_section{ drawing = d, view = 3, cross_section = 0 }
-bearcad.drawing_view_style{ drawing = d, view = 3, style = "shaded" }
+-- The three-quarter view in the bottom right keeps the body's colour (#1822): a page of
+-- grey views says nothing about materials.
+bearcad.drawing_view_style{ drawing = d, view = 3, style = "colorful" }
 bearcad.drawing_move_view{ drawing = d, view = 0, x = 0.30, y = 0.30 }
 bearcad.drawing_move_view{ drawing = d, view = 1, x = 0.30, y = 0.72 }
 bearcad.drawing_move_view{ drawing = d, view = 2, x = 0.68, y = 0.30 }

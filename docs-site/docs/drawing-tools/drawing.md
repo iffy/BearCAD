@@ -12,7 +12,7 @@ A drawing is a black-on-white sheet for printing. A document can hold any number
 collecting **views** — a body, several bodies, or a whole component shown from a chosen
 direction.
 
-![The PDF export of a technical drawing: four views of a cut cylinder, the cut faces hatched, one length dimension](/img/drawing-pdf.png)
+![The PDF export of a technical drawing: four views of a cut cylinder, the cut faces hatched, one length dimension, and a blue three-quarter view](/img/drawing-pdf.png)
 
 **CAD → New Drawing** creates a drawing and opens the drawing pane. Right-click a **body**
 in the Elements pane → **Create drawing** makes a drawing of that body in one step. The

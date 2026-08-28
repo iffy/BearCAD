@@ -431,6 +431,7 @@ See [Materials](/docs/materials).
 
 ```lua
 bearcad.material{ name = "Brass", color = "#c88a4a", bodies = {0} }
+bearcad.material{ name = "Blue", bodies = {1} }   -- no colour: applies the one already there
 bearcad.set_material{ body = 1, material = 0 }
 bearcad.set_material{ body = 1 }        -- back to the default material
 ```

@@ -18146,12 +18146,28 @@ op,
                 let name = name
                     .filter(|n| !n.trim().is_empty())
                     .unwrap_or_else(|| format!("Material {}", count + 1));
-                if self
+                let existing = self
                     .doc
                     .materials
-                    .values()
-                    .any(|m| m.name.eq_ignore_ascii_case(name.trim()))
-                {
+                    .iter()
+                    .find(|(_, m)| m.name.eq_ignore_ascii_case(name.trim()))
+                    .map(|(k, _)| k);
+                if let Some(key) = existing {
+                    // Naming a material that is already there, with no colour of its own, is
+                    // a request to *use* it (#1822) — the same thing the Material dropdown
+                    // does. Refusing meant a script could only reach the built-in palette by
+                    // counting entries in it.
+                    if color.is_none() && !bodies.is_empty() {
+                        for bi in &bodies {
+                            if let Some(body) = self.doc.bodies.get_mut(*bi) {
+                                body.material = Some(key);
+                            }
+                        }
+                        self.status = format!("Material '{name}' applied");
+                        return ActionResult::Ok;
+                    }
+                    // With a colour, it is ambiguous — recolour the old one, or add a second
+                    // by that name? — so it stays a refusal.
                     let e = format!("A material named '{name}' already exists");
                     self.status = e.clone();
                     return ActionResult::Err(e);
@@ -32078,6 +32094,48 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             k
         };
         assert_eq!(key(&pencil), key(&geometry(&state)), "the hand wavered between renders");
+    }
+
+    /// #1822: naming a material that already exists, with no colour of its own, applies it.
+    /// It used to be refused, so a script could only reach the built-in palette by counting
+    /// entries in it — while the Material dropdown next to it just picks one by name.
+    #[test]
+    fn naming_an_existing_material_applies_it() {
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        let blue = state
+            .doc
+            .materials
+            .iter()
+            .find(|(_, m)| m.name == "Blue")
+            .map(|(k, _)| k)
+            .expect("the palette seeds a Blue");
+
+        let result = state.apply(Action::AddMaterial {
+            name: Some("blue".to_string()),
+            color: None,
+            bodies: vec![bkey(0)],
+        });
+        assert!(matches!(result, ActionResult::Ok), "{}", state.status);
+        assert_eq!(
+            state.doc.bodies[bkey(0)].material,
+            Some(blue),
+            "the body takes the material that was named, matched case-insensitively"
+        );
+        assert!(
+            state.doc.materials.values().filter(|m| m.name == "Blue").count() == 1,
+            "and no second Blue is added"
+        );
+
+        // With a colour it is ambiguous — recolour the old one, or add a second by that name?
+        // — so it stays a refusal.
+        let clash = state.apply(Action::AddMaterial {
+            name: Some("Blue".to_string()),
+            color: Some([1, 2, 3]),
+            bodies: vec![bkey(1)],
+        });
+        assert!(matches!(clash, ActionResult::Err(_)), "{}", state.status);
+        assert_eq!(state.doc.bodies[bkey(1)].material, None, "and nothing was applied");
     }
 
     /// #1821: the Coloured pencil projection style is the viewport's coloured-pencil mode on

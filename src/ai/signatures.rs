@@ -121,7 +121,7 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.line"                        , "bearcad.line{ x, y, x1, y1, length, angle, bezier, dimension, name }"),
     ("bearcad.line_endpoints"              , "bearcad.line_endpoints(index)"),
     ("bearcad.loft"                        , "bearcad.loft{ circle, circles, polygon, polygons, bodies, body, name }"),
-    ("bearcad.material"                    , "bearcad.material{ name, color, bodies }"),
+    ("bearcad.material"                    , "bearcad.material{ name, color, bodies }   -- no colour + an existing name applies that material"),
     ("bearcad.mesh_cache"                  , "bearcad.mesh_cache()"),
     ("bearcad.mirror_bodies"               , "bearcad.mirror_bodies{ plane, bodies, output, name }"),
     ("bearcad.mirror_sketch"               , "bearcad.mirror_sketch{ sketch, line, lines, circles }"),

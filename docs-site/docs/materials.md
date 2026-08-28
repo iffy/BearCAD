@@ -44,8 +44,9 @@ in Bambu Studio with one filament slot per colour.
 
 ```lua
 bearcad.material{ name = "Brass", color = "#c88a4a", bodies = {0} }
+bearcad.material{ name = "Blue", bodies = {1} }   -- no colour: applies the one already there
 bearcad.set_material{ body = 1, material = 0 }
 bearcad.set_material{ body = 1 }        -- back to the default material
 ```
 
-Scripts name a material by its order in the document. Unobtainium is `0`.
+`set_material` names a material by its order in the document. Unobtainium is `0`.
