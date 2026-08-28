@@ -1134,6 +1134,10 @@ mod cli_tests {
         let doc_path = dir.join("headless_e2e.bearcad");
         let png_path = dir.join("headless_e2e.png");
         let script_path = dir.join("headless_e2e.lua");
+        // Lua reads \U as an escape: give it forward slashes (Windows file APIs and
+        // std::path both accept them).
+        let lua_doc_path = doc_path.display().to_string().replace('\\', "/");
+        let lua_png_path = png_path.display().to_string().replace('\\', "/");
         std::fs::write(
             &script_path,
             format!(
@@ -1144,8 +1148,8 @@ mod cli_tests {
                  bearcad.save(\"{}\")\n\
                  bearcad.ui.screenshot(\"{}\")\n\
                  bearcad.quit()\n",
-                doc_path.display(),
-                png_path.display(),
+                lua_doc_path,
+                lua_png_path,
             ),
         )
         .unwrap();
