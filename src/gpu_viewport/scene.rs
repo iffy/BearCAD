@@ -224,9 +224,93 @@ const SHADOW_MAP_PADDING: f32 = 8.0;
 use crate::pencil::{
     colour_tones as colour_pencil_tones, hatch_segments as pencil_hatch_segments,
     stroke as pencil_stroke, PENCIL_BODY_FILL, PENCIL_GRAPHITE, PENCIL_GRID, PENCIL_GRID_AXIS,
-    PENCIL_HATCH_COLOR, PENCIL_HATCH_WIDTH_PX, PENCIL_LINE_WIDTH_PX, PENCIL_PAPER, PENCIL_PASSES,
+    PENCIL_FILL_TONE_RANGE, PENCIL_HATCH_COLOR, PENCIL_HATCH_WIDTH_PX, PENCIL_LINE_WIDTH_PX,
+    PENCIL_PAPER, PENCIL_PASSES,
     PENCIL_X_AXIS, PENCIL_Y_AXIS, PENCIL_Z_AXIS,
 };
+
+/// How far above a receiving plane a triangle has to sit to cast a shadow on it (#1818). The
+/// contact face itself, and the tessellation wrinkles around it, must not shade the very face
+/// they lie on.
+const SHADOW_CASTER_MIN_MM: f32 = 0.05;
+
+/// One coplanar run of a solid's triangles (#1818), for shading or shadowing a face as a
+/// single surface rather than as the triangles it happens to be cut into.
+struct CoplanarFlat {
+    /// Outward normal of the plane.
+    normal: Vec3,
+    /// A point on it.
+    point: Vec3,
+    tris: Vec<[Vec3; 3]>,
+    /// A stable per-plane turn for the hatch direction, so two faces meeting at an edge are
+    /// not shaded in lockstep. Keyed to the plane, so it does not crawl as the camera moves.
+    angle_offset: f32,
+    /// Surface area, mm². What decides whether a flat is worth drawing strokes on.
+    area: f32,
+}
+
+/// Flats smaller than this are shaded by their fill alone (#1818): a tessellated sphere is
+/// hundreds of facets, and stroking every one of them both buries the drawing under hatching
+/// and costs more than the rest of the frame put together.
+const PENCIL_FLAT_MIN_AREA_MM2: f32 = 40.0;
+/// …and at most this many flats per body get strokes or receive a cast shadow — the largest
+/// ones, which are the faces a hand would actually work over.
+const PENCIL_FLAT_LIMIT: usize = 16;
+
+/// The flats of `solid` worth drawing on, largest first (#1818).
+fn pencil_drawable_flats(solid: &crate::extrude::SolidMesh) -> Vec<CoplanarFlat> {
+    let mut flats: Vec<CoplanarFlat> = coplanar_flats(solid)
+        .into_iter()
+        .filter(|f| f.area >= PENCIL_FLAT_MIN_AREA_MM2)
+        .collect();
+    flats.sort_by(|a, b| b.area.total_cmp(&a.area));
+    flats.truncate(PENCIL_FLAT_LIMIT);
+    flats
+}
+
+/// Group a solid's triangles by the plane they lie in (#1818). The key quantizes the normal
+/// and the plane's distance from the origin, so a tessellator's per-triangle rounding still
+/// lands every triangle of one flat in the same group.
+fn coplanar_flats(solid: &crate::extrude::SolidMesh) -> Vec<CoplanarFlat> {
+    // Keyed, not scanned: a tessellated sphere is hundreds of one-triangle flats, and a linear
+    // search per triangle made the pencil view quadratic in the mesh — half a second a frame
+    // for a handful of spheres.
+    let mut index: std::collections::HashMap<[i32; 4], usize> = std::collections::HashMap::new();
+    let mut out: Vec<CoplanarFlat> = Vec::new();
+    for tri in &solid.triangles {
+        let cross = (tri[1] - tri[0]).cross(tri[2] - tri[0]);
+        let normal = cross.normalize_or_zero();
+        if normal == Vec3::ZERO {
+            continue;
+        }
+        let q = |v: f32| (v * 1000.0).round() as i32;
+        let key = [q(normal.x), q(normal.y), q(normal.z), q(normal.dot(tri[0]) * 0.1)];
+        let area = cross.length() * 0.5;
+        match index.get(&key) {
+            Some(&i) => {
+                out[i].tris.push(*tri);
+                out[i].area += area;
+            }
+            None => {
+                // A repeatable turn from the key's own bits.
+                let mut h = 0x811C_9DC5u32;
+                for v in key {
+                    h = (h ^ v as u32).wrapping_mul(0x0100_0193);
+                }
+                let angle_offset = (h >> 8) as f32 / (1 << 24) as f32 * std::f32::consts::PI;
+                index.insert(key, out.len());
+                out.push(CoplanarFlat {
+                    normal,
+                    point: tri[0],
+                    tris: vec![*tri],
+                    angle_offset,
+                    area,
+                });
+            }
+        }
+    }
+    out
+}
 
 /// A body's shadow on the ground, as triangles on z = 0 (#1811): its own triangles projected
 /// along the scene light, minus the ones below the plane (a half-buried part shadows only the
@@ -1192,6 +1276,9 @@ impl ViewportScene {
         // Every pencil-mode caster's ground footprint, gathered across the body loop and
         // hatched once at the end (#1811) — see the `LoosePencil` arm below.
         let mut pencil_shadow_footprint: Vec<[Vec3; 3]> = Vec::new();
+        // …and the solids themselves, which shadow each other (#1818).
+        let mut pencil_shadow_casters: Vec<(&crate::extrude::SolidMesh, Vec<CoplanarFlat>)> =
+            Vec::new();
 
         // Extruded solid bodies (3D, depth-tested, flat-shaded).
         for (bi, body) in input.doc.bodies.iter() {
@@ -1436,12 +1523,37 @@ impl ViewportScene {
                 // colour (one pencil, one colour); coloured pencil keeps it (#1812).
                 mode @ (crate::camera::ShadingMode::LoosePencil
                 | crate::camera::ShadingMode::ColourPencil) => {
-                    let (paper_fill, stroke) = if mode == crate::camera::ShadingMode::ColourPencil {
+                    let coloured = mode == crate::camera::ShadingMode::ColourPencil;
+                    let (paper_fill, stroke) = if coloured {
                         colour_pencil_tones(fill)
                     } else {
                         (PENCIL_BODY_FILL, PENCIL_GRAPHITE)
                     };
-                    mesh.push_solid_flat(solid, paper_fill, &coplanar_planes, input.cam);
+                    // Which of this body's faces are worth drawing on — computed once and
+                    // used for both its own shading and the shadows it receives (#1818).
+                    let flats = pencil_drawable_flats(solid);
+                    // Coloured pencil shades by how squarely a surface faces the key light
+                    // (#1818): a deepened fill everywhere, plus strokes on the flats big
+                    // enough to carry them. Plain pencil stays a single flat tone with the
+                    // drawing carried entirely by its outlines (#1805).
+                    if coloured {
+                        mesh.push_solid_pencil_fill(
+                            solid,
+                            paper_fill,
+                            stroke,
+                            &coplanar_planes,
+                            input.cam,
+                        );
+                        mesh.push_pencil_face_shading(
+                            &flats,
+                            fill,
+                            input.cam,
+                            input.viewport,
+                            &vp,
+                        );
+                    } else {
+                        mesh.push_solid_flat(solid, paper_fill, &coplanar_planes, input.cam);
+                    }
                     let edges = crate::extrude::body_feature_edges(input.doc, bi);
                     mesh.push_pencil_edges(
                         solid,
@@ -1451,10 +1563,11 @@ impl ViewportScene {
                         input.viewport,
                         &vp,
                     );
-                    // The shadow is drawn once for the whole scene, after this loop (#1811):
+                    // The shadows are drawn once for the whole scene, after this loop (#1811):
                     // hatching each body separately drew every overlap twice.
                     pencil_shadow_footprint
                         .extend(ground_shadow_footprint(solid, input.cam));
+                    pencil_shadow_casters.push((solid, flats));
                 }
             }
         }
@@ -1463,6 +1576,10 @@ impl ViewportScene {
         // second set of strokes over every overlap — on its own scan-line phase, so the
         // shared region went both denser and darker than either shadow.
         mesh.push_pencil_ground_hatch(&pencil_shadow_footprint, input.cam, input.viewport, &vp);
+        // …and the shadows the solids throw on *each other* (#1818): the ground was the only
+        // receiver, so a part sitting on another part cast nothing and the two read as
+        // unrelated outlines.
+        mesh.push_pencil_cast_shadows(&pencil_shadow_casters, input.cam, input.viewport, &vp);
 
         // Imported unit instances (#722/#724) render through the ordinary body loop above:
         // each instance materializes as a derived body (`BodySource::UnitInstance`), so
@@ -2519,6 +2636,35 @@ impl<'a> SceneMesh<'a> {
         self.push_shaded_solid(solid, None, fill, cam, coplanar_planes, ShadingModel::Unlit);
     }
 
+    /// The coloured-pencil fill (#1818): the same laid-on tone as [`Self::push_solid_flat`],
+    /// but deepened where the surface turns from the key light, so a solid has a light and a
+    /// dark side even where it is too finely tessellated to carry strokes (a sphere is
+    /// hundreds of facets; hatching each one buries the drawing).
+    fn push_solid_pencil_fill(
+        &mut self,
+        solid: &crate::extrude::SolidMesh,
+        fill: Color32,
+        deep: Color32,
+        coplanar_planes: &[(Vec3, Vec3)],
+        cam: &Camera,
+    ) {
+        let light = SCENE_LIGHT_DIR.normalize_or_zero();
+        let tone = |n: Vec3| {
+            let lit = n.dot(light).max(0.0);
+            // Even the brightest side keeps a little tone: paper white is the background.
+            let t = (1.0 - lit) * PENCIL_FILL_TONE_RANGE;
+            let mix = |a: u8, b: u8| {
+                (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
+            };
+            Color32::from_rgb(
+                mix(fill.r(), deep.r()),
+                mix(fill.g(), deep.g()),
+                mix(fill.b(), deep.b()),
+            )
+        };
+        self.push_toned_solid(solid, None, &tone, cam, coplanar_planes, ShadingModel::Unlit);
+    }
+
     /// Draw a body's feature edges as pencil strokes (#1805): each edge gone over
     /// [`PENCIL_PASSES`] times, every pass overshooting its corners and bowing along its
     /// length. Silhouettes of smooth surfaces come along too, so a cylinder has sides.
@@ -2546,6 +2692,123 @@ impl<'a> SceneMesh<'a> {
                     viewport,
                     view_proj,
                 );
+            }
+        }
+    }
+
+    /// Shade a body's faces with coloured pencil (#1818): each flat gone over with strokes in
+    /// the body's own colour, closer together the further that flat turns from the key light,
+    /// and crossed a second time where it turns away altogether. A flat fill reads as paint —
+    /// this is where the light and dark sides of a solid come from, and it is what makes the
+    /// tone look laid down by hand rather than poured in.
+    fn push_pencil_face_shading(
+        &mut self,
+        flats: &[CoplanarFlat],
+        base: Color32,
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+    ) {
+        let light = SCENE_LIGHT_DIR.normalize_or_zero();
+        let tone = crate::pencil::shading_tone(base);
+        let color = fill_color(tone, crate::pencil::PENCIL_SHADE_ALPHA);
+        for flat in flats {
+            let lit = flat.normal.dot(light).max(0.0);
+            let (spacing, cross) = crate::pencil::shade_spacing(lit);
+            let frame = crate::pencil::HatchFrame::new(flat.point, flat.normal);
+            // Each flat gets its own stroke direction, keyed to the plane it lies in, so two
+            // faces meeting at an edge are not shaded in lockstep.
+            let angle = crate::pencil::PENCIL_HATCH_ANGLE_RAD + flat.angle_offset;
+            let mut passes = vec![angle];
+            if cross {
+                passes.push(angle + crate::pencil::PENCIL_SHADE_CROSS_TURN_RAD);
+            }
+            for (pass, angle) in passes.into_iter().enumerate() {
+                for (a, b) in
+                    crate::pencil::hatch_in_frame(&frame, spacing, angle, &flat.tris, None)
+                {
+                    self.push_polyline_segment(
+                        &crate::pencil::stroke_inside(a, b, pass),
+                        color,
+                        crate::pencil::PENCIL_SHADE_WIDTH_PX,
+                        cam,
+                        viewport,
+                        view_proj,
+                    );
+                }
+            }
+        }
+    }
+
+    /// The shadows the solids cast **on each other** (#1818), hatched like the ground one.
+    ///
+    /// Every flat facing the light is a receiver: everything standing between it and the light
+    /// is projected down onto its plane along the light, and the hatch is clipped to the flat
+    /// so the shadow marks only the face it actually lands on. Without this a part resting on
+    /// another part had no shadow at all — only the ground did — and an assembly read as a set
+    /// of unrelated outlines.
+    fn push_pencil_cast_shadows(
+        &mut self,
+        casters: &[(&crate::extrude::SolidMesh, Vec<CoplanarFlat>)],
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+    ) {
+        let light = SCENE_LIGHT_DIR.normalize_or_zero();
+        for (_, flats) in casters {
+            for flat in flats {
+                let facing = flat.normal.dot(light);
+                if facing <= 0.2 {
+                    continue; // turned away from the light, or edge-on to it
+                }
+                let c = flat.normal.dot(flat.point);
+                // Everything on the light side of this plane, dropped onto it along the light.
+                // A triangle lying *in* the plane is the contact face, not a caster.
+                let mut cast: Vec<[Vec3; 3]> = Vec::new();
+                for (caster, _) in casters {
+                    for tri in &caster.triangles {
+                        // Only the lit side of a caster needs projecting: its far side traces
+                        // the same silhouette, at twice the cost.
+                        if (tri[1] - tri[0]).cross(tri[2] - tri[0]).dot(light) <= 0.0 {
+                            continue;
+                        }
+                        let above = tri.map(|p| flat.normal.dot(p) - c);
+                        // Nothing standing above the plane, so nothing to cast. A wall that
+                        // *meets* the plane still casts the part of it that stands clear —
+                        // dropping the whole triangle for one vertex on the plane left a post
+                        // resting on a plate throwing no shadow at all.
+                        if above.iter().all(|d| *d < SHADOW_CASTER_MIN_MM) {
+                            continue;
+                        }
+                        cast.push(std::array::from_fn(|i| {
+                            tri[i] - light * (above[i].max(0.0) / facing)
+                        }));
+                    }
+                }
+                if cast.is_empty() {
+                    continue;
+                }
+                let frame = crate::pencil::HatchFrame::new(flat.point, flat.normal);
+                for (a, b) in crate::pencil::hatch_in_frame(
+                    &frame,
+                    crate::pencil::PENCIL_CAST_SPACING_MM,
+                    // Across the strokes that shade the face, not along them: a shadow drawn
+                    // on the same ruling as the tone under it just makes that tone heavier.
+                    crate::pencil::PENCIL_HATCH_ANGLE_RAD
+                        + flat.angle_offset
+                        + crate::pencil::PENCIL_CAST_TURN_RAD,
+                    &cast,
+                    Some(flat.tris.as_slice()),
+                ) {
+                    self.push_polyline_segment(
+                        &crate::pencil::stroke_inside(a, b, 0),
+                        PENCIL_HATCH_COLOR,
+                        PENCIL_HATCH_WIDTH_PX,
+                        cam,
+                        viewport,
+                        view_proj,
+                    );
+                }
             }
         }
     }
@@ -2654,6 +2917,21 @@ impl<'a> SceneMesh<'a> {
         solid: &crate::extrude::SolidMesh,
         normals: Option<&[[Vec3; 3]]>,
         base: Color32,
+        cam: &Camera,
+        coplanar_planes: &[(Vec3, Vec3)],
+        model: ShadingModel,
+    ) {
+        self.push_toned_solid(solid, normals, &|_| base, cam, coplanar_planes, model);
+    }
+
+    /// As [`Self::push_shaded_solid`], but each triangle's colour comes from its own outward
+    /// normal (#1818) — how the unlit pencil fill gets a light and a dark side without any
+    /// lighting in the shader.
+    fn push_toned_solid(
+        &mut self,
+        solid: &crate::extrude::SolidMesh,
+        normals: Option<&[[Vec3; 3]]>,
+        tone: &dyn Fn(Vec3) -> Color32,
         _cam: &Camera,
         coplanar_planes: &[(Vec3, Vec3)],
         model: ShadingModel,
@@ -2665,6 +2943,7 @@ impl<'a> SceneMesh<'a> {
             let flat = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
             let corner_normals = normals.map(|n| n[ti]).unwrap_or([flat; 3]);
             let base_idx = self.scene.vertices.len() as u32;
+            let base = tone(flat);
             self.push_lit_triangle(*tri, corner_normals, base, model);
             if model == ShadingModel::Realistic {
                 self.scene
@@ -14318,6 +14597,159 @@ mod loose_pencil_tests {
         }
         // Nothing to shade, nothing drawn.
         assert!(pencil_hatch_segments(&[]).is_empty());
+    }
+
+    /// #1818: a face is shaded by strokes laid across it, and how close together they sit is
+    /// what makes one side of a solid lighter than another. A flat fill gave every side of a
+    /// cube the same value, so a coloured-pencil drawing read as a flat sticker.
+    #[test]
+    fn shading_strokes_crowd_on_the_sides_turned_from_the_light() {
+        let (lit_spacing, lit_cross) = crate::pencil::shade_spacing(1.0);
+        let (mid_spacing, _) = crate::pencil::shade_spacing(0.6);
+        let (dark_spacing, dark_cross) = crate::pencil::shade_spacing(0.0);
+        assert!(
+            dark_spacing < mid_spacing && mid_spacing < lit_spacing,
+            "less light, tighter strokes: {dark_spacing} < {mid_spacing} < {lit_spacing}"
+        );
+        assert!(!lit_cross, "a face full in the light is not crossed a second time");
+        assert!(dark_cross, "a face turned away from it is");
+
+        // …and a square shaded that way really does get more strokes on the dark side.
+        let square = |n: Vec3| {
+            let frame = crate::pencil::HatchFrame::new(Vec3::ZERO, n);
+            let c = |x: f32, y: f32| frame.origin + frame.u * x + frame.v * y;
+            [
+                [c(0.0, 0.0), c(20.0, 0.0), c(20.0, 20.0)],
+                [c(0.0, 0.0), c(20.0, 20.0), c(0.0, 20.0)],
+            ]
+        };
+        let count = |n: Vec3, lit: f32| {
+            let (spacing, _) = crate::pencil::shade_spacing(lit);
+            crate::pencil::hatch_in_frame(
+                &crate::pencil::HatchFrame::new(Vec3::ZERO, n),
+                spacing,
+                0.4,
+                &square(n),
+                None,
+            )
+            .len()
+        };
+        assert!(
+            count(Vec3::Z, 0.0) > count(Vec3::Z, 1.0),
+            "the dark side of the same square is worked over more"
+        );
+    }
+
+    /// #1818: a solid's shadow lands on the faces of other solids, not only on the ground.
+    /// A post standing on a plate cast nothing onto it, so an assembly read as a set of
+    /// unrelated outlines.
+    #[test]
+    fn a_cast_shadow_is_clipped_to_the_face_it_falls_on() {
+        // A 40 mm square receiver on z = 0…
+        let plate = [
+            [Vec3::new(0.0, 0.0, 0.0), Vec3::new(40.0, 0.0, 0.0), Vec3::new(40.0, 40.0, 0.0)],
+            [Vec3::new(0.0, 0.0, 0.0), Vec3::new(40.0, 40.0, 0.0), Vec3::new(0.0, 40.0, 0.0)],
+        ];
+        // …and a shadow shape that hangs well off two of its edges.
+        let cast = [
+            [
+                Vec3::new(-30.0, -30.0, 0.0),
+                Vec3::new(20.0, -30.0, 0.0),
+                Vec3::new(20.0, 20.0, 0.0),
+            ],
+            [
+                Vec3::new(-30.0, -30.0, 0.0),
+                Vec3::new(20.0, 20.0, 0.0),
+                Vec3::new(-30.0, 20.0, 0.0),
+            ],
+        ];
+        let frame = crate::pencil::HatchFrame::new(Vec3::ZERO, Vec3::Z);
+        let spacing = crate::pencil::PENCIL_CAST_SPACING_MM;
+        let loose = crate::pencil::hatch_in_frame(&frame, spacing, 0.4, &cast, None);
+        let clipped = crate::pencil::hatch_in_frame(&frame, spacing, 0.4, &cast, Some(&plate));
+        assert!(!clipped.is_empty(), "the overlap is shaded");
+        assert!(clipped.len() < loose.len(), "and the part hanging off the plate is not");
+        for (a, b) in &clipped {
+            for p in [a, b] {
+                assert!(
+                    (-0.01..=20.01).contains(&p.x) && (-0.01..=20.01).contains(&p.y),
+                    "a cast-shadow stroke ran off the face it falls on: {p:?}"
+                );
+            }
+        }
+        // Nothing shared, nothing drawn.
+        let elsewhere = [[
+            Vec3::new(100.0, 100.0, 0.0),
+            Vec3::new(120.0, 100.0, 0.0),
+            Vec3::new(120.0, 120.0, 0.0),
+        ]];
+        assert!(
+            crate::pencil::hatch_in_frame(&frame, spacing, 0.4, &elsewhere, Some(&plate))
+                .is_empty(),
+            "a shadow that misses the face marks nothing"
+        );
+    }
+
+    /// #1818: shading and shadow strokes stay inside their own ends. The outline strokes
+    /// overshoot on purpose — that is the hand-drawn tell — but a fill that overshoots leaves
+    /// a fringe of hair around every silhouette.
+    #[test]
+    fn fill_strokes_do_not_overshoot_their_ends() {
+        let (a, b) = (Vec3::new(0.0, 0.0, 0.0), Vec3::new(30.0, 0.0, 0.0));
+        for pass in 0..PENCIL_PASSES {
+            let inside = crate::pencil::stroke_inside(a, b, pass);
+            for p in &inside {
+                assert!(
+                    (-1e-4..=30.0 + 1e-4).contains(&p.x),
+                    "a fill stroke ran past its end: {p:?}"
+                );
+            }
+            assert_eq!(inside.first().map(|p| p.x), Some(0.0), "it starts where it should");
+            assert_eq!(inside.last().map(|p| p.x), Some(30.0), "and ends there");
+            // The outline stroke still overshoots — the two are not the same hand.
+            let outline = pencil_stroke(a, b, pass);
+            assert!(
+                outline.first().map(|p| p.x).unwrap_or(0.0) < -1e-4
+                    || outline.last().map(|p| p.x).unwrap_or(0.0) > 30.0 + 1e-4,
+                "an outline stroke overshoots its corner"
+            );
+            // …and it still bows: a fill stroke is a drawn line, not a ruled one.
+            assert!(
+                inside.iter().any(|p| p.y.abs() > 1e-6 || p.z.abs() > 1e-6),
+                "a fill stroke still wobbles"
+            );
+        }
+    }
+
+    /// #1818: a solid's triangles are grouped into the flats they lie in, so a face is shaded
+    /// as one surface rather than as the triangles it happens to be cut into.
+    #[test]
+    fn coplanar_flats_group_a_cube_into_six_faces() {
+        let mut doc = crate::model::Document::default();
+        let shape = doc.primitives.insert(crate::model::Primitive {
+            kind: crate::model::PrimitiveKind::Cuboid,
+            origin: Vec3::ZERO.into(),
+            normal: Vec3::Z.into(),
+            u_axis: Vec3::X.into(),
+            width: "40".into(),
+            depth: "30".into(),
+            height: "20".into(),
+            radius: "10".into(),
+            name: None,
+        });
+        let cube = crate::primitives::mesh(&doc, &doc.primitives[shape]).expect("a cuboid mesh");
+        let flats = coplanar_flats(&cube);
+        assert_eq!(flats.len(), 6, "a cuboid is six flats, got {}", flats.len());
+        for flat in &flats {
+            assert_eq!(flat.tris.len(), 2, "each one is its two triangles");
+        }
+        // Every flat gets its own stroke direction, so two faces meeting at an edge are not
+        // shaded in lockstep.
+        let mut offsets: Vec<f32> = flats.iter().map(|f| f.angle_offset).collect();
+        offsets.sort_by(f32::total_cmp);
+        for pair in offsets.windows(2) {
+            assert!(pair[1] - pair[0] > 1e-6, "two flats share a hatch angle");
+        }
     }
 
     /// #1811: two bodies standing near each other cast **one** shadow, not two overlapping

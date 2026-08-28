@@ -5111,6 +5111,19 @@ The model in one place:
       headlight fill, and convex exteriors are not painted with hole-cavity decals.
       Ground-plane shadows stay at z = 0 (no camera-space lift) and stay hidden when
       looking up from below (#1464/#1476).
+    - *Loose pencil / Coloured pencil (#1805/#1812)*: the scene drawn by hand on warm paper —
+      a laid-on fill so a near edge hides a far one, every feature edge and silhouette gone
+      over twice with a repeatable wobble, and a hatched contact shadow instead of a smeared
+      blot. Plain pencil is one graphite colour; coloured pencil keeps each body's material
+      colour and, on top of that, **shades** (#1818): the fill deepens as a surface turns from
+      the key light, and every flat big enough to carry them (`PENCIL_FLAT_MIN_AREA_MM2`, at
+      most `PENCIL_FLAT_LIMIT` per body — a tessellated sphere is hundreds of facets) is gone
+      over with strokes whose spacing tightens with the shade and which cross a second time
+      where the face turns away. Solids also cast hatched shadows **on each other** (#1818),
+      not only on the ground: every lit flat is a receiver, everything standing over it is
+      projected onto its plane along the light, and the hatch is clipped to the flat.
+      `crate::pencil` holds the strokes, tones and hatching, shared with the drawings
+      workbench's pencil style (#1809).
 
   **Lighting runs per pixel, on smooth normals (#1037).** Solids carry a world-space normal
   and a lighting-model tag per vertex (`GpuVertex::normal`, whose `w` is a `ShadingModel`);

@@ -38,6 +38,27 @@ bearcad.material{ name = "Brass", color = "#c88a4a", bodies = {0} }
 bearcad.ui.wait(2)
 assert(bearcad.ui.camera{}.shading == "colour_pencil", "still in coloured pencil")
 
+-- Coloured pencil shades each flat by how it faces the light and drops the solids' shadows
+-- onto each other (#1818): more scene-building code — per-flat hatching, a projection onto
+-- every lit face, clipped to it — that a real frame has to survive. A post standing on a
+-- plate is the case that exercises both.
+bearcad.new()
+bearcad.ui.tool("select")
+bearcad.cuboid{ width = 90, depth = 90, height = 12 }
+bearcad.cuboid{ at = { 30, 30, 12 }, width = 14, depth = 14, height = 45 }
+bearcad.cylinder{ radius = 7, height = 20, at = { 70, 20, 12 } }
+bearcad.ui.shading("colour_pencil")
+bearcad.ui.view("iso")
+bearcad.ui.zoom_fit()
+bearcad.ui.wait(2)
+-- Orbiting re-derives the shading and the shadows from the new eye position.
+bearcad.ui.orbit(140, 25)
+bearcad.ui.wait(2)
+-- From below: every face is turned away from the light, so nothing receives a shadow.
+bearcad.ui.camera{ pitch = -40 }
+bearcad.ui.wait(2)
+assert(bearcad.ui.camera{}.shading == "colour_pencil", "still in coloured pencil")
+
 -- And every other mode still renders after them.
 for _, mode in ipairs({ "wireframe", "transparent", "solid", "solid_wireframe", "realistic" }) do
   bearcad.ui.shading(mode)

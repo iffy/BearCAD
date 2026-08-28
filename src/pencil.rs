@@ -45,6 +45,54 @@ pub const PENCIL_HATCH_WIDTH_PX: f32 = 1.3;
 /// Graphite laid down lightly — premultiplied, so it composites as a ~45%-coverage stroke.
 pub const PENCIL_HATCH_COLOR: Color32 = Color32::from_rgba_premultiplied(26, 27, 31, 118);
 
+/// Shading a *face* in coloured pencil (#1818). A flat fill reads as paint; a real coloured
+/// pencil drawing gets its tone from strokes laid across the face, closer together where the
+/// surface turns away from the light. These bracket that spacing, in world mm: the lit side of
+/// a solid is barely touched, the side facing away is worked over.
+pub const PENCIL_SHADE_SPACING_LIT_MM: f32 = 3.4;
+pub const PENCIL_SHADE_SPACING_DARK_MM: f32 = 1.15;
+/// Below this much light, the face is gone over a second time at a crossed angle — the way a
+/// hand deepens a shadow.
+pub const PENCIL_SHADE_CROSS_BELOW: f32 = 0.5;
+/// How far the crossing pass turns from the first.
+pub const PENCIL_SHADE_CROSS_TURN_RAD: f32 = 1.05;
+pub const PENCIL_SHADE_WIDTH_PX: f32 = 1.6;
+/// Coverage of one shading stroke. Light: tone comes from laying many of them side by side.
+pub const PENCIL_SHADE_ALPHA: f32 = 0.5;
+/// Spacing of the hatch a body's shadow lays on the face it falls on (#1818) — a touch tighter
+/// than the ground hatch, so a shadow on a part reads as darker than one on the paper.
+pub const PENCIL_CAST_SPACING_MM: f32 = 1.7;
+/// …and turned well across the strokes shading that face, so the two read as separate layers
+/// rather than as one heavier tone.
+pub const PENCIL_CAST_TURN_RAD: f32 = 1.72;
+/// How far the coloured-pencil fill is allowed to travel from the laid-on tone toward the
+/// pressed-hard one as a surface turns from the light (#1818). Well short of the whole way:
+/// the strokes on top are what carry the shading, this only has to stop every side of a solid
+/// reading as the same value.
+pub const PENCIL_FILL_TONE_RANGE: f32 = 0.45;
+
+/// How a face's own colour reads when it is *shaded* with a coloured pencil (#1818): the body
+/// colour deepened a little toward graphite, so a stroke reads as pencil pressure rather than
+/// as a brighter version of the fill underneath it.
+pub fn shading_tone(base: Color32) -> Color32 {
+    mix(base, PENCIL_GRAPHITE, 0.28)
+}
+
+/// Blend two colours, `t` of the way from `a` to `b`.
+fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let lerp =
+        |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round().clamp(0.0, 255.0) as u8;
+    Color32::from_rgb(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()))
+}
+
+/// Hatch spacing and whether to cross-hatch for a face receiving `lit` (0..1) of the key light.
+pub fn shade_spacing(lit: f32) -> (f32, bool) {
+    let t = lit.clamp(0.0, 1.0);
+    let spacing = PENCIL_SHADE_SPACING_DARK_MM
+        + (PENCIL_SHADE_SPACING_LIT_MM - PENCIL_SHADE_SPACING_DARK_MM) * t;
+    (spacing, t < PENCIL_SHADE_CROSS_BELOW)
+}
+
 /// How a body's own colour reads in coloured pencil (#1812): the fill it is laid on with,
 /// and the darker tone of the same colour its outline is drawn in.
 ///
@@ -52,10 +100,6 @@ pub const PENCIL_HATCH_COLOR: Color32 = Color32::from_rgba_premultiplied(26, 27,
 /// down toward [`PENCIL_PAPER`]. The outline is the same colour pressed harder, mixed toward
 /// graphite so it still reads as a drawn line rather than a bright edge.
 pub fn colour_tones(base: Color32) -> (Color32, Color32) {
-    let mix = |a: Color32, b: Color32, t: f32| {
-        let lerp = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round().clamp(0.0, 255.0) as u8;
-        Color32::from_rgb(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()))
-    };
     (mix(base, PENCIL_PAPER, 0.72), mix(base, PENCIL_GRAPHITE, 0.55))
 }
 
@@ -119,24 +163,138 @@ pub fn stroke(a: Vec3, b: Vec3, pass: usize) -> Vec<Vec3> {
         .collect()
 }
 
-/// Where the hatch strokes standing in for a body's contact shadow start and end (#1805).
-/// The caster's ground-plane footprint is scanned by parallel lines `PENCIL_HATCH_SPACING_MM`
-/// apart; each line's span across the footprint becomes one stroke, so the hatch fills the
-/// shadow's shape rather than a box around it.
-pub fn hatch_segments(footprint: &[[Vec3; 3]]) -> Vec<(Vec3, Vec3)> {
-    if footprint.is_empty() {
+/// An in-plane frame to hatch within (#1818): a point on the plane and two orthonormal
+/// in-plane axes. Built from the plane itself — the foot of the perpendicular from the world
+/// origin — so the same flat gets the same frame from every angle and on every redraw, which
+/// is what keeps the strokes from crawling as the camera moves.
+#[derive(Clone, Copy, Debug)]
+pub struct HatchFrame {
+    pub origin: Vec3,
+    pub u: Vec3,
+    pub v: Vec3,
+}
+
+impl HatchFrame {
+    /// The canonical frame for the plane with outward normal `n` through `point`.
+    pub fn new(point: Vec3, n: Vec3) -> Self {
+        let n = n.normalize_or_zero();
+        // A helper axis the normal is least aligned with, so `u` never collapses.
+        let helper = if n.z.abs() < 0.9 { Vec3::Z } else { Vec3::X };
+        let u = n.cross(helper).normalize_or_zero();
+        Self { origin: n * n.dot(point), u, v: n.cross(u) }
+    }
+
+    fn to_2d(&self, p: Vec3) -> Vec2 {
+        let d = p - self.origin;
+        Vec2::new(d.dot(self.u), d.dot(self.v))
+    }
+
+    fn to_3d(&self, p: Vec2) -> Vec3 {
+        self.origin + self.u * p.x + self.v * p.y
+    }
+}
+
+/// A triangle soup prepared for scanning (#1818): the triangles, plus the scan lines each one
+/// can possibly cross. A shadow soup is every triangle of every solid standing over the face,
+/// and testing all of them against all of the scan lines is what made the pencil view crawl.
+struct ScanBins {
+    tris: Vec<[Vec2; 3]>,
+    bins: Vec<Vec<u32>>,
+}
+
+fn bin_soup(
+    soup: &[[Vec2; 3]],
+    across: Vec2,
+    first_offset: f32,
+    spacing: f32,
+    lines: usize,
+) -> ScanBins {
+    let mut bins: Vec<Vec<u32>> = vec![Vec::new(); lines];
+    for (i, tri) in soup.iter().enumerate() {
+        let d: [f32; 3] = std::array::from_fn(|k| tri[k].dot(across));
+        let lo = d[0].min(d[1]).min(d[2]);
+        let hi = d[0].max(d[1]).max(d[2]);
+        let from = ((lo - first_offset) / spacing).ceil().max(0.0) as usize;
+        let to = ((hi - first_offset) / spacing).floor();
+        if to < 0.0 {
+            continue;
+        }
+        for bin in bins.iter_mut().take((to as usize + 1).min(lines)).skip(from) {
+            bin.push(i as u32);
+        }
+    }
+    ScanBins { tris: soup.to_vec(), bins }
+}
+
+/// The spans one scan line covers over a prepared soup, merged.
+fn scan_spans(soup: &ScanBins, line: usize, across: Vec2, along: Vec2, offset: f32) -> Vec<(f32, f32)> {
+    let mut spans: Vec<(f32, f32)> = Vec::new();
+    for &i in soup.bins.get(line).map(Vec::as_slice).unwrap_or(&[]) {
+        let tri = &soup.tris[i as usize];
+        let mut hits: Vec<f32> = Vec::new();
+        for e in 0..3 {
+            let (p, q) = (tri[e], tri[(e + 1) % 3]);
+            let (dp, dq) = (p.dot(across) - offset, q.dot(across) - offset);
+            if (dp > 0.0) == (dq > 0.0) || (dp - dq).abs() < 1e-9 {
+                continue;
+            }
+            let t = dp / (dp - dq);
+            hits.push((p + (q - p) * t).dot(along));
+        }
+        if hits.len() >= 2 {
+            hits.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            spans.push((hits[0], hits[hits.len() - 1]));
+        }
+    }
+    if spans.is_empty() {
+        return spans;
+    }
+    // Merge so a stroke crosses the whole shape in one go rather than restarting at every
+    // internal triangle edge.
+    spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut merged = vec![spans[0]];
+    for &(s, e) in &spans[1..] {
+        let last = merged.last_mut().expect("seeded above");
+        if s <= last.1 + 1e-3 {
+            last.1 = last.1.max(e);
+        } else {
+            merged.push((s, e));
+        }
+    }
+    merged
+}
+
+/// Ruled strokes filling `cover` inside `frame`, `spacing` apart and running at `angle` within
+/// the plane, optionally clipped to `clip` (#1818). Both soups are world triangles that lie in
+/// — or have already been projected onto — the frame's plane.
+///
+/// The scan lines sit on a world lattice rather than on wherever `cover` happens to start
+/// (#1811), so a shaded area that grows, moves or merges with another keeps to the same ruled
+/// lines instead of drifting into a moiré against its neighbour.
+pub fn hatch_in_frame(
+    frame: &HatchFrame,
+    spacing: f32,
+    angle: f32,
+    cover: &[[Vec3; 3]],
+    clip: Option<&[[Vec3; 3]]>,
+) -> Vec<(Vec3, Vec3)> {
+    if cover.is_empty() || spacing <= 1e-4 {
         return Vec::new();
     }
-    let (sin, cos) = PENCIL_HATCH_ANGLE_RAD.sin_cos();
-    // Hatch direction and the axis the scan lines advance along.
+    let (sin, cos) = angle.sin_cos();
     let along = Vec2::new(cos, sin);
     let across = Vec2::new(-sin, cos);
-    let project = |p: Vec3| Vec2::new(p.x, p.y);
+    let flatten = |soup: &[[Vec3; 3]]| -> Vec<[Vec2; 3]> {
+        soup.iter()
+            .map(|tri| std::array::from_fn(|i| frame.to_2d(tri[i])))
+            .collect()
+    };
+    let cover = flatten(cover);
 
     let (mut lo, mut hi) = (f32::MAX, f32::MIN);
-    for tri in footprint {
+    for tri in &cover {
         for p in tri {
-            let d = project(*p).dot(across);
+            let d = p.dot(across);
             lo = lo.min(d);
             hi = hi.max(d);
         }
@@ -144,60 +302,84 @@ pub fn hatch_segments(footprint: &[[Vec3; 3]]) -> Vec<(Vec3, Vec3)> {
     if !lo.is_finite() || !hi.is_finite() {
         return Vec::new();
     }
-    // Scan lines sit on a world lattice, not on wherever this footprint happens to start
-    // (#1811) — so a shadow that grows, moves or merges with another keeps to the same ruled
-    // lines instead of drifting into a moiré against its neighbour.
-    let first = (lo / PENCIL_HATCH_SPACING_MM).ceil();
-    // A degenerate or enormous footprint would ask for an unbounded number of strokes.
-    let count = (((hi - lo) / PENCIL_HATCH_SPACING_MM).ceil() as i32 + 1).clamp(0, 600);
+    let first = (lo / spacing).ceil();
+    // A degenerate or enormous area would ask for an unbounded number of strokes.
+    let lines = ((((hi - lo) / spacing).ceil() as i32 + 1).clamp(0, 600)) as usize;
+    let first_offset = first * spacing;
+    let cover = bin_soup(&cover, across, first_offset, spacing, lines);
+    let clip = clip.map(|c| bin_soup(&flatten(c), across, first_offset, spacing, lines));
 
     let mut out = Vec::new();
-    for i in 0..count {
-        let offset = (first + i as f32) * PENCIL_HATCH_SPACING_MM;
+    for line in 0..lines {
+        let offset = first_offset + line as f32 * spacing;
         if offset > hi {
             break;
         }
-        // Every crossing of this scan line with the footprint's triangles, as distances
-        // along the hatch direction; consecutive pairs bound the covered spans.
-        let mut spans: Vec<(f32, f32)> = Vec::new();
-        for tri in footprint {
-            let mut hits: Vec<f32> = Vec::new();
-            for e in 0..3 {
-                let (p, q) = (project(tri[e]), project(tri[(e + 1) % 3]));
-                let (dp, dq) = (p.dot(across) - offset, q.dot(across) - offset);
-                if (dp > 0.0) == (dq > 0.0) || (dp - dq).abs() < 1e-9 {
-                    continue;
-                }
-                let t = dp / (dp - dq);
-                hits.push((p + (q - p) * t).dot(along));
-            }
-            if hits.len() >= 2 {
-                hits.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                spans.push((hits[0], hits[hits.len() - 1]));
-            }
-        }
+        let spans = scan_spans(&cover, line, across, along, offset);
         if spans.is_empty() {
             continue;
         }
-        // Merge the per-triangle spans so a stroke crosses the whole footprint in one go
-        // rather than restarting at every internal triangle edge.
-        spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        let mut merged = vec![spans[0]];
-        for &(s, e) in &spans[1..] {
-            let last = merged.last_mut().expect("seeded above");
-            if s <= last.1 + 1e-3 {
-                last.1 = last.1.max(e);
-            } else {
-                merged.push((s, e));
+        // Clipped to the receiving surface: a cast shadow only marks the face it lands on.
+        let spans: Vec<(f32, f32)> = match &clip {
+            None => spans,
+            Some(clip) => {
+                let keep = scan_spans(clip, line, across, along, offset);
+                spans
+                    .iter()
+                    .flat_map(|&(s, e)| {
+                        keep.iter().filter_map(move |&(ks, ke)| {
+                            let (s, e) = (s.max(ks), e.min(ke));
+                            (e - s > 1e-3).then_some((s, e))
+                        })
+                    })
+                    .collect()
             }
-        }
-        let point = |d: f32| {
-            let p = across * offset + along * d;
-            Vec3::new(p.x, p.y, 0.0)
         };
-        out.extend(merged.into_iter().map(|(s, e)| (point(s), point(e))));
+        let point = |d: f32| frame.to_3d(across * offset + along * d);
+        out.extend(spans.into_iter().map(|(s, e)| (point(s), point(e))));
     }
     out
+}
+
+/// Where the hatch strokes standing in for a body's contact shadow start and end (#1805).
+/// The caster's ground-plane footprint is scanned by parallel lines `PENCIL_HATCH_SPACING_MM`
+/// apart; each line's span across the footprint becomes one stroke, so the hatch fills the
+/// shadow's shape rather than a box around it.
+pub fn hatch_segments(footprint: &[[Vec3; 3]]) -> Vec<(Vec3, Vec3)> {
+    hatch_in_frame(
+        &HatchFrame { origin: Vec3::ZERO, u: Vec3::X, v: Vec3::Y },
+        PENCIL_HATCH_SPACING_MM,
+        PENCIL_HATCH_ANGLE_RAD,
+        footprint,
+        None,
+    )
+}
+
+/// One hand-drawn pass that stays **inside** its own ends (#1818): bowed like [`stroke`], but
+/// with no overshoot. Shading and shadow strokes are bounded by the outline of the face they
+/// fill — letting them run past a corner leaves a fringe of hair around every silhouette.
+pub fn stroke_inside(a: Vec3, b: Vec3, pass: usize) -> Vec<Vec3> {
+    let along = b - a;
+    let length = along.length();
+    if length < 1e-6 {
+        return vec![a, b];
+    }
+    let dir = along / length;
+    let helper = if dir.z.abs() < 0.9 { Vec3::Z } else { Vec3::X };
+    let u = dir.cross(helper).normalize_or_zero();
+    let v = dir.cross(u);
+    let wobble = (length * PENCIL_WOBBLE).min(PENCIL_WOBBLE_MAX_MM);
+    (0..=PENCIL_STROKE_STEPS)
+        .map(|joint| {
+            let t = joint as f32 / PENCIL_STROKE_STEPS as f32;
+            let point = a + along * t;
+            let bow = (std::f32::consts::PI * t).sin();
+            let seed = seed(a, b, joint, pass);
+            point
+                + u * (noise(seed) * wobble * bow)
+                + v * (noise(seed ^ 0x5BF0_3635) * wobble * bow)
+        })
+        .collect()
 }
 
 /// A hand-drawn pass over the 2D segment `a`–`b` (#1809) — the flat-paper form of [`stroke`],
