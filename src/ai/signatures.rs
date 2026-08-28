@@ -23,6 +23,7 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.begin_edit_section_plane"    , "bearcad.begin_edit_section_plane{ view, cut }"),
     ("bearcad.begin_joint"                 , "bearcad.begin_joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin, frame_axis, frame_axis2, position, position2, position3, slide_min, slide_max, slide_min_to, slide_max_to, turn_min, turn_max, name }   -- face = { moving, fixed, flip?, offset?, spin? }"),
     ("bearcad.begin_move"                  , "bearcad.begin_move{ bodies, images, x, y, z, rx, ry, rz, roll, flip, spin, gap, from, to, from_b, to_b, from_c, to_c }   -- from/to are { body = i, vertex = {x,y,z} } | { body = i, edge = {{x,y,z},{x,y,z}} } | { origin = true }"),
+    ("bearcad.bake"                        , "bearcad.bake(index)   -- freeze a boolean's result into standalone bodies and consume its inputs"),
     ("bearcad.begin_sketch"                , "bearcad.begin_sketch(…)"),
     ("bearcad.body_cylinders"              , "bearcad.body_cylinders(index)"),
     ("bearcad.body_edges"                  , "bearcad.body_edges(index)"),

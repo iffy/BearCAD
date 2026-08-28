@@ -8026,17 +8026,42 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "combine",
-                &["op", "a", "b", "keep_b", "keep_leftovers", "name"],
+                &["op", "a", "b", "keep_b", "keep_leftovers", "bake", "name"],
             )?;
             let (kind, a, b, keep_b) = parse_boolean_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::CreateBooleanOp { kind, a, b, keep_b })?;
+            }
+            let bake: bool = opts.get::<Option<bool>>("bake")?.unwrap_or(false);
+            if bake {
+                // #1793: bake the result into a standalone body and consume the inputs,
+                // so the script ends with exactly one body per combine. The op is gone
+                // afterwards, so a `name` names the baked body instead.
+                let op = unsafe { tick.state().doc.boolean_ops.keys().last() };
+                if let Some(op) = op {
+                    unsafe { tick.exec(Instruction::BakeBooleanOp { op: op.index() as usize })?; }
+                }
+                let element = SceneElement::Body(unsafe {
+                    tick.state().doc.bodies.keys().last().unwrap_or_else(|| crate::arena::Key::from_bits(u64::MAX))
+                });
+                drop(tick);
+                return apply_optional_name(lua, element, Some(opts));
             }
             let element = SceneElement::BooleanOp(unsafe {
                 tick.state().doc.boolean_ops.keys().last().unwrap_or_else(|| crate::arena::Key::from_bits(u64::MAX))
             });
             drop(tick);
             apply_optional_name(lua, element, Some(opts))
+        })?,
+    )?;
+
+    // #1793: bake an existing boolean's result into standalone mesh bodies and consume
+    // its inputs — the scripted way to union two bodies and end up with exactly one.
+    api.set(
+        "bake",
+        lua.create_function(|lua, index: usize| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::BakeBooleanOp { op: index }) }
         })?,
     )?;
 
@@ -13281,6 +13306,39 @@ pub mod tests {
         "#,
         );
         assert_eq!(state.doc.bodies.len(), 5, "no body was deleted");
+    }
+
+    /// #1793: `combine{ bake = true }` ends with exactly one body — the result baked
+    /// into a standalone solid, inputs consumed — so a script can union and move on.
+    #[test]
+    fn lua_combine_bake_ends_with_exactly_one_body() {
+        let state = run_lua(
+            r#"
+            bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            bearcad.cuboid{ at = {5, 0, 0}, width = 10, depth = 10, height = 10 }
+            bearcad.combine{ op = "combine", a = {0}, b = {1}, bake = true }
+            assert(bearcad.count("body") == 1, "expected exactly one body, got " .. bearcad.count("body"))
+            local s = bearcad.body_stats(0)
+            assert(s, "the baked body must have stats")
+            assert(math.abs(s.volume - 1500) < 1, "union volume, got " .. s.volume)
+        "#,
+        );
+        assert_eq!(state.doc.boolean_ops.len(), 0, "the op is gone");
+        assert_eq!(state.doc.bodies.len(), 1);
+    }
+
+    /// #1793: without `bake`, combine keeps its shadowed inputs (unchanged behavior).
+    #[test]
+    fn lua_combine_without_bake_keeps_shadowed_inputs() {
+        let state = run_lua(
+            r#"
+            bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            bearcad.cuboid{ at = {5, 0, 0}, width = 10, depth = 10, height = 10 }
+            bearcad.combine{ op = "combine", a = {0}, b = {1} }
+        "#,
+        );
+        assert_eq!(state.doc.bodies.len(), 3);
+        assert_eq!(state.doc.boolean_ops.len(), 1);
     }
 
     /// A body no op depends on deletes normally.

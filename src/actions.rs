@@ -3544,6 +3544,12 @@ pub enum Action {
         b: Vec<crate::model::BodyKey>,
         keep_b: bool,
     },
+    /// Freeze a boolean result into standalone mesh bodies (#1793): each output body is
+    /// re-sourced from its current triangles, the op is dropped, and the consumed inputs
+    /// are deleted — so `combine{ bake = true }` ends with exactly one body.
+    BakeBooleanResult {
+        op: crate::model::BooleanOpKey,
+    },
     /// Commit the in-progress Move-tool operation.
     CommitMove,
     /// Scripted/replayed move operation with an explicit payload.
@@ -16642,6 +16648,80 @@ op,
                 }
                 self.refresh_document_health();
                 self.status = format!("Edited {}", kind.label());
+                ActionResult::Ok
+            }
+            Action::BakeBooleanResult { op } => {
+                let Some(entry) = self.doc.boolean_ops.get(op) else {
+                    let e = format!("Boolean operation {op:?} not found");
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                let kind = entry.kind;
+                let keep_b = entry.keep_b;
+                let inputs: Vec<crate::model::BodyKey> = entry
+                    .a
+                    .iter()
+                    .chain(if kind.keep_leaves_b_live(keep_b) { &[][..] } else { &entry.b[..] })
+                    .copied()
+                    .collect();
+                let outputs = entry.outputs.clone();
+                if outputs.is_empty() {
+                    let e = "Nothing to bake — the boolean has no result bodies".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                // Freeze each output's live mesh into a standalone mesh body.
+                let mut sources = Vec::with_capacity(outputs.len());
+                for &out in &outputs {
+                    let Some(mesh) = crate::extrude::body_solid_mesh(&self.doc, out) else {
+                        let e = "Cannot bake — a result body has no solid geometry".to_string();
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    };
+                    let key = self.doc.imported_meshes.insert(crate::model::ImportedMesh {
+                        triangles: mesh.triangles,
+                        source_name: "baked".to_string(),
+                        step_bytes: None,
+                    });
+                    sources.push(key);
+                }
+                for (&out, &src) in outputs.iter().zip(&sources) {
+                    if let Some(body) = self.doc.bodies.get_mut(out) {
+                        body.source = crate::model::BodySource::Imported(src);
+                        body.shadow = false;
+                    }
+                }
+                // The op is history — its result no longer recomputes from the inputs.
+                let ordinal = self.doc.boolean_ops.keys().position(|k| k == op);
+                self.doc.boolean_ops.remove(op);
+                if let Some(ordinal) = ordinal {
+                    crate::document_lifecycle::remove_shape_order_entry(
+                        &mut self.doc,
+                        ShapeKind::BooleanOperation,
+                        ordinal,
+                    );
+                }
+                // Consume the inputs, unless they feed some other live op (#1792's guard
+                // would refuse those deletes; leaving them shadowed is the honest fallback).
+                let mut deleted = 0usize;
+                for input in inputs {
+                    if crate::document_lifecycle::deletion_dependents(&self.doc, &crate::hierarchy::SceneElement::Body(input)).is_none()
+                    {
+                        if crate::document_lifecycle::delete_element(
+                            &mut self.doc,
+                            crate::hierarchy::SceneElement::Body(input),
+                        ) {
+                            deleted += 1;
+                        }
+                    }
+                }
+                self.scene_selection
+                    .retain(|e| crate::document_lifecycle::element_alive(&self.doc, e.clone()));
+                self.refresh_document_health();
+                self.status = format!(
+                    "Baked {} body(ies), consumed {deleted} input(s)",
+                    outputs.len()
+                );
                 ActionResult::Ok
             }
             Action::CommitSlice => {

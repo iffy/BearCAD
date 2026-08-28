@@ -63,7 +63,7 @@ bearcad.extrude_face{ face = {…}, distance, body? }
 bearcad.revolve{ polygon = {…} | circle = i | circles = {i, …}, axis = "x"|"y"|"z"|{ line = i }, angle? | revolutions?, pitch?, body = "new"|"add"|"cut"?, bodies?, symmetric?, name? }
 bearcad.sweep{ polygon = {…} | circle = i | circles = {i, …}, path = {line, …}, body = "add"|"cut"?, bodies? }
 bearcad.loft{ circles = {i, …}?, polygons = { {line, …}, … }?, body? }
-bearcad.combine{ op = "combine"|"union"|"cut"|"intersect"|"difference", a = {i, …}, b = {i, …}, keep_b?, keep_leftovers?, name? }
+bearcad.combine{ op = "combine"|"union"|"cut"|"intersect"|"difference", a = {i, …}, b = {i, …}, keep_b?, keep_leftovers?, bake?, name? }   -- bake = true consumes the inputs and leaves one standalone body
 bearcad.slice{ bodies = {i, …}, cutters = {…}, extend?, name? }
 bearcad.shell{ bodies = {i, …}, faces = {…}?, thickness, name? }
 bearcad.move_bodies{ bodies = {i, …}, x?, y?, z?, rx?, ry?, rz?, name? }
@@ -179,6 +179,7 @@ bearcad.add_geometric_constraint(name)
 bearcad.add_unit_instance{ unit, name }
 bearcad.apply_construction(construction)
 bearcad.apply_visibility(visible)
+bearcad.bake(index)   -- freeze a boolean's result into standalone bodies and consume its inputs
 bearcad.begin_combine{ op, a, b, keep_b, keep_leftovers }
 bearcad.begin_edit_section_plane{ view, cut }
 bearcad.begin_joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin, frame_axis, frame_axis2, position, position2, position3, slide_min, slide_max, slide_min_to, slide_max_to, turn_min, turn_max, name }   -- face = { moving, fixed, flip?, offset?, spin? }

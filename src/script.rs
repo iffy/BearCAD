@@ -551,6 +551,8 @@ pub enum Instruction {
         b: Vec<usize>,
         keep_b: bool,
     },
+    /// Bake a boolean result into standalone bodies and consume its inputs (#1793).
+    BakeBooleanOp { op: usize },
     /// Move bodies (Move tool): translation + optional rotation, expressions allowed.
     CreateMoveOp {
         targets: Vec<usize>,
@@ -1842,6 +1844,7 @@ impl Instruction {
             Instruction::EditBooleanOp { op, kind, a, b, keep_b } => {
                 boolean_op_lua("bearcad.edit_boolean", Some(*op), *kind, a, b, *keep_b)
             }
+            Instruction::BakeBooleanOp { op } => format!("bearcad.bake({op})"),
             Instruction::CreateMoveOp { targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
                 move_op_lua("bearcad.move_bodies", None, targets, images, tx, ty, tz, rx, ry, rz, roll_angle, *face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
             }
@@ -3365,6 +3368,9 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 b: body_ordinals(doc, b)?,
                 keep_b: *keep_b,
             })
+        }
+        Action::BakeBooleanResult { op } => {
+            Some(Instruction::BakeBooleanOp { op: boolean_op_ordinal(doc, *op)? })
         }
         Action::CreateMoveOperation { targets, image_targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, .. } => {
             Some(Instruction::CreateMoveOp {
@@ -7707,6 +7713,15 @@ impl ScriptRunner {
                 };
                 let result =
                     state.apply(Action::EditBooleanOperation { op, kind, a, b, keep_b });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::BakeBooleanOp { op } => {
+                let Some(op) = boolean_op_key(&state.doc, op) else {
+                    self.last_action_error = Some(format!("Boolean operation {op} not found"));
+                    return StepResult::Continue;
+                };
+                let result = state.apply(Action::BakeBooleanResult { op });
                 self.record_action_error(result);
                 StepResult::Continue
             }
