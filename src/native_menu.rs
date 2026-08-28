@@ -274,6 +274,17 @@ pub fn command_for_event(event: &MenuEvent, menu: &NativeMenu) -> Option<MenuCom
 impl NativeMenu {
     /// Build and attach the native menu bar to the running application.
     pub fn install(cc: &CreationContext<'_>) -> Result<Self, muda::Error> {
+        Self::install_inner(cc, true)
+    }
+
+    /// Headless variant: build the menu so `bearcad.ui.menu_structure()` (#1622) still
+    /// describes the bar, but attach it to no platform app/window — headless runs have
+    /// neither. Menu *construction* still needs the main thread (muda's macOS backend).
+    pub fn install_unattached(cc: &CreationContext<'_>) -> Result<Self, muda::Error> {
+        Self::install_inner(cc, false)
+    }
+
+    fn install_inner(cc: &CreationContext<'_>, attach: bool) -> Result<Self, muda::Error> {
         let _ = EGUI_CTX.set(cc.egui_ctx.clone());
         install_event_handler();
 
@@ -549,13 +560,17 @@ impl NativeMenu {
             menu.append(&dev_menu)?;
         }
 
-        attach_to_platform(&menu, cc)?;
+        if attach {
+            attach_to_platform(&menu, cc)?;
+        }
 
         // Publish the bar's shape for `bearcad.ui.menu_structure()` (#1622).
         *MENU_STRUCTURE.lock().expect("menu structure") = summarize_menu(&menu);
 
         #[cfg(target_os = "macos")]
-        help_menu.set_as_help_menu_for_nsapp();
+        if attach {
+            help_menu.set_as_help_menu_for_nsapp();
+        }
 
         let ids = MenuIds {
             new_document: new_document.id().clone(),

@@ -9194,6 +9194,10 @@ pub struct ScriptOptions {
     pub tutorial: Option<String>,
     /// Discard `geometry_cache` after opening a document (`--rebuild`, SPEC §4.4).
     pub rebuild: bool,
+    /// Run without a window: the egui pass loop runs against an offscreen wgpu target,
+    /// so scripts, screenshots and exports work on machines with no display. `--script`
+    /// defaults to headless; `--headless`/`--no-headless` override the default.
+    pub headless: bool,
 }
 
 /// Parsed command-line outcome.
@@ -9314,11 +9318,14 @@ Commands:
                         Cursor, project-local Claude skills)
 
 Options:
-  --script <path>       Run a Lua script
+  --script <path>       Run a Lua script (headless by default — no window)
   --repl                Interactive Lua REPL on stdin against the live app
                         (globals persist between entries; Ctrl-D ends it)
   --exit, --exit-on-complete
                         Exit after startup, or after the script finishes
+  --headless            Run without a window (offscreen rendering). The default
+                        for --script; forced on for document-only runs too
+  --no-headless         Open a window even for a --script run
   --show-commands       Print each user action as a script line on stdout
   --tutorial <name>     Start a guided tutorial on launch (e.g. `cube`)
   --timeout <seconds>   Force-exit with an error if the app hasn't closed on
@@ -9332,6 +9339,7 @@ Examples:
   bearcad drawing.bearcad --exit
   bearcad --script demo.lua
   bearcad demo.lua --exit
+  bearcad --script demo.lua --no-headless
   bearcad --repl
   bearcad --tutorial cube
   bearcad --exit --timeout 30
@@ -9404,6 +9412,7 @@ pub fn parse_args(args: impl IntoIterator<Item = impl AsRef<str>>) -> ScriptOpti
 
 fn parse_args_from_vec(args: &[String]) -> ScriptOptions {
     let mut opts = ScriptOptions::default();
+    let mut headless_explicit: Option<bool> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -9415,6 +9424,12 @@ fn parse_args_from_vec(args: &[String]) -> ScriptOptions {
             }
             "--exit" | "--exit-on-complete" => {
                 opts.exit_on_complete = true;
+            }
+            "--headless" => {
+                headless_explicit = Some(true);
+            }
+            "--no-headless" => {
+                headless_explicit = Some(false);
             }
             "--repl" => {
                 opts.repl = true;
@@ -9455,6 +9470,9 @@ fn parse_args_from_vec(args: &[String]) -> ScriptOptions {
         }
         i += 1;
     }
+    // A scripted run has nobody watching a window: default it headless so it works on
+    // machines with no display at all. Explicit `--headless`/`--no-headless` always wins.
+    opts.headless = headless_explicit.unwrap_or(opts.script_path.is_some());
     opts
 }
 
@@ -10127,8 +10145,43 @@ mod tests {
                 repl: false,
                 tutorial: None,
                 rebuild: false,
+                headless: true,
             })
         );
+    }
+
+    /// A script run needs no window: `--script` defaults to headless (offscreen wgpu,
+    /// no winit event loop). `--no-headless` opts back into the windowed app.
+    #[test]
+    fn script_runs_are_headless_by_default() {
+        let opts = parse_args(["bearcad", "--script", "test.lua"]);
+        assert!(opts.headless);
+        // The bare `.lua` positional form behaves the same.
+        assert!(parse_args(["bearcad", "demo.lua"]).headless);
+        // ...and so does a script alongside a document.
+        assert!(parse_args(["bearcad", "doc.bearcad", "demo.lua"]).headless);
+    }
+
+    #[test]
+    fn no_headless_opts_a_script_back_into_the_window() {
+        assert!(!parse_args(["bearcad", "--script", "test.lua", "--no-headless"]).headless);
+        assert!(!parse_args(["bearcad", "demo.lua", "--exit", "--no-headless"]).headless);
+    }
+
+    #[test]
+    fn headless_flag_forces_headless_even_without_a_script() {
+        // A document-only launch that should never open a window.
+        assert!(parse_args(["bearcad", "doc.bearcad", "--headless"]).headless);
+    }
+
+    #[test]
+    fn windowed_launches_stay_windowed() {
+        assert!(!parse_args(["bearcad", "doc.bearcad"]).headless);
+        assert!(!parse_args(["bearcad"]).headless);
+        assert!(!parse_args(["bearcad", "--exit"]).headless);
+        // The REPL is interactive: it keeps the window unless asked otherwise.
+        assert!(!parse_args(["bearcad", "--repl"]).headless);
+        assert!(parse_args(["bearcad", "--repl", "--headless"]).headless);
     }
 
     #[test]

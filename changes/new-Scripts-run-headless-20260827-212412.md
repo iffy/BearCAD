@@ -1,0 +1,1 @@
+Scripts run headless by default: offscreen rendering, no window, works on display-less machines and in CI. --no-headless opens a real window; --headless forces it for windowed launches. bearcad.ui.screenshot renders offscreen headlessly.

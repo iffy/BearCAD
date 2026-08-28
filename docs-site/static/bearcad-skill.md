@@ -22,13 +22,14 @@ function.
 ## Running a script
 
 ```sh
-bearcad --script build.lua --exit      # run, then close
-bearcad drawing.bearcad --exit         # open a document
-bearcad --script edit.lua drawing.bearcad --exit
+bearcad --script build.lua            # run headless (no window), then exit
+bearcad --script build.lua --exit     # same; --exit is implied for scripts
+bearcad drawing.bearcad --headless    # open a document, no window
+bearcad --script edit.lua drawing.bearcad
 ```
 
-- `--exit` closes the app when the script finishes. **Always pass it** unless you want a
-  window left open; without it the process keeps running.
+- Scripts run **headless** by default — offscreen rendering, no window, works over SSH
+  and in CI. Add `--no-headless` to watch a script in a real window.
 - `--timeout <seconds>` force-exits non-zero if it hangs. Use it in unattended runs.
 - A failed `assert` or a Lua error exits non-zero and prints the traceback — that is how
   you find out something did not work.
@@ -197,8 +198,8 @@ bearcad.ui.screenshot("shot.png", "window")    -- the whole window
 bearcad.ui.screenshot("shot.png", "elements")  -- one pane
 ```
 
-Screenshots need a real rendered frame: they work on a desktop session, and headless needs
-a virtual display (`xvfb-run`).
+Screenshots render offscreen: they work headless (the default for scripts) and in a
+window alike, with no virtual display needed.
 
 ## Driving the GUI directly
 

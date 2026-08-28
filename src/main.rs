@@ -4,11 +4,13 @@
 //! dimension inputs on the sides. Type to constrain a side, Tab to cycle,
 //! Enter to commit. Right-drag orbit, wheel zoom. Save/Open .bearcad. (prototype)
 //!
-//! Fully scriptable via Lua files (SPEC §8):
+//! Fully scriptable via Lua files (SPEC §8). Script runs default to headless —
+//! offscreen rendering, no window:
 //!   bearcad --script demo.lua
 //!   bearcad --exit
 //!   bearcad drawing.bearcad --exit
 //!   bearcad demo.lua --exit
+//!   bearcad demo.lua --no-headless   (watch it in a real window)
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 // The web build compiles the whole native codebase with scripting/CLI/SQLite gated out,
@@ -81,6 +83,8 @@ mod web_menu;
 mod web_lua;
 #[cfg(not(target_arch = "wasm32"))]
 mod lua_script;
+#[cfg(not(target_arch = "wasm32"))]
+mod headless;
 #[cfg(any(test, not(target_arch = "wasm32")))]
 mod release_artifacts;
 #[cfg(not(target_arch = "wasm32"))]
@@ -508,7 +512,21 @@ fn main() -> eframe::Result<()> {
             print!("{}", testplan::render());
             return Ok(());
         }
-        script::CliOutcome::Run(script_opts) => run_app(script_opts),
+        script::CliOutcome::Run(script_opts) => {
+            if script_opts.headless {
+                // No window, no winit loop: the app runs against an offscreen wgpu
+                // target (see headless). This is the default for `--script`.
+                match headless::run(script_opts) {
+                    Ok(()) => Ok(()),
+                    Err(err) => {
+                        eprintln!("error: {err}");
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                run_app(script_opts)
+            }
+        }
     }
 }
 
@@ -852,7 +870,9 @@ fn run_app(script_opts: script::ScriptOptions) -> eframe::Result<()> {
                 // of anything this app does — worth saying out loud.
                 None => diag::warn("no wgpu render state — the 3D viewport cannot draw"),
             }
-            let native_menu = NativeMenu::install(cc).map_err(|e| {
+            let native_menu = NativeMenu::install(cc)
+                .map(Some)
+                .map_err(|e| {
                 eframe::Error::AppCreation(Box::new(std::io::Error::other(
                     e.to_string(),
                 )))
@@ -1094,6 +1114,85 @@ mod cli_tests {
             script::parse_cli(["bearcad", "drawing.bearcad", "--exit"]),
             script::CliOutcome::Run(_)
         ));
+    }
+
+    /// `--headless` runs the whole app — egui pass loop, 3D viewport, script runner —
+    /// against an offscreen wgpu target with no window at all. A script that models,
+    /// saves, and screenshots must come out the other side with both files on disk.
+    #[test]
+    fn headless_run_models_saves_and_captures_a_screenshot() {
+        let Some(_guard) = headless_gpu_guard() else {
+            eprintln!("skipping: no offscreen GPU adapter available");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("bearcad_headless_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("run.log");
+        std::env::set_var("BEARCAD_LOG_FILE", &log);
+        std::env::set_var("BEARCAD_AI_CONFIG", dir.join("ai.json"));
+
+        let doc_path = dir.join("headless_e2e.bearcad");
+        let png_path = dir.join("headless_e2e.png");
+        let script_path = dir.join("headless_e2e.lua");
+        std::fs::write(
+            &script_path,
+            format!(
+                "bearcad.new()\n\
+                 bearcad.rect{{ width = 80, height = 50, name = \"Base\" }}\n\
+                 bearcad.extrude{{ polygon = {{0, 1, 2, 3}}, distance = 20, name = \"Block\" }}\n\
+                 bearcad.ui.zoom_fit()\n\
+                 bearcad.save(\"{}\")\n\
+                 bearcad.ui.screenshot(\"{}\")\n\
+                 bearcad.quit()\n",
+                doc_path.display(),
+                png_path.display(),
+            ),
+        )
+        .unwrap();
+
+        let opts = script::parse_args(["bearcad", "--headless", script_path.to_str().unwrap()]);
+        crate::headless::run(opts).unwrap_or_else(|e| panic!("headless run failed: {e}"));
+
+        // The document was saved through the full app path (storage codec, kernel build).
+        assert!(doc_path.exists(), "document was not saved by the headless run");
+        // The screenshot came back through the offscreen render + readback path.
+        let png = std::fs::read(&png_path).expect("screenshot was not written by the headless run");
+        assert_eq!(&png[..4], b"\x89PNG", "screenshot file is not a PNG");
+        // A fully blank frame would mean the viewport never drew; the box on the
+        // background must produce something with real content.
+        assert!(png.len() > 10_000, "screenshot suspiciously small: {} bytes", png.len());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A script that fails under `--headless` must fail the run (exit non-zero in the
+    /// CLI), exactly like the windowed `--exit` path (#125).
+    #[test]
+    fn headless_script_error_fails_the_run() {
+        let Some(_guard) = headless_gpu_guard() else {
+            eprintln!("skipping: no offscreen GPU adapter available");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("bearcad_headless_err_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("BEARCAD_LOG_FILE", dir.join("run.log"));
+        std::env::set_var("BEARCAD_AI_CONFIG", dir.join("ai.json"));
+        let script_path = dir.join("headless_err.lua");
+        std::fs::write(&script_path, "error(\"boom\")\nbearcad.quit()\n").unwrap();
+        let opts = script::parse_args(["bearcad", "--headless", script_path.to_str().unwrap()]);
+        assert!(crate::headless::run(opts).is_err(), "a failing script must fail the headless run");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Headless rendering needs a wgpu adapter; when the machine (or CI container) has
+    /// none offscreen, these tests can't run. Skip instead of failing on the environment.
+    fn headless_gpu_guard() -> Option<()> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+        {
+            Ok(_) => Some(()),
+            Err(_) => None,
+        }
     }
 }
 
@@ -3745,7 +3844,11 @@ struct App {
     #[cfg(not(target_arch = "wasm32"))]
     mcp_job: Option<McpJob>,
     #[cfg(not(target_arch = "wasm32"))]
-    native_menu: NativeMenu,
+    native_menu: Option<NativeMenu>,
+    /// Headless run (`--headless`, the default for `--script`): no window exists, so
+    /// window-server interactions (launch maximize, activation, AppKit probes) stand
+    /// down, and the loop ends when the script finishes even without `--exit`.
+    headless: bool,
     /// Results of async browser file dialogs (open/import picks), drained each frame.
     #[cfg(target_arch = "wasm32")]
     web_io: WebIoQueue,
@@ -5306,7 +5409,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
         document_path: Option<String>,
         exit_on_script_complete: bool,
         show_commands: bool,
-        #[cfg(not(target_arch = "wasm32"))] native_menu: NativeMenu,
+        #[cfg(not(target_arch = "wasm32"))] native_menu: Option<NativeMenu>,
         script_failed: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Self {
         let status = if script.as_ref().is_some_and(|r| r.is_repl()) {
@@ -5418,6 +5521,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             viewport_context_menu: None,
             launch_maximize_frames_remaining: initial_launch_maximize_frames(),
             launched_at: crate::time::Instant::now(),
+            headless: false,
             compact_layout_initialized: false,
             last_touch_press_time: f64::NEG_INFINITY,
             was_multi_touch: false,
@@ -6746,22 +6850,33 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
         }
     }
 
-    /// Handle selections from the native OS menu bar.
+    /// Handle selections from the native OS menu bar. `None` when headless — there is
+    /// no OS menu to drain or sync without a process the user can see.
     #[cfg(not(target_arch = "wasm32"))]
     fn handle_native_menu(&mut self, ctx: &egui::Context) {
-        let events = self.native_menu.drain_events();
+        let events = self
+            .native_menu
+            .as_ref()
+            .map(NativeMenu::drain_events)
+            .unwrap_or_default();
         for event in events {
-            let Some(command) = native_menu::command_for_event(&event, &self.native_menu) else {
+            let Some(native_menu) = self.native_menu.as_ref() else {
+                continue;
+            };
+            let Some(command) = native_menu::command_for_event(&event, native_menu) else {
                 continue;
             };
             self.handle_menu_command(ctx, command);
         }
 
-        self.native_menu
+        let Some(native_menu) = self.native_menu.as_mut() else {
+            return;
+        };
+        native_menu
             .sync_pane_checks(|pane| self.state.panes.is_visible(pane));
-        self.native_menu.sync_fps_mode(self.state.fps.is_some());
-        self.native_menu.sync_help_mode(self.state.help_mode);
-        self.native_menu.sync_tool_hints(self.state.show_tool_hints);
+        native_menu.sync_fps_mode(self.state.fps.is_some());
+        native_menu.sync_help_mode(self.state.help_mode);
+        native_menu.sync_tool_hints(self.state.show_tool_hints);
     }
 
     fn dispatch_palette_outcome(&mut self, outcome: PaletteOutcome) {
@@ -19181,6 +19296,21 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
         }
     }
 
+    /// Headless mode switch: window-server interactions stand down, and the launch
+    /// maximize countdown is already done (there is no window to maximize).
+    fn set_headless(&mut self, headless: bool) {
+        self.headless = headless;
+        if headless {
+            self.launch_maximize_frames_remaining = 0;
+        }
+    }
+
+    /// Whether the script (if any) has finished. The headless loop exits on this even
+    /// without `--exit` — there is no window to leave open for interaction.
+    fn script_finished(&self) -> bool {
+        self.script.as_ref().is_some_and(|runner| runner.done)
+    }
+
     fn tick_exit_after_startup(&mut self, ctx: &egui::Context) {
         if !self.exit_after_startup || self.exit_after_startup_sent {
             return;
@@ -19452,11 +19582,15 @@ impl eframe::App for App {
                 self.state.apply(Action::SetPaneVisible { pane, visible: false });
             }
         }
-        tick_launch_maximize(
-            &mut self.launch_maximize_frames_remaining,
-            self.launched_at.elapsed(),
-            ctx,
-        );
+        // Headless runs have no window: the settle/activation machinery would talk to
+        // a window server that isn't there (and steal focus if one were).
+        if !self.headless {
+            tick_launch_maximize(
+                &mut self.launch_maximize_frames_remaining,
+                self.launched_at.elapsed(),
+                ctx,
+            );
+        }
         theme::apply(ctx);
         #[cfg(not(target_arch = "wasm32"))]
         {

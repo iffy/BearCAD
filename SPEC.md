@@ -4069,6 +4069,10 @@ should be added to the shared action layer so they become available headlessly b
   the given duration, so an unattended/CI launch can't hang forever (#61).
 - `--rebuild` — discard persisted tessellation (`geometry_cache`) after open and rebuild
   geometry (SPEC §4.4).
+- `--headless` / `--no-headless` — run without a window: the egui pass loop and the 3D
+  viewport render into an offscreen wgpu target, and the run ends when the script does
+  (or errors). Scripts default to headless, so they work on displays-less machines and
+  in CI; `--no-headless` opens a real window to watch a script run.
 
 **Launch diagnostics (#978).** A window that comes up blank — title bar and menu present,
 nothing drawn — has several possible causes and no way to tell them apart from the outside.
@@ -4117,6 +4121,9 @@ tessellation + writers (or dedicated libraries — license-audited per §1).
 The application must be fully scriptable via a file containing a sequence of instructions.
 
 - Invocation: `bearcad <script-file>` or `bearcad --script <script-file>` (or equivalent).
+  A script run defaults to **headless** — no window, offscreen rendering, the process
+  exits when the script finishes (an uncaught error exits non-zero) — see `--headless`/
+  `--no-headless` above.
 - When a script is provided the app shall open, sequentially execute every instruction in order,
   and apply the effects exactly as a user would (updating document, tools, camera, in-progress
   interactions, UI state, etc.).
