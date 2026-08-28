@@ -1833,6 +1833,122 @@ pub struct ShadedFace {
     /// The colour `shade` scales (#1807). White for `Shaded`, which is how it stays grey;
     /// the body's own material colour for `Colorful`.
     pub tint: [u8; 3],
+    /// The world plane this flat lies in (#1820): outward normal, and `n · p` for any point
+    /// on it. The paint order is a depth sort over these, so keeping them lets a consumer —
+    /// and the regression test — recover which surface really is in front at a given point.
+    pub plane: (Vec3, f32),
+}
+
+/// Back-to-front paint order for a set of coplanar flats (#1820).
+///
+/// A depth sort alone only orders flats that don't overlap on the page: one flat spans a range
+/// of depths, so a big face's farthest point can sit behind a small face the big one actually
+/// covers, and the small face paints over it. This takes the depth-sorted order as a starting
+/// point and repairs it — for every overlapping pair it samples where the two meet, asks each
+/// flat's own plane how deep it is there, and records "this one must be painted first". A
+/// topological sort then honours those constraints, falling back on the depth order for pairs
+/// that never meet and for any cycle (two flats that genuinely pass through each other, which
+/// no single order can draw correctly anyway).
+///
+/// `flats` arrives in the fallback order; the returned indices point back into it.
+fn painter_order(flats: &[ShadedFace], right: Vec3, up: Vec3, toward: Vec3) -> Vec<usize> {
+    let n = flats.len();
+    if n < 2 {
+        return (0..n).collect();
+    }
+    let bbox = |tris: &[[glam::Vec2; 3]]| {
+        let mut lo = glam::Vec2::splat(f32::INFINITY);
+        let mut hi = glam::Vec2::splat(f32::NEG_INFINITY);
+        for t in tris {
+            for p in t {
+                lo = lo.min(*p);
+                hi = hi.max(*p);
+            }
+        }
+        (lo, hi)
+    };
+    let boxes: Vec<(glam::Vec2, glam::Vec2)> = flats.iter().map(|f| bbox(&f.tris)).collect();
+    let inside = |tris: &[[glam::Vec2; 3]], p: glam::Vec2| {
+        tris.iter().any(|t| {
+            let area2 = (t[1] - t[0]).perp_dot(t[2] - t[0]);
+            if area2.abs() < 1e-9 {
+                return false;
+            }
+            let w0 = (t[1] - p).perp_dot(t[2] - p) / area2;
+            let w1 = (t[2] - p).perp_dot(t[0] - p) / area2;
+            let w2 = 1.0 - w0 - w1;
+            w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0
+        })
+    };
+    // How deep this flat's plane is under a point on the page. The view basis is orthonormal,
+    // so a page point `(u, v)` is the world ray `u·right + v·up + d·toward`; solving the plane
+    // equation for `d` gives the depth. Front-facing flats have `n · toward > 0`.
+    let depth_at = |(nrm, c): (Vec3, f32), p: glam::Vec2| {
+        let denom = nrm.dot(toward);
+        (denom.abs() > 1e-6)
+            .then(|| (c - p.x * nrm.dot(right) - p.y * nrm.dot(up)) / denom)
+    };
+    /// Sample grid across the overlap of two flats' bounds. Coarse on purpose: it only has to
+    /// find *a* point the two share, not measure the overlap.
+    const GRID: usize = 6;
+    // `before[i]` = the flats that must be painted before `i`.
+    let mut edges: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut indegree = vec![0usize; n];
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let (lo, hi) = (boxes[i].0.max(boxes[j].0), boxes[i].1.min(boxes[j].1));
+            if lo.x > hi.x || lo.y > hi.y {
+                continue; // never meet on the page
+            }
+            // The sample where the two are furthest apart in depth decides: a shared edge
+            // (where they meet exactly) says nothing about which is in front.
+            let mut best = 0.0f32;
+            let mut front = i;
+            for gy in 0..=GRID {
+                for gx in 0..=GRID {
+                    let p = glam::Vec2::new(
+                        lo.x + (hi.x - lo.x) * gx as f32 / GRID as f32,
+                        lo.y + (hi.y - lo.y) * gy as f32 / GRID as f32,
+                    );
+                    if !inside(&flats[i].tris, p) || !inside(&flats[j].tris, p) {
+                        continue;
+                    }
+                    let (Some(di), Some(dj)) =
+                        (depth_at(flats[i].plane, p), depth_at(flats[j].plane, p))
+                    else {
+                        continue;
+                    };
+                    if (di - dj).abs() > best {
+                        best = (di - dj).abs();
+                        front = if di > dj { i } else { j };
+                    }
+                }
+            }
+            if best <= 0.0 {
+                continue; // touching, or no shared sample — leave them to the depth order
+            }
+            let back = if front == i { j } else { i };
+            edges[back].push(front);
+            indegree[front] += 1;
+        }
+    }
+    // Kahn's algorithm, always taking the lowest-numbered ready flat so the depth order breaks
+    // every tie — the result is deterministic, and identical to the depth sort when nothing
+    // overlaps.
+    let mut out = Vec::with_capacity(n);
+    let mut done = vec![false; n];
+    for _ in 0..n {
+        let Some(next) = (0..n).find(|&i| !done[i] && indegree[i] == 0) else {
+            break; // a cycle: interpenetrating flats, which no order draws correctly
+        };
+        done[next] = true;
+        out.push(next);
+        for &to in &edges[next] {
+            indegree[to] -= 1;
+        }
+    }
+    out.extend((0..n).filter(|&i| !done[i]));
+    out
 }
 
 /// Project a view's geometry under its display style (#301). Sketch views have no solid to
@@ -1960,7 +2076,16 @@ pub fn styled_view_geometry(
         // quantized so a tessellator's per-triangle rounding still lands on one flat.
         // The plane key carries the tint, so two bodies that happen to share a plane still
         // paint as two faces in their own colours (#1807).
-        let mut planes: Vec<(([i32; 4], [u8; 3]), f32, f32, Vec<[glam::Vec2; 3]>)> = Vec::new();
+        struct Flat {
+            key: ([i32; 4], [u8; 3]),
+            /// The flat's farthest point along `toward` — the initial (and tie-break) order.
+            depth: f32,
+            shade: f32,
+            tris: Vec<[glam::Vec2; 3]>,
+            /// World plane: outward normal and `n · p`.
+            plane: (Vec3, f32),
+        }
+        let mut planes: Vec<Flat> = Vec::new();
         for (body_mesh, tint) in &bodies {
             for t in &body_mesh.triangles {
                 let n = (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero();
@@ -1972,22 +2097,35 @@ pub fn styled_view_geometry(
                 let shade = 0.62 + 0.33 * n.dot(light).max(0.0);
                 let depth = (t[0] + t[1] + t[2]).dot(toward) / 3.0;
                 let tri = [project(t[0]), project(t[1]), project(t[2])];
-                match planes.iter_mut().find(|(k, ..)| *k == key) {
-                    Some((_, d, _, tris)) => {
-                        *d = d.min(depth);
-                        tris.push(tri);
+                match planes.iter_mut().find(|f| f.key == key) {
+                    Some(f) => {
+                        f.depth = f.depth.min(depth);
+                        f.tris.push(tri);
                     }
-                    None => planes.push((key, depth, shade, vec![tri])),
+                    None => planes.push(Flat {
+                        key,
+                        depth,
+                        shade,
+                        tris: vec![tri],
+                        plane: (n, n.dot(t[0])),
+                    }),
                 }
             }
         }
-        // Farthest flat first: coplanar triangles never occlude each other, so one depth
-        // per face is enough to order the painting.
-        planes.sort_by(|a, b| a.1.total_cmp(&b.1));
-        fills = planes
+        // Farthest flat first. One depth per flat only orders flats that don't overlap on the
+        // page: a big face spans a range of depths, so its farthest point can sit behind a
+        // small face it actually covers — that is how a bar's shaded side leaked through onto
+        // the top of the solid it grows out of (#1820). So sort by depth for a deterministic
+        // starting order, then reorder every overlapping *pair* by which one is really in
+        // front where they meet.
+        planes.sort_by(|a, b| a.depth.total_cmp(&b.depth));
+        let mut faces: Vec<ShadedFace> = planes
             .into_iter()
-            .map(|((_, tint), _, shade, tris)| ShadedFace { tris, shade, tint })
+            .map(|f| ShadedFace { tris: f.tris, shade: f.shade, tint: f.key.1, plane: f.plane })
             .collect();
+        let order = painter_order(&faces, right, up, toward);
+        let mut slots: Vec<Option<ShadedFace>> = faces.drain(..).map(Some).collect();
+        fills = order.into_iter().filter_map(|i| slots[i].take()).collect();
     }
 
     // Loose pencil (#1809): the same visible edges, drawn the way a hand draws them —
@@ -3344,6 +3482,80 @@ mod tests {
             (p(20.0, 30.0), p(40.0, 30.0)),
         ]);
         assert_eq!(others.len(), 3, "got {others:?}");
+    }
+
+    /// #1820: the shaded fills were painted in one depth order per flat, taken from the flat's
+    /// *farthest* point. A big face spans a range of depths, so a small face it covers could
+    /// sort in front of it — the bar's shaded side leaked through onto the top of the block it
+    /// grows out of. Paint order must agree with what is actually in front where two flats meet.
+    #[test]
+    fn shaded_fills_paint_back_to_front_where_they_overlap() {
+        let bytes = std::fs::read("tests/fixtures/issue_1820.json").expect("fixture");
+        let doc = crate::storage::from_json_bytes(&bytes).expect("load");
+        let d = doc.drawings.values().next().expect("the drawing");
+        let iso = d
+            .views
+            .iter()
+            .find(|v| v.style == crate::model::DrawingViewStyle::Shaded)
+            .expect("the shaded three-quarter view");
+        let (right, up) = resolved_view_axes(&d.views, iso);
+        let toward = right.cross(up);
+        let geo = styled_view_geometry(&doc, &d.views, iso);
+        assert!(geo.faces.len() > 3, "the view shades several flats");
+
+        let inside = |tris: &[[glam::Vec2; 3]], p: glam::Vec2| {
+            tris.iter().any(|t| {
+                let area2 = (t[1] - t[0]).perp_dot(t[2] - t[0]);
+                if area2.abs() < 1e-9 {
+                    return false;
+                }
+                let w0 = (t[1] - p).perp_dot(t[2] - p) / area2;
+                let w1 = (t[2] - p).perp_dot(t[0] - p) / area2;
+                let w2 = 1.0 - w0 - w1;
+                w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0
+            })
+        };
+        let depth_at = |(n, c): (Vec3, f32), p: glam::Vec2| {
+            (c - p.x * n.dot(right) - p.y * n.dot(up)) / n.dot(toward)
+        };
+
+        // Sample the whole drawn area; at each point the *last* face painted over it is what
+        // the reader sees, and it has to be the nearest surface there.
+        let (mut lo, mut hi) = (glam::Vec2::splat(f32::INFINITY), glam::Vec2::splat(f32::NEG_INFINITY));
+        for f in &geo.faces {
+            for t in &f.tris {
+                for p in t {
+                    lo = lo.min(*p);
+                    hi = hi.max(*p);
+                }
+            }
+        }
+        let mut checked = 0;
+        for gy in 0..80 {
+            for gx in 0..80 {
+                let p = glam::Vec2::new(
+                    lo.x + (hi.x - lo.x) * (gx as f32 + 0.5) / 80.0,
+                    lo.y + (hi.y - lo.y) * (gy as f32 + 0.5) / 80.0,
+                );
+                let covering: Vec<usize> = (0..geo.faces.len())
+                    .filter(|&i| inside(&geo.faces[i].tris, p))
+                    .collect();
+                let Some(&painted) = covering.last() else {
+                    continue;
+                };
+                checked += 1;
+                let shown = depth_at(geo.faces[painted].plane, p);
+                for &i in &covering {
+                    let d = depth_at(geo.faces[i].plane, p);
+                    assert!(
+                        d <= shown + 1e-3,
+                        "at {p:?} face {i} sits {:.3}mm in front of the face painted over it",
+                        d - shown
+                    );
+                }
+            }
+        }
+        assert!(checked > 500, "the sweep should land on the solid, hit {checked} points");
     }
 
     /// #1713: a hidden line poked a stub out of the solid in the shaded three-quarter view.

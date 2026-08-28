@@ -2562,8 +2562,11 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   editor: **Visible edges** (hidden lines removed — every feature edge is depth-sampled
   against the body's mesh and only the unoccluded runs stroke), **Wireframe** (every feature
   edge, the default), or **Shaded** (front faces painted back-to-front, greyed by a fixed
-  key light, under the visible edges). Sketch views have no solid, so they always draw
-  wireframe. The projection logic is `drawing::styled_view_geometry`, shared by the editor
+  key light, under the visible edges). Coplanar triangles merge into one flat, and the paint
+  order is a depth sort **repaired pairwise** (#1820): a flat spans a range of depths, so
+  overlapping pairs are re-asked which is really in front where they meet and topologically
+  sorted (`drawing::painter_order`) — otherwise a bar's shaded side leaks through onto the top
+  of the block it grows out of. Sketch views have no solid, so they always draw wireframe. The projection logic is `drawing::styled_view_geometry`, shared by the editor
   pane (greys darkened for the dark sheet) and both exports (the `Canvas` trait gained a
   filled-polygon primitive). `Action::SetDrawingViewStyle`.
 - **View card size (#1207):** each projection stores `size_x`/`size_y` as page fractions
