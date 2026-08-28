@@ -118,10 +118,10 @@ jobs:
           fi
           for script in "${scripts[@]}"; do
             echo "Running $script"
-            # --timeout force-exits (code 1) if the app hasn't finished on its own —
-            # a hung script (e.g. headless GPU/EGL issues under Xvfb) must fail the
-            # job instead of hanging it indefinitely.
-            xvfb-run -a ./target/debug/bearcad --script "$script" --exit --timeout 30
+            # Scripts run headless (offscreen wgpu, no Xvfb needed). --timeout
+            # force-exits (code 1) if the app hasn't finished on its own — a hung
+            # run must fail the job instead of hanging it indefinitely.
+            ./target/debug/bearcad --script "$script" --timeout 30
           done
 
       # Interaction regression tests (todoer #459): scripted *real* pointer input
@@ -129,8 +129,8 @@ jobs:
       # A lua assert failure exits non-zero (#125) and fails the job.
       - name: Run interaction tests
         env:
-          # Fixed large window so ground-coordinate clicks land in the 3D viewport
-          # under Xvfb (no window manager to honor maximize). See BEARCAD_WINDOW.
+          # Fixed large "window" so ground-coordinate clicks land in the 3D viewport
+          # (headless honors BEARCAD_WINDOW as its offscreen size too). See BEARCAD_WINDOW.
           BEARCAD_WINDOW: 1280x800
           # The app loads AI config at startup; point it at a throwaway file so a test run
           # never touches the ai.json of the machine running it.
@@ -142,15 +142,22 @@ jobs:
             echo "No interaction tests found in tests/interaction/" >&2
             exit 1
           fi
+          # These tests drive real OS windows — ⌘` window cycling and the
+          # McMaster-Carr helper process — which only exist when the app opens a
+          # windowed one under Xvfb. Everything else runs headless (faster, no X).
+          WINDOWED="cmd_backtick_cycles_mcmaster"
           failed=0
           for script in "${tests[@]}"; do
             echo "::group::Running $script"
             # 120s: body outline highlight (#1110) + llvmpipe makes multi-wait Face Snap
             # scripts (hover midpoints, staged picks) exceed the old 60s budget.
-            # --no-headless: some interaction tests drive OS windows (menu bar,
-            # ⌘` window cycling, the mcmaster helper process), which only exist
-            # when the app opens a real one.
-            if xvfb-run -a ./target/debug/bearcad --script "$script" --exit --no-headless --timeout 120; then
+            base=$(basename "$script" .lua)
+            if [[ " $WINDOWED " == *" $base "* ]]; then
+              run=(xvfb-run -a ./target/debug/bearcad --script "$script" --exit --no-headless --timeout 120)
+            else
+              run=(./target/debug/bearcad "$script" --timeout 120)
+            fi
+            if "${run[@]}"; then
               echo "OK $script"
             else
               echo "::error::FAILED $script (exit $?)"
