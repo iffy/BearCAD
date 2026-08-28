@@ -1007,6 +1007,16 @@ impl BooleanJob {
         let kind_bg = kind;
         let a_bg = a.clone();
         let b_bg = b.clone();
+        #[cfg(target_arch = "wasm32")]
+        {
+            // The web has no threads (#1789): spawning panics with `Unsupported`, which
+            // took the whole app down on a scripted combine. Compute inline instead —
+            // the caller is a user action, so blocking the one UI thread is unavoidable
+            // there, and the job still delivers through the same channel.
+            let result = crate::extrude::precompute_boolean(&doc, kind_bg, &a_bg, &b_bg, keep_b);
+            let _ = tx.send(result);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         std::thread::spawn(move || {
             let result =
                 crate::extrude::precompute_boolean(&doc, kind_bg, &a_bg, &b_bg, keep_b);
