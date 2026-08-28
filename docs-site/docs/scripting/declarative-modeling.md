@@ -218,7 +218,9 @@ bearcad.fillet_vertex{ points = {
 
 On a solid, `chamfer_edge`/`fillet_edge` take an analytic edge of an extrusion or a
 Shape-tool cuboid (`primitive = 0` instead of `extrusion = 0`) — a vertical
-edge between two side walls, or a cap edge where a side wall meets the top or base:
+edge between two side walls, or a cap edge where a side wall meets the top or base
+(`kind = "cap"` with `top = true`/`false`, or the shorthand `kind = "top"` / `"bottom"`).
+On a circle-profile extrusion the whole rim is one edge — `{ kind = "top", face = 0, edge = 0 }`:
 
 ```lua
 bearcad.fillet_edge{
@@ -231,6 +233,14 @@ bearcad.chamfer_edge{
   edge = { kind = "cap", face = 0, edge = 1, top = true },
   distance = 3,
 }
+```
+
+`extrude_edges(i)` lists every edge ref extrusion `i` accepts, in exactly the shape the
+calls take — pass an entry straight back in:
+
+```lua
+local edges = bearcad.extrude_edges(0)
+bearcad.fillet_edge{ extrusion = 0, edge = edges[1], radius = 2 }
 ```
 
 Rounding several edges at once takes **one call** with `edges`, matching what a Shift+click

@@ -80,6 +80,7 @@ edge (four calls would make four bodies):
 ```
 bearcad.fillet_edge{ extrusion = i, edges = { { kind = "vertical"|"top"|"bottom", face = i, edge = i }, … }, radius }
 bearcad.chamfer_edge{ extrusion = i, edges = { … }, distance }
+bearcad.extrude_edges(i)               -- the edge refs fillet/chamfer accept on extrusion i
 bearcad.fillet_vertex{ point = { kind = "line", index = i, ["end"] = "start"|"end" }, radius }
 bearcad.chamfer_vertex{ point = { kind = "line", index = i, ["end"] = "start"|"end" }, distance }
 ```
@@ -262,6 +263,7 @@ bearcad.export_preview(path)
 bearcad.export_step(path, body?)
 bearcad.export_stl(path, body?)
 bearcad.extrude{ distance, to, circle, circles, polygon, text, boolean, body, name, symmetric, taper, taper_mode }
+bearcad.extrude_edges(index)   -- edge refs fillet_edge/chamfer_edge accept: kind vertical|top|bottom
 bearcad.extrude_face{ to, distance, body, name }
 bearcad.fillet_edge{ edges, edge, extrusion, primitive, radius }
 bearcad.fillet_vertex{ points, point, radius }

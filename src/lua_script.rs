@@ -1266,6 +1266,7 @@ fn parse_constraint_point_table(lua: &Lua, table: Table) -> mlua::Result<Constra
 /// `ExtrusionEdgeRef`: `{ kind = "vertical", face = 0, edge = 2 }` for the vertical edge
 /// between side walls 2 and 3 of face 0, or `{ kind = "cap", face = 0, edge = 2, top = true }`
 /// for the edge where side wall 2 meets the top (or, with `top = false`/omitted, base) cap.
+/// `kind = "top"` / `"bottom"` are shorthand for the cap edges (#1799).
 fn parse_extrusion_edge_table(table: Table) -> mlua::Result<ExtrusionEdgeRef> {
     let kind: String = table.get("kind").or_else(|_| table.get("type"))?;
     let face: usize = table.get::<Option<usize>>("face")?.unwrap_or(0);
@@ -1276,8 +1277,18 @@ fn parse_extrusion_edge_table(table: Table) -> mlua::Result<ExtrusionEdgeRef> {
             let top: bool = table.get::<Option<bool>>("top")?.unwrap_or(false);
             Ok(ExtrusionEdgeRef::Cap { face, edge, top })
         }
+        "top" => Ok(ExtrusionEdgeRef::Cap {
+            face,
+            edge,
+            top: true,
+        }),
+        "bottom" => Ok(ExtrusionEdgeRef::Cap {
+            face,
+            edge,
+            top: false,
+        }),
         other => Err(mlua::Error::external(format!(
-            "unknown extrusion edge kind '{other}' (expected 'vertical' or 'cap')"
+            "unknown extrusion edge kind '{other}' (expected 'vertical', 'cap', 'top', or 'bottom')"
         ))),
     }
 }
@@ -6406,6 +6417,60 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     // Read a line's current endpoints (sketch-local mm) — the assertion hook for
     // interaction regression tests.
+    // #1799: `extrude_edges(i)` lists the analytic edges of extrusion `i` in exactly the
+    // shape `fillet_edge`/`chamfer_edge` accept — no guessing magic (face, edge) pairs.
+    api.set(
+        "extrude_edges",
+        lua.create_function(|lua, index: usize| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let doc = unsafe { &tick.state().doc };
+            let Some(ext) = doc.extrusions.keys().nth(index).map(|k| &doc.extrusions[k]) else {
+                return Err(mlua::Error::external(format!("no extrusion {index}")));
+            };
+            let out = lua.create_table()?;
+            let mut n = 0usize;
+            for (fi, face) in ext.faces.iter().enumerate() {
+                match face {
+                    // A circle's rim is one closed edge: the top and bottom cap rims.
+                    crate::model::ExtrudeFace::Circle(_) => {
+                        for (kind, top) in [("bottom", false), ("top", true)] {
+                            let e = lua.create_table()?;
+                            e.set("kind", kind)?;
+                            e.set("face", fi)?;
+                            e.set("edge", 0)?;
+                            e.raw_set("top", top)?;
+                            n += 1;
+                            out.set(n, e)?;
+                        }
+                    }
+                    other => {
+                        let count = crate::extrude::side_face_count(other);
+                        for edge in 0..count {
+                            let e = lua.create_table()?;
+                            e.set("kind", "vertical")?;
+                            e.set("face", fi)?;
+                            e.set("edge", edge)?;
+                            n += 1;
+                            out.set(n, e)?;
+                        }
+                        for edge in 0..count {
+                            for (kind, top) in [("bottom", false), ("top", true)] {
+                                let e = lua.create_table()?;
+                                e.set("kind", kind)?;
+                                e.set("face", fi)?;
+                                e.set("edge", edge)?;
+                                e.raw_set("top", top)?;
+                                n += 1;
+                                out.set(n, e)?;
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(out)
+        })?,
+    )?;
+
     api.set(
         "line_endpoints",
         lua.create_function(|lua, index: usize| {
@@ -12929,6 +12994,59 @@ pub mod tests {
             matches!(sketch_face, crate::model::FaceId::RevolveSide { .. }),
             "the circle must land in the revolve-side sketch, got {sketch_face:?}"
         );
+    }
+
+    /// #1799: `kind = "top"` / `"bottom"` are accepted spellings for cap edges — a
+    /// disc's rim can be filleted without knowing the `cap` + `top` dance.
+    #[test]
+    fn lua_fillet_edge_accepts_top_and_bottom_edge_kinds() {
+        let state = run_lua(
+            r#"
+            bearcad.circle{ x = 0, y = 0, r = 20 }
+            bearcad.extrude{ circle = 0, distance = 5 }
+            bearcad.fillet_edge{ extrusion = 0,
+                edge = { kind = "top", face = 0, edge = 0 }, radius = 2 }
+        "#,
+        );
+        assert_eq!(state.doc.edge_treatment_ops.len(), 1);
+    }
+
+    /// #1799: `extrude_edges(i)` lists the edge refs `fillet_edge`/`chamfer_edge`
+    /// actually accept, and each one round-trips into a real fillet call.
+    #[test]
+    fn lua_extrude_edges_lists_filletable_edges() {
+        let state = run_lua(
+            r#"
+            bearcad.circle{ x = 0, y = 0, r = 20 }
+            bearcad.extrude{ circle = 0, distance = 5 }
+            local edges = bearcad.extrude_edges(0)
+            assert(#edges == 2, "a disc has two rim edges, got " .. #edges)
+            local kinds = {}
+            for _, e in ipairs(edges) do
+              assert(e.face == 0 and e.edge == 0, "rim refs name face 0 edge 0")
+              kinds[e.kind] = true
+            end
+            assert(kinds.top and kinds.bottom, "both cap rims listed")
+            -- Every listed edge must be accepted by fillet_edge.
+            bearcad.fillet_edge{ extrusion = 0, edge = edges[1], radius = 1 }
+        "#,
+        );
+        assert_eq!(state.doc.edge_treatment_ops.len(), 1);
+
+        let state = run_lua(
+            r#"
+            bearcad.rect{ x = 0, y = 0, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            local edges = bearcad.extrude_edges(0)
+            assert(#edges == 12, "a box has 4 vertical + 8 cap edges, got " .. #edges)
+            local vertical, cap = 0, 0
+            for _, e in ipairs(edges) do
+              if e.kind == "vertical" then vertical = vertical + 1 else cap = cap + 1 end
+            end
+            assert(vertical == 4 and cap == 8, "4 vertical + 8 cap edges")
+        "#,
+        );
+        assert_eq!(state.doc.extrusions.len(), 1);
     }
 
     #[test]

@@ -26,6 +26,7 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.bake"                        , "bearcad.bake(index)   -- freeze a boolean's result into standalone bodies and consume its inputs"),
     ("bearcad.begin_sketch"                , "bearcad.begin_sketch(…)"),
     ("bearcad.body_cylinders"              , "bearcad.body_cylinders(index)"),
+    ("bearcad.extrude_edges"               , "bearcad.extrude_edges(index)   -- edge refs fillet_edge/chamfer_edge accept: kind vertical|top|bottom"),
     ("bearcad.body_edges"                  , "bearcad.body_edges(index)"),
     ("bearcad.body_faces"                  , "bearcad.body_faces(index)"),
     ("bearcad.body_stats"                  , "bearcad.body_stats(index)"),
