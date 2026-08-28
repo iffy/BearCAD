@@ -1,4 +1,4 @@
--- Interaction regression (#1805): the Loose pencil shading mode survives a real frame.
+-- Interaction regression (#1805/#1811/#1812): the pencil shading modes survive a real frame.
 --
 -- The pencil view is scene-building code — wobbled strokes, silhouettes, a hatched contact
 -- shadow — that unit tests exercise only in pieces. Driving a real frame is what proves the
@@ -30,7 +30,15 @@ bearcad.delete_selection()
 bearcad.ui.wait(2)
 assert(bearcad.ui.camera{}.shading == "loose_pencil", "the mode stuck")
 
--- And every other mode still renders after it.
+-- Coloured pencil takes each body's material colour (#1812), including bodies whose
+-- material was assigned after the mode was already on.
+bearcad.ui.shading("colour_pencil")
+bearcad.ui.wait(2)
+bearcad.material{ name = "Brass", color = "#c88a4a", bodies = {0} }
+bearcad.ui.wait(2)
+assert(bearcad.ui.camera{}.shading == "colour_pencil", "still in coloured pencil")
+
+-- And every other mode still renders after them.
 for _, mode in ipairs({ "wireframe", "transparent", "solid", "solid_wireframe", "realistic" }) do
   bearcad.ui.shading(mode)
   bearcad.ui.wait()

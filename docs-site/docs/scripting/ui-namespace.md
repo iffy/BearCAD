@@ -45,7 +45,8 @@ bearcad.ui.view("edge", "front_top")    -- a view-bear edge
 bearcad.ui.view_home()
 bearcad.ui.toggle_projection()
 bearcad.ui.shading("solid_wireframe")   -- "wireframe" | "transparent" | "solid"
-                                        -- "solid_wireframe" | "realistic" | "loose_pencil"
+                                        -- "solid_wireframe" | "realistic"
+                                        -- "loose_pencil" | "colour_pencil"
 bearcad.ui.ground("off")                -- ground plane: "grid" | "solid" | "off"
 ```
 

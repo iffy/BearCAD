@@ -1354,6 +1354,7 @@ fn shading_mode_tooltip(mode: crate::camera::ShadingMode) -> &'static str {
         ShadingMode::SolidWireframe => "Solid + wireframe",
         ShadingMode::Realistic => "Realistic",
         ShadingMode::LoosePencil => "Loose pencil",
+        ShadingMode::ColourPencil => "Coloured pencil",
     }
 }
 
@@ -1435,26 +1436,29 @@ fn show_view_settings_button(
             });
             ui.separator();
             ui.label(egui::RichText::new("Shading").small().weak());
-            ui.horizontal(|ui| {
-                let active = cam.shading_mode();
-                for mode in crate::camera::SHADING_MODES {
-                    let selected = active == mode;
-                    let resp = crate::icons::selectable_icon_button(
-                        ui,
-                        crate::icons::icon_for_shading_mode(mode),
-                        selected,
-                        shading_mode_tooltip(mode),
-                    );
-                    if resp.clicked() && !selected {
-                        cam.set_shading_mode(mode);
-                        if let Some(log) = command_log.as_mut() {
-                            log.note_view_instruction(crate::script::Instruction::ShadingMode(
-                                mode,
-                            ));
+            // A row per family (#1812): the technical modes, then the pencil views.
+            for row in crate::camera::SHADING_MODE_ROWS {
+                ui.horizontal(|ui| {
+                    let active = cam.shading_mode();
+                    for &mode in row {
+                        let selected = active == mode;
+                        let resp = crate::icons::selectable_icon_button(
+                            ui,
+                            crate::icons::icon_for_shading_mode(mode),
+                            selected,
+                            shading_mode_tooltip(mode),
+                        );
+                        if resp.clicked() && !selected {
+                            cam.set_shading_mode(mode);
+                            if let Some(log) = command_log.as_mut() {
+                                log.note_view_instruction(
+                                    crate::script::Instruction::ShadingMode(mode),
+                                );
+                            }
                         }
                     }
-                }
-            });
+                });
+            }
         });
 }
 

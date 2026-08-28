@@ -5504,8 +5504,17 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "shading",
         lua.create_function(|lua, name: String| {
-            let mode = ShadingMode::from_name(&name)
-                .ok_or_else(|| mlua::Error::external(format!("unknown shading mode '{name}'")))?;
+            let mode = ShadingMode::from_name(&name).ok_or_else(|| {
+                // Name the options: a typo'd mode is otherwise a guessing game (#1812).
+                let known: Vec<&str> = crate::camera::SHADING_MODES
+                    .iter()
+                    .map(|m| m.script_name())
+                    .collect();
+                mlua::Error::external(format!(
+                    "unknown shading mode '{name}' (try {})",
+                    known.join(", ")
+                ))
+            })?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::ShadingMode(mode)) }
         })?,

@@ -93,6 +93,7 @@ pub enum IconId {
     ShadingSolidWireframe,
     ShadingRealistic,
     ShadingLoosePencil,
+    ShadingColourPencil,
     GroundGrid,
     GroundSolid,
     ViewList,
@@ -152,7 +153,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 99] = [
+    pub const ALL: [Self; 100] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -218,6 +219,7 @@ impl IconId {
         Self::ShadingSolidWireframe,
         Self::ShadingRealistic,
         Self::ShadingLoosePencil,
+        Self::ShadingColourPencil,
         Self::GroundGrid,
         Self::GroundSolid,
         Self::ViewList,
@@ -323,6 +325,7 @@ impl IconId {
             Self::ShadingSolidWireframe => include_str!("assets/icons/solid_wireframe.svg"),
             Self::ShadingRealistic => include_str!("assets/icons/realistic.svg"),
             Self::ShadingLoosePencil => include_str!("assets/icons/loose_pencil.svg"),
+            Self::ShadingColourPencil => include_str!("assets/icons/colour_pencil.svg"),
             Self::GroundGrid => include_str!("assets/icons/ground_grid.svg"),
             Self::GroundSolid => include_str!("assets/icons/ground_solid.svg"),
             Self::ViewList => include_str!("assets/icons/view_list.svg"),
@@ -429,6 +432,7 @@ impl IconId {
             Self::ShadingSolidWireframe => "Solid + wireframe",
             Self::ShadingRealistic => "Realistic",
             Self::ShadingLoosePencil => "Loose pencil",
+            Self::ShadingColourPencil => "Coloured pencil",
             Self::GroundGrid => "Ground grid",
             Self::GroundSolid => "Solid ground",
             Self::ViewList => "List view",
@@ -504,6 +508,7 @@ pub fn icon_for_shading_mode(mode: crate::camera::ShadingMode) -> IconId {
         crate::camera::ShadingMode::SolidWireframe => IconId::ShadingSolidWireframe,
         crate::camera::ShadingMode::Realistic => IconId::ShadingRealistic,
         crate::camera::ShadingMode::LoosePencil => IconId::ShadingLoosePencil,
+        crate::camera::ShadingMode::ColourPencil => IconId::ShadingColourPencil,
     }
 }
 

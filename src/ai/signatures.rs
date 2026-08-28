@@ -252,7 +252,7 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.ui.scroll_pane"              , "bearcad.ui.scroll_pane(pane, dy)"),
     ("bearcad.ui.set_home_view"            , "bearcad.ui.set_home_view()"),
     ("bearcad.ui.settings"                 , "bearcad.ui.settings(verb?)"),
-    ("bearcad.ui.shading"                  , "bearcad.ui.shading(name)   -- wireframe, transparent, solid, solid_wireframe, realistic, loose_pencil"),
+    ("bearcad.ui.shading"                  , "bearcad.ui.shading(name)   -- wireframe, transparent, solid, solid_wireframe, realistic, loose_pencil, colour_pencil"),
     ("bearcad.ui.snapping"                 , "bearcad.ui.snapping(on?)"),
     ("bearcad.ui.tab"                      , "bearcad.ui.tab(index?)"),
     ("bearcad.ui.tab_count"                , "bearcad.ui.tab_count()"),

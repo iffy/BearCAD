@@ -237,7 +237,9 @@ const PENCIL_GRID_AXIS: Color32 = Color32::from_rgb(196, 193, 184);
 const PENCIL_X_AXIS: Color32 = Color32::from_rgb(184, 96, 92);
 const PENCIL_Y_AXIS: Color32 = Color32::from_rgb(104, 152, 104);
 const PENCIL_Z_AXIS: Color32 = Color32::from_rgb(96, 122, 176);
-const PENCIL_LINE_WIDTH_PX: f32 = 1.5;
+/// A pencil outline carries the drawing, so it is heavier than the thin technical wireframe
+/// overlay (#1810).
+const PENCIL_LINE_WIDTH_PX: f32 = 2.1;
 /// How many times a stroke is gone over. Two is the hand-drawn tell; more turns to mud.
 const PENCIL_PASSES: usize = 2;
 /// Joints along one stroke. Each one is nudged sideways, so the line bows rather than bends.
@@ -256,6 +258,20 @@ const PENCIL_HATCH_ANGLE_RAD: f32 = 0.6;
 const PENCIL_HATCH_WIDTH_PX: f32 = 1.3;
 /// Graphite laid down lightly — premultiplied, so it composites as a ~45%-coverage stroke.
 const PENCIL_HATCH_COLOR: Color32 = Color32::from_rgba_premultiplied(26, 27, 31, 118);
+
+/// How a body's own colour reads in coloured pencil (#1812): the fill it is laid on with,
+/// and the darker tone of the same colour its outline is drawn in.
+///
+/// A coloured pencil does not cover the paper — the fill is the body colour let a long way
+/// down toward [`PENCIL_PAPER`]. The outline is the same colour pressed harder, mixed toward
+/// graphite so it still reads as a drawn line rather than a bright edge.
+fn colour_pencil_tones(base: Color32) -> (Color32, Color32) {
+    let mix = |a: Color32, b: Color32, t: f32| {
+        let lerp = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round().clamp(0.0, 255.0) as u8;
+        Color32::from_rgb(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()))
+    };
+    (mix(base, PENCIL_PAPER, 0.72), mix(base, PENCIL_GRAPHITE, 0.55))
+}
 
 /// A repeatable number in `-1..1` from an integer seed. The point is repeatability: a wobble
 /// re-rolled every frame would make the whole drawing crawl as the camera moved, which is
@@ -317,6 +333,27 @@ fn pencil_stroke(a: Vec3, b: Vec3, pass: usize) -> Vec<Vec3> {
         .collect()
 }
 
+/// A body's shadow on the ground, as triangles on z = 0 (#1811): its own triangles projected
+/// along the scene light, minus the ones below the plane (a half-buried part shadows only the
+/// half above it) and the ones lying on it (that is the contact face, not a shadow). Empty
+/// when nothing can cast — looking up from below, or a light parallel to the ground.
+fn ground_shadow_footprint(solid: &crate::extrude::SolidMesh, cam: &Camera) -> Vec<[Vec3; 3]> {
+    if cam.eye().z <= 0.0 {
+        return Vec::new();
+    }
+    let light = SCENE_LIGHT_DIR.normalize_or_zero();
+    if light.z.abs() < 1e-3 {
+        return Vec::new();
+    }
+    solid
+        .triangles
+        .iter()
+        .filter(|tri| !tri.iter().any(|p| p.z < 0.0))
+        .filter(|tri| !triangle_on_plane(tri, Vec3::ZERO, Vec3::Z))
+        .map(|tri| std::array::from_fn(|i| tri[i] - light * (tri[i].z / light.z)))
+        .collect()
+}
+
 /// Where the hatch strokes standing in for a body's contact shadow start and end (#1805).
 /// The caster's ground-plane footprint is scanned by parallel lines `PENCIL_HATCH_SPACING_MM`
 /// apart; each line's span across the footprint becomes one stroke, so the hatch fills the
@@ -342,12 +379,19 @@ fn pencil_hatch_segments(footprint: &[[Vec3; 3]]) -> Vec<(Vec3, Vec3)> {
     if !lo.is_finite() || !hi.is_finite() {
         return Vec::new();
     }
+    // Scan lines sit on a world lattice, not on wherever this footprint happens to start
+    // (#1811) — so a shadow that grows, moves or merges with another keeps to the same ruled
+    // lines instead of drifting into a moiré against its neighbour.
+    let first = (lo / PENCIL_HATCH_SPACING_MM).ceil();
     // A degenerate or enormous footprint would ask for an unbounded number of strokes.
-    let count = (((hi - lo) / PENCIL_HATCH_SPACING_MM).ceil() as i32).clamp(0, 400);
+    let count = (((hi - lo) / PENCIL_HATCH_SPACING_MM).ceil() as i32 + 1).clamp(0, 600);
 
     let mut out = Vec::new();
     for i in 0..count {
-        let offset = lo + (i as f32 + 0.5) * PENCIL_HATCH_SPACING_MM;
+        let offset = (first + i as f32) * PENCIL_HATCH_SPACING_MM;
+        if offset > hi {
+            break;
+        }
         // Every crossing of this scan line with the footprint's triangles, as distances
         // along the hatch direction; consecutive pairs bound the covered spans.
         let mut spans: Vec<(f32, f32)> = Vec::new();
@@ -702,12 +746,13 @@ impl Default for ViewportPalette {
 }
 
 impl ViewportPalette {
-    /// The palette a shading mode draws in (#1805). Every mode but `LoosePencil` uses the
-    /// theme's own colours; the pencil view swaps the ground out for paper and the grid for
-    /// faint ruled guides, so a drawing is a drawing all the way to its background.
+    /// The palette a shading mode draws in (#1805/#1812). The technical modes use the theme's
+    /// own colours; both pencil views swap the ground out for paper and the grid for faint
+    /// ruled guides, so a drawing is a drawing all the way to its background.
     pub fn for_shading(self, mode: crate::camera::ShadingMode) -> Self {
         match mode {
-            crate::camera::ShadingMode::LoosePencil => Self {
+            crate::camera::ShadingMode::LoosePencil
+            | crate::camera::ShadingMode::ColourPencil => Self {
                 background: PENCIL_PAPER,
                 grid: PENCIL_GRID,
                 grid_axis: PENCIL_GRID_AXIS,
@@ -1323,6 +1368,10 @@ impl ViewportScene {
                 })
                 .collect();
 
+        // Every pencil-mode caster's ground footprint, gathered across the body loop and
+        // hatched once at the end (#1811) — see the `LoosePencil` arm below.
+        let mut pencil_shadow_footprint: Vec<[Vec3; 3]> = Vec::new();
+
         // Extruded solid bodies (3D, depth-tested, flat-shaded).
         for (bi, body) in input.doc.bodies.iter() {
             if let Some(editing) = input.editing_extrusion {
@@ -1560,24 +1609,40 @@ impl ViewportScene {
                     // its own projection (#1476).
                     mesh.push_ground_shadow(solid, input.cam);
                 }
-                // Pencil on paper (#1805): a flat paper-toned fill so a near edge hides a far
-                // one — a drawing's enclosed areas are paper, not paint — and then every
-                // feature edge drawn by hand over the top. The body colour is deliberately
-                // ignored: a pencil has one colour.
-                crate::camera::ShadingMode::LoosePencil => {
-                    mesh.push_solid_flat(solid, PENCIL_BODY_FILL, &coplanar_planes, input.cam);
+                // Pencil on paper (#1805): a flat, lightly-laid fill so a near edge hides a
+                // far one — a drawing's enclosed areas are paper, not paint — and then every
+                // feature edge drawn by hand over the top. Plain pencil ignores the body
+                // colour (one pencil, one colour); coloured pencil keeps it (#1812).
+                mode @ (crate::camera::ShadingMode::LoosePencil
+                | crate::camera::ShadingMode::ColourPencil) => {
+                    let (paper_fill, stroke) = if mode == crate::camera::ShadingMode::ColourPencil {
+                        colour_pencil_tones(fill)
+                    } else {
+                        (PENCIL_BODY_FILL, PENCIL_GRAPHITE)
+                    };
+                    mesh.push_solid_flat(solid, paper_fill, &coplanar_planes, input.cam);
                     let edges = crate::extrude::body_feature_edges(input.doc, bi);
                     mesh.push_pencil_edges(
                         solid,
                         &edges,
+                        stroke,
                         input.cam,
                         input.viewport,
                         &vp,
                     );
-                    mesh.push_pencil_ground_hatch(solid, input.cam, input.viewport, &vp);
+                    // The shadow is drawn once for the whole scene, after this loop (#1811):
+                    // hatching each body separately drew every overlap twice.
+                    pencil_shadow_footprint
+                        .extend(ground_shadow_footprint(solid, input.cam));
                 }
             }
         }
+        // One hatch for the whole scene (#1811). Bodies standing near each other cast one
+        // shadow, and it is drawn once: hatching each body's footprint separately laid a
+        // second set of strokes over every overlap — on its own scan-line phase, so the
+        // shared region went both denser and darker than either shadow.
+        mesh.push_pencil_ground_hatch(&pencil_shadow_footprint, input.cam, input.viewport, &vp);
+
         // Imported unit instances (#722/#724) render through the ordinary body loop above:
         // each instance materializes as a derived body (`BodySource::UnitInstance`), so
         // shading modes, selection, hover, and picking all treat it as a body — keyed to
@@ -2640,6 +2705,7 @@ impl<'a> SceneMesh<'a> {
         &mut self,
         solid: &crate::extrude::SolidMesh,
         feature_edges: &[(Vec3, Vec3)],
+        graphite: Color32,
         cam: &Camera,
         viewport: UiRect,
         view_proj: &Mat4,
@@ -2649,7 +2715,7 @@ impl<'a> SceneMesh<'a> {
             for pass in 0..PENCIL_PASSES {
                 // The second pass is lighter: going over a line again darkens the first
                 // stroke, it does not lay down a second line of equal weight.
-                let color = fill_color(PENCIL_GRAPHITE, if pass == 0 { 1.0 } else { 0.45 });
+                let color = fill_color(graphite, if pass == 0 { 1.0 } else { 0.45 });
                 let stroke = pencil_stroke(a, b, pass);
                 self.push_polyline_segment(
                     &stroke,
@@ -2668,28 +2734,14 @@ impl<'a> SceneMesh<'a> {
     /// instead of a smeared translucent blot — the way a shadow is drawn, not rendered.
     fn push_pencil_ground_hatch(
         &mut self,
-        solid: &crate::extrude::SolidMesh,
+        footprint: &[[Vec3; 3]],
         cam: &Camera,
         viewport: UiRect,
         view_proj: &Mat4,
     ) {
-        if cam.eye().z <= 0.0 {
-            return;
-        }
-        let light = SCENE_LIGHT_DIR.normalize_or_zero();
-        if light.z.abs() < 1e-3 {
-            return;
-        }
-        let footprint: Vec<[Vec3; 3]> = solid
-            .triangles
-            .iter()
-            .filter(|tri| !tri.iter().any(|p| p.z < 0.0))
-            .filter(|tri| !triangle_on_plane(tri, Vec3::ZERO, Vec3::Z))
-            .map(|tri| std::array::from_fn(|i| tri[i] - light * (tri[i].z / light.z)))
-            .collect();
         // Ordinary strokes on the base layer, not the shadow layer: a hatch is lines, and
         // depth-testing them means a body standing on the ground occludes its own shadow.
-        for (a, b) in pencil_hatch_segments(&footprint) {
+        for (a, b) in pencil_hatch_segments(footprint) {
             self.push_polyline_segment(
                 &pencil_stroke(a, b, 0),
                 PENCIL_HATCH_COLOR,
@@ -14441,6 +14493,114 @@ mod loose_pencil_tests {
         assert!(pencil_hatch_segments(&[]).is_empty());
     }
 
+    /// #1811: two bodies standing near each other cast **one** shadow, not two overlapping
+    /// ones. Hatching each body separately drew the overlap twice — twice the strokes, and on
+    /// interleaved scan lines, so the shared region went much darker than either shadow.
+    #[test]
+    fn overlapping_shadows_hatch_once() {
+        let square = |x0: f32, x1: f32| {
+            [
+                [Vec3::new(x0, 0.0, 0.0), Vec3::new(x1, 0.0, 0.0), Vec3::new(x1, 20.0, 0.0)],
+                [Vec3::new(x0, 0.0, 0.0), Vec3::new(x1, 20.0, 0.0), Vec3::new(x0, 20.0, 0.0)],
+            ]
+        };
+        // Two footprints overlapping across x = 10..20, hatched as one.
+        let mut both = square(0.0, 20.0).to_vec();
+        both.extend(square(10.0, 30.0));
+        let strokes = pencil_hatch_segments(&both);
+        assert!(!strokes.is_empty());
+        // No two strokes on the same scan line may overlap: that is the double-darkening.
+        for (i, (a1, b1)) in strokes.iter().enumerate() {
+            for (a2, b2) in strokes.iter().skip(i + 1) {
+                let same_line = (a1.y - a2.y).abs() < 1e-3 && (b1.y - b2.y).abs() < 1e-3;
+                if !same_line {
+                    continue;
+                }
+                let (lo1, hi1) = (a1.x.min(b1.x), a1.x.max(b1.x));
+                let (lo2, hi2) = (a2.x.min(b2.x), a2.x.max(b2.x));
+                assert!(
+                    hi1 <= lo2 + 1e-3 || hi2 <= lo1 + 1e-3,
+                    "two strokes cover the same ground twice"
+                );
+            }
+        }
+    }
+
+    /// #1811: the scan lines sit on a world lattice, not on wherever this particular
+    /// footprint happens to start — so shadows that grow, move or join stay on the same ruled
+    /// lines instead of drifting into a moiré against each other.
+    #[test]
+    fn hatch_scan_lines_sit_on_a_world_lattice() {
+        let footprint = |shift: f32| {
+            [
+                [
+                    Vec3::new(0.0, shift, 0.0),
+                    Vec3::new(20.0, shift, 0.0),
+                    Vec3::new(20.0, shift + 20.0, 0.0),
+                ],
+                [
+                    Vec3::new(0.0, shift, 0.0),
+                    Vec3::new(20.0, shift + 20.0, 0.0),
+                    Vec3::new(0.0, shift + 20.0, 0.0),
+                ],
+            ]
+        };
+        let line_of = |(a, _b): &(Vec3, Vec3)| {
+            let (sin, cos) = PENCIL_HATCH_ANGLE_RAD.sin_cos();
+            glam::Vec2::new(a.x, a.y).dot(glam::Vec2::new(-sin, cos))
+        };
+        for stroke in pencil_hatch_segments(&footprint(0.0)) {
+            let d = line_of(&stroke) / PENCIL_HATCH_SPACING_MM;
+            assert!(
+                (d - d.round()).abs() < 1e-2,
+                "scan line at {d} spacings is off the lattice"
+            );
+        }
+        // A footprint that starts somewhere else still lands on the same lines.
+        for stroke in pencil_hatch_segments(&footprint(7.3)) {
+            let d = line_of(&stroke) / PENCIL_HATCH_SPACING_MM;
+            assert!((d - d.round()).abs() < 1e-2, "shifted footprint drifted off the lattice");
+        }
+    }
+
+    /// #1810: a body's outline is the drawing. It reads thicker than the thin technical
+    /// wireframe overlay, which is a different thing for a different purpose.
+    #[test]
+    fn pencil_outlines_are_heavier_than_the_wireframe_overlay() {
+        assert!(
+            PENCIL_LINE_WIDTH_PX > WIREFRAME_LINE_WIDTH_PX,
+            "a pencil outline should carry more weight than a wireframe edge"
+        );
+    }
+
+    /// #1812: coloured pencil keeps each body's own colour, laid on lightly the way a pencil
+    /// leaves it — paper still showing through — with the outline a darker tone of the same
+    /// colour rather than graphite.
+    #[test]
+    fn colour_pencil_draws_each_body_in_its_own_colour() {
+        let red = Color32::from_rgb(200, 60, 60);
+        let blue = Color32::from_rgb(60, 80, 200);
+        let (red_fill, red_line) = colour_pencil_tones(red);
+        let (blue_fill, blue_line) = colour_pencil_tones(blue);
+        assert_ne!(red_fill, blue_fill, "two colours, two fills");
+        assert_ne!(red_line, blue_line, "and two outlines");
+        // The fill is the colour let down onto paper: lighter than the body colour, and
+        // lighter than the outline drawn over it.
+        for (base, fill, line) in [(red, red_fill, red_line), (blue, blue_fill, blue_line)] {
+            let lum = |c: Color32| c.r() as u32 + c.g() as u32 + c.b() as u32;
+            assert!(lum(fill) > lum(base), "the fill is laid on lightly");
+            assert!(lum(line) < lum(fill), "the outline reads over its own fill");
+        }
+        // Plain pencil ignores the body colour entirely — one pencil, one colour.
+        assert_eq!(
+            ViewportPalette::default().for_shading(crate::camera::ShadingMode::LoosePencil).background,
+            ViewportPalette::default()
+                .for_shading(crate::camera::ShadingMode::ColourPencil)
+                .background,
+            "both pencil views draw on the same paper"
+        );
+    }
+
     /// #1805: the pencil view draws on paper; every other mode keeps the theme's colours.
     #[test]
     fn loose_pencil_swaps_the_palette_for_paper() {
@@ -14449,7 +14609,10 @@ mod loose_pencil_tests {
         assert_eq!(paper.background, PENCIL_PAPER);
         assert_ne!(paper.grid, theme.grid, "the grid becomes a faint ruled guide");
         for mode in crate::camera::SHADING_MODES {
-            if mode == crate::camera::ShadingMode::LoosePencil {
+            if matches!(
+                mode,
+                crate::camera::ShadingMode::LoosePencil | crate::camera::ShadingMode::ColourPencil
+            ) {
                 continue;
             }
             assert_eq!(
