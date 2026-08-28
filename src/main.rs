@@ -6833,7 +6833,9 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             MenuCommand::InstallCli => {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
-                    self.state.status = match cli_install::run_install() {
+                    // #1788: the menu action may ask for the user's password with the
+                    // standard macOS prompt when the link directory needs root.
+                    self.state.status = match cli_install::run_install_gui() {
                         Ok(msg) => msg,
                         Err(err) => format!("Install CLI failed: {err}"),
                     };

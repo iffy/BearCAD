@@ -1,0 +1,1 @@
+The Install CLI menu action on macOS now asks for the user's password with the standard macOS authorization prompt when /usr/local/bin is not writable, instead of failing with a permission-denied message suggesting sudo.
