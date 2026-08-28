@@ -88,19 +88,26 @@ bearcad.combine{ kind = "cut", a = {0}, b = {1} }
 -- error: combine: unknown key `kind` (accepted keys: op, a, b, keep_b, keep_leftovers, name)
 ```
 
-To sketch on a specific plane:
+To sketch on a specific plane — `0`, `1` and `2` are the default ground/front/side datum
+planes; planes you create start at `3`:
 
 ```lua
-bearcad.begin_sketch("construction_plane", 0)
+bearcad.begin_sketch("construction_plane", 3)
 bearcad.rect{ width = 80, height = 50, name = "Main box" }
 ```
 
-`begin_sketch` also accepts a body face — an extrusion's cap or side wall:
+`begin_sketch` also accepts a body face — an extrusion's cap or side wall, or the flat
+cap/washer faces of a revolve (a full-turn revolve has no end caps; sketch on its
+`revolve_side` faces):
 
 ```lua
 bearcad.begin_sketch{
   kind = "extrude_cap", extrusion = 0,
   profile = "polygon", profile_lines = {0, 1, 2, 3}, top = true,
+}
+bearcad.begin_sketch{
+  kind = "revolve_side", revolution = 0, edge = 2,
+  profile = "polygon", profile_lines = {0, 1, 2, 3},
 }
 ```
 

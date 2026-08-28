@@ -10936,7 +10936,11 @@ impl AppState {
             }
             Action::BeginSketch { face, viewport } => {
                 if sketch_frame(&self.doc, face.clone()).is_none() {
-                    return ActionResult::Err(format!("Unknown face {:?}", face));
+                    return ActionResult::Err(format!(
+                        "Cannot sketch on {face:?}: the face does not resolve (a full-turn \
+                         revolve has no end caps — sketch on its flat revolve_side faces; \
+                         the feature may also be deleted, or the edge index out of range)"
+                    ));
                 }
                 let sketch = self.doc.add_sketch(face.clone());
                 // Sketching on a unit's face (#725) projects that face's own boundary in

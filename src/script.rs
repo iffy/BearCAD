@@ -6699,10 +6699,8 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::BeginSketch { face } => {
-                state.apply(Action::BeginSketch {
-                    face,
-                    viewport,
-                });
+                let result = state.apply(Action::BeginSketch { face, viewport });
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::OpenSketch { sketch } => {
@@ -6710,10 +6708,8 @@ impl ScriptRunner {
                     self.last_action_error = Some(format!("Unknown sketch {sketch}"));
                     return StepResult::Continue;
                 };
-                state.apply(Action::OpenSketch {
-                    sketch,
-                    viewport,
-                });
+                let result = state.apply(Action::OpenSketch { sketch, viewport });
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::ExitSketch => {

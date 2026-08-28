@@ -823,7 +823,13 @@ fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
     let kind: String = table.get("kind").or_else(|_| table.get("type"))?;
     match kind.to_ascii_lowercase().as_str() {
         "extrude_cap" | "extrude_side" => {
-            let extrusion = extrusion_key_from_ordinal(lua, table.get("extrusion")?)?;
+            let extrusion = extrusion_key_from_ordinal(lua, table.get("extrusion")?)
+                .map_err(|e| {
+                    mlua::Error::external(format!(
+                        "{e}. If the body came from a revolve, sketch on it with \
+                         kind = \"revolve_cap\" or kind = \"revolve_side\" (revolution = i) instead"
+                    ))
+                })?;
             let profile = parse_extrude_profile(lua, &table)?;
             if kind.eq_ignore_ascii_case("extrude_cap") {
                 let top: bool = table.get::<Option<bool>>("top")?.unwrap_or(true);
@@ -12856,6 +12862,72 @@ pub mod tests {
             state.scene_selection.ordered(),
             vec![SceneElement::Line(lkey(0))],
             "the script's selection must survive the refs-form call"
+        );
+    }
+
+    /// #1795: a begin_sketch that cannot resolve its face must fail the script — the
+    /// next drawing verb silently falling back to the ground sketch is the bug.
+    #[test]
+    fn lua_begin_sketch_refuses_an_unresolvable_face_loudly() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            -- A full-turn revolve has no caps: the flat faces are `revolve_side`s.
+            bearcad.rect{ x = 5, y = 0, width = 5, height = 3 }
+            bearcad.revolve{ polygon = {0, 1, 2, 3}, axis = "y", angle = 360 }
+            local ok, err = pcall(bearcad.begin_sketch,
+                { kind = "revolve_cap", revolution = 0,
+                  profile = "polygon", profile_lines = {0, 1, 2, 3}, ["end"] = true })
+            assert(not ok, "a cap sketch on a capless revolve must be refused")
+            assert(tostring(err):find("cap"), "unexpected error: " .. tostring(err))
+            assert(bearcad.count("sketch") == 1, "no new sketch may be created")
+        "#,
+        );
+        assert_eq!(state.doc.sketches.len(), 1);
+        assert_eq!(state.doc.lines.len(), 4, "only the rect's lines");
+    }
+
+    /// #1795: `begin_sketch{ kind = "extrude_cap", extrusion = 0 }` against a revolve
+    /// body names the revolve spellings instead of a bare "no extrusion 0".
+    #[test]
+    fn lua_begin_sketch_extrude_cap_on_a_revolve_names_the_alternative() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ x = 5, y = 0, width = 5, height = 3 }
+            bearcad.revolve{ polygon = {0, 1, 2, 3}, axis = "y", angle = 360 }
+            local ok, err = pcall(bearcad.begin_sketch,
+                { kind = "extrude_cap", extrusion = 0,
+                  profile = "polygon", profile_lines = {0, 1, 2, 3}, top = true })
+            assert(not ok, "extrude_cap needs an extrusion; a revolve must be refused")
+            err = tostring(err)
+            assert(err:find("revolve_cap") and err:find("revolve_side"),
+              "the error should name the revolve spellings: " .. err)
+        "#,
+        );
+        assert_eq!(state.doc.sketches.len(), 1, "no new sketch");
+    }
+
+    /// #1795: the flat washer faces of a full-turn revolve are `revolve_side`s —
+    /// sketching on one works, and the sketch session lands on it.
+    #[test]
+    fn lua_begin_sketch_revolve_side_hosts_a_sketch() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ x = 5, y = 0, width = 5, height = 3 }
+            bearcad.revolve{ polygon = {0, 1, 2, 3}, axis = "y", angle = 360 }
+            bearcad.begin_sketch{ kind = "revolve_side", revolution = 0,
+                profile = "polygon", profile_lines = {0, 1, 2, 3}, edge = 2 }
+            bearcad.circle{ x = 7, y = 1, r = 1 }
+        "#,
+        );
+        assert_eq!(state.doc.sketches.len(), 2, "the cap sketch is created");
+        let circle = &state.doc.circles.values().next().unwrap();
+        let sketch_face = state.doc.sketch_face(circle.sketch).unwrap();
+        assert!(
+            matches!(sketch_face, crate::model::FaceId::RevolveSide { .. }),
+            "the circle must land in the revolve-side sketch, got {sketch_face:?}"
         );
     }
 
