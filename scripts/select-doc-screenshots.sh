@@ -188,7 +188,7 @@ deps_for_scene() {
         fillet|chamfer)
           printf '%s\n' "src/model\\.rs" "src/opsigs\\.rs"
           ;;
-        extrude|revolve|sweep|loft|slice|combine|offset|repeat|shape|text)
+        extrude|revolve|sweep|loft|slice|combine|offset|repeat|shape|text|shell)
           printf '%s\n' "src/extrude\\.rs" "src/model\\.rs" "src/opsigs\\.rs" "src/offset\\.rs" "src/text\\.rs"
           ;;
       esac

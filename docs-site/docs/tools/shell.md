@@ -9,6 +9,15 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 
 Hollow a solid to a wall thickness. Optionally open faces so the inside is accessible.
 
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/shell.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/shell.png")} alt="A block hollowed to a thin wall with its top face open, seen from above" />
+</a>
+
 ## How to use it
 
 1. Pick the **Shell** tool and click one or more bodies (**Bodies**).
