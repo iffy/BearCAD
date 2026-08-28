@@ -2747,7 +2747,8 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
     }
 
-    /// #1340: preview PNG/STL live in `blobs`, not base64 meta text.
+    /// #1340: the preview PNG lives in `blobs`, not base64 meta text. The retired
+    /// `preview_stl` snapshot must not come back (#1790).
     #[test]
     fn preview_is_stored_as_a_blob() {
         use crate::model::{Body, BodySource, ImportedMesh};
@@ -2787,14 +2788,14 @@ mod tests {
         assert!(png.starts_with(&[0x89, b'P', b'N', b'G']), "PNG magic");
         assert!(png.len() > 50);
 
-        let stl: Vec<u8> = conn
+        let stl_count: i64 = conn
             .query_row(
-                "SELECT bytes FROM blobs WHERE kind = 'preview_stl'",
+                "SELECT COUNT(*) FROM blobs WHERE kind = 'preview_stl'",
                 [],
                 |row| row.get(0),
             )
-            .expect("preview_stl must be a blob row");
-        assert!(stl.len() >= 84, "binary STL header + count");
+            .unwrap();
+        assert_eq!(stl_count, 0, "retired preview_stl blob must not be written");
 
         let meta_png: i64 = conn
             .query_row(
@@ -2804,7 +2805,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(meta_png, 0, "preview must not live in meta as base64");
-
         drop(conn);
         std::fs::remove_file(&path).unwrap();
     }

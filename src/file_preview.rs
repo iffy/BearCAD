@@ -5,11 +5,11 @@
 //! managers) can show the model in the icon/preview slot. A black silhouette outline keeps
 //! the model readable on both light and dark backgrounds.
 //!
-//! Also embeds a binary STL mesh snapshot (`preview_stl`) so the macOS QuickLook Preview
-//! Extension can load the geometry into SceneKit and let the user rotate it like an STL.
+//! The macOS QuickLook Preview Extension shows the same PNG (#1790 wanted the colorful
+//! screenshot back, not a gray mesh). Legacy `preview_stl` blobs are deleted on save.
 
 use crate::camera::Camera;
-use crate::extrude::{body_solid_mesh, document_solid_mesh, document_world_bounds, SolidMesh};
+use crate::extrude::{body_solid_mesh, document_world_bounds, SolidMesh};
 use crate::gpu_viewport::body_material_fill;
 use crate::model::Document;
 use egui::{Pos2, Rect};
@@ -19,7 +19,8 @@ use glam::{Mat4, Vec3};
 pub const PREVIEW_SIZE: u32 = 1024;
 /// `blobs.kind` for the Home-orientation PNG thumbnail.
 pub const PREVIEW_PNG_BLOB_KIND: &str = "preview_png";
-/// `blobs.kind` for the binary STL mesh snapshot (#1290 QuickLook).
+/// `blobs.kind` of the retired QuickLook STL snapshot: legacy rows are deleted on save
+/// so files saved by older builds shrink back down (#1790).
 pub const PREVIEW_STL_BLOB_KIND: &str = "preview_stl";
 /// Silhouette outline radius in pixels — enough to read on light and dark backgrounds.
 const OUTLINE_RADIUS: i32 = 3;
@@ -76,15 +77,6 @@ pub fn document_preview_png(doc: &Document) -> Option<Vec<u8>> {
     preview.encode_png().ok()
 }
 
-/// Binary STL of all non-shadow body meshes for QuickLook (#1290). `None` when empty.
-pub fn document_preview_stl(doc: &Document) -> Option<Vec<u8>> {
-    let mesh = document_solid_mesh(doc);
-    if mesh.is_empty() {
-        return None;
-    }
-    Some(crate::stl::write_binary_stl("preview", &mesh))
-}
-
 /// Write a preview PNG of `doc` to `path` (scriptable via `bearcad.export_preview`).
 pub fn export_preview_png(doc: &Document, path: &str) -> Result<(), String> {
     let png = document_preview_png(doc).ok_or_else(|| {
@@ -107,15 +99,9 @@ pub fn attach_preview_after_save(path: &str, doc: &Document) {
     if let Err(e) = embed_preview_png(path, &png) {
         crate::diag::warn(format!("preview embed failed for {path}: {e}"));
     }
-    // Mesh snapshot for macOS QuickLook interactive rotate (#1290). Independent of PNG.
-    match document_preview_stl(doc) {
-        Some(stl) => {
-            if let Err(e) = embed_preview_stl(path, &stl) {
-                crate::diag::warn(format!("preview STL embed failed for {path}: {e}"));
-            }
-        }
-        None => clear_embedded_preview_stl(path),
-    }
+    // #1790: the STL QuickLook snapshot is retired — purge legacy blobs so old files
+    // slim down on their next save.
+    let _ = clear_embedded_preview_stl(path);
     // Icon attach is best-effort: a panic here must not unwind through save (#1339).
     // SIGBUS from ImageIO cannot be caught — `apply_os_preview` must not call it.
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| apply_os_preview(path, &png))) {
@@ -458,14 +444,8 @@ fn embed_preview_png(path: &str, png: &[u8]) -> Result<(), String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn embed_preview_stl(path: &str, stl: &[u8]) -> Result<(), String> {
-    crate::storage::upsert_preview_blob(path, PREVIEW_STL_BLOB_KIND, stl)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 fn clear_embedded_preview(path: &str) {
     let _ = crate::storage::delete_preview_blob(path, PREVIEW_PNG_BLOB_KIND);
-    let _ = crate::storage::delete_preview_blob(path, PREVIEW_STL_BLOB_KIND);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1121,44 +1101,30 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// #1290: save embeds a binary STL mesh so the macOS QuickLook extension can show an
-    /// interactive SceneKit rotate preview (same gesture as system STL).
+    /// #1790: the retired `preview_stl` blob is purged on save, so files saved by older
+    /// builds slim down and QuickLook shows only the PNG screenshot.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn save_embeds_preview_stl_meta() {
+    fn save_purges_legacy_preview_stl_blob() {
         let doc = cube_document();
-        let path = std::env::temp_dir().join("bearcad_preview_stl_embed_test.bearcad");
+        let path = std::env::temp_dir().join("bearcad_preview_stl_purge_test.bearcad");
         let path_s = path.to_string_lossy().to_string();
         let _ = std::fs::remove_file(&path);
 
         crate::storage::save(&path_s, &doc).expect("save");
+        // Simulate a file saved by a build that still embedded the STL snapshot.
+        let _ = crate::storage::upsert_preview_blob(&path_s, PREVIEW_STL_BLOB_KIND, &[0u8; 84]);
+        assert!(load_embedded_preview_stl(&path_s).is_some(), "fixture");
+
         attach_preview_after_save(&path_s, &doc);
 
-        let stl = load_embedded_preview_stl(&path_s).expect("save should embed preview_stl blob");
-        // Binary STL: 80-byte header + u32 count + 50 bytes/tri. A cube has 12 tris.
-        assert!(stl.len() >= 84, "binary STL too short: {}", stl.len());
-        let count = u32::from_le_bytes(stl[80..84].try_into().unwrap());
-        assert_eq!(count, 12, "cube should export 12 triangles");
-        assert_eq!(stl.len(), 84 + 12 * 50);
-        // Round-trip through the public parser.
-        let tris = crate::stl::parse_stl(&stl).expect("embedded STL must parse");
-        assert_eq!(tris.len(), 12);
+        assert!(
+            load_embedded_preview_stl(&path_s).is_none(),
+            "legacy preview_stl blob must be deleted on save"
+        );
+        assert!(load_embedded_preview_png(&path_s).is_some(), "PNG survives");
 
         let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn document_preview_stl_from_imported_mesh() {
-        let doc = cube_document();
-        let stl = document_preview_stl(&doc).expect("cube must produce preview STL");
-        let count = u32::from_le_bytes(stl[80..84].try_into().unwrap());
-        assert_eq!(count, 12);
-    }
-
-    #[test]
-    fn empty_document_has_no_preview_stl() {
-        let doc = Document::default();
-        assert!(document_preview_stl(&doc).is_none());
     }
 
     #[test]

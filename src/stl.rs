@@ -118,7 +118,9 @@ pub fn write_ascii_stl(name: &str, mesh: &SolidMesh) -> String {
 }
 
 /// Binary STL (80-byte header + little-endian u32 triangle count + 50-byte records).
-/// Compact form used for the QuickLook mesh snapshot embedded in `.bearcad` files (#1290).
+/// The QuickLook mesh snapshot that used this is retired (#1790); the writer stays for
+/// the binary round-trip tests.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn write_binary_stl(name: &str, mesh: &SolidMesh) -> Vec<u8> {
     let mut out = vec![0u8; 80];
     // Header is free-form; put a short label so the source is obvious in a hex dump.

@@ -467,7 +467,7 @@ fn put_blob(tx: &Connection, id: i64, kind: &str, bytes: &[u8]) -> Result<()> {
 
 fn delete_entity_blobs(tx: &Connection, id: i64) -> Result<()> {
     tx.execute(
-        "DELETE FROM blobs WHERE id = ?1 AND kind NOT IN ('preview_png', 'preview_stl')",
+        "DELETE FROM blobs WHERE id = ?1 AND kind NOT IN ('preview_png')",
         params![id],
     )
     .map_err(|e| e.to_string())?;
