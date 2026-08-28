@@ -5318,15 +5318,20 @@ pub enum DrawingViewStyle {
     /// The visible edges drawn by hand (#1809): wobbled, overshot at the corners, gone over
     /// twice — the drawings-page counterpart of the `LoosePencil` viewport shading mode.
     LoosePencil,
+    /// [`Self::LoosePencil`]'s hand-drawn edges over each body's own colour, shaded with
+    /// strokes and with the solids' shadows falling on each other (#1821) — the drawings-page
+    /// counterpart of the `ColourPencil` viewport shading mode.
+    ColourPencil,
 }
 
 impl DrawingViewStyle {
-    pub const ALL: [DrawingViewStyle; 5] = [
+    pub const ALL: [DrawingViewStyle; 6] = [
         DrawingViewStyle::Visible,
         DrawingViewStyle::Wireframe,
         DrawingViewStyle::Shaded,
         DrawingViewStyle::Colorful,
         DrawingViewStyle::LoosePencil,
+        DrawingViewStyle::ColourPencil,
     ];
 
     pub fn label(self) -> &'static str {
@@ -5336,6 +5341,20 @@ impl DrawingViewStyle {
             Self::Shaded => "Shaded",
             Self::Colorful => "Colorful",
             Self::LoosePencil => "Loose pencil",
+            Self::ColourPencil => "Coloured pencil",
+        }
+    }
+
+    /// The name scripts set this style by, and read it back as (#1821). `label()` is for
+    /// menus; this is the one that round-trips through `from_name`.
+    pub fn script_name(self) -> &'static str {
+        match self {
+            Self::Visible => "visible",
+            Self::Wireframe => "wireframe",
+            Self::Shaded => "shaded",
+            Self::Colorful => "colorful",
+            Self::LoosePencil => "loose_pencil",
+            Self::ColourPencil => "colour_pencil",
         }
     }
 
@@ -5347,8 +5366,15 @@ impl DrawingViewStyle {
             "shaded" | "solid" => Some(Self::Shaded),
             "colorful" | "colourful" | "color" | "colour" => Some(Self::Colorful),
             "loose_pencil" | "pencil" | "sketchy" => Some(Self::LoosePencil),
+            "colour_pencil" | "color_pencil" | "coloured_pencil" | "colored_pencil"
+            | "coloured pencil" | "colored pencil" => Some(Self::ColourPencil),
             _ => None,
         }
+    }
+
+    /// Whether this style draws its edges by hand rather than ruling them (#1809/#1821).
+    pub fn is_pencil(self) -> bool {
+        matches!(self, Self::LoosePencil | Self::ColourPencil)
     }
 }
 
@@ -6163,6 +6189,26 @@ pub fn effective_angle_unit(doc: &Document, sketch: SketchId) -> AngleUnit {
 
 #[cfg(test)]
 mod tests {
+    /// #1821: every projection style round-trips through the name scripts use, so a script can
+    /// compare what it set with what it reads back.
+    #[test]
+    fn drawing_view_styles_round_trip_their_script_names() {
+        for style in DrawingViewStyle::ALL {
+            assert_eq!(
+                DrawingViewStyle::from_name(style.script_name()),
+                Some(style),
+                "{:?} does not round-trip",
+                style
+            );
+            assert!(!style.label().is_empty(), "{style:?} needs a menu label");
+        }
+        assert_eq!(DrawingViewStyle::from_name("nonsense"), None);
+        // Pencil styles draw their edges by hand; the rest rule them.
+        assert!(DrawingViewStyle::ColourPencil.is_pencil());
+        assert!(DrawingViewStyle::LoosePencil.is_pencil());
+        assert!(!DrawingViewStyle::Shaded.is_pencil());
+    }
+
     use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
 

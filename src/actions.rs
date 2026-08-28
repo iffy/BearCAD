@@ -32080,6 +32080,80 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert_eq!(key(&pencil), key(&geometry(&state)), "the hand wavered between renders");
     }
 
+    /// #1821: the Coloured pencil projection style is the viewport's coloured-pencil mode on
+    /// the page — hand-drawn edges over each body's own colour, shaded with strokes rather
+    /// than a flat fill, and with the solids' shadows falling on each other.
+    #[test]
+    fn coloured_pencil_drawing_view_shades_with_strokes() {
+        use crate::model::{DrawingOrientation, DrawingViewStyle};
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::AddDrawingView {
+            drawing: dkey(0),
+            bodies: vec![bkey(0)],
+            orientation: DrawingOrientation::Isometric,
+        });
+        state.apply(Action::AddMaterial {
+            name: Some("Rust".to_string()),
+            color: Some([200, 60, 60]),
+            bodies: vec![bkey(0)],
+        });
+        let geometry = |state: &AppState| {
+            crate::drawing::styled_view_geometry(
+                &state.doc,
+                &state.doc.drawings[dkey(0)].views,
+                &state.doc.drawings[dkey(0)].views[0],
+            )
+        };
+        let style = |state: &mut AppState, style| {
+            state.apply(Action::SetDrawingViewStyle { drawing: dkey(0), view: 0, style });
+        };
+
+        style(&mut state, DrawingViewStyle::Colorful);
+        let colorful = geometry(&state);
+        assert!(colorful.shading.is_empty(), "only the pencil style lays strokes on faces");
+        style(&mut state, DrawingViewStyle::LoosePencil);
+        let loose = geometry(&state);
+        style(&mut state, DrawingViewStyle::ColourPencil);
+        let pencil = geometry(&state);
+
+        // Colour like Colorful…
+        assert!(
+            pencil.faces.iter().any(|f| f.tint == [200, 60, 60]),
+            "the body keeps its own colour, got {:?}",
+            pencil.faces.iter().map(|f| f.tint).collect::<Vec<_>>()
+        );
+        // …edges like Loose pencil…
+        assert!(
+            pencil.segments.len() > loose.segments.len() / 2,
+            "the edges are still drawn by hand"
+        );
+        // …and the tone comes from strokes, in the body's colour, darker than the fill they
+        // lie on. A flat fill is what made the style read as a sticker.
+        assert!(!pencil.shading.is_empty(), "the faces are shaded with strokes");
+        for stroke in &pencil.shading {
+            assert_eq!(stroke.tint, [200, 60, 60], "shading is the body's own colour");
+            assert!(stroke.shade > 0.0, "and it is a tone, not black");
+        }
+        let lightest_face = pencil.faces.iter().map(|f| f.shade).fold(0.0f32, f32::max);
+        assert!(
+            pencil.shading.iter().all(|s| s.shade < lightest_face),
+            "a stroke reads darker than the face it is laid on"
+        );
+        // The hand is steady: the same view redraws the same strokes.
+        let key = |g: &crate::drawing::StyledViewGeometry| {
+            let mut k: Vec<[u32; 4]> = g
+                .shading
+                .iter()
+                .map(|s| [s.a.x.to_bits(), s.a.y.to_bits(), s.b.x.to_bits(), s.b.y.to_bits()])
+                .collect();
+            k.sort_unstable();
+            k
+        };
+        assert_eq!(key(&pencil), key(&geometry(&state)), "the hand wavered between renders");
+    }
+
     /// #296: an aligned child projection shares its parent's axis (stays lined up) and follows
     /// the parent when the parent moves; the child only slides on its free axis.
     #[test]

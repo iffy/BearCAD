@@ -943,7 +943,12 @@ fn drawing_view_body_meshes(
     if view.sketch.is_some() {
         return Vec::new();
     }
-    let colorful = view.style == crate::model::DrawingViewStyle::Colorful;
+    // Coloured pencil keeps each body's own colour too (#1821) — that is what makes it
+    // *coloured* pencil rather than the grey one.
+    let colorful = matches!(
+        view.style,
+        crate::model::DrawingViewStyle::Colorful | crate::model::DrawingViewStyle::ColourPencil
+    );
     view.bodies
         .iter()
         .filter_map(|&bi| {
@@ -1822,6 +1827,24 @@ pub struct StyledViewGeometry {
     /// A sectioned view's hatch lines (#1689), kept apart from the edges so they can stroke
     /// thinner than them (#1784) — the hatch is a fill texture, not geometry.
     pub hatch: Vec<(glam::Vec2, glam::Vec2)>,
+    /// Coloured-pencil shading (#1821): the strokes laid across each face to give it its tone,
+    /// and the shadows the solids drop on one another. Empty for every other style.
+    pub shading: Vec<ShadingStroke>,
+    /// The colour to stroke the edges in (#1821), or `None` for the usual ink. A coloured
+    /// pencil draws its outlines in a deepened version of what it filled with, the way the
+    /// viewport's mode does — but only when the view shows one colour: edges come from the
+    /// merged mesh, so a two-colour assembly has no one answer, and ink is the honest one.
+    pub stroke_tint: Option<[u8; 3]>,
+}
+
+/// One coloured-pencil stroke laid on a face (#1821). Carries a `tint` and a `shade` like
+/// [`ShadedFace`], so the sheet and the print map it with the formula they already use for
+/// fills — a stroke is just a darker patch of the same colour.
+pub struct ShadingStroke {
+    pub a: glam::Vec2,
+    pub b: glam::Vec2,
+    pub tint: [u8; 3],
+    pub shade: f32,
 }
 
 /// One coplanar run of a shaded view's front faces, with the grey it's painted in
@@ -1978,13 +2001,18 @@ pub fn styled_view_geometry(
         faces: Vec::new(),
         segments: edges.iter().map(|(a, b)| (project(*a), project(*b))).collect(),
         hatch: hatch.clone(),
+        shading: Vec::new(),
+        stroke_tint: None,
     };
     if view.sketch.is_some() || view.style == DrawingViewStyle::Wireframe {
         return wireframe();
     }
     // Both shaded styles fill faces; the pencil style draws the same visible edges as
     // `Visible`, by hand (#1809).
-    let shades_faces = matches!(view.style, DrawingViewStyle::Shaded | DrawingViewStyle::Colorful);
+    let shades_faces = matches!(
+        view.style,
+        DrawingViewStyle::Shaded | DrawingViewStyle::Colorful | DrawingViewStyle::ColourPencil
+    );
     // Per body, so `Colorful` can keep each one's material colour (#1807); the merged mesh
     // is what the occlusion test and the grey styles work from, exactly as before.
     let bodies = drawing_view_body_meshes(doc, view);
@@ -2131,7 +2159,7 @@ pub fn styled_view_geometry(
     // Loose pencil (#1809): the same visible edges, drawn the way a hand draws them —
     // overshooting each corner, bowing along the way, and gone over twice. The wobble is
     // keyed to the segment's own endpoints, so a view redraws identically every time.
-    if view.style == DrawingViewStyle::LoosePencil {
+    if view.style.is_pencil() {
         let mut drawn = Vec::with_capacity(segments.len() * crate::pencil::PENCIL_PASSES * 5);
         for (a, b) in &segments {
             for pass in 0..crate::pencil::PENCIL_PASSES {
@@ -2142,8 +2170,126 @@ pub fn styled_view_geometry(
         segments = drawn;
     }
 
-    StyledViewGeometry { faces: fills, segments, hatch }
+    // Coloured pencil (#1821): the same hand as the viewport's mode — strokes laid across each
+    // flat, tighter where it turns from the light and crossed a second time where it turns
+    // away, and the shadows the solids drop on one another. The tone is drawn, not poured.
+    let mut shading = Vec::new();
+    if view.style == DrawingViewStyle::ColourPencil {
+        let light = (toward * 1.2 - right * 0.35 + up * 0.55).normalize();
+        // Everything the light can reach, for the shadows the flats receive.
+        let casters: Vec<[Vec3; 3]> = mesh
+            .triangles
+            .iter()
+            .filter(|t| (t[1] - t[0]).cross(t[2] - t[0]).dot(light) > 0.0)
+            .copied()
+            .collect();
+        // Hatching happens flat on the page: the flats are already projected there, and a
+        // drawing's stroke spacing belongs to the sheet rather than to the model.
+        let page = crate::pencil::HatchFrame { origin: Vec3::ZERO, u: Vec3::X, v: Vec3::Y };
+        let lift = |tris: &[[glam::Vec2; 3]]| -> Vec<[Vec3; 3]> {
+            tris.iter()
+                .map(|t| std::array::from_fn(|i| Vec3::new(t[i].x, t[i].y, 0.0)))
+                .collect()
+        };
+        for face in &fills {
+            let (n, c) = face.plane;
+            let lit = n.dot(light).max(0.0);
+            let (spacing, cross) = crate::pencil::shade_spacing(lit);
+            // A stable turn per flat, so two faces meeting at an edge are not shaded in
+            // lockstep — keyed to the plane, so a view redraws identically every time.
+            let mut h = 0x811C_9DC5u32;
+            for v in [n.x, n.y, n.z, c] {
+                h = (h ^ (v * 1000.0).round() as i32 as u32).wrapping_mul(0x0100_0193);
+            }
+            let turn = (h >> 8) as f32 / (1 << 24) as f32 * std::f32::consts::PI;
+            let flat = lift(&face.tris);
+            let mut angles = vec![crate::pencil::PENCIL_HATCH_ANGLE_RAD + turn];
+            if cross {
+                angles.push(
+                    crate::pencil::PENCIL_HATCH_ANGLE_RAD
+                        + turn
+                        + crate::pencil::PENCIL_SHADE_CROSS_TURN_RAD,
+                );
+            }
+            let mut push = |segments: Vec<(Vec3, Vec3)>, shade: f32, pass: usize| {
+                for (a, b) in segments {
+                    let points = crate::pencil::stroke_inside(a, b, pass);
+                    shading.extend(points.windows(2).map(|w| ShadingStroke {
+                        a: glam::Vec2::new(w[0].x, w[0].y),
+                        b: glam::Vec2::new(w[1].x, w[1].y),
+                        tint: face.tint,
+                        shade,
+                    }));
+                }
+            };
+            for (pass, angle) in angles.into_iter().enumerate() {
+                push(
+                    crate::pencil::hatch_in_frame(&page, spacing, angle, &flat, None),
+                    face.shade * PENCIL_STROKE_SHADE,
+                    pass,
+                );
+            }
+            // What stands between this flat and the light, dropped onto its plane and clipped
+            // to the flat — the drawings-page half of the viewport's cast shadows (#1818).
+            let facing = n.dot(light);
+            if facing > 0.2 {
+                let cast: Vec<[Vec3; 3]> = casters
+                    .iter()
+                    .filter_map(|t| {
+                        let above = t.map(|p| n.dot(p) - c);
+                        (above.iter().any(|d| *d >= SHADOW_CASTER_MIN_MM)).then(|| {
+                            let on: [Vec3; 3] =
+                                std::array::from_fn(|i| t[i] - light * (above[i].max(0.0) / facing));
+                            std::array::from_fn(|i| {
+                                let p = project(on[i]);
+                                Vec3::new(p.x, p.y, 0.0)
+                            })
+                        })
+                    })
+                    .collect();
+                push(
+                    crate::pencil::hatch_in_frame(
+                        &page,
+                        crate::pencil::PENCIL_CAST_SPACING_MM,
+                        crate::pencil::PENCIL_HATCH_ANGLE_RAD
+                            + turn
+                            + crate::pencil::PENCIL_CAST_TURN_RAD,
+                        &cast,
+                        Some(&flat),
+                    ),
+                    face.shade * PENCIL_SHADOW_SHADE,
+                    0,
+                );
+            }
+        }
+    }
+
+    // A coloured pencil draws its outline in a deepened version of what it filled with
+    // (#1812/#1821) — but only when there is one colour to deepen.
+    let stroke_tint = (view.style == DrawingViewStyle::ColourPencil)
+        .then(|| {
+            let mut tints = bodies.iter().map(|(_, t)| *t);
+            let first = tints.next()?;
+            tints.all(|t| t == first).then(|| {
+                let deep = crate::pencil::colour_tones(eframe::egui::Color32::from_rgb(
+                    first[0], first[1], first[2],
+                ))
+                .1;
+                [deep.r(), deep.g(), deep.b()]
+            })
+        })
+        .flatten();
+
+    StyledViewGeometry { faces: fills, segments, hatch, shading, stroke_tint }
 }
+
+/// How much darker a coloured-pencil shading stroke is than the fill it lies on (#1821), and
+/// how much darker again a cast shadow is. Both scale the face's own `shade`, so the sheet and
+/// the print map them with the formula they already use for fills.
+const PENCIL_STROKE_SHADE: f32 = 0.74;
+const PENCIL_SHADOW_SHADE: f32 = 0.46;
+/// How far above a flat a triangle must stand to shadow it — the contact face itself must not.
+const SHADOW_CASTER_MIN_MM: f32 = 0.05;
 
 /// An 8-bit RGB paint.
 #[derive(Clone, Copy, PartialEq)]
@@ -2524,13 +2670,31 @@ fn render_view_geometry<C: Canvas>(
             canvas.poly(&s, fill);
         }
     }
+    let ink = styled
+        .stroke_tint
+        .map(|t| Rgb(t[0], t[1], t[2]))
+        .unwrap_or(BLACK);
     for (a, b) in &styled.segments {
         // A segment lying on a detected circle is drawn as part of the smooth circle instead.
         if projected_segment_on_circle(*a, *b, &pcircles) {
             continue;
         }
         let (sa, sb) = (to_screen(*a), to_screen(*b));
-        canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, MODEL_STROKE);
+        canvas.line(sa.x, sa.y, sb.x, sb.y, ink, MODEL_STROKE);
+    }
+    // Coloured-pencil shading (#1821): a stroke is a darker patch of the fill it lies on, so
+    // it takes the same tint × shade the fills do.
+    for stroke in &styled.shading {
+        let lit = |c: u8| (c as f32 * stroke.shade.clamp(0.0, 1.0)).round().clamp(0.0, 255.0) as u8;
+        let (sa, sb) = (to_screen(stroke.a), to_screen(stroke.b));
+        canvas.line(
+            sa.x,
+            sa.y,
+            sb.x,
+            sb.y,
+            Rgb(lit(stroke.tint[0]), lit(stroke.tint[1]), lit(stroke.tint[2])),
+            HATCH_STROKE,
+        );
     }
     // The section hatch strokes thinner than the edges (#1784): a fill texture, not
     // geometry.

@@ -9581,7 +9581,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             for (i, view) in doc.drawings[key].views.iter().enumerate() {
                 let t = lua.create_table()?;
                 t.set("orientation", view.orientation.label())?;
-                t.set("style", view.style.label())?;
+                // The name it is *set* by (#1821), so a script can compare what it asked for
+                // with what it got; `style_label` is the menu wording.
+                t.set("style", view.style.script_name())?;
+                t.set("style_label", view.style.label())?;
                 t.set("dimensions", view.dimensioned_edges.len())?;
                 t.set("curve_dimensions", view.dimensioned_curves.len())?;
                 t.set("point_dimensions", view.point_dims.len())?;
@@ -20371,7 +20374,8 @@ pub mod tests {
             bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
             bearcad.drawing_view_style{ drawing = d, view = 0, style = "shaded" }
             bearcad.drawing_view_orientation{ drawing = d, view = 0, orientation = "front-right-top" }
-            assert(bearcad.drawing_views(d)[1].style == "Shaded")
+            assert(bearcad.drawing_views(d)[1].style == "shaded")
+            assert(bearcad.drawing_views(d)[1].style_label == "Shaded")
             local ok = pcall(bearcad.drawing_view_style, { drawing = d, view = 0, style = "sparkly" })
             assert(not ok, "an unknown style should error")
         "#,

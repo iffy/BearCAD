@@ -67,7 +67,7 @@ for _, v in ipairs(views) do
     aligned = aligned + 1
     assert(v.align_lines, v.orientation .. " should show its projection lines")
   end
-  if v.style == "Shaded" then shaded = v.orientation end
+  if v.style == "shaded" then shaded = v.orientation end
 end
 assert(aligned == 2, "two views aligned to the front, got " .. aligned)
 assert(shaded and shaded:find("-"),

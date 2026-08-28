@@ -28032,6 +28032,16 @@ impl App {
                         }
                         painter.add(egui::Shape::mesh(mesh));
                     }
+                    // A coloured-pencil projection outlines in its own colour (#1821); every
+                    // other style strokes in ink. The sheet is dark, so the print colour is
+                    // lifted rather than darkened the way the fills are.
+                    let ink = sty
+                        .stroke_tint
+                        .map(|t| {
+                            let lift = |c: u8| ((c as f32 * 0.45) as u8).saturating_add(120);
+                            egui::Color32::from_rgb(lift(t[0]), lift(t[1]), lift(t[2]))
+                        })
+                        .unwrap_or(INK);
                     for (a, b) in &sty.segments {
                         if on_circle(egui::vec2(a.x, a.y), egui::vec2(b.x, b.y)) {
                             continue;
@@ -28041,7 +28051,7 @@ impl App {
                                 to_screen(egui::vec2(a.x, a.y)),
                                 to_screen(egui::vec2(b.x, b.y)),
                             ],
-                            egui::Stroke::new(crate::drawing::MODEL_STROKE, INK),
+                            egui::Stroke::new(crate::drawing::MODEL_STROKE, ink),
                         );
                     }
                     // The section hatch strokes thinner than the edges (#1784).
@@ -28052,6 +28062,27 @@ impl App {
                                 to_screen(egui::vec2(b.x, b.y)),
                             ],
                             egui::Stroke::new(crate::drawing::HATCH_STROKE, INK),
+                        );
+                    }
+                    // Coloured-pencil shading (#1821): the same tint/shade pair the fills
+                    // carry, so one formula maps both onto the dark sheet.
+                    for stroke in &sty.shading {
+                        let level = |c: u8| {
+                            (c as f32 / 255.0 * stroke.shade.clamp(0.0, 1.0) * 110.0) as u8 + 30
+                        };
+                        painter.line_segment(
+                            [
+                                to_screen(egui::vec2(stroke.a.x, stroke.a.y)),
+                                to_screen(egui::vec2(stroke.b.x, stroke.b.y)),
+                            ],
+                            egui::Stroke::new(
+                                crate::drawing::HATCH_STROKE,
+                                egui::Color32::from_rgb(
+                                    level(stroke.tint[0]),
+                                    level(stroke.tint[1]),
+                                    level(stroke.tint[2]),
+                                ),
+                            ),
                         );
                     }
                 }

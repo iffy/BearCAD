@@ -2566,9 +2566,17 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   order is a depth sort **repaired pairwise** (#1820): a flat spans a range of depths, so
   overlapping pairs are re-asked which is really in front where they meet and topologically
   sorted (`drawing::painter_order`) — otherwise a bar's shaded side leaks through onto the top
-  of the block it grows out of. Sketch views have no solid, so they always draw wireframe. The projection logic is `drawing::styled_view_geometry`, shared by the editor
-  pane (greys darkened for the dark sheet) and both exports (the `Canvas` trait gained a
-  filled-polygon primitive). `Action::SetDrawingViewStyle`.
+  of the block it grows out of. Sketch views have no solid, so they always draw wireframe.
+  Two more styles draw by hand: **Loose pencil** (#1809) wobbles and overshoots the visible
+  edges, and **Coloured pencil** (#1821) is the viewport's coloured-pencil mode on the page —
+  the same hand-drawn edges, in a deepened version of the body's own colour when the view shows
+  one, over that colour's fills, with `crate::pencil` strokes laid across each flat for its
+  tone and the solids' shadows dropped onto one another. Shading strokes travel as
+  `ShadingStroke`s carrying the same `tint`/`shade` pair the fills do, so the sheet and the
+  print map them with the formula they already use. The projection logic is
+  `drawing::styled_view_geometry`, shared by the editor pane (greys darkened for the dark
+  sheet) and both exports (the `Canvas` trait gained a filled-polygon primitive).
+  `Action::SetDrawingViewStyle`.
 - **View card size (#1207):** each projection stores `size_x`/`size_y` as page fractions
   (default 0.42). Under **Select**, a selected card shows corner grips; dragging a corner
   resizes about the card centre (`Action::SetDrawingViewSize`, one undo step for the
