@@ -600,8 +600,14 @@ pub enum ViewportHoverHighlight {
         holes: Vec<Vec<Vec3>>,
     },
     /// A whole analytic edge given as its segments (#807): a hole's rim is many chords in the
-    /// mesh but one edge to the tools, so it highlights as one.
-    Curve { segments: Vec<(Vec3, Vec3)> },
+    /// mesh but one edge to the tools, so it highlights as one. `elements` names what those
+    /// segments *are* (#1541) — a face expanded to its boundary lights many edges at once, and
+    /// without the identities `bearcad.hovered()` had nothing to report. Empty when the lit
+    /// geometry has no `SceneElement` of its own.
+    Curve {
+        segments: Vec<(Vec3, Vec3)>,
+        elements: Vec<crate::hierarchy::SceneElement>,
+    },
 }
 
 /// Whether curved line `li`'s tangent handles should be drawn (#550): only when the curve or
@@ -4039,7 +4045,7 @@ impl<'a> SceneMesh<'a> {
                 );
                 self.set_index_layer(restore_layer);
             }
-            ViewportHoverHighlight::Curve { segments } => {
+            ViewportHoverHighlight::Curve { segments, .. } => {
                 // Depth-test-disabled like every other pick highlight (#153): a rim sunk
                 // into a hole would otherwise be half-buried in the wall beside it.
                 let restore_layer = self.index_layer;
@@ -8140,6 +8146,7 @@ mod tests {
         // chords) highlights as all of its segments, not just the one under the cursor.
         let one = build(Some(ViewportHoverHighlight::Curve {
             segments: vec![(Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0))],
+            elements: Vec::new(),
         }));
         let three = build(Some(ViewportHoverHighlight::Curve {
             segments: vec![
@@ -8147,6 +8154,7 @@ mod tests {
                 (Vec3::new(10.0, 0.0, 0.0), Vec3::new(10.0, 10.0, 0.0)),
                 (Vec3::new(10.0, 10.0, 0.0), Vec3::ZERO),
             ],
+            elements: Vec::new(),
         }));
         assert!(one.wireframe_indices.len() > base.wireframe_indices.len());
         assert!(

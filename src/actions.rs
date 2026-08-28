@@ -4881,11 +4881,12 @@ pub struct AppState {
     pub element_visibility: ElementVisibility,
     pub scene_selection: SceneSelection,
     pub context_pane: crate::context::ContextPaneState,
-    /// What the viewport is hover-highlighting, as a script-readable `(kind, index)` (#968) —
-    /// the pick a click would take. Derived per frame; `None` when nothing is hovered.
-    /// Only elements report: a hovered face region or curve with no element of its own is
-    /// `None`, which is itself worth being able to assert.
-    pub hover_element: Option<crate::hierarchy::SceneElement>,
+    /// What the viewport is hover-highlighting, as script-readable elements (#968) — the pick a
+    /// click would take. Derived per frame; empty when nothing is hovered. Only elements report:
+    /// a hovered face region with no element of its own leaves this empty, which is itself worth
+    /// being able to assert. Usually one, but a picker that expands a face to its boundary
+    /// lights — and takes — every edge at once (#1541).
+    pub hover_elements: Vec<crate::hierarchy::SceneElement>,
     /// The Move tool's intended preview pose (#1458): the hover probe when a candidate is
     /// under the cursor, else the in-progress move. The *target*, not the eased ghost, so
     /// a script can assert the placement a click would commit. `None` when there is no
@@ -5122,7 +5123,7 @@ impl Default for AppState {
             exploder_leaves: Vec::new(),
             exploder_loupe_positions: Vec::new(),
             pick_single_edge: false,
-            hover_element: None,
+            hover_elements: Vec::new(),
             move_preview_transform: None,
             tool_pickers: Vec::new(),
             picker_focus: None,

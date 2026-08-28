@@ -4894,8 +4894,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // can't tell an accepted pick from a rejected one — a body-set tool consumes the click
     // either way, so `selection()` looks identical.
     // What the viewport is hover-highlighting (#968) — the pick a click would take, as
-    // `{ kind, index }`, or nil when nothing is. Lets a script assert that the right thing
-    // lights up, which is otherwise unobservable from outside the renderer.
+    // `{ kind, index, count, elements }`, or nil when nothing is. Lets a script assert that the
+    // right thing lights up, which is otherwise unobservable from outside the renderer.
     api.set(
         "hovered",
         lua.create_function(|lua, ()| {
@@ -4903,16 +4903,30 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
             let state = unsafe { tick.state() };
-            let Some(element) = state.hover_element.clone() else {
+            let hovered = state.hover_elements.clone();
+            let Some(element) = hovered.first().cloned() else {
                 return Ok(Value::Nil);
             };
-            let entry = lua.create_table()?;
-            entry.set("kind", element_kind_name(element.clone()))?;
             let doc = unsafe { &tick.state().doc };
-            entry.set("index", element_index(doc, element.clone()))?;
-            if let Some(label) = face_element_label(doc, &element) {
-                entry.set("label", label)?;
+            let describe = |element: crate::hierarchy::SceneElement| -> mlua::Result<Table> {
+                let entry = lua.create_table()?;
+                entry.set("kind", element_kind_name(element.clone()))?;
+                entry.set("index", element_index(doc, element.clone()))?;
+                if let Some(label) = face_element_label(doc, &element) {
+                    entry.set("label", label)?;
+                }
+                Ok(entry)
+            };
+            let entry = describe(element)?;
+            // A picker that expands a face to its boundary lights — and takes — every edge at
+            // once (#1541). The first is the table's own kind/index, as it always was; `count`
+            // and `elements` say what the rest of the highlight is.
+            entry.set("count", hovered.len())?;
+            let all = lua.create_table()?;
+            for (i, e) in hovered.into_iter().enumerate() {
+                all.set(i + 1, describe(e)?)?;
             }
+            entry.set("elements", all)?;
             Ok(Value::Table(entry))
         })?,
     )?;

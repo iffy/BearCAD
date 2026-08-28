@@ -21804,6 +21804,9 @@ fn face_edge_hover(
     let n = loop_.len();
     (n >= 2).then(|| gpu_viewport::ViewportHoverHighlight::Curve {
         segments: vec![(loop_[index % n], loop_[(index + 1) % n])],
+        elements: vec![hierarchy::SceneElement::FaceEdge(
+            model::ConstraintLine::FaceEdge { face, index },
+        )],
     })
 }
 
@@ -22330,8 +22333,12 @@ fn resolve_viewport_hover_highlight(
                             _ => None,
                         })
                         .collect();
-                    (!segments.is_empty())
-                        .then_some(gpu_viewport::ViewportHoverHighlight::Curve { segments })
+                    (!segments.is_empty()).then_some(
+                        gpu_viewport::ViewportHoverHighlight::Curve {
+                            segments,
+                            elements: taken,
+                        },
+                    )
                 }
             }
         }
@@ -32828,8 +32835,12 @@ impl App {
                         .map(|(_, _, a, b)| (a, b))
                         .collect();
                     if !segments.is_empty() {
-                        hover_highlight =
-                            Some(gpu_viewport::ViewportHoverHighlight::Curve { segments });
+                        hover_highlight = Some(gpu_viewport::ViewportHoverHighlight::Curve {
+                            segments,
+                            // Chamfer/fillet edges are `(TreatableSolid, ExtrusionEdgeRef)`
+                            // pairs, not `SceneElement`s — nothing to name here.
+                            elements: Vec::new(),
+                        });
                     }
                 }
             }
@@ -33784,16 +33795,19 @@ impl App {
         // Publish what the viewport is hovering (#968) so a script can assert that the
         // right thing lights up — "all valid targets highlight" is otherwise unobservable
         // from outside the renderer.
-        self.state.hover_element = hover_highlight.as_ref().and_then(|h| match h {
-            gpu_viewport::ViewportHoverHighlight::Element(element) => Some(element.clone()),
-            gpu_viewport::ViewportHoverHighlight::PickTarget(kind) => {
-                construction::scene_element_from_pick(kind)
+        self.state.hover_elements = match hover_highlight.as_ref() {
+            Some(gpu_viewport::ViewportHoverHighlight::Element(element)) => vec![element.clone()],
+            Some(gpu_viewport::ViewportHoverHighlight::PickTarget(kind)) => {
+                construction::scene_element_from_pick(kind).into_iter().collect()
             }
-            gpu_viewport::ViewportHoverHighlight::SketchFace(face) => {
-                Some(hierarchy::SceneElement::from_face_id(face.clone()))
+            Some(gpu_viewport::ViewportHoverHighlight::SketchFace(face)) => {
+                vec![hierarchy::SceneElement::from_face_id(face.clone())]
             }
-            _ => None,
-        });
+            // A face expanded to its boundary lights many edges as one curve (#1541); report
+            // every one, so a script can assert the hover #1539 added.
+            Some(gpu_viewport::ViewportHoverHighlight::Curve { elements, .. }) => elements.clone(),
+            _ => Vec::new(),
+        };
         let mut scene_input = build_viewport_scene_input(
             doc,
             self.state.editing_cross_section,
@@ -34327,8 +34341,8 @@ impl App {
                 // The badge under the pointer, or the one whose row the Elements pane is
                 // hovering (#977) — a joint's marker is the only part of it in the 3D view,
                 // so pointing at its row has to mark it.
-                hovered_joint_icon.or(match self.state.hover_element {
-                    Some(hierarchy::SceneElement::Joint(ji)) => Some(ji),
+                hovered_joint_icon.or(match self.state.hover_elements.first() {
+                    Some(hierarchy::SceneElement::Joint(ji)) => Some(*ji),
                     _ => None,
                 }),
                 col::DIM_ANNOTATION,
@@ -41106,11 +41120,24 @@ mod tests {
             &pickers,
         );
         match hover {
-            Some(gpu_viewport::ViewportHoverHighlight::Curve { segments }) => {
+            Some(gpu_viewport::ViewportHoverHighlight::Curve { segments, elements }) => {
                 assert_eq!(
                     segments.len(),
                     4,
                     "the four edges of the face should light up, got {segments:?}"
+                );
+                // #1541: and each lit segment names the element a click would take, so
+                // `bearcad.hovered()` has something to report.
+                assert_eq!(
+                    elements.len(),
+                    4,
+                    "the highlight should name all four edges, got {elements:?}"
+                );
+                assert!(
+                    elements
+                        .iter()
+                        .all(|e| matches!(e, SceneElement::Line(_))),
+                    "the boundary of a sketch face is sketch lines, got {elements:?}"
                 );
             }
             other => panic!(
