@@ -4848,12 +4848,34 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     api.set(
         "add_geometric_constraint",
-        lua.create_function(|lua, name: String| {
+        lua.create_function(|lua, (name, refs): (String, MultiValue)| {
             let kind = parse_geometric_constraint(&name).ok_or_else(|| {
                 mlua::Error::external(format!("unknown geometric constraint '{name}'"))
             })?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            unsafe { tick.exec(Instruction::AddGeometricConstraint(kind)) }
+            if refs.is_empty() {
+                return unsafe { tick.exec(Instruction::AddGeometricConstraint(kind)) };
+            }
+            // Explicit-refs form (`"parallel", line_a, line_b`): resolve the referenced
+            // entities, constrain their selection, and restore the script's selection.
+            let elements: Vec<SceneElement> = refs
+                .into_iter()
+                .map(|v| resolve_element(lua, v))
+                .collect::<mlua::Result<_>>()?;
+            unsafe {
+                let state = tick.state();
+                let previous = state.scene_selection.ordered();
+                state.scene_selection.clear();
+                for element in &elements {
+                    state.scene_selection.insert(element.clone());
+                }
+                let result = tick.exec(Instruction::AddGeometricConstraint(kind));
+                state.scene_selection.clear();
+                for element in previous {
+                    state.scene_selection.insert(element);
+                }
+                result
+            }
         })?,
     )?;
 
@@ -12697,6 +12719,67 @@ pub mod tests {
             }),
             "expected a Coincident constraint between the two selected line endpoints, got: {:?}",
             state.doc.constraints
+        );
+    }
+
+    /// #1803: a refused geometric constraint must say *why* — what the selection is
+    /// missing — instead of a bare "not enabled for the current selection".
+    #[test]
+    fn lua_refused_geometric_constraint_error_says_what_is_missing() {
+        let state = run_lua(
+            r#"
+            bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
+            bearcad.select{ kind = "line", index = 0 }
+            local ok, err = pcall(bearcad.add_geometric_constraint, "coincident")
+            assert(not ok, "coincident needs two entities; one line must be refused")
+            err = tostring(err)
+            assert(err:find("still needs"), "unexpected error: " .. err)
+            assert(err:find("point"), "error should name the missing role: " .. err)
+        "#,
+        );
+        assert_eq!(state.doc.constraints.len(), 0);
+    }
+
+    /// #1803: with nothing selected the error says the selection has no sketch entities.
+    #[test]
+    fn lua_refused_geometric_constraint_error_covers_an_empty_selection() {
+        let state = run_lua(
+            r#"
+            bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
+            local ok, err = pcall(bearcad.add_geometric_constraint, "coincident")
+            assert(not ok, "coincident with an empty selection must be refused")
+            assert(
+                tostring(err):find("no sketch entities"),
+                "unexpected error: " .. tostring(err)
+            )
+        "#,
+        );
+        assert_eq!(state.doc.constraints.len(), 0);
+    }
+
+    /// The explicit-refs form `add_geometric_constraint(kind, a, b)` creates the
+    /// constraint and leaves the script's own selection untouched.
+    #[test]
+    fn lua_add_geometric_constraint_refs_form_constrains_and_restores_selection() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.line{ x = 0, y = 0, x1 = 40, y1 = 0 }
+            bearcad.line{ x = 0, y = 20, x1 = 40, y1 = 20 }
+            bearcad.select{ kind = "line", index = 0 }
+            bearcad.add_geometric_constraint("parallel",
+                { kind = "line", index = 0 }, { kind = "line", index = 1 })
+        "#,
+        );
+        assert_eq!(
+            state.doc.constraints.len(),
+            1,
+            "the refs form must create the constraint"
+        );
+        assert_eq!(
+            state.scene_selection.ordered(),
+            vec![SceneElement::Line(lkey(0))],
+            "the script's selection must survive the refs-form call"
         );
     }
 

@@ -391,13 +391,21 @@ pub fn add_geometric_constraint_from_selection(
 ) -> Result<crate::model::ConstraintKey, String> {
     let refs = selected_constraint_refs(selection);
     let rows = constraint_pane_rows(selection);
-    let enabled = rows
+    // Every constraint type always has a pane row; a disabled row explains what the
+    // selection is still missing (#1803).
+    let row = rows
         .iter()
-        .find(|row| row.kind == kind && row.enabled)
-        .ok_or_else(|| format!("{kind:?} constraint is not enabled for the current selection"))?;
-
-    if !enabled.enabled {
-        return Err(format!("{kind:?} constraint is not enabled for the current selection"));
+        .find(|row| row.kind == kind)
+        .expect("every constraint type has a pane row");
+    if !row.enabled {
+        let why = if refs.is_empty() {
+            "the selection has no sketch entities".to_string()
+        } else {
+            format!("the selection still needs: {}", row.missing.join(", "))
+        };
+        return Err(format!(
+            "{kind:?} constraint is not enabled for the current selection ({why})"
+        ));
     }
 
     let constraint_kind = build_constraint_kind(kind, &refs)?;

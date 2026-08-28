@@ -8333,11 +8333,13 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::AddGeometricConstraint(kind) => {
-                let _ = state.apply(Action::AddGeometricConstraint(kind));
+                let result = state.apply(Action::AddGeometricConstraint(kind));
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::ApplyConstraintShortcut(key) => {
-                let _ = state.apply(Action::ApplyConstraintShortcut(key));
+                let result = state.apply(Action::ApplyConstraintShortcut(key));
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::DragVertex { point, u, v } => {
