@@ -185,105 +185,9 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
     }
 }
 
-/// The index reported for a selected element (mirrors the `selection` query): the element's
-/// index, or `None` for the point/edge selectors that name a sub-feature of another element
-/// rather than a whole element (`Point`/`FaceEdge`).
-pub fn scene_element_selection_index(
-    doc: &crate::model::Document,
-    element: &SceneElement,
-) -> Option<usize> {
-    match element {
-        // An arena-backed element reports its **ordinal** among the live ones of its kind
-        // (#1055) — the same integer `scene_element_from_kind` takes back.
-        SceneElement::Image(key) => doc.tracing_images.keys().position(|k| k == *key),
-        SceneElement::CrossSection(key) => doc.cross_sections.keys().position(|k| k == *key),
-        SceneElement::SectionPlane { view, cut } => {
-            crate::model::section_plane_ordinal(doc, *view, *cut)
-        }
-        SceneElement::Body(key) => doc.bodies.keys().position(|k| k == *key),
-        SceneElement::BooleanOp(key) => doc.boolean_ops.keys().position(|k| k == *key),
-        SceneElement::MoveOp(key) => doc.move_ops.keys().position(|k| k == *key),
-        SceneElement::MirrorOp(key) => doc.mirror_ops.keys().position(|k| k == *key),
-        SceneElement::RepeatOp(key) => doc.repeat_ops.keys().position(|k| k == *key),
-        SceneElement::SliceOp(key) => doc.slice_ops.keys().position(|k| k == *key),
-        SceneElement::ShellOp(key) => doc.shell_ops.keys().position(|k| k == *key),
-        SceneElement::SketchRepeatOp(key) => {
-            doc.sketch_repeat_ops.keys().position(|k| k == *key)
-        }
-        SceneElement::SketchOffsetOp(key) => {
-            doc.sketch_offset_ops.keys().position(|k| k == *key)
-        }
-        SceneElement::SketchMirrorOp(key) => {
-            doc.sketch_mirror_ops.keys().position(|k| k == *key)
-        }
-        SceneElement::SketchVertexTreatmentOp(key) => {
-            doc.sketch_vertex_treatment_ops.keys().position(|k| k == *key)
-        }
-        SceneElement::SketchSliceOp(key) => {
-            doc.sketch_slice_ops.keys().position(|k| k == *key)
-        }
-        SceneElement::EdgeTreatmentOp(key) => {
-            doc.edge_treatment_ops.keys().position(|k| k == *key)
-        }
-        SceneElement::Revolution(key) => doc.revolutions.keys().position(|k| k == *key),
-        SceneElement::SweepOp(key) => doc.sweeps.keys().position(|k| k == *key),
-        SceneElement::Loft(key) => doc.lofts.keys().position(|k| k == *key),
-        SceneElement::Drawing(key) => doc.drawings.keys().position(|k| k == *key),
-        SceneElement::Shape(key) => doc.primitives.keys().position(|k| k == *key),
-        // A body face (#555) names a sub-feature with no flat index, like Point/FaceEdge.
-        SceneElement::Point(_)
-        | SceneElement::FaceEdge(_)
-        | SceneElement::BodyFace { .. }
-        // A cylinder and its centre line are keyed by geometry, not by an index (#1013).
-        | SceneElement::BodyCylinder { .. }
-        | SceneElement::BodyAxis { .. }
-        | SceneElement::SketchFace(_)
-        | SceneElement::MovePoint(_) => None,
-        SceneElement::ExtrusionEdge { extrusion, .. } => {
-            doc.extrusions.keys().position(|k| k == *extrusion)
-        }
-        SceneElement::PrimitiveEdge { primitive, .. } => {
-            doc.primitives.keys().position(|k| k == *primitive)
-        }
-        SceneElement::RepeatedFace { instance, .. } => Some(*instance),
-        // A page item indexes by its place on the page; a dimension has no index of its own,
-        // so it reports the view it is shown on (#967).
-        SceneElement::DrawingElement { drawing, element } => {
-            use crate::context::DrawingElementRef as D;
-            Some(match element {
-                D::Projection(i) => *i,
-                D::Text(key) => doc
-                    .drawings
-                    .get(*drawing)
-                    .and_then(|d| d.annotations.keys().position(|k| k == *key))?,
-                D::Dimension { view, .. } | D::PointDim { view, .. } => *view,
-            })
-        }
-        // X/Y/Z report as 0/1/2 (#952), matching `lua_script::element_index`.
-        SceneElement::GlobalAxis(axis) => Some(match axis {
-            crate::construction::GlobalAxis::X => 0,
-            crate::construction::GlobalAxis::Y => 1,
-            crate::construction::GlobalAxis::Z => 2,
-        }),
-        SceneElement::Line(key) => doc.lines.keys().position(|k| k == *key),
-        SceneElement::ConstructionPlane(key) => {
-            doc.construction_planes.keys().position(|k| k == *key)
-        }
-        SceneElement::Circle(key) => doc.circles.keys().position(|k| k == *key),
-        SceneElement::Sketch(key) => doc.sketches.keys().position(|k| k == *key),
-        SceneElement::Constraint(key) => doc.constraints.keys().position(|k| k == *key),
-        SceneElement::SketchText(key) => doc.sketch_texts.keys().position(|k| k == *key),
-        SceneElement::Extrusion(key) => doc.extrusions.keys().position(|k| k == *key),
-        SceneElement::Component(key) => doc.components.keys().position(|k| k == *key),
-        SceneElement::UnitInstance(key) => doc.unit_instances.keys().position(|k| k == *key),
-        SceneElement::Joint(key) => doc.joints.keys().position(|k| k == *key),
-        SceneElement::Origin
-        | SceneElement::BodyEdge { .. }
-        | SceneElement::BodyVertex { .. }
-        | SceneElement::ProjectedEdge { .. }
-        | SceneElement::ProjectedCorner { .. } => Some(0),
-    }
-}
+/// The index reported for a selected element: re-exported from `hierarchy`, which owns
+/// element identity so the native build can resolve handles too (#1801).
+pub use crate::hierarchy::element_live_index as scene_element_selection_index;
 
 /// The script name for a whole scene element's kind, for `find`'s return value. `None` for
 /// element variants that `scene_element_from_kind` can't round-trip. Arena-backed kinds
@@ -349,6 +253,7 @@ pub fn positional_to_named(name: &str, args: &[Value]) -> Result<Value, String> 
         "set_construction" => &["element", "construction"],
         "find" => &["name"],
         "visible" => &["element"],
+        "id" => &["element"],
         "set_joint_rest" | "revert_joint" => &["index"],
         "revert_joints" => &[],
         _ => return Err(format!("'{name}' expects named arguments (a table)")),
@@ -3710,6 +3615,35 @@ mod tests {
             scene_element_from_kind(&Document::default(), "construction_plane", 1),
             scene_element_from_kind(&Document::default(), "plane", 1)
         );
+        use crate::hierarchy::{element_from_id, element_id};
+        // #1801: every arena-backed element has an ID that round-trips, and a retired one
+        // never comes back.
+        for (kind, idx) in [("plane", 2), ("sketch", 0), ("line", 5), ("circle", 1),
+            ("constraint", 3), ("extrusion", 0), ("body", 4)]
+        {
+            let el = scene_element_from_kind(&doc, kind, idx).unwrap();
+            let id = element_id(&el).expect("an arena-backed element has an id");
+            assert_eq!(element_from_id(&doc, &id), Some(el), "{id} round-trips");
+        }
+        let body = scene_element_from_kind(&doc, "body", 4).unwrap();
+        let retired = element_id(&body).unwrap();
+        doc.bodies.remove(bkey(4));
+        assert_eq!(element_from_id(&doc, &retired), None, "a deleted body's id is dead");
+        // The slot is reusable, but its generation moved on, so the new occupant gets a new id.
+        let reused = doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(xkey(0)),
+            name: None,
+            material: None,
+            shadow: false,
+        });
+        assert_ne!(
+            element_id(&SceneElement::Body(reused)).unwrap(),
+            retired,
+            "an id is never handed out twice"
+        );
+        // A sub-element reference has no identity of its own to hand out.
+        assert_eq!(element_id(&SceneElement::Origin), None);
+        assert_eq!(element_from_id(&doc, "body#nonsense"), None);
     }
 
     #[test]

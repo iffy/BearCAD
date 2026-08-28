@@ -54,9 +54,10 @@ impl ScriptTickData {
         &*self.ctx
     }
 
-    pub(crate) unsafe fn exec(&self, instr: Instruction) -> mlua::Result<()> {
+    pub(crate) unsafe fn exec(&self, instr: Instruction) -> mlua::Result<Created> {
         let runner = self.runner();
         runner.last_action_error = None;
+        let before = created_snapshot(&self.state().doc);
         let _ = runner.execute_instruction(
             instr,
             self.state(),
@@ -70,24 +71,219 @@ impl ScriptTickData {
         // created. The GUI sees the same message through the status bar.
         match runner.last_action_error.take() {
             Some(e) => Err(mlua::Error::external(e)),
-            None => Ok(()),
+            None => {
+                let created = created_since(&before, &self.state().doc);
+                runner.last_created = created.clone();
+                Ok(Created(created))
+            }
         }
     }
 }
 
-/// A reference to a scene element used by Lua scripts.
+/// The kinds a call hands back what it made, most useful first (#1801). A solid operation
+/// records an operation *and* produces a body, and the body is what a script goes on to build
+/// with, so bodies win. Sketch geometry comes next — a `rect` is its four lines. The
+/// containers a call can open on your behalf come last: the sketch `circle` auto-opened is not
+/// what `circle` created.
+const CREATED_TIERS: &[&[&str]] = &[
+    &["body"],
+    &["shape"],
+    &["line", "circle", "sketch_text"],
+    &["plane"],
+    &["sketch"],
+    &["drawing", "cross_section", "component", "joint", "image"],
+];
+
+/// What a script gets back from a call: the elements it created, or nothing.
+pub struct Created(Vec<SceneElement>);
+
+impl mlua::IntoLua for Created {
+    fn into_lua(self, lua: &Lua) -> mlua::Result<Value> {
+        let mut made = self.0.into_iter();
+        let Some(first) = made.next() else {
+            return Ok(Value::Nil);
+        };
+        let Some(second) = made.next() else {
+            // One element is handed back on its own, so `local box = bearcad.extrude{…}` reads
+            // the way it should; several come back as a list.
+            return make_element(lua, first);
+        };
+        let out = lua.create_table()?;
+        for (i, element) in [first, second].into_iter().chain(made).enumerate() {
+            out.set(i + 1, make_element(lua, element)?)?;
+        }
+        Ok(Value::Table(out))
+    }
+}
+
+/// The elements of every [`CREATED_TIERS`] kind, tier by tier — what a call is measured
+/// against to see what it made.
+fn created_snapshot(doc: &crate::model::Document) -> Vec<std::collections::HashSet<SceneElement>> {
+    CREATED_TIERS
+        .iter()
+        .map(|tier| tier.iter().flat_map(|kind| elements_of_kind(doc, kind)).collect())
+        .collect()
+}
+
+/// The elements that appeared since `before`, from the highest tier that gained any — in
+/// creation order, which is the order their arena hands them back.
+fn created_since(
+    before: &[std::collections::HashSet<SceneElement>],
+    doc: &crate::model::Document,
+) -> Vec<SceneElement> {
+    for (tier, was) in CREATED_TIERS.iter().zip(before) {
+        let new: Vec<SceneElement> = tier
+            .iter()
+            .flat_map(|kind| elements_of_kind(doc, kind))
+            .filter(|element| !was.contains(element))
+            .collect();
+        if !new.is_empty() {
+            return new;
+        }
+    }
+    Vec::new()
+}
+
+/// A reference to a scene element used by Lua scripts — the stable handle a creation call
+/// hands back (#1801). It holds the element's arena key, so it names the same element for as
+/// long as that element exists, however its ordinal moves.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LuaElement {
     pub element: SceneElement,
-    /// The integer `index()` reports, resolved when the reference is made — a userdata
-    /// method has no document to resolve an arena key's ordinal against (#1055).
+    /// The ordinal the handle was made at. Only a fallback: `index()` re-reads the live
+    /// document, because that is the whole point of holding a handle (#1801).
     pub index: usize,
+}
+
+impl LuaElement {
+    /// The element's ordinal among the live ones of its kind, read from the document now —
+    /// `None` once the element is gone.
+    fn live_index(&self, lua: &Lua) -> Option<usize> {
+        let tick = lua.app_data_ref::<ScriptTickData>()?;
+        crate::hierarchy::element_live_index(unsafe { &tick.state().doc }, &self.element)
+    }
 }
 
 impl UserData for LuaElement {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("kind", |_, this, ()| Ok(element_kind_name(this.element.clone())));
-        methods.add_method("index", |_, this, ()| Ok(this.index));
+        methods.add_method("index", |lua, this, ()| {
+            this.live_index(lua).ok_or_else(|| {
+                mlua::Error::external(format!(
+                    "{} no longer exists",
+                    crate::hierarchy::element_id(&this.element)
+                        .unwrap_or_else(|| element_kind_name(this.element.clone()).to_string())
+                ))
+            })
+        });
+        // The document-unique, never-reused id (#1801) — the string form of the handle, safe
+        // to print, store, and hand back to `bearcad.element`.
+        methods.add_method("id", |_, this, ()| {
+            crate::hierarchy::element_id(&this.element).ok_or_else(|| {
+                mlua::Error::external(format!(
+                    "a {} reference has no id of its own",
+                    element_kind_name(this.element.clone())
+                ))
+            })
+        });
+        methods.add_method("exists", |lua, this, ()| Ok(this.live_index(lua).is_some()));
+        methods.add_method("name", |lua, this, ()| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            Ok(crate::names::element_name(unsafe { &tick.state().doc }, this.element.clone())
+                .map(str::to_string))
+        });
+        methods.add_meta_method(mlua::MetaMethod::ToString, |_, this, ()| {
+            Ok(crate::hierarchy::element_id(&this.element)
+                .unwrap_or_else(|| element_kind_name(this.element.clone()).to_string()))
+        });
+        methods.add_meta_method(mlua::MetaMethod::Eq, |_, this, other: mlua::AnyUserData| {
+            Ok(other
+                .borrow::<LuaElement>()
+                .is_ok_and(|other| other.element == this.element))
+        });
+    }
+}
+
+/// One element operand (#1801): the plain ordinal scripts have always written, or a stable
+/// handle (what a creation call returns), or that handle's id string, or an element's name.
+/// A handle resolves against the live document at the moment of the call — which is the point,
+/// since ordinals shift when elements are deleted or consumed by an operation.
+pub struct Ordinal(pub usize);
+
+impl mlua::FromLua for Ordinal {
+    fn from_lua(value: Value, lua: &Lua) -> mlua::Result<Self> {
+        match value {
+            Value::Integer(i) if i >= 0 => Ok(Ordinal(i as usize)),
+            Value::Number(n) if n >= 0.0 && n.fract() == 0.0 => Ok(Ordinal(n as usize)),
+            Value::UserData(ref ud) => {
+                let element = ud
+                    .borrow::<LuaElement>()
+                    .map_err(|_| mlua::Error::external("expected an element, index, or name"))?
+                    .clone();
+                ordinal_of_element(lua, &element.element)
+            }
+            Value::String(ref s) => {
+                let text = s.to_str()?.to_string();
+                let element = resolve_element(lua, value.clone())
+                    .map_err(|_| mlua::Error::external(format!("no element '{text}'")))?;
+                ordinal_of_element(lua, &element)
+            }
+            other => Err(mlua::Error::external(format!(
+                "expected an index, an element handle, or a name, got {other:?}"
+            ))),
+        }
+    }
+}
+
+/// The live ordinal of an element a handle names, or a clear error once it is gone.
+fn ordinal_of_element(lua: &Lua, element: &SceneElement) -> mlua::Result<Ordinal> {
+    let tick = lua
+        .app_data_ref::<ScriptTickData>()
+        .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+    crate::hierarchy::element_live_index(unsafe { &tick.state().doc }, element)
+        .map(Ordinal)
+        .ok_or_else(|| {
+            mlua::Error::external(format!(
+                "{} no longer exists",
+                crate::hierarchy::element_id(element)
+                    .unwrap_or_else(|| element_kind_name(element.clone()).to_string())
+            ))
+        })
+}
+
+/// Reading element operands out of an options table (#1801). Each takes an ordinal, a handle,
+/// an id, or a name — whichever the script wrote — and yields the ordinal the instruction
+/// layer wants, resolved against the document as it stands right now.
+trait Operands {
+    /// One operand; `None` when the key is absent.
+    fn ordinal_opt(&self, key: &str) -> mlua::Result<Option<usize>>;
+    /// A list of operands; empty when the key is absent.
+    fn ordinal_list(&self, key: &str) -> mlua::Result<Vec<usize>>;
+    /// The same, but telling an absent key from an empty list — some verbs branch on that.
+    fn ordinal_list_opt(&self, key: &str) -> mlua::Result<Option<Vec<usize>>>;
+    /// One operand the verb cannot do without.
+    fn ordinal_req(&self, key: &str) -> mlua::Result<usize>;
+}
+
+impl Operands for Table {
+    fn ordinal_opt(&self, key: &str) -> mlua::Result<Option<usize>> {
+        Ok(self.get::<Option<Ordinal>>(key)?.map(|o| o.0))
+    }
+
+    fn ordinal_list(&self, key: &str) -> mlua::Result<Vec<usize>> {
+        Ok(self.ordinal_list_opt(key)?.unwrap_or_default())
+    }
+
+    fn ordinal_list_opt(&self, key: &str) -> mlua::Result<Option<Vec<usize>>> {
+        Ok(self
+            .get::<Option<Vec<Ordinal>>>(key)?
+            .map(|list| list.into_iter().map(|o| o.0).collect()))
+    }
+
+    fn ordinal_req(&self, key: &str) -> mlua::Result<usize> {
+        Ok(self.get::<Ordinal>(key)?.0)
     }
 }
 
@@ -392,9 +588,35 @@ pub fn scene_element_from_kind(
 }
 
 /// Every element of a script kind name, in ordinal order (#1800) — what a `{ kind = … }`
-/// selector with no index stands for. Empty for an unknown kind, too: the caller reports both
-/// the same way.
+/// selector with no index stands for, and what a creation call is measured against to see
+/// what it made (#1801). Empty for an unknown kind, too: the caller reports both the same way.
 fn elements_of_kind(doc: &crate::model::Document, kind: &str) -> Vec<SceneElement> {
+    // The kinds this runs over on every instruction walk their arena once. Resolving ordinal
+    // by ordinal through `scene_element_from_kind` would be quadratic in the element count,
+    // which a script with a few thousand lines in it would feel.
+    macro_rules! all {
+        ($arena:expr, $variant:expr) => {
+            return $arena.keys().map($variant).collect()
+        };
+    }
+    match kind.to_ascii_lowercase().as_str() {
+        "body" => all!(doc.bodies, SceneElement::Body),
+        "shape" | "primitive" => all!(doc.primitives, SceneElement::Shape),
+        "line" => all!(doc.lines, SceneElement::Line),
+        "circle" => all!(doc.circles, SceneElement::Circle),
+        "sketch_text" | "text" => all!(doc.sketch_texts, SceneElement::SketchText),
+        "plane" | "construction_plane" | "constructionplane" => {
+            all!(doc.construction_planes, SceneElement::ConstructionPlane)
+        }
+        "sketch" => all!(doc.sketches, SceneElement::Sketch),
+        "drawing" => all!(doc.drawings, SceneElement::Drawing),
+        "cross_section" | "section" => all!(doc.cross_sections, SceneElement::CrossSection),
+        "component" => all!(doc.components, SceneElement::Component),
+        "joint" => all!(doc.joints, SceneElement::Joint),
+        "image" | "tracing_image" => all!(doc.tracing_images, SceneElement::Image),
+        _ => {}
+    }
+    // Everything else is rare enough to resolve the plain way.
     let mut out = Vec::new();
     while let Some(element) = scene_element_from_kind(doc, kind, out.len()) {
         out.push(element);
@@ -602,10 +824,12 @@ fn resolve_element(lua: &Lua, value: Value) -> mlua::Result<SceneElement> {
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
             let name = s.to_str()?.to_string();
-            unsafe {
-                find_element_by_name(&tick.state().doc, &name)
-                    .ok_or_else(|| mlua::Error::external(format!("no element named '{name}'")))
-            }
+            let doc = unsafe { &tick.state().doc };
+            // A stable id first (#1801), then a name — the two never collide, since an id is
+            // always `kind#slotVgeneration`.
+            crate::hierarchy::element_from_id(doc, &name)
+                .or_else(|| find_element_by_name(doc, &name))
+                .ok_or_else(|| mlua::Error::external(format!("no element named '{name}'")))
         }
         other => Err(mlua::Error::external(format!(
             "expected element, name string, or table, got {other:?}"
@@ -658,7 +882,7 @@ fn parse_element_table(lua: &Lua, table: Table) -> mlua::Result<SceneElement> {
     ) {
         return parse_drawing_element_table(lua, table, &kind);
     }
-    let index: usize = table.get("index")?;
+    let index: usize = table.ordinal_req("index")?;
     // Point-level selector (#68): a line endpoint (`end = "start"|"end"`), or an explicit
     // `point = true` (e.g. a circle's center) — otherwise
     // `kind`/`index` alone resolve to the whole element as before.
@@ -687,7 +911,7 @@ fn parse_drawing_element_table(lua: &Lua, table: Table, kind: &str) -> mlua::Res
     let tick = lua
         .app_data_ref::<ScriptTickData>()
         .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
-    let drawing_ordinal: usize = table.get("drawing")?;
+    let drawing_ordinal: usize = table.ordinal_req("drawing")?;
     unsafe {
         let doc = &tick.state().doc;
         let drawing = doc
@@ -701,7 +925,7 @@ fn parse_drawing_element_table(lua: &Lua, table: Table, kind: &str) -> mlua::Res
                 D::Projection(view)
             }
             "annotation" => {
-                let ordinal: usize = table.get("index")?;
+                let ordinal: usize = table.ordinal_req("index")?;
                 let key = doc
                     .drawings
                     .get(drawing)
@@ -841,8 +1065,8 @@ fn parse_extrude_profile(lua: &Lua, table: &Table) -> mlua::Result<crate::model:
             })
         }
         "text_glyph" => {
-            let text: usize = table.get::<Option<usize>>("text")?.unwrap_or(profile_index);
-            let glyph: usize = table.get::<Option<usize>>("glyph")?.unwrap_or(0);
+            let text: usize = table.ordinal_opt("text")?.unwrap_or(profile_index);
+            let glyph: usize = table.ordinal_opt("glyph")?.unwrap_or(0);
             Ok(crate::model::ExtrudeFace::TextGlyph {
                 text: sketch_text_key_from_ordinal(lua, text)?,
                 glyph,
@@ -888,7 +1112,7 @@ fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
         // washer face swept by one axis-perpendicular profile edge (`edge = i`).
         "revolve_cap" | "revolve_side" => {
             // The script's `revolution` is its ordinal among the live ones (#1055).
-            let ordinal: usize = table.get("revolution")?;
+            let ordinal: usize = table.ordinal_req("revolution")?;
             let tick = lua
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
@@ -919,7 +1143,7 @@ fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
         // live shapes; `face` names which side (`"top"`/`"bottom"`/`"side"` + `edge`, or the
         // cylinder caps / the serde snake_case tags).
         "primitive_face" => {
-            let ordinal: usize = table.get("primitive")?;
+            let ordinal: usize = table.ordinal_req("primitive")?;
             let tick = lua
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
@@ -950,7 +1174,7 @@ fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
             })
         }
         _ => {
-    let index: usize = table.get("index")?;
+    let index: usize = table.ordinal_req("index")?;
             let tick = lua
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
@@ -1019,10 +1243,10 @@ fn parse_extrude_face_table(
     lua: &Lua,
     table: &Table,
 ) -> mlua::Result<crate::model::ExtrudeFace> {
-    if let Some(i) = table.get::<Option<usize>>("circle")? {
+    if let Some(i) = table.ordinal_opt("circle")? {
         return Ok(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
     }
-    if let Some(lines) = table.get::<Option<Vec<usize>>>("polygon")? {
+    if let Some(lines) = table.ordinal_list_opt("polygon")? {
         return Ok(crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(lua, lines)?));
     }
     if let Some(boolean) = table.get::<Option<Table>>("boolean")? {
@@ -1125,7 +1349,7 @@ fn parse_extrude_target_table(
     lua: &Lua,
     table: &Table,
 ) -> mlua::Result<crate::model::ExtrudeTarget> {
-    if let Some(i) = table.get::<Option<usize>>("plane")? {
+    if let Some(i) = table.ordinal_opt("plane")? {
         return Ok(crate::model::ExtrudeTarget::Plane(plane_key_from_ordinal(lua, i)?));
     }
     if let Some(face) = table.get::<Option<Table>>("face")? {
@@ -1135,8 +1359,8 @@ fn parse_extrude_target_table(
             let face_id = parse_face_id_table(lua, face)?;
             // A repeated instance's face (#452): `{ face = {...}, repeat_op = i,
             // instance = n }` targets the source face translated to instance `n`.
-            if let Some(ordinal) = table.get::<Option<usize>>("repeat_op")? {
-                let instance: usize = table.get::<Option<usize>>("instance")?.unwrap_or(1);
+            if let Some(ordinal) = table.ordinal_opt("repeat_op")? {
+                let instance: usize = table.ordinal_opt("instance")?.unwrap_or(1);
                 // The script's `repeat_op` is an ordinal among the live ones (#1055).
                 let tick = lua
                     .app_data_ref::<ScriptTickData>()
@@ -1177,7 +1401,7 @@ fn parse_constraint_line_table(lua: &Lua, table: Table) -> mlua::Result<Constrai
         // boundary loop (#26/#27's `FaceEdge`).
         let face_table: Table = table.get("face")?;
         let face = parse_face_id_table(lua, face_table)?;
-        let index: usize = table.get("index")?;
+        let index: usize = table.ordinal_req("index")?;
         return Ok(ConstraintLine::FaceEdge { face, index });
     }
     if kind.eq_ignore_ascii_case("axis") {
@@ -1192,7 +1416,7 @@ fn parse_constraint_line_table(lua: &Lua, table: Table) -> mlua::Result<Constrai
     if kind.eq_ignore_ascii_case("image") {
         // { kind = "image", index = i, edge = "left" } — a tracing image's displayed-quad
         // edge (#1589).
-        let index: usize = table.get("index")?;
+        let index: usize = table.ordinal_req("index")?;
         let edge = parse_image_edge(&table)?;
         let tick = lua
             .app_data_ref::<ScriptTickData>()
@@ -1204,7 +1428,7 @@ fn parse_constraint_line_table(lua: &Lua, table: Table) -> mlua::Result<Constrai
             .ok_or_else(|| mlua::Error::external(format!("no image {index}")))?;
         return Ok(ConstraintLine::ImageEdge { image, edge });
     }
-    let index: usize = table.get("index")?;
+    let index: usize = table.ordinal_req("index")?;
     match kind.to_ascii_lowercase().as_str() {
         "line" => Ok(ConstraintLine::Line(line_key_from_ordinal(lua, index)?)),
         other => Err(mlua::Error::external(format!(
@@ -1237,10 +1461,10 @@ fn parse_constraint_point_table(lua: &Lua, table: Table) -> mlua::Result<Constra
         // boundary loop (#26/#27's `FaceVertex`).
         let face_table: Table = table.get("face")?;
         let face = parse_face_id_table(lua, face_table)?;
-        let index: usize = table.get("index")?;
+        let index: usize = table.ordinal_req("index")?;
         return Ok(ConstraintPoint::FaceVertex { face, index });
     }
-    let index: usize = table.get("index")?;
+    let index: usize = table.ordinal_req("index")?;
     match kind.to_ascii_lowercase().as_str() {
         "line" => {
             let end_name: String = table.get("end")?;
@@ -1304,7 +1528,7 @@ fn parse_constraint_point_table(lua: &Lua, table: Table) -> mlua::Result<Constra
 /// `kind = "top"` / `"bottom"` are shorthand for the cap edges (#1799).
 fn parse_extrusion_edge_table(table: Table) -> mlua::Result<ExtrusionEdgeRef> {
     let kind: String = table.get("kind").or_else(|_| table.get("type"))?;
-    let face: usize = table.get::<Option<usize>>("face")?.unwrap_or(0);
+    let face: usize = table.ordinal_opt("face")?.unwrap_or(0);
     let edge: usize = table.get("edge")?;
     match kind.to_ascii_lowercase().as_str() {
         "vertical" => Ok(ExtrusionEdgeRef::Vertical { face, edge }),
@@ -1389,8 +1613,8 @@ fn parse_extrusion_edge_set(
 }
 
 fn parse_treatable_solid_ref(opts: &Table) -> mlua::Result<Option<TreatableSolidRef>> {
-    let extrusion: Option<usize> = opts.get("extrusion")?;
-    let primitive: Option<usize> = opts.get("primitive")?;
+    let extrusion: Option<usize> = opts.ordinal_opt("extrusion")?;
+    let primitive: Option<usize> = opts.ordinal_opt("primitive")?;
     match (extrusion, primitive) {
         (Some(i), None) => Ok(Some(TreatableSolidRef::Extrusion(i))),
         (None, Some(i)) => Ok(Some(TreatableSolidRef::Primitive(i))),
@@ -1414,8 +1638,8 @@ fn parse_boolean_op_args(
             "unknown boolean op '{op_name}' (combine|cut|intersect|difference)"
         ))
     })?;
-    let mut a: Vec<usize> = opts.get::<Option<Vec<usize>>>("a")?.unwrap_or_default();
-    let mut b: Vec<usize> = opts.get::<Option<Vec<usize>>>("b")?.unwrap_or_default();
+    let mut a: Vec<usize> = opts.ordinal_list("a")?;
+    let mut b: Vec<usize> = opts.ordinal_list("b")?;
     // A union has one picker, but the documented call shape is `{ a, b }` for every op —
     // so fold B into A rather than dropping it and then complaining that A is short (#1660).
     // Union is commutative, so a ∪ b is exactly what was asked for.
@@ -1446,7 +1670,7 @@ fn parse_revolve_axis(
             ))),
         },
         Value::Table(t) => {
-            if let Some(li) = t.get::<Option<usize>>("line")? {
+            if let Some(li) = t.ordinal_opt("line")? {
                 return Ok(crate::model::RevolveAxis::Line(line_key_from_ordinal(lua, li)?));
             }
             let ordinal: usize = t.get("body").map_err(|_| {
@@ -1508,8 +1732,8 @@ fn parse_move_op_args(
     Option<crate::model::MovePointRef>,
     Option<crate::model::MovePointRef>,
 )> {
-    let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
-    let images: Vec<usize> = opts.get::<Option<Vec<usize>>>("images")?.unwrap_or_default();
+    let targets: Vec<usize> = opts.ordinal_list("bodies")?;
+    let images: Vec<usize> = opts.ordinal_list("images")?;
     let expr = |key: &str| -> mlua::Result<String> {
         Ok(match opts.get::<Value>(key)? {
             Value::Nil => String::new(),
@@ -1586,7 +1810,7 @@ fn parse_move_point(
         return Ok(Some(crate::model::MovePointRef::Origin));
     }
     // A tracing image box point (#1601): `{ image = i, anchor = "center" }`.
-    if let Some(idx) = t.get::<Option<usize>>("image")? {
+    if let Some(idx) = t.ordinal_opt("image")? {
         let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
         let doc = &unsafe { tick.state() }.doc;
         let image = doc
@@ -1697,7 +1921,7 @@ fn parse_mate_ref(
             v[0], v[1], v[2],
         )))
     };
-    if let Some(i) = t.get::<Option<usize>>("plane")? {
+    if let Some(i) = t.ordinal_opt("plane")? {
         return Ok(Some(crate::model::MateRef::Plane(plane_key_from_ordinal(lua, i)?)));
     }
     // A hole's or a shaft's centre line (#1013).
@@ -1910,7 +2134,7 @@ fn parse_repeat_op_args(
     String,
     Option<crate::model::ExtrudeTarget>,
 )> {
-    let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
+    let targets: Vec<usize> = opts.ordinal_list("bodies")?;
     let axis = match opts.get::<Value>("axis")? {
         Value::Nil => crate::model::RevolveAxis::X,
         value => parse_revolve_axis(lua, value, "repeat")?,
@@ -1981,9 +2205,9 @@ fn parse_repeat_op_args(
 fn parse_sketch_offset_op_args(
     opts: &Table,
 ) -> mlua::Result<(usize, Vec<usize>, Vec<usize>, String, bool)> {
-    let sketch: usize = opts.get::<Option<usize>>("sketch")?.unwrap_or(0);
-    let lines: Vec<usize> = opts.get::<Option<Vec<usize>>>("lines")?.unwrap_or_default();
-    let circles: Vec<usize> = opts.get::<Option<Vec<usize>>>("circles")?.unwrap_or_default();
+    let sketch: usize = opts.ordinal_opt("sketch")?.unwrap_or(0);
+    let lines: Vec<usize> = opts.ordinal_list("lines")?;
+    let circles: Vec<usize> = opts.ordinal_list("circles")?;
     let distance = match opts.get::<Value>("distance")? {
         Value::Nil => {
             return Err(mlua::Error::external("offset_sketch requires a `distance`"))
@@ -2020,9 +2244,9 @@ fn parse_sketch_repeat_op_args(
 )> {
     // `sketch` is required to create (which sketch to duplicate in) but ignored on edit (the op
     // already knows its sketch), so default it rather than erroring when omitted.
-    let sketch: usize = opts.get::<Option<usize>>("sketch")?.unwrap_or(0);
-    let lines: Vec<usize> = opts.get::<Option<Vec<usize>>>("lines")?.unwrap_or_default();
-    let circles: Vec<usize> = opts.get::<Option<Vec<usize>>>("circles")?.unwrap_or_default();
+    let sketch: usize = opts.ordinal_opt("sketch")?.unwrap_or(0);
+    let lines: Vec<usize> = opts.ordinal_list("lines")?;
+    let circles: Vec<usize> = opts.ordinal_list("circles")?;
     let (dir_u, dir_v) = match opts.get::<Value>("dir")? {
         Value::Table(t) => {
             let u: f32 = t.get::<f32>(1).or_else(|_| t.get("u"))?;
@@ -2092,7 +2316,7 @@ fn parse_slice_op_args(
     lua: &Lua,
     opts: &Table,
 ) -> mlua::Result<(Vec<usize>, Vec<crate::model::SliceCutter>, bool)> {
-    let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
+    let targets: Vec<usize> = opts.ordinal_list("bodies")?;
     let mut cutters: Vec<crate::model::SliceCutter> = Vec::new();
     if let Some(list) = opts.get::<Option<Vec<Table>>>("cutters")? {
         for table in list {
@@ -2108,7 +2332,7 @@ fn parse_shell_op_args(
     lua: &Lua,
     opts: &Table,
 ) -> mlua::Result<(Vec<usize>, Vec<crate::model::FaceId>, String)> {
-    let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
+    let targets: Vec<usize> = opts.ordinal_list("bodies")?;
     let mut open_faces: Vec<crate::model::FaceId> = Vec::new();
     if let Some(list) = opts.get::<Option<Vec<Table>>>("faces")? {
         for table in list {
@@ -2128,7 +2352,7 @@ fn parse_slice_cutter_table(lua: &Lua, table: Table) -> mlua::Result<crate::mode
         .as_deref()
         .is_some_and(|k| k.eq_ignore_ascii_case("line"))
     {
-        let index: usize = table.get("index")?;
+        let index: usize = table.ordinal_req("index")?;
         let line = line_key_from_ordinal(lua, index)?;
         return Ok(crate::model::SliceCutter::Line { line });
     }
@@ -2146,10 +2370,10 @@ fn parse_sketch_mirror_op_args(
     Vec<usize>,
     Vec<usize>,
 )> {
-    let sketch: usize = opts.get::<Option<usize>>("sketch")?.unwrap_or(0);
+    let sketch: usize = opts.ordinal_opt("sketch")?.unwrap_or(0);
     let line = parse_sketch_mirror_axis(lua, opts.get::<Value>("line")?)?;
-    let lines: Vec<usize> = opts.get::<Option<Vec<usize>>>("lines")?.unwrap_or_default();
-    let circles: Vec<usize> = opts.get::<Option<Vec<usize>>>("circles")?.unwrap_or_default();
+    let lines: Vec<usize> = opts.ordinal_list("lines")?;
+    let circles: Vec<usize> = opts.ordinal_list("circles")?;
     Ok((sketch, line, lines, circles))
 }
 
@@ -2199,7 +2423,7 @@ fn parse_sketch_mirror_axis(
                         }
                     }
                 } else {
-                    match t.get::<usize>("index")? {
+                    match t.ordinal_req("index")? {
                         0 => SketchMirrorAxis::X,
                         1 => SketchMirrorAxis::Y,
                         2 => SketchMirrorAxis::Z,
@@ -2224,7 +2448,7 @@ fn parse_sketch_mirror_axis(
                 }
             }
             if kind.eq_ignore_ascii_case("line") || kind.is_empty() {
-                if let Ok(index) = t.get::<usize>("index") {
+                if let Ok(index) = t.ordinal_req("index") {
                     return Ok(SketchMirrorAxis::Line(line_key_from_ordinal(lua, index)?));
                 }
             }
@@ -2263,7 +2487,7 @@ fn parse_mirror_op_args(
     opts: &Table,
 ) -> mlua::Result<(FaceId, Vec<usize>, crate::model::MirrorMode)> {
     let plane = parse_mirror_plane(lua, opts)?;
-    let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
+    let targets: Vec<usize> = opts.ordinal_list("bodies")?;
     // `output` mirrors the pane's Output row (#639); omitted means a new body each.
     let mode = match opts.get::<Option<String>>("output")?.as_deref() {
         None | Some("new") | Some("new_body") => crate::model::MirrorMode::NewBody,
@@ -2420,7 +2644,7 @@ fn parse_project_elements(lua: &Lua, opts: Option<Table>) -> mlua::Result<Vec<Sc
             elements.push(resolve_element(lua, ents.get(i)?)?);
         }
     }
-    if let Some(i) = opts.get::<Option<usize>>("body")? {
+    if let Some(i) = opts.ordinal_opt("body")? {
         elements.push(SceneElement::Body(body_key_from_ordinal(lua, i)?));
     }
     if let Some(bodies) = opts.get::<Option<Table>>("bodies")? {
@@ -2429,7 +2653,7 @@ fn parse_project_elements(lua: &Lua, opts: Option<Table>) -> mlua::Result<Vec<Sc
             elements.push(SceneElement::Body(body_key_from_ordinal(lua, idx)?));
         }
     }
-    if let Some(i) = opts.get::<Option<usize>>("plane")? {
+    if let Some(i) = opts.ordinal_opt("plane")? {
         elements.push(SceneElement::ConstructionPlane(plane_key_from_ordinal(
             lua, i,
         )?));
@@ -2701,20 +2925,23 @@ fn apply_optional_name(
     lua: &Lua,
     element: SceneElement,
     opts: Option<Table>,
-) -> mlua::Result<()> {
-    let Some(opts) = opts else { return Ok(()) };
-    let Ok(name) = opts.get::<String>("name") else {
-        return Ok(());
-    };
+) -> mlua::Result<Created> {
     let tick = lua
         .app_data_ref::<ScriptTickData>()
         .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+    // What the verb just made (#1801), captured before the rename — a rename creates nothing,
+    // so running it first would leave the caller with nothing to hold.
+    let created = Created(unsafe { tick.runner().last_created.clone() });
+    let Some(opts) = opts else { return Ok(created) };
+    let Ok(name) = opts.get::<String>("name") else {
+        return Ok(created);
+    };
     // The rename rides along on a creation call: keep the creation's status
     // ("Added extrusion (12.0 mm)") instead of clobbering it with "Renamed to …".
     let creation_status = unsafe { tick.state().status.clone() };
     unsafe { tick.exec(Instruction::SetElementName { element, name })? };
     unsafe { tick.state().status = creation_status };
-    Ok(())
+    Ok(created)
 }
 
 /// Register the global `bearcad` API table on a Lua state.
@@ -2937,7 +3164,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // #734: switch a unit's link mode: `bearcad.unit_link(0, "static"|"dynamic")`.
     api.set(
         "unit_link",
-        lua.create_function(|lua, (unit, mode): (usize, String)| {
+        lua.create_function(|lua, (unit, mode): (Ordinal, String)| {
+            let unit = unit.0;
             let link = match mode.as_str() {
                 "static" => crate::model::LinkMode::Static,
                 "dynamic" => crate::model::LinkMode::Dynamic,
@@ -2957,7 +3185,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "add_unit_instance",
         lua.create_function(|lua, opts: Table| {
             check_keys(&opts, "add_unit_instance", &["unit", "name"])?;
-            let unit: usize = opts.get("unit")?;
+            let unit: usize = opts.ordinal_req("unit")?;
             let name: Option<String> = opts.get("name")?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::AddUnitInstance { unit, name }) }
@@ -2983,7 +3211,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let unit = match value {
                 Value::Integer(i) => i as usize,
                 Value::Number(n) => n.round() as usize,
-                Value::Table(t) => t.get::<usize>("unit")?,
+                Value::Table(t) => t.ordinal_req("unit")?,
                 _ => {
                     return Err(mlua::Error::external(
                         "sync_unit takes a unit index or { unit = n }",
@@ -3002,7 +3230,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, value: Value| {
             let (path, plane) = match value {
                 Value::String(s) => (s.to_str()?.to_string(), None),
-                Value::Table(t) => (t.get::<String>("path")?, t.get::<Option<usize>>("plane")?),
+                Value::Table(t) => (t.get::<String>("path")?, t.ordinal_opt("plane")?),
                 _ => {
                     return Err(mlua::Error::external(
                         "import_image takes a path string or { path =, plane = }",
@@ -3022,8 +3250,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             check_keys(&opts, "calibration_point", &["image", "index", "x", "y"])?;
-            let image: usize = opts.get("image")?;
-            let index: usize = opts.get("index")?;
+            let image: usize = opts.ordinal_req("image")?;
+            let index: usize = opts.ordinal_req("index")?;
             let x: f32 = opts.get("x")?;
             let y: f32 = opts.get("y")?;
             unsafe { tick.exec(Instruction::SetCalibrationPoint { image, index, x, y }) }
@@ -3034,8 +3262,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             check_keys(&opts, "remove_calibration_point", &["image", "index"])?;
-            let image: usize = opts.get("image")?;
-            let index: usize = opts.get("index")?;
+            let image: usize = opts.ordinal_req("image")?;
+            let index: usize = opts.ordinal_req("index")?;
             unsafe { tick.exec(Instruction::RemoveCalibrationPoint { image, index }) }
         })?,
     )?;
@@ -3044,7 +3272,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "calibrate_image",
         lua.create_function(|lua, opts: Table| {
             check_keys(&opts, "calibrate_image", &["image", "from", "to", "length"])?;
-            let image: usize = opts.get("image")?;
+            let image: usize = opts.ordinal_req("image")?;
             let parse_point = |t: Table| -> mlua::Result<(f32, f32)> {
                 Ok((t.get(1)?, t.get(2)?))
             };
@@ -3081,7 +3309,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "image_opacity",
         lua.create_function(|lua, opts: Table| {
             check_keys(&opts, "image_opacity", &["image", "opacity"])?;
-            let image: usize = opts.get("image")?;
+            let image: usize = opts.ordinal_req("image")?;
             let expression = lua_amount_expr(&opts, "opacity")?;
             let opacity = expression.parse::<f32>().unwrap_or(0.0);
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
@@ -3285,7 +3513,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     api.set(
         "open_sketch",
-        lua.create_function(|lua, sketch: usize| {
+        lua.create_function(|lua, sketch: Ordinal| {
+            let sketch = sketch.0;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::OpenSketch { sketch }) }
         })?,
@@ -3299,18 +3528,43 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // `bearcad.element("body", 3)` by kind and ordinal, or `bearcad.element(id)` to turn a
+    // stable id string back into the handle it came from (#1801).
     api.set(
         "element",
-        lua.create_function(|lua, (kind, index): (String, usize)| {
+        lua.create_function(|lua, (kind, index): (String, Option<usize>)| {
             let element = {
                 let tick = lua
                     .app_data_ref::<ScriptTickData>()
                     .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
-                scene_element_from_kind(unsafe { &tick.state().doc }, &kind, index).ok_or_else(
-                    || mlua::Error::external(format!("unknown element kind '{kind}'")),
-                )?
+                let doc = unsafe { &tick.state().doc };
+                match index {
+                    Some(index) => scene_element_from_kind(doc, &kind, index).ok_or_else(|| {
+                        mlua::Error::external(format!("unknown element kind '{kind}'"))
+                    })?,
+                    None => crate::hierarchy::element_from_id(doc, &kind)
+                        .or_else(|| find_element_by_name(doc, &kind))
+                        .ok_or_else(|| {
+                            mlua::Error::external(format!("no element '{kind}'"))
+                        })?,
+                }
             };
             make_element(lua, element)
+        })?,
+    )?;
+
+    // The stable id of whatever a script is holding (#1801) — the same string `el:id()` gives,
+    // for a handle, a name, or a `{ kind, index }` table.
+    api.set(
+        "id",
+        lua.create_function(|lua, element: Value| {
+            let element = resolve_element(lua, element)?;
+            crate::hierarchy::element_id(&element).ok_or_else(|| {
+                mlua::Error::external(format!(
+                    "a {} reference has no id of its own",
+                    element_kind_name(element.clone())
+                ))
+            })
         })?,
     )?;
 
@@ -3378,11 +3632,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         .ok_or_else(|| mlua::Error::external(format!("unknown angle unit '{name}'")))
                 })
                 .transpose()?;
-            if let Some(component) = opts.get::<Option<usize>>("component")? {
+            if let Some(component) = opts.ordinal_opt("component")? {
                 unsafe {
                     tick.exec(Instruction::SetComponentUnits { component, length, angle })
                 }
-            } else if let Some(sketch) = opts.get::<Option<usize>>("sketch")? {
+            } else if let Some(sketch) = opts.ordinal_opt("sketch")? {
                 unsafe { tick.exec(Instruction::SetSketchUnits { sketch, length, angle }) }
             } else {
                 let doc = unsafe { &tick.state().doc };
@@ -3455,8 +3709,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     b: mm_point("b")?,
                 },
                 "body_vertex_distance" => {
-                    let ordinal_a: usize = opts.get("body")?;
-                    let ordinal_b = opts.get::<Option<usize>>("body_b")?.unwrap_or(ordinal_a);
+                    let ordinal_a: usize = opts.ordinal_req("body")?;
+                    let ordinal_b = opts.ordinal_opt("body_b")?.unwrap_or(ordinal_a);
                     PS::BodyVertexDistance {
                         body_a: body_key_from_ordinal(lua, ordinal_a)?,
                         a: mm_point("a")?,
@@ -3495,7 +3749,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let (name, parent) = match &opts {
                 Some(t) => {
                     check_keys(t, "component", &["name", "parent"])?;
-                    (t.get::<Option<String>>("name")?, t.get::<Option<usize>>("parent")?)
+                    (t.get::<Option<String>>("name")?, t.ordinal_opt("parent")?)
                 }
                 None => (None, None),
             };
@@ -3510,7 +3764,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             check_keys(&opts, "move_to_component", &["kind", "index", "component"])?;
             let kind: String = opts.get("kind")?;
-            let index: usize = opts.get("index")?;
+            let index: usize = opts.ordinal_req("index")?;
             let element = scene_element_from_kind(unsafe { &tick.state().doc }, &kind, index)
                 .ok_or_else(|| {
                     mlua::Error::external(format!("unknown element kind '{kind}'"))
@@ -3571,10 +3825,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                              document"
                         )));
                     }
+                    let mut last = Created(Vec::new());
                     for element in elements {
-                        unsafe { tick.exec(Instruction::SetElementVisible { element, visible })? };
+                        last = unsafe {
+                            tick.exec(Instruction::SetElementVisible { element, visible })?
+                        };
                     }
-                    return Ok(());
+                    return Ok(last);
                 }
             }
             let element = resolve_element(lua, element)?;
@@ -3721,7 +3978,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     api.set(
         "sketch_conflicts",
-        lua.create_function(|lua, sketch: Option<usize>| {
+        lua.create_function(|lua, sketch: Option<Ordinal>| {
+            let sketch = sketch.map(|o| o.0);
             let tick = lua
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
@@ -3753,7 +4011,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     api.set(
         "sketch_dof",
-        lua.create_function(|lua, sketch: Option<usize>| {
+        lua.create_function(|lua, sketch: Option<Ordinal>| {
+            let sketch = sketch.map(|o| o.0);
             let tick = lua
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
@@ -3799,7 +4058,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "get",
         lua.create_function(|lua, opts: Table| {
             let kind: String = opts.get("kind")?;
-            let index: usize = opts.get("index")?;
+            let index: usize = opts.ordinal_req("index")?;
             let tick = lua
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
@@ -4087,8 +4346,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     // A drawing view's circle Ø dimension (#1774): where its label was dragged
                     // to — `0.0` is the auto-placed default. `index` is the ordinal among the
                     // view's shown circle dimensions.
-                    let drawing: usize = opts.get("drawing")?;
-                    let view: usize = opts.get("view")?;
+                    let drawing: usize = opts.ordinal_req("drawing")?;
+                    let view: usize = opts.ordinal_req("view")?;
                     let offset = doc
                         .drawings
                         .values()
@@ -4107,8 +4366,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "point_dimension" => {
                     // A drawing view's free point-to-point dimension (#1774): what it measures
                     // and where its label was dragged to.
-                    let drawing: usize = opts.get("drawing")?;
-                    let view: usize = opts.get("view")?;
+                    let drawing: usize = opts.ordinal_req("drawing")?;
+                    let view: usize = opts.ordinal_req("view")?;
                     let Some(dim) = doc
                         .drawings
                         .values()
@@ -4439,7 +4698,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     api.set(
         "body_stats",
-        lua.create_function(|lua, index: usize| {
+        lua.create_function(|lua, index: Ordinal| {
+            let index = index.0;
             let tick = lua
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
@@ -4469,7 +4729,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // Without this a script would have to guess a face's quantized key to name it at all.
     api.set(
         "body_faces",
-        lua.create_function(|lua, index: usize| {
+        lua.create_function(|lua, index: Ordinal| {
+            let index = index.0;
             let tick = lua
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
@@ -4514,7 +4775,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // shaft; `cylinder` names the round wall itself.
     api.set(
         "body_cylinders",
-        lua.create_function(|lua, index: usize| {
+        lua.create_function(|lua, index: Ordinal| {
+            let index = index.0;
             let tick = lua
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
@@ -4545,7 +4807,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // un-posed body's own coordinates — what a mate's `line_up` row takes.
     api.set(
         "body_edges",
-        lua.create_function(|lua, index: usize| {
+        lua.create_function(|lua, index: Ordinal| {
+            let index = index.0;
             let tick = lua
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
@@ -4858,7 +5121,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 Some(text) => Some(parse_hex_color(&text)?),
                 None => None,
             };
-            let bodies: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
+            let bodies: Vec<usize> = opts.ordinal_list("bodies")?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::AddMaterial { name, color, bodies }) }
         })?,
@@ -4867,7 +5130,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "set_material",
         lua.create_function(|lua, opts: Table| {
-            let body: usize = opts.get("body")?;
+            let body: usize = opts.ordinal_req("body")?;
             let material: Option<usize> = opts.get("material")?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::SetBodyMaterial { body, material }) }
@@ -4880,7 +5143,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "set_body_shadow",
         lua.create_function(|lua, opts: Table| {
-            let body: usize = opts.get("body")?;
+            let body: usize = opts.ordinal_req("body")?;
             let shadow: bool = opts.get("shadow")?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::SetBodyShadow { body, shadow }) }
@@ -5070,7 +5333,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     api.set(
         "edit_plane",
-        lua.create_function(|lua, index: usize| {
+        lua.create_function(|lua, index: Ordinal| {
+            let index = index.0;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::BeginEditConstructionPlane { index }) }
         })?,
@@ -5505,7 +5769,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // on screen.
     api.set(
         "drawing_view_rect",
-        lua.create_function(|lua, view: usize| {
+        lua.create_function(|lua, view: Ordinal| {
+            let view = view.0;
             let tick = lua
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
@@ -6447,7 +6712,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // World corners of a tracing image (including an in-progress Move preview, #1611).
     api.set(
         "image_corners",
-        lua.create_function(|lua, index: usize| {
+        lua.create_function(|lua, index: Ordinal| {
+            let index = index.0;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let state = unsafe { tick.state() };
             let image = state
@@ -6485,7 +6751,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // shape `fillet_edge`/`chamfer_edge` accept — no guessing magic (face, edge) pairs.
     api.set(
         "extrude_edges",
-        lua.create_function(|lua, index: usize| {
+        lua.create_function(|lua, index: Ordinal| {
+            let index = index.0;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let doc = unsafe { &tick.state().doc };
             let Some(ext) = doc.extrusions.keys().nth(index).map(|k| &doc.extrusions[k]) else {
@@ -6537,7 +6804,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     api.set(
         "line_endpoints",
-        lua.create_function(|lua, index: usize| {
+        lua.create_function(|lua, index: Ordinal| {
+            let index = index.0;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let state = unsafe { tick.state() };
             // The script's `index` is the line's ordinal (#1055).
@@ -7063,7 +7331,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let element = {
                 let keys: Vec<_> = unsafe { tick.state().doc.lines.keys().collect() };
                 let Some(&first) = keys.iter().rev().nth(3) else {
-                    return Ok(());
+                    return Ok(Created(Vec::new()));
                 };
                 SceneElement::Line(first)
             };
@@ -7140,7 +7408,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             }
             // The line just committed (#1055): the newest live one.
             let Some(key) = (unsafe { tick.state().doc.lines.keys().last() }) else {
-                return Ok(());
+                return Ok(Created(Vec::new()));
             };
             apply_optional_name(lua, SceneElement::Line(key), Some(opts))
         })?,
@@ -7181,7 +7449,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             }
             // The circle just committed (#1055): the newest live one.
             let Some(key) = (unsafe { tick.state().doc.circles.keys().last() }) else {
-                return Ok(());
+                return Ok(Created(Vec::new()));
             };
             apply_optional_name(lua, SceneElement::Circle(key), Some(opts))
         })?,
@@ -7241,7 +7509,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             }
             // The text just committed (#1055): the newest live one.
             let Some(key) = (unsafe { tick.state().doc.sketch_texts.keys().last() }) else {
-                return Ok(());
+                return Ok(Created(Vec::new()));
             };
             apply_optional_name(lua, SceneElement::SketchText(key), Some(opts))
         })?,
@@ -7259,7 +7527,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let offset =
                 length_mm_or(lua, unsafe { &tick.state().doc }, &opts, "plane", "offset", 0.0)?;
-            let from: usize = opts.get::<Option<usize>>("from")?.unwrap_or(0);
+            let from: usize = opts.ordinal_opt("from")?.unwrap_or(0);
             let origin: Option<Table> = opts.get("origin")?;
             let normal: Option<Table> = opts.get("normal")?;
             unsafe {
@@ -7274,7 +7542,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                             normal: v(&n)?,
                         })?;
                     }
-                    (None, None) => tick.exec(Instruction::CreatePlane { offset, from })?,
+                    (None, None) => {
+                        tick.exec(Instruction::CreatePlane { offset, from })?;
+                    }
                     _ => {
                         return Err(mlua::Error::external(
                             "plane: origin and normal must be given together",
@@ -7284,7 +7554,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             }
             // The plane just committed (#1055): the newest live one.
             let Some(key) = (unsafe { tick.state().doc.construction_planes.keys().last() }) else {
-                return Ok(());
+                return Ok(Created(Vec::new()));
             };
             apply_optional_name(lua, SceneElement::ConstructionPlane(key), Some(opts))
         })?,
@@ -7328,22 +7598,22 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             // Faces: `circle` (single) and/or `circles` (array of indices), a `polygon` loop
             // (#66 — a rectangle is four lines forming such a loop), or a `boolean` region.
             let mut faces: Vec<crate::model::ExtrudeFace> = Vec::new();
-            if let Some(i) = opts.get::<Option<usize>>("circle")? {
+            if let Some(i) = opts.ordinal_opt("circle")? {
                 faces.push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
             }
-            if let Some(list) = opts.get::<Option<Vec<usize>>>("circles")? {
+            if let Some(list) = opts.ordinal_list_opt("circles")? {
                 for i in list {
                     faces
                         .push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
                 }
             }
             // `polygon = {line0, line1, ...}`: a single closed-loop face (#66).
-            if let Some(lines) = opts.get::<Option<Vec<usize>>>("polygon")? {
+            if let Some(lines) = opts.ordinal_list_opt("polygon")? {
                 faces.push(crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(lua, lines)?));
             }
             // `text = index`: extrude/engrave a whole sketch text — every glyph region of it,
             // counters (letter holes) preserved (#285/#355).
-            if let Some(ti) = opts.get::<Option<usize>>("text")? {
+            if let Some(ti) = opts.ordinal_opt("text")? {
                 let text = sketch_text_key_from_ordinal(lua, ti)?;
                 let glyphs = unsafe {
                     tick.state()
@@ -7430,7 +7700,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             }
             // The extrusion just committed (#1055): the newest live one.
             let Some(key) = (unsafe { tick.state().doc.extrusions.keys().last() }) else {
-                return Ok(());
+                return Ok(Created(Vec::new()));
             };
             apply_optional_name(lua, SceneElement::Extrusion(key), Some(opts))
         })?,
@@ -7478,7 +7748,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             }
             // The extrusion just committed (#1055): the newest live one.
             let Some(key) = (unsafe { tick.state().doc.extrusions.keys().last() }) else {
-                return Ok(());
+                return Ok(Created(Vec::new()));
             };
             apply_optional_name(lua, SceneElement::Extrusion(key), Some(opts))
         })?,
@@ -7534,7 +7804,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "edit_repeat",
                 &["index", "bodies", "axis", "around", "flip", "mode", "count", "spacing", "gap", "length", "to"],
             )?;
-            let op: usize = opts.get("index")?;
+            let op: usize = opts.ordinal_req("index")?;
             let (targets, axis, around_axis, flip, mode, count, spacing, length, length_target) =
                 parse_repeat_op_args(lua, &opts)?;
             unsafe {
@@ -7606,7 +7876,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "edit_sketch_repeat",
                 &["index", "sketch", "lines", "circles", "angle", "dir", "mode", "count", "spacing", "gap", "length"],
             )?;
-            let op: usize = opts.get("index")?;
+            let op: usize = opts.ordinal_req("index")?;
             let (_sketch, lines, circles, dir_u, dir_v, mode, count, spacing, length) =
                 parse_sketch_repeat_op_args(&opts)?;
             let circles = circles
@@ -7687,7 +7957,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "edit_sketch_offset",
                 &["index", "sketch", "lines", "circles", "distance", "construction"],
             )?;
-            let op: usize = opts.get("index")?;
+            let op: usize = opts.ordinal_req("index")?;
             let (_sketch, lines, circles, distance, construction) =
                 parse_sketch_offset_op_args(&opts)?;
             let circles = circles
@@ -7755,7 +8025,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "edit_sketch_mirror",
                 &["index", "sketch", "line", "lines", "circles"],
             )?;
-            let op: usize = opts.get("index")?;
+            let op: usize = opts.ordinal_req("index")?;
             let (_sketch, line, lines, circles) = parse_sketch_mirror_op_args(lua, &opts)?;
             let circles = circles
                 .into_iter()
@@ -7872,9 +8142,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "slice_sketch",
                 &["sketch", "lines", "circles", "faces", "cutters"],
             )?;
-            let sketch = sketch_key_from_ordinal(lua, opts.get::<Option<usize>>("sketch")?.unwrap_or(0))?;
+            let sketch = sketch_key_from_ordinal(lua, opts.ordinal_opt("sketch")?.unwrap_or(0))?;
             let line_targets =
-                line_keys_from_ordinals(lua, opts.get::<Option<Vec<usize>>>("lines")?.unwrap_or_default())?;
+                line_keys_from_ordinals(lua, opts.ordinal_list("lines")?)?;
             let circle_targets = opts
                 .get::<Option<Vec<usize>>>("circles")?
                 .unwrap_or_default()
@@ -7889,7 +8159,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 .collect::<mlua::Result<Vec<_>>>()?;
             let cutter_lines = line_keys_from_ordinals(
                 lua,
-                opts.get::<Option<Vec<usize>>>("cutters")?.unwrap_or_default(),
+                opts.ordinal_list("cutters")?,
             )?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::CreateSketchSliceOperation {
@@ -7916,9 +8186,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "edit_sketch_slice",
                 &["index", "lines", "circles", "faces", "cutters"],
             )?;
-            let op: usize = opts.get("index")?;
+            let op: usize = opts.ordinal_req("index")?;
             let line_targets =
-                line_keys_from_ordinals(lua, opts.get::<Option<Vec<usize>>>("lines")?.unwrap_or_default())?;
+                line_keys_from_ordinals(lua, opts.ordinal_list("lines")?)?;
             let circle_targets = opts
                 .get::<Option<Vec<usize>>>("circles")?
                 .unwrap_or_default()
@@ -7933,7 +8203,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 .collect::<mlua::Result<Vec<_>>>()?;
             let cutter_lines = line_keys_from_ordinals(
                 lua,
-                opts.get::<Option<Vec<usize>>>("cutters")?.unwrap_or_default(),
+                opts.ordinal_list("cutters")?,
             )?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::EditSketchSliceOperation {
@@ -8022,7 +8292,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 &[MOVE_OP_KEYS, &["index"]].concat(),
             )?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let op: usize = opts.get("index")?;
+            let op: usize = opts.ordinal_req("index")?;
             let (targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
                  face_offset, start_point_a, end_point_a, start_point_b, end_point_b,
                  start_point_c, end_point_c) =
@@ -8082,7 +8352,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "edit_joint",
         lua.create_function(|lua, opts: Table| {
-            let op: usize = opts.get("index")?;
+            let op: usize = opts.ordinal_req("index")?;
             let (members, base, kind, placement, frame, position, position2, position3, limits) =
                 parse_joint_op_args(lua, &opts, "edit_joint")?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
@@ -8146,7 +8416,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             check_keys(&opts, "edit_mirror", &["index", "plane", "bodies", "output"])?;
-            let op: usize = opts.get("index")?;
+            let op: usize = opts.ordinal_req("index")?;
             let (plane, targets, mode) = parse_mirror_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::EditMirrorOp { op, plane, targets, mode })?;
@@ -8195,7 +8465,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // its inputs — the scripted way to union two bodies and end up with exactly one.
     api.set(
         "bake",
-        lua.create_function(|lua, index: usize| {
+        lua.create_function(|lua, index: Ordinal| {
+            let index = index.0;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::BakeBooleanOp { op: index }) }
         })?,
@@ -8229,7 +8500,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "edit_boolean",
                 &["index", "op", "a", "b", "keep_b", "keep_leftovers"],
             )?;
-            let op: usize = opts.get("index")?;
+            let op: usize = opts.ordinal_req("index")?;
             let (kind, a, b, keep_b) = parse_boolean_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::EditBooleanOp { op, kind, a, b, keep_b })?;
@@ -8265,7 +8536,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             check_keys(&opts, "edit_slice", &["index", "bodies", "cutters", "extend"])?;
-            let op: usize = opts.get("index")?;
+            let op: usize = opts.ordinal_req("index")?;
             let (targets, cutters, extend_infinite) = parse_slice_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::EditSliceOp { op, targets, cutters, extend_infinite })?;
@@ -8305,7 +8576,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             check_keys(&opts, "edit_shell", &["index", "bodies", "faces", "thickness"])?;
-            let op: usize = opts.get("index")?;
+            let op: usize = opts.ordinal_req("index")?;
             let (targets, open_faces, thickness) = parse_shell_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::EditShellOp {
@@ -8336,16 +8607,16 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let mut faces: Vec<crate::model::ExtrudeFace> = Vec::new();
-            if let Some(i) = opts.get::<Option<usize>>("circle")? {
+            if let Some(i) = opts.ordinal_opt("circle")? {
                 faces.push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
             }
-            if let Some(list) = opts.get::<Option<Vec<usize>>>("circles")? {
+            if let Some(list) = opts.ordinal_list_opt("circles")? {
                 for i in list {
                     faces
                         .push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
                 }
             }
-            if let Some(lines) = opts.get::<Option<Vec<usize>>>("polygon")? {
+            if let Some(lines) = opts.ordinal_list_opt("polygon")? {
                 faces.push(crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(lua, lines)?));
             }
             if faces.is_empty() {
@@ -8400,7 +8671,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 (0.0, String::new())
             };
             let symmetric: bool = opts.get::<Option<bool>>("symmetric")?.unwrap_or(false);
-            let bodies: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
+            let bodies: Vec<usize> = opts.ordinal_list("bodies")?;
             let body = match opts.get::<Option<String>>("body")?.as_deref() {
                 Some("add") => crate::actions::RevolveBodyChoice::AddTouching,
                 Some("cut") => crate::actions::RevolveBodyChoice::Cut,
@@ -8462,7 +8733,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             check_shape_keys(&opts, "edit_shape")?;
             // The script's `index` is the shape's ordinal among the live ones (#1055).
-            let ordinal: usize = opts.get("index")?;
+            let ordinal: usize = opts.ordinal_req("index")?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let index = unsafe { tick.state().doc.primitives.keys().nth(ordinal) }
                 .ok_or_else(|| mlua::Error::external(format!("no shape {ordinal}")))?;
@@ -8506,16 +8777,16 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let mut faces: Vec<crate::model::ExtrudeFace> = Vec::new();
-            if let Some(i) = opts.get::<Option<usize>>("circle")? {
+            if let Some(i) = opts.ordinal_opt("circle")? {
                 faces.push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
             }
-            if let Some(list) = opts.get::<Option<Vec<usize>>>("circles")? {
+            if let Some(list) = opts.ordinal_list_opt("circles")? {
                 for i in list {
                     faces
                         .push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
                 }
             }
-            if let Some(lines) = opts.get::<Option<Vec<usize>>>("polygon")? {
+            if let Some(lines) = opts.ordinal_list_opt("polygon")? {
                 faces.push(crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(lua, lines)?));
             }
             if faces.is_empty() {
@@ -8524,13 +8795,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 ));
             }
             let path =
-                line_keys_from_ordinals(lua, opts.get::<Option<Vec<usize>>>("path")?.unwrap_or_default())?;
+                line_keys_from_ordinals(lua, opts.ordinal_list("path")?)?;
             if path.is_empty() {
                 return Err(mlua::Error::external(
                     "sweep requires `path` (a list of line indices)",
                 ));
             }
-            let bodies: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
+            let bodies: Vec<usize> = opts.ordinal_list("bodies")?;
             let body = match opts.get::<Option<String>>("body")?.as_deref() {
                 Some("add") => crate::actions::RevolveBodyChoice::AddTouching,
                 Some("cut") => crate::actions::RevolveBodyChoice::Cut,
@@ -8555,16 +8826,16 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let mut faces: Vec<crate::model::ExtrudeFace> = Vec::new();
-            if let Some(i) = opts.get::<Option<usize>>("circle")? {
+            if let Some(i) = opts.ordinal_opt("circle")? {
                 faces.push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
             }
-            if let Some(list) = opts.get::<Option<Vec<usize>>>("circles")? {
+            if let Some(list) = opts.ordinal_list_opt("circles")? {
                 for i in list {
                     faces
                         .push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
                 }
             }
-            if let Some(lines) = opts.get::<Option<Vec<usize>>>("polygon")? {
+            if let Some(lines) = opts.ordinal_list_opt("polygon")? {
                 faces.push(crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(lua, lines)?));
             }
             if let Some(loops) = opts.get::<Option<Vec<Vec<usize>>>>("polygons")? {
@@ -8579,7 +8850,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     "loft requires at least two sections (`circles`/`polygons`)",
                 ));
             }
-            let bodies: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
+            let bodies: Vec<usize> = opts.ordinal_list("bodies")?;
             let body = match opts.get::<Option<String>>("body")?.as_deref() {
                 Some("add") => crate::actions::RevolveBodyChoice::AddTouching,
                 Some("cut") => crate::actions::RevolveBodyChoice::Cut,
@@ -8644,7 +8915,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 &["view", "plane", "origin", "normal", "offset", "roll", "flip", "bodies", "exclude_bodies"],
             )?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let view: Option<usize> = opts.get("view")?;
+            let view: Option<usize> = opts.ordinal_opt("view")?;
             let cut_bodies =
                 section_plane_body_scope(&opts, "bodies")?.unwrap_or(None);
             let exclude_bodies = match section_plane_body_scope(&opts, "exclude_bodies")? {
@@ -8839,7 +9110,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "drawing_view",
                 &["drawing", "body", "bodies", "component", "sketch", "cross_section", "orientation"],
             )?;
-            let drawing: usize = opts.get("drawing")?;
+            let drawing: usize = opts.ordinal_req("drawing")?;
             let orientation = match opts.get::<Option<String>>("orientation")? {
                 Some(name) => crate::model::DrawingOrientation::from_name(&name).ok_or_else(|| {
                     mlua::Error::external(format!("unknown drawing orientation '{name}'"))
@@ -8847,12 +9118,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 None => crate::model::DrawingOrientation::default(),
             };
             // A view projects a body, several bodies, a component, or a sketch (#278/#403/#1190/#1191).
-            let body: Option<usize> = opts.get("body")?;
+            let body: Option<usize> = opts.ordinal_opt("body")?;
             let bodies: Option<Vec<usize>> = opts.get("bodies")?;
-            let component: Option<usize> = opts.get("component")?;
-            let sketch: Option<usize> = opts.get("sketch")?;
+            let component: Option<usize> = opts.ordinal_opt("component")?;
+            let sketch: Option<usize> = opts.ordinal_opt("sketch")?;
             // A whole cross-section view can be imported too (#1689): the model's bodies, cut.
-            let cross_section: Option<usize> = opts.get("cross_section")?;
+            let cross_section: Option<usize> = opts.ordinal_opt("cross_section")?;
             let source_count = usize::from(body.is_some())
                 + usize::from(bodies.is_some())
                 + usize::from(component.is_some())
@@ -8931,7 +9202,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         cross_section: Some(view),
                     })?;
                 }
-                Ok(())
+                Ok(Created(Vec::new()))
             }
         })?,
     )?;
@@ -8945,11 +9216,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "drawing_view_add",
                 &["drawing", "view", "body", "bodies", "component"],
             )?;
-            let drawing: usize = opts.get("drawing")?;
-            let view: usize = opts.get("view")?;
-            let body: Option<usize> = opts.get("body")?;
+            let drawing: usize = opts.ordinal_req("drawing")?;
+            let view: usize = opts.ordinal_req("view")?;
+            let body: Option<usize> = opts.ordinal_opt("body")?;
             let bodies: Option<Vec<usize>> = opts.get("bodies")?;
-            let component: Option<usize> = opts.get("component")?;
+            let component: Option<usize> = opts.ordinal_opt("component")?;
             let source_count = usize::from(body.is_some())
                 + usize::from(bodies.is_some())
                 + usize::from(component.is_some());
@@ -9000,7 +9271,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             check_keys(&opts, "drawing_page", &["drawing", "width", "height", "margin"])?;
-            let drawing: usize = opts.get("drawing")?;
+            let drawing: usize = opts.ordinal_req("drawing")?;
             let doc = unsafe { &tick.state().doc };
             let page = Instruction::SetDrawingPage {
                 drawing,
@@ -9018,7 +9289,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "export_drawing_svg",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let drawing: usize = opts.get("drawing")?;
+            let drawing: usize = opts.ordinal_req("drawing")?;
             let path: String = opts.get("path")?;
             unsafe { tick.exec(Instruction::ExportDrawingSvg { drawing, path }) }
         })?,
@@ -9030,7 +9301,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "export_drawing_pdf",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let drawing: usize = opts.get("drawing")?;
+            let drawing: usize = opts.ordinal_req("drawing")?;
             let path: String = opts.get("path")?;
             unsafe { tick.exec(Instruction::ExportDrawingPdf { drawing, path }) }
         })?,
@@ -9042,8 +9313,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "drawing_move_view",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let drawing: usize = opts.get("drawing")?;
-            let view: usize = opts.get("view")?;
+            let drawing: usize = opts.ordinal_req("drawing")?;
+            let view: usize = opts.ordinal_req("view")?;
             let x: f32 = opts.get("x")?;
             let y: f32 = opts.get("y")?;
             unsafe { tick.exec(Instruction::MoveDrawingView { drawing, view, x, y }) }
@@ -9061,8 +9332,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 &["drawing", "view", "width", "height", "size_x", "size_y"],
             )?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let drawing: usize = opts.get("drawing")?;
-            let view: usize = opts.get("view")?;
+            let drawing: usize = opts.ordinal_req("drawing")?;
+            let view: usize = opts.ordinal_req("view")?;
             let (cur_x, cur_y) = {
                 let state = unsafe { tick.state() };
                 state
@@ -9099,7 +9370,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "drawing_text",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let drawing: usize = opts.get("drawing")?;
+            let drawing: usize = opts.ordinal_req("drawing")?;
             let text: String = opts.get("text")?;
             let x: f32 = opts.get::<Option<f32>>("x")?.unwrap_or(0.1);
             let y: f32 = opts.get::<Option<f32>>("y")?.unwrap_or(0.1);
@@ -9113,8 +9384,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "drawing_align_view",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let drawing: usize = opts.get("drawing")?;
-            let parent: usize = opts.get("parent")?;
+            let drawing: usize = opts.ordinal_req("drawing")?;
+            let parent: usize = opts.ordinal_req("parent")?;
             let name: String = opts.get("dir")?;
             let dir = match name.to_ascii_lowercase().as_str() {
                 "below" | "down" | "bottom" => crate::model::AlignDir::Below,
@@ -9137,8 +9408,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "drawing_dimension",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let drawing: usize = opts.get("drawing")?;
-            let view: usize = opts.get("view")?;
+            let drawing: usize = opts.ordinal_req("drawing")?;
+            let view: usize = opts.ordinal_req("view")?;
             let point = |key: &str| -> mlua::Result<(f32, f32, f32)> {
                 let v: Vec<f32> = opts.get(key)?;
                 if v.len() != 3 {
@@ -9167,8 +9438,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "drawing_dim_offset",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let drawing: usize = opts.get("drawing")?;
-            let view: usize = opts.get("view")?;
+            let drawing: usize = opts.ordinal_req("drawing")?;
+            let view: usize = opts.ordinal_req("view")?;
             let point = |key: &str| -> mlua::Result<(f32, f32, f32)> {
                 let v: Vec<f32> = opts.get(key)?;
                 if v.len() != 3 {
@@ -9197,7 +9468,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // check a drawing the way it checks geometry. `bearcad.drawing_views(drawing)`.
     api.set(
         "drawing_views",
-        lua.create_function(|lua, index: usize| {
+        lua.create_function(|lua, index: Ordinal| {
+            let index = index.0;
             let tick = lua
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
@@ -9245,8 +9517,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "drawing_point_dimension",
                 &["drawing", "view", "a", "b", "axis"],
             )?;
-            let drawing: usize = opts.get("drawing")?;
-            let view: usize = opts.get("view")?;
+            let drawing: usize = opts.ordinal_req("drawing")?;
+            let view: usize = opts.ordinal_req("view")?;
             let point = |key: &str| -> mlua::Result<(f32, f32)> {
                 let v: Vec<f32> = opts.get(key)?;
                 if v.len() != 2 {
@@ -9283,9 +9555,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "drawing_point_dimension_axis",
                 &["drawing", "view", "index", "axis"],
             )?;
-            let drawing: usize = opts.get("drawing")?;
-            let view: usize = opts.get("view")?;
-            let index: usize = opts.get("index")?;
+            let drawing: usize = opts.ordinal_req("drawing")?;
+            let view: usize = opts.ordinal_req("view")?;
+            let index: usize = opts.ordinal_req("index")?;
             let name: String = opts.get("axis")?;
             let axis = crate::model::PointDimAxis::from_name(&name).ok_or_else(|| {
                 mlua::Error::external(format!(
@@ -9314,9 +9586,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "drawing_point_dim_offset",
                 &["drawing", "view", "index", "offset"],
             )?;
-            let drawing: usize = opts.get("drawing")?;
-            let view: usize = opts.get("view")?;
-            let index: usize = opts.get("index")?;
+            let drawing: usize = opts.ordinal_req("drawing")?;
+            let view: usize = opts.ordinal_req("view")?;
+            let index: usize = opts.ordinal_req("index")?;
             let offset: f32 = opts.get("offset")?;
             unsafe {
                 tick.exec(Instruction::SetDrawingPointDimOffset { drawing, view, index, offset })
@@ -9329,8 +9601,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "drawing_circle_dim_offset",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let drawing: usize = opts.get("drawing")?;
-            let view: usize = opts.get("view")?;
+            let drawing: usize = opts.ordinal_req("drawing")?;
+            let view: usize = opts.ordinal_req("view")?;
             let c: Vec<f32> = opts.get("center")?;
             if c.len() != 3 {
                 return Err(mlua::Error::external(
@@ -9355,8 +9627,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "drawing_view_style",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let drawing: usize = opts.get("drawing")?;
-            let view: usize = opts.get("view")?;
+            let drawing: usize = opts.ordinal_req("drawing")?;
+            let view: usize = opts.ordinal_req("view")?;
             let style: String = opts.get("style")?;
             if crate::model::DrawingViewStyle::from_name(&style).is_none() {
                 return Err(mlua::Error::external(format!(
@@ -9374,8 +9646,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "drawing_view_orientation",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let drawing: usize = opts.get("drawing")?;
-            let view: usize = opts.get("view")?;
+            let drawing: usize = opts.ordinal_req("drawing")?;
+            let view: usize = opts.ordinal_req("view")?;
             let orientation: String = opts.get("orientation")?;
             if crate::model::DrawingOrientation::from_name(&orientation).is_none() {
                 return Err(mlua::Error::external(format!(
@@ -9394,8 +9666,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "drawing_view_align_lines",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let drawing: usize = opts.get("drawing")?;
-            let view: usize = opts.get("view")?;
+            let drawing: usize = opts.ordinal_req("drawing")?;
+            let view: usize = opts.ordinal_req("view")?;
             let show: bool = opts.get("show")?;
             unsafe {
                 tick.exec(Instruction::SetDrawingViewAlignLines { drawing, view, show })
@@ -9410,8 +9682,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "drawing_view_label",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let drawing: usize = opts.get("drawing")?;
-            let view: usize = opts.get("view")?;
+            let drawing: usize = opts.ordinal_req("drawing")?;
+            let view: usize = opts.ordinal_req("view")?;
             let hidden: Option<bool> = opts.get("hidden")?;
             let pos: Option<String> = opts.get("pos")?;
             let text: Option<String> = opts.get("text")?;
@@ -9438,8 +9710,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "drawing_circle_dimension",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let drawing: usize = opts.get("drawing")?;
-            let view: usize = opts.get("view")?;
+            let drawing: usize = opts.ordinal_req("drawing")?;
+            let view: usize = opts.ordinal_req("view")?;
             let v: Vec<f32> = opts.get("center")?;
             if v.len() != 3 {
                 return Err(mlua::Error::external(
@@ -9464,8 +9736,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             check_keys(&opts, "drawing_curve_dimension", &["drawing", "view", "points"])?;
-            let drawing: usize = opts.get("drawing")?;
-            let view: usize = opts.get("view")?;
+            let drawing: usize = opts.ordinal_req("drawing")?;
+            let view: usize = opts.ordinal_req("view")?;
             let raw: Vec<Vec<f32>> = opts.get("points")?;
             if raw.len() < 2 {
                 return Err(mlua::Error::external(
@@ -9502,8 +9774,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "drawing_angle",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let drawing: usize = opts.get("drawing")?;
-            let view: usize = opts.get("view")?;
+            let drawing: usize = opts.ordinal_req("drawing")?;
+            let view: usize = opts.ordinal_req("view")?;
             let point = |t: &Table, key: &str| -> mlua::Result<(f32, f32, f32)> {
                 let v: Vec<f32> = t.get(key)?;
                 if v.len() != 3 {
@@ -9539,7 +9811,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             check_keys(&opts, "edit_extrusion", &["extrusion", "distance", "by", "to"])?;
-            let extrusion: usize = opts.get("extrusion")?;
+            let extrusion: usize = opts.ordinal_req("extrusion")?;
             // `distance` accepts a plain number or a parameter expression string (#402).
             let (mut distance, expression) = match scalar_arg(lua, &opts, "distance")? {
                 Some((d, e @ Some(_))) => (Some(d), e),
@@ -12261,6 +12533,85 @@ pub mod tests {
         "#,
         );
         assert_eq!(state.doc.construction_planes.len(), 3);
+    }
+
+    /// #1801: a creation call hands back a stable handle for what it made, and every operand
+    /// that takes an ordinal takes a handle too. Ordinals shift when elements are deleted or
+    /// consumed; a handle names the same element for as long as that element exists.
+    #[test]
+    fn lua_creation_calls_return_stable_handles() {
+        let state = run_lua(
+            r#"
+            -- A rect is four lines: the call hands back all four.
+            local sides = bearcad.rect{ x = 0, y = 0, width = 20, height = 10 }
+            assert(#sides == 4, "rect returns its four lines, got " .. tostring(#sides))
+            assert(sides[1]:kind() == "line", "a side is a line")
+            -- An extrude hands back the body it made, not the extrusion.
+            local box = bearcad.extrude{ polygon = sides, distance = 5 }
+            assert(box:kind() == "body", "extrude returns the body, got " .. box:kind())
+            assert(box:index() == 0, "the only body is ordinal 0")
+
+            -- Ordinals shift under your feet; the handle does not.
+            local plate = bearcad.cuboid{ width = 4, depth = 4, height = 4 }
+            assert(plate:index() == 1, "second body")
+            bearcad.select({ kind = "body", index = 0 })
+            bearcad.delete_selection()
+            assert(plate:index() == 0, "the handle followed its body to ordinal 0")
+            assert(not box:exists(), "the deleted body's handle is dead")
+
+            -- The ID is a string, unique in the document, and survives a round trip.
+            local id = plate:id()
+            assert(type(id) == "string", "an id is a string")
+            assert(bearcad.element(id):id() == id, "id round-trips through bearcad.element")
+            assert(bearcad.id(plate) == id, "bearcad.id agrees with the method")
+
+            -- An id is never handed out twice: delete and rebuild, and the old one is gone.
+            bearcad.select(plate)
+            bearcad.delete_selection()
+            local again = bearcad.cuboid{ width = 4, depth = 4, height = 4 }
+            assert(again:id() ~= id, "a fresh body never reuses a retired id")
+            local ok = pcall(bearcad.element, id)
+            assert(not ok, "a retired id resolves to nothing")
+
+            -- Names still resolve, alongside handles and ids.
+            local edge = bearcad.element("line", 0)
+            bearcad.set_name(edge, "Front")
+            assert(bearcad.find("Front"):id() == edge:id(), "find still works")
+            assert(bearcad.id("Front") == edge:id(), "a name resolves to the same id")
+        "#,
+        );
+        assert_eq!(state.doc.bodies.len(), 1);
+    }
+
+    /// #1801: an operand that names an element by ordinal takes a handle or an id instead —
+    /// so a script can chain operations without tracking which ordinal moved where.
+    #[test]
+    fn lua_operands_accept_handles_and_ids() {
+        let state = run_lua(
+            r#"
+            local a = bearcad.cuboid{ width = 10, depth = 10, height = 10, at = { 0, 0, 0 } }
+            local b = bearcad.cuboid{ width = 6, depth = 6, height = 20, at = { 0, 0, 0 } }
+            -- `a`/`b` take handles; a difference that leaves an offcut hands back both bodies.
+            local cut = bearcad.combine{ a = { a }, b = { b }, op = "difference" }
+            assert(#cut == 2, "difference makes the result and its offcut, got " .. tostring(#cut))
+            -- `bodies` takes an id string just as happily.
+            local moved = bearcad.move_bodies{ bodies = { cut[1]:id() }, z = 5 }
+            assert(moved:kind() == "body", "move_bodies returns the moved body")
+            -- `get` takes one too.
+            assert(bearcad.get{ kind = "body", index = moved } ~= nil, "get by handle")
+            -- The positional read-backs take one too.
+            assert(bearcad.body_stats(moved).volume > 0, "body_stats by handle")
+            assert(#bearcad.body_faces(moved) > 0, "body_faces by handle")
+            -- A handle whose element is gone says so rather than naming its replacement.
+            bearcad.select(moved)
+            bearcad.delete_selection()
+            local ok, err = pcall(bearcad.body_stats, moved)
+            assert(not ok, "a dead handle is refused")
+            assert(tostring(err):find("no longer exists"), "unexpected error: " .. tostring(err))
+        "#,
+        );
+        // Two cuboids, the difference and its offcut; the moved copy was deleted again.
+        assert_eq!(state.doc.bodies.len(), 4);
     }
 
     /// #189: selecting a point and a sketch origin axis, then applying Coincident, pins the

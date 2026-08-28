@@ -5764,6 +5764,10 @@ pub struct ScriptRunner {
     /// script error so invalid input fails loudly instead of silently doing nothing.
     /// Instruction-list playback ignores it (the GUI status bar already reports it).
     pub(crate) last_action_error: Option<String>,
+    /// What the instruction just executed created (#1801) — the handles a creation call hands
+    /// back to the script. Overwritten by every instruction, so it is only ever read straight
+    /// after the one that set it.
+    pub(crate) last_created: Vec<crate::hierarchy::SceneElement>,
     pub verbose: bool,
     pub done: bool,
     pub error: Option<String>,
@@ -5798,6 +5802,7 @@ impl ScriptRunner {
             waiting_view_transition: false,
             logged_pc: None,
             last_action_error: None,
+            last_created: Vec::new(),
             verbose: true,
             done: false,
             error: None,

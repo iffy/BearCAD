@@ -10404,3 +10404,206 @@ label_hidden: false,
     }
 }
 
+
+/// An element's ordinal among the live ones of its kind (#1055/#1801), or `None` once it is
+/// gone. Scripts address elements by this ordinal; a handle re-reads it on every call.
+/// Historically `script_json::scene_element_selection_index`: the element's
+/// index, or `None` for the point/edge selectors that name a sub-feature of another element
+/// rather than a whole element (`Point`/`FaceEdge`).
+pub fn element_live_index(
+    doc: &crate::model::Document,
+    element: &SceneElement,
+) -> Option<usize> {
+    match element {
+        // An arena-backed element reports its **ordinal** among the live ones of its kind
+        // (#1055) — the same integer `scene_element_from_kind` takes back.
+        SceneElement::Image(key) => doc.tracing_images.keys().position(|k| k == *key),
+        SceneElement::CrossSection(key) => doc.cross_sections.keys().position(|k| k == *key),
+        SceneElement::SectionPlane { view, cut } => {
+            crate::model::section_plane_ordinal(doc, *view, *cut)
+        }
+        SceneElement::Body(key) => doc.bodies.keys().position(|k| k == *key),
+        SceneElement::BooleanOp(key) => doc.boolean_ops.keys().position(|k| k == *key),
+        SceneElement::MoveOp(key) => doc.move_ops.keys().position(|k| k == *key),
+        SceneElement::MirrorOp(key) => doc.mirror_ops.keys().position(|k| k == *key),
+        SceneElement::RepeatOp(key) => doc.repeat_ops.keys().position(|k| k == *key),
+        SceneElement::SliceOp(key) => doc.slice_ops.keys().position(|k| k == *key),
+        SceneElement::ShellOp(key) => doc.shell_ops.keys().position(|k| k == *key),
+        SceneElement::SketchRepeatOp(key) => {
+            doc.sketch_repeat_ops.keys().position(|k| k == *key)
+        }
+        SceneElement::SketchOffsetOp(key) => {
+            doc.sketch_offset_ops.keys().position(|k| k == *key)
+        }
+        SceneElement::SketchMirrorOp(key) => {
+            doc.sketch_mirror_ops.keys().position(|k| k == *key)
+        }
+        SceneElement::SketchVertexTreatmentOp(key) => {
+            doc.sketch_vertex_treatment_ops.keys().position(|k| k == *key)
+        }
+        SceneElement::SketchSliceOp(key) => {
+            doc.sketch_slice_ops.keys().position(|k| k == *key)
+        }
+        SceneElement::EdgeTreatmentOp(key) => {
+            doc.edge_treatment_ops.keys().position(|k| k == *key)
+        }
+        SceneElement::Revolution(key) => doc.revolutions.keys().position(|k| k == *key),
+        SceneElement::SweepOp(key) => doc.sweeps.keys().position(|k| k == *key),
+        SceneElement::Loft(key) => doc.lofts.keys().position(|k| k == *key),
+        SceneElement::Drawing(key) => doc.drawings.keys().position(|k| k == *key),
+        SceneElement::Shape(key) => doc.primitives.keys().position(|k| k == *key),
+        // A body face (#555) names a sub-feature with no flat index, like Point/FaceEdge.
+        SceneElement::Point(_)
+        | SceneElement::FaceEdge(_)
+        | SceneElement::BodyFace { .. }
+        // A cylinder and its centre line are keyed by geometry, not by an index (#1013).
+        | SceneElement::BodyCylinder { .. }
+        | SceneElement::BodyAxis { .. }
+        | SceneElement::SketchFace(_)
+        | SceneElement::MovePoint(_) => None,
+        SceneElement::ExtrusionEdge { extrusion, .. } => {
+            doc.extrusions.keys().position(|k| k == *extrusion)
+        }
+        SceneElement::PrimitiveEdge { primitive, .. } => {
+            doc.primitives.keys().position(|k| k == *primitive)
+        }
+        SceneElement::RepeatedFace { instance, .. } => Some(*instance),
+        // A page item indexes by its place on the page; a dimension has no index of its own,
+        // so it reports the view it is shown on (#967).
+        SceneElement::DrawingElement { drawing, element } => {
+            use crate::context::DrawingElementRef as D;
+            Some(match element {
+                D::Projection(i) => *i,
+                D::Text(key) => doc
+                    .drawings
+                    .get(*drawing)
+                    .and_then(|d| d.annotations.keys().position(|k| k == *key))?,
+                D::Dimension { view, .. } | D::PointDim { view, .. } => *view,
+            })
+        }
+        // X/Y/Z report as 0/1/2 (#952), matching `lua_script::element_index`.
+        SceneElement::GlobalAxis(axis) => Some(match axis {
+            crate::construction::GlobalAxis::X => 0,
+            crate::construction::GlobalAxis::Y => 1,
+            crate::construction::GlobalAxis::Z => 2,
+        }),
+        SceneElement::Line(key) => doc.lines.keys().position(|k| k == *key),
+        SceneElement::ConstructionPlane(key) => {
+            doc.construction_planes.keys().position(|k| k == *key)
+        }
+        SceneElement::Circle(key) => doc.circles.keys().position(|k| k == *key),
+        SceneElement::Sketch(key) => doc.sketches.keys().position(|k| k == *key),
+        SceneElement::Constraint(key) => doc.constraints.keys().position(|k| k == *key),
+        SceneElement::SketchText(key) => doc.sketch_texts.keys().position(|k| k == *key),
+        SceneElement::Extrusion(key) => doc.extrusions.keys().position(|k| k == *key),
+        SceneElement::Component(key) => doc.components.keys().position(|k| k == *key),
+        SceneElement::UnitInstance(key) => doc.unit_instances.keys().position(|k| k == *key),
+        SceneElement::Joint(key) => doc.joints.keys().position(|k| k == *key),
+        SceneElement::Origin
+        | SceneElement::BodyEdge { .. }
+        | SceneElement::BodyVertex { .. }
+        | SceneElement::ProjectedEdge { .. }
+        | SceneElement::ProjectedCorner { .. } => Some(0),
+    }
+}
+
+/// The document-unique, never-reused ID of an element (#1801): its kind plus the arena key
+/// (slot and generation) it holds, e.g. `"body#3v0"`. Removing an element bumps its slot's
+/// generation, so an ID is handed out exactly once for the life of a document — a retired one
+/// resolves to nothing rather than to whatever moved into that slot. `None` for the
+/// sub-element references (a face, an edge, a point, an axis) that have no identity of their
+/// own to hand out.
+pub fn element_id(element: &SceneElement) -> Option<String> {
+    let (kind, bits) = element_kind_and_key(element)?;
+    Some(format!("{kind}#{}v{}", bits >> 32, bits as u32))
+}
+
+/// The element an [`element_id`] string names, if it is still in the document. A well-formed
+/// ID for an element that has since been deleted reads as `None`, the same as a malformed one.
+pub fn element_from_id(doc: &crate::model::Document, id: &str) -> Option<SceneElement> {
+    let (kind, rest) = id.split_once('#')?;
+    let (slot, generation) = rest.split_once('v')?;
+    let bits = ((slot.parse::<u32>().ok()? as u64) << 32) | generation.parse::<u32>().ok()? as u64;
+    let element = element_from_kind_and_key(kind, bits)?;
+    element_live_index(doc, &element)?;
+    Some(element)
+}
+
+/// An element's ID kind name and arena key. One match rather than two, so the spelling an ID
+/// is written with and the spelling it parses back from cannot drift apart.
+fn element_kind_and_key(element: &SceneElement) -> Option<(&'static str, u64)> {
+    use SceneElement as E;
+    Some(match element {
+        E::ConstructionPlane(k) => ("plane", k.to_bits()),
+        E::Sketch(k) => ("sketch", k.to_bits()),
+        E::Line(k) => ("line", k.to_bits()),
+        E::Circle(k) => ("circle", k.to_bits()),
+        E::Constraint(k) => ("constraint", k.to_bits()),
+        E::Extrusion(k) => ("extrusion", k.to_bits()),
+        E::Body(k) => ("body", k.to_bits()),
+        E::Image(k) => ("image", k.to_bits()),
+        E::BooleanOp(k) => ("boolean_op", k.to_bits()),
+        E::MoveOp(k) => ("move_op", k.to_bits()),
+        E::MirrorOp(k) => ("mirror_op", k.to_bits()),
+        E::RepeatOp(k) => ("repeat_op", k.to_bits()),
+        E::SketchRepeatOp(k) => ("sketch_repeat_op", k.to_bits()),
+        E::SketchOffsetOp(k) => ("sketch_offset_op", k.to_bits()),
+        E::SketchMirrorOp(k) => ("sketch_mirror_op", k.to_bits()),
+        E::SketchVertexTreatmentOp(k) => ("sketch_vertex_treatment_op", k.to_bits()),
+        E::SketchSliceOp(k) => ("sketch_slice_op", k.to_bits()),
+        E::SketchText(k) => ("sketch_text", k.to_bits()),
+        E::SliceOp(k) => ("slice_op", k.to_bits()),
+        E::ShellOp(k) => ("shell_op", k.to_bits()),
+        E::EdgeTreatmentOp(k) => ("edge_treatment_op", k.to_bits()),
+        E::Revolution(k) => ("revolution", k.to_bits()),
+        E::Shape(k) => ("shape", k.to_bits()),
+        E::SweepOp(k) => ("sweep", k.to_bits()),
+        E::Loft(k) => ("loft", k.to_bits()),
+        E::Drawing(k) => ("drawing", k.to_bits()),
+        E::CrossSection(k) => ("cross_section", k.to_bits()),
+        E::Component(k) => ("component", k.to_bits()),
+        E::UnitInstance(k) => ("unit_instance", k.to_bits()),
+        E::Joint(k) => ("joint", k.to_bits()),
+        _ => return None,
+    })
+}
+
+/// The inverse of [`element_kind_and_key`]. Says nothing about whether that element is still
+/// in the document — [`element_from_id`] checks that.
+fn element_from_kind_and_key(kind: &str, bits: u64) -> Option<SceneElement> {
+    use crate::arena::Key;
+    use SceneElement as E;
+    Some(match kind {
+        "plane" => E::ConstructionPlane(Key::from_bits(bits)),
+        "sketch" => E::Sketch(Key::from_bits(bits)),
+        "line" => E::Line(Key::from_bits(bits)),
+        "circle" => E::Circle(Key::from_bits(bits)),
+        "constraint" => E::Constraint(Key::from_bits(bits)),
+        "extrusion" => E::Extrusion(Key::from_bits(bits)),
+        "body" => E::Body(Key::from_bits(bits)),
+        "image" => E::Image(Key::from_bits(bits)),
+        "boolean_op" => E::BooleanOp(Key::from_bits(bits)),
+        "move_op" => E::MoveOp(Key::from_bits(bits)),
+        "mirror_op" => E::MirrorOp(Key::from_bits(bits)),
+        "repeat_op" => E::RepeatOp(Key::from_bits(bits)),
+        "sketch_repeat_op" => E::SketchRepeatOp(Key::from_bits(bits)),
+        "sketch_offset_op" => E::SketchOffsetOp(Key::from_bits(bits)),
+        "sketch_mirror_op" => E::SketchMirrorOp(Key::from_bits(bits)),
+        "sketch_vertex_treatment_op" => E::SketchVertexTreatmentOp(Key::from_bits(bits)),
+        "sketch_slice_op" => E::SketchSliceOp(Key::from_bits(bits)),
+        "sketch_text" => E::SketchText(Key::from_bits(bits)),
+        "slice_op" => E::SliceOp(Key::from_bits(bits)),
+        "shell_op" => E::ShellOp(Key::from_bits(bits)),
+        "edge_treatment_op" => E::EdgeTreatmentOp(Key::from_bits(bits)),
+        "revolution" => E::Revolution(Key::from_bits(bits)),
+        "shape" => E::Shape(Key::from_bits(bits)),
+        "sweep" => E::SweepOp(Key::from_bits(bits)),
+        "loft" => E::Loft(Key::from_bits(bits)),
+        "drawing" => E::Drawing(Key::from_bits(bits)),
+        "cross_section" => E::CrossSection(Key::from_bits(bits)),
+        "component" => E::Component(Key::from_bits(bits)),
+        "unit_instance" => E::UnitInstance(Key::from_bits(bits)),
+        "joint" => E::Joint(Key::from_bits(bits)),
+        _ => return None,
+    })
+}

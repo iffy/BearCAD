@@ -189,6 +189,22 @@ fn run_command(
         args = script_json::positional_to_named(name, &arr)?;
     }
 
+    // Stable element ids (#1801) reach the browser as strings — there is no userdata across
+    // the JSON bridge — so rewrite any operand spelled as an id into the ordinal the
+    // instruction layer wants, before anything reads the arguments.
+    resolve_id_operands(&mut args, &state.doc)?;
+
+    // `bearcad.id(element)` reads an element's stable id back (#1801).
+    if name == "id" {
+        let element = resolve_element(
+            args.get("element").ok_or("id requires an `element`")?,
+            &state.doc,
+        )?;
+        return crate::hierarchy::element_id(&element)
+            .map(Value::String)
+            .ok_or_else(|| "that reference has no id of its own".to_string());
+    }
+
     // Read-back queries return data instead of an instruction.
     if matches!(name, "count" | "get" | "body_stats") {
         return script_json::query_from_json(name, &args, &state.doc);
@@ -681,8 +697,60 @@ fn value_to_string(v: &Value) -> Option<String> {
 }
 
 /// Resolve an element argument (a name string, `{ name }`, or `{ kind, index }`) to a
-/// `SceneElement` against the live document — the web analogue of `lua_script::resolve_element`
-/// for whole elements.
+/// Operand keys that name an element by ordinal — the ones a stable id may stand in for
+/// (#1801). Mirrors the desktop `Operands` reads; a `name` or a `path` is left alone.
+const ID_OPERAND_KEYS: &[&str] = &[
+    "index", "drawing", "revolution", "primitive", "extrusion", "body", "body_b", "sketch",
+    "sketches", "plane", "line", "lines", "circle", "circles", "polygon", "text", "image",
+    "component", "cross_section", "joint", "bodies", "images", "cutters", "path", "cuts",
+    "from", "parent", "unit", "profile_lines", "view", "a", "b", "repeat_op",
+];
+
+/// Rewrite every id-spelled operand in a call's arguments into the element's current ordinal
+/// (#1801). Recurses into nested objects and arrays, since operands like `cutters` hold
+/// element tables of their own.
+fn resolve_id_operands(args: &mut Value, doc: &Document) -> Result<(), String> {
+    match args {
+        Value::Object(map) => {
+            for (key, value) in map.iter_mut() {
+                if ID_OPERAND_KEYS.contains(&key.as_str()) {
+                    resolve_ids_in_place(value, doc)?;
+                }
+                resolve_id_operands(value, doc)?;
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                resolve_id_operands(item, doc)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Turn an id string — or a list of them — into the ordinal(s) it names. Anything that isn't
+/// an id is left exactly as it was, so names and numbers keep working.
+fn resolve_ids_in_place(value: &mut Value, doc: &Document) -> Result<(), String> {
+    match value {
+        Value::String(id) => {
+            let Some(element) = crate::hierarchy::element_from_id(doc, id) else {
+                return Ok(());
+            };
+            let ordinal = crate::hierarchy::element_live_index(doc, &element)
+                .ok_or_else(|| format!("{id} no longer exists"))?;
+            *value = Value::from(ordinal);
+        }
+        Value::Array(items) => {
+            for item in items {
+                resolve_ids_in_place(item, doc)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// The kind a bare `{ kind = … }` element selector sweeps (#1800) — the web mirror of
 /// `lua_script::kind_only_selector`. `None` when the object names one specific element.
 fn kind_only_selector(v: &Value) -> Option<String> {
@@ -700,11 +768,14 @@ fn kind_only_selector(v: &Value) -> Option<String> {
     Some(kind.to_string())
 }
 
+/// A whole `SceneElement` from a JSON element argument, resolved against the live document —
+/// the web analogue of `lua_script::resolve_element`.
 fn resolve_element(v: &Value, doc: &Document) -> Result<SceneElement, String> {
     match v {
-        Value::String(name) => {
-            find_element_by_name(doc, name).ok_or_else(|| format!("no element named '{name}'"))
-        }
+        // An id first (#1801), then a name — the two can never collide.
+        Value::String(name) => crate::hierarchy::element_from_id(doc, name)
+            .or_else(|| find_element_by_name(doc, name))
+            .ok_or_else(|| format!("no element named '{name}'")),
         Value::Object(o) => {
             if let Some(name) = o.get("name").and_then(Value::as_str) {
                 return find_element_by_name(doc, name)

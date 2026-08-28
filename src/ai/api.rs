@@ -141,7 +141,8 @@ bearcad.get{ kind, index }         --   construction_plane, extrusion, revolutio
                                    --   `count` and `get` take the same set.
 bearcad.find("name")
 bearcad.set_name(el, "name")
-bearcad.element("line", i)
+bearcad.element("line", i)         -- or bearcad.element(id) / bearcad.element(name)
+bearcad.id(el)                     -- el:id(): a stable id, unique and never reused
 bearcad.line_endpoints(i)          -- x0, y0, x1, y1
 bearcad.image_corners(i)           -- tracing image quad in world mm, live Move included
 bearcad.body_stats(i)              -- volume, triangles, bbox = { min = {x,y,z}, max = {x,y,z} }
@@ -157,6 +158,21 @@ bearcad.status()
 ```
 
 Never assume a call did what you meant: read it back and assert.
+
+## Handles
+
+A creation call hands back what it made: one element, or a list of them.
+
+```
+local sides = bearcad.rect{ x = 0, y = 0, width = 20, height = 10 }   -- four lines
+local box   = bearcad.extrude{ polygon = sides, distance = 5 }        -- the new body
+box:kind()  box:index()  box:id()  box:name()  box:exists()  tostring(box)
+```
+
+Ordinals shift when elements are deleted, and a solid op consumes the body it acts on.
+A handle does not: it names the same element until that element is gone, and then says so.
+Anywhere an index is accepted — `bodies`, `polygon`, `extrusion`, `{ kind, index }`, … —
+a handle, its `id` string, or a name works too.
 
 ## Files
 

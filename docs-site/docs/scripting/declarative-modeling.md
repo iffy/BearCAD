@@ -34,6 +34,30 @@ for mesh export. Whole-document `export_3mf` keeps each body as its own coloured
 (material → 3MF `m:colorgroup`, one filament slot per colour in Bambu Studio).
 `bearcad.export_preview(path)` writes a Home zoom-to-fit PNG (same image embedded on save).
 
+## Handles: what a call hands back
+
+Every creation call returns what it made — one element, or a list.
+
+```lua
+local sides = bearcad.rect{ width = 80, height = 50 }   -- four lines
+local box   = bearcad.extrude{ polygon = sides, distance = 10 }  -- the new body
+```
+
+Ordinals shift when elements are deleted, and a solid operation consumes the body it acts
+on. A handle doesn't: it names the same element until that element is gone.
+
+```lua
+box:kind()      -- "body"
+box:index()     -- its ordinal right now; an error once it's gone
+box:id()        -- "body#3v0" — unique in the document, never reused
+box:name()      -- its name, or nil
+box:exists()    -- false once deleted
+```
+
+Anywhere an index is accepted — `bodies`, `polygon`, `extrusion`, `{ kind, index }` — a
+handle, its `id` string, or a name works too. `bearcad.element(id)` turns an id back into a
+handle; `bearcad.id(el)` is the method spelled as a function.
+
 ## Sketch, draw, and name elements
 
 ```lua

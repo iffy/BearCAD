@@ -75,6 +75,16 @@ bearcad.exit_sketch()
 A rectangle is **four lines**, indexed in creation order (bottom, right, top, left). A
 scripted line lands unconstrained; `dimension = 50` or `dimension = "leg"` locks its length.
 
+Every creation call hands back what it made — one element, or a list — and those handles go
+anywhere an index does:
+
+```lua
+local sides = bearcad.rect{ width = 80, height = 50 }            -- four line handles
+local box   = bearcad.extrude{ polygon = sides, distance = 10 }  -- the new body
+box:id()    -- "body#3v0": unique in the document, never reused
+box:index() -- its ordinal right now; an error once it's gone
+```
+
 Construction planes:
 
 ```lua
@@ -230,7 +240,7 @@ configuration; `bearcad mcp` bridges stdio to the running app. Its tools are
    into one call is the difference between one body and several.
 3. **Assert what you built.** Geometry that silently failed looks identical to geometry
    that was never asked for.
-4. **Indices are ordinals in creation order** and shift when things are deleted. Prefer
-   names (`bearcad.find`) for anything you will refer to twice.
+4. **Indices are ordinals in creation order** and shift when things are deleted. Hold the
+   handle a creation call returned (or a name) for anything you will refer to twice.
 5. **Prefer the declarative API.** Reach for `bearcad.ui.*` only to test an interaction or
    to take a picture.
