@@ -391,6 +391,41 @@ pub fn scene_element_from_kind(
     }
 }
 
+/// Every element of a script kind name, in ordinal order (#1800) — what a `{ kind = … }`
+/// selector with no index stands for. Empty for an unknown kind, too: the caller reports both
+/// the same way.
+fn elements_of_kind(doc: &crate::model::Document, kind: &str) -> Vec<SceneElement> {
+    let mut out = Vec::new();
+    while let Some(element) = scene_element_from_kind(doc, kind, out.len()) {
+        out.push(element);
+    }
+    out
+}
+
+/// The kind a bare `{ kind = … }` selector sweeps (#1800), or `None` when the table names one
+/// specific element. `{ kind = "plane" }` is every datum plane — the way a script clears them
+/// out of a screenshot; anything else in the table (an `index`, a `name`, a face/axis/point
+/// selector) picks a single element, as before.
+fn kind_only_selector(table: &Table) -> mlua::Result<Option<String>> {
+    let Some(kind) = table.get::<Option<String>>("kind")?.or(table.get::<Option<String>>("type")?)
+    else {
+        return Ok(None);
+    };
+    for key in [
+        "index", "name", "end", "corner", "anchor", "point", "edge", "face", "axis", "drawing",
+        "view",
+    ] {
+        if table.contains_key(key)? {
+            return Ok(None);
+        }
+    }
+    // `{ kind = "origin" }` is the origin itself, not a sweep over a kind called "origin".
+    if kind.eq_ignore_ascii_case("origin") {
+        return Ok(None);
+    }
+    Ok(Some(kind))
+}
+
 fn parse_visibility(value: Value) -> mlua::Result<Option<bool>> {
     match value {
         Value::Nil => Ok(None),
@@ -3524,13 +3559,42 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "set_visible",
         lua.create_function(|lua, (element, visible): (Value, Value)| {
-            let element = resolve_element(lua, element)?;
             let visible = parse_visibility(visible)?;
+            // `{ kind = … }` alone is every element of that kind (#1800).
+            if let Value::Table(table) = &element {
+                if let Some(kind) = kind_only_selector(table)? {
+                    let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+                    let elements = elements_of_kind(unsafe { &tick.state().doc }, &kind);
+                    if elements.is_empty() {
+                        return Err(mlua::Error::external(format!(
+                            "set_visible: no '{kind}' elements — unknown kind, or none in the \
+                             document"
+                        )));
+                    }
+                    for element in elements {
+                        unsafe { tick.exec(Instruction::SetElementVisible { element, visible })? };
+                    }
+                    return Ok(());
+                }
+            }
+            let element = resolve_element(lua, element)?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe {
                 tick.exec(Instruction::SetElementVisible { element, visible },
                 )
             }
+        })?,
+    )?;
+
+    // Read an element's *effective* visibility back (#1800): its own flag, and every
+    // component it nests inside — so a script can assert that a hide landed.
+    api.set(
+        "visible",
+        lua.create_function(|lua, element: Value| {
+            let element = resolve_element(lua, element)?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            Ok(state.element_visibility.effective_visible(&state.doc, element))
         })?,
     )?;
 
@@ -6919,9 +6983,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     api.set(
         "_wait",
-        lua.create_function(|lua, frames: u32| {
+        lua.create_function(|lua, frames: Option<u32>| {
+            // `ui.wait()` defaults to one frame (#1800).
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            unsafe { tick.exec(Instruction::WaitFrames(frames)) }
+            unsafe { tick.exec(Instruction::WaitFrames(frames.unwrap_or(1))) }
         })?,
     )?;
 
@@ -8703,12 +8768,34 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // bodies ("all" or body indices), excludes (body indices) }`.
     api.set(
         "section_planes",
-        lua.create_function(|lua, view: Option<usize>| {
+        lua.create_function(|lua, view: Option<Value>| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let state = unsafe { tick.state() };
+            // The view is a cross-section: give its ordinal, or its name (#1800).
             let key = match view {
-                Some(ordinal) => state.doc.cross_sections.keys().nth(ordinal),
                 None => state.editing_cross_section,
+                Some(Value::Integer(i)) => state.doc.cross_sections.keys().nth(i as usize),
+                Some(Value::Number(n)) => state.doc.cross_sections.keys().nth(n.round() as usize),
+                Some(Value::String(s)) => {
+                    let name = s.to_str()?.to_string();
+                    let found = state
+                        .doc
+                        .cross_sections
+                        .iter()
+                        .find(|(_, v)| v.name.as_deref() == Some(name.as_str()))
+                        .map(|(k, _)| k);
+                    let found = found.ok_or_else(|| {
+                        mlua::Error::external(format!(
+                            "section_planes: no cross-section view named '{name}'"
+                        ))
+                    })?;
+                    Some(found)
+                }
+                Some(other) => {
+                    return Err(mlua::Error::external(format!(
+                        "section_planes: `view` must be a cross-section index or name, got {other:?}"
+                    )))
+                }
             };
             let out = lua.create_table()?;
             let Some(view) = key.and_then(|k| state.doc.cross_sections.get(k)) else {
@@ -12119,6 +12206,61 @@ pub mod tests {
             end
         "#,
         );
+    }
+
+    /// #1800: assorted scripting ergonomics — `ui.view("iso")`, `ui.wait()` with no
+    /// argument, and `section_planes` taking a cross-section index or name.
+    #[test]
+    fn lua_ui_ergonomic_defaults() {
+        let state = run_lua(
+            r#"
+            bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            -- "iso" is a standard view (the Home corner), not an error.
+            bearcad.ui.view("iso")
+            -- wait() defaults to one frame.
+            bearcad.ui.wait()
+            -- section_planes takes an index or a name; a bogus name is refused loudly.
+            assert(#bearcad.section_planes(0) == 0, "no cross-section yet")
+            local ok, err = pcall(bearcad.section_planes, "top")
+            assert(not ok, "an unknown cross-section name must be refused")
+            assert(tostring(err):find("no cross%-section"), "unexpected error: " .. tostring(err))
+        "#,
+        );
+        assert_eq!(state.doc.primitives.len(), 1);
+    }
+
+    /// #1800: the datum planes a document opens with are what reads as a "phantom" translucent
+    /// square in a script's screenshots, and a script had no way to sweep them out of the
+    /// picture or to check that it had. `set_visible{ kind = … }` with no index now hides
+    /// every element of that kind, and `bearcad.visible` reads the flag back.
+    #[test]
+    fn lua_set_visible_by_kind_hides_every_element_of_that_kind() {
+        let state = run_lua(
+            r#"
+            bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            assert(bearcad.count("plane") == 3, "three datum planes")
+            for i = 0, 2 do
+                assert(bearcad.visible({ kind = "plane", index = i }), "plane " .. i .. " starts visible")
+            end
+            -- No index: every plane at once.
+            bearcad.set_visible({ kind = "plane" }, false)
+            for i = 0, 2 do
+                assert(not bearcad.visible({ kind = "plane", index = i }), "plane " .. i .. " hidden")
+            end
+            -- The body is untouched by a plane-kind sweep.
+            assert(bearcad.visible({ kind = "body", index = 0 }), "body still visible")
+            -- And back again.
+            bearcad.set_visible({ kind = "plane" }, true)
+            for i = 0, 2 do
+                assert(bearcad.visible({ kind = "plane", index = i }), "plane " .. i .. " shown again")
+            end
+            -- A kind with nothing in it is refused rather than silently doing nothing.
+            local ok, err = pcall(bearcad.set_visible, { kind = "image" }, false)
+            assert(not ok, "an empty kind must be refused")
+            assert(tostring(err):find("no 'image'"), "unexpected error: " .. tostring(err))
+        "#,
+        );
+        assert_eq!(state.doc.construction_planes.len(), 3);
     }
 
     /// #189: selecting a point and a sketch origin axis, then applying Coincident, pins the

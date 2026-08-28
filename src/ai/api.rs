@@ -144,12 +144,13 @@ bearcad.set_name(el, "name")
 bearcad.element("line", i)
 bearcad.line_endpoints(i)          -- x0, y0, x1, y1
 bearcad.image_corners(i)           -- tracing image quad in world mm, live Move included
-bearcad.body_stats(i)              -- volume, triangles, bbox
+bearcad.body_stats(i)              -- volume, triangles, bbox = { min = {x,y,z}, max = {x,y,z} }
 bearcad.body_faces(i)
 bearcad.drawing_views(i)           -- a drawing's page: orientation, style, dimensions
 bearcad.body_edges(i)
 bearcad.body_cylinders(i)
 bearcad.selection()
+bearcad.visible(el)                -- effective visibility, component chain included
 bearcad.sketch_dof()
 bearcad.sketch_conflicts()
 bearcad.status()

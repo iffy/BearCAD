@@ -415,6 +415,8 @@ bearcad.set_material{ body = 1 }        -- back to the default material
 
 ```lua
 bearcad.set_visible(box, "hide")       -- "show" | "hide" | "toggle"
+bearcad.set_visible({ kind = "plane" }, false)  -- a kind with no index: all of them
+bearcad.visible(box)                   -- read it back
 bearcad.set_construction(box, true)
 -- Shadow body: hidden in the viewport (except hover/select) and omitted from export.
 bearcad.set_body_shadow{ body = 0, shadow = true }

@@ -694,6 +694,13 @@ pub fn face_view_direction(view: StandardView) -> Vec3 {
         StandardView::Left => Vec3::NEG_X,
         StandardView::Top => Vec3::Z,
         StandardView::Bottom => Vec3::NEG_Z,
+        // The isometric corner: same spherical direction the camera's Home pose uses.
+        StandardView::Iso => {
+            let (yaw, pitch) = StandardView::Iso.yaw_pitch();
+            let (sy, cy) = yaw.sin_cos();
+            let (sp, cp) = pitch.sin_cos();
+            Vec3::new(cp * cy, cp * sy, sp)
+        }
     }
 }
 

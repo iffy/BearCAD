@@ -4747,6 +4747,7 @@ fn view_script_name(view: StandardView) -> &'static str {
         StandardView::Right => "right",
         StandardView::Top => "top",
         StandardView::Bottom => "bottom",
+        StandardView::Iso => "iso",
     }
 }
 
@@ -9239,6 +9240,8 @@ pub enum CliOutcome {
     /// Print the whole Lua API reference (`bearcad api`, #1635) — what the website serves
     /// at `/bearcad-api.md`.
     ApiReference,
+    /// Print the build's version and exit (`bearcad --version`, #1800).
+    Version,
     Run(ScriptOptions),
 }
 
@@ -9346,6 +9349,7 @@ Options:
                         its own within this many seconds
   --rebuild             Discard cached tessellation and rebuild geometry
   -h, --help            Show this help and exit
+  -V, --version         Print the build version and exit
 
 Examples:
   bearcad
@@ -9383,6 +9387,14 @@ pub fn parse_cli(args: impl IntoIterator<Item = impl AsRef<str>>) -> CliOutcome 
         .any(|arg| arg == "--help" || arg == "-h")
     {
         return CliOutcome::Help;
+    }
+    // `--version` / `-V` / `version` anywhere on the line: print and exit (#1800), the same
+    // scan `--help` gets just above.
+    if args
+        .iter()
+        .any(|arg| arg == "--version" || arg == "-V" || arg == "version")
+    {
+        return CliOutcome::Version;
     }
     // Subcommands (args[0] is the program name).
     match args.get(1).map(String::as_str) {
@@ -9902,6 +9914,15 @@ mod tests {
     fn parse_cli_help_flags() {
         assert_eq!(parse_cli(["bearcad", "--help"]), CliOutcome::Help);
         assert_eq!(parse_cli(["bearcad", "-h"]), CliOutcome::Help);
+    }
+
+    /// #1800: `--version` prints and exits instead of silently launching the app.
+    #[test]
+    fn parse_cli_version_flags() {
+        assert_eq!(parse_cli(["bearcad", "--version"]), CliOutcome::Version);
+        assert_eq!(parse_cli(["bearcad", "-V"]), CliOutcome::Version);
+        assert_eq!(parse_cli(["bearcad", "version"]), CliOutcome::Version);
+        assert_ne!(parse_cli(["bearcad"]), CliOutcome::Version);
     }
 
     #[test]

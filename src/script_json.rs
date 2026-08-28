@@ -348,6 +348,7 @@ pub fn positional_to_named(name: &str, args: &[Value]) -> Result<Value, String> 
         "set_visible" => &["element", "visible"],
         "set_construction" => &["element", "construction"],
         "find" => &["name"],
+        "visible" => &["element"],
         "set_joint_rest" | "revert_joint" => &["index"],
         "revert_joints" => &[],
         _ => return Err(format!("'{name}' expects named arguments (a table)")),

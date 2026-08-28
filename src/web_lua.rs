@@ -202,6 +202,18 @@ fn run_command(
         return Ok(Value::Null);
     }
 
+    // `visible` reads an element's effective visibility back (#1800). It lives here rather
+    // than in `query_from_json` because the flags hang off the app state, not the document.
+    if name == "visible" {
+        let element = resolve_element(
+            args.get("element").ok_or("visible requires an `element`")?,
+            &state.doc,
+        )?;
+        return Ok(Value::Bool(
+            state.element_visibility.effective_visible(&state.doc, element),
+        ));
+    }
+
     // `find` resolves a name to an element handle `{ kind, index }` (or null).
     if name == "find" {
         let query = args
@@ -219,6 +231,35 @@ fn run_command(
 
     // Element-referencing verbs resolve their `element` argument against the live document
     // (by name or `{kind, index}`), which instruction_from_json can't do on its own.
+    // `set_visible{ kind = … }` with no index sweeps every element of that kind (#1800) —
+    // the same bulk form the desktop API takes.
+    if name == "set_visible" {
+        if let Some(kind) = args.get("element").and_then(kind_only_selector) {
+            let visible = parse_visible(args.get("visible"));
+            let mut elements = Vec::new();
+            while let Some(element) =
+                script_json::scene_element_from_kind(&state.doc, &kind, elements.len())
+            {
+                elements.push(element);
+            }
+            if elements.is_empty() {
+                return Err(format!(
+                    "set_visible: no '{kind}' elements — unknown kind, or none in the document"
+                ));
+            }
+            for element in elements {
+                exec(
+                    runner,
+                    Instruction::SetElementVisible { element, visible },
+                    state,
+                    synthetic,
+                    viewport,
+                    ctx,
+                )?;
+            }
+            return Ok(Value::Null);
+        }
+    }
     if matches!(name, "select" | "set_name" | "set_visible" | "set_construction") {
         let element = resolve_element(
             args.get("element").ok_or_else(|| format!("{name} requires an `element`"))?,
@@ -642,6 +683,23 @@ fn value_to_string(v: &Value) -> Option<String> {
 /// Resolve an element argument (a name string, `{ name }`, or `{ kind, index }`) to a
 /// `SceneElement` against the live document — the web analogue of `lua_script::resolve_element`
 /// for whole elements.
+/// The kind a bare `{ kind = … }` element selector sweeps (#1800) — the web mirror of
+/// `lua_script::kind_only_selector`. `None` when the object names one specific element.
+fn kind_only_selector(v: &Value) -> Option<String> {
+    let o = v.as_object()?;
+    let kind = o.get("kind").or_else(|| o.get("type"))?.as_str()?;
+    let names_one = [
+        "index", "name", "end", "corner", "anchor", "point", "edge", "face", "axis", "drawing",
+        "view",
+    ]
+    .iter()
+    .any(|key| o.contains_key(*key));
+    if names_one || kind.eq_ignore_ascii_case("origin") {
+        return None;
+    }
+    Some(kind.to_string())
+}
+
 fn resolve_element(v: &Value, doc: &Document) -> Result<SceneElement, String> {
     match v {
         Value::String(name) => {

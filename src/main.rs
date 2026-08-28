@@ -426,6 +426,10 @@ fn main() -> eframe::Result<()> {
             script::print_usage();
             return Ok(());
         }
+        script::CliOutcome::Version => {
+            println!("BearCAD {}", full_version());
+            return Ok(());
+        }
         script::CliOutcome::InstallCli => {
             run_cli_action(cli_install::run_install());
             return Ok(());

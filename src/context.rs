@@ -9772,6 +9772,8 @@ fn orientation_pick_to_drawing(
             S::Right => O::Right,
             S::Top => O::Top,
             S::Bottom => O::Bottom,
+            // An isometric pick maps to the drawing's isometric orientation.
+            S::Iso => O::Isometric,
         },
         // A bear edge/corner click now picks that specific view (#344), not a fixed isometric.
         crate::view_cube::OrientationPick::Edge(id) => O::Edge(match id {

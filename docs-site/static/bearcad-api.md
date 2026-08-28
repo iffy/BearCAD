@@ -118,12 +118,13 @@ bearcad.set_name(el, "name")
 bearcad.element("line", i)
 bearcad.line_endpoints(i)          -- x0, y0, x1, y1
 bearcad.image_corners(i)           -- tracing image quad in world mm, live Move included
-bearcad.body_stats(i)              -- volume, triangles, bbox
+bearcad.body_stats(i)              -- volume, triangles, bbox = { min = {x,y,z}, max = {x,y,z} }
 bearcad.body_faces(i)
 bearcad.drawing_views(i)           -- a drawing's page: orientation, style, dimensions
 bearcad.body_edges(i)
 bearcad.body_cylinders(i)
 bearcad.selection()
+bearcad.visible(el)                -- effective visibility, component chain included
 bearcad.sketch_dof()
 bearcad.sketch_conflicts()
 bearcad.status()
@@ -312,7 +313,7 @@ bearcad.revert_joints()
 bearcad.revolve{ circle, circles, polygon, axis, symmetric, bodies, body, line, revolutions, angle, pitch, offset, gap, name }
 bearcad.save(path?)
 bearcad.section_plane{ view, plane, origin, normal, offset, roll, flip, bodies, exclude_bodies }
-bearcad.section_planes(view)
+bearcad.section_planes(view?)   -- view: cross-section index or name; omitted = the view being edited
 bearcad.select(…)
 bearcad.selection()
 bearcad.session_log()
@@ -327,7 +328,7 @@ bearcad.set_material{ body, material }
 bearcad.set_name(element, name)
 bearcad.set_unit_parameter{ instance, name, value, expression }
 bearcad.set_units{ length, angle, component, sketch }
-bearcad.set_visible(element, visible)
+bearcad.set_visible(element, visible)   -- element = { kind = "plane" } (no index): every element of that kind
 bearcad.shell{ bodies, faces, thickness, name }
 bearcad.sketch_conflicts(sketch?)
 bearcad.sketch_dof(sketch?)
@@ -454,4 +455,5 @@ bearcad.undo()
 bearcad.unit_link(unit, mode)
 bearcad.unit_override{ instance, name, value, expression }
 bearcad.version()
+bearcad.visible(element)   -- effective visibility, component chain included
 ```

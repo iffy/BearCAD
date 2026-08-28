@@ -149,7 +149,7 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.revolve"                     , "bearcad.revolve{ circle, circles, polygon, axis, symmetric, bodies, body, line, revolutions, angle, pitch, offset, gap, name }"),
     ("bearcad.save"                        , "bearcad.save(path?)"),
     ("bearcad.section_plane"               , "bearcad.section_plane{ view, plane, origin, normal, offset, roll, flip, bodies, exclude_bodies }"),
-    ("bearcad.section_planes"              , "bearcad.section_planes(view)"),
+    ("bearcad.section_planes"              , "bearcad.section_planes(view?)   -- view: cross-section index or name; omitted = the view being edited"),
     ("bearcad.edit_section_plane"          , "bearcad.edit_section_plane{ view, cut, offset, roll, flip, bodies, exclude_bodies }"),
     ("bearcad.delete_section_plane"        , "bearcad.delete_section_plane{ view, cut }"),
     ("bearcad.select"                      , "bearcad.select(…)"),
@@ -166,7 +166,7 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.set_name"                    , "bearcad.set_name(element, name)"),
     ("bearcad.set_unit_parameter"          , "bearcad.set_unit_parameter{ instance, name, value, expression }"),
     ("bearcad.set_units"                   , "bearcad.set_units{ length, angle, component, sketch }"),
-    ("bearcad.set_visible"                 , "bearcad.set_visible(element, visible)"),
+    ("bearcad.set_visible"                 , "bearcad.set_visible(element, visible)   -- element = { kind = \"plane\" } (no index): every element of that kind"),
     ("bearcad.shell"                       , "bearcad.shell{ bodies, faces, thickness, name }"),
     ("bearcad.sketch_conflicts"            , "bearcad.sketch_conflicts(sketch?)"),
     ("bearcad.sketch_dof"                  , "bearcad.sketch_dof(sketch?)"),
@@ -293,4 +293,5 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.unit_link"                   , "bearcad.unit_link(unit, mode)"),
     ("bearcad.unit_override"               , "bearcad.unit_override{ instance, name, value, expression }"),
     ("bearcad.version"                     , "bearcad.version()"),
+    ("bearcad.visible"                     , "bearcad.visible(element)   -- effective visibility, component chain included"),
 ];

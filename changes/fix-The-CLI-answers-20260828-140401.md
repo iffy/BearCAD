@@ -1,0 +1,1 @@
+The CLI answers `bearcad --version` instead of launching, `bearcad.ui.view("iso")` and `bearcad.ui.wait()` work as documented, `bearcad.section_planes` takes a cross-section index or name, `bearcad.set_visible({ kind = "plane" }, false)` hides every element of a kind, and the new `bearcad.visible(el)` reads visibility back.

@@ -18,6 +18,8 @@ pub enum StandardView {
     Right,
     Top,
     Bottom,
+    /// The isometric corner view — the Home orientation (#1800).
+    Iso,
 }
 
 impl StandardView {
@@ -29,6 +31,7 @@ impl StandardView {
             "right" | "r" => Some(Self::Right),
             "top" | "t" => Some(Self::Top),
             "bottom" | "bot" | "bo" => Some(Self::Bottom),
+            "iso" | "isometric" => Some(Self::Iso),
             _ => None,
         }
     }
@@ -49,6 +52,8 @@ impl StandardView {
             Self::Left => (PI, 0.0),
             Self::Top => (-FRAC_PI_2, FRAC_PI_2),
             Self::Bottom => (FRAC_PI_2, -FRAC_PI_2),
+            // Same corner the app opens at (#1800): the Home isometric orientation.
+            Self::Iso => (ISOMETRIC_YAW, ISOMETRIC_PITCH),
         }
     }
 }
