@@ -137,15 +137,21 @@ pub enum ShadingMode {
     /// flat/Lambert-ish shading `Solid` uses — a matte/satin "painted object" look (#83). No
     /// materials/textures yet; every body uses the same fixed gloss.
     Realistic,
+    /// Pencil on paper (#1805): a white ground, graphite strokes, and every line drawn a
+    /// little off — overshot at the corners, wobbling along its length, gone over twice — the
+    /// way a hand draws it. Bodies read as their outlines with a paper-toned fill that hides
+    /// what is behind them; the contact shadow is hatched rather than smeared.
+    LoosePencil,
 }
 
 /// All shading modes, in the order they should list in the HUD popup.
-pub const SHADING_MODES: [ShadingMode; 5] = [
+pub const SHADING_MODES: [ShadingMode; 6] = [
     ShadingMode::Wireframe,
     ShadingMode::TransparentSolid,
     ShadingMode::Solid,
     ShadingMode::SolidWireframe,
     ShadingMode::Realistic,
+    ShadingMode::LoosePencil,
 ];
 
 impl ShadingMode {
@@ -158,6 +164,7 @@ impl ShadingMode {
                 Some(Self::SolidWireframe)
             }
             "realistic" | "matte" | "satin" => Some(Self::Realistic),
+            "loose_pencil" | "pencil" | "sketchy" => Some(Self::LoosePencil),
             _ => None,
         }
     }
@@ -169,6 +176,7 @@ impl ShadingMode {
             Self::Solid => "solid",
             Self::SolidWireframe => "solid_wireframe",
             Self::Realistic => "realistic",
+            Self::LoosePencil => "loose_pencil",
         }
     }
 }
@@ -2018,6 +2026,19 @@ mod tests {
         assert_eq!(cam.shading_mode(), ShadingMode::Wireframe);
         cam.set_shading_mode(ShadingMode::SolidWireframe);
         assert_eq!(cam.shading_mode(), ShadingMode::SolidWireframe);
+    }
+
+    /// #1805: a pencil view — white paper, graphite strokes, everything drawn by hand.
+    #[test]
+    fn loose_pencil_is_a_shading_mode_of_its_own() {
+        assert!(SHADING_MODES.contains(&ShadingMode::LoosePencil));
+        assert_eq!(ShadingMode::LoosePencil.script_name(), "loose_pencil");
+        for alias in ["loose_pencil", "pencil", "sketchy"] {
+            assert_eq!(ShadingMode::from_name(alias), Some(ShadingMode::LoosePencil));
+        }
+        let mut cam = Camera::default();
+        cam.set_shading_mode(ShadingMode::LoosePencil);
+        assert_eq!(cam.shading_mode(), ShadingMode::LoosePencil);
     }
 
     #[test]

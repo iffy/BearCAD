@@ -44,7 +44,8 @@ bearcad.ui.view("front")                -- standard view; waits for the camera a
 bearcad.ui.view("edge", "front_top")    -- a view-bear edge
 bearcad.ui.view_home()
 bearcad.ui.toggle_projection()
-bearcad.ui.shading("solid_wireframe")   -- "wireframe" | "transparent" | "solid" | "solid_wireframe"
+bearcad.ui.shading("solid_wireframe")   -- "wireframe" | "transparent" | "solid"
+                                        -- "solid_wireframe" | "realistic" | "loose_pencil"
 bearcad.ui.ground("off")                -- ground plane: "grid" | "solid" | "off"
 ```
 
@@ -53,7 +54,8 @@ scripted screenshots deterministic; with no pose fields, `camera{}` is a pure re
 
 ```lua
 local c = bearcad.ui.camera{}           -- { yaw, pitch, distance, target = {x, y, z},
-                                        --   projection = "perspective" | "orthographic" }
+                                        --   projection = "perspective" | "orthographic",
+                                        --   shading, ground }
 bearcad.ui.camera{ yaw = 45, distance = 200 }         -- angles are degrees
 bearcad.ui.camera{ target = {20, 15, 5}, pitch = -35 }
 bearcad.ui.zoom_fit()                   -- frame selection or document (short glide)

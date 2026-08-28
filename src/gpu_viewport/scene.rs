@@ -218,6 +218,178 @@ pub const SOLID_GROUND_COLOR: Color32 = Color32::from_rgb(42, 50, 64);
 pub const GROUND_SHADOW_FILL: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 90);
 /// Extra world-mm around the caster AABB when framing the directional shadow map.
 const SHADOW_MAP_PADDING: f32 = 8.0;
+
+// ---------------------------------------------------------------------------------------
+// Loose pencil (#1805)
+// ---------------------------------------------------------------------------------------
+
+/// Paper the `LoosePencil` scene is drawn on: warm white, not the theme's near-black.
+pub const PENCIL_PAPER: Color32 = Color32::from_rgb(250, 249, 245);
+/// Graphite: a soft blue-black, never pure black — pure black reads as ink, not pencil.
+pub const PENCIL_GRAPHITE: Color32 = Color32::from_rgb(58, 60, 68);
+/// The faint tone inside a body, so a near edge hides a far one without the fill reading as
+/// paint. A hair off the paper, which is what a pencil drawing's enclosed areas look like.
+pub const PENCIL_BODY_FILL: Color32 = Color32::from_rgb(240, 239, 234);
+/// Ruled guide lines on the paper: the ground grid, barely there.
+pub const PENCIL_GRID: Color32 = Color32::from_rgb(222, 220, 212);
+const PENCIL_GRID_AXIS: Color32 = Color32::from_rgb(196, 193, 184);
+/// Coloured pencil for the world axes: the same three hues, muted to sit on paper.
+const PENCIL_X_AXIS: Color32 = Color32::from_rgb(184, 96, 92);
+const PENCIL_Y_AXIS: Color32 = Color32::from_rgb(104, 152, 104);
+const PENCIL_Z_AXIS: Color32 = Color32::from_rgb(96, 122, 176);
+const PENCIL_LINE_WIDTH_PX: f32 = 1.5;
+/// How many times a stroke is gone over. Two is the hand-drawn tell; more turns to mud.
+const PENCIL_PASSES: usize = 2;
+/// Joints along one stroke. Each one is nudged sideways, so the line bows rather than bends.
+const PENCIL_STROKE_STEPS: usize = 5;
+/// Sideways wobble, as a fraction of the stroke's own length, capped so a long edge bows the
+/// same visible amount as a short one rather than swinging wildly.
+const PENCIL_WOBBLE: f32 = 0.02;
+const PENCIL_WOBBLE_MAX_MM: f32 = 0.9;
+/// How far a stroke runs past the corner it should stop at — the other hand-drawn tell.
+const PENCIL_OVERSHOOT: f32 = 0.035;
+const PENCIL_OVERSHOOT_MAX_MM: f32 = 1.6;
+/// Spacing of the hatch strokes that stand in for a contact shadow, in world mm.
+const PENCIL_HATCH_SPACING_MM: f32 = 2.2;
+/// Hatch strokes run at this angle in the ground plane — off-axis, the way a hand shades.
+const PENCIL_HATCH_ANGLE_RAD: f32 = 0.6;
+const PENCIL_HATCH_WIDTH_PX: f32 = 1.3;
+/// Graphite laid down lightly — premultiplied, so it composites as a ~45%-coverage stroke.
+const PENCIL_HATCH_COLOR: Color32 = Color32::from_rgba_premultiplied(26, 27, 31, 118);
+
+/// A repeatable number in `-1..1` from an integer seed. The point is repeatability: a wobble
+/// re-rolled every frame would make the whole drawing crawl as the camera moved, which is
+/// unusable. Keying it to the stroke's own endpoints means the same edge wobbles the same way
+/// from every angle, and two edges that meet at a corner wobble differently.
+fn pencil_noise(seed: u32) -> f32 {
+    // A cheap integer hash (Wang/xorshift finalizer), then map the top bits into -1..1.
+    let mut h = seed.wrapping_mul(0x9E37_79B9);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x85EB_CA6B);
+    h ^= h >> 13;
+    h = h.wrapping_mul(0xC2B2_AE35);
+    h ^= h >> 16;
+    (h as f32 / u32::MAX as f32) * 2.0 - 1.0
+}
+
+/// A seed for one joint of one stroke: the segment's endpoints (quantized to a micron so
+/// floating-point noise doesn't reseed it), the joint index, and which pass this is.
+fn pencil_seed(a: Vec3, b: Vec3, joint: usize, pass: usize) -> u32 {
+    let q = |v: f32| (v * 1000.0).round() as i32 as u32;
+    let mut h = 0x811C_9DC5u32;
+    for value in [a.x, a.y, a.z, b.x, b.y, b.z] {
+        h = (h ^ q(value)).wrapping_mul(0x0100_0193);
+    }
+    (h ^ (joint as u32).wrapping_mul(0x27D4_EB2F)).wrapping_add((pass as u32).wrapping_mul(0x165667B1))
+}
+
+/// One hand-drawn pass over the segment `a`–`b`: overshot at both ends and bowed along its
+/// length, as a polyline to stroke.
+fn pencil_stroke(a: Vec3, b: Vec3, pass: usize) -> Vec<Vec3> {
+    let along = b - a;
+    let length = along.length();
+    if length < 1e-6 {
+        return vec![a, b];
+    }
+    let dir = along / length;
+    // Two perpendiculars, so the wobble can go any way around the segment and still read
+    // from whatever angle the camera is at.
+    let helper = if dir.z.abs() < 0.9 { Vec3::Z } else { Vec3::X };
+    let u = dir.cross(helper).normalize_or_zero();
+    let v = dir.cross(u);
+
+    let wobble = (length * PENCIL_WOBBLE).min(PENCIL_WOBBLE_MAX_MM);
+    let overshoot = (length * PENCIL_OVERSHOOT).min(PENCIL_OVERSHOOT_MAX_MM);
+    let start = -overshoot * pencil_noise(pencil_seed(a, b, usize::MAX, pass)).abs();
+    let end = length + overshoot * pencil_noise(pencil_seed(b, a, usize::MAX, pass)).abs();
+
+    (0..=PENCIL_STROKE_STEPS)
+        .map(|joint| {
+            let t = joint as f32 / PENCIL_STROKE_STEPS as f32;
+            let point = a + dir * (start + (end - start) * t);
+            // The ends stay put (a corner is a corner); the middle is free to bow.
+            let bow = (std::f32::consts::PI * t).sin();
+            let seed = pencil_seed(a, b, joint, pass);
+            point
+                + u * (pencil_noise(seed) * wobble * bow)
+                + v * (pencil_noise(seed ^ 0x5BF0_3635) * wobble * bow)
+        })
+        .collect()
+}
+
+/// Where the hatch strokes standing in for a body's contact shadow start and end (#1805).
+/// The caster's ground-plane footprint is scanned by parallel lines `PENCIL_HATCH_SPACING_MM`
+/// apart; each line's span across the footprint becomes one stroke, so the hatch fills the
+/// shadow's shape rather than a box around it.
+fn pencil_hatch_segments(footprint: &[[Vec3; 3]]) -> Vec<(Vec3, Vec3)> {
+    if footprint.is_empty() {
+        return Vec::new();
+    }
+    let (sin, cos) = PENCIL_HATCH_ANGLE_RAD.sin_cos();
+    // Hatch direction and the axis the scan lines advance along.
+    let along = glam::Vec2::new(cos, sin);
+    let across = glam::Vec2::new(-sin, cos);
+    let project = |p: Vec3| glam::Vec2::new(p.x, p.y);
+
+    let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+    for tri in footprint {
+        for p in tri {
+            let d = project(*p).dot(across);
+            lo = lo.min(d);
+            hi = hi.max(d);
+        }
+    }
+    if !lo.is_finite() || !hi.is_finite() {
+        return Vec::new();
+    }
+    // A degenerate or enormous footprint would ask for an unbounded number of strokes.
+    let count = (((hi - lo) / PENCIL_HATCH_SPACING_MM).ceil() as i32).clamp(0, 400);
+
+    let mut out = Vec::new();
+    for i in 0..count {
+        let offset = lo + (i as f32 + 0.5) * PENCIL_HATCH_SPACING_MM;
+        // Every crossing of this scan line with the footprint's triangles, as distances
+        // along the hatch direction; consecutive pairs bound the covered spans.
+        let mut spans: Vec<(f32, f32)> = Vec::new();
+        for tri in footprint {
+            let mut hits: Vec<f32> = Vec::new();
+            for e in 0..3 {
+                let (p, q) = (project(tri[e]), project(tri[(e + 1) % 3]));
+                let (dp, dq) = (p.dot(across) - offset, q.dot(across) - offset);
+                if (dp > 0.0) == (dq > 0.0) || (dp - dq).abs() < 1e-9 {
+                    continue;
+                }
+                let t = dp / (dp - dq);
+                hits.push((p + (q - p) * t).dot(along));
+            }
+            if hits.len() >= 2 {
+                hits.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                spans.push((hits[0], hits[hits.len() - 1]));
+            }
+        }
+        if spans.is_empty() {
+            continue;
+        }
+        // Merge the per-triangle spans so a stroke crosses the whole footprint in one go
+        // rather than restarting at every internal triangle edge.
+        spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut merged = vec![spans[0]];
+        for &(s, e) in &spans[1..] {
+            let last = merged.last_mut().expect("seeded above");
+            if s <= last.1 + 1e-3 {
+                last.1 = last.1.max(e);
+            } else {
+                merged.push((s, e));
+            }
+        }
+        let point = |d: f32| {
+            let p = across * offset + along * d;
+            Vec3::new(p.x, p.y, 0.0)
+        };
+        out.extend(merged.into_iter().map(|(s, e)| (point(s), point(e))));
+    }
+    out
+}
 /// On-screen width of the origin X/Y/Z axes, in pixels (#1072).
 pub const ORIGIN_AXIS_WIDTH_PX: f32 = 2.0;
 /// Hover thickness for a world origin axis (#1124) — same as [`push_segment_hover`].
@@ -525,6 +697,26 @@ impl Default for ViewportPalette {
             construction_plane_fill: PLANE_FILL_RGBA,
             construction_plane_opacity: DEFAULT_CONSTRUCTION_PLANE_OPACITY,
             section_hatch: Color32::from_rgb(70, 70, 70),
+        }
+    }
+}
+
+impl ViewportPalette {
+    /// The palette a shading mode draws in (#1805). Every mode but `LoosePencil` uses the
+    /// theme's own colours; the pencil view swaps the ground out for paper and the grid for
+    /// faint ruled guides, so a drawing is a drawing all the way to its background.
+    pub fn for_shading(self, mode: crate::camera::ShadingMode) -> Self {
+        match mode {
+            crate::camera::ShadingMode::LoosePencil => Self {
+                background: PENCIL_PAPER,
+                grid: PENCIL_GRID,
+                grid_axis: PENCIL_GRID_AXIS,
+                x_axis: PENCIL_X_AXIS,
+                y_axis: PENCIL_Y_AXIS,
+                z_axis: PENCIL_Z_AXIS,
+                ..self
+            },
+            _ => self,
         }
     }
 }
@@ -853,10 +1045,12 @@ pub struct ViewportSceneInput<'a> {
 impl ViewportScene {
     pub fn build(input: &ViewportSceneInput<'_>) -> Self {
         let vp = input.cam.view_proj(input.viewport);
+        // The shading mode gets the last word on colour (#1805): `LoosePencil` draws on paper.
+        let palette = input.palette.for_shading(input.cam.shading_mode());
         let mut scene = Self {
             view_proj: vp,
             eye: input.cam.eye(),
-            clear_color: color32_to_gpu(input.palette.background),
+            clear_color: color32_to_gpu(palette.background),
             ..Default::default()
         };
         // Tracing images (#170): a textured quad per visible image on its host plane.
@@ -891,7 +1085,7 @@ impl ViewportScene {
             input.viewport,
             &vp,
             sketch_dimmed,
-            &input.palette,
+            &palette,
             input.doc.default_length_unit,
         );
 
@@ -917,11 +1111,11 @@ impl ViewportScene {
                 ci,
                 input.cam,
                 health_tint_color(
-                    sketch_color(input.palette.rect_line, dim),
+                    sketch_color(palette.rect_line, dim),
                     input.document_health.element_status(element.clone()),
                 ),
                 health_tint_color(
-                    sketch_color(input.palette.construction, dim),
+                    sketch_color(palette.construction, dim),
                     input.document_health.element_status(element),
                 ),
                 shape_fill_depth_bias_laned(ci.index() as usize, 1),
@@ -960,11 +1154,11 @@ impl ViewportScene {
                     normal,
                     input.cam,
                     health_tint_color(
-                        sketch_color(input.palette.rect_line, dim),
+                        sketch_color(palette.rect_line, dim),
                         input.document_health.element_status(element.clone()),
                     ),
                     health_tint_color(
-                        sketch_color(input.palette.construction, dim),
+                        sketch_color(palette.construction, dim),
                         input.document_health.element_status(element),
                     ),
                     all_construction,
@@ -1366,6 +1560,22 @@ impl ViewportScene {
                     // its own projection (#1476).
                     mesh.push_ground_shadow(solid, input.cam);
                 }
+                // Pencil on paper (#1805): a flat paper-toned fill so a near edge hides a far
+                // one — a drawing's enclosed areas are paper, not paint — and then every
+                // feature edge drawn by hand over the top. The body colour is deliberately
+                // ignored: a pencil has one colour.
+                crate::camera::ShadingMode::LoosePencil => {
+                    mesh.push_solid_flat(solid, PENCIL_BODY_FILL, &coplanar_planes, input.cam);
+                    let edges = crate::extrude::body_feature_edges(input.doc, bi);
+                    mesh.push_pencil_edges(
+                        solid,
+                        &edges,
+                        input.cam,
+                        input.viewport,
+                        &vp,
+                    );
+                    mesh.push_pencil_ground_hatch(solid, input.cam, input.viewport, &vp);
+                }
             }
         }
         // Imported unit instances (#722/#724) render through the ordinary body loop above:
@@ -1448,15 +1658,15 @@ impl ViewportScene {
                 .and_then(|s| input.doc.sketch_face(s.sketch));
             let active = session_face == Some(FaceId::ConstructionPlane(i));
             let color = if active {
-                input.palette.dim_edge_highlight
+                palette.dim_edge_highlight
             } else {
-                input.palette.construction_plane_fill
+                palette.construction_plane_fill
             };
             plane_draws.push((i, plane.clone(), color, plane_camera_depth(plane, input.cam)));
         }
         plane_draws.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
         mesh.set_index_layer(MeshIndexLayer::PlaneFill);
-        let plane_opacity = input.palette.construction_plane_opacity;
+        let plane_opacity = palette.construction_plane_opacity;
         for (i, plane, color, _) in plane_draws {
             mesh.push_plane(&plane, i, color, plane_opacity, input.cam);
         }
@@ -1480,15 +1690,15 @@ impl ViewportScene {
             let element = SceneElement::Line(li);
             let dim = input.sketch_session.is_some_and(|s| line.sketch != s.sketch);
             let base = if line.projection.is_some() {
-                sketch_color(input.palette.projection, dim)
+                sketch_color(palette.projection, dim)
             } else if line.construction {
-                sketch_color(input.palette.construction, dim)
+                sketch_color(palette.construction, dim)
             } else if constrained_lines.contains(&li) {
-                sketch_color(input.palette.rect_line_constrained, dim)
+                sketch_color(palette.rect_line_constrained, dim)
             } else {
                 // #1149/#1153/#1167: body-face strokes contrast the face (and brighten in sketch).
                 solid_sketch_stroke_color(
-                    &input.palette,
+                    &palette,
                     input.doc,
                     line.sketch,
                     dim,
@@ -1550,10 +1760,10 @@ impl ViewportScene {
             let dim = input.sketch_session.is_some_and(|s| text.sketch != s.sketch);
             let selected = input.selection.is_selected(SceneElement::SketchText(ti));
             let color = if selected {
-                input.palette.rect_line_constrained
+                palette.rect_line_constrained
             } else {
                 solid_sketch_stroke_color(
-                    &input.palette,
+                    &palette,
                     input.doc,
                     text.sketch,
                     dim,
@@ -1581,7 +1791,7 @@ impl ViewportScene {
             // midpoints, and centre — pickable with the Constraint tool to hold the text to
             // other geometry.
             if selected {
-                let anchor_color = input.palette.preview;
+                let anchor_color = palette.preview;
                 for &pt in &crate::text::sketch_text_anchor_points(text) {
                     let world = {
                         let rx = pt.0 * cos - pt.1 * sin + text.origin.0;
@@ -1632,7 +1842,7 @@ impl ViewportScene {
             mesh.set_index_layer(MeshIndexLayer::Gizmo);
             // Handles draw in the sketch blue; a hovered/dragged/selected handle turns
             // the gold pick-highlight color and grows a little (#472).
-            let handle_color = input.palette.rect_line;
+            let handle_color = palette.rect_line;
             let highlight_color = crate::construction::PICK_HOVER_RGBA;
             for (li, line) in input.doc.lines.iter() {
                 if line.sketch != session.sketch {
@@ -1712,7 +1922,7 @@ impl ViewportScene {
                 &vp,
                 health_tint_color(
                     solid_sketch_stroke_color(
-                        &input.palette,
+                        &palette,
                         input.doc,
                         circle.sketch,
                         dim,
@@ -1721,7 +1931,7 @@ impl ViewportScene {
                     input.document_health.element_status(element.clone()),
                 ),
                 health_tint_color(
-                    sketch_color(input.palette.construction, dim),
+                    sketch_color(palette.construction, dim),
                     input.document_health.element_status(element),
                 ),
             );
@@ -1744,7 +1954,7 @@ impl ViewportScene {
                     Some(ViewportHoverHighlight::Element(SceneElement::Origin))
                 );
                 let (color, size) = if selected {
-                    (input.palette.dim_edge_highlight, 8.0)
+                    (palette.dim_edge_highlight, 8.0)
                 } else if hovered {
                     (input.hover_color, 7.0)
                 } else {
@@ -1765,8 +1975,8 @@ impl ViewportScene {
                 let (half_w, half_h) = input.cam.viewport_half_extents(aspect);
                 let axis_hl = half_w.hypot(half_h) * 2.5;
                 for (axis, dir, base) in [
-                    (SketchAxis::X, frame.u_axis, input.palette.x_axis),
-                    (SketchAxis::Y, frame.v_axis, input.palette.y_axis),
+                    (SketchAxis::X, frame.u_axis, palette.x_axis),
+                    (SketchAxis::Y, frame.v_axis, palette.y_axis),
                 ] {
                     let el = SceneElement::FaceEdge(ConstraintLine::OriginAxis(axis));
                     let selected = input.selection.is_selected(el.clone());
@@ -1775,7 +1985,7 @@ impl ViewportScene {
                         Some(ViewportHoverHighlight::Element(e)) if *e == el
                     );
                     let (color, width) = if selected {
-                        (input.palette.dim_edge_highlight, 3.0)
+                        (palette.dim_edge_highlight, 3.0)
                     } else if hovered {
                         (input.hover_color, 2.5)
                     } else {
@@ -1815,11 +2025,11 @@ impl ViewportScene {
                             Some(ViewportHoverHighlight::Element(e)) if *e == el
                         );
                         let (color, size) = if selected {
-                            (input.palette.dim_edge_highlight, 6.0)
+                            (palette.dim_edge_highlight, 6.0)
                         } else if hovered {
                             (input.hover_color, 5.5)
                         } else {
-                            (input.palette.preview, 4.5)
+                            (palette.preview, 4.5)
                         };
                         mesh.push_point_marker(
                             world,
@@ -1842,7 +2052,7 @@ impl ViewportScene {
             input.cam,
             input.viewport,
             &vp,
-            input.palette.dim_edge_highlight,
+            palette.dim_edge_highlight,
         );
 
         // Destructive (side-B / cut) bodies read by their red translucent fill alone
@@ -1856,7 +2066,7 @@ impl ViewportScene {
                     graphics,
                     input
                         .constraint_connector_color
-                        .unwrap_or(input.palette.dim_edge_highlight),
+                        .unwrap_or(palette.dim_edge_highlight),
                     input.cam,
                     input.viewport,
                     &vp,
@@ -1868,7 +2078,7 @@ impl ViewportScene {
             mesh.push_face_highlight(
                 input.doc,
                 face,
-                input.palette.dim_edge_highlight,
+                palette.dim_edge_highlight,
                 input.cam,
             );
         }
@@ -1888,15 +2098,15 @@ impl ViewportScene {
                 input.cam,
                 input.viewport,
                 &vp,
-                input.palette.preview,
-                input.palette.construction,
+                palette.preview,
+                palette.construction,
             );
         }
         if let Some(line) = input.preview_line.as_ref() {
             let color = if line.construction {
-                input.palette.construction
+                palette.construction
             } else {
-                input.palette.preview
+                palette.preview
             };
             if let Some((a, b)) = line_world_endpoints(input.doc, line) {
                 if line.construction {
@@ -1916,9 +2126,9 @@ impl ViewportScene {
         }
         if let Some(circle) = input.preview_circle.as_ref() {
             let solid = if circle.construction {
-                input.palette.construction
+                palette.construction
             } else {
-                input.palette.preview
+                palette.preview
             };
             // A preview circle isn't in the document yet, so it has no key of its own; the
             // callee only uses this for a depth lane (#1055).
@@ -1930,7 +2140,7 @@ impl ViewportScene {
                 input.viewport,
                 &vp,
                 solid,
-                input.palette.construction,
+                palette.construction,
                 PREVIEW_FILL_DEPTH_BIAS,
             );
         }
@@ -1942,7 +2152,7 @@ impl ViewportScene {
             mesh.push_dashed_line_segment(
                 a,
                 b,
-                input.palette.preview,
+                palette.preview,
                 1.5,
                 input.cam,
                 input.viewport,
@@ -1963,11 +2173,11 @@ impl ViewportScene {
         for &(a, b, dashed) in &input.sketch_ghost_lines {
             if dashed {
                 mesh.push_dashed_line_segment(
-                    a, b, input.palette.preview, 1.5, input.cam, input.viewport, &vp,
+                    a, b, palette.preview, 1.5, input.cam, input.viewport, &vp,
                 );
             } else {
                 mesh.push_line_segment(
-                    a, b, input.palette.preview, 1.5, input.cam, input.viewport, &vp,
+                    a, b, palette.preview, 1.5, input.cam, input.viewport, &vp,
                 );
             }
         }
@@ -1996,11 +2206,11 @@ impl ViewportScene {
             let corners = crate::construction::plane_corners(&plane);
             mesh.push_quad_fill(
                 corners,
-                fill_color(input.palette.preview, input.palette.construction_plane_opacity),
+                fill_color(palette.preview, palette.construction_plane_opacity),
             );
             mesh.push_quad_outline(
                 corners,
-                input.palette.preview,
+                palette.preview,
                 2.0,
                 input.cam,
                 input.viewport,
@@ -2010,7 +2220,7 @@ impl ViewportScene {
             mesh.push_line_segment(
                 plane.origin,
                 plane.origin + kept * 12.0,
-                input.palette.preview,
+                palette.preview,
                 2.0,
                 input.cam,
                 input.viewport,
@@ -2025,7 +2235,7 @@ impl ViewportScene {
                     mesh.push_section_hatch(
                         solid,
                         cut,
-                        input.palette.section_hatch,
+                        palette.section_hatch,
                         input.cam,
                         input.viewport,
                         &vp,
@@ -2036,8 +2246,8 @@ impl ViewportScene {
         if let Some(preview) = input.plane_preview.as_ref() {
             mesh.push_plane_creation_preview(
                 preview,
-                input.palette.preview,
-                input.palette.dim_edge_highlight,
+                palette.preview,
+                palette.dim_edge_highlight,
                 input.cam,
                 input.viewport,
                 &vp,
@@ -2048,7 +2258,7 @@ impl ViewportScene {
         if let Some(preview) = input.vertex_treatment_preview.as_ref() {
             mesh.push_polyline_segment(
                 &preview.points,
-                input.palette.preview,
+                palette.preview,
                 2.0,
                 input.cam,
                 input.viewport,
@@ -2409,6 +2619,86 @@ impl<'a> SceneMesh<'a> {
         coplanar_planes: &[(Vec3, Vec3)],
     ) {
         self.push_shaded_solid(solid, normals, base, cam, coplanar_planes, ShadingModel::Lambert);
+    }
+
+    /// Push a solid with one flat colour, unlit (#1805). `LoosePencil` wants the paper tone
+    /// on every face — a pencil drawing has no light source, only lines.
+    fn push_solid_flat(
+        &mut self,
+        solid: &crate::extrude::SolidMesh,
+        fill: Color32,
+        coplanar_planes: &[(Vec3, Vec3)],
+        cam: &Camera,
+    ) {
+        self.push_shaded_solid(solid, None, fill, cam, coplanar_planes, ShadingModel::Unlit);
+    }
+
+    /// Draw a body's feature edges as pencil strokes (#1805): each edge gone over
+    /// [`PENCIL_PASSES`] times, every pass overshooting its corners and bowing along its
+    /// length. Silhouettes of smooth surfaces come along too, so a cylinder has sides.
+    fn push_pencil_edges(
+        &mut self,
+        solid: &crate::extrude::SolidMesh,
+        feature_edges: &[(Vec3, Vec3)],
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+    ) {
+        let silhouettes = solid_mesh_smooth_silhouette_edges(solid, cam.eye());
+        for &(a, b) in feature_edges.iter().chain(silhouettes.iter()) {
+            for pass in 0..PENCIL_PASSES {
+                // The second pass is lighter: going over a line again darkens the first
+                // stroke, it does not lay down a second line of equal weight.
+                let color = fill_color(PENCIL_GRAPHITE, if pass == 0 { 1.0 } else { 0.45 });
+                let stroke = pencil_stroke(a, b, pass);
+                self.push_polyline_segment(
+                    &stroke,
+                    color,
+                    PENCIL_LINE_WIDTH_PX,
+                    cam,
+                    viewport,
+                    view_proj,
+                );
+            }
+        }
+    }
+
+    /// A body's contact shadow, hatched (#1805). Same projection onto z = 0 that
+    /// [`Self::push_ground_shadow`] uses, but the footprint is filled with ruled strokes
+    /// instead of a smeared translucent blot — the way a shadow is drawn, not rendered.
+    fn push_pencil_ground_hatch(
+        &mut self,
+        solid: &crate::extrude::SolidMesh,
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+    ) {
+        if cam.eye().z <= 0.0 {
+            return;
+        }
+        let light = SCENE_LIGHT_DIR.normalize_or_zero();
+        if light.z.abs() < 1e-3 {
+            return;
+        }
+        let footprint: Vec<[Vec3; 3]> = solid
+            .triangles
+            .iter()
+            .filter(|tri| !tri.iter().any(|p| p.z < 0.0))
+            .filter(|tri| !triangle_on_plane(tri, Vec3::ZERO, Vec3::Z))
+            .map(|tri| std::array::from_fn(|i| tri[i] - light * (tri[i].z / light.z)))
+            .collect();
+        // Ordinary strokes on the base layer, not the shadow layer: a hatch is lines, and
+        // depth-testing them means a body standing on the ground occludes its own shadow.
+        for (a, b) in pencil_hatch_segments(&footprint) {
+            self.push_polyline_segment(
+                &pencil_stroke(a, b, 0),
+                PENCIL_HATCH_COLOR,
+                PENCIL_HATCH_WIDTH_PX,
+                cam,
+                viewport,
+                view_proj,
+            );
+        }
     }
 
     /// A body's contact shadow on the build plane (#1041): its triangles projected onto
@@ -14077,5 +14367,96 @@ mod issue_1772_section_cut_shading {
             smoothed > 10,
             "the cut cylinder's wall shades smooth, got {smoothed} smoothed triangles"
         );
+    }
+}
+
+#[cfg(test)]
+mod loose_pencil_tests {
+    use super::*;
+
+    /// #1805: the wobble has to be repeatable. Re-rolling it per frame would make the whole
+    /// drawing crawl as the camera moved.
+    #[test]
+    fn a_pencil_stroke_is_the_same_every_time_it_is_drawn() {
+        let (a, b) = (Vec3::new(0.0, 0.0, 0.0), Vec3::new(40.0, 0.0, 0.0));
+        assert_eq!(pencil_stroke(a, b, 0), pencil_stroke(a, b, 0));
+        // Each pass over the line takes its own path, or "twice" would look like "once".
+        assert_ne!(pencil_stroke(a, b, 0), pencil_stroke(a, b, 1));
+        // And two different edges do not share a wobble.
+        let c = Vec3::new(0.0, 10.0, 0.0);
+        assert_ne!(pencil_stroke(a, b, 0), pencil_stroke(c, b, 0));
+    }
+
+    /// The stroke overshoots its corners and bows along its length — but stays recognisably
+    /// the edge it stands for, however long that edge is.
+    #[test]
+    fn a_pencil_stroke_overshoots_and_bows_within_bounds() {
+        for length in [0.5f32, 5.0, 40.0, 4000.0] {
+            let (a, b) = (Vec3::ZERO, Vec3::new(length, 0.0, 0.0));
+            let stroke = pencil_stroke(a, b, 0);
+            assert_eq!(stroke.len(), PENCIL_STROKE_STEPS + 1, "one point per joint");
+            let wobble = (length * PENCIL_WOBBLE).min(PENCIL_WOBBLE_MAX_MM);
+            let overshoot = (length * PENCIL_OVERSHOOT).min(PENCIL_OVERSHOOT_MAX_MM);
+            for p in &stroke {
+                // Sideways: never further off the line than the wobble allows.
+                let off = (p.y * p.y + p.z * p.z).sqrt();
+                assert!(off <= wobble * 1.5 + 1e-3, "{length}mm edge strayed {off}mm sideways");
+                // Lengthways: within the overshoot at either end.
+                assert!(
+                    p.x >= -overshoot - 1e-3 && p.x <= length + overshoot + 1e-3,
+                    "{length}mm edge ran to {}",
+                    p.x
+                );
+            }
+            // The ends are pinned, so a corner still reads as a corner.
+            assert!(stroke[0].y.abs() < 1e-3 && stroke[0].z.abs() < 1e-3);
+            let last = stroke[stroke.len() - 1];
+            assert!(last.y.abs() < 1e-3 && last.z.abs() < 1e-3);
+        }
+        // A degenerate edge is left alone rather than dividing by its own length.
+        assert_eq!(pencil_stroke(Vec3::ZERO, Vec3::ZERO, 0), vec![Vec3::ZERO, Vec3::ZERO]);
+    }
+
+    /// The hatch fills the caster's footprint, not a box around it.
+    #[test]
+    fn the_hatch_fills_the_footprint_it_is_given() {
+        // A 20 mm square on the ground, as two triangles.
+        let square = [
+            [Vec3::new(0.0, 0.0, 0.0), Vec3::new(20.0, 0.0, 0.0), Vec3::new(20.0, 20.0, 0.0)],
+            [Vec3::new(0.0, 0.0, 0.0), Vec3::new(20.0, 20.0, 0.0), Vec3::new(0.0, 20.0, 0.0)],
+        ];
+        let strokes = pencil_hatch_segments(&square);
+        assert!(!strokes.is_empty(), "a 20mm square gets hatched");
+        for (a, b) in &strokes {
+            for p in [a, b] {
+                assert!(
+                    (-0.01..=20.01).contains(&p.x) && (-0.01..=20.01).contains(&p.y),
+                    "a hatch stroke ran outside the footprint: {p:?}"
+                );
+                assert!(p.z.abs() < 1e-6, "the hatch lies on the ground");
+            }
+            assert!((*b - *a).length() > 0.0, "no zero-length strokes");
+        }
+        // Nothing to shade, nothing drawn.
+        assert!(pencil_hatch_segments(&[]).is_empty());
+    }
+
+    /// #1805: the pencil view draws on paper; every other mode keeps the theme's colours.
+    #[test]
+    fn loose_pencil_swaps_the_palette_for_paper() {
+        let theme = ViewportPalette::default();
+        let paper = theme.for_shading(crate::camera::ShadingMode::LoosePencil);
+        assert_eq!(paper.background, PENCIL_PAPER);
+        assert_ne!(paper.grid, theme.grid, "the grid becomes a faint ruled guide");
+        for mode in crate::camera::SHADING_MODES {
+            if mode == crate::camera::ShadingMode::LoosePencil {
+                continue;
+            }
+            assert_eq!(
+                theme.for_shading(mode).background,
+                theme.background,
+                "{mode:?} keeps the theme background"
+            );
+        }
     }
 }

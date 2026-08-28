@@ -70,7 +70,8 @@ the current view as Home).
 The **gear icon** under the view bear opens display settings:
 
 - **Projection** — orthographic (flat, technical) or perspective (natural).
-- **Shading** — wireframe, transparent, solid, solid + visible edges, or realistic
+- **Shading** — wireframe, transparent, solid, solid + visible edges, realistic, or loose
+  pencil (white paper, hand-drawn strokes, hatched shadows)
   lighting. Curved surfaces shade smoothly, while real edges — box corners, chamfers,
   extrusion caps — stay crisp.
 - **Ground** — grid lines or a solid ground plane. Grid lines follow the document's

@@ -5562,6 +5562,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         ProjectionMode::Orthographic => "orthographic",
                     },
                 )?;
+                // The other two view settings the gear popup holds (#1805): a script could
+                // set them but had no way to read them back and assert.
+                t.set("shading", cam.shading_mode().script_name())?;
+                t.set("ground", cam.ground_display().script_name())?;
                 return Ok(Value::Table(t));
             }
             unsafe {
@@ -12162,10 +12166,29 @@ pub mod tests {
             ("solid", ShadingMode::Solid),
             ("solid_wireframe", ShadingMode::SolidWireframe),
             ("realistic", ShadingMode::Realistic),
+            ("loose_pencil", ShadingMode::LoosePencil),
         ] {
             let state = run_lua(&format!(r#"bearcad.ui.shading("{name}")"#));
             assert_eq!(state.cam.shading_mode(), expected, "shading({name})");
         }
+    }
+
+    /// #1805: a script can read the view settings back, not just set them — the pencil view
+    /// went in with no way for a test to assert it had taken.
+    #[test]
+    fn lua_camera_reports_shading_and_ground() {
+        let state = run_lua(
+            r#"
+            bearcad.ui.shading("loose_pencil")
+            bearcad.ui.ground("off")
+            local c = bearcad.ui.camera{}
+            assert(c.shading == "loose_pencil", "shading, got " .. tostring(c.shading))
+            assert(c.ground == "off", "ground, got " .. tostring(c.ground))
+            bearcad.ui.shading("solid")
+            assert(bearcad.ui.camera{}.shading == "solid", "reads the change back")
+        "#,
+        );
+        assert_eq!(state.cam.shading_mode(), ShadingMode::Solid);
     }
 
     #[test]

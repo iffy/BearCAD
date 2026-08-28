@@ -92,6 +92,7 @@ pub enum IconId {
     ShadingSolid,
     ShadingSolidWireframe,
     ShadingRealistic,
+    ShadingLoosePencil,
     GroundGrid,
     GroundSolid,
     ViewList,
@@ -151,7 +152,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 98] = [
+    pub const ALL: [Self; 99] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -216,6 +217,7 @@ impl IconId {
         Self::ShadingSolid,
         Self::ShadingSolidWireframe,
         Self::ShadingRealistic,
+        Self::ShadingLoosePencil,
         Self::GroundGrid,
         Self::GroundSolid,
         Self::ViewList,
@@ -320,6 +322,7 @@ impl IconId {
             Self::ShadingSolid => include_str!("assets/icons/solid.svg"),
             Self::ShadingSolidWireframe => include_str!("assets/icons/solid_wireframe.svg"),
             Self::ShadingRealistic => include_str!("assets/icons/realistic.svg"),
+            Self::ShadingLoosePencil => include_str!("assets/icons/loose_pencil.svg"),
             Self::GroundGrid => include_str!("assets/icons/ground_grid.svg"),
             Self::GroundSolid => include_str!("assets/icons/ground_solid.svg"),
             Self::ViewList => include_str!("assets/icons/view_list.svg"),
@@ -425,6 +428,7 @@ impl IconId {
             Self::ShadingSolid => "Solid",
             Self::ShadingSolidWireframe => "Solid + wireframe",
             Self::ShadingRealistic => "Realistic",
+            Self::ShadingLoosePencil => "Loose pencil",
             Self::GroundGrid => "Ground grid",
             Self::GroundSolid => "Solid ground",
             Self::ViewList => "List view",
@@ -499,6 +503,7 @@ pub fn icon_for_shading_mode(mode: crate::camera::ShadingMode) -> IconId {
         crate::camera::ShadingMode::Solid => IconId::ShadingSolid,
         crate::camera::ShadingMode::SolidWireframe => IconId::ShadingSolidWireframe,
         crate::camera::ShadingMode::Realistic => IconId::ShadingRealistic,
+        crate::camera::ShadingMode::LoosePencil => IconId::ShadingLoosePencil,
     }
 }
 
@@ -798,6 +803,25 @@ mod tests {
             icon_for_shading_mode(ShadingMode::Realistic),
             IconId::ShadingRealistic
         );
+        assert_eq!(
+            icon_for_shading_mode(ShadingMode::LoosePencil),
+            IconId::ShadingLoosePencil
+        );
+    }
+
+    /// Every icon's SVG parses and rasterizes. A typo in a path renders as an empty button,
+    /// which is easy to miss when the icon is one of a row.
+    #[test]
+    fn every_icon_svg_rasterizes() {
+        for id in IconId::ALL {
+            let tree = resvg::usvg::Tree::from_str(id.svg_source(), &resvg::usvg::Options::default())
+                .unwrap_or_else(|e| panic!("{id:?} has an unparseable SVG: {e}"));
+            let size = tree.size();
+            assert!(
+                size.width() > 0.0 && size.height() > 0.0,
+                "{id:?} rasterizes to nothing"
+            );
+        }
     }
 
     #[test]

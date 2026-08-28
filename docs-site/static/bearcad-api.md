@@ -172,6 +172,8 @@ bearcad.ui.view("front"|"top"|"iso"|…)
 bearcad.ui.zoom_fit()
 bearcad.ui.screenshot("shot.png")            -- viewport; "window" / a pane name for others
 bearcad.ui.camera{ yaw?, pitch?, distance?, target? }
+bearcad.ui.camera{}                          -- read it back, shading and ground included
+bearcad.ui.shading("loose_pencil")           -- …|solid|solid_wireframe|realistic|loose_pencil
 bearcad.ui.pane("ai"|"hierarchy"|"context"|"parameters"|…, "show"|"hide"|"toggle")
 bearcad.ui.click_ground(x, y)               -- sketch-plane millimetres
 bearcad.ui.click_world(x, y, z)             -- any world point: a body's side wall, say
@@ -368,7 +370,7 @@ bearcad.ui.angle_snap(degrees)
 bearcad.ui.animate_joints(on?)
 bearcad.ui.animate_zoom_to_fit(on?)
 bearcad.ui.auto_zoom(on?)
-bearcad.ui.camera{ yaw, pitch, distance, target }?
+bearcad.ui.camera{ yaw, pitch, distance, target }?   -- no fields = read { …, projection, shading, ground }
 bearcad.ui.changelog(verb?)
 bearcad.ui.click(x, y, { shift?, ctrl?, cmd? }?)
 bearcad.ui.click_ground(x, y, { shift?, ctrl?, cmd? }?)
@@ -430,7 +432,7 @@ bearcad.ui.screenshot(path?, region?)
 bearcad.ui.scroll_pane(pane, dy)
 bearcad.ui.set_home_view()
 bearcad.ui.settings(verb?)
-bearcad.ui.shading(name)
+bearcad.ui.shading(name)   -- wireframe, transparent, solid, solid_wireframe, realistic, loose_pencil
 bearcad.ui.snapping(on?)
 bearcad.ui.tab(index?)
 bearcad.ui.tab_count()

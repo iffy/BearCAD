@@ -1,0 +1,1 @@
+New 'Loose pencil' shading mode draws the scene as a pencil drawing: white paper, graphite strokes that overshoot their corners and are gone over twice, faint ruled guides for the grid, and hatched contact shadows.
