@@ -13308,6 +13308,27 @@ pub mod tests {
         assert_eq!(state.doc.bodies.len(), 5, "no body was deleted");
     }
 
+    /// #1794: concentric circles extrude into a ring — the inner circle is a hole, not
+    /// a swallowed disc — and the same for revolve.
+    #[test]
+    fn lua_concentric_circles_extrude_to_a_ring() {
+        let state = run_lua(
+            r#"
+            bearcad.circle{ x = 0, y = 0, r = 47.5 }
+            bearcad.circle{ x = 0, y = 0, r = 44.5 }
+            bearcad.extrude{ circles = {0, 1}, distance = 7 }
+            local s = bearcad.body_stats(0)
+            assert(s, "the ring must have stats")
+            local disc = 3.14159 * 47.5 * 47.5 * 7
+            local ring = 3.14159 * (47.5 * 47.5 - 44.5 * 44.5) * 7
+            assert(s.volume < disc * 0.5, "inner circle must not be swallowed: " .. s.volume)
+            assert(math.abs(s.volume - ring) < ring * 0.1,
+              string.format("ring volume %.0f, got %.0f", ring, s.volume))
+        "#,
+        );
+        assert_eq!(state.doc.extrusions.len(), 1);
+    }
+
     /// #1793: `combine{ bake = true }` ends with exactly one body — the result baked
     /// into a standalone solid, inputs consumed — so a script can union and move on.
     #[test]

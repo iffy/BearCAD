@@ -302,6 +302,11 @@ fn extrusion_mesh_tessellated(
     }
     let mut mesh = SolidMesh::default();
     for (face_index, face) in extrusion.faces.iter().enumerate() {
+        // A face nested strictly inside a sibling is that sibling's hole (#1794):
+        // it must not extrude as a solid of its own.
+        if face_contained_in_sibling(doc, &extrusion.faces, face) {
+            continue;
+        }
         if let Some((profile, top, _normal)) = extrusion_profile_rings(doc, extrusion, face, distance)
         {
             // A face with holes (annulus, #268) has no edge treatments in the fallback path;
@@ -531,6 +536,11 @@ fn occt_extrusion_shape_overshoot_ends(
     // here, silently dropping every hole of the cut via the mesh fallback.
     let mut fused: Option<crate::kernel::Shape> = None;
     for face in &extrusion.faces {
+        // A face nested strictly inside a sibling is that sibling's hole (#1794):
+        // it must not fuse in as a solid of its own.
+        if face_contained_in_sibling(doc, &extrusion.faces, face) {
+            continue;
+        }
         let shape = occt_face_solid(doc, extrusion, face, distance, overshoot, overshoot_free)?;
         fused = Some(match fused {
             None => shape,
@@ -5156,6 +5166,12 @@ pub fn revolve_mesh(doc: &Document, rev: &crate::model::Revolution) -> Option<So
     let pitch = rev.pitch_mm;
     let mut mesh = SolidMesh::default();
     for face in &rev.faces {
+        // A face nested strictly inside a sibling is that sibling's hole (#1794):
+        // never a solid of its own. (The lathe fallback can't cut holes; the kernel
+        // path delivers the hollow solid, this is only the ghost/no-kernel preview.)
+        if face_contained_in_sibling(doc, &rev.faces, face) {
+            continue;
+        }
         let (profile, _normal) = face_profile_world(doc, face)?;
         if profile.len() < 3 {
             return None;
@@ -5216,8 +5232,13 @@ pub fn occt_revolution_shape(
     let pitch = rev.pitch_mm as f64;
     let mut fused: Option<crate::kernel::Shape> = None;
     for face in &rev.faces {
+        // A face nested strictly inside a sibling is that sibling's hole (#1794):
+        // it must not fuse in as a solid of its own.
+        if face_contained_in_sibling(doc, &rev.faces, face) {
+            continue;
+        }
         let shape =
-            occt_face_revolve_solid(doc, face, origin, dir, angle_rad, rev.symmetric, pitch)?;
+            occt_face_revolve_solid(doc, &rev.faces, face, origin, dir, angle_rad, rev.symmetric, pitch)?;
         fused = Some(match fused {
             None => shape,
             Some(acc) => acc.boolean(&shape, crate::kernel::BoolOp::Fuse)?,
@@ -5232,6 +5253,7 @@ pub fn occt_revolution_shape(
 /// revolve their single boundary loop directly. Non-zero `pitch` makes a helix (#1242).
 fn occt_face_revolve_solid(
     doc: &Document,
+    faces: &[ExtrudeFace],
     face: &ExtrudeFace,
     origin: Vec3,
     dir: Vec3,
@@ -5240,8 +5262,8 @@ fn occt_face_revolve_solid(
     pitch: f64,
 ) -> Option<crate::kernel::Shape> {
     if let ExtrudeFace::Boolean { op, a, b } = face {
-        let sa = occt_face_revolve_solid(doc, a, origin, dir, angle_rad, symmetric, pitch)?;
-        let sb = occt_face_revolve_solid(doc, b, origin, dir, angle_rad, symmetric, pitch)?;
+        let sa = occt_face_revolve_solid(doc, faces, a, origin, dir, angle_rad, symmetric, pitch)?;
+        let sb = occt_face_revolve_solid(doc, faces, b, origin, dir, angle_rad, symmetric, pitch)?;
         let boolop = match op {
             crate::model::BooleanOp::Difference => crate::kernel::BoolOp::Cut,
             crate::model::BooleanOp::Intersection => crate::kernel::BoolOp::Common,
@@ -5252,7 +5274,25 @@ fn occt_face_revolve_solid(
     if profile.len() < 3 {
         return None;
     }
-    crate::kernel::Shape::revolve(&profile, origin, dir, angle_rad, symmetric, pitch)
+    let mut shape = crate::kernel::Shape::revolve(&profile, origin, dir, angle_rad, symmetric, pitch)?;
+    // Sibling faces nested strictly inside this one are its holes (#1794): subtract
+    // their revolved solids so concentric circles revolve into a hollow solid.
+    for hole_face in sibling_hole_faces_in(doc, faces, face) {
+        let (hole_profile, _) = face_profile_world(doc, &hole_face)?;
+        if hole_profile.len() < 3 {
+            continue;
+        }
+        let hole = crate::kernel::Shape::revolve(
+            &hole_profile,
+            origin,
+            dir,
+            angle_rad,
+            symmetric,
+            pitch,
+        )?;
+        shape = shape.boolean(&hole, crate::kernel::BoolOp::Cut)?;
+    }
+    Some(shape)
 }
 
 /// The revolutions fusing into (`false`) or cutting (`true`) `body_index`.
@@ -9115,6 +9155,77 @@ fn resample_uv_loop(poly: &[(f32, f32)], n: usize) -> Vec<(f32, f32)> {
 }
 
 /// Base/top hole loops for a face under taper, parallel to [`extrusion_profile_rings`].
+/// Whether `inner`'s boundary sits strictly inside `outer`'s (all points inside, and
+/// not the reverse — identical/equal loops don't count) (#1794).
+fn loop_properly_inside(inner: &[(f32, f32)], outer: &[(f32, f32)]) -> bool {
+    loop_strictly_inside(inner, outer) && !loop_strictly_inside(outer, inner)
+}
+
+/// Sibling faces in `faces` that lie strictly inside `face` (#1794): concentric
+/// circles and nested profiles become holes of the face that contains them.
+fn sibling_hole_faces_in(
+    doc: &Document,
+    faces: &[ExtrudeFace],
+    face: &ExtrudeFace,
+) -> Vec<ExtrudeFace> {
+    let Some(sketch) = crate::actions::extrude_face_sketch(doc, face) else {
+        return Vec::new();
+    };
+    let Some(outer) = extrude_face_uv_loop(doc, sketch, face) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for sibling in faces {
+        if sibling == face {
+            continue;
+        }
+        // Only same-sketch siblings can nest; cross-sketch faces never overlap (#1794).
+        let Some(sibling_sketch) = crate::actions::extrude_face_sketch(doc, sibling) else {
+            continue;
+        };
+        if sibling_sketch != sketch {
+            continue;
+        }
+        let Some(inner) = extrude_face_uv_loop(doc, sketch, sibling) else {
+            continue;
+        };
+        if loop_properly_inside(&inner, &outer) {
+            out.push(sibling.clone());
+        }
+    }
+    out
+}
+
+/// Whether `face` is swallowed by a strictly larger sibling in `faces` (#1794): it must
+/// not extrude as a solid of its own, it only punches a hole in that sibling.
+fn face_contained_in_sibling(
+    doc: &Document,
+    faces: &[ExtrudeFace],
+    face: &ExtrudeFace,
+) -> bool {
+    let Some(sketch) = crate::actions::extrude_face_sketch(doc, face) else {
+        return false;
+    };
+    let Some(inner) = extrude_face_uv_loop(doc, sketch, face) else {
+        return false;
+    };
+    faces.iter().any(|sibling| {
+        if sibling == face {
+            return false;
+        }
+        let Some(sibling_sketch) = crate::actions::extrude_face_sketch(doc, sibling) else {
+            return false;
+        };
+        if sibling_sketch != sketch {
+            return false;
+        }
+        let Some(outer) = extrude_face_uv_loop(doc, sketch, sibling) else {
+            return false;
+        };
+        loop_properly_inside(&inner, &outer)
+    })
+}
+
 fn extrusion_hole_rings(
     doc: &Document,
     extrusion: &Extrusion,
@@ -9135,9 +9246,23 @@ fn extrusion_hole_rings(
     let Some((_, top_holes)) = tapered_uv_region(doc, face, top_off) else {
         return Vec::new();
     };
+    // Sibling faces of this same extrusion that sit strictly inside `face` are its holes
+    // (#1794): `extrude{ circles = {outer, inner} }` is a ring, not a disc swallowing the
+    // inner circle. Holes follow taper the same way the outer does.
+    let mut base_holes = base_holes;
+    let mut top_holes = top_holes;
+    for sibling in sibling_hole_faces_in(doc, &extrusion.faces, face) {
+        let Some((sibling_base, _)) = tapered_uv_region(doc, &sibling, base_off) else {
+            continue;
+        };
+        let Some((sibling_top, _)) = tapered_uv_region(doc, &sibling, top_off) else {
+            continue;
+        };
+        base_holes.push(sibling_base);
+        top_holes.push(sibling_top);
+    }
     // Pair by index; drop holes that collapsed on either end alone by lofting to a point.
-    let n = base_holes.len().max(top_holes.len());
-    let mut out = Vec::new();
+    let n = base_holes.len().max(top_holes.len());    let mut out = Vec::new();
     for i in 0..n {
         let b = base_holes.get(i).cloned().unwrap_or_default();
         let t = top_holes.get(i).cloned().unwrap_or_default();
