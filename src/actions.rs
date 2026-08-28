@@ -6987,8 +6987,7 @@ impl AppState {
 
     /// Shared revolve commit: validates the solid builds, stores the [`Revolution`], and
     /// (in NewBody mode) its body — one `ShapeKind::Revolution` undo marker covers both.
-    fn create_revolution(
-        &mut self,
+    fn create_revolution(        &mut self,
         sketch: SketchId,
         faces: Vec<ExtrudeFace>,
         axis: crate::model::RevolveAxis,
@@ -7016,8 +7015,7 @@ impl AppState {
             name: None,
         };
         if crate::extrude::revolve_mesh(&self.doc, &rev).is_none() {
-            let e = "Revolve failed: profile must be a closed face and the axis a real line"
-                .to_string();
+            let e = revolve_failure_error(&self.doc, &rev);
             self.status = e.clone();
             return ActionResult::Err(e);
         }
@@ -7099,8 +7097,7 @@ impl AppState {
             name: existing.name.clone(),
         };
         if crate::extrude::revolve_mesh(&self.doc, &candidate).is_none() {
-            let e = "Revolve failed: profile must be a closed face and the axis a real line"
-                .to_string();
+            let e = revolve_failure_error(&self.doc, &candidate);
             self.status = e.clone();
             return ActionResult::Err(e);
         }
@@ -22114,6 +22111,15 @@ pub fn gizmo_value(state: &AppState, name: &str) -> Option<f32> {
         .into_iter()
         .find(|g| g.name == name)
         .map(|g| g.value)
+}
+/// Why a revolve can't build its solid, naming the failing condition (#1791): a bad
+/// axis and a non-closed profile are different mistakes and get different messages.
+fn revolve_failure_error(doc: &crate::model::Document, rev: &crate::model::Revolution) -> String {
+    if crate::extrude::revolve_axis_world(doc, rev).is_none() {
+        "Revolve failed: the axis is not a real line".to_string()
+    } else {
+        "Revolve failed: the profile is not a closed face".to_string()
+    }
 }
 /// Why a shape's dimensions won't build, or `None` when they will (#1663): a negative
 /// dimension is an error in its own right, not a size to take the magnitude of.

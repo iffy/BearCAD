@@ -13005,6 +13005,62 @@ pub mod tests {
         assert_eq!(state.doc.extrusions.len(), 0);
     }
 
+    /// #1791: a closed chain of individual `bearcad.line` calls — endpoints coinciding
+    /// exactly, with no `Coincident` constraints — is a valid face for `extrude`.
+    #[test]
+    fn lua_extrude_accepts_a_geometrically_closed_line_chain() {
+        let state = run_lua(
+            r#"
+            bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
+            bearcad.line{ x = 10, y = 0, x1 = 10, y1 = 5 }
+            bearcad.line{ x = 10, y = 5, x1 = 0, y1 = 5 }
+            bearcad.line{ x = 0, y = 5, x1 = 0, y1 = 0 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 2 }
+        "#,
+        );
+        assert_eq!(state.doc.extrusions.len(), 1, "chain should extrude");
+        assert_eq!(state.doc.bodies.len(), 1);
+    }
+
+    /// #1791: the same geometrically closed chain revolves too — and when it doesn't,
+    /// the error names the axis or the profile, not both at once.
+    #[test]
+    fn lua_revolve_accepts_a_geometrically_closed_line_chain() {
+        let state = run_lua(
+            r#"
+            bearcad.line{ x = 2, y = 0, x1 = 7, y1 = 0 }
+            bearcad.line{ x = 7, y = 0, x1 = 7, y1 = 5 }
+            bearcad.line{ x = 7, y = 5, x1 = 2, y1 = 5 }
+            bearcad.line{ x = 2, y = 5, x1 = 2, y1 = 0 }
+            bearcad.revolve{ polygon = {0, 1, 2, 3}, axis = "y", angle = 360 }
+        "#,
+        );
+        assert_eq!(state.doc.revolutions.len(), 1, "chain should revolve");
+    }
+
+    /// #1791: with a valid profile but a broken axis, the error must blame the axis —
+    /// not conflate profile and axis in one message.
+    #[test]
+    fn lua_revolve_error_names_the_axis_when_the_profile_is_fine() {
+        let state = run_lua(
+            r#"
+            bearcad.line{ x = 2, y = 0, x1 = 7, y1 = 0 }
+            bearcad.line{ x = 7, y = 0, x1 = 7, y1 = 5 }
+            bearcad.line{ x = 7, y = 5, x1 = 2, y1 = 5 }
+            bearcad.line{ x = 2, y = 5, x1 = 2, y1 = 0 }
+            -- A degenerate (zero-length) body-edge axis parses fine but is no real axis.
+            bearcad.cuboid{ width = 1, depth = 1, height = 1 }
+            local ok, err = pcall(bearcad.revolve,
+                { polygon = {0, 1, 2, 3}, axis = { body = 0, from = {0,0,0}, to = {0,0,0} }, angle = 360 })
+            assert(not ok, "revolve with a degenerate axis line should error")
+            err = tostring(err)
+            assert(err:find("axis is not a real line"), "unexpected error: " .. err)
+            assert(not err:find("profile"), "error should not blame the profile: " .. err)
+        "#,
+        );
+        assert_eq!(state.doc.revolutions.len(), 0);
+    }
+
     /// #77: `bearcad.chamfer_edge`/`fillet_edge` chamfer/fillet an analytic edge of an
     /// extrusion's 3D solid — declared directly (extrusion index + structured edge reference),
     /// not via screen-space picking.

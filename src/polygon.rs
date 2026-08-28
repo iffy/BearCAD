@@ -1,30 +1,97 @@
 //! Closed-polygon face detection (#66): any set of plain `Line` entities that connect
-//! end-to-end into a closed loop (via `Coincident` point constraints) can be used as a
-//! face, the same way a `Rect` or `Circle` profile can.
+//! end-to-end into a closed loop (via `Coincident` point constraints, or simply by
+//! geometrically coinciding, #1791) can be used as a face, the same way a `Rect` or
+//! `Circle` profile can.
 
 use crate::document_lifecycle::line_alive;
 use crate::model::{ConstraintPoint, Document, LineEnd, SketchId};
 use crate::vertex_drag::coincident_group;
 
-/// Canonical id for the vertex group a line endpoint belongs to: the lexicographically
-/// smallest `(line, is_end)` among every `LineEndpoint` transitively coincident with it
-/// (via `Coincident` constraints). Two endpoints share a vertex iff this key matches.
-fn vertex_key(
-    doc: &Document,
-    sketch: SketchId,
-    line: crate::model::LineKey,
-    end: LineEnd,
-) -> (crate::model::LineKey, bool) {
-    coincident_group(doc, sketch, ConstraintPoint::LineEndpoint { line, end })
-        .into_iter()
-        .filter_map(|p| match p {
-            ConstraintPoint::LineEndpoint { line, end } => {
-                Some((line, matches!(end, LineEnd::End)))
+/// How close two unconstrained endpoints must be (sketch units, mm) to count as the
+/// same vertex (#1791). Scripted chains type endpoints exactly; a micron tolerates
+/// float noise without ever merging visibly distinct corners.
+const GEOMETRIC_MERGE_TOLERANCE: f32 = 1e-3;
+
+/// Canonical identity of a sketch vertex: either a `Coincident`-joined group of line
+/// endpoints (keyed by its canonical member, so it survives drags that temporarily
+/// separate the endpoints) or a geometric position cluster of otherwise-unconnected
+/// endpoints that coincide within [`GEOMETRIC_MERGE_TOLERANCE`] (#1791).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+enum VertexId {
+    Constrained(crate::model::LineKey, bool),
+    Free(usize),
+}
+
+/// Endpoint → [`VertexId`] map for one sketch, built once per query. Endpoints joined
+/// by `Coincident` constraints keep their group identity; the rest are clustered by
+/// position so an exact-touching line chain forms a loop without constraints (#1791).
+struct VertexIndex {
+    ids: std::collections::HashMap<(crate::model::LineKey, bool), VertexId>,
+}
+
+impl VertexIndex {
+    fn build(doc: &Document, sketch: SketchId) -> Self {
+        let endpoints: Vec<(crate::model::LineKey, LineEnd)> = doc
+            .lines
+            .iter()
+            .filter(|(_, l)| l.sketch == sketch)
+            .flat_map(|(i, _)| [(i, LineEnd::Start), (i, LineEnd::End)])
+            .collect();
+        let mut ids = std::collections::HashMap::new();
+        let mut free: Vec<(crate::model::LineKey, LineEnd)> = Vec::new();
+        for &(line, end) in &endpoints {
+            let group: Vec<_> = coincident_group(doc, sketch, ConstraintPoint::LineEndpoint { line, end })
+                .into_iter()
+                .filter_map(|p| match p {
+                    ConstraintPoint::LineEndpoint { line, end } => Some((line, end)),
+                    _ => None,
+                })
+                .collect();
+            if group.len() > 1 {
+                let (key_line, key_end) = group
+                    .iter()
+                    .copied()
+                    .min_by_key(|&(l, e)| (l, is_end(e)))
+                    .unwrap();
+                ids.insert((line, is_end(end)), VertexId::Constrained(key_line, is_end(key_end)));
+            } else {
+                free.push((line, end));
             }
-            _ => None,
-        })
-        .min()
-        .unwrap_or((line, matches!(end, LineEnd::End)))
+        }
+        // Cluster the unconstrained endpoints by proximity: each endpoint joins the
+        // first cluster within tolerance, else starts a new one. Sketches are tiny,
+        // so the linear scan is fine.
+        let mut clusters: Vec<(f32, f32)> = Vec::new();
+        for (line, end) in free {
+            let l = &doc.lines[line];
+            let (x, y) = match end {
+                LineEnd::Start => (l.x0, l.y0),
+                LineEnd::End => (l.x1, l.y1),
+            };
+            let id = match clusters.iter().position(|&(cx, cy)| {
+                (x - cx).hypot(y - cy) <= GEOMETRIC_MERGE_TOLERANCE
+            }) {
+                Some(c) => c,
+                None => {
+                    clusters.push((x, y));
+                    clusters.len() - 1
+                }
+            };
+            ids.insert((line, is_end(end)), VertexId::Free(id));
+        }
+        VertexIndex { ids }
+    }
+
+    fn id(&self, line: crate::model::LineKey, end: LineEnd) -> VertexId {
+        self.ids
+            .get(&(line, is_end(end)))
+            .copied()
+            .unwrap_or(VertexId::Constrained(line, is_end(end)))
+    }
+}
+
+fn is_end(end: LineEnd) -> bool {
+    matches!(end, LineEnd::End)
 }
 
 /// Every closed loop of connected `Line`s in `sketch`, as ordered line indices.
@@ -46,23 +113,24 @@ pub fn closed_line_loops(doc: &Document, sketch: SketchId) -> Vec<Vec<crate::mod
     if lines.len() < 3 {
         return Vec::new();
     }
+    let index = VertexIndex::build(doc, sketch);
 
-    // For each line, the vertex key at its start and end.
-    let endpoints: std::collections::HashMap<crate::model::LineKey, ((crate::model::LineKey, bool), (crate::model::LineKey, bool))> = lines
+    // For each line, the vertex id at its start and end.
+    let endpoints: std::collections::HashMap<crate::model::LineKey, (VertexId, VertexId)> = lines
         .iter()
         .map(|&i| {
             (
                 i,
                 (
-                    vertex_key(doc, sketch, i, LineEnd::Start),
-                    vertex_key(doc, sketch, i, LineEnd::End),
+                    index.id(i, LineEnd::Start),
+                    index.id(i, LineEnd::End),
                 ),
             )
         })
         .collect();
 
-    // Lines incident to each vertex key, paired with which of their own endpoints sits there.
-    let mut incident: std::collections::HashMap<(crate::model::LineKey, bool), Vec<(crate::model::LineKey, bool)>> =
+    // Lines incident to each vertex id, paired with which of their own endpoints sits there.
+    let mut incident: std::collections::HashMap<VertexId, Vec<(crate::model::LineKey, bool)>> =
         std::collections::HashMap::new();
     for (&line, &(start_key, end_key)) in &endpoints {
         incident.entry(start_key).or_default().push((line, false));
@@ -99,7 +167,7 @@ pub fn closed_line_loops(doc: &Document, sketch: SketchId) -> Vec<Vec<crate::mod
     //     relative to the reconstructed outer boundary, so the un-split perimeter is rejected in
     //     favour of the two half-faces. A disjoint nested shape shares no vertices with the outer
     //     loop, so it never triggers this — nested faces still resolve normally.
-    let ordered: Vec<Option<Vec<(crate::model::LineKey, bool)>>> = found
+    let ordered: Vec<Option<Vec<VertexId>>> = found
         .iter()
         .map(|lines| loop_shared_vertices(doc, sketch, lines))
         .collect();
@@ -129,19 +197,15 @@ fn loop_shared_vertices(
     doc: &Document,
     sketch: SketchId,
     lines: &[crate::model::LineKey],
-) -> Option<Vec<(crate::model::LineKey, bool)>> {
+) -> Option<Vec<VertexId>> {
     let n = lines.len();
     if n < 3 {
         return None;
     }
-    let keys: Vec<((crate::model::LineKey, bool), (crate::model::LineKey, bool))> = lines
+    let index = VertexIndex::build(doc, sketch);
+    let keys: Vec<(VertexId, VertexId)> = lines
         .iter()
-        .map(|&i| {
-            (
-                vertex_key(doc, sketch, i, LineEnd::Start),
-                vertex_key(doc, sketch, i, LineEnd::End),
-            )
-        })
+        .map(|&i| (index.id(i, LineEnd::Start), index.id(i, LineEnd::End)))
         .collect();
     let mut shared = Vec::with_capacity(n);
     for i in 0..n {
@@ -171,17 +235,18 @@ fn loop_is_minimal_face(
     doc: &Document,
     sketch: SketchId,
     lines: &[crate::model::LineKey],
-    verts: &[(crate::model::LineKey, bool)],
+    verts: &[VertexId],
 ) -> bool {
     let n = verts.len();
-    let pos: std::collections::HashMap<(crate::model::LineKey, bool), usize> =
+    let pos: std::collections::HashMap<VertexId, usize> =
         verts.iter().enumerate().map(|(i, &v)| (v, i)).collect();
+    let index = VertexIndex::build(doc, sketch);
     for (li, l) in doc.lines.iter() {
         if l.sketch != sketch || l.shadow || lines.contains(&li) {
             continue;
         }
-        let a = vertex_key(doc, sketch, li, LineEnd::Start);
-        let b = vertex_key(doc, sketch, li, LineEnd::End);
+        let a = index.id(li, LineEnd::Start);
+        let b = index.id(li, LineEnd::End);
         if let (Some(&ia), Some(&ib)) = (pos.get(&a), pos.get(&b)) {
             let adjacent = ia == ib
                 || (ia + 1) % n == ib
@@ -195,9 +260,9 @@ fn loop_is_minimal_face(
 }
 
 fn walk(
-    incident: &std::collections::HashMap<(crate::model::LineKey, bool), Vec<(crate::model::LineKey, bool)>>,
-    endpoints: &std::collections::HashMap<crate::model::LineKey, ((crate::model::LineKey, bool), (crate::model::LineKey, bool))>,
-    current: (crate::model::LineKey, bool),
+    incident: &std::collections::HashMap<VertexId, Vec<(crate::model::LineKey, bool)>>,
+    endpoints: &std::collections::HashMap<crate::model::LineKey, (VertexId, VertexId)>,
+    current: VertexId,
     path: &mut Vec<crate::model::LineKey>,
     used: &mut std::collections::HashSet<crate::model::LineKey>,
     found: &mut Vec<Vec<crate::model::LineKey>>,
@@ -257,14 +322,10 @@ pub fn loop_vertices_uv(
     if lines.len() < 3 {
         return None;
     }
-    let keys: Vec<((crate::model::LineKey, bool), (crate::model::LineKey, bool))> = lines
+    let index = VertexIndex::build(doc, sketch);
+    let keys: Vec<(VertexId, VertexId)> = lines
         .iter()
-        .map(|&i| {
-            (
-                vertex_key(doc, sketch, i, LineEnd::Start),
-                vertex_key(doc, sketch, i, LineEnd::End),
-            )
-        })
+        .map(|&i| (index.id(i, LineEnd::Start), index.id(i, LineEnd::End)))
         .collect();
 
     let mut vertices = Vec::new();
@@ -303,14 +364,10 @@ pub fn loop_corner_vertices_uv(
     if lines.len() < 3 {
         return None;
     }
-    let keys: Vec<((crate::model::LineKey, bool), (crate::model::LineKey, bool))> = lines
+    let index = VertexIndex::build(doc, sketch);
+    let keys: Vec<(VertexId, VertexId)> = lines
         .iter()
-        .map(|&i| {
-            (
-                vertex_key(doc, sketch, i, LineEnd::Start),
-                vertex_key(doc, sketch, i, LineEnd::End),
-            )
-        })
+        .map(|&i| (index.id(i, LineEnd::Start), index.id(i, LineEnd::End)))
         .collect();
 
     let mut corners = Vec::with_capacity(lines.len());

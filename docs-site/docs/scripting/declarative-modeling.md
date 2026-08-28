@@ -142,8 +142,8 @@ bearcad.exit_sketch()    -- leave the active sketch
 
 ## A closed polygon from plain lines, extruded
 
-Any lines that connect end-to-end into a closed loop form an extrudable face — see
-[point-level selection](./point-selection) for closing the loop from a script:
+Any lines whose endpoints coincide exactly (no constraints needed) form an
+extrudable face:
 
 ```lua
 bearcad.new()
