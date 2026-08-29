@@ -1559,6 +1559,7 @@ fn save_drawings(tx: &Connection, arena: &Arena<Drawing>) -> Result<()> {
                     "views": d.views,
                     "annotations": d.annotations,
                     "white_paper": d.white_paper,
+                    "default_view_style": d.default_view_style,
                 }))?,
             ],
         )
@@ -3402,6 +3403,8 @@ struct DrawingPayload {
     annotations: crate::arena::Arena<crate::model::DrawingAnnotation>,
     #[serde(default)]
     white_paper: bool,
+    #[serde(default)]
+    default_view_style: crate::model::DrawingViewStyle,
 }
 
 fn load_drawings(conn: &Connection) -> Result<Arena<Drawing>> {
@@ -3437,6 +3440,7 @@ fn load_drawings(conn: &Connection) -> Result<Arena<Drawing>> {
                 margin_mm: margin_mm as f32,
                 annotations: payload.annotations,
                 white_paper: payload.white_paper,
+                default_view_style: payload.default_view_style,
             },
         ));
     }

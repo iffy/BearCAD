@@ -472,6 +472,8 @@ pub enum Instruction {
         view: usize,
         style: String,
     },
+    /// The style projections **added** to a drawing start in (#1834).
+    SetDrawingDefaultViewStyle { drawing: usize, style: String },
     /// Turn a placed view to face another way (#1651), by orientation name.
     SetDrawingViewOrientation {
         drawing: usize,
@@ -1690,6 +1692,9 @@ impl Instruction {
             Instruction::SetDrawingViewStyle { drawing, view, style } => format!(
                 "bearcad.drawing_view_style{{ drawing = {drawing}, view = {view}, \
                  style = {style:?} }}"
+            ),
+            Instruction::SetDrawingDefaultViewStyle { drawing, style } => format!(
+                "bearcad.drawing_style{{ drawing = {drawing}, style = {style:?} }}"
             ),
             Instruction::SetDrawingViewOrientation { drawing, view, orientation } => format!(
                 "bearcad.drawing_view_orientation{{ drawing = {drawing}, view = {view}, \
@@ -7495,6 +7500,19 @@ impl ScriptRunner {
                     return StepResult::Continue;
                 };
                 state.apply(Action::SetDrawingPaper { drawing: key, white });
+                StepResult::Continue
+            }
+            Instruction::SetDrawingDefaultViewStyle { drawing, style } => {
+                let Some(key) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
+                let Some(style) = crate::model::DrawingViewStyle::from_name(&style) else {
+                    self.last_action_error = Some(format!("Unknown view style {style:?}"));
+                    return StepResult::Continue;
+                };
+                let result = state.apply(Action::SetDrawingDefaultViewStyle { drawing: key, style });
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::SetDrawingViewStyle { drawing, view, style } => {

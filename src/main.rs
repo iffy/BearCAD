@@ -16866,6 +16866,12 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                         flip: t.flip,
                     })
             },
+            // The style a projection added to the open page starts in (#1834).
+            drawing_default_style: self
+                .state
+                .editing_drawing
+                .and_then(|d| self.state.doc.drawings.get(d))
+                .map(|d| d.default_view_style),
             drawing_view: {
                 // The selected projection on the open drawing page (#289).
                 self.state
@@ -18322,10 +18328,20 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 }
                 drawing_view_edit = None;
             }
+            // The page-wide default (#1834) belongs to the open drawing, and is only ever
+            // offered when no view is selected — so it cannot go through the gate below.
+            if let Some(context::DrawingViewEdit::DefaultStyle(style)) = drawing_view_edit {
+                if let Some(drawing) = self.state.editing_drawing {
+                    self.state
+                        .apply(Action::SetDrawingDefaultViewStyle { drawing, style });
+                }
+                drawing_view_edit = None;
+            }
             if let Some(edit) = drawing_view_edit {
                 if let Some((drawing, view)) = self.state.selected_drawing_view() {
                     match edit {
-                        // Handled above, against the selected dimension (#1645).
+                        // Handled above, against the open drawing / selected dimension.
+                        context::DrawingViewEdit::DefaultStyle(_) => {}
                         context::DrawingViewEdit::PointDimAxis(_) => {}
                         context::DrawingViewEdit::Orientation(orientation) => {
                             self.state.apply(Action::SetDrawingViewOrientation {

@@ -123,6 +123,10 @@ per view rather than per viewport:
 Both pencil styles letter their captions and dimensions by hand, in Klee One. SVG exports name
 the font; PDF exports keep the drawing's usual sans.
 
+With nothing selected, the pane's **Drawing → New views** sets what the *next* projection on
+the page starts as. Views already placed keep theirs.
+
 ```lua
-bearcad.drawing_view_style{ drawing = 0, view = 0, style = "colorful" }
+bearcad.drawing_style{ drawing = 0, style = "colorful" }        -- new views
+bearcad.drawing_view_style{ drawing = 0, view = 0, style = "colorful" }  -- this one
 ```

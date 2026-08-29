@@ -4333,6 +4333,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     // Which sheet the *editor* shows it on (#1831); the exports are always
                     // black ink on white.
                     t.set("paper", if drawing.white_paper { "white" } else { "dark" })?;
+                    // The style projections added to this page start in (#1834).
+                    t.set("style", drawing.default_view_style.script_name())?;
+                    t.set("style_label", drawing.default_view_style.label())?;
                     t.set("views", drawing.views.len())?;
                     t.set("annotations", drawing.annotations.len())?;
                     if let Some(name) = &drawing.name {
@@ -9798,6 +9801,25 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             };
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::DrawingPaper { drawing, white }) }
+        })?,
+    )?;
+
+    // The style projections *added* to a drawing start in (#1834):
+    // `bearcad.drawing_style{ drawing, style }`. Views already placed keep theirs.
+    api.set(
+        "drawing_style",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let drawing: usize = opts.ordinal_req("drawing")?;
+            let style: String = opts.get("style")?;
+            if crate::model::DrawingViewStyle::from_name(&style).is_none() {
+                return Err(mlua::Error::external(format!(
+                    "drawing_style: unknown style {style:?} \
+                     (visible / wireframe / shaded / colorful / loose_pencil / \
+                     color_pencil / watercolor)"
+                )));
+            }
+            unsafe { tick.exec(Instruction::SetDrawingDefaultViewStyle { drawing, style }) }
         })?,
     )?;
 
@@ -20566,6 +20588,51 @@ pub mod tests {
             view.orientation,
             DrawingOrientation::Corner(CornerView::FrontRightTop)
         );
+    }
+
+    /// #1834: a drawing carries the style new projections start in, so a whole sheet can be
+    /// set to one look once instead of view by view — and any single view can still be
+    /// changed afterwards without the default following it.
+    #[test]
+    fn lua_drawing_style_sets_the_default_new_views_take() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 40, height = 25 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15 }
+            local d = bearcad.drawing{}
+            -- Before: a view added with no default is a wireframe, as it always was.
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
+            assert(bearcad.drawing_views(d)[1].style == "wireframe")
+            assert(bearcad.get{ kind = "drawing", index = d }.style == "wireframe")
+
+            bearcad.drawing_style{ drawing = d, style = "colorful" }
+            assert(bearcad.get{ kind = "drawing", index = d }.style == "colorful")
+            -- The default does not reach back to views already on the page.
+            assert(bearcad.drawing_views(d)[1].style == "wireframe")
+
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "top" }
+            assert(bearcad.drawing_views(d)[2].style == "colorful", "a new view takes the default")
+            -- An aligned child of a defaulted view takes it too.
+            bearcad.drawing_align_view{ drawing = d, parent = 1, dir = "below" }
+            assert(bearcad.drawing_views(d)[3].style == "colorful")
+
+            -- One view can still be overridden case by case.
+            bearcad.drawing_view_style{ drawing = d, view = 1, style = "watercolor" }
+            assert(bearcad.drawing_views(d)[2].style == "watercolor")
+            assert(bearcad.get{ kind = "drawing", index = d }.style == "colorful",
+                   "which leaves the default alone")
+
+            local ok = pcall(bearcad.drawing_style, { drawing = d, style = "sparkly" })
+            assert(not ok, "an unknown style should error")
+        "#,
+        );
+        use crate::model::DrawingViewStyle;
+        let drawing = &state.doc.drawings[dkey(0)];
+        assert_eq!(drawing.default_view_style, DrawingViewStyle::Colorful);
+        assert_eq!(drawing.views[0].style, DrawingViewStyle::Wireframe);
+        assert_eq!(drawing.views[1].style, DrawingViewStyle::Watercolor);
+        assert_eq!(drawing.views[2].style, DrawingViewStyle::Colorful);
     }
 
     /// #1654: `bearcad.session_log()` reads back what the run has done — the same text a DEV

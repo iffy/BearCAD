@@ -247,6 +247,7 @@ bearcad.drawing_paper{ drawing, paper }   -- white | dark (the editor's sheet; e
 bearcad.drawing_point_dim_offset{ drawing, view, index, offset }
 bearcad.drawing_point_dimension{ drawing, view, a, b, axis }
 bearcad.drawing_point_dimension_axis{ drawing, view, index, axis }
+bearcad.drawing_style{ drawing, style }              -- the style projections added to this page start in
 bearcad.drawing_text{ drawing, text, x, y, wrap? }   -- x/y are page fractions (0–1)
 bearcad.drawing_view{ drawing, body, bodies, component, sketch, cross_section, orientation }
 bearcad.drawing_view_add{ drawing, view, body, bodies, component }

@@ -5448,6 +5448,21 @@ pub struct Drawing {
     /// it. The exports are unaffected — they were always black ink on white.
     #[serde(default)]
     pub white_paper: bool,
+    /// The style a projection **added to this page** starts in (#1834). A sheet is usually
+    /// drawn one way throughout, so the choice belongs to the drawing; a view that wants to
+    /// differ still overrides it, and changing this never reaches back to views already
+    /// placed.
+    #[serde(default)]
+    pub default_view_style: DrawingViewStyle,
+}
+
+impl Drawing {
+    /// Place a view on the page in this drawing's default style (#1834), returning its index.
+    pub fn push_view(&mut self, mut view: DrawingView) -> usize {
+        view.style = self.default_view_style;
+        self.views.push(view);
+        self.views.len() - 1
+    }
 }
 
 /// A drawing's identity (#1055): stable across deletions of other drawings.
@@ -5625,6 +5640,7 @@ impl Default for Drawing {
             margin_mm: default_page_margin_mm(),
             annotations: crate::arena::Arena::new(),
             white_paper: false,
+            default_view_style: DrawingViewStyle::default(),
         }
     }
 }

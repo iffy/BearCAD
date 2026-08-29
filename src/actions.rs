@@ -3354,6 +3354,12 @@ pub enum Action {
         view: usize,
         scale: Option<String>,
     },
+    /// Set the style **new** projections on a drawing start in (#1834). Views already on the
+    /// page keep whatever they have.
+    SetDrawingDefaultViewStyle {
+        drawing: crate::model::DrawingKey,
+        style: crate::model::DrawingViewStyle,
+    },
     /// Set how a placed view renders (#301): visible edges only, wireframe, or shaded.
     SetDrawingViewStyle {
         drawing: crate::model::DrawingKey,
@@ -14394,8 +14400,7 @@ impl AppState {
                 let mut view = crate::model::DrawingView::from_bodies(bodies.clone(), orientation);
                 view.pos_x = (0.35 + step).min(0.9);
                 view.pos_y = (0.35 + step).min(0.9);
-                self.doc.drawings[drawing].views.push(view);
-                let vi = self.doc.drawings[drawing].views.len() - 1;
+                let vi = self.doc.drawings[drawing].push_view(view);
                 self.select_drawing_only(drawing, crate::context::DrawingElementRef::Projection(vi));
                 let source = if bodies.len() == 1 {
                     format!("body {}", bodies[0].index())
@@ -14477,8 +14482,7 @@ impl AppState {
                 page_view.cross_section = Some(view);
                 page_view.pos_x = (0.35 + step).min(0.9);
                 page_view.pos_y = (0.35 + step).min(0.9);
-                self.doc.drawings[drawing].views.push(page_view);
-                let vi = self.doc.drawings[drawing].views.len() - 1;
+                let vi = self.doc.drawings[drawing].push_view(page_view);
                 self.select_drawing_only(drawing, crate::context::DrawingElementRef::Projection(vi));
                 self.status = format!(
                     "Added cross section {} to drawing {}",
@@ -14538,8 +14542,7 @@ impl AppState {
                 let mut view = crate::model::DrawingView::from_sketch(sketch, orientation);
                 view.pos_x = (0.35 + step).min(0.9);
                 view.pos_y = (0.35 + step).min(0.9);
-                self.doc.drawings[drawing].views.push(view);
-                let vi = self.doc.drawings[drawing].views.len() - 1;
+                let vi = self.doc.drawings[drawing].push_view(view);
                 self.select_drawing_only(drawing, crate::context::DrawingElementRef::Projection(vi));
                 self.status = format!("Added sketch {} to drawing {}", sketch.index(), drawing.index());
                 ActionResult::Ok
@@ -14581,6 +14584,8 @@ impl AppState {
                 view.size_y = pv.size_y;
                 view.scale = pv.scale.clone();
                 view.style = pv.style;
+                // …the parent's, not the drawing's default (#1834): a child exists to be read
+                // beside its base, so it follows whatever that base was changed to.
                 // A sectioned base's child shows the same cut (#1779) — sketch children are
                 // never sectioned, and this inherits only from a body base anyway.
                 view.cross_section = pv.cross_section;
@@ -14666,6 +14671,14 @@ impl AppState {
                     Some(s) => format!("Set view scale {s}"),
                     None => "Cleared view scale (auto-fit)".to_string(),
                 };
+                ActionResult::Ok
+            }
+            Action::SetDrawingDefaultViewStyle { drawing, style } => {
+                let Some(d) = self.doc.drawings.get_mut(drawing) else {
+                    return ActionResult::Err(format!("No drawing {}", drawing.index()));
+                };
+                d.default_view_style = style;
+                self.status = format!("New views: {}", style.label());
                 ActionResult::Ok
             }
             Action::SetDrawingViewStyle { drawing, view, style } => {

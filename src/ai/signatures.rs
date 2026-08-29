@@ -76,6 +76,7 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.drawing_view_size"           , "bearcad.drawing_view_size{ drawing, view, width, height, size_x, size_y }"),
     ("bearcad.drawing_paper"               , "bearcad.drawing_paper{ drawing, paper }   -- white | dark (the editor's sheet; exports are always white)"),
     ("bearcad.drawing_view_style"          , "bearcad.drawing_view_style{ drawing, view, style }   -- visible, wireframe, shaded, colorful, loose_pencil, color_pencil, watercolor"),
+    ("bearcad.drawing_style"               , "bearcad.drawing_style{ drawing, style }              -- the style projections added to this page start in"),
     ("bearcad.drawing_views"               , "bearcad.drawing_views(index)"),
     ("bearcad.edit_boolean"                , "bearcad.edit_boolean{ index, op, a, b, keep_b, keep_leftovers }"),
     ("bearcad.edit_dim"                    , "bearcad.edit_dim(axis)"),

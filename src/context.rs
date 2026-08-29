@@ -135,6 +135,9 @@ pub struct ContextInput<'a> {
     pub sketch_text: Option<SketchTextControl>,
     /// Selected drawing-projection editor (#289).
     pub drawing_view: Option<DrawingViewControl>,
+    /// The open drawing's default projection style (#1834): what a projection added to this
+    /// page starts as. `None` outside a drawing.
+    pub drawing_default_style: Option<crate::model::DrawingViewStyle>,
     /// Selected drawing text annotation editor (#312).
     pub drawing_annotation: Option<DrawingAnnotationControl>,
     /// Selected free point-to-point dimension (#1645): which way it measures.
@@ -963,6 +966,10 @@ pub enum DrawingViewEdit {
     Orientation(crate::model::DrawingOrientation),
     /// Display style (#301): visible edges / wireframe / shaded.
     Style(crate::model::DrawingViewStyle),
+    /// The style projections **added** to the open drawing start in (#1834). Carried on this
+    /// channel because it is the same Style control, one level up; it applies to the page,
+    /// so it is handled against the open drawing rather than a selected view.
+    DefaultStyle(crate::model::DrawingViewStyle),
     /// A valid print-scale text (`"1:20"`), or `None` for auto-fit (#300). Only ever emitted
     /// with text that parses — invalid drafts stay local to the field.
     Scale(Option<String>),
@@ -1249,6 +1256,9 @@ pub struct ContextPaneContent {
     pub sketch_text: Option<SketchTextControl>,
     /// Selected drawing-projection editor (#289).
     pub drawing_view: Option<DrawingViewControl>,
+    /// The open drawing's default projection style (#1834), offered while no view is
+    /// selected — a selected view's own Style row is the one to use then.
+    pub drawing_default_style: Option<crate::model::DrawingViewStyle>,
     /// Selected drawing text annotation editor (#312).
     pub drawing_annotation: Option<DrawingAnnotationControl>,
     /// Selected free point-to-point dimension (#1645): which way it measures.
@@ -3471,6 +3481,10 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     } else {
         input.drawing_view.clone()
     };
+    // The page-wide default belongs to the pane only while no single view owns it (#1834).
+    let drawing_default_style = input
+        .drawing_default_style
+        .filter(|_| drawing_view.is_none() && input.drawing_annotation.is_none());
     let drawing_annotation = input.drawing_annotation.clone();
     let drawing_add_active = input.drawing_add_active;
     let repeat_edit_start = input.repeat_edit_start;
@@ -3547,6 +3561,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             project: project.clone(),
             sketch_text: sketch_text.clone(),
             drawing_view: drawing_view.clone(),
+            drawing_default_style,
             drawing_annotation: drawing_annotation.clone(),
             drawing_point_dim: input.drawing_point_dim,
             drawing_selection: None,
@@ -3615,6 +3630,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             project: project.clone(),
             sketch_text: sketch_text.clone(),
             drawing_view: drawing_view.clone(),
+            drawing_default_style,
             drawing_annotation: drawing_annotation.clone(),
             drawing_point_dim: input.drawing_point_dim,
             drawing_selection: None,
@@ -3685,6 +3701,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             project: project.clone(),
             sketch_text: sketch_text.clone(),
             drawing_view: drawing_view.clone(),
+            drawing_default_style,
             drawing_annotation: drawing_annotation.clone(),
             drawing_point_dim: input.drawing_point_dim,
             drawing_selection: None,
@@ -3773,6 +3790,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         project,
         sketch_text,
         drawing_view,
+        drawing_default_style,
         drawing_annotation,
         drawing_point_dim: input.drawing_point_dim,
         drawing_selection,
@@ -5032,8 +5050,13 @@ fn context_row_rect_id(label: &str) -> egui::Id {
 /// Where a labelled Context-pane row was drawn, in window coordinates (#1828). Scripts read
 /// this through `bearcad.ui.context_row_rect(label)` so an interaction test can click a pane
 /// control by name instead of by a guessed pixel offset.
+///
+/// `None` once the pane stops drawing that row: the rect is stamped with the pass it was
+/// drawn on, so a row that has gone away doesn't answer with where it used to be. Two passes
+/// of slack, since egui lays a frame out twice and a script reads between frames.
 pub fn context_row_rect(ctx: &egui::Context, label: &str) -> Option<egui::Rect> {
-    ctx.data(|d| d.get_temp::<egui::Rect>(context_row_rect_id(label)))
+    let (pass, rect) = ctx.data(|d| d.get_temp::<(u64, egui::Rect)>(context_row_rect_id(label)))?;
+    (pass + 2 >= ctx.cumulative_pass_nr()).then_some(rect)
 }
 
 /// Publish a row's rect for the log and for scripts (#1828).
@@ -5042,7 +5065,9 @@ fn note_row(ui: &egui::Ui, label: &str, rect: egui::Rect) {
         return;
     }
     crate::diag::note_ui_row(label, rect_bounds(rect));
-    ui.ctx().data_mut(|d| d.insert_temp(context_row_rect_id(label), rect));
+    let pass = ui.ctx().cumulative_pass_nr();
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(context_row_rect_id(label), (pass, rect)));
 }
 
 /// A rect as the `[min_x, min_y, max_x, max_y]` the log speaks in (#1828).
@@ -8963,6 +8988,26 @@ pub fn show_pane(
         }
     }
 
+    // The page's own default projection style (#1834): with nothing selected, the sheet is
+    // set once instead of view by view. A view added afterwards starts here; one already
+    // placed keeps whatever it has, and can still be changed on its own.
+    if let Some(default_style) = content.drawing_default_style {
+        any_control = true;
+        ui.separator();
+        section_label(ui, "Drawing");
+        labeled_row_salted(ui, Some("drawing_default_style"), "New views", |ui| {
+            egui::ComboBox::from_id_salt("drawing_default_style")
+                .selected_text(default_style.label())
+                .show_ui(ui, |ui| {
+                    for style in crate::model::DrawingViewStyle::ALL {
+                        if ui.selectable_label(default_style == style, style.label()).clicked() {
+                            on_drawing_view_edit(DrawingViewEdit::DefaultStyle(style));
+                        }
+                    }
+                });
+        });
+    }
+
     // Drawing-projection editor (#289): the selected view card's source, orientation, and a
     // remove button; the Add-view tool shows its pick hint until something is placed.
     if let Some(control) = &content.drawing_view {
@@ -11207,6 +11252,7 @@ mod tests {
             project: None,
             sketch_text: None,
             drawing_view: None,
+            drawing_default_style: None,
             drawing_annotation: None,
             drawing_point_dim: None,
             drawing_selection: Vec::new(),
@@ -11401,6 +11447,60 @@ mod tests {
             ..input(&doc, &selection)
         });
         assert!(joint.units.is_none(), "Joint tool hides the Default-units section (#998)");
+    }
+
+    /// #1834: a drawing carries the style new projections take, set from the pane with
+    /// nothing (or the drawing itself) selected — and out of the way once a view is selected,
+    /// where the per-view Style row is the one that matters.
+    #[test]
+    fn drawing_default_style_shows_when_no_view_is_selected() {
+        let doc = Document::default();
+        let selection = SceneSelection::default();
+        let open = context_pane_content(&ContextInput {
+            tool: Tool::Select,
+            in_drawing_workbench: true,
+            drawing_default_style: Some(crate::model::DrawingViewStyle::Colorful),
+            ..input(&doc, &selection)
+        });
+        assert_eq!(
+            open.drawing_default_style,
+            Some(crate::model::DrawingViewStyle::Colorful),
+            "with nothing selected the pane offers the drawing's default"
+        );
+
+        let view_control = DrawingViewControl {
+            view: 0,
+            source: "Body 0".to_string(),
+            orientation: crate::model::DrawingOrientation::Front,
+            scale: String::new(),
+            aligned: false,
+            align_lines: false,
+            inline_orientations: Vec::new(),
+            style: crate::model::DrawingViewStyle::Wireframe,
+            label_hidden: false,
+            label_pos: Default::default(),
+            label_text: String::new(),
+            auto_label: "Body 0 — Front".to_string(),
+            cross_section: None,
+        };
+        let selected = context_pane_content(&ContextInput {
+            tool: Tool::Select,
+            in_drawing_workbench: true,
+            drawing_default_style: Some(crate::model::DrawingViewStyle::Colorful),
+            drawing_view: Some(view_control),
+            ..input(&doc, &selection)
+        });
+        assert!(
+            selected.drawing_default_style.is_none(),
+            "a selected view's own Style row replaces it"
+        );
+
+        // Outside a drawing there is no default to set.
+        let modeling = context_pane_content(&ContextInput {
+            tool: Tool::Select,
+            ..input(&doc, &selection)
+        });
+        assert!(modeling.drawing_default_style.is_none());
     }
 
     /// #486: the Dimension tool shows the same sketch-geometry element picker as Constraint.
@@ -11750,6 +11850,7 @@ mod tests {
             project: None,
             sketch_text: None,
             drawing_view: None,
+            drawing_default_style: None,
             drawing_annotation: None,
             drawing_point_dim: None,
             drawing_selection: Vec::new(),
@@ -13611,6 +13712,7 @@ mod tests {
             project: None,
             sketch_text: None,
             drawing_view: None,
+            drawing_default_style: None,
             drawing_annotation: None,
             drawing_point_dim: None,
             drawing_selection: None,
@@ -13696,6 +13798,7 @@ mod tests {
             project: None,
             sketch_text: None,
             drawing_view: None,
+            drawing_default_style: None,
             drawing_annotation: None,
             drawing_point_dim: None,
             drawing_selection: Vec::new(),
@@ -13774,6 +13877,7 @@ mod tests {
             project: None,
             sketch_text: None,
             drawing_view: None,
+            drawing_default_style: None,
             drawing_annotation: None,
             drawing_point_dim: None,
             drawing_selection: None,
@@ -13859,6 +13963,7 @@ mod tests {
             project: None,
             sketch_text: None,
             drawing_view: None,
+            drawing_default_style: None,
             drawing_annotation: None,
             drawing_point_dim: None,
             drawing_selection: Vec::new(),
@@ -13997,6 +14102,7 @@ mod tests {
             project: None,
             sketch_text: None,
             drawing_view: None,
+            drawing_default_style: None,
             drawing_annotation: None,
             drawing_point_dim: None,
             drawing_selection: None,
@@ -14130,6 +14236,7 @@ mod tests {
             project: None,
             sketch_text: None,
             drawing_view: None,
+            drawing_default_style: None,
             drawing_annotation: None,
             drawing_point_dim: None,
             drawing_selection: Vec::new(),
@@ -14215,6 +14322,7 @@ mod tests {
             project: None,
             sketch_text: None,
             drawing_view: None,
+            drawing_default_style: None,
             drawing_annotation: None,
             drawing_point_dim: None,
             drawing_selection: Vec::new(),
@@ -14303,6 +14411,7 @@ mod tests {
             project: None,
             sketch_text: None,
             drawing_view: None,
+            drawing_default_style: None,
             drawing_annotation: None,
             drawing_point_dim: None,
             drawing_selection: None,
@@ -14379,6 +14488,7 @@ mod tests {
             project: None,
             sketch_text: None,
             drawing_view: None,
+            drawing_default_style: None,
             drawing_annotation: None,
             drawing_point_dim: None,
             drawing_selection: Vec::new(),
