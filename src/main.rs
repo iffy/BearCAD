@@ -28191,12 +28191,20 @@ impl App {
                                 } else {
                                     ink_on_dark_sheet(tint)
                                 };
+                                // A mark measured on the sheet scales with the view (#1840):
+                                // the side of a pencil covers a band of the drawing, not a
+                                // fixed number of pixels.
+                                let width = if stroke.on_sheet {
+                                    stroke.width * scale
+                                } else {
+                                    stroke.width
+                                };
                                 painter.line_segment(
                                     [
                                         to_screen(egui::vec2(stroke.a.x, stroke.a.y)),
                                         to_screen(egui::vec2(stroke.b.x, stroke.b.y)),
                                     ],
-                                    egui::Stroke::new(stroke.width, color),
+                                    egui::Stroke::new(width, color),
                                 );
                                 continue;
                             }

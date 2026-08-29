@@ -62,9 +62,6 @@ pub const PENCIL_HATCH_COLOR: Color32 = Color32::from_rgba_premultiplied(26, 27,
 /// (#1825): a colored pencil drawing gets its form from its outlines, so every side of a
 /// solid is laid on the same, exactly as the plain pencil mode does it.
 pub const PENCIL_SCRIBBLE_SPACING_MM: f32 = 1.5;
-pub const PENCIL_SHADE_WIDTH_PX: f32 = 2.8;
-/// Coverage of one scribble stroke. Light: the tone comes from laying many side by side.
-pub const PENCIL_SHADE_ALPHA: f32 = 0.8;
 /// How much of the gap to its neighbour a ruled fill's wobble may use up (#1826). A quarter
 /// leaves the lines clearly apart; the default cap is nearly half a section hatch's spacing,
 /// which filled the face in solid.
@@ -94,6 +91,12 @@ pub const PENCIL_CAST_TURN_RAD: f32 = 1.72;
 /// than as a brighter version of the fill underneath it.
 pub fn shading_tone(base: Color32) -> Color32 {
     mix(base, PENCIL_GRAPHITE, 0.16)
+}
+
+/// How a mark reads at less than full pressure (#1840): its tone, let back toward the ground
+/// it was laid on. A print has no alpha to stack — a lighter pass has to be a lighter color.
+pub fn pressed(tone: Color32, ground: Color32, pressure: f32) -> Color32 {
+    mix(ground, tone, pressure.clamp(0.0, 1.0))
 }
 
 /// One ruled span, as the pieces a quick scribble actually leaves (#1825).
@@ -134,6 +137,78 @@ pub fn scribble(a: Vec3, b: Vec3, pass: usize) -> Vec<(Vec3, Vec3)> {
         at = next + length * 0.04 * noise(s ^ 0x9E37_79B9).abs();
     }
     out
+}
+
+/// Shading with the **side** of the pencil (#1840): the flat of the lead dragged across the
+/// paper rather than its point. That is how a hand actually lays color into a shape — and it
+/// looks nothing like a hatch. One pass covers a band as wide as the lead is long, the bands
+/// overlap rather than sitting side by side, and the tone comes from how hard the hand
+/// pressed, not from how many lines were packed together.
+///
+/// Pitch between passes, in world mm. Well under the width one pass covers, so consecutive
+/// passes overlap and read as one laid-in tone instead of as stripes.
+pub const PENCIL_SIDE_SPACING_MM: f32 = 1.0;
+/// How broad one pass is on screen, and how much of the paper it actually covers. Light:
+/// what makes the tone is the passes lying over each other.
+pub const PENCIL_SIDE_WIDTH_PX: f32 = 10.0;
+pub const PENCIL_SIDE_ALPHA: f32 = 0.36;
+/// How far the pressure varies from one pass to the next. Gentle: a laid-in tone is meant to
+/// read as one surface, with the hand showing in it rather than breaking it up.
+const PENCIL_SIDE_PRESSURE: f32 = 0.3;
+/// How far a pass runs past the end of its span, and how far it may bow along its length —
+/// much tighter than a scribble's: the mark is as wide as the lead is long, so what reads as
+/// a lively overshoot on a thin line reads as fur around the shape on this one.
+const PENCIL_SIDE_OVERSHOOT_MAX_MM: f32 = 0.4;
+
+/// How often the hand lifts mid-pass, leaving a break of bare paper across the tone, and how
+/// often a whole pass is skipped. Both are occasional: side shading covers.
+const PENCIL_SIDE_BREAK_CHANCE: f32 = 0.18;
+const PENCIL_SIDE_SKIP_CHANCE: f32 = 0.1;
+/// How long that break is, as a share of the pass.
+const PENCIL_SIDE_BREAK: f32 = 0.12;
+
+/// One span laid in with the side of the pencil (#1840), as the pieces it leaves and how hard
+/// the hand pressed for each (`0..1`, 1 = full weight).
+///
+/// A pass covers the span it was dragged along — the whole of it, not a run of dashes. What
+/// varies is the pressure, the odd pass the hand skipped, and the occasional lift part-way
+/// across. Everything is keyed to the span's own endpoints, so the same face is laid in the
+/// same way from every angle and on every redraw.
+///
+/// Draw each piece as **one straight segment**, not as a jointed polyline: a mark this wide
+/// beads at every joint, and a row of beads is the one thing a laid-in tone must not look
+/// like. What makes it read as a hand is where the passes start and stop and how hard each
+/// was pressed, not a wobble along their length.
+pub fn side_shading(a: Vec3, b: Vec3, pass: usize) -> Vec<(Vec3, Vec3, f32)> {
+    let along = b - a;
+    let length = along.length();
+    if length < 1e-6 {
+        return Vec::new();
+    }
+    let dir = along / length;
+    let s = seed(a, b, usize::MAX, pass);
+    if noise(s ^ 0x5F35_6495).abs() < PENCIL_SIDE_SKIP_CHANCE {
+        return Vec::new(); // the pass the hand never made
+    }
+    // The side of the lead runs past the outline at each end, by a fraction of what a thin
+    // line would: a broad mark overshooting that far leaves fur around the shape.
+    let over = (length * PENCIL_SCRIBBLE_OVERSHOOT).min(PENCIL_SIDE_OVERSHOOT_MAX_MM);
+    let start = -over * noise(s).abs();
+    let end = length + over * noise(s ^ 0x9E37_79B9).abs();
+    let pressure = 1.0 - PENCIL_SIDE_PRESSURE * noise(s ^ 0x2545_F491).abs();
+    let at = |d: f32| a + dir * d;
+
+    if noise(s ^ 0x1B87_3593).abs() >= PENCIL_SIDE_BREAK_CHANCE {
+        return vec![(at(start), at(end), pressure)];
+    }
+    // A lift part-way across: two pieces with bare paper between them.
+    let span = end - start;
+    let gap = span * PENCIL_SIDE_BREAK;
+    let cut = start + span * (0.25 + 0.5 * noise(s ^ 0x27D4_EB2F).abs());
+    vec![
+        (at(start), at(cut - gap * 0.5), pressure),
+        (at(cut + gap * 0.5), at(end), pressure * 0.85),
+    ]
 }
 
 /// Blend two colors, `t` of the way from `a` to `b`.
@@ -551,3 +626,55 @@ pub fn stroke_2d_within(a: Vec2, b: Vec2, pass: usize, max_wobble_mm: f32) -> Ve
     .map(|p| Vec2::new(p.x, p.y))
     .collect()
 }
+
+
+#[cfg(test)]
+mod side_tests {
+    use super::*;
+
+    /// #1840: the side of the pencil lays one long mark down the span it was dragged along,
+    /// not a run of short ones. What varies is pressure, the odd lift part-way across, and
+    /// the odd pass the hand skipped — that unevenness is the tone.
+    #[test]
+    fn the_side_of_the_pencil_lays_long_marks_at_varying_pressure() {
+        let (a, b) = (Vec3::ZERO, Vec3::new(40.0, 0.0, 0.0));
+        let side = side_shading(a, b, 0);
+        assert!(!side.is_empty(), "the side of the lead leaves a mark");
+        assert!(side.len() <= 2, "one pass, at most broken once: {}", side.len());
+        let covered: f32 = side.iter().map(|(f, t, _)| (*t - *f).length()).sum();
+        assert!(
+            covered > 40.0 * 0.85,
+            "and it covers the span it was dragged along, got {covered} of 40"
+        );
+        assert!(
+            side.iter().all(|(_, _, p)| (0.5..=1.0).contains(p)),
+            "pressure stays within the hand's range"
+        );
+
+        // Repeatable, like every other mark: a tone re-rolled per frame would crawl.
+        assert_eq!(
+            side.iter().map(|p| p.2.to_bits()).collect::<Vec<_>>(),
+            side_shading(a, b, 0).iter().map(|p| p.2.to_bits()).collect::<Vec<_>>()
+        );
+
+        // Over a face's worth of passes the hand skips a few and lifts part-way across others,
+        // and no two passes are pressed exactly alike — that is what keeps a laid-in tone from
+        // reading as a printed fill.
+        let passes: Vec<Vec<(Vec3, Vec3, f32)>> = (0..80)
+            .map(|i| {
+                let y = i as f32 * 0.9;
+                side_shading(Vec3::new(0.0, y, 0.0), Vec3::new(40.0, y, 0.0), 0)
+            })
+            .collect();
+        assert!(passes.iter().any(|p| p.is_empty()), "some passes the hand never made");
+        assert!(passes.iter().any(|p| p.len() == 2), "and it lifts part-way across others");
+        assert!(
+            passes.iter().filter(|p| !p.is_empty()).count() > 60,
+            "but most of them cover"
+        );
+        let pressures: std::collections::HashSet<u32> =
+            passes.iter().flatten().map(|(_, _, p)| p.to_bits()).collect();
+        assert!(pressures.len() > 20, "each pass is pressed its own way");
+    }
+}
+

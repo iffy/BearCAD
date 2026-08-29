@@ -998,6 +998,13 @@ pub const HATCH_STROKE: f32 = MODEL_STROKE * 0.5;
 /// nearly bare paper. The viewport's pencil lays a mark heavier than its own outline — this is
 /// the page's version of that.
 pub const SCRIBBLE_STROKE: f32 = MODEL_STROKE * 0.9;
+/// Width of one side-of-the-lead pass on the page (#1840), as a multiple of the pitch between
+/// passes: the flat of the pencil covers a band, where its point draws a line, and the bands
+/// have to overlap or the tone reads as stripes.
+pub const SIDE_STROKE_OF_PITCH: f32 = 1.7;
+/// How far from the ground toward the full laid-on tone one pass at full pressure reaches.
+/// A pencil grazes the paper: the color is the body's, but a long way from saturated.
+pub const SIDE_STRENGTH: f32 = 0.42;
 /// …and how many of them cross the view, corner to corner (#1840). The number, not a spacing
 /// in millimetres, is what makes a hand's fill read the same on a 6 mm part and a 600 mm one.
 pub const SCRIBBLE_LINES_ACROSS: f32 = 80.0;
@@ -1966,9 +1973,15 @@ pub struct ShadingStroke {
     /// painted with that face rather than after all of them: a plate's scribble laid down
     /// last lands on top of the block standing on the plate.
     pub over: usize,
-    /// Stroke width, in the same device units the other strokes use (#1829). A pencil scribble
-    /// is a line; a wash lays broader marks, and its drying rim broader still.
+    /// Stroke width. In the same device units the other strokes use, unless `on_sheet`
+    /// (#1829/#1840). A pencil scribble is a line; a wash lays broader marks, and its drying
+    /// rim broader still.
     pub width: f32,
+    /// Whether `width` is in the view's own millimetres rather than device units (#1840), so
+    /// a renderer scales it with the view. The side of a pencil covers a *band of the
+    /// drawing*: at a fixed device width the passes pile up on top of each other when the
+    /// view is small and leave stripes when it is large.
+    pub on_sheet: bool,
 }
 
 /// One thing a renderer puts on the page, in [`StyledViewGeometry::painted`] order (#1840).
@@ -2519,6 +2532,7 @@ pub fn styled_view_geometry(
                             tint,
                             shade,
                             width,
+                            on_sheet: false,
                             over: fi,
                         }));
                     }
@@ -2555,25 +2569,43 @@ pub fn styled_view_geometry(
                             tint: [rim.r(), rim.g(), rim.b()],
                             shade: 1.0,
                             width: WASH_EDGE_STROKE,
+                            on_sheet: false,
                             over: fi,
                         }));
                     }
                 }
             } else {
-                push(
-                    &mut shading,
-                    crate::pencil::hatch_in_frame(
-                        &page,
-                        spacing(crate::pencil::PENCIL_SCRIBBLE_SPACING_MM),
-                        crate::pencil::PENCIL_HATCH_ANGLE_RAD + turn,
-                        &flat,
-                        None,
-                    ),
-                    stroke_tint,
-                    1.0,
-                    SCRIBBLE_STROKE,
-                    true,
-                );
+                // Colored pencil lays its color in with the **side** of the lead (#1840),
+                // not its point: broad passes across the flat, each at its own pressure,
+                // one straight mark apiece. A print cannot stack translucent passes the way
+                // the viewport does, so pressure shows as a paler tone rather than a
+                // lighter touch — `pressed` mixes it back toward the ground it lies on.
+                let ground = crate::pencil::scribble_ground(body);
+                let pitch = spacing(crate::pencil::PENCIL_SIDE_SPACING_MM);
+                for (a, b) in crate::pencil::hatch_in_frame(
+                    &page,
+                    pitch,
+                    crate::pencil::PENCIL_HATCH_ANGLE_RAD + turn,
+                    &flat,
+                    None,
+                ) {
+                    for (from, to, pressure) in crate::pencil::side_shading(a, b, 0) {
+                        // Opaque marks cannot build tone by lying over one another the way
+                        // the viewport's translucent passes do, so the pressure has to be in
+                        // the color: each pass is the laid-on tone let back toward the ground.
+                        let tone =
+                            crate::pencil::pressed(laid_on, ground, pressure * SIDE_STRENGTH);
+                        shading.push(ShadingStroke {
+                            a: glam::Vec2::new(from.x, from.y),
+                            b: glam::Vec2::new(to.x, to.y),
+                            tint: [tone.r(), tone.g(), tone.b()],
+                            shade: 1.0,
+                            width: pitch * SIDE_STROKE_OF_PITCH,
+                            on_sheet: true,
+                            over: fi,
+                        });
+                    }
+                }
             }
             // What stands between this flat and the light, dropped onto its plane and clipped
             // to the flat — the drawings-page half of the viewport's cast shadows (#1818).
@@ -3097,13 +3129,16 @@ fn render_view_geometry<C: Canvas>(
                     (c as f32 * stroke.shade.clamp(0.0, 1.0)).round().clamp(0.0, 255.0) as u8
                 };
                 let (sa, sb) = (to_screen(stroke.a), to_screen(stroke.b));
+                // A mark measured on the sheet scales with the view (#1840); the rest are in
+                // the page's own units already.
+                let width = if stroke.on_sheet { stroke.width * scale } else { stroke.width };
                 canvas.line(
                     sa.x,
                     sa.y,
                     sb.x,
                     sb.y,
                     Rgb(lit(stroke.tint[0]), lit(stroke.tint[1]), lit(stroke.tint[2])),
-                    stroke.width,
+                    width,
                 );
             }
         }

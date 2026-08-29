@@ -2733,24 +2733,28 @@ impl<'a> SceneMesh<'a> {
         view_proj: &Mat4,
     ) {
         let tone = crate::pencil::shading_tone(base);
-        let color = fill_color(tone, crate::pencil::PENCIL_SHADE_ALPHA);
         for flat in flats {
             let frame = crate::pencil::HatchFrame::new(flat.point, flat.normal);
             // Each flat gets its own stroke direction, keyed to the plane it lies in, so two
-            // faces meeting at an edge are not scribbled in lockstep.
+            // faces meeting at an edge are not laid in in lockstep.
             let angle = crate::pencil::PENCIL_HATCH_ANGLE_RAD + flat.angle_offset;
             for (a, b) in crate::pencil::hatch_in_frame(
                 &frame,
-                crate::pencil::PENCIL_SCRIBBLE_SPACING_MM,
+                crate::pencil::PENCIL_SIDE_SPACING_MM,
                 angle,
                 &flat.tris,
                 None,
             ) {
-                for (from, to) in crate::pencil::scribble(a, b, 0) {
-                    self.push_polyline_segment(
-                        &crate::pencil::stroke_inside(from, to, 0),
-                        color,
-                        crate::pencil::PENCIL_SHADE_WIDTH_PX,
+                // The side of the lead, not its point (#1840): broad overlapping passes, each
+                // at its own pressure, rather than a hatch of thin lines.
+                for (from, to, pressure) in crate::pencil::side_shading(a, b, 0) {
+                    // One straight segment per pass: a mark this wide beads at every joint of
+                    // a jointed polyline, and the beads read as knitting, not as shading.
+                    self.push_line_segment(
+                        from,
+                        to,
+                        fill_color(tone, crate::pencil::PENCIL_SIDE_ALPHA * pressure),
+                        crate::pencil::PENCIL_SIDE_WIDTH_PX,
                         cam,
                         viewport,
                         view_proj,
