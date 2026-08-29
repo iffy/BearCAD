@@ -138,12 +138,15 @@ fn install_with(elevation: Elevation) -> Result<String, String> {
                 source.display()
             )),
             Err(e) => {
-                let can_elevate = elevation == Elevation::WhenNeeded
-                    && cfg!(target_os = "macos")
-                    && e.contains("permission denied");
+                let can_elevate =
+                    elevation == Elevation::WhenNeeded && e.contains("permission denied");
                 if !can_elevate {
                     return Err(e);
                 }
+                // Only macOS has a standard authorization prompt; every other unix
+                // resolves to the stub below. The gate has to be a `#[cfg]`, not
+                // `cfg!(...)`, or the macOS-only helper still has to exist on Linux
+                // (#1835).
                 elevated_install_link(&source, &target)?;
                 parts.push(format!(
                     "Installed `{CLI_NAME}` -> {} (with administrator privileges; links to {})",
@@ -173,6 +176,16 @@ fn install_with(elevation: Elevation) -> Result<String, String> {
         return Err("install-cli: nothing to install on this platform".into());
     }
     Ok(parts.join("; "))
+}
+
+/// Non-macOS unix has no standard authorization prompt, so the install just reports
+/// that the link target needs root (#1835).
+#[cfg(all(unix, not(target_os = "macos")))]
+fn elevated_install_link(_source: &Path, target: &Path) -> Result<(), String> {
+    Err(format!(
+        "cannot write {}: re-run the install as root",
+        target.display()
+    ))
 }
 
 /// Single-quote a path for POSIX shell use.

@@ -43,8 +43,10 @@ npm run build
 npm run serve   # http://localhost:3000/
 ```
 
-Doc screenshots under `static/img/screenshots/` are CI artifacts. A local build
-warns if they're missing; the pages still serve.
+Doc screenshots under `static/img/screenshots/` are CI artifacts. `npm run build`
+first runs `scripts/check-doc-screenshots.mjs`: a referenced shot that no
+`screenshots/*.lua` captures fails the build, one merely not captured here warns and
+the pages still serve. The nightly runs it strictly (`BEARCAD_DOCS_REQUIRE_SCREENSHOTS=1`).
 
 ## Deployment
 

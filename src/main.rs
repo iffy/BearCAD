@@ -26,6 +26,7 @@ mod projection;
 mod app_icon;
 mod camera;
 #[cfg(not(target_arch = "wasm32"))]
+mod cfg_gates;
 mod cli_install;
 mod file_association;
 mod command_log;
@@ -42,6 +43,7 @@ mod diag;
 mod time;
 mod dimensions;
 mod drawing;
+mod doc_screenshots;
 mod document_health;
 mod element_picker;
 mod document_lifecycle;

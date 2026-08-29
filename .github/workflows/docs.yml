@@ -31,6 +31,8 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  # A failed or stale nightly files an issue rather than sitting unread (#1836).
+  issues: write
 
 jobs:
   plan:
@@ -39,8 +41,15 @@ jobs:
       generate: ${{ steps.plan.outputs.generate }}
       run_site: ${{ steps.plan.outputs.run_site }}
       pages_base: ${{ steps.plan.outputs.pages_base }}
+      stale: ${{ steps.drift.outputs.stale }}
+      behind: ${{ steps.drift.outputs.behind }}
+      days: ${{ steps.drift.outputs.days }}
+      reason: ${{ steps.drift.outputs.reason }}
     steps:
+      # Full history: the drift check counts commits from the published marker to HEAD.
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Decide screenshot + site work
         id: plan
@@ -51,22 +60,26 @@ jobs:
           pages_base="$(GITHUB_REPOSITORY="$GITHUB_REPOSITORY" bash scripts/pages-base.sh)"
           echo "pages_base=$pages_base" >> "$GITHUB_OUTPUT"
 
+          # The SHA the deployed screenshots were captured at, for every event: a push
+          # that only fetches them still gets to report how far behind they are (#1836).
+          marker=""
+          for url in \
+            "${pages_base}img/screenshots/screenshots-commit.txt" \
+            "${pages_base}img/screenshots/.screenshots-commit"
+          do
+            body="$(curl -fsSL --max-time 30 "$url" 2>/dev/null || true)"
+            if [[ -n "$body" && "$body" != *"<html"* && "$body" != *"<!DOCTYPE"* ]]; then
+              marker="$(printf '%s' "$body" | tr -d '[:space:]')"
+              break
+            fi
+          done
+          echo "marker=$marker" >> "$GITHUB_OUTPUT"
+
           generate=false
           run_site=true
 
           case "$GITHUB_EVENT_NAME" in
             schedule)
-              marker=""
-              for url in \
-                "${pages_base}img/screenshots/screenshots-commit.txt" \
-                "${pages_base}img/screenshots/.screenshots-commit"
-              do
-                body="$(curl -fsSL --max-time 30 "$url" 2>/dev/null || true)"
-                if [[ -n "$body" && "$body" != *"<html"* && "$body" != *"<!DOCTYPE"* ]]; then
-                  marker="$(printf '%s' "$body" | tr -d '[:space:]')"
-                  break
-                fi
-              done
               if [[ -n "$marker" && "$marker" == "$GITHUB_SHA" ]]; then
                 echo "nightly: repo unchanged since last screenshot build ($marker); skip"
                 run_site=false
@@ -90,6 +103,26 @@ jobs:
 
           echo "generate=$generate" >> "$GITHUB_OUTPUT"
           echo "run_site=$run_site" >> "$GITHUB_OUTPUT"
+
+      # How far the live screenshots lag master, and whether that is too far (#1836).
+      - name: Measure screenshot drift
+        id: drift
+        env:
+          DRIFT_MARKER: ${{ steps.plan.outputs.marker }}
+        run: bash scripts/screenshot-drift.sh
+
+      - name: Report screenshot drift
+        run: |
+          {
+            echo "### Doc screenshots"
+            echo
+            echo "- captured at: \`${{ steps.plan.outputs.marker || 'never published' }}\`"
+            echo "- behind master: ${{ steps.drift.outputs.behind }} commit(s), ${{ steps.drift.outputs.days }} day(s)"
+            echo "- stale: ${{ steps.drift.outputs.stale }} ${{ steps.drift.outputs.reason }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${{ steps.drift.outputs.stale }}" == "true" ]]; then
+            echo "::warning::doc screenshots are stale — ${{ steps.drift.outputs.reason }}"
+          fi
 
   # The hosted web app (wasm32) deploys under /app/ next to the docs.
   webapp:
@@ -299,9 +332,13 @@ jobs:
         run: npm ci
         working-directory: docs-site
 
+      # Screenshots the docs reference but nobody captures fail the build; ones a
+      # capture script owns only warn, unless this run just generated them (#1837).
       - name: Build website
         run: npm run build
         working-directory: docs-site
+        env:
+          BEARCAD_DOCS_REQUIRE_SCREENSHOTS: ${{ needs.plan.outputs.generate }}
 
       - name: Configure Pages
         uses: actions/configure-pages@v6
@@ -324,3 +361,40 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
+
+  # #1836: a red scheduled run used to sit unread in the Actions tab while the published
+  # screenshots froze. Say it in the one place that reaches a person: an issue.
+  alert:
+    if: always() && github.event_name == 'schedule' && (contains(needs.*.result, 'failure') || needs.plan.outputs.stale == 'true')
+    needs: [plan, webapp, build, deploy]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: File or update the nightly screenshot alarm
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          FAILED: ${{ contains(needs.*.result, 'failure') }}
+          STALE: ${{ needs.plan.outputs.stale }}
+          BEHIND: ${{ needs.plan.outputs.behind }}
+          DAYS: ${{ needs.plan.outputs.days }}
+          REASON: ${{ needs.plan.outputs.reason }}
+        run: |
+          set -euo pipefail
+          title="Nightly doc screenshots are not being published"
+          body="$(
+            printf 'The scheduled **Website** run needs attention.\n\n'
+            printf -- '- failed jobs: %s\n' "$FAILED"
+            printf -- '- screenshots stale: %s %s\n' "$STALE" "$REASON"
+            printf -- '- behind master: %s commit(s), %s day(s)\n' "$BEHIND" "$DAYS"
+            printf -- '- run: %s\n' "$RUN_URL"
+          )"
+          existing="$(gh issue list --state open --search "$title in:title" \
+            --json number,title --jq "[.[] | select(.title == \"$title\")][0].number")"
+          if [[ -n "$existing" && "$existing" != "null" ]]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
