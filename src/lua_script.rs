@@ -20566,7 +20566,10 @@ pub mod tests {
             local d = bearcad.drawing{ name = "Plate" }
             bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
             bearcad.drawing_view{ drawing = d, body = 0, orientation = "top" }
+            -- A dimension on each: the pencil view's has to be lettered by hand too (#1833),
+            -- and the wireframe view's must not be.
             bearcad.drawing_dimension{ drawing = d, view = 0, a = {0,0,0}, b = {40,0,0} }
+            bearcad.drawing_dimension{ drawing = d, view = 1, a = {0,0,0}, b = {40,0,0} }
             bearcad.drawing_view_style{ drawing = d, view = 1, style = "loose_pencil" }
         "#,
         );
@@ -20577,6 +20580,17 @@ pub mod tests {
         assert!(svg.contains(family), "a pencil view letters its caption by hand: {family}");
         // …and the wireframe view beside it keeps the sans it always had.
         assert!(svg.contains("sans-serif"), "the other view's text is unchanged");
+        // The dimension text goes through `text_rot`, a different call than the caption's —
+        // both have to switch face, or half a pencil view comes out in the sans (#1833).
+        let hand_lettered_rotated = svg
+            .lines()
+            .filter(|l| l.contains("rotate("))
+            .filter(|l| l.contains(family))
+            .count();
+        assert!(
+            hand_lettered_rotated > 0,
+            "a pencil view's dimensions are lettered by hand too:\n{svg}"
+        );
 
         // With no pencil view on the page, the font is never named at all.
         let mut plain = state;

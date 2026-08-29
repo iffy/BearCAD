@@ -28609,11 +28609,7 @@ impl App {
                         let label_screen = egui::pos2(lp.x, lp.y);
                         let label_w =
                             crate::drawing::text_device_width(dim_font, &label_text) + 12.0;
-                        let galley = painter.layout_no_wrap(
-                            label_text,
-                            egui::FontId::proportional(dim_font),
-                            INK,
-                        );
+                        let galley = painter.layout_no_wrap(label_text, label_font.clone(), INK);
                         // TextShape rotates about its top-left `pos`; offset so the label's
                         // centre lands at label_screen after rotation (#314).
                         let rot = egui::emath::Rot2::from_angle(ang);
@@ -28862,7 +28858,7 @@ impl App {
                         sp(g.label),
                         egui::Align2::CENTER_CENTER,
                         format!("{:.0}°", g.degrees),
-                        egui::FontId::proportional(dim_font),
+                        label_font.clone(),
                         INK,
                     );
                 }
