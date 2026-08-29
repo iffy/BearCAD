@@ -65,6 +65,11 @@ pub const PENCIL_SCRIBBLE_SPACING_MM: f32 = 1.5;
 pub const PENCIL_SHADE_WIDTH_PX: f32 = 2.8;
 /// Coverage of one scribble stroke. Light: the tone comes from laying many side by side.
 pub const PENCIL_SHADE_ALPHA: f32 = 0.8;
+/// How much of the gap to its neighbour a ruled fill's wobble may use up (#1826). A quarter
+/// leaves the lines clearly apart; the default cap is nearly half a section hatch's spacing,
+/// which filled the face in solid.
+pub const RULED_WOBBLE_OF_SPACING: f32 = 0.25;
+
 /// How far a scribble runs past the end of its span, as a fraction of that span and capped in
 /// mm — the "outside the lines" of a quick fill.
 pub const PENCIL_SCRIBBLE_OVERSHOOT: f32 = 0.09;
@@ -486,6 +491,17 @@ pub fn hatch_segments(footprint: &[[Vec3; 3]]) -> Vec<(Vec3, Vec3)> {
 /// with no overshoot. Shading and shadow strokes are bounded by the outline of the face they
 /// fill — letting them run past a corner leaves a fringe of hair around every silhouette.
 pub fn stroke_inside(a: Vec3, b: Vec3, pass: usize) -> Vec<Vec3> {
+    // The free-hand cap is per-axis, as it always was, so this keeps the hand it had.
+    stroke_within(a, b, pass, PENCIL_WOBBLE_MAX_MM * std::f32::consts::SQRT_2)
+}
+
+/// [`stroke_inside`] with the wobble held under `max_wobble_mm` (#1826) — that is the furthest
+/// the line may stray from straight, resultant and all.
+///
+/// A hand's wander has to stay well inside the gap to its neighbour. Ruled fills — a section
+/// hatch, say — sit a few millimetres apart, and the default cap is nearly half of that: every
+/// line crossed the next and the whole face filled in solid.
+pub fn stroke_within(a: Vec3, b: Vec3, pass: usize, max_wobble_mm: f32) -> Vec<Vec3> {
     let along = b - a;
     let length = along.length();
     if length < 1e-6 {
@@ -495,7 +511,11 @@ pub fn stroke_inside(a: Vec3, b: Vec3, pass: usize) -> Vec<Vec3> {
     let helper = if dir.z.abs() < 0.9 { Vec3::Z } else { Vec3::X };
     let u = dir.cross(helper).normalize_or_zero();
     let v = dir.cross(u);
-    let wobble = (length * PENCIL_WOBBLE).min(PENCIL_WOBBLE_MAX_MM);
+    // The wobble goes on in two perpendicular directions at once, so the *resultant* can reach
+    // √2 times either one. Divide it out, or a cap meant to keep a ruled fill inside its lane
+    // lets it wander 40% past (#1826).
+    let wobble = (length * PENCIL_WOBBLE)
+        .min(max_wobble_mm.max(0.0) / std::f32::consts::SQRT_2);
     (0..=PENCIL_STROKE_STEPS)
         .map(|joint| {
             let t = joint as f32 / PENCIL_STROKE_STEPS as f32;
@@ -516,4 +536,18 @@ pub fn stroke_2d(a: Vec2, b: Vec2, pass: usize) -> Vec<Vec2> {
         .into_iter()
         .map(|p| Vec2::new(p.x, p.y))
         .collect()
+}
+
+/// The flat-paper form of [`stroke_within`] (#1827): bowed, staying inside its own ends, and
+/// with the wobble held under `max_wobble_mm` so a ruled fill's lines do not cross each other.
+pub fn stroke_2d_within(a: Vec2, b: Vec2, pass: usize, max_wobble_mm: f32) -> Vec<Vec2> {
+    stroke_within(
+        Vec3::new(a.x, a.y, 0.0),
+        Vec3::new(b.x, b.y, 0.0),
+        pass,
+        max_wobble_mm,
+    )
+    .into_iter()
+    .map(|p| Vec2::new(p.x, p.y))
+    .collect()
 }

@@ -32340,6 +32340,96 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert_eq!(key(&wash), key(&geometry(&state)), "the brush wavered between renders");
     }
 
+    /// #1827: a pencil view's cross-section hatch is drawn by the same hand as everything else
+    /// on it. A perfectly ruled hatch in the middle of a hand-drawn view reads as a machine
+    /// drawing pasted in — and the wobble has to stay well under the hatch spacing, or the
+    /// lines cross each other and the cut face fills in solid.
+    #[test]
+    fn a_pencil_view_draws_its_section_hatch_by_hand() {
+        use crate::model::{DrawingOrientation, DrawingViewStyle};
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        // A cross section through the middle of the block, applied to a projection.
+        state.apply(Action::CreateCrossSection { name: None });
+        let section = state.doc.cross_sections.keys().next().expect("the cross section");
+        state.doc.cross_sections[section].cuts.push(crate::model::CrossSectionCut {
+            origin: glam::Vec3::new(0.0, 0.0, 5.0),
+            normal: -glam::Vec3::Z,
+            ..Default::default()
+        });
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::AddDrawingView {
+            drawing: dkey(0),
+            bodies: vec![bkey(0)],
+            orientation: DrawingOrientation::Isometric,
+        });
+        state.apply(Action::SetDrawingViewCrossSection {
+            drawing: dkey(0),
+            view: 0,
+            cross_section: Some(section),
+        });
+        let geometry = |state: &AppState| {
+            crate::drawing::styled_view_geometry(
+                &state.doc,
+                &state.doc.drawings[dkey(0)].views,
+                &state.doc.drawings[dkey(0)].views[0],
+            )
+        };
+        let style = |state: &mut AppState, style| {
+            state.apply(Action::SetDrawingViewStyle { drawing: dkey(0), view: 0, style });
+        };
+
+        style(&mut state, DrawingViewStyle::Visible);
+        let ruled = geometry(&state);
+        assert!(!ruled.hatch.is_empty(), "the sectioned view is hatched at all");
+        style(&mut state, DrawingViewStyle::LoosePencil);
+        let drawn = geometry(&state);
+
+        // Each ruled line becomes a many-jointed stroke…
+        assert!(
+            drawn.hatch.len() > ruled.hatch.len() * 3,
+            "{} hand-drawn pieces for {} ruled lines",
+            drawn.hatch.len(),
+            ruled.hatch.len()
+        );
+        // …that stays within a wobble of where the ruled one was, rather than wandering into
+        // its neighbours. The bound is the spacing the hatch was laid out on.
+        let slack = crate::extrude::SECTION_HATCH_SPACING_MM
+            * crate::pencil::RULED_WOBBLE_OF_SPACING
+            + 1e-3;
+        let near_a_ruled_line = |p: glam::Vec2| {
+            ruled.hatch.iter().any(|(a, b)| {
+                let seg = *b - *a;
+                let len2 = seg.length_squared();
+                let t = if len2 < 1e-12 {
+                    0.0
+                } else {
+                    ((p - *a).dot(seg) / len2).clamp(0.0, 1.0)
+                };
+                (p - (*a + seg * t)).length() <= slack
+            })
+        };
+        for (a, b) in &drawn.hatch {
+            for p in [a, b] {
+                assert!(
+                    near_a_ruled_line(*p),
+                    "a hatch stroke wandered {slack:.2}mm off its line at {p:?}"
+                );
+            }
+        }
+        // And the hand is steady between renders.
+        let key = |g: &crate::drawing::StyledViewGeometry| {
+            let mut k: Vec<[u32; 4]> = g
+                .hatch
+                .iter()
+                .map(|(a, b)| [a.x.to_bits(), a.y.to_bits(), b.x.to_bits(), b.y.to_bits()])
+                .collect();
+            k.sort_unstable();
+            k
+        };
+        assert_eq!(key(&drawn), key(&geometry(&state)), "the hand wavered between renders");
+    }
+
     /// #296: an aligned child projection shares its parent's axis (stays lined up) and follows
     /// the parent when the parent moves; the child only slides on its free axis.
     #[test]

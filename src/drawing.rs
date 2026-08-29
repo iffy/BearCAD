@@ -2000,10 +2000,32 @@ pub fn styled_view_geometry(
     // own field rather than with the stroked edges (#1784) — it draws thinner — and apart
     // from `drawing_view_world_edges`, so dimensioning and circle detection still see only
     // real geometry.
-    let hatch: Vec<(glam::Vec2, glam::Vec2)> = section_hatch_world_segments(doc, view)
-        .iter()
-        .map(|(a, b)| (project(*a), project(*b)))
-        .collect();
+    // A pencil view's cut is drawn by the same hand as the rest of it (#1827): a perfectly
+    // ruled hatch in the middle of a hand-drawn view reads as a machine drawing pasted in.
+    // The wobble is held well under the hatch spacing, or the lines cross and the face fills
+    // in solid.
+    let hatch: Vec<(glam::Vec2, glam::Vec2)> = {
+        let ruled: Vec<(glam::Vec2, glam::Vec2)> = section_hatch_world_segments(doc, view)
+            .iter()
+            .map(|(a, b)| (project(*a), project(*b)))
+            .collect();
+        if view.style.is_pencil() {
+            let wobble = crate::extrude::SECTION_HATCH_SPACING_MM
+                * crate::pencil::RULED_WOBBLE_OF_SPACING;
+            ruled
+                .iter()
+                .flat_map(|(a, b)| {
+                    let points = crate::pencil::stroke_2d_within(*a, *b, 0, wobble);
+                    points
+                        .windows(2)
+                        .map(|w| (w[0], w[1]))
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        } else {
+            ruled
+        }
+    };
     let wireframe = || StyledViewGeometry {
         faces: Vec::new(),
         segments: edges.iter().map(|(a, b)| (project(*a), project(*b))).collect(),

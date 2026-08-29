@@ -5157,7 +5157,12 @@ The model in one place:
       other** (#1818), not only on the ground: every lit flat is a receiver, everything standing
       over it is projected onto its plane along the light, and the hatch is clipped to the flat.
       `crate::pencil` holds the strokes, tones, scribble and hatching, shared with the drawings
-      workbench's pencil styles (#1809/#1821).
+      workbench's pencil styles (#1809/#1821). **A cross-section's hatch and cut outline are
+      drawn by the same hand (#1826/#1827)** — a perfectly ruled hatch in the middle of a
+      hand-drawn view reads as a machine drawing pasted in. The hatch uses `stroke_within` with
+      the wobble held to `RULED_WOBBLE_OF_SPACING` of the hatch spacing: the free-hand cap is
+      nearly half that gap, so on it every line crossed the next and the cut face filled in
+      solid. (The cap bounds the *resultant* — the wobble goes on along two axes at once.)
     - *Watercolour (#1829)*: the pencil drawing, painted. Same paper, same hand-drawn outlines,
       same hatched contact shadow; the colour is laid on as a **wash** instead of a scribble —
       a ground that covers (`pencil::wash_tone`, far less paper showing than the pencil one),

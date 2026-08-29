@@ -2275,6 +2275,7 @@ impl ViewportScene {
                         solid,
                         cut,
                         palette.section_hatch,
+                        input.cam.shading_mode().is_drawn_by_hand(),
                         input.cam,
                         input.viewport,
                         &vp,
@@ -3667,12 +3668,17 @@ impl<'a> SceneMesh<'a> {
     /// bounded surface. Both lift toward the camera by [`face_stroke_depth_lift`] on top of
     /// the usual stroke bias (#1777): they lie exactly on the cut face's fill, and a fixed
     /// lift is within depth-buffer noise of it, which speckled the lines into dashes.
+    ///
+    /// `by_hand` draws both with the pencil's wobble (#1826). A cut is the one part of a
+    /// hand-drawn scene that used to come out perfectly ruled, which reads as a machine
+    /// drawing pasted into a sketch.
     #[allow(clippy::too_many_arguments)]
     fn push_section_hatch(
         &mut self,
         solid: &crate::extrude::SolidMesh,
         cut: &crate::model::CrossSectionCut,
         color: Color32,
+        by_hand: bool,
         cam: &Camera,
         viewport: UiRect,
         view_proj: &Mat4,
@@ -3681,33 +3687,47 @@ impl<'a> SceneMesh<'a> {
         let bias = |a: Vec3, b: Vec3| {
             STROKE_DEPTH_BIAS + face_stroke_depth_lift(eye, (a + b) * 0.5)
         };
+        // `overshoot` only for the outline: hatch lines are short and laid close together, so
+        // running each past its ends fills the whole face in (#1826).
+        let mut stroke = |a: Vec3, b: Vec3, width: f32, pass: usize, overshoot: bool| {
+            let bias = bias(a, b);
+            if by_hand {
+                let points = if overshoot {
+                    crate::pencil::stroke(a, b, pass)
+                } else {
+                    // Held well inside the gap to the next line, or the hatch fills in solid.
+                    crate::pencil::stroke_within(
+                        a,
+                        b,
+                        pass,
+                        crate::extrude::SECTION_HATCH_SPACING_MM
+                            * crate::pencil::RULED_WOBBLE_OF_SPACING,
+                    )
+                };
+                for pair in points.windows(2) {
+                    self.push_line_segment_with_bias(
+                        pair[0], pair[1], color, width, cam, viewport, view_proj, bias,
+                    );
+                }
+            } else {
+                self.push_line_segment_with_bias(
+                    a, b, color, width, cam, viewport, view_proj, bias,
+                );
+            }
+        };
         for (a, b) in crate::extrude::section_hatch_segments(
             solid,
             cut,
             crate::extrude::SECTION_HATCH_SPACING_MM,
         ) {
-            self.push_line_segment_with_bias(
-                a,
-                b,
-                color,
-                SECTION_HATCH_WIDTH_PX,
-                cam,
-                viewport,
-                view_proj,
-                bias(a, b),
-            );
+            stroke(a, b, SECTION_HATCH_WIDTH_PX, 0, false);
         }
         for (a, b) in crate::extrude::section_face_perimeter_segments(solid, cut) {
-            self.push_line_segment_with_bias(
-                a,
-                b,
-                color,
-                SECTION_FACE_OUTLINE_WIDTH_PX,
-                cam,
-                viewport,
-                view_proj,
-                bias(a, b),
-            );
+            // The perimeter is an outline like any other, so it is gone over twice by hand.
+            let passes = if by_hand { PENCIL_PASSES } else { 1 };
+            for pass in 0..passes {
+                stroke(a, b, SECTION_FACE_OUTLINE_WIDTH_PX, pass, true);
+            }
         }
     }
 
@@ -14858,6 +14878,52 @@ mod loose_pencil_tests {
         for pair in offsets.windows(2) {
             assert!(pair[1] - pair[0] > 1e-6, "two flats share a hatch angle");
         }
+    }
+
+    /// #1826: a ruled fill's wobble has to stay well under the gap to its neighbour. The
+    /// pencil's default cap is nearly half a section hatch's 3 mm spacing, so hand-drawing the
+    /// hatch with it made every line cross the next and the cut face filled in solid black.
+    #[test]
+    fn a_ruled_fills_wobble_stays_inside_its_own_lane() {
+        let spacing = crate::extrude::SECTION_HATCH_SPACING_MM;
+        let lane = spacing * crate::pencil::RULED_WOBBLE_OF_SPACING;
+        assert!(
+            lane * 2.0 < spacing,
+            "a line may not reach its neighbour: {lane} either way of a {spacing} gap"
+        );
+        assert!(
+            lane < crate::pencil::PENCIL_WOBBLE_MAX_MM,
+            "and it is tighter than the free-hand cap, which is what filled the face in"
+        );
+
+        // A long line — long enough that the *fraction* is not what caps it — keeps inside.
+        let (a, b) = (Vec3::ZERO, Vec3::new(200.0, 0.0, 0.0));
+        for pass in 0..PENCIL_PASSES {
+            for p in crate::pencil::stroke_within(a, b, pass, lane) {
+                let off = (p - Vec3::new(p.x, 0.0, 0.0)).length();
+                assert!(off <= lane + 1e-4, "wandered {off:.3}mm, past the {lane:.3}mm lane");
+                assert!(
+                    (-1e-4..=200.0 + 1e-4).contains(&p.x),
+                    "a ruled fill's line stays inside its own ends, got {p:?}"
+                );
+            }
+        }
+        // The free-hand stroke is still free: it is only the ruled fills that are reined in.
+        // Sampled over several lines, since any one of them may happen to wander little.
+        let free_max = (0..12)
+            .flat_map(|i| {
+                let a = Vec3::new(0.0, i as f32 * 10.0, 0.0);
+                let b = Vec3::new(200.0, i as f32 * 10.0, 0.0);
+                crate::pencil::stroke_inside(a, b, 0)
+                    .into_iter()
+                    .map(move |p| (p - Vec3::new(p.x, a.y, 0.0)).length())
+                    .collect::<Vec<_>>()
+            })
+            .fold(0.0f32, f32::max);
+        assert!(
+            free_max > lane,
+            "an outline still wobbles as much as it always did, got {free_max:.3}mm"
+        );
     }
 
     /// #1811: two bodies standing near each other cast **one** shadow, not two overlapping
