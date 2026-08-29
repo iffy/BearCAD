@@ -32200,30 +32200,30 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         let tints: std::collections::HashSet<[u8; 3]> =
             pencil.faces.iter().map(|f| f.tint).collect();
         assert_eq!(tints.len(), 1, "and in one colour");
-        // …the fill under it is flagged as a pencil *ground* and keeps the body's own colour
-        // unmixed. Which way "most of the way to the paper" goes is the renderer's call — the
-        // print page is white, the editor's sheet is dark — so the geometry does not decide.
+        // …the fill under it is flagged as a *ground* rather than a shaded surface, and is the
+        // body's colour already taken most of the way to the paper — so what the eye reads as
+        // the colour is the scribble on top, and the gaps in it read as bare paper.
         assert!(pencil.scribbled, "the fills are a pencil ground, not a shaded surface");
-        let body = *tints.iter().next().expect("one tint");
-        assert_eq!(body, [200, 60, 60], "the body's own colour travels unmixed");
-        let ground = crate::pencil::scribble_ground(eframe::egui::Color32::from_rgb(
-            body[0], body[1], body[2],
-        ));
+        let ground = *tints.iter().next().expect("one tint");
+        let expected = crate::pencil::scribble_ground(eframe::egui::Color32::from_rgb(200, 60, 60));
+        assert_eq!(
+            ground,
+            [expected.r(), expected.g(), expected.b()],
+            "the ground is mixed once, by the geometry, not by each renderer"
+        );
         let paper = crate::pencil::PENCIL_PAPER;
         assert!(
-            ground.r() > body[0] && ground.r() <= paper.r(),
-            "and taking it toward the paper lightens it, {} → {}",
-            body[0],
-            ground.r()
+            ground[0] > 200 && ground[0] <= paper.r(),
+            "which lightens it toward the paper, got {ground:?}"
         );
-        assert!(ground.r() > ground.g(), "without losing the hue, got {ground:?}");
+        assert!(ground[0] > ground[1], "without losing the hue, got {ground:?}");
 
         // …and the colour itself is scribbled on, in a deepened version of the body's own.
         assert!(!pencil.shading.is_empty(), "the faces are scribbled in");
         for stroke in &pencil.shading {
             assert!(stroke.tint[0] > stroke.tint[1], "the scribble keeps the body's hue");
             assert!(
-                stroke.tint[0] < ground.r(),
+                stroke.tint[0] < ground[0],
                 "and reads darker than the ground it lies on, {:?} vs {ground:?}",
                 stroke.tint
             );
@@ -32239,6 +32239,105 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             k
         };
         assert_eq!(key(&pencil), key(&geometry(&state)), "the hand wavered between renders");
+    }
+
+    /// #1829: the Watercolour projection style is the pencil drawing, painted — the same
+    /// hand-drawn edges, with the colour laid on as a wash that pools and dries darker at the
+    /// edges instead of being scribbled on.
+    #[test]
+    fn watercolour_drawing_view_washes_the_colour_on() {
+        use crate::model::{DrawingOrientation, DrawingViewStyle};
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::AddDrawingView {
+            drawing: dkey(0),
+            bodies: vec![bkey(0)],
+            orientation: DrawingOrientation::Isometric,
+        });
+        state.apply(Action::AddMaterial {
+            name: Some("Sea".to_string()),
+            color: Some([60, 110, 200]),
+            bodies: vec![bkey(0)],
+        });
+        let geometry = |state: &AppState| {
+            crate::drawing::styled_view_geometry(
+                &state.doc,
+                &state.doc.drawings[dkey(0)].views,
+                &state.doc.drawings[dkey(0)].views[0],
+            )
+        };
+        let style = |state: &mut AppState, style| {
+            state.apply(Action::SetDrawingViewStyle { drawing: dkey(0), view: 0, style });
+        };
+
+        style(&mut state, DrawingViewStyle::LoosePencil);
+        let pencil = geometry(&state);
+        style(&mut state, DrawingViewStyle::ColourPencil);
+        let scribbled = geometry(&state);
+        style(&mut state, DrawingViewStyle::Watercolour);
+        let wash = geometry(&state);
+
+        // It starts from the pencil drawing: the same hand-drawn edges…
+        assert!(
+            wash.segments.len() > pencil.segments.len() / 2,
+            "the edges are still drawn by hand"
+        );
+        assert!(DrawingViewStyle::Watercolour.is_pencil(), "so its labels letter by hand too");
+        // …one tone on every side, in the body's own colour…
+        let shades: std::collections::HashSet<u32> =
+            wash.faces.iter().map(|f| f.shade.to_bits()).collect();
+        assert_eq!(shades.len(), 1, "a wash dries to one value on every side");
+        assert!(wash.scribbled, "and its fills are a ground, not a shaded surface");
+        let wash_ground = crate::pencil::wash_tone(eframe::egui::Color32::from_rgb(60, 110, 200));
+        assert!(
+            wash.faces
+                .iter()
+                .all(|f| f.tint == [wash_ground.r(), wash_ground.g(), wash_ground.b()]),
+            "carrying the colour the wash dries to — a wash covers, where a pencil grazes"
+        );
+        let pencil_ground =
+            crate::pencil::scribble_ground(eframe::egui::Color32::from_rgb(60, 110, 200));
+        assert!(
+            wash_ground.b() < pencil_ground.b(),
+            "and it is the stronger of the two grounds, {wash_ground:?} vs {pencil_ground:?}"
+        );
+
+        // …and the colour is *washed* on: broader marks than a pencil scribble, and a deeper
+        // rim where it dried against the edges.
+        assert!(!wash.shading.is_empty(), "the faces are painted");
+        let widest = wash.shading.iter().map(|s| s.width).fold(0.0f32, f32::max);
+        let pencil_width =
+            scribbled.shading.iter().map(|s| s.width).fold(0.0f32, f32::max);
+        assert!(
+            widest > pencil_width,
+            "a brush lays a broader mark than a pencil, {widest} vs {pencil_width}"
+        );
+        let rim = crate::pencil::wash_edge_tone(eframe::egui::Color32::from_rgb(60, 110, 200));
+        assert!(
+            wash.shading.iter().any(|s| s.tint == [rim.r(), rim.g(), rim.b()]),
+            "and there is a drying rim in the deeper tone"
+        );
+        // Every mark keeps the body's hue — a wash darkens in its own colour, which is what
+        // separates it from a pencil pressed harder.
+        for stroke in &wash.shading {
+            assert!(
+                stroke.tint[2] > stroke.tint[0],
+                "the wash stays blue, got {:?}",
+                stroke.tint
+            );
+        }
+        // The hand is steady: the same view repaints the same marks.
+        let key = |g: &crate::drawing::StyledViewGeometry| {
+            let mut k: Vec<[u32; 4]> = g
+                .shading
+                .iter()
+                .map(|s| [s.a.x.to_bits(), s.a.y.to_bits(), s.b.x.to_bits(), s.b.y.to_bits()])
+                .collect();
+            k.sort_unstable();
+            k
+        };
+        assert_eq!(key(&wash), key(&geometry(&state)), "the brush wavered between renders");
     }
 
     /// #296: an aligned child projection shares its parent's axis (stays lined up) and follows

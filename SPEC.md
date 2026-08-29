@@ -2572,10 +2572,14 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   page — the same hand-drawn edges, in a deepened version of the body's own colour when the
   view shows one, over a ground of that colour, with `crate::pencil` scribble strokes laid
   across each flat and the solids' shadows dropped onto one another. One tone on every side.
+  **Watercolour** (#1829) is the same again with the colour washed on instead: a covering
+  ground, pooling, and the rim it dries to along each flat's boundary. `is_hand_coloured` is
+  what both share; `ShadingStroke::width` lets a brush lay a broader mark than a pencil.
   Strokes travel as `ShadingStroke`s, and `StyledViewGeometry::scribbled` marks the fills as a
-  pencil **ground** rather than a shaded surface: the tint stays the body's own colour, because
-  "most of the way to the paper" means toward white on the print and toward the sheet's own
-  dark in the editor, so each surface maps it. **Both pencil styles letter their own text
+  pencil **ground** rather than a shaded surface. The geometry mixes that ground once and the
+  tint carries the result; the editor then reads the whole style as **ink on paper**
+  (`ink_on_dark_sheet`) rather than as colour, because mapping a pale print ground and a dark
+  print rim straight onto a dark sheet inverts them and the painting comes out inside-out. **Both pencil styles letter their own text
   (#1830)**: a pencil view's caption and dimensions are set in the bundled hand-lettered
   **Klee One** (`pencil::LABEL_FONT`, OFL — see `THIRD_PARTY_LICENSES.md`), registered with
   egui once in `theme::apply`; every other style keeps the sans. `Canvas::set_hand_lettered`
@@ -5149,6 +5153,15 @@ The model in one place:
       over it is projected onto its plane along the light, and the hatch is clipped to the flat.
       `crate::pencil` holds the strokes, tones, scribble and hatching, shared with the drawings
       workbench's pencil styles (#1809/#1821).
+    - *Watercolour (#1829)*: the pencil drawing, painted. Same paper, same hand-drawn outlines,
+      same hatched contact shadow; the colour is laid on as a **wash** instead of a scribble —
+      a ground that covers (`pencil::wash_tone`, far less paper showing than the pencil one),
+      soft overlapping bands where the pigment **pooled** (`pencil::pooling`), and the deeper
+      **rim** a drying wash leaves against every edge of a flat (`flat_boundary_edges`, the
+      edges only one triangle owns). The rim goes down as several thin passes rather than one
+      thick stroke: a thick round-capped line beads at every joint of its own wobble, which
+      reads as bubbles rather than gathered pigment. `ShadingMode::is_drawn_by_hand` is what
+      the paper palette and the popup's second row are keyed to, so the three stay one family.
 
   **Lighting runs per pixel, on smooth normals (#1037).** Solids carry a world-space normal
   and a lighting-model tag per vertex (`GpuVertex::normal`, whose `w` is a `ShadingModel`);

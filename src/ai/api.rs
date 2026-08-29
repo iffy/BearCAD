@@ -199,7 +199,7 @@ bearcad.ui.zoom_fit()
 bearcad.ui.screenshot("shot.png")            -- viewport; "window" / a pane name for others
 bearcad.ui.camera{ yaw?, pitch?, distance?, target?, projection?, shading?, ground? }
 bearcad.ui.camera{}                          -- read it back, shading and ground included
-bearcad.ui.shading("loose_pencil")           -- …|realistic|loose_pencil|colour_pencil
+bearcad.ui.shading("loose_pencil")           -- …|realistic|loose_pencil|colour_pencil|watercolour
 bearcad.ui.pane("ai"|"hierarchy"|"context"|"parameters"|…, "show"|"hide"|"toggle")
 bearcad.ui.click_ground(x, y)               -- sketch-plane millimetres
 bearcad.ui.click_world(x, y, z)             -- any world point: a body's side wall, say

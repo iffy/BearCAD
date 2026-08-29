@@ -20258,6 +20258,37 @@ fn next_plane_focus_dim(focused: PlaneDim) -> PlaneDim {
 }
 
 /// URL of the in-repo third-party open-source licenses document (#86). Opened by
+/// Read a hand-drawn style's print colour as **ink on paper**, for the editor's dark sheet
+/// (#1829).
+///
+/// The exports really are on white paper, so a wash's ground prints as a pale tint and the rim
+/// it dried to prints darker. Mapping those two straight onto a dark sheet inverts them — the
+/// pale ground goes bright and the dark rim goes dim, so the painting comes out inside-out.
+/// What carries over is not the colour but *how much ink is on the paper*: the further a print
+/// colour sits from the paper, the more of the body's own hue is laid over the sheet. Order is
+/// preserved, so a mark that prints darker than its ground still reads stronger here.
+fn ink_on_dark_sheet(print: [u8; 3]) -> egui::Color32 {
+    let paper = crate::pencil::PENCIL_PAPER;
+    let paper = [paper.r(), paper.g(), paper.b()];
+    // Coverage: the channel that moved furthest from the paper. A saturated colour is a lot of
+    // ink even where one of its channels is still near white.
+    let cover = (0..3)
+        .map(|i| {
+            (paper[i] as f32 - print[i] as f32) / (paper[i].max(1) as f32)
+        })
+        .fold(0.0f32, f32::max)
+        .clamp(0.0, 1.0);
+    // Hue: the print colour opened back up to full strength, so what lands on the sheet is the
+    // body's colour rather than a grey of the same darkness.
+    let peak = print.iter().copied().max().unwrap_or(255).max(1) as f32;
+    let hue: [f32; 3] = std::array::from_fn(|i| print[i] as f32 / peak * 255.0);
+    // A gentle curve: a light wash should still read as colour, not as bare sheet.
+    let t = cover.powf(0.6);
+    let sheet = [30.0f32, 30.0, 30.0];
+    let mix = |i: usize| (sheet[i] + (hue[i] - sheet[i]) * t).round().clamp(0.0, 255.0) as u8;
+    egui::Color32::from_rgb(mix(0), mix(1), mix(2))
+}
+
 /// Help ▸ Licenses.
 const LICENSES_DOC_URL: &str =
     "https://github.com/iffy/BearCAD/blob/master/THIRD_PARTY_LICENSES.md";
@@ -28031,20 +28062,20 @@ impl App {
                         // dark sheet — so it goes down toward the sheet, not up toward white,
                         // and the scribble over it is what carries the colour.
                         let level = |c: u8| {
-                            if sty.scribbled {
-                                (c as f32 * 0.22) as u8 + 18
-                            } else {
-                                (c as f32 / 255.0 * face.shade.clamp(0.0, 1.0) * 110.0) as u8 + 30
-                            }
+                            (c as f32 / 255.0 * face.shade.clamp(0.0, 1.0) * 110.0) as u8 + 30
                         };
                         // One raw mesh per coplanar face (#1651): its triangles meet without
                         // the feathered edges a per-triangle fill would leave, so the
                         // tessellation's diagonals don't show as faint seams.
-                        let color = egui::Color32::from_rgb(
-                            level(face.tint[0]),
-                            level(face.tint[1]),
-                            level(face.tint[2]),
-                        );
+                        let color = if sty.scribbled {
+                            ink_on_dark_sheet(face.tint)
+                        } else {
+                            egui::Color32::from_rgb(
+                                level(face.tint[0]),
+                                level(face.tint[1]),
+                                level(face.tint[2]),
+                            )
+                        };
                         let mut mesh = egui::epaint::Mesh::default();
                         for pts in &face.tris {
                             let base = mesh.vertices.len() as u32;
@@ -28087,27 +28118,19 @@ impl App {
                             egui::Stroke::new(crate::drawing::HATCH_STROKE, INK),
                         );
                     }
-                    // The scribble itself (#1821/#1825). It carries the body's colour, which
-                    // on the dark sheet wants lifting rather than mapping down — this is the
-                    // mark on the paper, not the paper.
+                    // The marks laid on that ground (#1821/#1825/#1829) — through the same
+                    // ink-on-paper reading, so a mark that prints darker than its ground shows
+                    // darker here too, which two separate mappings could not guarantee.
                     for stroke in &sty.shading {
-                        let level = |c: u8| {
-                            let s = stroke.shade.clamp(0.0, 1.0);
-                            ((c as f32 * 0.62 + 55.0) * s) as u8
-                        };
+                        let s = stroke.shade.clamp(0.0, 1.0);
+                        let tint: [u8; 3] =
+                            std::array::from_fn(|i| (stroke.tint[i] as f32 * s) as u8);
                         painter.line_segment(
                             [
                                 to_screen(egui::vec2(stroke.a.x, stroke.a.y)),
                                 to_screen(egui::vec2(stroke.b.x, stroke.b.y)),
                             ],
-                            egui::Stroke::new(
-                                crate::drawing::HATCH_STROKE,
-                                egui::Color32::from_rgb(
-                                    level(stroke.tint[0]),
-                                    level(stroke.tint[1]),
-                                    level(stroke.tint[2]),
-                                ),
-                            ),
+                            egui::Stroke::new(stroke.width, ink_on_dark_sheet(tint)),
                         );
                     }
                 }

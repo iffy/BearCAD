@@ -94,6 +94,17 @@ angle, so the drawing doesn't crawl as you orbit.
 </div>
 </div>
 
+<div className="row">
+<div className="col col--6">
+
+**Watercolour** — the same drawing, painted: each colour a wash that pools and dries darker at
+the edges.
+
+<img src={useBaseUrl("/img/screenshots/view-styles-watercolour.png")} alt="The same hand-drawn cubes, their colours laid on as watercolour washes" />
+
+</div>
+</div>
+
 ## Projections on a drawing
 
 A [projection](/docs/drawing-tools/projection) on a drawing page has its own **Style**, set
@@ -107,6 +118,7 @@ per view rather than per viewport:
 | Colorful | Shaded, keeping each body's material colour. |
 | Loose pencil | The visible edges drawn by hand. |
 | Coloured pencil | The same hand, with each body's colour scribbled in and the solids' shadows on each other. |
+| Watercolour | The same hand, with each colour washed on instead — pooling, and darker where it dried at the edges. |
 
 Both pencil styles letter their captions and dimensions by hand, in Klee One. SVG exports name
 the font; PDF exports keep the drawing's usual sans.

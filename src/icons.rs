@@ -94,6 +94,7 @@ pub enum IconId {
     ShadingRealistic,
     ShadingLoosePencil,
     ShadingColourPencil,
+    ShadingWatercolour,
     GroundGrid,
     GroundSolid,
     ViewList,
@@ -153,7 +154,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 100] = [
+    pub const ALL: [Self; 101] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -220,6 +221,7 @@ impl IconId {
         Self::ShadingRealistic,
         Self::ShadingLoosePencil,
         Self::ShadingColourPencil,
+        Self::ShadingWatercolour,
         Self::GroundGrid,
         Self::GroundSolid,
         Self::ViewList,
@@ -326,6 +328,7 @@ impl IconId {
             Self::ShadingRealistic => include_str!("assets/icons/realistic.svg"),
             Self::ShadingLoosePencil => include_str!("assets/icons/loose_pencil.svg"),
             Self::ShadingColourPencil => include_str!("assets/icons/colour_pencil.svg"),
+            Self::ShadingWatercolour => include_str!("assets/icons/watercolour.svg"),
             Self::GroundGrid => include_str!("assets/icons/ground_grid.svg"),
             Self::GroundSolid => include_str!("assets/icons/ground_solid.svg"),
             Self::ViewList => include_str!("assets/icons/view_list.svg"),
@@ -433,6 +436,7 @@ impl IconId {
             Self::ShadingRealistic => "Realistic",
             Self::ShadingLoosePencil => "Loose pencil",
             Self::ShadingColourPencil => "Coloured pencil",
+            Self::ShadingWatercolour => "Watercolour",
             Self::GroundGrid => "Ground grid",
             Self::GroundSolid => "Solid ground",
             Self::ViewList => "List view",
@@ -509,6 +513,7 @@ pub fn icon_for_shading_mode(mode: crate::camera::ShadingMode) -> IconId {
         crate::camera::ShadingMode::Realistic => IconId::ShadingRealistic,
         crate::camera::ShadingMode::LoosePencil => IconId::ShadingLoosePencil,
         crate::camera::ShadingMode::ColourPencil => IconId::ShadingColourPencil,
+        crate::camera::ShadingMode::Watercolour => IconId::ShadingWatercolour,
     }
 }
 

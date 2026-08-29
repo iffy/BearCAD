@@ -15,7 +15,8 @@ bearcad.ui.pane("elements", "hide")
 bearcad.ui.pane("parameters", "hide")
 bearcad.ui.wait(6)
 
-for _, style in ipairs({ "wireframe", "shaded", "colorful", "loose_pencil", "colour_pencil" }) do
+for _, style in ipairs({ "wireframe", "shaded", "colorful", "loose_pencil", "colour_pencil",
+                         "watercolour" }) do
   bearcad.drawing_view_style{ drawing = d, view = 0, style = style }
   bearcad.ui.wait(4)
   assert(bearcad.drawing_views(d)[1].style == style,

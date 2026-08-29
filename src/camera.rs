@@ -146,10 +146,14 @@ pub enum ShadingMode {
     /// laid on lightly the way a coloured pencil leaves it — paper still showing through —
     /// and outlined in a darker tone of that same colour rather than graphite.
     ColourPencil,
+    /// The pencil drawing, painted (#1829): the same hand-drawn outlines and hatched contact
+    /// shadow, with each body's colour laid on as a **wash** instead of a scribble — pooling
+    /// unevenly, running past the line, and drying darker where it gathers at the edges.
+    Watercolour,
 }
 
 /// All shading modes, in the order they list in the HUD popup.
-pub const SHADING_MODES: [ShadingMode; 7] = [
+pub const SHADING_MODES: [ShadingMode; 8] = [
     ShadingMode::Wireframe,
     ShadingMode::TransparentSolid,
     ShadingMode::Solid,
@@ -157,6 +161,7 @@ pub const SHADING_MODES: [ShadingMode; 7] = [
     ShadingMode::Realistic,
     ShadingMode::LoosePencil,
     ShadingMode::ColourPencil,
+    ShadingMode::Watercolour,
 ];
 
 /// How the popup breaks that list into rows (#1812). The technical modes are one family and
@@ -170,7 +175,11 @@ pub const SHADING_MODE_ROWS: [&[ShadingMode]; 2] = [
         ShadingMode::SolidWireframe,
         ShadingMode::Realistic,
     ],
-    &[ShadingMode::LoosePencil, ShadingMode::ColourPencil],
+    &[
+        ShadingMode::LoosePencil,
+        ShadingMode::ColourPencil,
+        ShadingMode::Watercolour,
+    ],
 ];
 
 impl ShadingMode {
@@ -187,6 +196,9 @@ impl ShadingMode {
             "colour_pencil" | "color_pencil" | "coloured_pencil" | "colored_pencil" => {
                 Some(Self::ColourPencil)
             }
+            "watercolour" | "watercolor" | "water_colour" | "water_color" => {
+                Some(Self::Watercolour)
+            }
             _ => None,
         }
     }
@@ -201,6 +213,7 @@ impl ShadingMode {
             Self::Realistic => "Realistic",
             Self::LoosePencil => "Loose pencil",
             Self::ColourPencil => "Coloured pencil",
+            Self::Watercolour => "Watercolour",
         }
     }
 
@@ -213,7 +226,15 @@ impl ShadingMode {
             Self::Realistic => "realistic",
             Self::LoosePencil => "loose_pencil",
             Self::ColourPencil => "colour_pencil",
+            Self::Watercolour => "watercolour",
         }
+    }
+
+    /// Whether the mode draws the scene by hand (#1805/#1812/#1829) — pencil outlines on
+    /// paper, whatever fills them. The three share a ground, a grid, an axis palette and a
+    /// hatched contact shadow; only the way colour is laid on differs.
+    pub fn is_drawn_by_hand(self) -> bool {
+        matches!(self, Self::LoosePencil | Self::ColourPencil | Self::Watercolour)
     }
 }
 
@@ -2089,10 +2110,21 @@ mod tests {
         // Every mode appears in exactly one row, and the rows are the whole set.
         let laid_out: Vec<ShadingMode> = SHADING_MODE_ROWS.iter().flat_map(|r| r.iter().copied()).collect();
         assert_eq!(laid_out, SHADING_MODES.to_vec(), "the rows are the mode list, in order");
-        // The pencils share a row of their own.
+        // The hand-drawn modes share a row of their own (#1829).
         assert_eq!(
             SHADING_MODE_ROWS[SHADING_MODE_ROWS.len() - 1],
-            &[ShadingMode::LoosePencil, ShadingMode::ColourPencil]
+            &[ShadingMode::LoosePencil, ShadingMode::ColourPencil, ShadingMode::Watercolour]
+        );
+        assert!(
+            SHADING_MODE_ROWS[SHADING_MODE_ROWS.len() - 1]
+                .iter()
+                .all(|m| m.is_drawn_by_hand()),
+            "and that row is exactly the modes drawn by hand"
+        );
+        assert!(
+            SHADING_MODES.iter().filter(|m| m.is_drawn_by_hand()).count()
+                == SHADING_MODE_ROWS[SHADING_MODE_ROWS.len() - 1].len(),
+            "with none of them left in the technical row"
         );
     }
 

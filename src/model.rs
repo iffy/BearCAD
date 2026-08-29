@@ -5322,16 +5322,21 @@ pub enum DrawingViewStyle {
     /// strokes and with the solids' shadows falling on each other (#1821) — the drawings-page
     /// counterpart of the `ColourPencil` viewport shading mode.
     ColourPencil,
+    /// [`Self::ColourPencil`]'s drawing, painted (#1829): the same hand-drawn edges with each
+    /// body's colour laid on as a wash — pooling unevenly and drying darker at the edges — the
+    /// drawings-page counterpart of the `Watercolour` viewport shading mode.
+    Watercolour,
 }
 
 impl DrawingViewStyle {
-    pub const ALL: [DrawingViewStyle; 6] = [
+    pub const ALL: [DrawingViewStyle; 7] = [
         DrawingViewStyle::Visible,
         DrawingViewStyle::Wireframe,
         DrawingViewStyle::Shaded,
         DrawingViewStyle::Colorful,
         DrawingViewStyle::LoosePencil,
         DrawingViewStyle::ColourPencil,
+        DrawingViewStyle::Watercolour,
     ];
 
     pub fn label(self) -> &'static str {
@@ -5342,6 +5347,7 @@ impl DrawingViewStyle {
             Self::Colorful => "Colorful",
             Self::LoosePencil => "Loose pencil",
             Self::ColourPencil => "Coloured pencil",
+            Self::Watercolour => "Watercolour",
         }
     }
 
@@ -5355,6 +5361,7 @@ impl DrawingViewStyle {
             Self::Colorful => "colorful",
             Self::LoosePencil => "loose_pencil",
             Self::ColourPencil => "colour_pencil",
+            Self::Watercolour => "watercolour",
         }
     }
 
@@ -5368,13 +5375,23 @@ impl DrawingViewStyle {
             "loose_pencil" | "pencil" | "sketchy" => Some(Self::LoosePencil),
             "colour_pencil" | "color_pencil" | "coloured_pencil" | "colored_pencil"
             | "coloured pencil" | "colored pencil" => Some(Self::ColourPencil),
+            "watercolour" | "watercolor" | "water_colour" | "water_color" => {
+                Some(Self::Watercolour)
+            }
             _ => None,
         }
     }
 
-    /// Whether this style draws its edges by hand rather than ruling them (#1809/#1821).
+    /// Whether this style draws its edges by hand rather than ruling them, and letters its
+    /// labels to match (#1809/#1821/#1829/#1830).
     pub fn is_pencil(self) -> bool {
-        matches!(self, Self::LoosePencil | Self::ColourPencil)
+        matches!(self, Self::LoosePencil | Self::ColourPencil | Self::Watercolour)
+    }
+
+    /// Whether this style lays the body's own colour on the paper by hand (#1821/#1829) —
+    /// scribbled for coloured pencil, washed for watercolour.
+    pub fn is_hand_coloured(self) -> bool {
+        matches!(self, Self::ColourPencil | Self::Watercolour)
     }
 }
 

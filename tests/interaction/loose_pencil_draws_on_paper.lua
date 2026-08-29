@@ -59,6 +59,14 @@ bearcad.ui.camera{ pitch = -40 }
 bearcad.ui.wait(2)
 assert(bearcad.ui.camera{}.shading == "colour_pencil", "still in coloured pencil")
 
+-- Watercolour is the same drawing, painted (#1829): the wash, its pooling and the rim it
+-- dries to are more scene-building code a real frame has to survive.
+bearcad.ui.shading("watercolour")
+bearcad.ui.wait(2)
+bearcad.ui.orbit(70, -15)
+bearcad.ui.wait(2)
+assert(bearcad.ui.camera{}.shading == "watercolour", "the wash is a mode of its own")
+
 -- And every other mode still renders after them.
 for _, mode in ipairs({ "wireframe", "transparent", "solid", "solid_wireframe", "realistic" }) do
   bearcad.ui.shading(mode)

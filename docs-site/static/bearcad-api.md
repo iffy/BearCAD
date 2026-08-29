@@ -173,7 +173,7 @@ bearcad.ui.zoom_fit()
 bearcad.ui.screenshot("shot.png")            -- viewport; "window" / a pane name for others
 bearcad.ui.camera{ yaw?, pitch?, distance?, target?, projection?, shading?, ground? }
 bearcad.ui.camera{}                          -- read it back, shading and ground included
-bearcad.ui.shading("loose_pencil")           -- …|realistic|loose_pencil|colour_pencil
+bearcad.ui.shading("loose_pencil")           -- …|realistic|loose_pencil|colour_pencil|watercolour
 bearcad.ui.pane("ai"|"hierarchy"|"context"|"parameters"|…, "show"|"hide"|"toggle")
 bearcad.ui.click_ground(x, y)               -- sketch-plane millimetres
 bearcad.ui.click_world(x, y, z)             -- any world point: a body's side wall, say
@@ -254,7 +254,7 @@ bearcad.drawing_view_label{ drawing, view, hidden, pos, text }
 bearcad.drawing_view_orientation{ drawing, view, orientation }
 bearcad.drawing_view_section{ drawing, view, cross_section }
 bearcad.drawing_view_size{ drawing, view, width, height, size_x, size_y }
-bearcad.drawing_view_style{ drawing, view, style }   -- visible, wireframe, shaded, colorful, loose_pencil, colour_pencil
+bearcad.drawing_view_style{ drawing, view, style }   -- visible, wireframe, shaded, colorful, loose_pencil, colour_pencil, watercolour
 bearcad.drawing_views(index)
 bearcad.edit_boolean{ index, op, a, b, keep_b, keep_leftovers }
 bearcad.edit_dim(axis)
@@ -433,7 +433,7 @@ bearcad.ui.screenshot(path?, region?)
 bearcad.ui.scroll_pane(pane, dy)
 bearcad.ui.set_home_view()
 bearcad.ui.settings(verb?)
-bearcad.ui.shading(name)   -- wireframe, transparent, solid, solid_wireframe, realistic, loose_pencil, colour_pencil
+bearcad.ui.shading(name)   -- wireframe, transparent, solid, solid_wireframe, realistic, loose_pencil, colour_pencil, watercolour
 bearcad.ui.snapping(on?)
 bearcad.ui.tab(index?)
 bearcad.ui.tab_count()

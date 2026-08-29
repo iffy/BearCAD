@@ -138,6 +138,80 @@ fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from_rgb(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()))
 }
 
+// ---------------------------------------------------------------------------------------
+// Watercolour (#1829). The same drawing as the pencil styles — same paper, same hand-drawn
+// outlines, same hatched contact shadow — with the colour laid on as a *wash* instead of a
+// scribble. A wash is not a scribble with the gaps filled in: it covers, it pools unevenly
+// where the water gathered, it runs past the line it was painted inside, and it dries darker
+// at the edge of the puddle. Those four things are what these constants buy.
+
+/// How far a wash is taken toward the paper. Much less than the pencil ground: a wash covers,
+/// where a coloured pencil only grazes the tooth of the paper.
+pub const WASH_MIX: f32 = 0.42;
+/// The rim a drying wash leaves where pigment gathers against the edge — the single most
+/// recognisable thing about watercolour. A deeper draw of the same colour.
+pub const WASH_EDGE_MIX: f32 = 0.16;
+/// Width of that rim and how strongly it reads. Laid down as a few thin passes rather than one
+/// thick stroke: a thick round-capped line beads at every joint of its own wobble, which reads
+/// as bubbles along the edge instead of pigment gathered against it.
+pub const WASH_EDGE_WIDTH_PX: f32 = 3.2;
+pub const WASH_EDGE_ALPHA: f32 = 0.4;
+pub const WASH_EDGE_PASSES: usize = 3;
+/// Pooling within the wash: soft, low-opacity bands where the pigment settled deeper. Close
+/// enough together to overlap, so the tone builds smoothly instead of reading as stripes.
+pub const WASH_POOL_SPACING_MM: f32 = 3.0;
+pub const WASH_POOL_WIDTH_PX: f32 = 5.5;
+pub const WASH_POOL_ALPHA: f32 = 0.22;
+/// …and only about half of them land, so the pooling is uneven rather than even.
+pub const WASH_POOL_COVERAGE: f32 = 0.55;
+
+/// The body of a wash (#1829): the colour it dries to across the flat.
+pub fn wash_tone(base: Color32) -> Color32 {
+    mix(base, PENCIL_PAPER, WASH_MIX)
+}
+
+/// The rim it dries to where it gathered against an edge (#1829) — the same colour, drawn
+/// deeper. Never mixed toward graphite: watercolour stays its own hue as it darkens, which is
+/// what separates it from a pencil pressed harder.
+pub fn wash_edge_tone(base: Color32) -> Color32 {
+    mix(base, PENCIL_PAPER, WASH_EDGE_MIX)
+}
+
+/// The tone a wash reaches where the pigment pooled a little deeper (#1829). Between the body
+/// of the wash and the rim: on a printed page the marks are opaque, so they cannot build tone
+/// by overlapping the way the viewport's translucent ones do — the colour has to be right on
+/// the first pass.
+pub fn wash_pool_tone(base: Color32) -> Color32 {
+    mix(wash_tone(base), wash_edge_tone(base), 0.4)
+}
+
+/// Where a wash pooled, as spans along one ruled line (#1829). Same repeatable hand as
+/// [`scribble`], but far fewer and much longer pieces: a puddle, not a stroke.
+pub fn pooling(a: Vec3, b: Vec3, pass: usize) -> Vec<(Vec3, Vec3)> {
+    let along = b - a;
+    let length = along.length();
+    if length < 1e-6 {
+        return Vec::new();
+    }
+    let dir = along / length;
+    let mut at = 0.0f32;
+    let mut out = Vec::new();
+    for i in 0..PENCIL_SCRIBBLE_MAX_PIECES {
+        if at >= length {
+            break;
+        }
+        let s = seed(a, b, i, pass);
+        // Long pieces: a pool spans a good part of the face it settled on.
+        let piece = length * (0.35 + 0.4 * noise(s).abs());
+        let next = (at + piece).min(length);
+        if noise(s ^ 0x2545_F491).abs() < WASH_POOL_COVERAGE && next - at > 1e-4 {
+            out.push((a + dir * at, a + dir * next));
+        }
+        at = next + length * 0.1 * noise(s ^ 0x1B87_3593).abs();
+    }
+    out
+}
+
 /// The ground tone a coloured-pencil body is filled with (#1825): its own colour taken most of
 /// the way to the paper. It is only there so a near face hides a far one — what the eye reads
 /// as the colour is the scribble laid over it, and the gaps in that scribble have to read as

@@ -945,10 +945,8 @@ fn drawing_view_body_meshes(
     }
     // Coloured pencil keeps each body's own colour too (#1821) — that is what makes it
     // *coloured* pencil rather than the grey one.
-    let colorful = matches!(
-        view.style,
-        crate::model::DrawingViewStyle::Colorful | crate::model::DrawingViewStyle::ColourPencil
-    );
+    let colorful = view.style == crate::model::DrawingViewStyle::Colorful
+        || view.style.is_hand_coloured();
     view.bodies
         .iter()
         .filter_map(|&bi| {
@@ -1851,6 +1849,9 @@ pub struct ShadingStroke {
     pub b: glam::Vec2,
     pub tint: [u8; 3],
     pub shade: f32,
+    /// Stroke width, in the same device units the other strokes use (#1829). A pencil scribble
+    /// is a line; a wash lays broader marks, and its drying rim broader still.
+    pub width: f32,
 }
 
 /// One coplanar run of a shaded view's front faces, with the grey it's painted in
@@ -2016,10 +2017,8 @@ pub fn styled_view_geometry(
     }
     // Both shaded styles fill faces; the pencil style draws the same visible edges as
     // `Visible`, by hand (#1809).
-    let shades_faces = matches!(
-        view.style,
-        DrawingViewStyle::Shaded | DrawingViewStyle::Colorful | DrawingViewStyle::ColourPencil
-    );
+    let shades_faces = matches!(view.style, DrawingViewStyle::Shaded | DrawingViewStyle::Colorful)
+        || view.style.is_hand_coloured();
     // Per body, so `Colorful` can keep each one's material colour (#1807); the merged mesh
     // is what the occlusion test and the grey styles work from, exactly as before.
     let bodies = drawing_view_body_meshes(doc, view);
@@ -2132,7 +2131,7 @@ pub fn styled_view_geometry(
                 // Coloured pencil takes one value on every side (#1825): its ground tone is
                 // the body's own colour taken toward the paper, not a lit surface, so the key
                 // light plays no part in it.
-                let shade = if view.style == DrawingViewStyle::ColourPencil {
+                let shade = if view.style.is_hand_coloured() {
                     1.0
                 } else {
                     0.62 + 0.33 * n.dot(light).max(0.0)
@@ -2190,7 +2189,7 @@ pub fn styled_view_geometry(
     // every side, whichever way it faces: a coloured pencil drawing gets its form from its
     // outlines, exactly as the plain pencil style does.
     let mut shading = Vec::new();
-    if view.style == DrawingViewStyle::ColourPencil {
+    if view.style.is_hand_coloured() {
         let light = (toward * 1.2 - right * 0.35 + up * 0.55).normalize();
         // Everything the light can reach, for the shadows the flats receive.
         let casters: Vec<[Vec3; 3]> = mesh
@@ -2221,30 +2220,82 @@ pub fn styled_view_geometry(
             }
             let turn = (h >> 8) as f32 / (1 << 24) as f32 * std::f32::consts::PI;
             let flat = lift(&face.tris);
-            let mut push = |segments: Vec<(Vec3, Vec3)>, tint: [u8; 3], shade: f32| {
+            let wash = view.style == DrawingViewStyle::Watercolour;
+            let push = |out: &mut Vec<ShadingStroke>,
+                        segments: Vec<(Vec3, Vec3)>,
+                        tint: [u8; 3],
+                        shade: f32,
+                        width: f32,
+                        broken: bool| {
                 for (a, b) in segments {
-                    for (from, to) in crate::pencil::scribble(a, b, 0) {
+                    // A pencil lifts and re-lands; a brush carries the mark right through.
+                    let pieces: Vec<(Vec3, Vec3)> = if broken {
+                        crate::pencil::scribble(a, b, 0)
+                    } else {
+                        crate::pencil::pooling(a, b, 0)
+                    };
+                    for (from, to) in pieces {
                         let points = crate::pencil::stroke_inside(from, to, 0);
-                        shading.extend(points.windows(2).map(|w| ShadingStroke {
+                        out.extend(points.windows(2).map(|w| ShadingStroke {
                             a: glam::Vec2::new(w[0].x, w[0].y),
                             b: glam::Vec2::new(w[1].x, w[1].y),
                             tint,
                             shade,
+                            width,
                         }));
                     }
                 }
             };
-            push(
-                crate::pencil::hatch_in_frame(
-                    &page,
-                    crate::pencil::PENCIL_SCRIBBLE_SPACING_MM,
-                    crate::pencil::PENCIL_HATCH_ANGLE_RAD + turn,
-                    &flat,
-                    None,
-                ),
-                stroke_tint,
-                1.0,
-            );
+            if wash {
+                // Pooling within the wash, and the rim it dried to against every edge.
+                let pool = crate::pencil::wash_pool_tone(body);
+                push(
+                    &mut shading,
+                    crate::pencil::hatch_in_frame(
+                        &page,
+                        crate::pencil::WASH_POOL_SPACING_MM,
+                        crate::pencil::PENCIL_HATCH_ANGLE_RAD + turn,
+                        &flat,
+                        None,
+                    ),
+                    [pool.r(), pool.g(), pool.b()],
+                    1.0,
+                    WASH_POOL_STROKE,
+                    false,
+                );
+                let rim = crate::pencil::wash_edge_tone(body);
+                for (a, b) in flat_boundary_edges_2d(&face.tris) {
+                    for pass in 0..crate::pencil::WASH_EDGE_PASSES {
+                        let points = crate::pencil::stroke(
+                            Vec3::new(a.x, a.y, 0.0),
+                            Vec3::new(b.x, b.y, 0.0),
+                            pass,
+                        );
+                        shading.extend(points.windows(2).map(|w| ShadingStroke {
+                            a: glam::Vec2::new(w[0].x, w[0].y),
+                            b: glam::Vec2::new(w[1].x, w[1].y),
+                            tint: [rim.r(), rim.g(), rim.b()],
+                            shade: 1.0,
+                            width: WASH_EDGE_STROKE,
+                        }));
+                    }
+                }
+            } else {
+                push(
+                    &mut shading,
+                    crate::pencil::hatch_in_frame(
+                        &page,
+                        crate::pencil::PENCIL_SCRIBBLE_SPACING_MM,
+                        crate::pencil::PENCIL_HATCH_ANGLE_RAD + turn,
+                        &flat,
+                        None,
+                    ),
+                    stroke_tint,
+                    1.0,
+                    HATCH_STROKE,
+                    true,
+                );
+            }
             // What stands between this flat and the light, dropped onto its plane and clipped
             // to the flat — the drawings-page half of the viewport's cast shadows (#1818).
             let facing = n.dot(light);
@@ -2264,6 +2315,7 @@ pub fn styled_view_geometry(
                     })
                     .collect();
                 push(
+                    &mut shading,
                     crate::pencil::hatch_in_frame(
                         &page,
                         crate::pencil::PENCIL_CAST_SPACING_MM,
@@ -2275,14 +2327,25 @@ pub fn styled_view_geometry(
                     ),
                     stroke_tint,
                     PENCIL_SHADOW_SHADE,
+                    HATCH_STROKE,
+                    true,
                 );
             }
         }
-        // The fill underneath is only there so a near face hides a far one — a drawing's
-        // enclosed areas are paper, not paint. One value on every side (#1825): the light term
-        // goes entirely. The tint stays the body's own colour and `scribbled` says how to read
-        // it, because "most of the way to the paper" means the opposite thing on the white
-        // print and on the editor's dark sheet.
+        // The ground under whatever is laid on it. One value on every side (#1825): the light
+        // term goes entirely. Each style mixes its own — a coloured pencil only grazes the
+        // paper, a wash covers — and the tint carries the result, so both renderers read one
+        // print colour rather than each re-deriving it (#1829).
+        for face in &mut fills {
+            let body = eframe::egui::Color32::from_rgb(face.tint[0], face.tint[1], face.tint[2]);
+            let ground = if view.style == DrawingViewStyle::Watercolour {
+                crate::pencil::wash_tone(body)
+            } else {
+                crate::pencil::scribble_ground(body)
+            };
+            face.tint = [ground.r(), ground.g(), ground.b()];
+            face.shade = 1.0;
+        }
     }
 
     // A coloured pencil draws its outline in a deepened version of what it filled with    // A coloured pencil draws its outline in a deepened version of what it filled with
@@ -2306,9 +2369,41 @@ pub fn styled_view_geometry(
         segments,
         hatch,
         shading,
-        scribbled: view.style == DrawingViewStyle::ColourPencil,
+        scribbled: view.style.is_hand_coloured(),
         stroke_tint,
     }
+}
+
+/// Stroke widths for the watercolour wash on the page (#1829), in the same device units the
+/// hatch uses: the pooling lays a broad mark, and the rim it dries to a broader one.
+const WASH_POOL_STROKE: f32 = HATCH_STROKE * 3.5;
+const WASH_EDGE_STROKE: f32 = HATCH_STROKE * 2.0;
+
+/// The boundary of one projected flat (#1829): the edges only one of its triangles owns, which
+/// is the outline a wash gathers against as it dries. The 2D twin of the viewport's
+/// `flat_boundary_edges`, on the page rather than in the world.
+fn flat_boundary_edges_2d(tris: &[[glam::Vec2; 3]]) -> Vec<(glam::Vec2, glam::Vec2)> {
+    let key = |p: glam::Vec2| [(p.x * 1000.0).round() as i64, (p.y * 1000.0).round() as i64];
+    let mut seen: std::collections::HashMap<([i64; 2], [i64; 2]), (glam::Vec2, glam::Vec2, u32)> =
+        std::collections::HashMap::new();
+    for tri in tris {
+        for e in 0..3 {
+            let (a, b) = (tri[e], tri[(e + 1) % 3]);
+            let (ka, kb) = (key(a), key(b));
+            let k = if ka <= kb { (ka, kb) } else { (kb, ka) };
+            seen.entry(k).or_insert((a, b, 0)).2 += 1;
+        }
+    }
+    let mut out: Vec<(glam::Vec2, glam::Vec2)> =
+        seen.into_values().filter(|(_, _, n)| *n == 1).map(|(a, b, _)| (a, b)).collect();
+    // Deterministic: the map hands them back in an arbitrary order, and a wobble keyed to the
+    // endpoints must be laid down in a stable order for the page to redraw identically.
+    out.sort_by(|x, y| {
+        (x.0.x, x.0.y, x.1.x, x.1.y)
+            .partial_cmp(&(y.0.x, y.0.y, y.1.x, y.1.y))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    out
 }
 
 /// How much darker a coloured-pencil cast shadow is than the scribble it lies among (#1821).
@@ -2693,20 +2788,10 @@ fn render_view_geometry<C: Canvas>(
     let styled = styled_view_geometry(doc, views, view);
     for face in &styled.faces {
         // `shade` scales the face's tint (#1807): white for the grey Shaded style, the body's
-        // own material colour for Colorful. A coloured-pencil ground is that colour taken most
-        // of the way to the paper instead (#1825) — the page really is white, so "toward the
-        // paper" is toward white here.
+        // own material colour for Colorful, and for the hand-coloured styles the ground tone
+        // the geometry already mixed toward the paper (#1825/#1829).
         let lit = |c: u8| (c as f32 * face.shade.clamp(0.0, 1.0)).round().clamp(0.0, 255.0) as u8;
-        let fill = if styled.scribbled {
-            let g = crate::pencil::scribble_ground(eframe::egui::Color32::from_rgb(
-                face.tint[0],
-                face.tint[1],
-                face.tint[2],
-            ));
-            Rgb(g.r(), g.g(), g.b())
-        } else {
-            Rgb(lit(face.tint[0]), lit(face.tint[1]), lit(face.tint[2]))
-        };
+        let fill = Rgb(lit(face.tint[0]), lit(face.tint[1]), lit(face.tint[2]));
         for pts in &face.tris {
             let s: Vec<(f32, f32)> = pts
                 .iter()
@@ -2741,7 +2826,7 @@ fn render_view_geometry<C: Canvas>(
             sb.x,
             sb.y,
             Rgb(lit(stroke.tint[0]), lit(stroke.tint[1]), lit(stroke.tint[2])),
-            HATCH_STROKE,
+            stroke.width,
         );
     }
     // The section hatch strokes thinner than the edges (#1784): a fill texture, not

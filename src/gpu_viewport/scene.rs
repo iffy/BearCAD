@@ -312,6 +312,34 @@ fn coplanar_flats(solid: &crate::extrude::SolidMesh) -> Vec<CoplanarFlat> {
     out
 }
 
+/// The outline of one coplanar flat (#1829): the edges of its triangles that only one triangle
+/// owns. Interior edges are shared by two and drop out, so what is left is the boundary a wash
+/// gathers against as it dries.
+fn flat_boundary_edges(tris: &[[Vec3; 3]]) -> Vec<(Vec3, Vec3)> {
+    let key = |p: Vec3| [(p.x * 1000.0).round() as i64, (p.y * 1000.0).round() as i64,
+                         (p.z * 1000.0).round() as i64];
+    let mut seen: std::collections::HashMap<([i64; 3], [i64; 3]), (Vec3, Vec3, u32)> =
+        std::collections::HashMap::new();
+    for tri in tris {
+        for e in 0..3 {
+            let (a, b) = (tri[e], tri[(e + 1) % 3]);
+            let (ka, kb) = (key(a), key(b));
+            let k = if ka <= kb { (ka, kb) } else { (kb, ka) };
+            seen.entry(k).or_insert((a, b, 0)).2 += 1;
+        }
+    }
+    let mut out: Vec<(Vec3, Vec3)> =
+        seen.into_values().filter(|(_, _, n)| *n == 1).map(|(a, b, _)| (a, b)).collect();
+    // Deterministic: the map hands them back in an arbitrary order, and a wobble keyed to the
+    // endpoints must be laid down in a stable order for the picture to redraw identically.
+    out.sort_by(|x, y| {
+        (x.0.x, x.0.y, x.0.z, x.1.x, x.1.y, x.1.z)
+            .partial_cmp(&(y.0.x, y.0.y, y.0.z, y.1.x, y.1.y, y.1.z))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    out
+}
+
 /// A body's shadow on the ground, as triangles on z = 0 (#1811): its own triangles projected
 /// along the scene light, minus the ones below the plane (a half-buried part shadows only the
 /// half above it) and the ones lying on it (that is the contact face, not a shadow). Empty
@@ -645,13 +673,12 @@ impl Default for ViewportPalette {
 }
 
 impl ViewportPalette {
-    /// The palette a shading mode draws in (#1805/#1812). The technical modes use the theme's
-    /// own colours; both pencil views swap the ground out for paper and the grid for faint
-    /// ruled guides, so a drawing is a drawing all the way to its background.
+    /// The palette a shading mode draws in (#1805/#1812/#1829). The technical modes use the
+    /// theme's own colours; every mode drawn by hand swaps the ground out for paper and the
+    /// grid for faint ruled guides, so a drawing is a drawing all the way to its background.
     pub fn for_shading(self, mode: crate::camera::ShadingMode) -> Self {
         match mode {
-            crate::camera::ShadingMode::LoosePencil
-            | crate::camera::ShadingMode::ColourPencil => Self {
+            m if m.is_drawn_by_hand() => Self {
                 background: PENCIL_PAPER,
                 grid: PENCIL_GRID,
                 grid_axis: PENCIL_GRID_AXIS,
@@ -1522,39 +1549,46 @@ impl ViewportScene {
                 // feature edge drawn by hand over the top. Plain pencil ignores the body
                 // colour (one pencil, one colour); coloured pencil keeps it (#1812).
                 mode @ (crate::camera::ShadingMode::LoosePencil
-                | crate::camera::ShadingMode::ColourPencil) => {
-                    let coloured = mode == crate::camera::ShadingMode::ColourPencil;
-                    let (paper_fill, stroke) = if coloured {
-                        // The fill goes further toward the paper than the outline's tone does
-                        // (#1825), so the gaps in the scribble over it read as bare paper.
-                        let (_, line) = colour_pencil_tones(fill);
-                        (crate::pencil::scribble_ground(fill), line)
-                    } else {
-                        (PENCIL_BODY_FILL, PENCIL_GRAPHITE)
+                | crate::camera::ShadingMode::ColourPencil
+                | crate::camera::ShadingMode::Watercolour) => {
+                    use crate::camera::ShadingMode as SM;
+                    let (paper_fill, stroke) = match mode {
+                        // A wash covers, so its ground is the colour it dries to (#1829).
+                        SM::Watercolour => {
+                            (crate::pencil::wash_tone(fill), colour_pencil_tones(fill).1)
+                        }
+                        // The pencil ground goes further toward the paper than the outline's
+                        // tone does (#1825), so the gaps in the scribble over it read as bare
+                        // paper.
+                        SM::ColourPencil => {
+                            (crate::pencil::scribble_ground(fill), colour_pencil_tones(fill).1)
+                        }
+                        _ => (PENCIL_BODY_FILL, PENCIL_GRAPHITE),
                     };
                     // Which of this body's faces are worth drawing on — computed once and
                     // used for both its own shading and the shadows it receives (#1818).
                     let flats = pencil_drawable_flats(solid);
-                    // Coloured pencil shades by how squarely a surface faces the key light
-                    // (#1818): a deepened fill everywhere, plus strokes on the flats big
-                    // enough to carry them. Plain pencil stays a single flat tone with the
-                    // drawing carried entirely by its outlines (#1805).
-                    if coloured {
-                        mesh.push_solid_pencil_fill(
-                            solid,
-                            paper_fill,
-                            &coplanar_planes,
-                            input.cam,
-                        );
-                        mesh.push_pencil_face_shading(
+                    // The ground under whatever is laid on it. Plain pencil stops here: its
+                    // drawing is carried entirely by its outlines (#1805).
+                    mesh.push_solid_pencil_fill(solid, paper_fill, &coplanar_planes, input.cam);
+                    match mode {
+                        // Coloured pencil scribbles the colour on (#1825).
+                        SM::ColourPencil => mesh.push_pencil_face_shading(
                             &flats,
                             fill,
                             input.cam,
                             input.viewport,
                             &vp,
-                        );
-                    } else {
-                        mesh.push_solid_flat(solid, paper_fill, &coplanar_planes, input.cam);
+                        ),
+                        // Watercolour washes it on: pooling, and a rim where it dried (#1829).
+                        SM::Watercolour => mesh.push_watercolour_wash(
+                            &flats,
+                            fill,
+                            input.cam,
+                            input.viewport,
+                            &vp,
+                        ),
+                        _ => {}
                     }
                     let edges = crate::extrude::body_feature_edges(input.doc, bi);
                     mesh.push_pencil_edges(
@@ -2716,6 +2750,62 @@ impl<'a> SceneMesh<'a> {
                         &crate::pencil::stroke_inside(from, to, 0),
                         color,
                         crate::pencil::PENCIL_SHADE_WIDTH_PX,
+                        cam,
+                        viewport,
+                        view_proj,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Paint a body's faces with a watercolour wash (#1829).
+    ///
+    /// Three passes, which together are what makes a wash read as a wash rather than a fill:
+    /// broad soft bands where the pigment pooled, a deeper rim where it gathered against each
+    /// edge as it dried, and — because a brush does not stop at a pencil line — both allowed to
+    /// run a little past the outline.
+    fn push_watercolour_wash(
+        &mut self,
+        flats: &[CoplanarFlat],
+        base: Color32,
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+    ) {
+        let pool = fill_color(crate::pencil::wash_edge_tone(base), crate::pencil::WASH_POOL_ALPHA);
+        let rim = fill_color(crate::pencil::wash_edge_tone(base), crate::pencil::WASH_EDGE_ALPHA);
+        for flat in flats {
+            let frame = crate::pencil::HatchFrame::new(flat.point, flat.normal);
+            // Pooling: broad, soft, low-opacity bands, each flat pooling its own way.
+            let angle = crate::pencil::PENCIL_HATCH_ANGLE_RAD + flat.angle_offset;
+            for (a, b) in crate::pencil::hatch_in_frame(
+                &frame,
+                crate::pencil::WASH_POOL_SPACING_MM,
+                angle,
+                &flat.tris,
+                None,
+            ) {
+                for (from, to) in crate::pencil::pooling(a, b, 0) {
+                    self.push_polyline_segment(
+                        &crate::pencil::stroke_inside(from, to, 0),
+                        pool,
+                        crate::pencil::WASH_POOL_WIDTH_PX,
+                        cam,
+                        viewport,
+                        view_proj,
+                    );
+                }
+            }
+            // The drying rim, run along the flat's own boundary with the wobble of a brush —
+            // a few thin passes, each wobbling its own way, so they build a soft gathered
+            // edge instead of one thick line beading at its joints.
+            for (a, b) in flat_boundary_edges(&flat.tris) {
+                for pass in 0..crate::pencil::WASH_EDGE_PASSES {
+                    self.push_polyline_segment(
+                        &crate::pencil::stroke(a, b, pass),
+                        rim,
+                        crate::pencil::WASH_EDGE_WIDTH_PX,
                         cam,
                         viewport,
                         view_proj,
@@ -14886,10 +14976,7 @@ mod loose_pencil_tests {
         assert_eq!(paper.background, PENCIL_PAPER);
         assert_ne!(paper.grid, theme.grid, "the grid becomes a faint ruled guide");
         for mode in crate::camera::SHADING_MODES {
-            if matches!(
-                mode,
-                crate::camera::ShadingMode::LoosePencil | crate::camera::ShadingMode::ColourPencil
-            ) {
+            if mode.is_drawn_by_hand() {
                 continue;
             }
             assert_eq!(
