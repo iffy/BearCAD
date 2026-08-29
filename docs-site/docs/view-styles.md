@@ -108,6 +108,9 @@ per view rather than per viewport:
 | Loose pencil | The visible edges drawn by hand. |
 | Coloured pencil | The same hand, with each body's colour scribbled in and the solids' shadows on each other. |
 
+Both pencil styles letter their captions and dimensions by hand, in Klee One. SVG exports name
+the font; PDF exports keep the drawing's usual sans.
+
 ```lua
 bearcad.drawing_view_style{ drawing = 0, view = 0, style = "colorful" }
 ```

@@ -2347,6 +2347,12 @@ trait Canvas {
     fn poly(&mut self, pts: &[(f32, f32)], fill: Rgb);
     /// A stroked (unfilled) circle outline — a smooth detected curve (#313).
     fn circle(&mut self, cx: f32, cy: f32, r: f32, color: Rgb, width: f32);
+    /// Letter the text that follows by hand, or back in the drawing's usual sans (#1830).
+    /// A pencil view's caption and dimensions are set in the bundled Klee One; every other
+    /// style keeps the sans, and a backend that cannot switch face ignores this.
+    fn set_hand_lettered(&mut self, hand_lettered: bool) {
+        let _ = hand_lettered;
+    }
     /// Text is always black in a drawing; `size` is the font size in px.
     fn text(&mut self, x: f32, y: f32, size: f32, anchor: Anchor, content: &str);
     /// Text rotated `angle` radians clockwise about `(x, y)` — dimension labels running along
@@ -2443,6 +2449,9 @@ fn render_drawing<C: Canvas>(
             .as_deref()
             .map(|s| format!(" ({s})"))
             .unwrap_or_default();
+        // A pencil view letters its own text by hand (#1830) — caption and dimensions both.
+        // A technical caption in the usual clean sans undoes the drawn look under it.
+        canvas.set_hand_lettered(view.style.is_pencil());
         // The caption is toggleable, positionable, and its text overridable (#372); custom
         // templates interpolate {expr} fields (#338), same as the editor.
         if !view.label_hidden {
@@ -2478,6 +2487,7 @@ fn render_drawing<C: Canvas>(
             cell_h,
             unit,
         );
+        canvas.set_hand_lettered(false);
     }
 
     // Aligned projection lines (#377): dashed, lightweight lines connecting each toggled
@@ -2980,6 +2990,20 @@ fn render_view_geometry<C: Canvas>(
 
 struct SvgCanvas {
     body: String,
+    /// Whether the text that follows is a pencil view's, and so set in the hand-lettered face
+    /// (#1830). SVG names the family; the viewer needs it installed, and falls back to the
+    /// sans otherwise — embedding the whole face would add megabytes to every export.
+    hand_lettered: bool,
+}
+
+impl SvgCanvas {
+    fn font_family(&self) -> String {
+        if self.hand_lettered {
+            format!("'{}', sans-serif", crate::pencil::LABEL_FONT_FAMILY)
+        } else {
+            "sans-serif".to_string()
+        }
+    }
 }
 
 fn svg_esc(s: &str) -> String {
@@ -3036,14 +3060,19 @@ impl Canvas for SvgCanvas {
         ));
     }
 
+    fn set_hand_lettered(&mut self, hand_lettered: bool) {
+        self.hand_lettered = hand_lettered;
+    }
+
     fn text(&mut self, x: f32, y: f32, size: f32, anchor: Anchor, content: &str) {
         let anchor = match anchor {
             Anchor::Start => "start",
             Anchor::Middle => "middle",
             Anchor::End => "end",
         };
+        let family = self.font_family();
         self.body.push_str(&format!(
-            "<text x=\"{x:.1}\" y=\"{y:.1}\" font-family=\"sans-serif\" font-size=\"{size}\" \
+            "<text x=\"{x:.1}\" y=\"{y:.1}\" font-family=\"{family}\" font-size=\"{size}\" \
              fill=\"black\" text-anchor=\"{anchor}\">{}</text>\n",
             svg_esc(content)
         ));
@@ -3056,11 +3085,12 @@ impl Canvas for SvgCanvas {
             Anchor::End => "end",
         };
         let deg = angle.to_degrees();
+        let family = self.font_family();
         // `dominant-baseline="central"` makes `(x, y)` the visual centre, matching the
         // editor and the PDF backend (#1350). Captions still use `text()`, which stays
         // baseline-aligned.
         self.body.push_str(&format!(
-            "<text x=\"{x:.1}\" y=\"{y:.1}\" font-family=\"sans-serif\" font-size=\"{size}\" \
+            "<text x=\"{x:.1}\" y=\"{y:.1}\" font-family=\"{family}\" font-size=\"{size}\" \
              fill=\"black\" text-anchor=\"{anchor}\" dominant-baseline=\"central\" \
              transform=\"rotate({deg:.2} {x:.1} {y:.1})\">{}</text>\n",
             svg_esc(content)
@@ -3072,7 +3102,7 @@ impl Canvas for SvgCanvas {
 /// index is missing or deleted.
 pub fn drawing_to_svg(doc: &Document, index: crate::model::DrawingKey) -> Option<String> {
     let (width, height) = page_dims(doc, index)?;
-    let mut canvas = SvgCanvas { body: String::new() };
+    let mut canvas = SvgCanvas { body: String::new(), hand_lettered: false };
     render_drawing(doc, index, &mut canvas)?;
     let mut s = String::new();
     s.push_str(&format!(
@@ -4193,7 +4223,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
     /// labels land on the dimension line in the PDF/SVG while sitting beside it on screen.
     #[test]
     fn svg_text_rot_centers_on_the_layout_point() {
-        let mut c = SvgCanvas { body: String::new() };
+        let mut c = SvgCanvas { body: String::new(), hand_lettered: false };
         c.text_rot(100.0, 50.0, 11.0, Anchor::Middle, "80.0 mm", 0.0);
         assert!(
             c.body.contains("dominant-baseline=\"central\""),

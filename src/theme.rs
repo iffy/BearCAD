@@ -152,7 +152,35 @@ pub fn panel_frame() -> egui::Frame {
 }
 
 /// Apply dark theme to an egui context.
+/// The egui family a pencil drawing's labels are laid out in (#1830).
+pub fn hand_lettered_family() -> egui::FontFamily {
+    egui::FontFamily::Name(crate::pencil::LABEL_FONT_FAMILY.into())
+}
+
+/// Register the bundled hand-lettered face (#1830) so a pencil view's captions and dimensions
+/// can be set in it. Called once with the theme, before anything lays text out: asking egui to
+/// lay out text in a family its atlas has not been told about panics (#392).
+fn register_hand_lettered_font(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    let key = crate::pencil::LABEL_FONT_FAMILY.to_string();
+    fonts.font_data.insert(
+        key.clone(),
+        std::sync::Arc::new(egui::FontData::from_static(crate::pencil::LABEL_FONT)),
+    );
+    // The hand-lettered face first, then the default proportional stack behind it, so glyphs
+    // it lacks still render rather than coming out blank.
+    let mut stack = vec![key];
+    if let Some(default) = fonts.families.get(&egui::FontFamily::Proportional) {
+        stack.extend(default.iter().cloned());
+    }
+    fonts
+        .families
+        .insert(egui::FontFamily::Name(crate::pencil::LABEL_FONT_FAMILY.into()), stack);
+    ctx.set_fonts(fonts);
+}
+
 pub fn apply(ctx: &egui::Context) {
+    register_hand_lettered_font(ctx);
     // Stay on dark visuals even when the OS prefers light mode.
     ctx.set_theme(ThemePreference::Dark);
     let v = visuals();
@@ -173,6 +201,56 @@ pub fn apply(ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1830: the bundled hand-lettered face has to be one egui's own parser accepts, and it
+    /// has to actually carry the Latin letters a caption is made of. An unparseable face
+    /// panics inside the glyph-atlas build (#392), and a face without the glyphs would letter
+    /// every caption in the fallback sans while looking registered.
+    #[test]
+    fn the_bundled_hand_lettered_face_parses_and_has_latin() {
+        use ab_glyph::Font as _;
+        let face = ab_glyph::FontRef::try_from_slice(crate::pencil::LABEL_FONT)
+            .expect("egui's parser accepts the bundled face");
+        for ch in "BodyFront-Right0123456789 —".chars() {
+            assert!(
+                face.glyph_id(ch).0 != 0,
+                "the face is missing {ch:?}, so captions would fall back to the sans"
+            );
+        }
+    }
+
+    /// #1830: …and registering it leaves the family egui lays a pencil caption out in.
+    #[test]
+    fn applying_the_theme_registers_the_hand_lettered_family() {
+        let ctx = egui::Context::default();
+        apply(&ctx);
+        let family = hand_lettered_family();
+        assert_eq!(family, egui::FontFamily::Name(crate::pencil::LABEL_FONT_FAMILY.into()));
+        // A pass has to run before the atlas knows the family; after that, laying text out in
+        // it must work and must not silently come back as the default.
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        let width = |f: egui::FontFamily| {
+            let mut w = 0.0;
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                w = ui
+                    .painter()
+                    .layout_no_wrap(
+                        "Body 4 — Front".to_string(),
+                        egui::FontId::new(11.0, f.clone()),
+                        egui::Color32::WHITE,
+                    )
+                    .size()
+                    .x;
+            });
+            w
+        };
+        assert!(width(family.clone()) > 0.0, "the hand-lettered family lays text out");
+        assert_ne!(
+            width(family),
+            width(egui::FontFamily::Proportional),
+            "and it is a different face from the sans, not a silent fallback"
+        );
+    }
 
     #[test]
     fn theme_is_dark_and_matches_viewport() {

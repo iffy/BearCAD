@@ -9,6 +9,15 @@
 use eframe::egui::Color32;
 use glam::{Vec2, Vec3};
 
+/// The face a pencil drawing's lettering is set in (#1830): Klee One, a hand-lettered
+/// Japanese/Latin face under the SIL Open Font License (see `assets/fonts/KleeOne-OFL.txt`).
+///
+/// A technical caption set in the same clean sans every other style uses undoes the drawn look
+/// of the view beneath it. The face is bundled rather than looked up on the system, so a
+/// drawing letters the same on every machine and in every export.
+pub const LABEL_FONT_FAMILY: &str = "Klee One";
+pub const LABEL_FONT: &[u8] = include_bytes!("assets/fonts/KleeOne-Regular.ttf");
+
 /// Paper the `LoosePencil` scene is drawn on: warm white, not the theme's near-black.
 pub const PENCIL_PAPER: Color32 = Color32::from_rgb(250, 249, 245);
 /// Graphite: a soft blue-black, never pure black — pure black reads as ink, not pencil.

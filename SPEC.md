@@ -2575,7 +2575,13 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   Strokes travel as `ShadingStroke`s, and `StyledViewGeometry::scribbled` marks the fills as a
   pencil **ground** rather than a shaded surface: the tint stays the body's own colour, because
   "most of the way to the paper" means toward white on the print and toward the sheet's own
-  dark in the editor, so each surface maps it. The projection logic is
+  dark in the editor, so each surface maps it. **Both pencil styles letter their own text
+  (#1830)**: a pencil view's caption and dimensions are set in the bundled hand-lettered
+  **Klee One** (`pencil::LABEL_FONT`, OFL — see `THIRD_PARTY_LICENSES.md`), registered with
+  egui once in `theme::apply`; every other style keeps the sans. `Canvas::set_hand_lettered`
+  carries it to the exports — SVG names the family (falling back to the sans where it isn't
+  installed), and PDF stays on Helvetica, since embedding the face would add megabytes to
+  every exported file. The projection logic is
   `drawing::styled_view_geometry`, shared by the editor pane (greys darkened for the dark
   sheet) and both exports (the `Canvas` trait gained a filled-polygon primitive).
   `Action::SetDrawingViewStyle`.

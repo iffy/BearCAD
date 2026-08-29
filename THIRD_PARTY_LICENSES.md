@@ -35,6 +35,22 @@ the submodule source.
 
 ---
 
+## Klee One — SIL Open Font License 1.1
+
+Drawing captions and dimensions in the **pencil** view styles are set in
+[Klee One](https://github.com/fontworks-fonts/Klee) by Fontworks Inc., licensed
+under the **SIL Open Font License, Version 1.1**. The regular weight is bundled
+into the binary
+([`src/assets/fonts/KleeOne-Regular.ttf`](src/assets/fonts/KleeOne-Regular.ttf))
+so a drawing letters the same on every machine; full license text:
+[`src/assets/fonts/KleeOne-OFL.txt`](src/assets/fonts/KleeOne-OFL.txt).
+
+The OFL permits bundling and redistribution, including in a commercial product,
+provided the font is not sold on its own and this notice travels with it. BearCAD
+ships the face unmodified and under its original name.
+
+---
+
 ## Rust dependencies
 
 The following direct dependencies are compiled into BearCAD. Each is used

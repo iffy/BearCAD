@@ -20502,6 +20502,41 @@ pub mod tests {
         assert!(svg.trim_end().ends_with("</svg>"));
     }
 
+    /// #1826: the pencil styles letter their labels by hand too. A technical caption set in
+    /// the same clean sans as every other style undoes the drawn look of the view under it,
+    /// so a pencil view's text is set in the bundled Klee One and every other style keeps the
+    /// sans it always had.
+    #[test]
+    fn pencil_drawing_labels_are_set_in_the_hand_lettered_font() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 40, height = 25 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15 }
+            local d = bearcad.drawing{ name = "Plate" }
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "top" }
+            bearcad.drawing_dimension{ drawing = d, view = 0, a = {0,0,0}, b = {40,0,0} }
+            bearcad.drawing_view_style{ drawing = d, view = 1, style = "loose_pencil" }
+        "#,
+        );
+        let family = crate::pencil::LABEL_FONT_FAMILY;
+
+        // A page with one pencil view names the hand-lettered family for that view's text…
+        let svg = crate::drawing::drawing_to_svg(&state.doc, dkey(0)).expect("svg");
+        assert!(svg.contains(family), "a pencil view letters its caption by hand: {family}");
+        // …and the wireframe view beside it keeps the sans it always had.
+        assert!(svg.contains("sans-serif"), "the other view's text is unchanged");
+
+        // With no pencil view on the page, the font is never named at all.
+        let mut plain = state;
+        for view in &mut plain.doc.drawings[dkey(0)].views {
+            view.style = crate::model::DrawingViewStyle::Wireframe;
+        }
+        let svg = crate::drawing::drawing_to_svg(&plain.doc, dkey(0)).expect("svg");
+        assert!(!svg.contains(family), "no pencil view, no hand lettering");
+    }
+
     /// #1350: exported dimension labels sit beside their dimension lines — the same
     /// visual-centre placement the editor uses — so a horizontal label never sits on
     /// its dimension stroke the way a baseline-aligned PDF used to.

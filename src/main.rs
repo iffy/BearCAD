@@ -27162,6 +27162,16 @@ impl App {
                 .unwrap_or_default();
 
             for (vi, view) in views.iter().enumerate() {
+                // A pencil view letters its caption and dimensions by hand (#1830); every
+                // other style keeps the sans, matching what the exports do.
+                let label_font = egui::FontId::new(
+                    dim_font,
+                    if view.style.is_pencil() {
+                        crate::theme::hand_lettered_family()
+                    } else {
+                        egui::FontFamily::Proportional
+                    },
+                );
                 // Aligned children (#296) resolve their shared axis to the parent's.
                 let (rpx, rpy) = crate::drawing::resolved_view_pos(&self.state.doc, drawing, vi);
                 let center =
@@ -27445,7 +27455,8 @@ impl App {
                             egui::Align2::RIGHT_BOTTOM,
                         ),
                     };
-                    painter.text(pos, align, caption, egui::FontId::proportional(dim_font), INK);
+                    // A pencil view letters its caption by hand (#1830).
+                    painter.text(pos, align, caption, label_font.clone(), INK);
                 }
                 // Remove ✕ only with the border chrome — selected or hovered (#1229).
                 // Uses the bundled ✕ SVG (IconId::Close), never a font glyph (#325).
@@ -28102,8 +28113,7 @@ impl App {
                 }
                 // A rotated label drawn centred at a screen point (#314/#320).
                 let draw_rot_label = |painter: &egui::Painter, text: String, at: egui::Pos2, ang: f32| {
-                    let galley =
-                        painter.layout_no_wrap(text, egui::FontId::proportional(dim_font), INK);
+                    let galley = painter.layout_no_wrap(text, label_font.clone(), INK);
                     let rot = egui::emath::Rot2::from_angle(ang);
                     let pos = at - rot * (galley.size() * 0.5);
                     let mut shape = egui::epaint::TextShape::new(pos, galley, INK);
