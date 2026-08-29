@@ -2579,15 +2579,15 @@ pub struct Body {
 pub type BodyKey = crate::arena::Key<Body>;
 
 /// How a body names its material (#1055): a key, so removing a material never renames
-/// another one's colour onto a body that was never made of it.
+/// another one's color onto a body that was never made of it.
 pub type MaterialKey = crate::arena::Key<Material>;
 
-/// A material a body can be made of (#834): a name and the colour it renders in. Documents
-/// start with none — a body with no material renders in the default body colour.
+/// A material a body can be made of (#834): a name and the color it renders in. Documents
+/// start with none — a body with no material renders in the default body color.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Material {
     pub name: String,
-    /// Rendered colour, sRGB.
+    /// Rendered color, sRGB.
     pub color: [u8; 3],
 }
 
@@ -2596,12 +2596,12 @@ impl Material {
     /// the picker from the first frame, so choosing what a body is made of never means
     /// making a material first.
     ///
-    /// **Unobtainium** comes first and is what a new body is made of — its colour is the
+    /// **Unobtainium** comes first and is what a new body is made of — its color is the
     /// grey-blue every body rendered in before materials existed, so nothing looks
     /// different until you pick something else. The rest walk hues that **contrast with
     /// their neighbours** (#927): blue, green, red, yellow, purple, orange, cyan, pink,
     /// grey — so two materials made one after the other never look alike. Every entry is
-    /// light enough (Rec. 709 Y > 0.35) that a shaded solid still reads as its own colour
+    /// light enough (Rec. 709 Y > 0.35) that a shaded solid still reads as its own color
     /// where the lighting falls away.
     pub const DEFAULTS: [(&'static str, [u8; 3]); 10] = [
         ("Unobtainium", [150, 168, 196]),
@@ -2616,8 +2616,8 @@ impl Material {
         ("Grey", [0xc9, 0xce, 0xd8]),
     ];
 
-    /// The colours a **new** material walks through, so consecutive ones look different
-    /// without anyone picking colours (#834/#927): the defaults' palette, minus
+    /// The colors a **new** material walks through, so consecutive ones look different
+    /// without anyone picking colors (#834/#927): the defaults' palette, minus
     /// Unobtainium (which is the starting material, not a choice in the rotation).
     pub const NEW_COLORS: [[u8; 3]; 9] = [
         Self::DEFAULTS[1].1,
@@ -2817,7 +2817,7 @@ impl Document {
 
     /// What a body with no material of its own is made of (#924): the document's first
     /// material, which a fresh document seeds as **Unobtainium**. Older files (and any body
-    /// whose material was cleared) fall back to it rather than to a colour with no entry
+    /// whose material was cleared) fall back to it rather than to a color with no entry
     /// behind it. `None` only when a document has no materials at all.
     pub fn default_material(&self) -> Option<MaterialKey> {
         self.materials.keys().next()
@@ -2828,7 +2828,7 @@ impl Document {
 mod material_tests {
     use super::Material;
 
-    /// #925/#927/#928: the seeded palette leads with Unobtainium — the colour every body
+    /// #925/#927/#928: the seeded palette leads with Unobtainium — the color every body
     /// rendered in before materials existed — and then walks contrasting hues, so two
     /// materials made one after the other never look alike.
     #[test]
@@ -2837,7 +2837,7 @@ mod material_tests {
         assert_eq!(arena.len(), Material::DEFAULTS.len());
         let defaults: Vec<&Material> = arena.values().collect();
         assert_eq!(defaults[0].name, "Unobtainium");
-        assert_eq!(defaults[0].color, [150, 168, 196], "the old default body colour");
+        assert_eq!(defaults[0].color, [150, 168, 196], "the old default body color");
         assert_eq!(
             defaults.iter().skip(1).map(|m| m.name.as_str()).collect::<Vec<_>>(),
             vec!["Blue", "Green", "Red", "Yellow", "Purple", "Orange", "Cyan", "Pink", "Grey"]
@@ -5312,20 +5312,23 @@ pub enum DrawingViewStyle {
     Wireframe,
     /// Grey-shaded faces with the visible edges on top.
     Shaded,
-    /// [`Self::Shaded`] with each body's material colour kept instead of flattened to grey
+    /// [`Self::Shaded`] with each body's material color kept instead of flattened to grey
     /// (#1807) — an assembly reads as its parts rather than as one grey mass.
     Colorful,
     /// The visible edges drawn by hand (#1809): wobbled, overshot at the corners, gone over
     /// twice — the drawings-page counterpart of the `LoosePencil` viewport shading mode.
     LoosePencil,
-    /// [`Self::LoosePencil`]'s hand-drawn edges over each body's own colour, shaded with
+    /// [`Self::LoosePencil`]'s hand-drawn edges over each body's own color, shaded with
     /// strokes and with the solids' shadows falling on each other (#1821) — the drawings-page
-    /// counterpart of the `ColourPencil` viewport shading mode.
-    ColourPencil,
-    /// [`Self::ColourPencil`]'s drawing, painted (#1829): the same hand-drawn edges with each
-    /// body's colour laid on as a wash — pooling unevenly and drying darker at the edges — the
-    /// drawings-page counterpart of the `Watercolour` viewport shading mode.
-    Watercolour,
+    /// counterpart of the `ColorPencil` viewport shading mode.
+    // Reads back documents saved before the spelling was standardised (#1832).
+    #[serde(alias = "ColourPencil")]
+    ColorPencil,
+    /// [`Self::ColorPencil`]'s drawing, painted (#1829): the same hand-drawn edges with each
+    /// body's color laid on as a wash — pooling unevenly and drying darker at the edges — the
+    /// drawings-page counterpart of the `Watercolor` viewport shading mode.
+    #[serde(alias = "Watercolour")]
+    Watercolor,
 }
 
 impl DrawingViewStyle {
@@ -5335,8 +5338,8 @@ impl DrawingViewStyle {
         DrawingViewStyle::Shaded,
         DrawingViewStyle::Colorful,
         DrawingViewStyle::LoosePencil,
-        DrawingViewStyle::ColourPencil,
-        DrawingViewStyle::Watercolour,
+        DrawingViewStyle::ColorPencil,
+        DrawingViewStyle::Watercolor,
     ];
 
     pub fn label(self) -> &'static str {
@@ -5346,8 +5349,8 @@ impl DrawingViewStyle {
             Self::Shaded => "Shaded",
             Self::Colorful => "Colorful",
             Self::LoosePencil => "Loose pencil",
-            Self::ColourPencil => "Coloured pencil",
-            Self::Watercolour => "Watercolour",
+            Self::ColorPencil => "Colored pencil",
+            Self::Watercolor => "Watercolor",
         }
     }
 
@@ -5360,8 +5363,8 @@ impl DrawingViewStyle {
             Self::Shaded => "shaded",
             Self::Colorful => "colorful",
             Self::LoosePencil => "loose_pencil",
-            Self::ColourPencil => "colour_pencil",
-            Self::Watercolour => "watercolour",
+            Self::ColorPencil => "color_pencil",
+            Self::Watercolor => "watercolor",
         }
     }
 
@@ -5373,10 +5376,12 @@ impl DrawingViewStyle {
             "shaded" | "solid" => Some(Self::Shaded),
             "colorful" | "colourful" | "color" | "colour" => Some(Self::Colorful),
             "loose_pencil" | "pencil" | "sketchy" => Some(Self::LoosePencil),
-            "colour_pencil" | "color_pencil" | "coloured_pencil" | "colored_pencil"
-            | "coloured pencil" | "colored pencil" => Some(Self::ColourPencil),
-            "watercolour" | "watercolor" | "water_colour" | "water_color" => {
-                Some(Self::Watercolour)
+            // The British spellings stay accepted (#1832): they are what scripts written
+            // before the rename say, and a name is cheap to keep answering to.
+            "color_pencil" | "colour_pencil" | "colored_pencil" | "coloured_pencil"
+            | "colored pencil" | "coloured pencil" => Some(Self::ColorPencil),
+            "watercolor" | "watercolour" | "water_color" | "water_colour" => {
+                Some(Self::Watercolor)
             }
             _ => None,
         }
@@ -5385,13 +5390,13 @@ impl DrawingViewStyle {
     /// Whether this style draws its edges by hand rather than ruling them, and letters its
     /// labels to match (#1809/#1821/#1829/#1830).
     pub fn is_pencil(self) -> bool {
-        matches!(self, Self::LoosePencil | Self::ColourPencil | Self::Watercolour)
+        matches!(self, Self::LoosePencil | Self::ColorPencil | Self::Watercolor)
     }
 
-    /// Whether this style lays the body's own colour on the paper by hand (#1821/#1829) —
-    /// scribbled for coloured pencil, washed for watercolour.
-    pub fn is_hand_coloured(self) -> bool {
-        matches!(self, Self::ColourPencil | Self::Watercolour)
+    /// Whether this style lays the body's own color on the paper by hand (#1821/#1829) —
+    /// scribbled for colored pencil, washed for watercolor.
+    pub fn is_hand_colored(self) -> bool {
+        matches!(self, Self::ColorPencil | Self::Watercolor)
     }
 }
 
@@ -5819,7 +5824,7 @@ pub struct Document {
     #[serde(default)]
     pub bodies: crate::arena::Arena<Body>,
     /// Materials bodies can be made of (#834). A body with no material renders in the
-    /// document's default body colour.
+    /// document's default body color.
     #[serde(default)]
     pub materials: crate::arena::Arena<Material>,
     #[serde(default)]
@@ -6221,7 +6226,7 @@ mod tests {
         }
         assert_eq!(DrawingViewStyle::from_name("nonsense"), None);
         // Pencil styles draw their edges by hand; the rest rule them.
-        assert!(DrawingViewStyle::ColourPencil.is_pencil());
+        assert!(DrawingViewStyle::ColorPencil.is_pencil());
         assert!(DrawingViewStyle::LoosePencil.is_pencil());
         assert!(!DrawingViewStyle::Shaded.is_pencil());
     }

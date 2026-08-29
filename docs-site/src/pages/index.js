@@ -87,7 +87,7 @@ function Hero() {
         <img
           className={styles.shot}
           src={useBaseUrl('/img/screenshots/materials.png')}
-          alt="Nine cubes in a 2×2×2 with a centre cube, each a different material colour, some with a hole, sphere bite, chamfer or fillet"
+          alt="Nine cubes in a 2×2×2 with a centre cube, each a different material color, some with a hole, sphere bite, chamfer or fillet"
         />
       </div>
     </header>

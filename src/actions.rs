@@ -6118,8 +6118,8 @@ impl AppState {
         self.write_mesh_file(path, name, mesh, MeshExportFormat::Step)
     }
 
-    /// Write a multi-object coloured 3MF package (#1284 / #1294 / #1299). Each part is a separate
-    /// object with `m:colorgroup` colours so Bambu Studio assigns a filament slot per colour.
+    /// Write a multi-object colored 3MF package (#1284 / #1294 / #1299). Each part is a separate
+    /// object with `m:colorgroup` colors so Bambu Studio assigns a filament slot per color.
     fn write_3mf_collected_file(
         &mut self,
         path: &str,
@@ -6146,7 +6146,7 @@ impl AppState {
         }
     }
 
-    /// Material name + sRGB colour a body exports with (#1294 / #834).
+    /// Material name + sRGB color a body exports with (#1294 / #834).
     fn body_export_material(&self, body: &crate::model::Body) -> (String, [u8; 3]) {
         let mat = body
             .material
@@ -6165,7 +6165,7 @@ impl AppState {
         }
     }
 
-    /// Collect non-empty solid meshes + colours for the given body keys (skip shadows / empty).
+    /// Collect non-empty solid meshes + colors for the given body keys (skip shadows / empty).
     /// Each entry is `(object_name, mesh, material_name, color)`.
     fn collect_3mf_export(
         &self,
@@ -6600,7 +6600,7 @@ impl AppState {
     }
 
     /// 3MF package of one body (or the whole document) as bytes (#1284 / #1294).
-    /// Multi-body exports keep each body as a separate coloured object.
+    /// Multi-body exports keep each body as a separate colored object.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub fn export_3mf_bytes(&self, body: Option<crate::model::BodyKey>) -> Result<Vec<u8>, String> {
         let keys: Vec<crate::model::BodyKey> = match body {
@@ -6675,7 +6675,7 @@ impl AppState {
     }
 
     /// 3MF of every body in a component (and nested components) as bytes (#1284 / #1294).
-    /// Each body is a separate coloured object (not a single merged mesh).
+    /// Each body is a separate colored object (not a single merged mesh).
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub fn export_component_3mf_bytes(&self, ci: crate::model::ComponentKey) -> Result<Vec<u8>, String> {
         let bodies = self.component_body_indices(ci);
@@ -10174,7 +10174,7 @@ impl AppState {
                 self.write_stl_file(&path, &name, mesh)
             }
             Action::Export3mf { path, body } => {
-                // #1294: keep each body as its own coloured object (do not fuse into one mesh).
+                // #1294: keep each body as its own colored object (do not fuse into one mesh).
                 let keys: Result<Vec<crate::model::BodyKey>, String> = match &body {
                     Some(name) => {
                         match self.doc.bodies.iter().find_map(|(k, b)| {
@@ -18160,7 +18160,7 @@ op,
                     .find(|(_, m)| m.name.eq_ignore_ascii_case(name.trim()))
                     .map(|(k, _)| k);
                 if let Some(key) = existing {
-                    // Naming a material that is already there, with no colour of its own, is
+                    // Naming a material that is already there, with no color of its own, is
                     // a request to *use* it (#1822) — the same thing the Material dropdown
                     // does. Refusing meant a script could only reach the built-in palette by
                     // counting entries in it.
@@ -18173,7 +18173,7 @@ op,
                         self.status = format!("Material '{name}' applied");
                         return ActionResult::Ok;
                     }
-                    // With a colour, it is ambiguous — recolour the old one, or add a second
+                    // With a color, it is ambiguous — recolor the old one, or add a second
                     // by that name? — so it stays a refusal.
                     let e = format!("A material named '{name}' already exists");
                     self.status = e.clone();
@@ -24090,9 +24090,9 @@ mod tests {
     }
 
     /// #1294 / #1299: multi-body 3MF export keeps each body as its own object with
-    /// m:colorgroup colours so Bambu Studio assigns distinct filament slots.
+    /// m:colorgroup colors so Bambu Studio assigns distinct filament slots.
     #[test]
-    fn export_3mf_preserves_body_colours() {
+    fn export_3mf_preserves_body_colors() {
         let mut state = two_box_state(false);
         // Seeded palette: Yellow is index 4, Red is index 3.
         let yellow = state
@@ -24180,8 +24180,8 @@ mod tests {
             "red m:color:\n{model}"
         );
         // Objects pid into colorgroup (id=2) with distinct pindex → Fila 1 and 2.
-        assert!(model.contains("pid=\"2\" pindex=\"0\""), "first colour:\n{model}");
-        assert!(model.contains("pid=\"2\" pindex=\"1\""), "second colour:\n{model}");
+        assert!(model.contains("pid=\"2\" pindex=\"0\""), "first color:\n{model}");
+        assert!(model.contains("pid=\"2\" pindex=\"1\""), "second color:\n{model}");
         assert!(model.contains("objectid=\"3\"") && model.contains("objectid=\"4\""));
         // Not a single fused object.
         assert_eq!(
@@ -28755,10 +28755,10 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert_eq!(cp.live_dims(), (12.0, 45.0));
     }
 
-    /// #834: a material is created, handed to the selected bodies, renamed and recoloured;
+    /// #834: a material is created, handed to the selected bodies, renamed and recolored;
     /// a body with none keeps the default look.
     #[test]
-    fn materials_are_assigned_named_and_recoloured() {
+    fn materials_are_assigned_named_and_recolored() {
         let mut state = two_box_state(false);
         // #925/#928: a document starts with the whole default palette, Unobtainium first.
         let seeded = state.doc.materials.len();
@@ -28778,7 +28778,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert_eq!(state.doc.materials[brass].name, "Brass");
         assert_eq!(state.doc.bodies[bkey(1)].material, None, "only the listed bodies get it");
 
-        // A second material gets the next palette colour and its own name by default.
+        // A second material gets the next palette color and its own name by default.
         state.apply(Action::AddMaterial { name: None, color: None, bodies: vec![bkey(1)] });
         let second = state.doc.bodies[bkey(1)].material.expect("and this one to the other body");
         assert_ne!(state.doc.materials[second].color, state.doc.materials[brass].color);
@@ -31964,9 +31964,9 @@ translate_mode: crate::model::MoveTranslateMode::Free,
     }
 
     /// #1807: the Colorful style shades the same faces as Shaded, but keeps each body's
-    /// material colour instead of flattening everything to grey.
+    /// material color instead of flattening everything to grey.
     #[test]
-    fn colorful_drawing_view_keeps_the_material_colour() {
+    fn colorful_drawing_view_keeps_the_material_color() {
         use crate::model::{DrawingOrientation, DrawingViewStyle};
         let mut state = two_box_state(false);
         state.apply(Action::ExitSketch);
@@ -31995,7 +31995,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             style: DrawingViewStyle::Shaded,
         });
         let shaded = geometry(&state);
-        // Grey shading is a colourless tint: every channel the same.
+        // Grey shading is a colorless tint: every channel the same.
         for face in &shaded.faces {
             let [r, g, b] = face.tint;
             assert_eq!((r, g), (g, b), "the Shaded style stays grey");
@@ -32014,10 +32014,10 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         );
         assert!(
             colorful.faces.iter().all(|f| f.tint == [200, 60, 60]),
-            "every face carries the body's own colour, got {:?}",
+            "every face carries the body's own color, got {:?}",
             colorful.faces.iter().map(|f| f.tint).collect::<Vec<_>>()
         );
-        // Two bodies in one view keep two colours.
+        // Two bodies in one view keep two colors.
         state.apply(Action::AddMaterial {
             name: Some("Leaf".to_string()),
             color: Some([40, 140, 80]),
@@ -32028,7 +32028,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             geometry(&state).faces.iter().map(|f| f.tint).collect();
         assert!(
             tints.contains(&[200, 60, 60]) && tints.contains(&[40, 140, 80]),
-            "each body keeps its own colour, got {tints:?}"
+            "each body keeps its own color, got {tints:?}"
         );
     }
 
@@ -32103,7 +32103,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert_eq!(key(&pencil), key(&geometry(&state)), "the hand wavered between renders");
     }
 
-    /// #1822: naming a material that already exists, with no colour of its own, applies it.
+    /// #1822: naming a material that already exists, with no color of its own, applies it.
     /// It used to be refused, so a script could only reach the built-in palette by counting
     /// entries in it — while the Material dropdown next to it just picks one by name.
     #[test]
@@ -32134,7 +32134,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             "and no second Blue is added"
         );
 
-        // With a colour it is ambiguous — recolour the old one, or add a second by that name?
+        // With a color it is ambiguous — recolor the old one, or add a second by that name?
         // — so it stays a refusal.
         let clash = state.apply(Action::AddMaterial {
             name: Some("Blue".to_string()),
@@ -32145,11 +32145,11 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert_eq!(state.doc.bodies[bkey(1)].material, None, "and nothing was applied");
     }
 
-    /// #1821/#1825: the Coloured pencil projection style is the viewport's coloured-pencil mode
-    /// on the page — hand-drawn edges, and the body's colour *scribbled* in rather than poured,
+    /// #1821/#1825: the Colored pencil projection style is the viewport's colored-pencil mode
+    /// on the page — hand-drawn edges, and the body's color *scribbled* in rather than poured,
     /// at one lightness on every side.
     #[test]
-    fn coloured_pencil_drawing_view_scribbles_the_colour_in() {
+    fn colored_pencil_drawing_view_scribbles_the_color_in() {
         use crate::model::{DrawingOrientation, DrawingViewStyle};
         let mut state = two_box_state(false);
         state.apply(Action::ExitSketch);
@@ -32185,7 +32185,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
 
         style(&mut state, DrawingViewStyle::LoosePencil);
         let loose = geometry(&state);
-        style(&mut state, DrawingViewStyle::ColourPencil);
+        style(&mut state, DrawingViewStyle::ColorPencil);
         let pencil = geometry(&state);
 
         // Edges drawn by hand, like Loose pencil…
@@ -32196,13 +32196,13 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         // …one lightness on every side (#1825) — no light-and-dark, which read as a render…
         let shades: std::collections::HashSet<u32> =
             pencil.faces.iter().map(|f| f.shade.to_bits()).collect();
-        assert_eq!(shades.len(), 1, "every side of a coloured-pencil solid is laid on the same");
+        assert_eq!(shades.len(), 1, "every side of a colored-pencil solid is laid on the same");
         let tints: std::collections::HashSet<[u8; 3]> =
             pencil.faces.iter().map(|f| f.tint).collect();
-        assert_eq!(tints.len(), 1, "and in one colour");
+        assert_eq!(tints.len(), 1, "and in one color");
         // …the fill under it is flagged as a *ground* rather than a shaded surface, and is the
-        // body's colour already taken most of the way to the paper — so what the eye reads as
-        // the colour is the scribble on top, and the gaps in it read as bare paper.
+        // body's color already taken most of the way to the paper — so what the eye reads as
+        // the color is the scribble on top, and the gaps in it read as bare paper.
         assert!(pencil.scribbled, "the fills are a pencil ground, not a shaded surface");
         let ground = *tints.iter().next().expect("one tint");
         let expected = crate::pencil::scribble_ground(eframe::egui::Color32::from_rgb(200, 60, 60));
@@ -32218,7 +32218,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         );
         assert!(ground[0] > ground[1], "without losing the hue, got {ground:?}");
 
-        // …and the colour itself is scribbled on, in a deepened version of the body's own.
+        // …and the color itself is scribbled on, in a deepened version of the body's own.
         assert!(!pencil.shading.is_empty(), "the faces are scribbled in");
         for stroke in &pencil.shading {
             assert!(stroke.tint[0] > stroke.tint[1], "the scribble keeps the body's hue");
@@ -32241,11 +32241,11 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert_eq!(key(&pencil), key(&geometry(&state)), "the hand wavered between renders");
     }
 
-    /// #1829: the Watercolour projection style is the pencil drawing, painted — the same
-    /// hand-drawn edges, with the colour laid on as a wash that pools and dries darker at the
+    /// #1829: the Watercolor projection style is the pencil drawing, painted — the same
+    /// hand-drawn edges, with the color laid on as a wash that pools and dries darker at the
     /// edges instead of being scribbled on.
     #[test]
-    fn watercolour_drawing_view_washes_the_colour_on() {
+    fn watercolor_drawing_view_washes_the_color_on() {
         use crate::model::{DrawingOrientation, DrawingViewStyle};
         let mut state = two_box_state(false);
         state.apply(Action::ExitSketch);
@@ -32273,9 +32273,9 @@ translate_mode: crate::model::MoveTranslateMode::Free,
 
         style(&mut state, DrawingViewStyle::LoosePencil);
         let pencil = geometry(&state);
-        style(&mut state, DrawingViewStyle::ColourPencil);
+        style(&mut state, DrawingViewStyle::ColorPencil);
         let scribbled = geometry(&state);
-        style(&mut state, DrawingViewStyle::Watercolour);
+        style(&mut state, DrawingViewStyle::Watercolor);
         let wash = geometry(&state);
 
         // It starts from the pencil drawing: the same hand-drawn edges…
@@ -32283,8 +32283,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             wash.segments.len() > pencil.segments.len() / 2,
             "the edges are still drawn by hand"
         );
-        assert!(DrawingViewStyle::Watercolour.is_pencil(), "so its labels letter by hand too");
-        // …one tone on every side, in the body's own colour…
+        assert!(DrawingViewStyle::Watercolor.is_pencil(), "so its labels letter by hand too");
+        // …one tone on every side, in the body's own color…
         let shades: std::collections::HashSet<u32> =
             wash.faces.iter().map(|f| f.shade.to_bits()).collect();
         assert_eq!(shades.len(), 1, "a wash dries to one value on every side");
@@ -32294,7 +32294,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             wash.faces
                 .iter()
                 .all(|f| f.tint == [wash_ground.r(), wash_ground.g(), wash_ground.b()]),
-            "carrying the colour the wash dries to — a wash covers, where a pencil grazes"
+            "carrying the color the wash dries to — a wash covers, where a pencil grazes"
         );
         let pencil_ground =
             crate::pencil::scribble_ground(eframe::egui::Color32::from_rgb(60, 110, 200));
@@ -32303,7 +32303,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             "and it is the stronger of the two grounds, {wash_ground:?} vs {pencil_ground:?}"
         );
 
-        // …and the colour is *washed* on: broader marks than a pencil scribble, and a deeper
+        // …and the color is *washed* on: broader marks than a pencil scribble, and a deeper
         // rim where it dried against the edges.
         assert!(!wash.shading.is_empty(), "the faces are painted");
         let widest = wash.shading.iter().map(|s| s.width).fold(0.0f32, f32::max);
@@ -32318,7 +32318,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             wash.shading.iter().any(|s| s.tint == [rim.r(), rim.g(), rim.b()]),
             "and there is a drying rim in the deeper tone"
         );
-        // Every mark keeps the body's hue — a wash darkens in its own colour, which is what
+        // Every mark keeps the body's hue — a wash darkens in its own color, which is what
         // separates it from a pencil pressed harder.
         for stroke in &wash.shading {
             assert!(

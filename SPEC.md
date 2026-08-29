@@ -87,7 +87,7 @@ become inputs to the referencing component.
 The Elements pane draws a component as **two bodies fused into one solid** (#922) — the
 union silhouette the extrude tool's "Join body" output icon uses, shaded like the body
 element — and an imported unit instance as the **assembly** icon (#923): two of those
-components meshed together, the back one in the accent blue, the front in the theme colour.
+components meshed together, the back one in the accent blue, the front in the theme color.
 
 **Implemented today (#423) — components as organizational groups:** `model::Component`
 (`name`, `parent`, per-component `length_unit`/`angle_unit` overrides) plus
@@ -440,7 +440,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   drawn as a small marker where the axes cross) and the origin axes (`ConstraintLine::OriginAxis`)
   are also directly viewport-selectable in the constraint tool — not just reachable by snapping —
   so a point can be constrained coincident with the origin, or onto an axis, by clicking them. A
-  selected origin brightens to the selection colour and a selected axis highlights along its full
+  selected origin brightens to the selection color and a selected axis highlights along its full
   length so the pick is visible. The **world** axes carry their own scene element
   (`SceneElement::GlobalAxis`, #952) — fixed geometry with no owning entity, like the origin, and
   no Elements-pane row — so an axis pick has an identity an element picker can hold, which is what
@@ -475,7 +475,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   A **loft section** needs no element of its own: it is a profile plus its sketch, and the
   profile is a `FaceId`, so the analytic face already names it
   (`extrude::extrude_face_scene_element`). The **sketch's two axes are always drawn** while a sketch is open
-  (#577): the X (u) axis in the red axis colour and Y (v) axis in green, through the origin, faint
+  (#577): the X (u) axis in the red axis color and Y (v) axis in green, through the origin, faint
   normally and brighter when hovered — the "floating origin" that makes the sketch frame's
   orientation unambiguous now that the camera takes the shortest roll instead of forcing u-right.
   Selecting a line **and** an axis and applying **Parallel** (or Perpendicular) constrains the line
@@ -1056,7 +1056,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   in — stationary geometry would otherwise be swallowed by the depth test, and the visible
   remainder read as landing offset from the snap target. The B pair carries through to the
   ghost (#748), so a completed rotation previews too. The picked points are marked in the
-  viewport in colours of their own (`ViewportSceneInput::colored_pick_highlights`): **start
+  viewport in colors of their own (`ViewportSceneInput::colored_pick_highlights`): **start
   point A green** and **end point A red** — go and stop, so the direction of the snap reads at
   a glance — and **both B points and both C points in candidate blue** (#748). A complete pair draws the
   point's **path**: a dashed curve from start B to end B, in the same candidate blue as
@@ -1165,9 +1165,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     straight out to the sphere** (#745, `snap_rotation_axis_candidates`): mid-air landing
     spots along those directions, each with a **dashed guide** drawn from the pivot
     (gold when its spot is hovered). Every unhovered candidate — dot and guide alike — is
-    **colour-coded by the axis its turn goes about** (#949, `snap_rotation_axis_toward` →
+    **color-coded by the axis its turn goes about** (#949, `snap_rotation_axis_toward` →
     `rotation_axis_color`: the world axis the rotation axis lies nearest, in that axis's own
-    colour), so a sphereful of spots reads as groups instead of one indistinguishable blue;
+    color), so a sphereful of spots reads as groups instead of one indistinguishable blue;
     end point C's candidates all spin about the same A→B axis, so they stay candidate blue.
     The candidate under the cursor reads **gold**; hovering
     it previews the move it would produce, and clicking takes it. Candidates sit mid-edge or
@@ -1488,28 +1488,28 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   The GUI/scripting to *pick* the length face is a tracked follow-up.
 
 #### 3.4.4 Materials (#834)
-- A **material** (`model::Material`) is a name plus a rendered colour, living in
+- A **material** (`model::Material`) is a name plus a rendered color, living in
   `Document::materials`, an `arena::Arena` (#1055). Every body carries
   `Body::material: Option<MaterialKey>`; `None` means the **first material**
   (`Document::default_material`), which every document seeds as **Unobtainium** (#924/#925)
-  — coloured exactly like the neutral body grey bodies rendered in before materials existed,
+  — colored exactly like the neutral body grey bodies rendered in before materials existed,
   so nothing looks different until another is picked. A body renders
-  in its material's colour (`gpu_viewport::scene::body_material_fill`); selection and hover
-  colours still win over it.
+  in its material's color (`gpu_viewport::scene::body_material_fill`); selection and hover
+  colors still win over it.
 - **Seeded palette (#927/#928):** a new document already holds `Material::DEFAULTS` — the whole
   set is in the dropdown from the first frame, so choosing what something is made of never
   means making a material first. Unobtainium leads; the rest walk hues that **contrast with
   their neighbours** — Blue, Green, Red, Yellow, Purple, Orange, Cyan, Pink, Grey — so two
   materials picked (or created) one after the other never look alike. Every entry stays light
-  enough (Rec. 709 Y > 0.35) that a shaded solid still reads as its own colour where the
+  enough (Rec. 709 Y > 0.35) that a shaded solid still reads as its own color where the
   lighting falls away. `Material::NEW_COLORS` — what **New material…** walks — is that palette
-  minus Unobtainium. (Colour-blind separation is deliberately *not* what this palette
+  minus Unobtainium. (Color-blind separation is deliberately *not* what this palette
   optimizes for; that belongs to a mode of its own.)
 - **Context pane:** selecting one or more bodies (any tool) shows a **Material** dropdown —
-  every material with its colour swatch, plus **New material…**, which creates one (named
-  `Material N`, next colour from `Material::NEW_COLORS`) and assigns it to the selection. A
+  every material with its color swatch, plus **New material…**, which creates one (named
+  `Material N`, next color from `Material::NEW_COLORS`) and assigns it to the selection. A
   body with no material of its own shows **Unobtainium** selected, like any other material
-  (#924), with its **Name** and **Colour** editable in place; every body using it re-renders.
+  (#924), with its **Name** and **Color** editable in place; every body using it re-renders.
   Selecting bodies whose materials differ reads *Mixed*.
 - **Inherited by extrusion (#926):** a new body extruded off another body's face is made of
   that body's material (`extrusion_source_material` → `model::body_index_for_face`), so a boss
@@ -1563,7 +1563,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     all of its edges in one go (#938): a body face projects its whole boundary loop
     (`construction::coplanar_face_boundary`), and a click over open sketch space inside one of the
     sketch's own closed profiles (`face::pick_sketch_face`) adds every line of that loop. Faces and
-    profiles hover-highlight like the rest. It previews the result as **solid preview-coloured**
+    profiles hover-highlight like the rest. It previews the result as **solid preview-colored**
     lines — dashed only when Construction is checked (#940), matching the mirror/extrude/revolve
     preview styling — and sets the distance via an in-plane
     **push-pull handle** (an arrow gizmo drawn through the GPU scene's `arrow_gizmos` so it lands
@@ -2573,17 +2573,17 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   sorted (`drawing::painter_order`) — otherwise a bar's shaded side leaks through onto the top
   of the block it grows out of. Sketch views have no solid, so they always draw wireframe.
   Two more styles draw by hand: **Loose pencil** (#1809) wobbles and overshoots the visible
-  edges, and **Coloured pencil** (#1821/#1825) is the viewport's coloured-pencil mode on the
-  page — the same hand-drawn edges, in a deepened version of the body's own colour when the
-  view shows one, over a ground of that colour, with `crate::pencil` scribble strokes laid
+  edges, and **Colored pencil** (#1821/#1825) is the viewport's colored-pencil mode on the
+  page — the same hand-drawn edges, in a deepened version of the body's own color when the
+  view shows one, over a ground of that color, with `crate::pencil` scribble strokes laid
   across each flat and the solids' shadows dropped onto one another. One tone on every side.
-  **Watercolour** (#1829) is the same again with the colour washed on instead: a covering
-  ground, pooling, and the rim it dries to along each flat's boundary. `is_hand_coloured` is
+  **Watercolor** (#1829) is the same again with the color washed on instead: a covering
+  ground, pooling, and the rim it dries to along each flat's boundary. `is_hand_colored` is
   what both share; `ShadingStroke::width` lets a brush lay a broader mark than a pencil.
   Strokes travel as `ShadingStroke`s, and `StyledViewGeometry::scribbled` marks the fills as a
   pencil **ground** rather than a shaded surface. The geometry mixes that ground once and the
   tint carries the result; the editor then reads the whole style as **ink on paper**
-  (`ink_on_dark_sheet`) rather than as colour, because mapping a pale print ground and a dark
+  (`ink_on_dark_sheet`) rather than as color, because mapping a pale print ground and a dark
   print rim straight onto a dark sheet inverts them and the painting comes out inside-out. **Both pencil styles letter their own text
   (#1830)**: a pencil view's caption and dimensions are set in the bundled hand-lettered
   **Klee One** (`pencil::LABEL_FONT`, OFL — see `THIRD_PARTY_LICENSES.md`), registered with
@@ -3109,7 +3109,7 @@ ordinal too.
   the moment its geometry is picked. As soon as the selection describes something
   dimensionable — a fresh pick, or a selection carried in when the Dimension tool is chosen —
   the tool enters a **placement phase** (`AppState::placing_dimension`, a `PlacingDimension`
-  holding the target and the pixel offset): the dimension is previewed in the preview colour
+  holding the target and the pixel offset): the dimension is previewed in the preview color
   and follows the cursor, and a **click drops it there and moves on to typing the value**,
   carrying the placed offset onto the constraint's `dim_offset`. For an **angle**, two
   crossing lines have two distinct magnitudes (supplementary, one on each pair of opposite
@@ -3176,11 +3176,11 @@ ordinal too.
   light what they **made**: an operation its output bodies, a component every body under it,
   a joint the parts it joins (`hierarchy::produced_bodies`, which reads the same descendant
   map the pane's own tree does rather than re-deriving outputs per op kind). Those wear
-  `DERIVED_OUTPUT_HIGHLIGHT`, a colour of their own rather than the hover colour: the hover
-  colour means "this is the thing under your cursor", and the cursor is on the row, not on the
+  `DERIVED_OUTPUT_HIGHLIGHT`, a color of their own rather than the hover color: the hover
+  color means "this is the thing under your cursor", and the cursor is on the row, not on the
   body. A joint additionally marks its **badge**, the one part of it that is in the view. A
   tracing image outlines its quad. The one row that adds no overlay is a **body**, which
-  recolours in the main pass instead (#455).
+  recolors in the main pass instead (#455).
 - **Hover picking rejects on bounds first (#1026).** `resolve_pick_target` runs every frame
   the camera moves, and used to project **every triangle of every body** to answer what is
   under the cursor. Orbit and pan hid this because both suppress hover while a mouse button is
@@ -3289,7 +3289,7 @@ ordinal too.
   painter-drawn and clipped to the loupe disc (`draw_pick_target_loupe` / `clip_segment_to_disc`),
   so overlapping things read clearly. A loupe whose own thing has **no wireframe inside the disc**
   at that magnification — a **whole body**, a face far bigger than the hitbox — would show an
-  empty or flat-coloured disc with nothing to recognise, so it **zooms out to frame that thing**
+  empty or flat-colored disc with nothing to recognise, so it **zooms out to frame that thing**
   instead (#944/#945, `loupe_view` / `pick_target_loupe_wireframe`): the magnifier is kept
   whenever any of the thing's own segments or points lands in the disc, and only ever traded for
   a wider view, never a tighter one. The faint centre mark still shows where the cursor falls in
@@ -3303,7 +3303,7 @@ ordinal too.
   Only the **highlighted** vertex shows a dot; a
   line-endpoint vertex also gets a short **stub** of its line — a *fixed on-screen length* relative
   to the loupe, not a fraction of the line — so coincident endpoints of different lines are told
-  apart by the direction their line leaves the vertex. Colours: the in-loupe element and its ring
+  apart by the direction their line leaves the vertex. Colors: the in-loupe element and its ring
   read **blue** while idle and turn the accent **yellow** the moment the loupe is hovered *or* its
   thing is selected, matching that element's own highlight out in the 3D view. The crowd spans
   **everything inside the hitbox, front and back** — sketch points/lines/circles, body
@@ -3390,8 +3390,8 @@ ordinal too.
   anchor would catch. **Every** kind the crowd can offer lights up that way (#974); the renderer's
   `PickTargetKind` hover is total, and the only two kinds that draw nothing *there* draw elsewhere
   in the same frame — a constraint's badge glows in the 2D annotation overlay (#568) and a whole
-  body recolours in the main pass (#902), through **both** hover channels: the hovered leaf's
-  `PickTarget(Body)` and a hovered group's members reach the body-fill recolour just like an
+  body recolors in the main pass (#902), through **both** hover channels: the hovered leaf's
+  `PickTarget(Body)` and a hovered group's members reach the body-fill recolor just like an
   Elements-pane row hover does (#985) — the pick-target hover pusher has no marker of its own
   for a whole solid, so the main pass is the only place a body hover can read. A kind that reaches the cursor as more than one pick
   target — a datum plane arrives both as itself and as the analytic face over the same surface,
@@ -3400,13 +3400,13 @@ ordinal too.
   the selection-family tools) rather than re-resolving a pick at the redirected anchor, which would
   be ambiguous for an overlapping crowd or land on something outside the hitbox; for other tools
   the pointer is still **redirected** to the hovered handle's anchor so their own pick path runs.
-  A loupe's contents wear **their own colours**, not the loupe's accent (#976/#979) — the loupe
+  A loupe's contents wear **their own colors**, not the loupe's accent (#976/#979) — the loupe
   magnifies the scene, so what's in it should look like what's out there. Solids take their
   **material**, shaded per triangle; the **world axes** their red/green/blue, which is the only
   thing telling X from Y from Z; a **datum plane** its shaded quad with an outline, rather than
   the single dot it used to draw, which was indistinguishable from a vertex. Which loupe is hot
   is the **ring's** job (accent yellow, and thicker), which is what frees the contents to be
-  their own colour — **in the state it's in** (#980), by the 3D view's own rule: selected, then
+  their own color — **in the state it's in** (#980), by the 3D view's own rule: selected, then
   hovered, then the material. The material alone made a hovered loupe indistinguishable from a
   cold one, since the fill is the whole visual for a body and a ring around the disc is not the
   signal a hover needs. Every kind has content to magnify (`every_loupe_has_content`), including
@@ -3481,7 +3481,7 @@ ordinal too.
     at once in the 3D view (`hovered_group_members` → the scene's `extra_pick_highlights`); a back
     loupe only navigates. Single-element loupes still select their element on click, unchanged.
 - **How selection works** is normative in **§11.4a**, not here: pickers, focus, hover, the
-  Exploder's fan, pick priority, pane clicks, tool-switch handoff, and highlight colour. This
+  Exploder's fan, pick priority, pane clicks, tool-switch handoff, and highlight color. This
   section covers what the *constraint tool* selects, not how selecting works.
 - **Fade descendants while editing (#260):** while an operation is being edited (an extrusion,
   a Move/Combine/Repeat/Slice op, or a revolve), the bodies **downstream** of its outputs
@@ -3536,10 +3536,10 @@ ordinal too.
     convenience form of "make this horizontal/vertical". They author a `Parallel` constraint against
     `OriginAxis(X)`/`OriginAxis(Y)`; the scripting names `horizontal`/`vertical` map to them for
     back-compat. Their pane buttons are **hand-painted glyphs (#751)**: a double-headed arrow in the
-    axis's own colour (X red, Y green) drawn at the axis's **current on-screen direction**
+    axis's own color (X red, Y green) drawn at the axis's **current on-screen direction**
     (`ContextInput::sketch_axis_screen_dirs`, the projected local axes normalized — rotated with the
     view, never skewed), so which way the line will snap always matches what the viewport shows.
-    The viewport itself labels the local axes at its edge (#751): **"LX"/"LY"** in the axis colours,
+    The viewport itself labels the local axes at its edge (#751): **"LX"/"LY"** in the axis colors,
     where the axis line meets the view (`axis_label_edge_pos`) — the nearer of the two exits so a
     lopsided origin doesn't park the label on the far side (#1216), preferring the positive
     direction when equidistant — nudged **perpendicular** onto whichever side has room so the
@@ -4737,7 +4737,7 @@ pickers a tool has and what each takes — they do not restate *how* picking beh
 **Adding a tool?** Its entry point is declaring its pickers. Give the tool an ordered list of
 `ToolPickerView`s (the first is its **primary**), each an `ElementPicker` configured with the
 element kinds it accepts, any `PickRule`s, a pick limit, and — only if its elements are consumed
-by the operation — a selected-colour override. Everything below then applies without further
+by the operation — a selected-color override. Everything below then applies without further
 work: focus stepping, hover, the Exploder's fan, pane clicks, tool-switch handoff, and the
 viewport highlight. Nothing about a new tool should need a new arm in a `match tool { … }`.
 
@@ -4794,7 +4794,7 @@ The model in one place:
 - **Switching tools carries the picked set** from the outgoing tool's primary picker to the new
   one's, keeping what it accepts (#956).
 - **What a picker holds is styled as selected** in the viewport and in the Elements pane, in
-  **that picker's** colour (#961/#965).
+  **that picker's** color (#961/#965).
 - **The panes say what the armed picker can take** (#965): a hovered row the picker accepts
   wears a wash of the pick-hover yellow, the same signal the viewport gives. A row it refuses
   gets the ordinary hover — it is not inert, because a refused pick still falls through to the
@@ -4890,13 +4890,13 @@ The model in one place:
   and in the Elements pane** while the tool is active (#965; folded into the highlight set each
   of them shows, not into the persistent selection) — a body gathered into Move's set is as
   picked as one in the selection, and the two views should not disagree about the same thing.
-  Which colour it renders in comes from the **picker** (#961): the theme selection
+  Which color it renders in comes from the **picker** (#961): the theme selection
   blue by default, the red cut accent for a picker whose elements the operation consumes. The
   viewport iterates the active tool's pickers (`picker_highlights`) rather than matching on the
   tool, so a set lights up because its tool *has* a picker for it, not because the viewport was
   told about that tool. A destructive picker's **bodies** take the red solid fill
   (`cut_highlight_bodies`); everything else it holds — a Slice cutter's plane or face, an
-  in-sketch cutter line — has no fill to recolour and draws in the picker's colour through
+  in-sketch cutter line — has no fill to recolor and draws in the picker's color through
   `colored_element_highlights` instead. Deriving the pickers is therefore **not** gated on the Context pane
   being visible (#973) — the pane's visibility gates only its rendering.
   While a body-set tool (Combine/Move/Repeat/Slice) is active, the **body under
@@ -4998,7 +4998,7 @@ The model in one place:
 - **Selectable hover feedback:** in any tool mode where the user can click to select
   geometry (e.g. picking a reference face or axis for a construction plane), every
   pickable target under the cursor is highlighted before click. The highlight uses a
-  distinct accent colour and follows the shape of the target (line stroke, face outline,
+  distinct accent color and follows the shape of the target (line stroke, face outline,
   ground crosshair, etc.).
 - **Proximity picking:** thin or point-like geometry (lines, endpoints, vertices) must
   be pickable within a screen-space tolerance — the pointer need not land exactly on the
@@ -5142,17 +5142,17 @@ The model in one place:
       headlight fill, and convex exteriors are not painted with hole-cavity decals.
       Ground-plane shadows stay at z = 0 (no camera-space lift) and stay hidden when
       looking up from below (#1464/#1476).
-    - *Loose pencil / Coloured pencil (#1805/#1812)*: the scene drawn by hand on warm paper —
+    - *Loose pencil / Colored pencil (#1805/#1812)*: the scene drawn by hand on warm paper —
       a laid-on fill so a near edge hides a far one, every feature edge and silhouette gone
       over twice with a repeatable wobble, and a hatched contact shadow instead of a smeared
-      blot. Plain pencil is one graphite colour; coloured pencil keeps each body's material
-      colour and **scribbles it in** (#1818/#1825): the fill goes most of the way to the paper
+      blot. Plain pencil is one graphite color; colored pencil keeps each body's material
+      color and **scribbles it in** (#1818/#1825): the fill goes most of the way to the paper
       (`pencil::scribble_ground`) and every flat big enough to carry them
       (`PENCIL_FLAT_MIN_AREA_MM2`, at most `PENCIL_FLAT_LIMIT` per body — a tessellated sphere
       is hundreds of facets) is gone over with ruled strokes that `pencil::scribble` breaks
       into pieces: run a little past the outline, with gaps of bare paper between them, the way
       a hand fills a shape quickly. **One density and one tone on every side (#1825)** — no
-      light-and-dark, which read as a render; a coloured pencil drawing gets its form from its
+      light-and-dark, which read as a render; a colored pencil drawing gets its form from its
       outlines, exactly as the plain pencil mode does. Solids do cast hatched shadows **on each
       other** (#1818), not only on the ground: every lit flat is a receiver, everything standing
       over it is projected onto its plane along the light, and the hatch is clipped to the flat.
@@ -5163,8 +5163,8 @@ The model in one place:
       the wobble held to `RULED_WOBBLE_OF_SPACING` of the hatch spacing: the free-hand cap is
       nearly half that gap, so on it every line crossed the next and the cut face filled in
       solid. (The cap bounds the *resultant* — the wobble goes on along two axes at once.)
-    - *Watercolour (#1829)*: the pencil drawing, painted. Same paper, same hand-drawn outlines,
-      same hatched contact shadow; the colour is laid on as a **wash** instead of a scribble —
+    - *Watercolor (#1829)*: the pencil drawing, painted. Same paper, same hand-drawn outlines,
+      same hatched contact shadow; the color is laid on as a **wash** instead of a scribble —
       a ground that covers (`pencil::wash_tone`, far less paper showing than the pencil one),
       soft overlapping bands where the pigment **pooled** (`pencil::pooling`), and the deeper
       **rim** a drying wash leaves against every edge of a flat (`flat_boundary_edges`, the
@@ -5176,16 +5176,16 @@ The model in one place:
   **Lighting runs per pixel, on smooth normals (#1037).** Solids carry a world-space normal
   and a lighting-model tag per vertex (`GpuVertex::normal`, whose `w` is a `ShadingModel`);
   `shader.wgsl` lights them in the fragment stage. Everything that is not a body — lines,
-  fills, text, gizmos, the grid — is tagged `Unlit` and its colour passes through untouched.
+  fills, text, gizmos, the grid — is tagged `Unlit` and its color passes through untouched.
   The shader is the single source of truth for the lighting maths; the CPU `realistic_shade`
   is a test-only mirror, and `realistic_terms_match_the_shader` pins the shared constants to
   the WGSL source so the two cannot drift.
 
   **Lighting is done in linear space and tonemapped (#1038).** The viewport's render target
   is a plain UNORM format, so nothing encodes on our behalf: the shader decodes each base
-  colour from sRGB, does its arithmetic in linear light, applies a filmic tonemap, and
+  color from sRGB, does its arithmetic in linear light, applies a filmic tonemap, and
   re-encodes. The specular is *added* light rather than a lerp toward white, so a highlight
-  keeps the material's colour underneath and the tonemap's shoulder rolls off the overshoot
+  keeps the material's color underneath and the tonemap's shoulder rolls off the overshoot
   instead of clipping to a flat white disc. The tonemap is Narkowicz's ACES fit normalized
   by `aces(1.0)` (`ACES_WHITE`), so adopting it does not darken the whole image.
   The ambient/diffuse weights are therefore **linear-space** values: `SOLID_AMBIENT`/
@@ -5312,7 +5312,7 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   finger drags a sketch shape out (`creating_line`/`creating_rect`/`creating_circle`) or
   drags a vertex, a round **magnifier** floats beside it (`touch_loupe`, radius 64 px,
   ×2.6). It paints the open sketch's own geometry (lines, circles, their endpoints and the
-  sketch origin), the shape in progress in the preview colour, and the live snap ring —
+  sketch origin), the shape in progress in the preview color, and the live snap ring —
   all projected, blown up about the fingertip, and clipped to the disc
   (`draw_touch_draw_loupe`, sharing the exploder's `clip_segment_to_disc`). A crosshair at
   the disc's centre marks the fingertip itself. It sits **above** the finger, and moves to

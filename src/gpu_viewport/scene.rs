@@ -113,7 +113,7 @@ pub const PLANE_FILL_DEPTH_BIAS: f32 = 0.0;
 /// Base fill color for extruded solid bodies (shaded per triangle).
 pub const SOLID_FILL: Color32 = Color32::from_rgb(150, 168, 196);
 
-/// The fill a body renders in: its material's colour (#834). A body with no material of
+/// The fill a body renders in: its material's color (#834). A body with no material of
 /// its own is made of the document's first material (#924, **Unobtainium** in a fresh
 /// document), and falls back to [`SOLID_FILL`] only when there isn't one.
 pub fn body_material_fill(doc: &crate::model::Document, body: &crate::model::Body) -> Color32 {
@@ -129,7 +129,7 @@ pub fn body_material_fill(doc: &crate::model::Document, body: &crate::model::Bod
 pub const UNIT_SOLID_FILL: Color32 = Color32::from_rgb(178, 162, 144);
 /// The wash an element's **outputs** wear while its Elements-pane row is hovered (#977): what
 /// this step made, what this component holds, what this joint joins. Deliberately not the plain
-/// hover colour — that says "this is the thing under your cursor", and the thing under your
+/// hover color — that says "this is the thing under your cursor", and the thing under your
 /// cursor is the row, not the body. A history operation isn't in the 3D view at all, so its
 /// outputs are the only thing it *can* light.
 pub const DERIVED_OUTPUT_HIGHLIGHT: Color32 = Color32::from_rgb(170, 130, 240);
@@ -179,7 +179,7 @@ pub const WIREFRAME_LINE_COLOR: Color32 = Color32::from_rgb(230, 235, 242);
 const WIREFRAME_LINE_WIDTH_PX: f32 = 1.2;
 /// Cross-section hatch stroke width (#1688).
 pub const SECTION_HATCH_WIDTH_PX: f32 = 2.5;
-/// Cut-face perimeter outline width (#1768): the hatch colour, slightly thicker than the
+/// Cut-face perimeter outline width (#1768): the hatch color, slightly thicker than the
 /// hatch, so each cut face reads as one bounded surface.
 pub const SECTION_FACE_OUTLINE_WIDTH_PX: f32 = 3.5;
 pub const SHAPE_FILL_DEPTH_BIAS_BASE: f32 = 0.04;
@@ -222,7 +222,7 @@ const SHADOW_MAP_PADDING: f32 = 8.0;
 // The pencil views' strokes, tones and hatching live in `crate::pencil` — the drawings
 // workbench draws with the same hand (#1809).
 use crate::pencil::{
-    colour_tones as colour_pencil_tones, hatch_segments as pencil_hatch_segments,
+    color_tones as color_pencil_tones, hatch_segments as pencil_hatch_segments,
     stroke as pencil_stroke, PENCIL_BODY_FILL, PENCIL_GRAPHITE, PENCIL_GRID, PENCIL_GRID_AXIS,
     PENCIL_HATCH_COLOR, PENCIL_HATCH_WIDTH_PX, PENCIL_LINE_WIDTH_PX, PENCIL_PAPER,
     PENCIL_PASSES,
@@ -428,7 +428,7 @@ pub struct GpuVertex {
     pub color: [f32; 4],
     /// World-space normal in `xyz` and the lighting model in `w` (#1037) — see
     /// [`ShadingModel`]. Everything that isn't a solid body (lines, fills, text, gizmos,
-    /// the grid) is `ShadingModel::Unlit`, and the shader hands its colour straight
+    /// the grid) is `ShadingModel::Unlit`, and the shader hands its color straight
     /// through, exactly as before per-pixel lighting existed.
     pub normal: [f32; 4],
 }
@@ -437,7 +437,7 @@ pub struct GpuVertex {
 /// [`GpuVertex::normal`]`.w`. Kept in step with the `MODE_*` constants in `shader.wgsl`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShadingModel {
-    /// Colour passes through untouched — 2D chrome, lines, fills, text, gizmos.
+    /// Color passes through untouched — 2D chrome, lines, fills, text, gizmos.
     Unlit = 0,
     /// Two-sided ambient + diffuse, the `Solid` mode look.
     Lambert = 1,
@@ -479,7 +479,7 @@ pub struct ViewportScene {
     /// Opaque body triangles that lie on a construction plane (or an extrusion's target
     /// plane), re-drawn **after** plane fills (#1215). Coplanar solid/plane pairs z-fight
     /// under floating-point depth; a second pass of just those faces restores the solid
-    /// colour without world-space, pipeline, or frag-depth bias (those mis-place planes,
+    /// color without world-space, pipeline, or frag-depth bias (those mis-place planes,
     /// #1088/#1121). Shares vertices with the base solid draw.
     pub body_over_plane_indices: Vec<u32>,
     /// Strokes, selection, hover, and previews (drawn on top of plane fills).
@@ -493,7 +493,7 @@ pub struct ViewportScene {
     /// The selection/hover outline mask (#1110/#1155): triangles of selected and hovered
     /// bodies, drawn flat into an offscreen mask (R = selected, G = hovered). A later
     /// fullscreen pass dilates the mask and strokes the silhouette band (blue selected,
-    /// yellow hovered) **on top of** the fill recolour — both effects always apply.
+    /// yellow hovered) **on top of** the fill recolor — both effects always apply.
     pub mask_indices: Vec<u32>,
     pub text_vertices: Vec<GpuTextVertex>,
     pub text_indices: Vec<u32>,
@@ -674,7 +674,7 @@ impl Default for ViewportPalette {
 
 impl ViewportPalette {
     /// The palette a shading mode draws in (#1805/#1812/#1829). The technical modes use the
-    /// theme's own colours; every mode drawn by hand swaps the ground out for paper and the
+    /// theme's own colors; every mode drawn by hand swaps the ground out for paper and the
     /// grid for faint ruled guides, so a drawing is a drawing all the way to its background.
     pub fn for_shading(self, mode: crate::camera::ShadingMode) -> Self {
         match mode {
@@ -924,7 +924,7 @@ pub struct ViewportSceneInput<'a> {
     /// (#232) — the sketch-plane equivalent of the 3D repeat ghost meshes.
     pub sketch_repeat_ghost: Vec<(Vec3, Vec3)>,
     /// Preview segments for in-progress in-sketch geometry — a mirror's reflection (#542), an
-    /// offset's parallel copies (#940). Each `(a, b, dashed)` draws a solid preview-coloured
+    /// offset's parallel copies (#940). Each `(a, b, dashed)` draws a solid preview-colored
     /// line (matching the repeat/extrude/revolve preview styling), or a dashed one when the
     /// result will be construction geometry.
     pub sketch_ghost_lines: Vec<(Vec3, Vec3, bool)>,
@@ -993,7 +993,7 @@ pub struct ViewportSceneInput<'a> {
     /// Extra pick targets to hover-highlight in `hover_color` all at once (#559): every member of a
     /// hovered Selection-Exploder group loupe, so the whole group lights up in the 3D view.
     pub extra_pick_highlights: Vec<crate::construction::PickTargetKind>,
-    /// Scene elements to highlight in a colour of their own (#961): what a **destructive**
+    /// Scene elements to highlight in a color of their own (#961): what a **destructive**
     /// picker holds — a Slice cutter, say — which reads red rather than the blue selection
     /// style. Bodies go through `cut_highlight_bodies` instead, since a solid takes a fill
     /// rather than an outline.
@@ -1003,10 +1003,10 @@ pub struct ViewportSceneInput<'a> {
     /// aura, because for a solid the fill *is* the visual — and it outranks the selection blue,
     /// which would otherwise paint both sides the same and answer the wrong question.
     pub tinted_bodies: Vec<(crate::model::BodyKey, Color32)>,
-    /// Pick targets to highlight in a colour of their own rather than the shared hover colour
+    /// Pick targets to highlight in a color of their own rather than the shared hover color
     /// (#660): the Move tool marks start point A green and end point A red.
     pub colored_pick_highlights: Vec<(crate::construction::PickTargetKind, Color32)>,
-    /// World-space segments to draw in a colour of their own (#668): the Move tool's connector
+    /// World-space segments to draw in a color of their own (#668): the Move tool's connector
     /// from start point A to end point A, so the translation reads as a vector.
     pub colored_segments: Vec<(Vec3, Vec3, Color32, bool)>,
     /// Elements using the parameter hovered/focused in the Parameters pane (#620) — its
@@ -1022,7 +1022,7 @@ pub struct ViewportSceneInput<'a> {
 impl ViewportScene {
     pub fn build(input: &ViewportSceneInput<'_>) -> Self {
         let vp = input.cam.view_proj(input.viewport);
-        // The shading mode gets the last word on colour (#1805): `LoosePencil` draws on paper.
+        // The shading mode gets the last word on color (#1805): `LoosePencil` draws on paper.
         let palette = input.palette.for_shading(input.cam.shading_mode());
         let mut scene = Self {
             view_proj: vp,
@@ -1180,7 +1180,7 @@ impl ViewportScene {
             }
         };
         // Bodies an Elements-pane op/component/joint row "lights" while hovered (#977):
-        // recolour them in the main pass like body hover (#455/#1150). Stacking a translucent
+        // recolor them in the main pass like body hover (#455/#1150). Stacking a translucent
         // coplanar copy of the same mesh z-fights the solid into a mottled checkerboard.
         let derived_output_bodies: std::collections::HashSet<crate::model::BodyKey> =
             match &input.hover_highlight {
@@ -1397,7 +1397,7 @@ impl ViewportScene {
                 || unit_instance
                     .is_some_and(|i| input.selection.is_selected(SceneElement::UnitInstance(i)));
             // #1110/#1155: selected/hovered bodies always get **both** solid-body shading
-            // (fill + wire recolour) and a screen-space silhouette outline from the mask
+            // (fill + wire recolor) and a screen-space silhouette outline from the mask
             // pass. (`tint` still wins for fill: it's an explicit override, e.g. the
             // joint-mobile green, not a highlight.)
             let tint = input
@@ -1411,14 +1411,14 @@ impl ViewportScene {
             } else if selected {
                 SOLID_FILL_SELECTED
             } else if derived {
-                // #977/#1150: operation-row wash — main-pass recolour, not a coplanar overlay.
+                // #977/#1150: operation-row wash — main-pass recolor, not a coplanar overlay.
                 DERIVED_OUTPUT_HIGHLIGHT
             } else if hovered {
                 SOLID_FILL_HOVERED
             } else if unit_instance.is_some() {
                 UNIT_SOLID_FILL
             } else {
-                // The body's material colours it (#834); bodies with no material keep the
+                // The body's material colors it (#834); bodies with no material keep the
                 // default look.
                 body_material_fill(input.doc, body)
             };
@@ -1433,7 +1433,7 @@ impl ViewportScene {
             };
             // Outline mask: R for selected, G for hovered (selected wins when both). The
             // mask pass draws them unlit into an offscreen texture; a later fullscreen pass
-            // dilates that into the silhouette band over the already-recoloured fill.
+            // dilates that into the silhouette band over the already-recolored fill.
             if selected || hovered {
                 let mask_color = if selected {
                     Color32::from_rgb(255, 0, 0)
@@ -1547,21 +1547,21 @@ impl ViewportScene {
                 // Pencil on paper (#1805): a flat, lightly-laid fill so a near edge hides a
                 // far one — a drawing's enclosed areas are paper, not paint — and then every
                 // feature edge drawn by hand over the top. Plain pencil ignores the body
-                // colour (one pencil, one colour); coloured pencil keeps it (#1812).
+                // color (one pencil, one color); colored pencil keeps it (#1812).
                 mode @ (crate::camera::ShadingMode::LoosePencil
-                | crate::camera::ShadingMode::ColourPencil
-                | crate::camera::ShadingMode::Watercolour) => {
+                | crate::camera::ShadingMode::ColorPencil
+                | crate::camera::ShadingMode::Watercolor) => {
                     use crate::camera::ShadingMode as SM;
                     let (paper_fill, stroke) = match mode {
-                        // A wash covers, so its ground is the colour it dries to (#1829).
-                        SM::Watercolour => {
-                            (crate::pencil::wash_tone(fill), colour_pencil_tones(fill).1)
+                        // A wash covers, so its ground is the color it dries to (#1829).
+                        SM::Watercolor => {
+                            (crate::pencil::wash_tone(fill), color_pencil_tones(fill).1)
                         }
                         // The pencil ground goes further toward the paper than the outline's
                         // tone does (#1825), so the gaps in the scribble over it read as bare
                         // paper.
-                        SM::ColourPencil => {
-                            (crate::pencil::scribble_ground(fill), colour_pencil_tones(fill).1)
+                        SM::ColorPencil => {
+                            (crate::pencil::scribble_ground(fill), color_pencil_tones(fill).1)
                         }
                         _ => (PENCIL_BODY_FILL, PENCIL_GRAPHITE),
                     };
@@ -1572,16 +1572,16 @@ impl ViewportScene {
                     // drawing is carried entirely by its outlines (#1805).
                     mesh.push_solid_pencil_fill(solid, paper_fill, &coplanar_planes, input.cam);
                     match mode {
-                        // Coloured pencil scribbles the colour on (#1825).
-                        SM::ColourPencil => mesh.push_pencil_face_shading(
+                        // Colored pencil scribbles the color on (#1825).
+                        SM::ColorPencil => mesh.push_pencil_face_shading(
                             &flats,
                             fill,
                             input.cam,
                             input.viewport,
                             &vp,
                         ),
-                        // Watercolour washes it on: pooling, and a rim where it dried (#1829).
-                        SM::Watercolour => mesh.push_watercolour_wash(
+                        // Watercolor washes it on: pooling, and a rim where it dried (#1829).
+                        SM::Watercolor => mesh.push_watercolor_wash(
                             &flats,
                             fill,
                             input.cam,
@@ -2005,8 +2005,8 @@ impl ViewportScene {
                 // Y (v) — are drawn through the origin so the sketch frame is always visible and its
                 // orientation unambiguous (the camera no longer forces u-right/v-up). They're
                 // selectable in the constraint tool: a line constrained parallel to an axis replaces
-                // the old Horizontal/Vertical constraints. Faint in their axis colours normally,
-                // brighter when hovered, and the selection colour when selected. The half-length
+                // the old Horizontal/Vertical constraints. Faint in their axis colors normally,
+                // brighter when hovered, and the selection color when selected. The half-length
                 // tracks the visible viewport (scaled by zoom) so an axis always spans the view.
                 use crate::model::{ConstraintLine, SketchAxis};
                 let aspect =
@@ -2198,7 +2198,7 @@ impl ViewportScene {
                 &vp,
             );
         }
-        // Coloured segments (#668): the Move tool's start-A → end-A connector, plus the
+        // Colored segments (#668): the Move tool's start-A → end-A connector, plus the
         // dashed end-B guides (#745).
         for &(a, b, color, dashed) in &input.colored_segments {
             if dashed {
@@ -2207,7 +2207,7 @@ impl ViewportScene {
                 mesh.push_line_segment(a, b, color, 2.0, input.cam, input.viewport, &vp);
             }
         }
-        // In-sketch mirror (#542) and offset (#940) previews: solid preview-coloured lines like
+        // In-sketch mirror (#542) and offset (#940) previews: solid preview-colored lines like
         // the repeat/extrude/revolve previews, dashed only when the result is construction.
         for &(a, b, dashed) in &input.sketch_ghost_lines {
             if dashed {
@@ -2419,7 +2419,7 @@ impl ViewportScene {
                 &vp,
             );
         }
-        // Individually coloured marks, e.g. the Move tool's green source / red target (#660).
+        // Individually colored marks, e.g. the Move tool's green source / red target (#660).
         for (kind, color) in &input.colored_pick_highlights {
             mesh.push_hover_highlight(
                 input.doc,
@@ -2431,8 +2431,8 @@ impl ViewportScene {
                 &vp,
             );
         }
-        // What a destructive picker holds, in its own colour (#961) — the elements a Slice
-        // cutter set holds are faces and planes, which have no body fill to recolour.
+        // What a destructive picker holds, in its own color (#961) — the elements a Slice
+        // cutter set holds are faces and planes, which have no body fill to recolor.
         for (element, color) in &input.colored_element_highlights {
             mesh.push_element_hover(
                 input.doc,
@@ -2661,7 +2661,7 @@ impl<'a> SceneMesh<'a> {
         self.push_shaded_solid(solid, normals, base, cam, coplanar_planes, ShadingModel::Lambert);
     }
 
-    /// Push a solid with one flat colour, unlit (#1805). `LoosePencil` wants the paper tone
+    /// Push a solid with one flat color, unlit (#1805). `LoosePencil` wants the paper tone
     /// on every face — a pencil drawing has no light source, only lines.
     fn push_solid_flat(
         &mut self,
@@ -2673,9 +2673,9 @@ impl<'a> SceneMesh<'a> {
         self.push_shaded_solid(solid, None, fill, cam, coplanar_planes, ShadingModel::Unlit);
     }
 
-    /// The coloured-pencil ground tone (#1818/#1825): the body's own colour laid on *very*
+    /// The colored-pencil ground tone (#1818/#1825): the body's own color laid on *very*
     /// lightly, one value on every side. It is only here so a near face hides a far one — a
-    /// drawing's enclosed areas are paper, not paint. What the eye reads as the colour is the
+    /// drawing's enclosed areas are paper, not paint. What the eye reads as the color is the
     /// scribble laid over it by [`Self::push_pencil_face_shading`].
     fn push_solid_pencil_fill(
         &mut self,
@@ -2718,11 +2718,11 @@ impl<'a> SceneMesh<'a> {
         }
     }
 
-    /// Scribble a body's faces in with coloured pencil (#1818/#1825): each flat gone over with
-    /// strokes in the body's own colour, run a little past its outline and broken by gaps of
+    /// Scribble a body's faces in with colored pencil (#1818/#1825): each flat gone over with
+    /// strokes in the body's own color, run a little past its outline and broken by gaps of
     /// bare paper — the way a hand fills a shape quickly. A flat fill reads as paint.
     ///
-    /// One density on every side, whichever way it faces (#1825): a coloured pencil drawing
+    /// One density on every side, whichever way it faces (#1825): a colored pencil drawing
     /// gets its form from its outlines, exactly as the plain pencil mode does.
     fn push_pencil_face_shading(
         &mut self,
@@ -2760,13 +2760,13 @@ impl<'a> SceneMesh<'a> {
         }
     }
 
-    /// Paint a body's faces with a watercolour wash (#1829).
+    /// Paint a body's faces with a watercolor wash (#1829).
     ///
     /// Three passes, which together are what makes a wash read as a wash rather than a fill:
     /// broad soft bands where the pigment pooled, a deeper rim where it gathered against each
     /// edge as it dried, and — because a brush does not stop at a pencil line — both allowed to
     /// run a little past the outline.
-    fn push_watercolour_wash(
+    fn push_watercolor_wash(
         &mut self,
         flats: &[CoplanarFlat],
         base: Color32,
@@ -3000,7 +3000,7 @@ impl<'a> SceneMesh<'a> {
         self.push_toned_solid(solid, normals, &|_| base, cam, coplanar_planes, model);
     }
 
-    /// As [`Self::push_shaded_solid`], but each triangle's colour comes from its own outward
+    /// As [`Self::push_shaded_solid`], but each triangle's color comes from its own outward
     /// normal (#1818) — how the unlit pencil fill gets a light and a dark side without any
     /// lighting in the shader.
     fn push_toned_solid(
@@ -3664,7 +3664,7 @@ impl<'a> SceneMesh<'a> {
     /// Hatch the faces a cutting plane opened (#1688): the lined pattern that says "you are
     /// looking at cut material". The segments themselves come from
     /// [`crate::extrude::section_hatch_segments`], shared with the drawing page. Each cut
-    /// face is also outlined in the same colour, slightly thicker (#1768), so it reads as one
+    /// face is also outlined in the same color, slightly thicker (#1768), so it reads as one
     /// bounded surface. Both lift toward the camera by [`face_stroke_depth_lift`] on top of
     /// the usual stroke bias (#1777): they lie exactly on the cut face's fill, and a fixed
     /// lift is within depth-buffer noise of it, which speckled the lines into dashes.
@@ -4978,10 +4978,10 @@ impl<'a> SceneMesh<'a> {
             }
             // Everything whose own shape isn't in the 3D view lights what it **made** instead
             // (#977): an operation its output bodies, a component every body under it, a joint
-            // the parts it joins. In a colour of their own — the plain hover colour would claim
+            // the parts it joins. In a color of their own — the plain hover color would claim
             // those bodies are what the cursor is on, and it's on the row.
             //
-            // Fill (and wireframe line colour) recolour in the main body pass (#1150), like
+            // Fill (and wireframe line color) recolor in the main body pass (#1150), like
             // body hover (#455). A translucent coplanar overlay of the same mesh used to
             // z-fight the solid into a mottled checkerboard — especially bad for Slice, where
             // the cut faces and outer walls sit on top of themselves.
@@ -6754,7 +6754,7 @@ fn construction_geometry_visible(
 }
 
 /// Whether a sketch sits on a solid's face (extrude cap/side, etc.) rather than a datum
-/// plane. Used for stroke colour contrast (#1149/#1167). Committed strokes on those faces
+/// plane. Used for stroke color contrast (#1149/#1167). Committed strokes on those faces
 /// depth-test like plane sketches (#1174); hover/selection fills still use the depth-
 /// disabled wireframe layer (#1139/#1140).
 fn sketch_is_body_coplanar(doc: &Document, sketch: crate::model::SketchId) -> bool {
@@ -6764,7 +6764,7 @@ fn sketch_is_body_coplanar(doc: &Document, sketch: crate::model::SketchId) -> bo
     }
 }
 
-/// Stroke colour for unconstrained solid sketch geometry (#1149/#1153/#1167):
+/// Stroke color for unconstrained solid sketch geometry (#1149/#1153/#1167):
 /// - construction-plane sketches: plane blue ([`ViewportPalette::rect_line`])
 /// - body-face sketches **while a sketch is open**: bright blue-grey — sketch mode dims
 ///   bodies (#433), so the dark stroke vanishes on the dimmed face
@@ -6785,7 +6785,7 @@ fn solid_sketch_stroke_color(
     sketch_color(base, dim)
 }
 
-/// Body-face fill colour for stroke contrast (#1167): the owning body's material, or the
+/// Body-face fill color for stroke contrast (#1167): the owning body's material, or the
 /// default solid fill when the sketch's face has no body.
 fn sketch_body_fill(doc: &Document, sketch: crate::model::SketchId) -> Color32 {
     doc.sketch_face(sketch)
@@ -6795,7 +6795,7 @@ fn sketch_body_fill(doc: &Document, sketch: crate::model::SketchId) -> Color32 {
         .unwrap_or(SOLID_FILL)
 }
 
-/// Rec. 709 relative luminance of an sRGB colour (channels as authored, 0–1).
+/// Rec. 709 relative luminance of an sRGB color (channels as authored, 0–1).
 fn srgb_relative_luminance(color: Color32) -> f32 {
     let r = color.r() as f32 / 255.0;
     let g = color.g() as f32 / 255.0;
@@ -7492,7 +7492,7 @@ mod tests {
     }
 
     /// #1038: the sRGB transfer function and its inverse actually round-trip, so decoding
-    /// for lighting and re-encoding afterwards is not itself a colour shift.
+    /// for lighting and re-encoding afterwards is not itself a color shift.
     #[test]
     fn srgb_round_trips_through_linear() {
         for i in 0..=255u32 {
@@ -8140,7 +8140,7 @@ mod tests {
             SceneElement::Sketch(sketch),
             SceneElement::ConstructionPlane(pkey(0)),
         ] {
-            // `Body` and ops that only light *produced* bodies recolour in the main pass
+            // `Body` and ops that only light *produced* bodies recolor in the main pass
             // rather than as an overlay (#455/#977/#1150), so they add nothing here.
             if matches!(
                 element,
@@ -8165,7 +8165,7 @@ mod tests {
                 "hovering {element:?} drew nothing — every pane row must light something"
             );
         }
-        // Main-pass recolour path for produced bodies (#1150): a Component holding a body
+        // Main-pass recolor path for produced bodies (#1150): a Component holding a body
         // must wash that body purple when its row is hovered.
         let palette = ViewportPalette::default();
         let build = |hover: Option<ViewportHoverHighlight>| {
@@ -8340,7 +8340,7 @@ mod tests {
     ///
     /// Two kinds draw *outside* this pass and are named explicitly, so adding a third silent
     /// one is a deliberate act: a constraint's badge glows in the 2D annotation overlay
-    /// (#568), and a whole body recolours in the main pass (#902).
+    /// (#568), and a whole body recolors in the main pass (#902).
     #[test]
     fn every_crowd_kind_lights_up_when_hovered() {
         use crate::construction::GlobalAxis;
@@ -10618,7 +10618,7 @@ mod tests {
         assert_eq!(hatch_yellow, 0, "the hatch is not thin yellow");
     }
 
-    /// #1768: each cut face is outlined with a solid line in the hatch colour, slightly
+    /// #1768: each cut face is outlined with a solid line in the hatch color, slightly
     /// thicker than the hatch, so the cut material reads as one bounded face.
     #[test]
     fn cross_section_view_outlines_each_cut_face() {
@@ -10643,7 +10643,7 @@ mod tests {
         });
         let cut_scene = build_scene_for_doc_in_view(&state, Some(view));
         let palette = ViewportPalette::default();
-        // Endpoints of every section-hatch-coloured stroke on the cut face's plane. The
+        // Endpoints of every section-hatch-colored stroke on the cut face's plane. The
         // strokes lift toward the camera along the view ray to clear the face fill in the
         // depth buffer (#1777), so each endpoint is projected back onto the plane first.
         let target = color32_to_gpu(palette.section_hatch);
@@ -10673,7 +10673,7 @@ mod tests {
                 plane_points
                     .iter()
                     .any(|p| (p.x - cx).abs() < 0.25 && (p.y - cy).abs() < 0.25),
-                "the cut face's rim reaches corner ({cx}, {cy}) in the hatch colour"
+                "the cut face's rim reaches corner ({cx}, {cy}) in the hatch color"
             );
         }
     }
@@ -11409,7 +11409,7 @@ mod tests {
         use crate::model::ExtrudeFace;
 
         let mut state = state_with_one_body();
-        // Paint the body a dark colour (below the 0.35 luminance threshold).
+        // Paint the body a dark color (below the 0.35 luminance threshold).
         let mat = state.doc.materials.insert(crate::model::Material {
             name: "Dark".into(),
             color: [30, 30, 35],
@@ -11517,7 +11517,7 @@ mod tests {
             assert!(quad[0].normal[3] > 0.0 && quad[1].normal[3] < 0.0);
             assert!(quad[2].normal[3] > 0.0 && quad[3].normal[3] < 0.0);
         }
-        // Must not also emit a world-ribbon of the same colour into the ordinary mesh —
+        // Must not also emit a world-ribbon of the same color into the ordinary mesh —
         // that is the freestanding 3D rectangle the report showed.
         let world_ribbon = scene
             .vertices
@@ -12140,7 +12140,7 @@ mod tests {
         let state = state_with_one_body();
         let cam = state.cam.clone();
         let viewport = test_viewport();
-        // Fill recolour on hover (#455); outline mask is layered on top (#1155).
+        // Fill recolor on hover (#455); outline mask is layered on top (#1155).
         let palette = ViewportPalette::default();
         let build = |hover: Option<ViewportHoverHighlight>| {
             ViewportScene::build(&ViewportSceneInput {
@@ -12290,9 +12290,9 @@ mod tests {
         state
     }
 
-    /// #1150: hovering a Slice row lights its fragment bodies by **recolouring the main
+    /// #1150: hovering a Slice row lights its fragment bodies by **recoloring the main
     /// pass**, not by stacking a translucent coplanar copy of the same mesh (which
-    /// z-fought the solid into a mottled purple/body-colour checkerboard). The slice's
+    /// z-fought the solid into a mottled purple/body-color checkerboard). The slice's
     /// shadow input also stays hidden on op hover — it occupies the same outer envelope
     /// as the pieces and would z-fight them the same way.
     #[test]
@@ -12361,7 +12361,7 @@ mod tests {
         ))));
 
         // The derived-output purple is b > r > g (170, 130, 240). A translucent overlay of
-        // the same mesh used to land in plane_fill; the main-pass recolour lives in `indices`.
+        // the same mesh used to land in plane_fill; the main-pass recolor lives in `indices`.
         let derived_tinted = |scene: &ViewportScene| {
             scene
                 .vertices
@@ -12392,7 +12392,7 @@ mod tests {
         let state = state_with_one_body();
         let cam = state.cam.clone();
         let viewport = test_viewport();
-        // Fill recolour on hover (#985); outline mask layers on top (#1155).
+        // Fill recolor on hover (#985); outline mask layers on top (#1155).
         let palette = ViewportPalette::default();
         let build = |hover: Option<ViewportHoverHighlight>,
                      extra: Vec<crate::construction::PickTargetKind>| {
@@ -12560,7 +12560,7 @@ mod tests {
                 constraint_connector_color: None,
             })
         };
-        // The construction palette colour is what marks it; flat sketch strokes carry it whole.
+        // The construction palette color is what marks it; flat sketch strokes carry it whole.
         let c = ViewportPalette::default().construction;
         let has_construction_hue = |scene: &ViewportScene| {
             scene.vertices.iter().any(|v| {
@@ -12607,7 +12607,7 @@ mod tests {
         );
         let cam = state.cam.clone();
         let viewport = test_viewport();
-        // Fill recolour (tint vs selection) — outline still applies but doesn't affect fills.
+        // Fill recolor (tint vs selection) — outline still applies but doesn't affect fills.
         let palette = ViewportPalette::default();
         let build = |tint: Vec<(crate::model::BodyKey, Color32)>| {
             ViewportScene::build(&ViewportSceneInput {
@@ -12687,7 +12687,7 @@ mod tests {
         assert!(
             !ratios_of(&fixed, SOLID_FILL_JOINT_MOBILE)
                 && !ratios_of(&mobile, SOLID_FILL_JOINT_FIXED),
-            "the two sides must not read as the same colour"
+            "the two sides must not read as the same color"
         );
         // With no tint the body is back to the ordinary selection fill.
         assert!(ratios_of(&build(Vec::new()), SOLID_FILL_SELECTED));
@@ -12773,7 +12773,7 @@ mod tests {
         assert!(has_selected_hue(&with_selection), "selected body must use the saturated blue");
     }
 
-    /// #1110/#1155: selected bodies always get solid-body shading (fill recolour) **and**
+    /// #1110/#1155: selected bodies always get solid-body shading (fill recolor) **and**
     /// outline-mask triangles so the GPU can stroke the silhouette.
     #[test]
     fn selected_body_highlights_with_shading_and_outline() {
@@ -12846,7 +12846,7 @@ mod tests {
         });
         assert!(
             has_selected_hue(&scene),
-            "selected body must recolour its fill (solid-body shading)"
+            "selected body must recolor its fill (solid-body shading)"
         );
         assert!(
             !scene.mask_indices.is_empty(),
@@ -14695,8 +14695,8 @@ mod loose_pencil_tests {
     }
 
     /// #1825: every side of a solid takes the *same* tone. The light-and-dark sides #1818 gave
-    /// the mode read as a render; a coloured pencil drawing gets its form from the outlines,
-    /// and the colour is just laid on — the same way the plain pencil mode works.
+    /// the mode read as a render; a colored pencil drawing gets its form from the outlines,
+    /// and the color is just laid on — the same way the plain pencil mode works.
     #[test]
     fn every_face_is_scribbled_at_the_same_density() {
         let square = |n: Vec3| {
@@ -14725,7 +14725,7 @@ mod loose_pencil_tests {
         }
     }
 
-    /// #1825: the colour is *scribbled* in — it runs a little past the outline and leaves gaps
+    /// #1825: the color is *scribbled* in — it runs a little past the outline and leaves gaps
     /// of bare paper, the way a hand filling a shape quickly does. A solid, edge-to-edge fill
     /// reads as paint.
     #[test]
@@ -14741,7 +14741,7 @@ mod loose_pencil_tests {
             "and not all of it — the gaps are the point, covered {covered:.1} of 30"
         );
 
-        // It runs past at least one end: the colour goes outside the lines.
+        // It runs past at least one end: the color goes outside the lines.
         let lo = pieces.iter().flat_map(|(p, q)| [p.x, q.x]).fold(f32::MAX, f32::min);
         let hi = pieces.iter().flat_map(|(p, q)| [p.x, q.x]).fold(f32::MIN, f32::max);
         assert!(
@@ -15006,35 +15006,35 @@ mod loose_pencil_tests {
         );
     }
 
-    /// #1812: coloured pencil keeps each body's own colour, laid on lightly the way a pencil
+    /// #1812: colored pencil keeps each body's own color, laid on lightly the way a pencil
     /// leaves it — paper still showing through — with the outline a darker tone of the same
-    /// colour rather than graphite.
+    /// color rather than graphite.
     #[test]
-    fn colour_pencil_draws_each_body_in_its_own_colour() {
+    fn color_pencil_draws_each_body_in_its_own_color() {
         let red = Color32::from_rgb(200, 60, 60);
         let blue = Color32::from_rgb(60, 80, 200);
-        let (red_fill, red_line) = colour_pencil_tones(red);
-        let (blue_fill, blue_line) = colour_pencil_tones(blue);
-        assert_ne!(red_fill, blue_fill, "two colours, two fills");
+        let (red_fill, red_line) = color_pencil_tones(red);
+        let (blue_fill, blue_line) = color_pencil_tones(blue);
+        assert_ne!(red_fill, blue_fill, "two colors, two fills");
         assert_ne!(red_line, blue_line, "and two outlines");
-        // The fill is the colour let down onto paper: lighter than the body colour, and
+        // The fill is the color let down onto paper: lighter than the body color, and
         // lighter than the outline drawn over it.
         for (base, fill, line) in [(red, red_fill, red_line), (blue, blue_fill, blue_line)] {
             let lum = |c: Color32| c.r() as u32 + c.g() as u32 + c.b() as u32;
             assert!(lum(fill) > lum(base), "the fill is laid on lightly");
             assert!(lum(line) < lum(fill), "the outline reads over its own fill");
         }
-        // Plain pencil ignores the body colour entirely — one pencil, one colour.
+        // Plain pencil ignores the body color entirely — one pencil, one color.
         assert_eq!(
             ViewportPalette::default().for_shading(crate::camera::ShadingMode::LoosePencil).background,
             ViewportPalette::default()
-                .for_shading(crate::camera::ShadingMode::ColourPencil)
+                .for_shading(crate::camera::ShadingMode::ColorPencil)
                 .background,
             "both pencil views draw on the same paper"
         );
     }
 
-    /// #1805: the pencil view draws on paper; every other mode keeps the theme's colours.
+    /// #1805: the pencil view draws on paper; every other mode keeps the theme's colors.
     #[test]
     fn loose_pencil_swaps_the_palette_for_paper() {
         let theme = ViewportPalette::default();

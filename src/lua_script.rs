@@ -789,12 +789,12 @@ fn unit_instance_key_from_ordinal(
     key.ok_or_else(|| mlua::Error::external(format!("no unit instance {ordinal}")))
 }
 
-/// A `#rrggbb` (or bare `rrggbb`) colour string (#834).
+/// A `#rrggbb` (or bare `rrggbb`) color string (#834).
 fn parse_hex_color(text: &str) -> mlua::Result<[u8; 3]> {
     let hex = text.trim().trim_start_matches('#');
     if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(mlua::Error::external(format!(
-            "colour must be #rrggbb, got '{text}'"
+            "color must be #rrggbb, got '{text}'"
         )));
     }
     let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).unwrap_or(0);
@@ -12926,7 +12926,7 @@ pub mod tests {
         );
     }
 
-    /// #834: materials from scripts — created with a colour, handed to bodies, reassigned.
+    /// #834: materials from scripts — created with a color, handed to bodies, reassigned.
     #[test]
     fn lua_materials_are_scriptable() {
         let state = run_lua(
@@ -13162,7 +13162,7 @@ pub mod tests {
         src[..cut].to_string()
     }
 
-    /// The materials screenshot is eight coloured corner cubes plus a same-size centre
+    /// The materials screenshot is eight colored corner cubes plus a same-size centre
     /// cube that overlaps them all, with a through-hole, a sphere bite, a chamfer and a
     /// fillet each on a different corner cube.
     #[test]
@@ -13209,7 +13209,7 @@ pub mod tests {
             .iter()
             .filter(|(_, b)| !b.shadow)
             .collect();
-        assert_eq!(live.len(), 9, "nine live coloured bodies (sphere is a shadow)");
+        assert_eq!(live.len(), 9, "nine live colored bodies (sphere is a shadow)");
 
         let mats: std::collections::HashSet<_> =
             live.iter().filter_map(|(_, b)| b.material).collect();
@@ -13241,12 +13241,12 @@ pub mod tests {
     }
 
     #[test]
-    fn lua_material_rejects_a_bad_colour() {
+    fn lua_material_rejects_a_bad_color() {
         let mut runner = ScriptRunner::from_lua_source(
             r##"
             bearcad.new()
             local ok, err = pcall(bearcad.material, { name = "Bad", color = "nope" })
-            assert(not ok, "a bad colour should error")
+            assert(not ok, "a bad color should error")
             assert(tostring(err):find("#rrggbb"), "the error should say the form: " .. tostring(err))
         "##,
         )

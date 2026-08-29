@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <!-- the hand-drawn cube of colour_pencil.svg, its faces washed instead of scribbled
+  <!-- the hand-drawn cube of color_pencil.svg, its faces washed instead of scribbled
        (#1829): each wash runs past its own outline and dries darker at the edge -->
   <g stroke="none" fill="currentColor">
     <!-- washes, spilling a little past the lines they were painted inside -->

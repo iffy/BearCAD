@@ -1,5 +1,5 @@
 //! Drawing by hand (#1805/#1809): the strokes, tones and hatching that the `LoosePencil` and
-//! `ColourPencil` shading modes and the drawings workbench's pencil style share.
+//! `ColorPencil` shading modes and the drawings workbench's pencil style share.
 //!
 //! Everything here is deliberately **repeatable**: a wobble re-rolled every frame would make
 //! the whole drawing crawl as the camera moved, which is unusable. Each stroke's shape comes
@@ -28,7 +28,7 @@ pub const PENCIL_BODY_FILL: Color32 = Color32::from_rgb(240, 239, 234);
 /// Ruled guide lines on the paper: the ground grid, barely there.
 pub const PENCIL_GRID: Color32 = Color32::from_rgb(222, 220, 212);
 pub const PENCIL_GRID_AXIS: Color32 = Color32::from_rgb(196, 193, 184);
-/// Coloured pencil for the world axes: the same three hues, muted to sit on paper.
+/// Colored pencil for the world axes: the same three hues, muted to sit on paper.
 pub const PENCIL_X_AXIS: Color32 = Color32::from_rgb(184, 96, 92);
 pub const PENCIL_Y_AXIS: Color32 = Color32::from_rgb(104, 152, 104);
 pub const PENCIL_Z_AXIS: Color32 = Color32::from_rgb(96, 122, 176);
@@ -54,12 +54,12 @@ pub const PENCIL_HATCH_WIDTH_PX: f32 = 1.3;
 /// Graphite laid down lightly — premultiplied, so it composites as a ~45%-coverage stroke.
 pub const PENCIL_HATCH_COLOR: Color32 = Color32::from_rgba_premultiplied(26, 27, 31, 118);
 
-/// Laying colour on a face with a coloured pencil (#1818/#1825).
+/// Laying color on a face with a colored pencil (#1818/#1825).
 ///
-/// Not a flat fill — that reads as paint. The colour is *scribbled* in: ruled strokes this far
+/// Not a flat fill — that reads as paint. The color is *scribbled* in: ruled strokes this far
 /// apart, run past the outline a little and broken by gaps of bare paper, the way a hand
 /// filling a shape quickly does. The spacing is one number and not a function of the light
-/// (#1825): a coloured pencil drawing gets its form from its outlines, so every side of a
+/// (#1825): a colored pencil drawing gets its form from its outlines, so every side of a
 /// solid is laid on the same, exactly as the plain pencil mode does it.
 pub const PENCIL_SCRIBBLE_SPACING_MM: f32 = 1.5;
 pub const PENCIL_SHADE_WIDTH_PX: f32 = 2.8;
@@ -89,8 +89,8 @@ pub const PENCIL_CAST_SPACING_MM: f32 = 1.7;
 /// rather than as one heavier tone.
 pub const PENCIL_CAST_TURN_RAD: f32 = 1.72;
 
-/// How a face's own colour reads when it is *scribbled* on with a coloured pencil (#1818): the
-/// body colour deepened a little toward graphite, so a stroke reads as pencil pressure rather
+/// How a face's own color reads when it is *scribbled* on with a colored pencil (#1818): the
+/// body color deepened a little toward graphite, so a stroke reads as pencil pressure rather
 /// than as a brighter version of the fill underneath it.
 pub fn shading_tone(base: Color32) -> Color32 {
     mix(base, PENCIL_GRAPHITE, 0.16)
@@ -99,7 +99,7 @@ pub fn shading_tone(base: Color32) -> Color32 {
 /// One ruled span, as the pieces a quick scribble actually leaves (#1825).
 ///
 /// A hand filling a shape lifts and re-lands, and runs past the outline on the way — so the
-/// line is not continuous, the paper shows through, and the colour sits a little outside the
+/// line is not continuous, the paper shows through, and the color sits a little outside the
 /// lines. Every piece is keyed to the span's own endpoints, so the same face scribbles the
 /// same way from every angle and on every redraw; re-rolling it per frame would make the whole
 /// drawing crawl as the camera moved.
@@ -136,7 +136,7 @@ pub fn scribble(a: Vec3, b: Vec3, pass: usize) -> Vec<(Vec3, Vec3)> {
     out
 }
 
-/// Blend two colours, `t` of the way from `a` to `b`.
+/// Blend two colors, `t` of the way from `a` to `b`.
 fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     let lerp =
         |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round().clamp(0.0, 255.0) as u8;
@@ -144,17 +144,17 @@ fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
 }
 
 // ---------------------------------------------------------------------------------------
-// Watercolour (#1829). The same drawing as the pencil styles — same paper, same hand-drawn
-// outlines, same hatched contact shadow — with the colour laid on as a *wash* instead of a
+// Watercolor (#1829). The same drawing as the pencil styles — same paper, same hand-drawn
+// outlines, same hatched contact shadow — with the color laid on as a *wash* instead of a
 // scribble. A wash is not a scribble with the gaps filled in: it covers, it pools unevenly
 // where the water gathered, it runs past the line it was painted inside, and it dries darker
 // at the edge of the puddle. Those four things are what these constants buy.
 
 /// How far a wash is taken toward the paper. Much less than the pencil ground: a wash covers,
-/// where a coloured pencil only grazes the tooth of the paper.
+/// where a colored pencil only grazes the tooth of the paper.
 pub const WASH_MIX: f32 = 0.42;
 /// The rim a drying wash leaves where pigment gathers against the edge — the single most
-/// recognisable thing about watercolour. A deeper draw of the same colour.
+/// recognisable thing about watercolor. A deeper draw of the same color.
 pub const WASH_EDGE_MIX: f32 = 0.16;
 /// Width of that rim and how strongly it reads. Laid down as a few thin passes rather than one
 /// thick stroke: a thick round-capped line beads at every joint of its own wobble, which reads
@@ -170,13 +170,13 @@ pub const WASH_POOL_ALPHA: f32 = 0.22;
 /// …and only about half of them land, so the pooling is uneven rather than even.
 pub const WASH_POOL_COVERAGE: f32 = 0.55;
 
-/// The body of a wash (#1829): the colour it dries to across the flat.
+/// The body of a wash (#1829): the color it dries to across the flat.
 pub fn wash_tone(base: Color32) -> Color32 {
     mix(base, PENCIL_PAPER, WASH_MIX)
 }
 
-/// The rim it dries to where it gathered against an edge (#1829) — the same colour, drawn
-/// deeper. Never mixed toward graphite: watercolour stays its own hue as it darkens, which is
+/// The rim it dries to where it gathered against an edge (#1829) — the same color, drawn
+/// deeper. Never mixed toward graphite: watercolor stays its own hue as it darkens, which is
 /// what separates it from a pencil pressed harder.
 pub fn wash_edge_tone(base: Color32) -> Color32 {
     mix(base, PENCIL_PAPER, WASH_EDGE_MIX)
@@ -184,7 +184,7 @@ pub fn wash_edge_tone(base: Color32) -> Color32 {
 
 /// The tone a wash reaches where the pigment pooled a little deeper (#1829). Between the body
 /// of the wash and the rim: on a printed page the marks are opaque, so they cannot build tone
-/// by overlapping the way the viewport's translucent ones do — the colour has to be right on
+/// by overlapping the way the viewport's translucent ones do — the color has to be right on
 /// the first pass.
 pub fn wash_pool_tone(base: Color32) -> Color32 {
     mix(wash_tone(base), wash_edge_tone(base), 0.4)
@@ -217,21 +217,21 @@ pub fn pooling(a: Vec3, b: Vec3, pass: usize) -> Vec<(Vec3, Vec3)> {
     out
 }
 
-/// The ground tone a coloured-pencil body is filled with (#1825): its own colour taken most of
+/// The ground tone a colored-pencil body is filled with (#1825): its own color taken most of
 /// the way to the paper. It is only there so a near face hides a far one — what the eye reads
-/// as the colour is the scribble laid over it, and the gaps in that scribble have to read as
-/// bare paper, not as a lighter wash of the same colour.
+/// as the color is the scribble laid over it, and the gaps in that scribble have to read as
+/// bare paper, not as a lighter wash of the same color.
 pub fn scribble_ground(base: Color32) -> Color32 {
     mix(base, PENCIL_PAPER, 0.88)
 }
 
-/// How a body's own colour reads in coloured pencil (#1812): the fill it is laid on with,
-/// and the darker tone of the same colour its outline is drawn in.
+/// How a body's own color reads in colored pencil (#1812): the fill it is laid on with,
+/// and the darker tone of the same color its outline is drawn in.
 ///
-/// A coloured pencil does not cover the paper — the fill is the body colour let a long way
-/// down toward [`PENCIL_PAPER`]. The outline is the same colour pressed harder, mixed toward
+/// A colored pencil does not cover the paper — the fill is the body color let a long way
+/// down toward [`PENCIL_PAPER`]. The outline is the same color pressed harder, mixed toward
 /// graphite so it still reads as a drawn line rather than a bright edge.
-pub fn colour_tones(base: Color32) -> (Color32, Color32) {
+pub fn color_tones(base: Color32) -> (Color32, Color32) {
     (mix(base, PENCIL_PAPER, 0.72), mix(base, PENCIL_GRAPHITE, 0.55))
 }
 

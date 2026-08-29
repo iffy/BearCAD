@@ -1,8 +1,8 @@
 -- The cube cluster the front page and the view-styles page are both pictures of: a 2x2x2 of
--- cubes in the eight contrasting palette colours, plus a ninth Grey cube of the same size at
+-- cubes in the eight contrasting palette colors, plus a ninth Grey cube of the same size at
 -- the cluster centre so it overlaps every corner. One corner has a circle extruded through
 -- it, one has a sphere cut from a side, one is chamfered, one is filleted — real features, so
--- the colours stay on distinct bodies and every shading mode has something to shade.
+-- the colors stay on distinct bodies and every shading mode has something to shade.
 --
 -- Modeling only: no camera, no capture. `materials.lua` and `view-styles.lua` each load this
 -- and then frame and shoot it their own way.

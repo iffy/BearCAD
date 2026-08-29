@@ -22,7 +22,7 @@ a placed view to reopen its editor. Options:
   fields update with the model; clear the field to restore the automatic caption.
 - **Scale:** type a print scale like `1:20` (page mm : model mm). Clear to auto-fit.
 - **Style:** Visible edges, Wireframe (default), Shaded (grey), Colorful (shaded in each
-  body's material colour), or Loose pencil (the visible edges drawn by hand).
+  body's material color), or Loose pencil (the visible edges drawn by hand).
 
 ## Help
 

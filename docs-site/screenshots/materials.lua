@@ -18,7 +18,7 @@ for i = 0, 2 do bearcad.set_visible({ kind = "construction_plane", index = i }, 
 bearcad.ui.ground("off")
 bearcad.ui.shading("realistic")
 -- The OS cursor would hover-highlight whichever face it sits on; Dimension has no
--- pick hover, so the colours stay clean.
+-- pick hover, so the colors stay clean.
 bearcad.ui.tool("dimension")
 bearcad.ui.view("corner", "front_right_top")
 bearcad.ui.wait(2)

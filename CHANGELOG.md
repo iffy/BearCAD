@@ -8,7 +8,7 @@
 - **NEW:** In the View workbench, the Cutting plane tool hangs a cutting plane on any face you click, with Offset, Rotate, and Flip in the context pane, and several planes combine to cut a view in more than one direction.
 - **NEW:** The Elements pane's plus menu now includes New drawing.
 - **NEW:** Added a Mirror in a sketch tutorial that reflects a circle across the Y axis and extrudes the matching pair into two posts.
-- **NEW:** Cross-section views now outline each cut face with a solid line in the hatch colour, slightly thicker than the hash marks, so cut material reads as one bounded face.
+- **NEW:** Cross-section views now outline each cut face with a solid line in the hatch color, slightly thicker than the hash marks, so cut material reads as one bounded face.
 - **NEW:** Added a Repeat tutorial that patterns a block along the X axis and works all three interlinked fields plus the Gap/Offset and Distance start/end toggles.
 - **NEW:** Cutting planes in cross-section views take a body scope: a "Bodies to cut" picker and an "Exclude" picker, each with an All-bodies switch; scripts scope them with the new bodies / exclude_bodies keys of bearcad.section_plane and bearcad.edit_section_plane, and bearcad.section_planes reads them back.
 - **NEW:** Added a Slice tutorial that draws a slanted line across a block's top face and uses it as a laser cutter to split the block in two.
@@ -245,7 +245,7 @@
 - **FIX:** Fillet and Chamfer no longer pick an edge through a body, and a moved body's edges pick the same way any other body's do.
 - **FIX:** On the web, Shift+right-drag pans the camera instead of opening the browser context menu.
 - **FIX:** Sketch mirrors nest under their sketch, so filtering out sketch components hides the mirror and its children.
-- **FIX:** Clicking a material's colour swatch in the Context pane dropdown selects that material, the same as clicking its name.
+- **FIX:** Clicking a material's color swatch in the Context pane dropdown selects that material, the same as clicking its name.
 - **FIX:** Extrude, Revolve, Sweep, Loft and Mirror Output (new / add / cut) is scriptable as bearcad.ui.tool_mode.
 - **FIX:** Repeating a standalone extrude makes a separate body for each instance, and each instance can take its own material.
 - **FIX:** Dragging the Face Snap Turn gizmo a short way now stores the short signed angle, so a clockwise pull reads as −61° instead of wrapping to 299° (#1432).

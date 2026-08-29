@@ -62,9 +62,9 @@ it is* — no picks, no values, for parts already sitting where they belong.
 The fixed side takes a datum plane, a world axis or the origin too, which is how the first
 part of an assembly is grounded.
 
-While the joint is being created or edited, the two parts are coloured by their role —
+While the joint is being created or edited, the two parts are colored by their role —
 **green** for the one that moves, **blue** for the one holding it — so you can see which is
-which without reading the pane. They go back to their own colours once it's committed.
+which without reading the pane. They go back to their own colors once it's committed.
 
 The moving part also sweeps back and forth through its range, showing the motion before you
 commit. **Animate** turns that sweep off — one switch for every joint.

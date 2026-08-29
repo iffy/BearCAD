@@ -1287,7 +1287,7 @@ pub struct ContextPaneContent {
 /// What the units picker in the context pane should show and let the user change.
 ///
 /// The material picker for the selected bodies (#834): what they're made of, and the way in
-/// to naming/recolouring that material.
+/// to naming/recoloring that material.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MaterialControl {
     /// The selected bodies this assigns to.
@@ -1295,7 +1295,7 @@ pub struct MaterialControl {
     /// The material they all share; `None` when they disagree. `Some(None)` is the default
     /// material — no material assigned.
     pub current: Option<Option<crate::model::MaterialKey>>,
-    /// Every live material: key, name, colour.
+    /// Every live material: key, name, color.
     pub materials: Vec<(crate::model::MaterialKey, String, [u8; 3])>,
 }
 
@@ -2074,7 +2074,7 @@ fn unit_instance_control(doc: &Document, instance: crate::model::UnitInstanceKey
 }
 
 /// The axis-parallel constraint buttons' hand-painted glyph (#751): a double-headed
-/// arrow in the axis's own colour, drawn along `dir` — the axis's current on-screen
+/// arrow in the axis's own color, drawn along `dir` — the axis's current on-screen
 /// direction (already projected, so a tilted view rotates the glyph but never skews it).
 fn axis_constraint_button(
     ui: &mut egui::Ui,
@@ -3870,7 +3870,7 @@ fn material_control_from_selection(
         return None;
     }
     // A body with no material of its own is made of the document's first one (#924), so
-    // the picker shows that material selected — swatch, name and colour included — rather
+    // the picker shows that material selected — swatch, name and color included — rather
     // than a "Default" entry standing in for it.
     let material_of = |bi: &crate::model::BodyKey| {
         doc.bodies[*bi]
@@ -5202,10 +5202,10 @@ pub fn checkbox_row_rect(ctx: &egui::Context, label: &str) -> Option<egui::Rect>
     ctx.data(|d| d.get_temp::<egui::Rect>(checkbox_row_rect_id(label)))
 }
 
-/// Colour-swatch size in the material combo list (#1460).
+/// Color-swatch size in the material combo list (#1460).
 const MATERIAL_SWATCH_SIZE: f32 = 12.0;
 
-/// A material combo row: colour swatch then name. Both are click targets (#1460).
+/// A material combo row: color swatch then name. Both are click targets (#1460).
 fn selectable_swatch_label(
     ui: &mut egui::Ui,
     color: [u8; 3],
@@ -6237,7 +6237,7 @@ pub fn show_pane(
                     enabled,
                 );
                 // The axis-parallel buttons draw their own glyph (#751): an arrow in the
-                // axis's colour, rotated to the axis's current on-screen direction — so
+                // axis's color, rotated to the axis's current on-screen direction — so
                 // "which way will this line snap" always matches the view.
                 use crate::geometric_constraints::GeometricConstraintType as G;
                 let axis = match row.kind {
@@ -9490,7 +9490,7 @@ pub fn show_pane(
     }
 
     // Material picker (#834): what the selected body is made of, with the way in to naming
-    // and recolouring that material.
+    // and recoloring that material.
     if let Some(control) = &content.material {
         any_control = true;
         ui.separator();
@@ -9523,7 +9523,7 @@ pub fn show_pane(
                     });
             });
         });
-        // The chosen material's own name and colour, editable in place.
+        // The chosen material's own name and color, editable in place.
         if let Some(Some(mi)) = control.current {
             if let Some((_, name, color)) =
                 control.materials.iter().find(|(i, _, _)| *i == mi)
@@ -9535,7 +9535,7 @@ pub fn show_pane(
                             pending = Some(MaterialEdit::Rename(mi, text));
                         }
                     });
-                    labeled_row(ui, "Colour", |ui| {
+                    labeled_row(ui, "Color", |ui| {
                         let mut rgb = *color;
                         if ui.color_edit_button_srgb(&mut rgb).changed() {
                             pending = Some(MaterialEdit::Recolor(mi, rgb));
@@ -11967,7 +11967,7 @@ mod tests {
         input
     }
 
-    /// #1460: the material list's colour swatch is a click target, same as the name.
+    /// #1460: the material list's color swatch is a click target, same as the name.
     #[test]
     fn material_swatch_click_selects_like_the_name() {
         let red = [232_u8, 97, 92];
@@ -11999,7 +11999,7 @@ mod tests {
         let (swatch_clicked, swatch_row) = click_row(true);
         assert!(
             swatch_clicked,
-            "clicking the colour swatch should select the material, same as the name (row {swatch_row:?})"
+            "clicking the color swatch should select the material, same as the name (row {swatch_row:?})"
         );
     }
 

@@ -7,7 +7,7 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 
 # Materials
 
-A material is a name and a colour. Bodies render in their material's colour.
+A material is a name and a color. Bodies render in their material's color.
 
 <a
   href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/materials.bearcad.json"))}
@@ -15,7 +15,7 @@ A material is a name and a colour. Bodies render in their material's colour.
   rel="noopener noreferrer"
   title="Open this model in BearCAD"
 >
-  <img src={useBaseUrl("/img/screenshots/materials.png")} alt="Nine cubes in a 2×2×2 with a centre cube, each a different material colour, some with a hole, sphere bite, chamfer or fillet" />
+  <img src={useBaseUrl("/img/screenshots/materials.png")} alt="Nine cubes in a 2×2×2 with a centre cube, each a different material color, some with a hole, sphere bite, chamfer or fillet" />
 </a>
 
 ## Assigning
@@ -26,9 +26,9 @@ in the document.
 - A new document already has a palette: **Unobtainium** first (the grey-blue every new
   body starts as), then Blue, Green, Red, Yellow, Purple, Orange, Cyan, Pink, Grey.
   Consecutive entries contrast, so two picks in a row never look alike.
-- **New material…** adds one (`Material N`, next colour in that rotation) and assigns it
+- **New material…** adds one (`Material N`, next color in that rotation) and assigns it
   to the selection.
-- **Name** and **Colour** edit the chosen material in place; every body using it
+- **Name** and **Color** edit the chosen material in place; every body using it
   re-renders.
 - Selecting bodies of different materials reads *Mixed*.
 
@@ -37,14 +37,14 @@ plane has no source body, so its extrusion starts as Unobtainium.
 
 ## Export
 
-[3MF export](/docs/files#export) writes each body's colour, so a multi-colour model opens
-in Bambu Studio with one filament slot per colour.
+[3MF export](/docs/files#export) writes each body's color, so a multi-color model opens
+in Bambu Studio with one filament slot per color.
 
 ## Scripting
 
 ```lua
 bearcad.material{ name = "Brass", color = "#c88a4a", bodies = {0} }
-bearcad.material{ name = "Blue", bodies = {1} }   -- no colour: applies the one already there
+bearcad.material{ name = "Blue", bodies = {1} }   -- no color: applies the one already there
 bearcad.set_material{ body = 1, material = 0 }
 bearcad.set_material{ body = 1 }        -- back to the default material
 ```

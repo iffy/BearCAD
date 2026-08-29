@@ -57,7 +57,7 @@ const SHADOW_MAP_SIZE: f32 = 2048.0;
 const SHADOW_DEPTH_BIAS: f32 = 0.002;
 const SHADOW_SLOPE_BIAS: f32 = 0.004;
 
-// The render target is a plain UNORM format, so nothing encodes for us: colours arrive
+// The render target is a plain UNORM format, so nothing encodes for us: colors arrive
 // sRGB-encoded and whatever this shader writes is what reaches the screen. Lighting has to
 // decode to linear, do its arithmetic there, and re-encode (#1038).
 fn srgb_to_linear(c: vec3f) -> vec3f {
@@ -114,7 +114,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     return out;
 }
 
-// Depth-only pass from the light (#1535). No colour target.
+// Depth-only pass from the light (#1535). No color target.
 @vertex
 fn vs_shadow(input: VertexInput) -> @builtin(position) vec4f {
     return uniforms.light_view_proj * vec4f(input.position, 1.0);
@@ -145,12 +145,12 @@ fn shadow_visibility(world_pos: vec3f, n: vec3f, light: vec3f) -> f32 {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
-    // 2D chrome, lines, fills, text, gizmos: the colour is already final.
+    // 2D chrome, lines, fills, text, gizmos: the color is already final.
     if (input.mode < 0.5) {
         return input.color;
     }
     // Interpolating unit normals across a triangle shortens them; renormalize per pixel.
-    // A degenerate normal would divide by zero, so fall back to passing the colour through.
+    // A degenerate normal would divide by zero, so fall back to passing the color through.
     let len = length(input.normal);
     if (len < 1e-6) {
         return input.color;
@@ -158,7 +158,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     let n = input.normal / len;
     let light = normalize(uniforms.light_dir.xyz);
 
-    // Colours arrive premultiplied. Lighting is a property of the surface, not of how
+    // Colors arrive premultiplied. Lighting is a property of the surface, not of how
     // transparent it is, so undo that before decoding and restore it at the end.
     let alpha = input.color.a;
     let unassociated = select(input.color.rgb / alpha, input.color.rgb, alpha <= 0.0);
@@ -189,7 +189,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     let half_vec = normalize(light + view);
     let specular = pow(max(dot(nf, half_vec), 0.0), REALISTIC_SHININESS) * visibility;
     // In linear space a highlight is light *added* to the surface, not a lerp toward white:
-    // it keeps the material's colour underneath and lets the tonemap's shoulder roll off
+    // it keeps the material's color underneath and lets the tonemap's shoulder roll off
     // the overshoot, instead of clipping to a flat white disc.
     let shaded = base * (REALISTIC_AMBIENT + REALISTIC_DIFFUSE * diffuse)
         + vec3f(REALISTIC_SPECULAR * specular);
@@ -197,7 +197,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     return vec4f(lit * alpha, alpha);
 }
 
-// Body contact shadows (#1480/#1493): unlit colour plus a slope-scaled depth
+// Body contact shadows (#1480/#1493): unlit color plus a slope-scaled depth
 // offset so the overlay still wins on a wall viewed end-on. Ground shadows
 // stay MODE_UNLIT and keep their unbiased z = 0 depth. A dedicated entry
 // point so the main scene pass does not write frag_depth (and lose early-z).
@@ -332,7 +332,7 @@ fn vs_grid(input: VertexInput) -> GridVertexOutput {
     return out;
 }
 
-/// Solid ground fill (#159/#1295/#1301): flat colour, hidden from below (#1300).
+/// Solid ground fill (#159/#1295/#1301): flat color, hidden from below (#1300).
 @fragment
 fn fs_solid_ground(input: GridVertexOutput) -> @location(0) vec4f {
     if (uniforms.eye.z <= 0.0) {
@@ -444,7 +444,7 @@ fn fs_blit(input: BlitVertexOutput) -> @location(0) vec4f {
 // G = hovered). This fullscreen pass dilates that mask in screen space and strokes a
 // 9px-wide silhouette band offset 5px outside the body — blue for selected, yellow for
 // hovered — so the highlight reads as an outline on the flattened camera-plane view
-// rather than a fill recolour.
+// rather than a fill recolor.
 //
 // Reuses the blit pipeline's group-0 bindings (`scene_texture` / `scene_sampler`): the
 // outline pipeline has the same layout, and at draw time the bind group points at the

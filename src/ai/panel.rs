@@ -403,7 +403,7 @@ fn mcp_section(ui: &mut egui::Ui, state: &mut AppState) {
                     .stick_to_bottom(true)
                     .show(ui, |ui| {
                         for entry in &log {
-                            let colour = if entry.ok {
+                            let color = if entry.ok {
                                 ui.visuals().weak_text_color()
                             } else {
                                 ui.visuals().error_fg_color
@@ -411,7 +411,7 @@ fn mcp_section(ui: &mut egui::Ui, state: &mut AppState) {
                             ui.label(
                                 egui::RichText::new(format!("{}  {}", entry.what, entry.detail))
                                     .size(10.0)
-                                    .color(colour),
+                                    .color(color),
                             );
                         }
                     });

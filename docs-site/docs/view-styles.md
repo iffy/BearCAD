@@ -80,16 +80,16 @@ angle, so the drawing doesn't crawl as you orbit.
 <div className="row">
 <div className="col col--6">
 
-**Loose pencil** — one pencil, one colour.
+**Loose pencil** — one pencil, one color.
 
 <img src={useBaseUrl("/img/screenshots/view-styles-loose_pencil.png")} alt="Nine cubes drawn in graphite on white paper with hand-drawn strokes" />
 
 </div>
 <div className="col col--6">
 
-**Coloured pencil** — each body's colour scribbled in, sloppily, past the lines; solids shadow each other.
+**Colored pencil** — each body's color scribbled in, sloppily, past the lines; solids shadow each other.
 
-<img src={useBaseUrl("/img/screenshots/view-styles-colour_pencil.png")} alt="The same hand-drawn cubes, each in its own colour" />
+<img src={useBaseUrl("/img/screenshots/view-styles-color_pencil.png")} alt="The same hand-drawn cubes, each in its own color" />
 
 </div>
 </div>
@@ -97,10 +97,10 @@ angle, so the drawing doesn't crawl as you orbit.
 <div className="row">
 <div className="col col--6">
 
-**Watercolour** — the same drawing, painted: each colour a wash that pools and dries darker at
+**Watercolor** — the same drawing, painted: each color a wash that pools and dries darker at
 the edges.
 
-<img src={useBaseUrl("/img/screenshots/view-styles-watercolour.png")} alt="The same hand-drawn cubes, their colours laid on as watercolour washes" />
+<img src={useBaseUrl("/img/screenshots/view-styles-watercolor.png")} alt="The same hand-drawn cubes, their colors laid on as watercolor washes" />
 
 </div>
 </div>
@@ -115,10 +115,10 @@ per view rather than per viewport:
 | Visible edges | Hidden lines removed. |
 | Wireframe | Every feature edge, including the back ones. The default. |
 | Shaded | Grey-shaded faces under the visible edges. |
-| Colorful | Shaded, keeping each body's material colour. |
+| Colorful | Shaded, keeping each body's material color. |
 | Loose pencil | The visible edges drawn by hand. |
-| Coloured pencil | The same hand, with each body's colour scribbled in and the solids' shadows on each other. |
-| Watercolour | The same hand, with each colour washed on instead — pooling, and darker where it dried at the edges. |
+| Colored pencil | The same hand, with each body's color scribbled in and the solids' shadows on each other. |
+| Watercolor | The same hand, with each color washed on instead — pooling, and darker where it dried at the edges. |
 
 Both pencil styles letter their captions and dimensions by hand, in Klee One. SVG exports name
 the font; PDF exports keep the drawing's usual sans.

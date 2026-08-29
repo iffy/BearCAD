@@ -1,1 +1,1 @@
-The coloured pencil view now shades each face by how it faces the light — light and dark sides, strokes laid across the surface instead of a flat fill — and solids cast hatched shadows on each other, not just on the ground.
+The colored pencil view now shades each face by how it faces the light — light and dark sides, strokes laid across the surface instead of a flat fill — and solids cast hatched shadows on each other, not just on the ground.

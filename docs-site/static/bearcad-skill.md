@@ -190,7 +190,7 @@ bearcad.import_stl("part.stl")
 bearcad.import_unit("bracket.bearcad")     -- another document as a reusable unit
 bearcad.export_step("out.step")            -- real BREP
 bearcad.export_stl("out.stl")
-bearcad.export_3mf("out.3mf")              -- one coloured object per body
+bearcad.export_3mf("out.3mf")              -- one colored object per body
 bearcad.undo()
 ```
 

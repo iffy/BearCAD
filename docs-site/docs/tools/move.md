@@ -38,7 +38,7 @@ Move slides whole bodies to a new place, producing moved copies.
      — the same distance from end point A as start B is from start point A — so once you're
      picking it, every reachable spot is marked: where surrounding edges cross
      that distance, and mid-air spots straight out along any edge running through end point
-     A, each with a dashed guide line from it. Each spot takes the colour of the axis its turn
+     A, each with a dashed guide line from it. Each spot takes the color of the axis its turn
      goes about — **red** for X, **green** for Y, **blue** for Z — so spots that turn the same
      way group together. The one under the cursor turns **gold** and
      the preview shows the move you'd get. With both B points picked, a **dashed blue curve** from
@@ -65,9 +65,9 @@ Move slides whole bodies to a new place, producing moved copies.
      yellow ring at the mate point (0° sits on a world axis). A **yellow curve** leaves each
      face along its normal and meets the other, and the ghost shows where the part lands.
    - **Free** — optionally pick a **Reference Point** on a moving body, then type the
-     **X / Y / Z** amounts, or drag the coloured arrows on each face of the selection's tight
+     **X / Y / Z** amounts, or drag the colored arrows on each face of the selection's tight
      bounding cuboid (all six sides; each axis has a value box beside its +face handle).
-     Under **Rotation**, type **X / Y / Z** turns or drag the matching coloured rings; they
+     Under **Rotation**, type **X / Y / Z** turns or drag the matching colored rings; they
      spin the part about its own centre. Everything is an expression, so the move stays
      parametric.
 3. Press **Enter**.

@@ -1,5 +1,5 @@
--- #1821: the Coloured pencil projection style is the viewport's coloured-pencil mode on the
--- page — hand-drawn edges in the body's own colour, shading strokes across every flat, and the
+-- #1821: the Colored pencil projection style is the viewport's colored-pencil mode on the
+-- page — hand-drawn edges in the body's own color, shading strokes across every flat, and the
 -- solids' shadows falling on each other. It is scene-building code the unit tests exercise only
 -- in pieces; driving a real frame is what proves the whole path runs.
 bearcad.new()
@@ -15,8 +15,8 @@ bearcad.ui.pane("elements", "hide")
 bearcad.ui.pane("parameters", "hide")
 bearcad.ui.wait(6)
 
-for _, style in ipairs({ "wireframe", "shaded", "colorful", "loose_pencil", "colour_pencil",
-                         "watercolour" }) do
+for _, style in ipairs({ "wireframe", "shaded", "colorful", "loose_pencil", "color_pencil",
+                         "watercolor" }) do
   bearcad.drawing_view_style{ drawing = d, view = 0, style = style }
   bearcad.ui.wait(4)
   assert(bearcad.drawing_views(d)[1].style == style,
@@ -32,5 +32,5 @@ f:close()
 os.remove(out)
 assert(#svg > 1000, "the export drew something, got " .. #svg .. " bytes")
 
-print("ok: a coloured-pencil projection draws and exports")
+print("ok: a colored-pencil projection draws and exports")
 bearcad.quit()

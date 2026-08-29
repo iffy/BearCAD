@@ -3955,7 +3955,7 @@ fn styled_label(label: &str, style: RowStyle) -> RichText {
     }
 }
 
-/// Paint the "active" marker (#429) inline as a small filled circle in the accent colour,
+/// Paint the "active" marker (#429) inline as a small filled circle in the accent color,
 /// drawn by hand rather than as a `●` glyph: the default font lacks that codepoint, so the
 /// glyph rendered as a tofu box before the active component/root name (#520). Allocates
 /// roughly the footprint the `● ` prefix took so the label lines up as before.
@@ -5803,7 +5803,7 @@ fn show_component_row(
             .interact(egui::Sense::click());
         let label = node_label(doc, HierarchyNode::Component(ci));
         // The active component (#429) — where new elements land — reads in the accent
-        // colour with a painted dot marker (#520).
+        // color with a painted dot marker (#520).
         let text = if active_component == Some(ci) {
             active_marker_dot(ui);
             RichText::new(&label).color(crate::theme::FOCUS_ACCENT)

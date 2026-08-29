@@ -1,1 +1,1 @@
-The coloured pencil view now lays one tone on every side of a body and scribbles the colour in — sloppily, past the outline, with gaps of bare paper — instead of shading light and dark sides; the drawings-page Coloured pencil style matches.
+The colored pencil view now lays one tone on every side of a body and scribbles the color in — sloppily, past the outline, with gaps of bare paper — instead of shading light and dark sides; the drawings-page Colored pencil style matches.

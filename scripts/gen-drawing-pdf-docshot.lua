@@ -27,7 +27,7 @@ bearcad.drawing_align_view{ drawing = d, parent = 0, dir = "below" }
 bearcad.drawing_align_view{ drawing = d, parent = 0, dir = "right" }
 bearcad.drawing_view{ drawing = d, body = 0, orientation = "back-right-top" }
 bearcad.drawing_view_section{ drawing = d, view = 3, cross_section = 0 }
--- The three-quarter view in the bottom right keeps the body's colour (#1822): a page of
+-- The three-quarter view in the bottom right keeps the body's color (#1822): a page of
 -- grey views says nothing about materials.
 bearcad.drawing_view_style{ drawing = d, view = 3, style = "colorful" }
 bearcad.drawing_move_view{ drawing = d, view = 0, x = 0.30, y = 0.30 }

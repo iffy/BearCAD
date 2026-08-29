@@ -15,7 +15,7 @@ use crate::model::{
 use crate::value::{eval_length_mm, parse_length_or};
 use eframe::egui;
 use glam::{Quat, Vec3};
-/// Shared stroke/fill colour for all construction geometry.
+/// Shared stroke/fill color for all construction geometry.
 pub const CONSTRUCTION_RGBA: egui::Color32 = egui::Color32::from_rgb(230, 120, 40);
 /// Pale yellow (#ffffc5) fill for construction planes (semi-transparent in the viewport, #628).
 pub const PLANE_FILL_RGBA: egui::Color32 = egui::Color32::from_rgb(0xff, 0xff, 0xc5);
@@ -58,7 +58,7 @@ pub const AXIS_ANGLE_GIZMO_RADIUS_MM: f32 = 25.0;
 /// Screen-space hit radius for axis gizmo drag handles (pixels).
 pub const AXIS_GIZMO_HANDLE_HIT_RADIUS_PX: f32 = 14.0;
 
-/// Yellow arc colour for the axis angle dial, matching the Face Snap rotation arc (#1384).
+/// Yellow arc color for the axis angle dial, matching the Face Snap rotation arc (#1384).
 pub const AXIS_ANGLE_ARC: egui::Color32 = egui::Color32::from_rgb(255, 225, 90);
 
 /// What the user picked as the plane reference on the first click.

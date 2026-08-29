@@ -2546,7 +2546,7 @@ fn clip_convex_to_disc(poly: &[egui::Pos2], center: egui::Pos2, r: f32) -> Vec<e
 /// view, so a loupe shows what the thing would look like if you picked it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LoupeState {
-    /// A context loupe, or this loupe's thing at rest: its own colour.
+    /// A context loupe, or this loupe's thing at rest: its own color.
     Idle,
     /// The loupe under the cursor.
     Hovered,
@@ -2560,7 +2560,7 @@ fn loupe_face_shade(tri: &[Vec3; 3]) -> f32 {
     (0.4 + 0.6 * normal.dot(light).abs()).clamp(0.0, 1.0)
 }
 
-/// A loupe magnifies the scene, so a solid in it wears the colour it wears out there (#976) —
+/// A loupe magnifies the scene, so a solid in it wears the color it wears out there (#976) —
 /// **and in the state it's in** (#980). The 3D view's own rule, exactly: selected, then
 /// hovered, then the body's material. Reading the material as the *only* answer was the
 /// mistake: it made a hovered loupe indistinguishable from a cold one, since the fill is the
@@ -2760,7 +2760,7 @@ fn pick_target_loupe_wireframe(
 /// Normally that's the **magnifier** — the pick hitbox around the cursor, blown up so the loupe
 /// shows exactly what the cursor covers. But a big thing (a whole body, a large face) has no
 /// wireframe anywhere near the hitbox, so magnifying it yields an empty disc or a flat wash of
-/// colour with nothing to recognise (#944/#945). When none of the loupe's own geometry lands
+/// color with nothing to recognise (#944/#945). When none of the loupe's own geometry lands
 /// inside the disc, the view **zooms out** to frame that geometry instead, so there is always
 /// something identifying in it. It only ever zooms out, never further in than the magnifier.
 fn loupe_view<'a>(
@@ -2981,7 +2981,7 @@ fn draw_pick_target_loupe(
                 }
             }
         }
-        // An axis is its own colour (#976/#979) — red/green/blue is what tells X from Y from
+        // An axis is its own color (#976/#979) — red/green/blue is what tells X from Y from
         // Z, and three identically-accented lines in three loupes told you nothing. Brighter
         // when this loupe's own thing, dimmed as context, so which loupe is which still reads.
         PK::GlobalAxis(axis) => {
@@ -3077,7 +3077,7 @@ fn draw_pick_target_loupe(
                         // antialiasing, so two triangles sharing an edge each fade out along
                         // it and leave a hairline of background between them — across a whole
                         // mesh that reads as a web of cracks over the solid. A hairline stroke
-                        // of the same colour covers the seam.
+                        // of the same color covers the seam.
                         painter.add(egui::Shape::convex_polygon(
                             poly,
                             fill,
@@ -3426,7 +3426,7 @@ fn draw_orb_pointer_combo(
     ctx.request_repaint();
 }
 
-/// A line of blue words riding just above the orb (#851/#853): the guide's own colour on a
+/// A line of blue words riding just above the orb (#851/#853): the guide's own color on a
 /// rounded backing that echoes the ring, so it reads as part of the guide rather than as a
 /// control.
 fn orb_word_hint(
@@ -3707,7 +3707,7 @@ fn draw_touch_draw_loupe(
     }
     dot(face::local_to_world(frame, 0.0, 0.0), 3.0, egui::Color32::from_gray(210));
 
-    // The shape being drawn right now, in the same preview colour the viewport uses.
+    // The shape being drawn right now, in the same preview color the viewport uses.
     let preview = egui::Stroke::new(1.8, col::PREVIEW);
     if let Some(cl) = &state.creating_line {
         seg(cl.origin, cl.end_point(frame, doc), preview);
@@ -5166,7 +5166,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                         });
                         ui.add_space(4.0);
                         // Parameter names, values and the exact letters to type are drawn
-                        // as code — monospace, in their own colour — so they stand out
+                        // as code — monospace, in their own color — so they stand out
                         // from the sentence around them (#757).
                         let mut job = egui::text::LayoutJob::default();
                         for (text, code) in
@@ -8623,7 +8623,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
     /// Ghost preview for the in-progress offset: the parallel copies at the live distance, as
     /// world segments (circles sampled as polylines). Each carries a `dashed` flag that is only
     /// set when Construction is checked (#940) — a substantial offset previews as a solid
-    /// preview-coloured line, like the mirror/extrude/revolve previews.
+    /// preview-colored line, like the mirror/extrude/revolve previews.
     fn sketch_offset_ghost_segments(&self) -> Vec<(Vec3, Vec3, bool)> {
         let Some(co) = self.state.creating_sketch_offset.as_ref() else {
             return Vec::new();
@@ -19012,7 +19012,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     }
                 }
             }
-            // Material picker (#834): assign, create, rename, recolour.
+            // Material picker (#834): assign, create, rename, recolor.
             if let Some(edit) = material_edit {
                 let bodies = context::bodies_for_material_selection(
                     &self.state.doc,
@@ -20265,19 +20265,19 @@ fn drawing_view_remove_id(view: usize) -> egui::Id {
     egui::Id::new(("drawing_view_remove", view))
 }
 
-/// Read a hand-drawn style's print colour as **ink on paper**, for the editor's dark sheet
+/// Read a hand-drawn style's print color as **ink on paper**, for the editor's dark sheet
 /// (#1829).
 ///
 /// The exports really are on white paper, so a wash's ground prints as a pale tint and the rim
 /// it dried to prints darker. Mapping those two straight onto a dark sheet inverts them — the
 /// pale ground goes bright and the dark rim goes dim, so the painting comes out inside-out.
-/// What carries over is not the colour but *how much ink is on the paper*: the further a print
-/// colour sits from the paper, the more of the body's own hue is laid over the sheet. Order is
+/// What carries over is not the color but *how much ink is on the paper*: the further a print
+/// color sits from the paper, the more of the body's own hue is laid over the sheet. Order is
 /// preserved, so a mark that prints darker than its ground still reads stronger here.
 fn ink_on_dark_sheet(print: [u8; 3]) -> egui::Color32 {
     let paper = crate::pencil::PENCIL_PAPER;
     let paper = [paper.r(), paper.g(), paper.b()];
-    // Coverage: the channel that moved furthest from the paper. A saturated colour is a lot of
+    // Coverage: the channel that moved furthest from the paper. A saturated color is a lot of
     // ink even where one of its channels is still near white.
     let cover = (0..3)
         .map(|i| {
@@ -20285,11 +20285,11 @@ fn ink_on_dark_sheet(print: [u8; 3]) -> egui::Color32 {
         })
         .fold(0.0f32, f32::max)
         .clamp(0.0, 1.0);
-    // Hue: the print colour opened back up to full strength, so what lands on the sheet is the
-    // body's colour rather than a grey of the same darkness.
+    // Hue: the print color opened back up to full strength, so what lands on the sheet is the
+    // body's color rather than a grey of the same darkness.
     let peak = print.iter().copied().max().unwrap_or(255).max(1) as f32;
     let hue: [f32; 3] = std::array::from_fn(|i| print[i] as f32 / peak * 255.0);
-    // A gentle curve: a light wash should still read as colour, not as bare sheet.
+    // A gentle curve: a light wash should still read as color, not as bare sheet.
     let t = cover.powf(0.6);
     let sheet = [30.0f32, 30.0, 30.0];
     let mix = |i: usize| (sheet[i] + (hue[i] - sheet[i]) * t).round().clamp(0.0, 255.0) as u8;
@@ -20330,7 +20330,7 @@ fn open_licenses_document() -> std::io::Result<()> {
     open_in_browser(LICENSES_DOC_URL)
 }
 
-/// Colours used in the viewport.
+/// Colors used in the viewport.
 pub(crate) mod col {
     use egui::Color32;
     pub const BG: Color32 = Color32::from_gray(28);
@@ -20368,7 +20368,7 @@ pub(crate) mod col {
     pub const SECTION_HATCH: Color32 = Color32::from_rgb(70, 70, 70);
     /// Committed sketch dimension lines and labels in edit mode.
     pub const DIM_ANNOTATION: Color32 = Color32::from_rgb(180, 188, 204);
-    /// All construction geometry (planes, etc.) shares this colour.
+    /// All construction geometry (planes, etc.) shares this color.
     pub const CONSTRUCTION: Color32 = crate::construction::CONSTRUCTION_RGBA;
     /// Fully-constrained solid lines (#172): no remaining degrees of freedom.
     pub const RECT_LINE_CONSTRAINED: Color32 = Color32::from_rgb(225, 228, 235);
@@ -20395,14 +20395,14 @@ const TAB_TOP_RADIUS: f32 = 4.0;
 const TAB_ICON_SIZE: f32 = 16.0;
 /// Hit target for tab close / new-tab — larger than the glyph for easier clicking (#1132).
 const TAB_ICON_HIT: f32 = 22.0;
-/// Strip baseline and active-tab outline — same colour so the open bottom joins the line (#1138).
+/// Strip baseline and active-tab outline — same color so the open bottom joins the line (#1138).
 const TAB_BASELINE: egui::Color32 = egui::Color32::from_gray(55);
 /// Inactive filing-tab outline — fainter than the active tab / baseline (#1138).
 const TAB_INACTIVE_BORDER: egui::Color32 = egui::Color32::from_gray(40);
 /// How much [`theme::FOCUS_ACCENT`] is mixed into panel fill at the top of the selected tab (#1138).
 const TAB_SELECTED_TOP_BLUE_MIX: f32 = 0.28;
 
-/// Fill a convex filing-tab path with a top→bottom colour gradient (vertex-coloured mesh) (#1138).
+/// Fill a convex filing-tab path with a top→bottom color gradient (vertex-colored mesh) (#1138).
 fn paint_filing_tab_vertical_gradient(
     painter: &egui::Painter,
     path: &[egui::Pos2],
@@ -21112,29 +21112,29 @@ fn picker_highlights(
 ) -> (Vec<SceneElement>, Vec<model::BodyKey>, Vec<(SceneElement, egui::Color32)>) {
     let mut folded = Vec::new();
     let mut cut_bodies = Vec::new();
-    let mut coloured = Vec::new();
+    let mut colored = Vec::new();
     for view in views {
         let color = view.picker.selected_color(crate::theme::FOCUS_ACCENT);
         let destructive = color == crate::theme::CUT_ACCENT;
-        // A picker with its own highlight colour (Face Snap's cyan moving / blue fixed face,
-        // #1361) draws that colour through the element highlight rather than folding into the
+        // A picker with its own highlight color (Face Snap's cyan moving / blue fixed face,
+        // #1361) draws that color through the element highlight rather than folding into the
         // shared selection blue — exactly how a destructive picker's elements already do.
-        let individually_coloured = color != crate::theme::FOCUS_ACCENT;
+        let individually_colored = color != crate::theme::FOCUS_ACCENT;
         for element in view.picker.picked() {
             match element {
                 // A solid takes a fill, so a destructive body goes down the body-fill path.
                 SceneElement::Body(bi) if destructive => cut_bodies.push(*bi),
                 // Everything else a destructive picker holds — a Slice cutter's plane or
-                // face, an in-sketch cutter line — has no fill to recolour, so it draws in
-                // the picker's colour through the element highlight instead.
-                _ if destructive => coloured.push((element.clone(), color)),
-                // A picker that colours its own picked elements (not the shared blue).
-                _ if individually_coloured => coloured.push((element.clone(), color)),
+                // face, an in-sketch cutter line — has no fill to recolor, so it draws in
+                // the picker's color through the element highlight instead.
+                _ if destructive => colored.push((element.clone(), color)),
+                // A picker that colors its own picked elements (not the shared blue).
+                _ if individually_colored => colored.push((element.clone(), color)),
                 other => folded.push(other.clone()),
             }
         }
     }
-    (folded, cut_bodies, coloured)
+    (folded, cut_bodies, colored)
 }
 
 /// Apply a tool-owned element picker's row action (#213) to its backing set: `Remove(i)` drops
@@ -22547,7 +22547,7 @@ fn build_viewport_scene_input<'a>(
     vertex_treatment_preview: Option<Vec<Vec3>>,
     hover_highlight: Option<gpu_viewport::ViewportHoverHighlight>,
     extra_pick_highlights: Vec<construction::PickTargetKind>,
-    // Marks with a colour of their own (#660): the Move tool's green start point A and red
+    // Marks with a color of their own (#660): the Move tool's green start point A and red
     // end point A, plus the connector between them (#668).
     colored_pick_highlights: Vec<(construction::PickTargetKind, egui::Color32)>,
     colored_segments: Vec<(Vec3, Vec3, egui::Color32, bool)>,
@@ -24774,8 +24774,8 @@ fn extrude_face_id(face: model::ExtrudeFace) -> FaceId {
     face.face_id()
 }
 
-/// The colour that stands for a rotation axis (#949): the world axis it lies nearest, in that
-/// axis's own viewport colour. Used to colour-code the Move tool's end-point-B candidate dots
+/// The color that stands for a rotation axis (#949): the world axis it lies nearest, in that
+/// axis's own viewport color. Used to color-code the Move tool's end-point-B candidate dots
 /// so a sphereful of them reads as groups turning about roughly the same axis. Ties go to X
 /// then Y, which only matters for an axis exactly between two — either answer is as true.
 fn rotation_axis_color(axis: Vec3) -> egui::Color32 {
@@ -28067,12 +28067,12 @@ impl App {
                         // The editor sheet is dark; map the print tones down so shading reads
                         // without blowing out (exports keep the light print values). The
                         // face's tint is white for the grey Shaded style and the body's own
-                        // material colour for Colorful (#1807), so one formula serves both.
+                        // material color for Colorful (#1807), so one formula serves both.
                         //
-                        // A coloured-pencil ground is neither (#1825): it is the body's colour
+                        // A colored-pencil ground is neither (#1825): it is the body's color
                         // meant to sit a long way toward the *paper*, and here the paper is the
                         // dark sheet — so it goes down toward the sheet, not up toward white,
-                        // and the scribble over it is what carries the colour.
+                        // and the scribble over it is what carries the color.
                         let level = |c: u8| {
                             (c as f32 / 255.0 * face.shade.clamp(0.0, 1.0) * 110.0) as u8 + 30
                         };
@@ -28098,8 +28098,8 @@ impl App {
                         }
                         painter.add(egui::Shape::mesh(mesh));
                     }
-                    // A coloured-pencil projection outlines in its own colour (#1821); every
-                    // other style strokes in ink. The sheet is dark, so the print colour is
+                    // A colored-pencil projection outlines in its own color (#1821); every
+                    // other style strokes in ink. The sheet is dark, so the print color is
                     // lifted rather than darkened the way the fills are.
                     let ink = sty
                         .stroke_tint
@@ -30213,7 +30213,7 @@ impl App {
         ui: &mut egui::Ui,
         render_state: Option<&eframe::egui_wgpu::RenderState>,
         // The active tool's pickers (#973/#961): what each holds is highlighted in that
-        // picker's own colour, so the viewport never has to know which tool owns which set.
+        // picker's own color, so the viewport never has to know which tool owns which set.
         tool_pickers: &[context::ToolPickerView],
     ) {
         self.handle_in_progress_object_keyboard(ui);
@@ -33094,8 +33094,8 @@ impl App {
                 let point = self.pick_move_point(pp, &project, pick_occlusion, Some(false))?;
                 Some(actions::CreatingMove { end_point_a: Some(point), ..cm.clone() })
             });
-        // Candidates render through the same coloured-mark channel as the A points (#660):
-        // gold for the one a click would take, otherwise colour-coded by the axis the turn to
+        // Candidates render through the same colored-mark channel as the A points (#660):
+        // gold for the one a click would take, otherwise color-coded by the axis the turn to
         // that spot goes about (#949) — a sphereful of identical blue dots was impossible to
         // tell apart. End point C's candidates all spin about the same A→B axis, so there's
         // nothing to code and they stay candidate blue.
@@ -33232,7 +33232,7 @@ impl App {
             }
         }
         // Dashed guides from the pivot to each mid-air end-B spot (#745) — gold when its
-        // landing spot is the one under the cursor, otherwise the same axis colour as the dot
+        // landing spot is the one under the cursor, otherwise the same axis color as the dot
         // it leads to (#949) so each spoke reads as one thing.
         for (a, b) in &move_b_guides {
             let hovered = move_b_hover.is_some_and(|(_, h)| (h - *b).length() < 1e-4);
@@ -33437,7 +33437,7 @@ impl App {
             }
         }
         // Every tool that gathers a set through an element picker shows that picked set
-        // highlighted in the viewport (#213), in **that picker's own colour** (#961): the
+        // highlighted in the viewport (#213), in **that picker's own color** (#961): the
         // theme's selection blue by default, red for a picker whose elements the operation
         // consumes. This used to be a per-tool match listing, by hand, which sets to fold and
         // which bodies to paint red — so a tool missing from it highlighted nothing, and Slice's
@@ -33742,7 +33742,7 @@ impl App {
         // the picked lines/circles at every computed offset, so the result previews before commit.
         let sketch_repeat_ghost = self.sketch_repeat_ghost_segments();
         // The mirror reflection (#542) and the offset's parallel copies (#940) preview as solid
-        // preview-coloured lines — matching the repeat/extrude/revolve preview styling — and only
+        // preview-colored lines — matching the repeat/extrude/revolve preview styling — and only
         // go dashed when the result will be construction geometry.
         let mut sketch_ghost_lines = self.sketch_mirror_ghost_segments();
         sketch_ghost_lines.extend(self.sketch_offset_ghost_segments());
@@ -36023,8 +36023,8 @@ impl App {
         }
 
         // Label the sketch's local axes at the viewport edge (#751): "LX"/"LY" in each
-        // axis's own colour, sitting where its positive direction leaves the view — so
-        // which way is which never depends on remembering the colours.
+        // axis's own color, sitting where its positive direction leaves the view — so
+        // which way is which never depends on remembering the colors.
         if let Some(frame) = self
             .state
             .sketch_session
@@ -38408,7 +38408,7 @@ mod tests {
         };
         assert_eq!(gone.connector(&doc), None);
 
-        // The two marks are visibly different colours — go and stop.
+        // The two marks are visibly different colors — go and stop.
         assert_ne!(crate::theme::MOVE_START_POINT, crate::theme::MOVE_END_POINT);
     }
 
@@ -40202,7 +40202,7 @@ mod tests {
     /// picker focused by hand wins until it's satisfied (#658).
     #[test]
     fn a_destructive_pickers_bodies_read_red_the_rest_blue() {
-        // #961: the viewport asks each picker for its colour instead of a per-tool match
+        // #961: the viewport asks each picker for its color instead of a per-tool match
         // listing which sets to fold and which bodies to paint red.
         use crate::context::{PickerTarget, ToolPickerView};
         use crate::element_picker::{ElementFilter, ElementKind, ElementPicker, PickLimit};
@@ -40225,24 +40225,24 @@ mod tests {
         };
         let kept = body_picker(None, &[bkey(1), bkey(2)]);
         let consumed = body_picker(Some(crate::theme::CUT_ACCENT), &[bkey(3)]);
-        let (folded, cut, coloured) = picker_highlights(&[kept, consumed]);
+        let (folded, cut, colored) = picker_highlights(&[kept, consumed]);
         assert_eq!(folded, vec![SceneElement::Body(bkey(1)), SceneElement::Body(bkey(2))]);
         assert_eq!(cut, vec![bkey(3)], "a consumed body reads red, not blue");
 
         // No pickers at all — nothing to highlight, and nothing to special-case.
         assert!(
-            coloured.is_empty(),
+            colored.is_empty(),
             "a destructive picker's *bodies* take the fill path, not the element one"
         );
 
-        let (folded, cut, coloured) = picker_highlights(&[]);
-        assert!(folded.is_empty() && cut.is_empty() && coloured.is_empty());
+        let (folded, cut, colored) = picker_highlights(&[]);
+        assert!(folded.is_empty() && cut.is_empty() && colored.is_empty());
     }
 
     #[test]
     fn a_destructive_pickers_faces_read_red_through_the_element_channel() {
         // #961: Slice's cutters include planes and faces (and lines, #1126). A solid takes a
-        // fill, but a face has none to recolour, so those go down the coloured-element path
+        // fill, but a face has none to recolor, so those go down the colored-element path
         // instead of being folded into the blue selection — which is what they used to do.
         use crate::context::{PickerTarget, ToolPickerView};
         use crate::element_picker::{ElementFilter, ElementKind, ElementPicker, PickLimit};
@@ -40260,11 +40260,11 @@ mod tests {
             separator_above: true,
             render: context::PickerRender::Shared,
         };
-        let (folded, cut_bodies, coloured) = picker_highlights(&[view]);
+        let (folded, cut_bodies, colored) = picker_highlights(&[view]);
         assert!(folded.is_empty(), "a cutter is not part of the blue selection");
         assert!(cut_bodies.is_empty(), "it is not a body either");
         assert_eq!(
-            coloured,
+            colored,
             vec![(SceneElement::ConstructionPlane(pkey(1)), crate::theme::CUT_ACCENT)],
             "it reads in the picker's red"
         );
@@ -40487,7 +40487,7 @@ mod tests {
         }
 
         // Shading varies with the face normal, so the shape reads as solid rather than as a
-        // flat wash of one colour.
+        // flat wash of one color.
         let shades: Vec<u8> = faces.iter().map(|(_, shade)| *shade).collect();
         let lo = shades.iter().copied().min().unwrap();
         let hi = shades.iter().copied().max().unwrap();
@@ -40580,10 +40580,10 @@ mod tests {
         assert_eq!(segments.len(), 4, "a plane's four edges");
     }
 
-    /// #979: the world axes draw in **their own** colours in a loupe. Three identically
+    /// #979: the world axes draw in **their own** colors in a loupe. Three identically
     /// accented lines in three loupes told you nothing about which was X.
     #[test]
-    fn the_axes_keep_their_colours_in_a_loupe() {
+    fn the_axes_keep_their_colors_in_a_loupe() {
         use construction::GlobalAxis;
         let colors: Vec<egui::Color32> = [GlobalAxis::X, GlobalAxis::Y, GlobalAxis::Z]
             .iter()
@@ -40598,7 +40598,7 @@ mod tests {
         assert_ne!(colors[0], colors[2]);
     }
 
-    /// #976: a loupe magnifies the scene, so what's in it should wear the colour it wears out
+    /// #976: a loupe magnifies the scene, so what's in it should wear the color it wears out
     /// there. Every body's faces were painted in the loupe's own accent instead, so a pink body
     /// showed up blue — the fill was carrying "which loupe is hot", which is the ring's job.
     #[test]
@@ -40700,10 +40700,10 @@ mod tests {
         );
     }
 
-    /// #949: the end-point-B candidate dots are colour-coded by the axis the turn to each one
+    /// #949: the end-point-B candidate dots are color-coded by the axis the turn to each one
     /// goes about, so a sphereful of them reads as groups instead of one indistinguishable blue.
     #[test]
-    fn rotation_axis_colours_pick_the_nearest_world_axis() {
+    fn rotation_axis_colors_pick_the_nearest_world_axis() {
         assert_eq!(rotation_axis_color(Vec3::X), col::X_AXIS);
         assert_eq!(rotation_axis_color(-Vec3::X), col::X_AXIS, "sign doesn't matter");
         assert_eq!(rotation_axis_color(Vec3::Y), col::Y_AXIS);

@@ -997,7 +997,7 @@ mod tests {
             opaque.len()
         );
 
-        // Pure-black outline pixels (RGB=0, A=255) next to model-coloured fill.
+        // Pure-black outline pixels (RGB=0, A=255) next to model-colored fill.
         let mut black_outline = 0usize;
         for &(x, y) in &opaque {
             let o = (y * 128 + x) * 4;
@@ -1043,7 +1043,7 @@ mod tests {
         }];
         let bounds = meshes[0].mesh.bounds().unwrap();
         let img = rasterize_meshes(&meshes, bounds.0, bounds.1, 64);
-        // Under isometric Home, more than one face is visible → colour variance.
+        // Under isometric Home, more than one face is visible → color variance.
         let mut colors = std::collections::HashSet::new();
         for y in 0..64 {
             for x in 0..64 {

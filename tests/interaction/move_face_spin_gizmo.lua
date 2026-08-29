@@ -1,5 +1,5 @@
 -- Regression (#1360/#1361/#1362): the Face Snap move's spin gizmo, the moving/fixed face
--- colours, and the curved start→finish connector all render without error when the move is
+-- colors, and the curved start→finish connector all render without error when the move is
 -- armed with a non-zero turn. Drives the live preview (`begin_move` never commits) so the
 -- gizmo, the yellow arc, and the curved A→A connector all get drawn this frame.
 bearcad.new()

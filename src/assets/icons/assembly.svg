@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
   <!-- assembly (#923): two components meshed into one another, each shaded like the body
-       element and drawn in its own colour — the back one in the accent blue, the front one
-       in the theme colour — so it reads as parts joined into a whole rather than as one
+       element and drawn in its own color — the back one in the accent blue, the front one
+       in the theme color — so it reads as parts joined into a whole rather than as one
        part. The front block overlaps the back one's corner, which is what makes them read
        as interlocked. -->
   <!-- back component -->

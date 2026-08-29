@@ -30,8 +30,8 @@ bearcad.quit()
 ```
 
 `bearcad.export_stl(path, [body])` and `bearcad.export_3mf(path, [body])` work the same way
-for mesh export. Whole-document `export_3mf` keeps each body as its own coloured object
-(material → 3MF `m:colorgroup`, one filament slot per colour in Bambu Studio).
+for mesh export. Whole-document `export_3mf` keeps each body as its own colored object
+(material → 3MF `m:colorgroup`, one filament slot per color in Bambu Studio).
 `bearcad.export_preview(path)` writes a Home zoom-to-fit PNG (same image embedded on save).
 
 ## Handles: what a call hands back
@@ -431,7 +431,7 @@ See [Materials](/docs/materials).
 
 ```lua
 bearcad.material{ name = "Brass", color = "#c88a4a", bodies = {0} }
-bearcad.material{ name = "Blue", bodies = {1} }   -- no colour: applies the one already there
+bearcad.material{ name = "Blue", bodies = {1} }   -- no color: applies the one already there
 bearcad.set_material{ body = 1, material = 0 }
 bearcad.set_material{ body = 1 }        -- back to the default material
 ```

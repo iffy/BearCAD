@@ -1708,7 +1708,7 @@ pub fn move_snap_rotation_axis_angle(
 
 /// The axis the bodies would turn about if `target` were taken as end point B (#949) — the
 /// same rotation [`move_snap_rotation_axis_angle`] derives, but for a candidate spot rather
-/// than a picked end B, so each candidate dot can be coloured by the axis it turns about.
+/// than a picked end B, so each candidate dot can be colored by the axis it turns about.
 /// `None` when the pair can't be resolved or the turn is degenerate (no rotation at all).
 pub fn snap_rotation_axis_toward(
     doc: &Document,
@@ -7355,7 +7355,7 @@ pub fn section_hatch_segments(
 /// The spacing the hatch is drawn at, in millimetres (#1688).
 pub const SECTION_HATCH_SPACING_MM: f32 = 3.0;
 
-/// The solid outline around each cut face (#1768): stroked in the hatch colour but slightly
+/// The solid outline around each cut face (#1768): stroked in the hatch color but slightly
 /// thicker than the hatch lines, so a cut face reads as one bounded surface.
 pub fn section_face_perimeter_segments(
     mesh: &SolidMesh,
@@ -12238,7 +12238,7 @@ mod tests {
     }
 
     /// #949: the axis a candidate end point B would turn the bodies about — a quarter turn in
-    /// the XY plane goes about Z, one in XZ about Y — so the dots can be coloured by it.
+    /// the XY plane goes about Z, one in XZ about Y — so the dots can be colored by it.
     #[test]
     fn the_axis_a_candidate_end_b_turns_about() {
         use crate::model::MovePointRef;
@@ -12265,7 +12265,7 @@ mod tests {
         // +X → +Y is a quarter turn about +Z; +X → +Z is one about −Y.
         assert!((axis(Vec3::Y * 10.0).unwrap() - Vec3::Z).length() < 1e-4);
         assert!((axis(Vec3::Z * 10.0).unwrap() + Vec3::Y).length() < 1e-4);
-        // Straight ahead is no turn at all, so there's no axis to colour by.
+        // Straight ahead is no turn at all, so there's no axis to color by.
         assert_eq!(axis(Vec3::X * 10.0), None);
         // A missing point leaves it unresolved rather than guessing.
         assert_eq!(

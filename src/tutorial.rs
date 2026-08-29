@@ -243,7 +243,7 @@ impl TypeHint {
 
 /// Split a step's narration into plain prose and **code** runs (#757): anything between
 /// backticks — parameter names, values, the exact letters to type — which the bubble draws
-/// in monospace and its own colour so it stands out from the sentence around it.
+/// in monospace and its own color so it stands out from the sentence around it.
 /// Backticks never survive into the drawn text; an unclosed one just ends the string.
 pub fn narration_spans(text: &str) -> Vec<(&str, bool)> {
     let mut spans = Vec::new();

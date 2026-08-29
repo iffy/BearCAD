@@ -49,7 +49,7 @@ impl GpuUniforms {
     const NO_GRID: ([f32; 4], [f32; 4]) = ([1.0, 1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]);
 }
 
-/// Vertex layout shared by every scene-geometry pipeline: position, colour, and the
+/// Vertex layout shared by every scene-geometry pipeline: position, color, and the
 /// normal + lighting-model pair the fragment shader lights with (#1037).
 const SCENE_VERTEX_ATTRS: [wgpu::VertexAttribute; 3] = [
     wgpu::VertexAttribute {
@@ -90,7 +90,7 @@ pub struct ViewportGpuResources {
     /// — the gaps between lines must not hide anything below z = 0.
     grid_pipeline: wgpu::RenderPipeline,
     /// Solid ground fill (#159/#1295/#1301): same no-depth-write footprint pass as the grid,
-    /// flat colour. Keeps coplanar construction planes from z-fighting without bias.
+    /// flat color. Keeps coplanar construction planes from z-fighting without bias.
     solid_ground_pipeline: wgpu::RenderPipeline,
     /// Shared footprint quad for grid / solid ground — rewritten each frame the footprint
     /// moves — and its two triangles, which never change.
@@ -118,7 +118,7 @@ pub struct ViewportGpuResources {
     /// flat (unlit, no depth) into an offscreen R/G mask.
     mask_pipeline: wgpu::RenderPipeline,
     /// Fullscreen pass that dilates the outline mask and strokes the silhouette band
-    /// onto the resolved scene colour (#1110).
+    /// onto the resolved scene color (#1110).
     outline_pipeline: wgpu::RenderPipeline,
     /// Bind-group layout shared by the blit and outline pipelines (texture + sampler).
     blit_bind_group_layout: wgpu::BindGroupLayout,
@@ -926,7 +926,7 @@ impl ViewportGpuResources {
         });
 
         // Outline stroke (#1110): dilate the mask and paint the silhouette band over the
-        // resolved scene colour. Same bind-group layout as blit (texture + sampler);
+        // resolved scene color. Same bind-group layout as blit (texture + sampler);
         // at draw time the bind group points at the mask, not the scene.
         let outline_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("bearcad_viewport_outline_pipeline"),
@@ -1435,7 +1435,7 @@ impl ViewportGpuResources {
         // rather than getting a dedicated pipeline and boundary.
         let wireframe_index_count = scene.wireframe_indices.len();
         // Outline mask indices (#1110) ride at the end of the combined index buffer and are
-        // drawn in a separate pass into the offscreen R/G mask — never the main colour target.
+        // drawn in a separate pass into the offscreen R/G mask — never the main color target.
         let mask_index_count = scene.mask_indices.len();
         let shadow_caster_index_count = scene.shadow_caster_indices.len();
         let scene_index_count = base_index_count
@@ -1578,7 +1578,7 @@ impl ViewportGpuResources {
             );
         }
         // Footprint corners for grid (#1073) or solid ground (#159/#1301). Solid ground
-        // carries its fill colour in the vertex; the grid lattice reads colour from uniforms.
+        // carries its fill color in the vertex; the grid lattice reads color from uniforms.
         if let Some(grid) = &scene.grid {
             let quad: [GpuVertex; 4] = std::array::from_fn(|i| GpuVertex {
                 position: grid.corners[i].to_array(),
@@ -1769,7 +1769,7 @@ impl ViewportGpuResources {
                 multiview_mask: None,
             });
             // Ground footprint first, under everything (#1073 / #159 / #1301): no depth
-            // write, so bodies occlude it by overwriting colour and construction planes
+            // write, so bodies occlude it by overwriting color and construction planes
             // composite cleanly later. Hidden from below in the fragment shaders (#1300).
             if scene.solid_ground.is_some() {
                 pass.set_bind_group(0, &self.uniform_bind_group, &[]);
@@ -1908,7 +1908,7 @@ impl ViewportGpuResources {
 
         // Body-highlight outline (#1110/#1155): when the scene built a mask of selected/
         // hovered body silhouettes, paint it into the offscreen R/G target and stroke the
-        // dilated band over the resolved scene colour (which already has the fill recolour).
+        // dilated band over the resolved scene color (which already has the fill recolor).
         // Two extra passes — only when any body is selected/hovered.
         if mask_index_count > 0 {
             if let (Some(mask_view), Some(color_view), Some(outline_bind_group)) = (
@@ -1945,7 +1945,7 @@ impl ViewportGpuResources {
                     mask_pass.draw_indexed(mask_start..mask_end, 0, 0..1);
                 }
                 {
-                    // Load the resolved scene colour and alpha-blend the outline band on top.
+                    // Load the resolved scene color and alpha-blend the outline band on top.
                     let mut outline_pass =
                         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                             label: Some("bearcad_viewport_outline_pass"),

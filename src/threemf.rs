@@ -6,16 +6,16 @@
 //!
 //! Multi-body documents export as separate `<object>` entries sharing a
 //! materials-extension `<m:colorgroup>` (one `<m:color>` per distinct body
-//! colour). Bambu Studio maps each unique colour to a filament slot and sets
+//! color). Bambu Studio maps each unique color to a filament slot and sets
 //! the object's extruder from `pid`/`pindex` (#1294 / #1299). Core
-//! `<basematerials>` is also written so generic 3MF viewers show colours.
+//! `<basematerials>` is also written so generic 3MF viewers show colors.
 
 use crate::extrude::SolidMesh;
 use glam::Vec3;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-/// Default body colour when no material is known (matches Unobtainium / SOLID_FILL).
+/// Default body color when no material is known (matches Unobtainium / SOLID_FILL).
 pub const DEFAULT_BODY_COLOR: [u8; 3] = [150, 168, 196];
 
 /// Materials extension namespace (3MF Materials Spec 1.1) — required for `m:colorgroup`.
@@ -26,17 +26,17 @@ const MATERIALS_NS: &str = "http://schemas.microsoft.com/3dmanufacturing/materia
 pub struct ThreeMfPart<'a> {
     pub name: &'a str,
     pub mesh: &'a SolidMesh,
-    /// sRGB body colour.
+    /// sRGB body color.
     pub color: [u8; 3],
     /// Label written into `<basematerials>` (material name).
     pub material_name: &'a str,
 }
 
-/// Serialize one or more coloured mesh parts as a 3MF package (#1284 / #1294 / #1299).
+/// Serialize one or more colored mesh parts as a 3MF package (#1284 / #1294 / #1299).
 ///
 /// Coordinates are millimetres. Each part becomes its own `<object>` with
 /// `pid`/`pindex` into a shared materials-extension `<m:colorgroup>`. Bambu Studio
-/// assigns a filament slot per distinct colour; identical colours share a slot.
+/// assigns a filament slot per distinct color; identical colors share a slot.
 pub fn write_3mf_parts(parts: &[ThreeMfPart<'_>]) -> Vec<u8> {
     let model = model_xml_parts(parts);
     zip_store(&[
@@ -60,8 +60,8 @@ const ROOT_RELS_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 "#;
 
 fn model_xml_parts(parts: &[ThreeMfPart<'_>]) -> String {
-    // Distinct colours (order of first appearance) → filament slots / pindex.
-    // Also keep a display name for basematerials (first material name per colour).
+    // Distinct colors (order of first appearance) → filament slots / pindex.
+    // Also keep a display name for basematerials (first material name per color).
     let mut colors: Vec<[u8; 3]> = Vec::new();
     let mut color_names: Vec<&str> = Vec::new();
     let mut pindex_for: Vec<u32> = Vec::with_capacity(parts.len());
@@ -91,7 +91,7 @@ fn model_xml_parts(parts: &[ThreeMfPart<'_>]) -> String {
     out.push_str("  <resources>\n");
 
     // id=1: basematerials (standard 3MF viewers). id=2: m:colorgroup (Bambu Studio).
-    // Objects `pid` into the colorgroup so Bambu assigns extruders from colour.
+    // Objects `pid` into the colorgroup so Bambu assigns extruders from color.
     const BASEMATERIALS_ID: u32 = 1;
     const COLORGROUP_ID: u32 = 2;
     if !colors.is_empty() {
@@ -170,7 +170,7 @@ fn model_xml_parts(parts: &[ThreeMfPart<'_>]) -> String {
     out
 }
 
-/// 3MF colour: `#RRGGBBAA` (opaque). Used for both basematerials displaycolor and m:color.
+/// 3MF color: `#RRGGBBAA` (opaque). Used for both basematerials displaycolor and m:color.
 fn display_color(rgb: [u8; 3]) -> String {
     format!("#{:02X}{:02X}{:02X}FF", rgb[0], rgb[1], rgb[2])
 }
@@ -440,10 +440,10 @@ mod tests {
         assert_eq!(model.matches("<triangle ").count(), 0);
     }
 
-    /// #1294 / #1299: each coloured body is its own object; basematerials for viewers and
-    /// m:colorgroup (materials extension) so Bambu Studio maps colours → filament slots.
+    /// #1294 / #1299: each colored body is its own object; basematerials for viewers and
+    /// m:colorgroup (materials extension) so Bambu Studio maps colors → filament slots.
     #[test]
-    fn write_3mf_parts_emits_colorgroup_and_per_colour_objects() {
+    fn write_3mf_parts_emits_colorgroup_and_per_color_objects() {
         let red = box_mesh();
         let yellow = {
             let mut m = box_mesh();
@@ -511,9 +511,9 @@ mod tests {
         assert_eq!(model.matches("<triangle ").count(), 24);
     }
 
-    /// Bodies that share a colour share one colorgroup entry (same pindex / filament).
+    /// Bodies that share a color share one colorgroup entry (same pindex / filament).
     #[test]
-    fn write_3mf_parts_dedupes_shared_colours() {
+    fn write_3mf_parts_dedupes_shared_colors() {
         let a = box_mesh();
         let b = box_mesh();
         let bytes = write_3mf_parts(&[
@@ -527,7 +527,7 @@ mod tests {
                 name: "b",
                 mesh: &b,
                 color: [0xff, 0x00, 0x00],
-                material_name: "Also red", // different name, same colour → same filament
+                material_name: "Also red", // different name, same color → same filament
             },
         ]);
         let model = String::from_utf8(zip_entry(&bytes, "3D/3dmodel.model").unwrap()).unwrap();
