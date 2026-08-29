@@ -993,6 +993,15 @@ pub const DIM_STROKE: f32 = 0.6;
 /// reads as a fill texture on the cut faces rather than lines competing with the outline.
 pub const HATCH_STROKE: f32 = MODEL_STROKE * 0.5;
 
+/// Width of one colored-pencil scribble on the page (#1840). A section hatch is a texture and
+/// draws thin; a scribble is the color itself, and laid down at hatch weight the face stayed
+/// nearly bare paper. The viewport's pencil lays a mark heavier than its own outline — this is
+/// the page's version of that.
+pub const SCRIBBLE_STROKE: f32 = MODEL_STROKE * 0.9;
+/// …and how many of them cross the view, corner to corner (#1840). The number, not a spacing
+/// in millimetres, is what makes a hand's fill read the same on a 6 mm part and a 600 mm one.
+pub const SCRIBBLE_LINES_ACROSS: f32 = 80.0;
+
 /// Combined solid mesh of every body a view projects (#1190/#1191). Empty/`None` for sketch
 /// views or when no body still has geometry.
 /// The cutting planes a view is sectioned by (#1689): those of the cross-section view it was
@@ -1953,9 +1962,42 @@ pub struct ShadingStroke {
     pub b: glam::Vec2,
     pub tint: [u8; 3],
     pub shade: f32,
+    /// Which of [`StyledViewGeometry::faces`] this mark was laid on (#1840). It has to be
+    /// painted with that face rather than after all of them: a plate's scribble laid down
+    /// last lands on top of the block standing on the plate.
+    pub over: usize,
     /// Stroke width, in the same device units the other strokes use (#1829). A pencil scribble
     /// is a line; a wash lays broader marks, and its drying rim broader still.
     pub width: f32,
+}
+
+/// One thing a renderer puts on the page, in [`StyledViewGeometry::painted`] order (#1840).
+pub enum PaintedMark<'a> {
+    /// A face's fill.
+    Fill(&'a ShadedFace),
+    /// A mark laid on the face that came before it.
+    Stroke(&'a ShadingStroke),
+}
+
+impl StyledViewGeometry {
+    /// The fills and the marks laid on them, in the order they go on the page (#1840): each
+    /// face, then its own strokes. A renderer must not paint every fill and *then* every
+    /// mark — a face's marks have to go down before whatever stands in front of that face
+    /// covers it, or a plate's scribble lands on top of the block standing on the plate.
+    pub fn painted(&self) -> Vec<PaintedMark<'_>> {
+        let mut by_face: Vec<Vec<&ShadingStroke>> = vec![Vec::new(); self.faces.len()];
+        for stroke in &self.shading {
+            if let Some(bucket) = by_face.get_mut(stroke.over) {
+                bucket.push(stroke);
+            }
+        }
+        let mut out = Vec::with_capacity(self.faces.len() + self.shading.len());
+        for (i, face) in self.faces.iter().enumerate() {
+            out.push(PaintedMark::Fill(face));
+            out.extend(by_face[i].iter().map(|s| PaintedMark::Stroke(s)));
+        }
+        out
+    }
 }
 
 /// One coplanar run of a shaded view's front faces, with the grey it's painted in
@@ -2421,14 +2463,27 @@ pub fn styled_view_geometry(
             .copied()
             .collect();
         // Hatching happens flat on the page: the flats are already projected there, and a
-        // drawing's stroke spacing belongs to the sheet rather than to the model.
+        // drawing's stroke spacing belongs to the sheet rather than to the model. A view is
+        // scaled to fit its card, so a spacing fixed in millimetres of the *part* lays a
+        // dense scribble on a small one and a few stray lines across a big one (#1840) —
+        // take it from how big the view is instead, and a hand covers every part the same.
+        let (mut lo, mut hi) = (glam::Vec2::splat(f32::MAX), glam::Vec2::splat(f32::MIN));
+        for p in fills.iter().flat_map(|f| f.tris.iter()).flat_map(|t| t.iter()) {
+            lo = lo.min(*p);
+            hi = hi.max(*p);
+        }
+        let across = if lo.is_finite() && hi.is_finite() { (hi - lo).length() } else { 100.0 };
+        let spacing = |mm: f32| {
+            (across / SCRIBBLE_LINES_ACROSS * (mm / crate::pencil::PENCIL_SCRIBBLE_SPACING_MM))
+                .clamp(0.3, 6.0)
+        };
         let page = crate::pencil::HatchFrame { origin: Vec3::ZERO, u: Vec3::X, v: Vec3::Y };
         let lift = |tris: &[[glam::Vec2; 3]]| -> Vec<[Vec3; 3]> {
             tris.iter()
                 .map(|t| std::array::from_fn(|i| Vec3::new(t[i].x, t[i].y, 0.0)))
                 .collect()
         };
-        for face in &fills {
+        for (fi, face) in fills.iter().enumerate() {
             let (n, c) = face.plane;
             // Read off the body's own color before the fills are lightened below.
             let body = eframe::egui::Color32::from_rgb(face.tint[0], face.tint[1], face.tint[2]);
@@ -2464,6 +2519,7 @@ pub fn styled_view_geometry(
                             tint,
                             shade,
                             width,
+                            over: fi,
                         }));
                     }
                 }
@@ -2499,6 +2555,7 @@ pub fn styled_view_geometry(
                             tint: [rim.r(), rim.g(), rim.b()],
                             shade: 1.0,
                             width: WASH_EDGE_STROKE,
+                            over: fi,
                         }));
                     }
                 }
@@ -2507,14 +2564,14 @@ pub fn styled_view_geometry(
                     &mut shading,
                     crate::pencil::hatch_in_frame(
                         &page,
-                        crate::pencil::PENCIL_SCRIBBLE_SPACING_MM,
+                        spacing(crate::pencil::PENCIL_SCRIBBLE_SPACING_MM),
                         crate::pencil::PENCIL_HATCH_ANGLE_RAD + turn,
                         &flat,
                         None,
                     ),
                     stroke_tint,
                     1.0,
-                    HATCH_STROKE,
+                    SCRIBBLE_STROKE,
                     true,
                 );
             }
@@ -2540,7 +2597,7 @@ pub fn styled_view_geometry(
                     &mut shading,
                     crate::pencil::hatch_in_frame(
                         &page,
-                        crate::pencil::PENCIL_CAST_SPACING_MM,
+                        spacing(crate::pencil::PENCIL_CAST_SPACING_MM),
                         crate::pencil::PENCIL_HATCH_ANGLE_RAD
                             + turn
                             + crate::pencil::PENCIL_CAST_TURN_RAD,
@@ -2549,7 +2606,7 @@ pub fn styled_view_geometry(
                     ),
                     stroke_tint,
                     PENCIL_SHADOW_SHADE,
-                    HATCH_STROKE,
+                    SCRIBBLE_STROKE,
                     true,
                 );
             }
@@ -2568,7 +2625,11 @@ pub fn styled_view_geometry(
         let wash = view.style == DrawingViewStyle::Watercolor;
         let page = crate::pencil::HatchFrame { origin: Vec3::ZERO, u: Vec3::X, v: Vec3::Y };
         let mut painted: Vec<ShadedFace> = Vec::with_capacity(fills.len());
+        // Splotch fills go in among the flats they belong to, so the marks already laid on
+        // those flats have to follow them to their new places (#1840).
+        let mut moved: Vec<usize> = Vec::with_capacity(fills.len());
         for mut face in fills {
+            moved.push(painted.len());
             let body = eframe::egui::Color32::from_rgb(face.tint[0], face.tint[1], face.tint[2]);
             let ground = if wash {
                 crate::pencil::wash_tone(body)
@@ -2607,6 +2668,9 @@ pub fn styled_view_geometry(
                     plane,
                 });
             }
+        }
+        for stroke in &mut shading {
+            stroke.over = moved[stroke.over];
         }
         fills = painted;
     }
@@ -3052,21 +3116,44 @@ fn render_view_geometry<C: Canvas>(
     // A hidden-line style's rims come through `styled.segments` as the arcs that survive
     // (#1841/#1842); only a wireframe view still strokes a detected circle whole.
     let whole_circles = view_strokes_whole_circles(view);
-    for face in &styled.faces {
-        // `shade` scales the face's tint (#1807): white for the grey Shaded style, the body's
-        // own material color for Colorful, and for the hand-colored styles the ground tone
-        // the geometry already mixed toward the paper (#1825/#1829).
-        let lit = |c: u8| (c as f32 * face.shade.clamp(0.0, 1.0)).round().clamp(0.0, 255.0) as u8;
-        let fill = Rgb(lit(face.tint[0]), lit(face.tint[1]), lit(face.tint[2]));
-        for pts in &face.tris {
-            let s: Vec<(f32, f32)> = pts
-                .iter()
-                .map(|p| {
-                    let sp = to_screen(*p);
-                    (sp.x, sp.y)
-                })
-                .collect();
-            canvas.poly(&s, fill);
+    // Each fill, then the marks laid on it (#1840): a face's colored-pencil scribble or its
+    // wash has to go down before whatever stands in front of that face covers it.
+    for mark in styled.painted() {
+        match mark {
+            PaintedMark::Fill(face) => {
+                // `shade` scales the face's tint (#1807): white for the grey Shaded style, the
+                // body's own material color for Colorful, and for the hand-colored styles the
+                // ground tone the geometry already mixed toward the paper (#1825/#1829).
+                let lit =
+                    |c: u8| (c as f32 * face.shade.clamp(0.0, 1.0)).round().clamp(0.0, 255.0) as u8;
+                let fill = Rgb(lit(face.tint[0]), lit(face.tint[1]), lit(face.tint[2]));
+                for pts in &face.tris {
+                    let s: Vec<(f32, f32)> = pts
+                        .iter()
+                        .map(|p| {
+                            let sp = to_screen(*p);
+                            (sp.x, sp.y)
+                        })
+                        .collect();
+                    canvas.poly(&s, fill);
+                }
+            }
+            // A stroke is a darker patch of the fill it lies on (#1821), so it takes the same
+            // tint × shade the fills do.
+            PaintedMark::Stroke(stroke) => {
+                let lit = |c: u8| {
+                    (c as f32 * stroke.shade.clamp(0.0, 1.0)).round().clamp(0.0, 255.0) as u8
+                };
+                let (sa, sb) = (to_screen(stroke.a), to_screen(stroke.b));
+                canvas.line(
+                    sa.x,
+                    sa.y,
+                    sb.x,
+                    sb.y,
+                    Rgb(lit(stroke.tint[0]), lit(stroke.tint[1]), lit(stroke.tint[2])),
+                    stroke.width,
+                );
+            }
         }
     }
     let ink = styled
@@ -3104,20 +3191,6 @@ fn render_view_geometry<C: Canvas>(
                 }
             }
         }
-    }
-    // Colored-pencil shading (#1821): a stroke is a darker patch of the fill it lies on, so
-    // it takes the same tint × shade the fills do.
-    for stroke in &styled.shading {
-        let lit = |c: u8| (c as f32 * stroke.shade.clamp(0.0, 1.0)).round().clamp(0.0, 255.0) as u8;
-        let (sa, sb) = (to_screen(stroke.a), to_screen(stroke.b));
-        canvas.line(
-            sa.x,
-            sa.y,
-            sb.x,
-            sb.y,
-            Rgb(lit(stroke.tint[0]), lit(stroke.tint[1]), lit(stroke.tint[2])),
-            stroke.width,
-        );
     }
     // The section hatch strokes thinner than the edges (#1784): a fill texture, not
     // geometry.

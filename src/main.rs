@@ -28158,7 +28158,50 @@ impl App {
                 let styled = (view.sketch.is_none())
                     .then(|| crate::drawing::styled_view_geometry(&self.state.doc, &views, view));
                 if let Some(sty) = &styled {
-                    for face in &sty.faces {
+                    // A colored pencil draws its outline in a deepened version of what it
+                    // filled with (#1821); every other style strokes in ink. On white paper
+                    // the print color *is* the right color (#1831/#1840) — lifting it there
+                    // washed the outline out to a pale tint of itself; only the dark sheet
+                    // needs it lifted.
+                    let ink = sty
+                        .stroke_tint
+                        .map(|t| {
+                            if white_paper {
+                                return egui::Color32::from_rgb(t[0], t[1], t[2]);
+                            }
+                            let lift = |c: u8| ((c as f32 * 0.45) as u8).saturating_add(120);
+                            egui::Color32::from_rgb(lift(t[0]), lift(t[1]), lift(t[2]))
+                        })
+                        .unwrap_or(INK);
+                    // Each fill, then the marks laid on it (#1840) — a face's scribble has to
+                    // go down before whatever stands in front of that face covers it.
+                    for mark in sty.painted() {
+                        let face = match mark {
+                            crate::drawing::PaintedMark::Fill(face) => face,
+                            // The marks on that ground (#1821/#1825/#1829) — through the same
+                            // ink-on-paper reading, so a mark that prints darker than its
+                            // ground shows darker here too, which two separate mappings could
+                            // not guarantee.
+                            crate::drawing::PaintedMark::Stroke(stroke) => {
+                                let s = stroke.shade.clamp(0.0, 1.0);
+                                let tint: [u8; 3] =
+                                    std::array::from_fn(|i| (stroke.tint[i] as f32 * s) as u8);
+                                let color = if white_paper {
+                                    egui::Color32::from_rgb(tint[0], tint[1], tint[2])
+                                } else {
+                                    ink_on_dark_sheet(tint)
+                                };
+                                painter.line_segment(
+                                    [
+                                        to_screen(egui::vec2(stroke.a.x, stroke.a.y)),
+                                        to_screen(egui::vec2(stroke.b.x, stroke.b.y)),
+                                    ],
+                                    egui::Stroke::new(stroke.width, color),
+                                );
+                                continue;
+                            }
+                        };
+                        {
                         // The editor sheet is dark; map the print tones down so shading reads
                         // without blowing out (exports keep the light print values). The
                         // face's tint is white for the grey Shaded style and the body's own
@@ -28198,17 +28241,8 @@ impl App {
                             mesh.add_triangle(base, base + 1, base + 2);
                         }
                         painter.add(egui::Shape::mesh(mesh));
+                        }
                     }
-                    // A colored-pencil projection outlines in its own color (#1821); every
-                    // other style strokes in ink. The sheet is dark, so the print color is
-                    // lifted rather than darkened the way the fills are.
-                    let ink = sty
-                        .stroke_tint
-                        .map(|t| {
-                            let lift = |c: u8| ((c as f32 * 0.45) as u8).saturating_add(120);
-                            egui::Color32::from_rgb(lift(t[0]), lift(t[1]), lift(t[2]))
-                        })
-                        .unwrap_or(INK);
                     for (a, b) in &sty.segments {
                         if whole_circles && on_circle(egui::vec2(a.x, a.y), egui::vec2(b.x, b.y)) {
                             continue;
@@ -28229,26 +28263,6 @@ impl App {
                                 to_screen(egui::vec2(b.x, b.y)),
                             ],
                             egui::Stroke::new(crate::drawing::HATCH_STROKE, INK),
-                        );
-                    }
-                    // The marks laid on that ground (#1821/#1825/#1829) — through the same
-                    // ink-on-paper reading, so a mark that prints darker than its ground shows
-                    // darker here too, which two separate mappings could not guarantee.
-                    for stroke in &sty.shading {
-                        let s = stroke.shade.clamp(0.0, 1.0);
-                        let tint: [u8; 3] =
-                            std::array::from_fn(|i| (stroke.tint[i] as f32 * s) as u8);
-                        let color = if white_paper {
-                            egui::Color32::from_rgb(tint[0], tint[1], tint[2])
-                        } else {
-                            ink_on_dark_sheet(tint)
-                        };
-                        painter.line_segment(
-                            [
-                                to_screen(egui::vec2(stroke.a.x, stroke.a.y)),
-                                to_screen(egui::vec2(stroke.b.x, stroke.b.y)),
-                            ],
-                            egui::Stroke::new(stroke.width, color),
                         );
                     }
                 }

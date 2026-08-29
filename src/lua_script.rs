@@ -20800,6 +20800,51 @@ pub mod tests {
         }
     }
 
+    /// #1840: a face's colored-pencil scribble is painted *with* that face, not after every
+    /// face — the marks on a plate used to land on top of the block standing on it, in the
+    /// plate's own color.
+    #[test]
+    fn a_faces_scribble_is_painted_before_what_stands_in_front_of_it() {
+        for style in ["color_pencil", "watercolor"] {
+            let state = plate_with_a_hole_state(style);
+            let views = state.doc.drawings[dkey(0)].views.clone();
+            let geo = crate::drawing::styled_view_geometry(&state.doc, &views, &views[0]);
+            assert!(!geo.shading.is_empty(), "{style}: the faces are marked");
+            let inside = |tris: &[[glam::Vec2; 3]], p: glam::Vec2| {
+                tris.iter().any(|t| {
+                    let area2 = (t[1] - t[0]).perp_dot(t[2] - t[0]);
+                    if area2.abs() < 1e-9 {
+                        return false;
+                    }
+                    let w0 = (t[1] - p).perp_dot(t[2] - p) / area2;
+                    let w1 = (t[2] - p).perp_dot(t[0] - p) / area2;
+                    w0 >= 0.0 && w1 >= 0.0 && 1.0 - w0 - w1 >= 0.0
+                })
+            };
+            // In paint order, the marks that fall where the block stands come *before* the
+            // block's own fill, which then covers them. Painting every mark last put the
+            // plate's scribble on top of the block.
+            let painted = geo.painted();
+            let mut covered = 0;
+            for (i, mark) in painted.iter().enumerate() {
+                let crate::drawing::PaintedMark::Stroke(stroke) = mark else {
+                    continue;
+                };
+                let at = (stroke.a + stroke.b) * 0.5;
+                if painted[i + 1..].iter().any(|later| match later {
+                    crate::drawing::PaintedMark::Fill(face) => inside(&face.tris, at),
+                    crate::drawing::PaintedMark::Stroke(_) => false,
+                }) {
+                    covered += 1;
+                }
+            }
+            assert!(
+                covered > 20,
+                "{style}: only {covered} marks are covered by the fills painted over them"
+            );
+        }
+    }
+
     /// #1841: an edge stops where the solid in front of it starts. Visibility used to be
     /// sampled at 32 fixed points along each edge, so a line ran on past the block hiding it
     /// by up to a thirty-second of its length before the next sample noticed.
