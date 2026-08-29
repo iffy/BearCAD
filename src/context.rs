@@ -289,6 +289,8 @@ pub struct SectionPlaneControl {
     pub offset_text: String,
     pub roll_text: String,
     pub tilt_v_text: String,
+    /// How deep the cut reaches (#1845); empty runs it all the way through.
+    pub depth_text: String,
     pub flip: bool,
     pub has_anchor: bool,
     /// Axis/edge anchors show one angle; face anchors show two tilts (#1752/#1757).
@@ -310,6 +312,8 @@ pub enum SectionPlaneEdit {
     SetOffset(String),
     SetRoll(String),
     SetTiltV(String),
+    /// The Cut depth field (#1845): empty is the through cut, anything else a length.
+    SetDepth(String),
     SetFlip(bool),
     /// The All-bodies switch on the cut picker (#1769): on is every body, off starts an
     /// explicit (initially empty) list for individual picks.
@@ -6896,6 +6900,23 @@ pub fn show_pane(
                     });
                 });
             }
+            // How far the cut reaches before the material comes back (#1845). Blank is the
+            // whole way through — one plane hiding its whole far side, as it always was.
+            labeled_row(ui, "Cut depth", |ui| {
+                ui.add_enabled_ui(controls_enabled, |ui| {
+                    let mut text = control.depth_text.clone();
+                    let resp = crate::expression_input::ValueInput::new(
+                        "section_plane_depth_ctx",
+                        crate::expression_input::ValueKind::Length,
+                    )
+                    .hint("through")
+                    .width(90.0)
+                    .show(ui, &mut text, doc);
+                    if resp.changed() {
+                        on_section_plane_edit(SectionPlaneEdit::SetDepth(text));
+                    }
+                });
+            });
             let mut flip = control.flip;
             if checkbox_row(ui, "Flip", &mut flip, None) {
                 on_section_plane_edit(SectionPlaneEdit::SetFlip(flip));

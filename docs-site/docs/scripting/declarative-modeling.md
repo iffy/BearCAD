@@ -403,8 +403,19 @@ bearcad.section_plane{ origin = {0, 0, 10}, normal = {0, 0, 1}, flip = true }
 bearcad.begin_edit_section_plane{ cut = 0 }        -- the live edit draft (Esc/Enter ends it)
 bearcad.edit_section_plane{ cut = 0, offset = -2, roll = 30 }   -- slide and turn it
 bearcad.delete_section_plane{ cut = 1 }
-local cuts = bearcad.section_planes()              -- { origin, normal, offset, roll, flip,
-                                                   --   bodies ("all" or indices), excludes }
+local cuts = bearcad.section_planes()              -- { origin, normal, offset, depth, roll,
+                                                   --   flip, bodies ("all"/indices), excludes }
+```
+
+**Cut depth** bounds how far a plane reaches. Blank cuts all the way through; a length pairs
+the plane with a second one that far behind it, facing back, so only the slab between the two
+is hidden — a chunk out of the middle rather than a whole half.
+
+```lua
+bearcad.section_plane{ origin = {0, 0, 16}, normal = {0, 0, 1}, depth = 6 }
+bearcad.edit_section_plane{ cut = 0, depth = false }   -- back to cutting through
+local left = bearcad.section_stats(0)                  -- body 0 as the open view shows it:
+                                                       -- { volume, triangles, bbox }
 ```
 
 A plane takes every body unless you scope it (#1769): the tool's **Cut bodies** picker

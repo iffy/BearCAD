@@ -7272,8 +7272,10 @@ thread_local! {
         std::cell::RefCell::new((0, HashMap::new()));
 }
 
-/// The half-space a cutting plane takes **away** (#1688): everything behind the plane, or in
-/// front of it when the cut is flipped. Sized to swallow the whole body it is cutting.
+/// The region a cutting plane takes **away** (#1688): everything behind the plane, or in
+/// front of it when the cut is flipped. Sized to swallow the whole body it is cutting — or,
+/// when the plane carries a cut depth (#1845), only that far, which leaves a slab out of the
+/// middle of the body rather than a missing half.
 fn cross_section_halfspace(
     doc: &Document,
     body: crate::model::BodyKey,
@@ -7295,7 +7297,14 @@ fn cross_section_halfspace(
     ];
     // The kept side is the one the normal points toward, so the prism runs the other way.
     let away = if cut.flip { n } else { -n };
-    crate::kernel::Shape::prism(&profile, away * reach)
+    // A cut depth stops the prism short, so the material comes back behind it (#1845). A
+    // zero or negative depth hides nothing at all.
+    let run = match cut.depth_mm {
+        Some(depth) if depth <= 0.0 => return None,
+        Some(depth) => depth.min(reach),
+        None => reach,
+    };
+    crate::kernel::Shape::prism(&profile, away * run)
 }
 
 /// The lined pattern drawn on the faces a cutting plane opened (#1688): parallel world-space
@@ -7307,11 +7316,23 @@ pub fn section_hatch_segments(
     cut: &crate::model::CrossSectionCut,
     spacing: f32,
 ) -> Vec<(Vec3, Vec3)> {
+    // A cut depth opens a second face, on the plane it put behind the first (#1845).
+    crate::construction::cross_section_cut_faces(cut)
+        .iter()
+        .flat_map(|plane| plane_hatch_segments(mesh, plane, spacing))
+        .collect()
+}
+
+/// The hatch on the faces lying in one plane — see [`section_hatch_segments`].
+fn plane_hatch_segments(
+    mesh: &SolidMesh,
+    plane: &crate::model::ConstructionPlane,
+    spacing: f32,
+) -> Vec<(Vec3, Vec3)> {
     const ON_PLANE_EPS: f32 = 1e-3;
     /// A pathological face would ask for thousands of lines; cap the run per triangle.
     const MAX_LINES: i32 = 512;
     let spacing = spacing.max(0.05);
-    let plane = crate::construction::cross_section_cut_plane(cut);
     let (o, n, u, v) = (plane.origin, plane.normal, plane.u_axis, plane.v_axis);
     let mut out = Vec::new();
     for tri in &mesh.triangles {
@@ -7361,8 +7382,19 @@ pub fn section_face_perimeter_segments(
     mesh: &SolidMesh,
     cut: &crate::model::CrossSectionCut,
 ) -> Vec<(Vec3, Vec3)> {
+    // A cut depth opens a second face to outline, on the plane behind the first (#1845).
+    crate::construction::cross_section_cut_faces(cut)
+        .iter()
+        .flat_map(|plane| plane_face_perimeter_segments(mesh, plane))
+        .collect()
+}
+
+/// The rim of the cut faces lying in one plane — see [`section_face_perimeter_segments`].
+fn plane_face_perimeter_segments(
+    mesh: &SolidMesh,
+    plane: &crate::model::ConstructionPlane,
+) -> Vec<(Vec3, Vec3)> {
     const ON_PLANE_EPS: f32 = 1e-3;
-    let plane = crate::construction::cross_section_cut_plane(cut);
     let (o, n) = (plane.origin, plane.normal);
     type EdgeKey = ((i64, i64, i64), (i64, i64, i64));
     // Count how many in-plane triangles use each edge: an edge of the cut face's rim borders
@@ -17632,6 +17664,68 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// #1845: a cut depth bounds how far the plane reaches. The plane still hides what is
+    /// behind it, but only for that many millimetres — a second plane facing the other way
+    /// brings the material back — so a slab comes out of the middle instead of a whole half.
+    #[test]
+    fn cut_depth_takes_a_slab_out_of_the_middle() {
+        let (mut doc, _sketch, ext) = box_doc(); // 10x10 footprint, 5 tall
+        doc.extrusions.insert(ext);
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(xkey(0)),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let through = crate::model::CrossSectionCut {
+            origin: glam::Vec3::new(0.0, 0.0, 4.0),
+            normal: glam::Vec3::Z,
+            ..Default::default()
+        };
+        let whole = cross_section_body_mesh(&doc, bkey(0), std::slice::from_ref(&through))
+            .expect("the top slice survives");
+        assert!(
+            (mesh_signed_volume(&whole).abs() - 100.0).abs() < 1.0,
+            "an unbounded cut takes everything below z = 4, got {}",
+            mesh_signed_volume(&whole).abs()
+        );
+
+        let slab = crate::model::CrossSectionCut {
+            depth_mm: Some(2.0),
+            ..through.clone()
+        };
+        let mesh = cross_section_body_mesh(&doc, bkey(0), std::slice::from_ref(&slab))
+            .expect("both sides of the slab survive");
+        assert!(
+            (mesh_signed_volume(&mesh).abs() - 300.0).abs() < 1.0,
+            "only the 10x10x2 slab is hidden, got {}",
+            mesh_signed_volume(&mesh).abs()
+        );
+        let (min, max) = mesh.bounds().expect("bounds");
+        assert!(
+            min.z.abs() < 1e-3 && (max.z - 5.0).abs() < 1e-3,
+            "material stays on both sides of the slab, got {min:?}..{max:?}"
+        );
+
+        // Both faces the pair opened are hatched — the near one at z = 4 and the far one
+        // the depth put at z = 2.
+        let hatch = section_hatch_segments(&mesh, &slab, SECTION_HATCH_SPACING_MM);
+        assert!(
+            hatch.iter().any(|(a, _)| (a.z - 4.0).abs() < 1e-3),
+            "the near cut face is hatched"
+        );
+        assert!(
+            hatch.iter().any(|(a, _)| (a.z - 2.0).abs() < 1e-3),
+            "the far cut face the depth opened is hatched too"
+        );
+        let perimeter = section_face_perimeter_segments(&mesh, &slab);
+        let lap: f32 = perimeter.iter().map(|(a, b)| (*b - *a).length()).sum();
+        assert!(
+            (lap - 80.0).abs() < 1e-2,
+            "both cut faces get an outlined rim (two 40mm laps), got {lap}"
+        );
     }
 
     /// #1777: the hatch lines on a cut face run unbroken — every segment a line picks up

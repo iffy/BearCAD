@@ -2272,30 +2272,40 @@ impl ViewportScene {
             selected_cuts.push(preview.cut.clone());
         }
         for cut in &selected_cuts {
-            let plane = crate::construction::cross_section_cut_plane(cut);
-            let corners = crate::construction::plane_corners(&plane);
-            mesh.push_quad_fill(
-                corners,
-                fill_color(palette.preview, palette.construction_plane_opacity),
-            );
-            mesh.push_quad_outline(
-                corners,
-                palette.preview,
-                2.0,
-                input.cam,
-                input.viewport,
-                &vp,
-            );
-            let kept = if cut.flip { -plane.normal } else { plane.normal };
-            mesh.push_line_segment(
-                plane.origin,
-                plane.origin + kept * 12.0,
-                palette.preview,
-                2.0,
-                input.cam,
-                input.viewport,
-                &vp,
-            );
+            let front = crate::construction::cross_section_cut_plane(cut);
+            let kept = if cut.flip { -front.normal } else { front.normal };
+            // A cut depth hangs a second plane that far behind the first (#1845): both draw,
+            // so the slab the pair hides reads as the gap between two quads. The back plane's
+            // own normal already points at the material it keeps.
+            let back = crate::construction::cross_section_back_plane(cut);
+            let faces = [Some((front, kept))]
+                .into_iter()
+                .flatten()
+                .chain(back.map(|p| { let n = p.normal; (p, n) }));
+            for (plane, kept) in faces {
+                let corners = crate::construction::plane_corners(&plane);
+                mesh.push_quad_fill(
+                    corners,
+                    fill_color(palette.preview, palette.construction_plane_opacity),
+                );
+                mesh.push_quad_outline(
+                    corners,
+                    palette.preview,
+                    2.0,
+                    input.cam,
+                    input.viewport,
+                    &vp,
+                );
+                mesh.push_line_segment(
+                    plane.origin,
+                    plane.origin + kept * 12.0,
+                    palette.preview,
+                    2.0,
+                    input.cam,
+                    input.viewport,
+                    &vp,
+                );
+            }
         }
         // The lined pattern on the faces the planes opened (#1688): thick dark grey, not
         // thin yellow (#1759).

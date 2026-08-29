@@ -267,7 +267,7 @@ bearcad.edit_mirror{ index, plane, bodies, output }
 bearcad.edit_move{ index, bodies, images, x, y, z, rx, ry, rz, roll, flip, spin, gap, from, to, from_b, to_b, from_c, to_c }   -- from/to are { body = i, vertex = {x,y,z} } | { body = i, edge = {{x,y,z},{x,y,z}} } | { origin = true }
 bearcad.edit_plane(index)
 bearcad.edit_repeat{ index, bodies, axis, around, flip, mode, count, spacing, gap, length, to }
-bearcad.edit_section_plane{ view, cut, offset, roll, flip, bodies, exclude_bodies }
+bearcad.edit_section_plane{ view, cut, offset, roll, depth, flip, bodies, exclude_bodies }
 bearcad.edit_shape{ index, shape, at, normal, u_axis, width, depth, height, radius, name }
 bearcad.edit_shell{ index, bodies, faces, thickness }
 bearcad.edit_sketch_mirror{ index, sketch, line, lines, circles }
@@ -334,8 +334,9 @@ bearcad.revert_joint(op)
 bearcad.revert_joints()
 bearcad.revolve{ circle, circles, polygon, axis, symmetric, bodies, body, line, revolutions, angle, pitch, offset, gap, name }
 bearcad.save(path?)
-bearcad.section_plane{ view, plane, origin, normal, offset, roll, flip, bodies, exclude_bodies }
+bearcad.section_plane{ view, plane, origin, normal, offset, roll, depth, flip, bodies, exclude_bodies }   -- depth: how far the cut reaches; omitted or false cuts through
 bearcad.section_planes(view?)   -- view: cross-section index or name; omitted = the view being edited
+bearcad.section_stats(index)   -- body as the open cross-section shows it: { volume, triangles, bbox }
 bearcad.select(…)
 bearcad.selection()
 bearcad.session_log()

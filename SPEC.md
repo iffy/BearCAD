@@ -2361,8 +2361,9 @@ outside the shape/undo DAG.
 - **Model:** `Document::cross_sections` is an `arena::Arena<CrossSection>`; a view is named by
   a `CrossSectionKey` (`SceneElement::CrossSection`, `HierarchyNode::CrossSection`). Each
   view holds a name and its `cuts`: a `CrossSectionCut` per plane — the frame it was placed on
-  (`origin`/`normal`), how far it has slid along its own normal (`offset_mm`), its two
-  in-plane tilts (`roll` / `tilt_v`), and which side survives (`flip`).
+  (`origin`/`normal`), how far it has slid along its own normal (`offset_mm`), how deep the
+  cut reaches (`depth_mm`, #1845), its two in-plane tilts (`roll` / `tilt_v`), and which side
+  survives (`flip`).
 - **Where they live:** views group under a **Views** section at the bottom of the Elements
   pane, the way drawings group under Drawings (#1205) — with their own filter toggle. The
   section collapses; the views inside are ordinary elements (selectable, renameable,
@@ -2392,6 +2393,11 @@ outside the shape/undo DAG.
   open shell — and it is **hatched**: parallel lines at 3 mm, phased from the plane's own
   origin so they run unbroken across the whole face rather than restarting per triangle.
   The kept side is the one the plane's normal points toward; **Flip** keeps the other.
+  **Cut depth (#1845)** bounds how far the plane reaches: blank cuts all the way through,
+  while a length pairs the plane with a second one that far behind it facing back, so only
+  the slab between the two is hidden — a chunk out of the middle of the model rather than a
+  whole half. Both planes open a hatched, outlined face, and both draw their quad while the
+  plane is selected.
   A face coplanar with a cutting plane is drawn only if some of the body sits on the keep
   side. Visible views cut the model in every workbench — hide a view to lift its cut.
   The hatch is thick dark grey. The yellow plane quad draws only while the plane is selected
@@ -2404,11 +2410,14 @@ outside the shape/undo DAG.
   hangs it on the open view. Double-click a hanging plane (or right-click **Edit**) to
   reopen the same inputs with a live preview. Cutting planes nest under their view in the
   Elements pane and are hidden from that pane in the modeling workbench.
-  Scriptable: `bearcad.section_plane{ view?, plane|origin+normal, offset?, roll?, flip?,
-  bodies?, exclude_bodies? }`, `bearcad.edit_section_plane{ view?, cut, …, bodies?,
-  exclude_bodies? }`, `bearcad.delete_section_plane{ view?, cut }`,
-  and `bearcad.section_planes(view?)` reads them back (`roll` in degrees; `bodies` is
-  `"all"` or body indices, `excludes` the spared ones). A scope is a `bodies` list and an
+  Scriptable: `bearcad.section_plane{ view?, plane|origin+normal, offset?, roll?, depth?,
+  flip?, bodies?, exclude_bodies? }`, `bearcad.edit_section_plane{ view?, cut, …, depth?,
+  bodies?, exclude_bodies? }`, `bearcad.delete_section_plane{ view?, cut }`,
+  and `bearcad.section_planes(view?)` reads them back (`roll` in degrees; `depth` is a
+  length or `false` for a cut that runs through; `bodies` is
+  `"all"` or body indices, `excludes` the spared ones). `bearcad.section_stats(body)` gives
+  a body's `{ volume, triangles, bbox }` **as the open view shows it** (#1845), so a script
+  can see what the planes actually took. A scope is a `bodies` list and an
   `exclude_bodies` list (#1769): a pane picker each, each with an All-bodies switch — a
   body is cut when it is listed (or all) **and** not excluded.
 - **The View workbench (#1686):** creating a view — or double-clicking one's row, or its

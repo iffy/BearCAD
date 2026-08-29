@@ -2410,9 +2410,13 @@ pub struct CreatingSectionPlane {
     /// Face-anchor tilt around the second in-plane axis, degrees (#1752). Unused for an axis.
     pub tilt_v_deg: f32,
     pub flip: bool,
+    /// How deep the cut reaches (#1845): `None` runs all the way through.
+    pub depth_live: Option<f32>,
     pub offset_text: String,
     pub roll_text: String,
     pub tilt_v_text: String,
+    /// The Cut depth field's text; empty is "all the way through" (#1845).
+    pub depth_text: String,
     pub user_edited_offset: bool,
     pub user_edited_roll: bool,
     pub user_edited_tilt_v: bool,
@@ -2457,9 +2461,11 @@ impl Default for CreatingSectionPlane {
             roll_deg: 0.0,
             tilt_v_deg: 0.0,
             flip: false,
+            depth_live: None,
             offset_text: String::new(),
             roll_text: String::new(),
             tilt_v_text: String::new(),
+            depth_text: String::new(),
             user_edited_offset: false,
             user_edited_roll: false,
             user_edited_tilt_v: false,
@@ -2494,6 +2500,7 @@ impl CreatingSectionPlane {
             offset_live: cut.offset_mm,
             roll_deg: cut.roll.to_degrees(),
             tilt_v_deg: cut.tilt_v.to_degrees(),
+            depth_live: cut.depth_mm,
             flip: cut.flip,
             offset_text: if cut.offset_expression.is_empty() {
                 format!("{}", cut.offset_mm)
@@ -2510,6 +2517,12 @@ impl CreatingSectionPlane {
             } else {
                 cut.tilt_v_expression.clone()
             },
+            // An empty depth field is the through cut, so `None` stays blank (#1845).
+            depth_text: match (&cut.depth_expression, cut.depth_mm) {
+                (e, _) if !e.is_empty() => e.clone(),
+                (_, Some(d)) => format!("{d}"),
+                (_, None) => String::new(),
+            },
             user_edited_offset: !cut.offset_expression.is_empty(),
             user_edited_roll: !cut.roll_expression.is_empty(),
             user_edited_tilt_v: !cut.tilt_v_expression.is_empty(),
@@ -2518,6 +2531,20 @@ impl CreatingSectionPlane {
             exclude_bodies: cut.exclude_bodies.clone(),
             ..Self::default()
         }
+    }
+
+    /// The cut depth the draft's field asks for (#1845): an empty field is the through cut,
+    /// anything else a length expression evaluated in the document.
+    pub fn depth(&self, doc: &crate::model::Document) -> (Option<f32>, String) {
+        let text = self.depth_text.trim();
+        if text.is_empty() {
+            return (None, String::new());
+        }
+        let live = self.depth_live.unwrap_or(0.0);
+        (
+            Some(crate::value::parse_length_or_in_doc(text, doc, live)),
+            text.to_string(),
+        )
     }
 
     pub fn as_cut(&self, doc: &crate::model::Document) -> crate::model::CrossSectionCut {
@@ -2536,6 +2563,7 @@ impl CreatingSectionPlane {
                 live
             }
         };
+        let (depth_mm, depth_expression) = self.depth(doc);
         match &self.reference {
             crate::construction::PlaneReference::Axis {
                 origin, direction, ..
@@ -2552,6 +2580,8 @@ impl CreatingSectionPlane {
                     } else {
                         String::new()
                     },
+                    depth_mm,
+                    depth_expression: depth_expression.clone(),
                     flip: self.flip,
                     roll: 0.0,
                     roll_expression: String::new(),
@@ -2574,6 +2604,8 @@ impl CreatingSectionPlane {
                     } else {
                         String::new()
                     },
+                    depth_mm,
+                    depth_expression,
                     flip: self.flip,
                     roll: tilt_u.to_radians(),
                     roll_expression: if self.user_edited_roll {
@@ -2626,6 +2658,7 @@ impl CreatingSectionPlane {
                 origin: *origin,
                 normal: plane.normal,
                 offset_mm: self.offset_live,
+                depth_mm: self.depth_live,
                 flip: self.flip,
                 cut_bodies: self.cut_bodies.clone(),
                 exclude_bodies: self.exclude_bodies.clone(),
@@ -2637,6 +2670,7 @@ impl CreatingSectionPlane {
                 origin: *origin,
                 normal: *normal,
                 offset_mm: self.offset_live,
+                depth_mm: self.depth_live,
                 flip: self.flip,
                 roll: self.roll_deg.to_radians(),
                 tilt_v: self.tilt_v_deg.to_radians(),
@@ -3263,6 +3297,9 @@ pub enum Action {
         cut: usize,
         offset_mm: Option<f32>,
         roll_deg: Option<f32>,
+        /// The plane's cut depth (#1845): the outer `None` leaves it alone, an inner `None`
+        /// puts the cut back to running all the way through.
+        depth_mm: Option<Option<f32>>,
         flip: Option<bool>,
         /// Scope the plane's cut (#1769): the outer `None` leaves it alone, an inner `None`
         /// means every body, and a list restricts the cut to those bodies.
@@ -14243,6 +14280,7 @@ impl AppState {
                 cut,
                 offset_mm,
                 roll_deg,
+                depth_mm,
                 flip,
                 cut_bodies,
                 exclude_bodies,
@@ -14262,6 +14300,10 @@ impl AppState {
                 }
                 if let Some(roll) = roll_deg {
                     plane.roll = roll.to_radians();
+                }
+                if let Some(depth) = depth_mm {
+                    plane.depth_mm = depth;
+                    plane.depth_expression = String::new();
                 }
                 if let Some(flip) = flip {
                     plane.flip = flip;
@@ -41094,6 +41136,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             cut: 0,
             offset_mm: None,
             roll_deg: None,
+            depth_mm: None,
             flip: None,
             cut_bodies: Some(Some(vec![b])),
             exclude_bodies: None,
@@ -41151,6 +41194,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             cut: 0,
             offset_mm: Some(-3.5),
             roll_deg: None,
+            depth_mm: None,
             flip: None,
             cut_bodies: None,
             exclude_bodies: None,
@@ -41160,6 +41204,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             cut: 0,
             offset_mm: None,
             roll_deg: Some(90.0),
+            depth_mm: None,
             flip: Some(true),
             cut_bodies: None,
             exclude_bodies: None,

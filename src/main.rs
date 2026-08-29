@@ -17088,6 +17088,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     offset_text: cs.map(|c| c.offset_text.clone()).unwrap_or_default(),
                     roll_text: cs.map(|c| c.roll_text.clone()).unwrap_or_default(),
                     tilt_v_text: cs.map(|c| c.tilt_v_text.clone()).unwrap_or_default(),
+                    depth_text: cs.map(|c| c.depth_text.clone()).unwrap_or_default(),
                     flip: cs.map(|c| c.flip).unwrap_or(false),
                     has_anchor: cs.is_some_and(|c| c.anchor.is_some() || c.edit_cut.is_some()),
                     show_angle: is_axis,
@@ -17549,6 +17550,20 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                             )
                             .map(|r| r.to_degrees())
                             .unwrap_or(cs.roll_deg);
+                        }
+                    }
+                    context::SectionPlaneEdit::SetDepth(value) => {
+                        if let Some(cs) = self.state.creating_section.as_mut() {
+                            cs.depth_text = value;
+                            // An empty field is the through cut (#1845); anything else is a
+                            // length the preview follows live.
+                            cs.depth_live = (!cs.depth_text.trim().is_empty()).then(|| {
+                                crate::value::parse_length_or_in_doc(
+                                    &cs.depth_text,
+                                    &self.state.doc,
+                                    cs.depth_live.unwrap_or(0.0),
+                                )
+                            });
                         }
                     }
                     context::SectionPlaneEdit::SetFlip(flip) => {
@@ -18464,6 +18479,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                             cut,
                             offset_mm: Some(offset_mm),
                             roll_deg: None,
+                            depth_mm: None,
                             flip: None,
                             cut_bodies: None,
                             exclude_bodies: None,
@@ -18474,6 +18490,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                         cut,
                         offset_mm: None,
                         roll_deg: Some(roll_deg),
+                        depth_mm: None,
                         flip: None,
                         cut_bodies: None,
                         exclude_bodies: None,
@@ -18483,6 +18500,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                         cut,
                         offset_mm: None,
                         roll_deg: None,
+                        depth_mm: None,
                         flip: Some(flip),
                         cut_bodies: None,
                         exclude_bodies: None,

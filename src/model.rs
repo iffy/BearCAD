@@ -5499,6 +5499,15 @@ pub struct CrossSectionCut {
     /// Typed offset expression, when the user typed one (#1745). Empty means the live number.
     #[serde(default)]
     pub offset_expression: String,
+    /// How deep the cut reaches, in millimetres (#1845). `None` cuts all the way through, the
+    /// way a lone plane always did. `Some(d)` pairs the plane with a second one `d` behind it
+    /// facing the other way, so only the slab between the two is hidden and a chunk comes out
+    /// of the middle of the model instead of a whole half.
+    #[serde(default)]
+    pub depth_mm: Option<f32>,
+    /// Typed cut-depth expression, when the user typed one (#1845). Empty means the live number.
+    #[serde(default)]
+    pub depth_expression: String,
     /// Which side survives: by default the material the normal points **toward** is kept and
     /// everything behind the plane is hidden, so you look along the normal into the cut.
     /// Flipping keeps the other side instead.
@@ -5535,6 +5544,8 @@ impl Default for CrossSectionCut {
             normal: glam::Vec3::Z,
             offset_mm: 0.0,
             offset_expression: String::new(),
+            depth_mm: None,
+            depth_expression: String::new(),
             flip: false,
             roll: 0.0,
             roll_expression: String::new(),

@@ -1086,6 +1086,42 @@ pub fn cross_section_cut_plane(cut: &crate::model::CrossSectionCut) -> Construct
     }
 }
 
+/// The far plane of a depth-bounded cut (#1845): the cutting plane slid `depth_mm` into the
+/// side it hides, facing back the other way, so the pair hides only the slab between them.
+/// `None` when the cut runs all the way through and there is no second plane.
+pub fn cross_section_back_plane(
+    cut: &crate::model::CrossSectionCut,
+) -> Option<ConstructionPlane> {
+    let depth = cut.depth_mm?;
+    if !(depth > 0.0) {
+        return None;
+    }
+    let front = cross_section_cut_plane(cut);
+    // The front plane keeps the side its normal points toward, so the hidden slab runs the
+    // other way and the back plane faces back into it.
+    let away = if cut.flip { front.normal } else { -front.normal };
+    // Its normal points at the material it keeps — everything past the slab — the same way
+    // an unflipped cutting plane's does.
+    let (u_axis, v_axis) = plane_basis(away);
+    Some(ConstructionPlane {
+        origin: front.origin + away * depth,
+        normal: away,
+        u_axis,
+        v_axis,
+        ..front
+    })
+}
+
+/// Every plane a cut opens a face on (#1845): the cutting plane itself, plus the far plane a
+/// finite cut depth adds. What the hatch and the cut-face outline are drawn on.
+pub fn cross_section_cut_faces(
+    cut: &crate::model::CrossSectionCut,
+) -> Vec<ConstructionPlane> {
+    let mut planes = vec![cross_section_cut_plane(cut)];
+    planes.extend(cross_section_back_plane(cut));
+    planes
+}
+
 pub fn plane_corners(plane: &ConstructionPlane) -> [Vec3; 4] {
     plane_corners_of(plane, plane.extent)
 }

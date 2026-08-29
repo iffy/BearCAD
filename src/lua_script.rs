@@ -1005,6 +1005,24 @@ fn section_plane_body_scope(
     })
 }
 
+/// A cutting plane's `depth` option (#1845). Outer `None` is the key being absent —
+/// leave-alone on edit, and the through cut on create. Inner `None` is `false` / `"through"`:
+/// the cut runs all the way through. A number bounds it to that many millimetres.
+fn cut_depth(opts: &Table) -> mlua::Result<Option<Option<f32>>> {
+    Ok(match opts.get::<Value>("depth")? {
+        Value::Nil => None,
+        Value::Boolean(false) => Some(None),
+        Value::String(ref s) if s.to_str()? == "through" => Some(None),
+        Value::Integer(i) => Some(Some(i as f32)),
+        Value::Number(n) => Some(Some(n as f32)),
+        other => {
+            return Err(mlua::Error::external(format!(
+                "depth takes a length or false (cut through), got {other:?}"
+            )))
+        }
+    })
+}
+
 /// World millimetres (what `body_faces` writes for `face`), quantized on the way in.
 fn parse_world_mm(table: &Table, key: &str) -> mlua::Result<[i32; 3]> {
     let [x, y, z] = parse_xyz(table, key)?;
@@ -4719,6 +4737,43 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 return Ok(Value::Nil);
             };
             let Some(mesh) = crate::extrude::body_solid_mesh(doc, index) else {
+                return Ok(Value::Nil);
+            };
+            let Some((min, max)) = mesh.bounds() else {
+                return Ok(Value::Nil);
+            };
+            let t = lua.create_table()?;
+            t.set("volume", crate::extrude::mesh_signed_volume(&mesh).abs())?;
+            t.set("triangles", mesh.triangles.len())?;
+            let bbox = lua.create_table()?;
+            bbox.set("min", vec3_lua(lua, min)?)?;
+            bbox.set("max", vec3_lua(lua, max)?)?;
+            t.set("bbox", bbox)?;
+            Ok(Value::Table(t))
+        })?,
+    )?;
+
+    // A body **as the open cross-section view shows it** (#1845): the same
+    // `{ volume, triangles, bbox }` `body_stats` gives, measured on the mesh the view's
+    // cutting planes leave behind. Without it a script can hang planes but never see what
+    // they took. `nil` when nothing of the body survives the cut.
+    api.set(
+        "section_stats",
+        lua.create_function(|lua, index: Ordinal| {
+            let index = index.0;
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let state = unsafe { tick.state() };
+            let Some(key) = state.doc.bodies.keys().nth(index) else {
+                return Ok(Value::Nil);
+            };
+            let cuts: Vec<crate::model::CrossSectionCut> = state
+                .editing_cross_section
+                .and_then(|v| state.doc.cross_sections.get(v))
+                .map(|v| v.cuts.clone())
+                .unwrap_or_default();
+            let Some(mesh) = crate::extrude::sectioned_body_mesh(&state.doc, key, &cuts) else {
                 return Ok(Value::Nil);
             };
             let Some((min, max)) = mesh.bounds() else {
@@ -9070,7 +9125,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "section_plane",
-                &["view", "plane", "origin", "normal", "offset", "roll", "flip", "bodies", "exclude_bodies"],
+                &["view", "plane", "origin", "normal", "offset", "roll", "depth", "flip", "bodies", "exclude_bodies"],
             )?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let view: Option<usize> = opts.ordinal_opt("view")?;
@@ -9098,6 +9153,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 },
                 offset: opts.get("offset")?,
                 roll_deg: opts.get("roll")?,
+                // `depth` is the cut depth (#1845): a length, or absent/`false` to run
+                // all the way through.
+                depth: cut_depth(&opts)?.flatten(),
                 flip: opts.get("flip")?,
                 cut_bodies,
                 exclude_bodies,
@@ -9144,7 +9202,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "edit_section_plane",
-                &["view", "cut", "offset", "roll", "flip", "bodies", "exclude_bodies"],
+                &["view", "cut", "offset", "roll", "depth", "flip", "bodies", "exclude_bodies"],
             )?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let instr = Instruction::EditSectionPlane {
@@ -9152,6 +9210,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 cut: opts.get("cut")?,
                 offset: opts.get("offset")?,
                 roll_deg: opts.get("roll")?,
+                // `depth` is left alone when absent; `false` runs the cut through again;
+                // a length bounds it (#1845).
+                depth: cut_depth(&opts)?,
                 flip: opts.get("flip")?,
                 // `bodies` is left alone when absent; `"all"`/`true` restores every body;
                 // a table restricts the cut to those bodies (#1769).
@@ -9236,6 +9297,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 t.set("normal", vec3_lua(lua, cut.normal)?)?;
                 t.set("offset", cut.offset_mm)?;
                 t.set("roll", cut.roll.to_degrees())?;
+                // The cut depth (#1845): a length, or `false` when the cut runs through.
+                match cut.depth_mm {
+                    Some(depth) => t.set("depth", depth)?,
+                    None => t.set("depth", false)?,
+                }
                 t.set("flip", cut.flip)?;
                 match &cut.cut_bodies {
                     None => t.set("bodies", "all")?,

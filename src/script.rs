@@ -312,6 +312,8 @@ pub enum Instruction {
         normal: Option<[f32; 3]>,
         offset: Option<f32>,
         roll_deg: Option<f32>,
+        /// How deep the cut reaches (#1845); `None` runs all the way through.
+        depth: Option<f32>,
         flip: Option<bool>,
         /// Which bodies the plane cuts (#1769): `None` is every body.
         cut_bodies: Option<Vec<usize>>,
@@ -324,6 +326,8 @@ pub enum Instruction {
         cut: usize,
         offset: Option<f32>,
         roll_deg: Option<f32>,
+        /// `None` leaves the cut depth; `Some(None)` puts it back to running through (#1845).
+        depth: Option<Option<f32>>,
         flip: Option<bool>,
         /// `None` leaves the scope; `Some(None)` is every body again (#1769).
         cut_bodies: Option<Option<Vec<usize>>>,
@@ -1469,7 +1473,7 @@ impl Instruction {
             Instruction::SetWorkbench { workbench } => {
                 format!("bearcad.ui.workbench({:?})", workbench.script_name())
             }
-            Instruction::AddSectionPlane { view, plane, origin, normal, offset, roll_deg, flip, cut_bodies, exclude_bodies } => {
+            Instruction::AddSectionPlane { view, plane, origin, normal, offset, roll_deg, depth, flip, cut_bodies, exclude_bodies } => {
                 let mut parts: Vec<String> = Vec::new();
                 if let Some(v) = view {
                     parts.push(format!("view = {v}"));
@@ -1489,6 +1493,9 @@ impl Instruction {
                 if let Some(r) = roll_deg {
                     parts.push(format!("roll = {r}"));
                 }
+                if let Some(d) = depth {
+                    parts.push(format!("depth = {d}"));
+                }
                 if let Some(f) = flip {
                     parts.push(format!("flip = {f}"));
                 }
@@ -1500,7 +1507,7 @@ impl Instruction {
                 }
                 format!("bearcad.section_plane{{ {} }}", parts.join(", "))
             }
-            Instruction::EditSectionPlane { view, cut, offset, roll_deg, flip, cut_bodies, exclude_bodies } => {
+            Instruction::EditSectionPlane { view, cut, offset, roll_deg, depth, flip, cut_bodies, exclude_bodies } => {
                 let mut parts: Vec<String> = vec![format!("cut = {cut}")];
                 if let Some(v) = view {
                     parts.insert(0, format!("view = {v}"));
@@ -1510,6 +1517,12 @@ impl Instruction {
                 }
                 if let Some(r) = roll_deg {
                     parts.push(format!("roll = {r}"));
+                }
+                if let Some(d) = depth {
+                    parts.push(match d {
+                        None => "depth = false".to_string(),
+                        Some(mm) => format!("depth = {mm}"),
+                    });
                 }
                 if let Some(f) = flip {
                     parts.push(format!("flip = {f}"));
@@ -6999,6 +7012,7 @@ impl ScriptRunner {
                 normal,
                 offset,
                 roll_deg,
+                depth,
                 flip,
                 cut_bodies,
                 exclude_bodies,
@@ -7035,6 +7049,7 @@ impl ScriptRunner {
                 }
                 cut.offset_mm = offset.unwrap_or(0.0);
                 cut.roll = roll_deg.unwrap_or(0.0).to_radians();
+                cut.depth_mm = depth;
                 cut.flip = flip.unwrap_or(false);
                 // Body scopes resolve eagerly so a bad index fails loudly rather than being
                 // silently dropped from the plane's cut (#1769).
@@ -7063,7 +7078,7 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::EditSectionPlane { view, cut, offset, roll_deg, flip, cut_bodies, exclude_bodies } => {
+            Instruction::EditSectionPlane { view, cut, offset, roll_deg, depth, flip, cut_bodies, exclude_bodies } => {
                 let view = match cross_section_key(&state.doc, view) {
                     Ok(key) => key,
                     Err(e) => {
@@ -7095,6 +7110,7 @@ impl ScriptRunner {
                     cut,
                     offset_mm: offset,
                     roll_deg,
+                    depth_mm: depth,
                     flip,
                     // Outer `None` leaves the scope; inner `None` is every body again.
                     cut_bodies: cut_bodies
