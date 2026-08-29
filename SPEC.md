@@ -413,6 +413,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   delivered through eframe's `raw_input_hook`, so they build genuine egui pointer state —
   driving click-select and drags end to end, asserting on geometry via
   `bearcad.line_endpoints`.
+  **A pointer call aimed at a world point waits out a camera glide (#1814):** where that point
+  lands on screen is not yet where it will land, so the runner answers `StepResult::Wait` and
+  the Lua wrapper yields and calls again (bounded, then errors). `exec` used to drop that
+  answer, turning "not yet" into "never" — the call vanished and the script went on to assert
+  against a click that never happened.
   Construction (dashed grey) and projected (solid cyan, #140/#1186) styling take precedence.
   **Construction geometry draws only inside its own sketch (#994):** it is scaffolding — a guide
   to dimension and constrain against, never model geometry — so a construction line or circle is

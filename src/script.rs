@@ -5764,6 +5764,11 @@ pub struct ScriptRunner {
     /// script error so invalid input fails loudly instead of silently doing nothing.
     /// Instruction-list playback ignores it (the GUI status bar already reports it).
     pub(crate) last_action_error: Option<String>,
+    /// Whether the last instruction asked to be retried rather than run (#1814) — a pointer
+    /// call made while the camera is still gliding, say. The Lua API yields and calls again
+    /// until this clears; without it the call was silently dropped and the script asserted
+    /// against something that never happened.
+    pub(crate) last_deferred: bool,
     /// What the instruction just executed created (#1801) — the handles a creation call hands
     /// back to the script. Overwritten by every instruction, so it is only ever read straight
     /// after the one that set it.
@@ -5802,6 +5807,7 @@ impl ScriptRunner {
             waiting_view_transition: false,
             logged_pc: None,
             last_action_error: None,
+            last_deferred: false,
             last_created: Vec::new(),
             verbose: true,
             done: false,
@@ -6367,6 +6373,7 @@ impl ScriptRunner {
     }
 }
 
+#[derive(Debug)]
 pub(crate) enum StepResult {
     Continue,
     Wait,
@@ -9515,6 +9522,68 @@ mod tests {
     use crate::model::extrusion_key_for_slot as xkey;
     use super::*;
     use crate::model::ConstraintLine;
+
+    /// #1814: a pointer instruction aimed at a *world* point, issued while the camera is still
+    /// gliding, asks to be **retried**. Where that point lands on screen is not yet where it
+    /// will land, so running it early would click the wrong thing. (A plain viewport-pixel
+    /// click does not depend on the camera and goes straight through.)
+    ///
+    /// This is the contract `ScriptTickData::exec` has to honour: it used to throw the answer
+    /// away, which turned "not yet" into "never" and let a script assert against a click that
+    /// never happened.
+    #[test]
+    fn a_pointer_instruction_defers_while_the_camera_is_gliding() {
+        let mut runner = ScriptRunner::from_lua_source("").expect("runner");
+        let mut state = AppState::default();
+        let mut synthetic = SyntheticInput::default();
+        let ctx = egui::Context::default();
+        let vp = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0));
+
+        // Start a view transition, exactly as `bearcad.ui.view("top")` does.
+        state.apply(crate::actions::Action::SetStandardView(
+            crate::camera::StandardView::Top,
+        ));
+        assert!(state.cam.is_transitioning(), "the view change starts a glide");
+
+        for instr in [
+            Instruction::ClickGround { x: 10.0, y: 10.0, mods: ClickMods::default() },
+            Instruction::MoveGround { x: 10.0, y: 10.0 },
+            Instruction::ClickWorld { x: 0.0, y: 60.0, z: 0.0, mods: ClickMods::default() },
+            Instruction::MoveWorld { x: 0.0, y: 60.0, z: 0.0 },
+            Instruction::DragGround { x0: 0.0, y0: 0.0, x1: 10.0, y1: 10.0 },
+        ] {
+            let result = runner.execute_instruction(
+                instr.clone(),
+                &mut state,
+                &mut synthetic,
+                Some(vp),
+                &ctx,
+            );
+            assert!(
+                matches!(result, StepResult::Wait),
+                "{instr:?} should ask to be retried mid-glide, got {result:?}"
+            );
+        }
+
+        // Once the glide is over the same instruction runs.
+        let mut safety = 0;
+        while state.cam.is_transitioning() {
+            let _ = state.cam.tick_transition(1.0 / 60.0);
+            safety += 1;
+            assert!(safety < 10_000, "the glide should end");
+        }
+        let result = runner.execute_instruction(
+            Instruction::MoveGround { x: 10.0, y: 10.0 },
+            &mut state,
+            &mut synthetic,
+            Some(vp),
+            &ctx,
+        );
+        assert!(
+            matches!(result, StepResult::Continue),
+            "and goes through once the camera has settled, got {result:?}"
+        );
+    }
 
     /// Set up a channel-driven REPL session (no terminal): returns the runner, the sender
     /// that plays the role of stdin lines, and the receiver for ready-prompt handoffs. The

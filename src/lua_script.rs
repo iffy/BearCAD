@@ -11,7 +11,8 @@ use crate::model::{
 };
 use crate::names::find_element_by_name;
 use crate::script::{
-    parse_key, Instruction, ScreenshotRegion, ScriptRunner, SyntheticInput, TreatableSolidRef,
+    parse_key, Instruction, ScreenshotRegion, ScriptRunner, StepResult, SyntheticInput,
+    TreatableSolidRef,
 };
 use crate::value::{AngleUnit, LengthUnit};
 use crate::view_cube::{CubeCornerId, CubeEdgeId};
@@ -58,13 +59,17 @@ impl ScriptTickData {
         let runner = self.runner();
         runner.last_action_error = None;
         let before = created_snapshot(&self.state().doc);
-        let _ = runner.execute_instruction(
+        let result = runner.execute_instruction(
             instr,
             self.state(),
             self.synthetic(),
             self.viewport,
             self.egui_ctx(),
         );
+        // "Not yet — try next frame", which is what the runner means by `Wait`. Dropping it
+        // here silently skipped the instruction (#1814); the Lua wrappers yield and call
+        // again while this is set.
+        runner.last_deferred = matches!(result, StepResult::Wait);
         // Declarative modeling instructions record their action's rejection in
         // `last_action_error` (#104/#109/#110/#112): raise it so invalid input fails the
         // script (catchable with `pcall`) instead of silently succeeding with nothing
@@ -5982,6 +5987,18 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Whether the last instruction asked to be retried rather than run (#1814). The Lua
+    // wrappers below spin on this; scripts never call it.
+    api.set(
+        "_deferred",
+        lua.create_function(|lua, ()| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            Ok(unsafe { tick.runner() }.last_deferred)
+        })?,
+    )?;
+
     // egui multipass id-instability count (#1614). Zero on a healthy layout.
     api.set(
         "widget_id_warnings",
@@ -10091,7 +10108,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         bearcad.ui = {}
         local ui_funcs = {
             "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_calibrate", "focus_dim", "pane", "pane_rect", "elements_row_rect", "drawing_view_rect", "pane_scroll", "scroll_pane", "ai_sections", "ai_pane_sections", "ai_mcp", "menu_structure",
-            "widget_id_warnings", "headless", "palette", "settings",
+            "widget_id_warnings", "headless", "_deferred", "palette", "settings",
             "changelog",
             "mcmaster",
             "report_issue", "windows", "focused_window", "viewport",
@@ -10140,6 +10157,39 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         yielding("view", "_view")
         yielding("view_home", "_view_home")
         yielding("zoom_fit", "_zoom_fit")
+
+        -- Pointer and typing calls stand down while the camera is gliding, or before the
+        -- viewport has ever drawn: the world point they aim at is not where it will be. The
+        -- runner says so by asking to be retried, and this is what does the retrying (#1814).
+        -- Dropping that answer silently skipped the call, and the script went on to assert
+        -- against a click that never happened.
+        -- Bounded, so a call that can never settle fails loudly instead of spinning the
+        -- script forever. Ten seconds at 60 fps is far longer than any camera glide.
+        local SETTLE_FRAMES = 600
+        local function settling(name)
+            local native = bearcad.ui[name]
+            bearcad.ui[name] = function(...)
+                local result = native(...)
+                local waited = 0
+                while bearcad.ui._deferred() do
+                    if waited >= SETTLE_FRAMES then
+                        error(name .. ": the camera never settled, so the pointer never moved")
+                    end
+                    waited = waited + 1
+                    coroutine.yield()
+                    result = native(...)
+                end
+                return result
+            end
+        end
+        for _, name in ipairs({
+            "move", "click", "double_click", "move_ground", "click_ground",
+            "move_world", "click_world", "drag", "drag_ground", "drag_world",
+            "right_click", "right_click_ground", "right_drag", "right_drag_shift",
+            "type",
+        }) do
+            if bearcad.ui[name] then settling(name) end
+        end
     "#,
     )
     .exec()?;
