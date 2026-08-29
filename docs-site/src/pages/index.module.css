@@ -247,6 +247,10 @@
   padding-bottom: 3.25rem;
 }
 
+.shotStack {
+  position: relative;
+}
+
 .shot {
   display: block;
   width: 100%;
@@ -256,6 +260,31 @@
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--ink) 10%, transparent),
     0 28px 70px rgba(0, 0, 0, 0.28);
+}
+
+/* The pencil view of the same frame, laid over the realistic one and faded in across a
+   diagonal (#1843): the model is shaded on one side of the line and drawn by hand on the
+   other. The band is wide enough that the two readings blend rather than butt together. */
+.shotPencil {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 14px;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(
+    114deg,
+    transparent 42%,
+    rgba(0, 0, 0, 0.5) 50%,
+    #000 58%
+  );
+  mask-image: linear-gradient(
+    114deg,
+    transparent 42%,
+    rgba(0, 0, 0, 0.5) 50%,
+    #000 58%
+  );
 }
 
 .stats {
@@ -458,6 +487,10 @@
     box-shadow:
       0 0 0 1px color-mix(in srgb, var(--ink) 10%, transparent),
       0 14px 32px rgba(0, 0, 0, 0.2);
+  }
+
+  .shotPencil {
+    border-radius: 12px;
   }
 
   .stat {

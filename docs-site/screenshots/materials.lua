@@ -1,11 +1,16 @@
--- Documentation screenshot: materials — the cube cluster, in Realistic shading.
+-- Documentation screenshot: materials — the cube cluster, in Realistic shading, and the
+-- same frame again in Loose pencil (#1843). The front page lays the second over the first
+-- and fades between them along a diagonal, so the hero shows the app drawing the same model
+-- two ways; the two shots must therefore be framed identically, which is why one script
+-- takes both without touching the camera in between.
 --
 -- The scene is `scenes/cube_cluster.lua`, which the view-styles page shoots too.
 --
 -- Output dir: $BEARCAD_SCREENSHOT_OUT (set by scripts/gen-doc-screenshots.sh),
 -- falling back to ".". The PNG is only written where a real GPU frame renders.
 
-local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/materials.png"
+local dir = os.getenv("BEARCAD_SCREENSHOT_OUT") or "."
+local out = dir .. "/materials.png"
 
 -- Hide the viewport usage overlay so it doesn't cover the model (#1509).
 bearcad.ui.tool_hints(false)
@@ -26,7 +31,14 @@ bearcad.ui.zoom_fit()
 bearcad.ui.wait(2)
 bearcad.ui.screenshot(out)
 -- The document behind this picture, so the docs page can link the screenshot into
--- the web app with `?open=` pointing here (#1049 pattern).
+-- the web app with `?open=` pointing here (#1049 pattern). Saved before the style
+-- changes, so the file opens the way the picture beside it looks.
 bearcad.save((out:gsub("%.png$", ".bearcad.json")))
+
+-- The same frame, drawn by hand (#1843) — the camera is untouched, so the two pictures
+-- register pixel for pixel and the front page can cross-fade between them.
+bearcad.ui.shading("loose_pencil")
+bearcad.ui.wait(3)
+bearcad.ui.screenshot(dir .. "/materials-pencil.png")
 
 bearcad.quit()

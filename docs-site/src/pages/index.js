@@ -84,11 +84,22 @@ function Hero() {
         </div>
       </div>
       <div className={styles.shotWrap}>
-        <img
-          className={styles.shot}
-          src={useBaseUrl('/img/screenshots/materials.png')}
-          alt="Nine cubes in a 2×2×2 with a centre cube, each a different material color, some with a hole, sphere bite, chamfer or fillet"
-        />
+        {/* The same model, drawn two ways: the realistic render, with the hand-drawn
+            pencil view fading in over it across a diagonal (#1843). Both shots come
+            from one capture with the camera untouched, so they register exactly. */}
+        <div className={styles.shotStack}>
+          <img
+            className={styles.shot}
+            src={useBaseUrl('/img/screenshots/materials.png')}
+            alt="Nine cubes in a 2×2×2 with a centre cube, each a different material color, some with a hole, sphere bite, chamfer or fillet — shaded realistically on the left, drawn as a pencil sketch on the right"
+          />
+          <img
+            className={styles.shotPencil}
+            src={useBaseUrl('/img/screenshots/materials-pencil.png')}
+            alt=""
+            aria-hidden="true"
+          />
+        </div>
       </div>
     </header>
   );
