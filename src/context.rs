@@ -5024,6 +5024,32 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
     })
 }
 
+/// Egui-memory key for where the Context pane drew the row labelled `label` this frame.
+fn context_row_rect_id(label: &str) -> egui::Id {
+    egui::Id::new(("context_row_rect", label))
+}
+
+/// Where a labelled Context-pane row was drawn, in window coordinates (#1828). Scripts read
+/// this through `bearcad.ui.context_row_rect(label)` so an interaction test can click a pane
+/// control by name instead of by a guessed pixel offset.
+pub fn context_row_rect(ctx: &egui::Context, label: &str) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<egui::Rect>(context_row_rect_id(label)))
+}
+
+/// Publish a row's rect for the log and for scripts (#1828).
+fn note_row(ui: &egui::Ui, label: &str, rect: egui::Rect) {
+    if label.is_empty() {
+        return;
+    }
+    crate::diag::note_ui_row(label, rect_bounds(rect));
+    ui.ctx().data_mut(|d| d.insert_temp(context_row_rect_id(label), rect));
+}
+
+/// A rect as the `[min_x, min_y, max_x, max_y]` the log speaks in (#1828).
+fn rect_bounds(r: egui::Rect) -> [f32; 4] {
+    [r.min.x, r.min.y, r.max.x, r.max.y]
+}
+
 /// A two-column field row (#371): `label` in the fixed-width left column (vertically centred
 /// against the input), the input(s) from `add_input` in the aligned right column. Shared
 /// with the Settings window (#720) so its rows line up — and note help (#672) — the same way.
@@ -5073,6 +5099,9 @@ pub(crate) fn labeled_row_salted<R>(
         })
         .inner;
     note_help(ui, &help_key, out.response.rect);
+    // Name the row for any id-clash warning logged this frame (#1828): "in the Context
+    // pane" is fifty widgets, "in the \"Style\" row" is one. Scripts read the same rect.
+    note_row(ui, id_key, out.response.rect);
     out.inner
 }
 
@@ -5126,6 +5155,7 @@ fn checkbox_row(
         })
         .inner;
     note_help(ui, label, row.response.rect);
+    note_row(ui, label, row.response.rect);
     changed
 }
 

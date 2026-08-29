@@ -19548,7 +19548,7 @@ impl eframe::App for App {
                         ))
                     })
                     .collect();
-                let regions = self
+                let mut regions = self
                     .last_viewport
                     .map(|r| {
                         let mut regions = regions.clone();
@@ -19559,12 +19559,46 @@ impl eframe::App for App {
                         regions
                     })
                     .unwrap_or(regions);
+                // Floating layers — combo popups, tooltips, windows — sit *over* the panes,
+                // so a warning about one used to read as if it came from the pane underneath
+                // (#1828). They are the innermost region, and win.
+                ui.ctx().memory(|m| {
+                    for layer in m.areas().visible_layer_ids() {
+                        if layer.order == egui::Order::Background {
+                            continue;
+                        }
+                        if let Some(r) = m.area_rect(layer.id) {
+                            regions.push((
+                                format!("{:?} layer {}", layer.order, layer.id.short_debug_format()),
+                                [r.min.x, r.min.y, r.max.x, r.max.y],
+                            ));
+                        }
+                    }
+                });
+                // What is selected, in one line (#1828): most of what the Context pane draws
+                // is a function of it, so a warning without it can't be reproduced.
+                let mut picked: Vec<String> = self
+                    .state
+                    .scene_selection
+                    .iter()
+                    .take(6)
+                    .map(|e| diag::action_detail(&e))
+                    .collect();
+                for (_, element) in self.state.selected_drawing_elements.iter().take(6) {
+                    picked.push(diag::action_detail(element));
+                }
+                let selection = if picked.is_empty() {
+                    "nothing".to_string()
+                } else {
+                    picked.join(" + ")
+                };
                 diag::set_ui_context(diag::UiContext {
                     frame: diag::frames_drawn(),
                     workbench: self.state.workbench().script_name(),
                     tool: shortcuts::tool_script_name(self.state.tool),
                     regions,
                     windows: self.state.script_cycle_windows(),
+                    selection,
                 });
             }
             // What the window believes about itself, left where the watchdog can find it

@@ -5872,6 +5872,28 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1828: where the Context pane drew the row labelled `label` last frame, in window
+    // coordinates (like `pane_rect`) — `{ x, y, w, h }`, or `nil` when the pane is not
+    // showing such a row. Unlabelled rows answer to their salt ("align_lines").
+    api.set(
+        "context_row_rect",
+        lua.create_function(|lua, label: String| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let Some(rect) = crate::context::context_row_rect(unsafe { tick.egui_ctx() }, &label)
+            else {
+                return Ok(Value::Nil);
+            };
+            let t = lua.create_table()?;
+            t.set("x", rect.min.x)?;
+            t.set("y", rect.min.y)?;
+            t.set("w", rect.width())?;
+            t.set("h", rect.height())?;
+            Ok(Value::Table(t))
+        })?,
+    )?;
+
     // #1709: where the drawing page drew a view's card last frame, in window coordinates
     // (like `pane_rect` and `tutorial_orb`) — `{ x, y, w, h }`, or `nil` when that view isn't
     // on screen.
@@ -10132,7 +10154,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         -- `bearcad.ui.*` sub-namespace so scripts can focus on modeling (#46).
         bearcad.ui = {}
         local ui_funcs = {
-            "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_calibrate", "focus_dim", "pane", "pane_rect", "elements_row_rect", "drawing_view_rect", "pane_scroll", "scroll_pane", "ai_sections", "ai_pane_sections", "ai_mcp", "menu_structure",
+            "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_calibrate", "focus_dim", "pane", "pane_rect", "elements_row_rect", "context_row_rect", "drawing_view_rect", "pane_scroll", "scroll_pane", "ai_sections", "ai_pane_sections", "ai_mcp", "menu_structure",
             "widget_id_warnings", "headless", "_deferred", "palette", "settings",
             "changelog",
             "mcmaster",
@@ -18676,6 +18698,20 @@ pub mod tests {
             err = tostring(err)
             assert(err:find("radius") and err:find("diameter"),
                    "error should name the accepted keys: " .. err)
+        "#,
+        );
+    }
+
+    /// #1828: a script can find a Context-pane row by its label, the way it can find an
+    /// Elements row — without it, the only way to click a pane control is a guessed pixel
+    /// offset, and the id-clash the issue reports can't be driven at all.
+    #[test]
+    fn lua_context_row_rect_is_readable() {
+        run_lua_expect_ok(
+            r#"
+            assert(type(bearcad.ui.context_row_rect) == "function")
+            -- Nothing is painted in this test, so every row is absent rather than wrong.
+            assert(bearcad.ui.context_row_rect("Style") == nil)
         "#,
         );
     }

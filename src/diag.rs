@@ -206,15 +206,55 @@ pub struct UiContext {
     pub regions: Vec<(String, [f32; 4])>,
     /// Windows and dialogs open at the time.
     pub windows: Vec<String>,
+    /// What was selected, in one line (#1828). Half of what a pane draws depends on it, so
+    /// a warning that doesn't say it can't be reproduced.
+    pub selection: String,
+}
+
+/// Named rows a pane drew this frame, as `(label, [min_x, min_y, max_x, max_y])` (#1828).
+///
+/// "In the Context pane" is fifty widgets; the row is one. Rows publish themselves as they
+/// are built, and the id-clash warning names the innermost one its rect lies inside.
+static UI_ROWS: Mutex<Vec<(String, [f32; 4])>> = Mutex::new(Vec::new());
+
+/// Record a labelled row at `rect`, for a warning later this frame to name.
+pub fn note_ui_row(label: impl Into<String>, rect: [f32; 4]) {
+    let label = label.into();
+    if label.is_empty() {
+        return;
+    }
+    if let Ok(mut rows) = UI_ROWS.lock() {
+        // A pane can rebuild several times a frame (egui multipass, detached windows); a
+        // cap keeps a runaway from growing without bound.
+        if rows.len() < 512 {
+            rows.push((label, rect));
+        }
+    }
 }
 
 static UI_CONTEXT: Mutex<Option<UiContext>> = Mutex::new(None);
 
-/// Publish what the app is doing, for any warning logged from here on (#1823).
+/// Publish what the app is doing, for any warning logged from here on (#1823). Called once
+/// per frame, which is also where the rows collected for the last one are dropped.
 pub fn set_ui_context(context: UiContext) {
+    if let Ok(mut rows) = UI_ROWS.lock() {
+        rows.clear();
+    }
     if let Ok(mut slot) = UI_CONTEXT.lock() {
         *slot = Some(context);
     }
+}
+
+/// Does `rect` sit inside `region` (with half a pixel of slack)?
+fn inside(rect: [f32; 4], region: [f32; 4]) -> bool {
+    rect[0] >= region[0] - 0.5
+        && rect[1] >= region[1] - 0.5
+        && rect[2] <= region[2] + 0.5
+        && rect[3] <= region[3] + 0.5
+}
+
+fn area(r: [f32; 4]) -> f32 {
+    (r[2] - r[0]).max(0.0) * (r[3] - r[1]).max(0.0)
 }
 
 /// The `[[x y] - [x y]]` rect an egui widget warning names.
@@ -245,16 +285,30 @@ pub fn annotate_warning(message: &str) -> Option<String> {
         parts.push(format!("{} tool", context.tool));
     }
     if let Some(rect) = warned_rect(message) {
-        let inside = context.regions.iter().find(|(_, r)| {
-            rect[0] >= r[0] - 0.5
-                && rect[1] >= r[1] - 0.5
-                && rect[2] <= r[2] + 0.5
-                && rect[3] <= r[3] + 0.5
-        });
-        parts.push(match inside {
+        // The *innermost* region: a combo popup or a tooltip drawn over a pane is the thing
+        // to name, not the pane it happens to cover (#1828).
+        let region = context
+            .regions
+            .iter()
+            .filter(|(_, r)| inside(rect, *r))
+            .min_by(|a, b| area(a.1).total_cmp(&area(b.1)));
+        parts.push(match region {
             Some((name, _)) => format!("in the {name}"),
             None => "not inside any named pane".to_string(),
         });
+        // And the row inside it, which is the widget someone has to go and look at.
+        if let Ok(rows) = UI_ROWS.lock() {
+            if let Some((label, _)) = rows
+                .iter()
+                .filter(|(_, r)| inside(rect, *r))
+                .min_by(|a, b| area(a.1).total_cmp(&area(b.1)))
+            {
+                parts.push(format!("in the {label:?} row"));
+            }
+        }
+    }
+    if !context.selection.is_empty() {
+        parts.push(format!("selected: {}", context.selection));
     }
     if !context.windows.is_empty() {
         parts.push(format!("open: {}", context.windows.join(", ")));
@@ -682,11 +736,15 @@ mod tests {
         unsafe { std::env::remove_var("BEARCAD_LOG_FILE") };
     }
 
+    /// The published UI context is process-wide, so the tests that set it take turns.
+    static UI_CONTEXT_TESTS: Mutex<()> = Mutex::new(());
+
     /// #1823: an egui id-clash warning on its own says nothing anyone can act on — a rect and
     /// two hashes. The line has to carry what the app was doing and which part of the window
     /// the rect landed in, or it can't be turned into a bug report.
     #[test]
     fn a_widget_id_warning_says_where_and_when_it_happened() {
+        let _turn = UI_CONTEXT_TESTS.lock();
         set_ui_context(UiContext {
             frame: 512,
             workbench: "drawing",
@@ -696,6 +754,7 @@ mod tests {
                 ("Context pane".into(), [660.0, 40.0, 900.0, 800.0]),
             ],
             windows: vec!["main".into(), "report_issue".into()],
+            selection: String::new(),
         });
         let line = annotate_warning(
             "egui::context: Widget rect [[673.8 187.3] - [699.8 207.3]] changed id between \
@@ -718,6 +777,54 @@ mod tests {
 
         // Other warnings are left exactly as they came.
         assert_eq!(annotate_warning("wgpu: surface lost"), None);
+        set_ui_context(UiContext::default());
+    }
+
+    /// #1828: "in the Context pane" was as far as the line went, and a pane is fifty
+    /// widgets. The row a rect lies in, and what was selected, are what turn the warning
+    /// into something reproducible — and an overlay drawn *over* a pane must not be
+    /// reported as the pane.
+    #[test]
+    fn a_widget_id_warning_names_the_row_and_the_selection() {
+        let _turn = UI_CONTEXT_TESTS.lock();
+        set_ui_context(UiContext {
+            frame: 900,
+            workbench: "drawing",
+            tool: "select",
+            regions: vec![("Context pane".into(), [660.0, 40.0, 900.0, 800.0])],
+            windows: vec!["main".into()],
+            selection: "drawing_view 1 (aligned)".into(),
+        });
+        note_ui_row("Style", [664.0, 180.0, 896.0, 200.0]);
+        note_ui_row("Projection lines", [664.0, 210.0, 896.0, 228.0]);
+
+        let line = annotate_warning(
+            "egui::context: Widget rect [[670.0 212.0] - [856.0 226.0]] changed id between \
+             passes: prev ids: [\"D3AC\"], new ids: [\"300F\"]",
+        )
+        .expect("annotated");
+        assert!(line.contains("Projection lines"), "the row the rect lies in: {line}");
+        assert!(!line.contains("Style"), "not a row it misses: {line}");
+        assert!(line.contains("drawing_view 1 (aligned)"), "what was selected: {line}");
+
+        // An overlay (a combo popup, a tooltip) covering part of a pane is the smaller
+        // region, and the one worth naming.
+        set_ui_context(UiContext {
+            frame: 901,
+            workbench: "drawing",
+            tool: "select",
+            regions: vec![
+                ("Context pane".into(), [660.0, 40.0, 900.0, 800.0]),
+                ("drawing_view_style popup".into(), [664.0, 170.0, 890.0, 300.0]),
+            ],
+            windows: vec!["main".into()],
+            selection: String::new(),
+        });
+        let line = annotate_warning(
+            "egui::context: Widget rect [[670.0 200.0] - [856.0 220.0]] changed id between passes",
+        )
+        .expect("annotated");
+        assert!(line.contains("popup"), "the innermost region wins: {line}");
         set_ui_context(UiContext::default());
     }
 
