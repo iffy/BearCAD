@@ -20258,6 +20258,13 @@ fn next_plane_focus_dim(focused: PlaneDim) -> PlaneDim {
 }
 
 /// URL of the in-repo third-party open-source licenses document (#86). Opened by
+/// The id of a drawing view card's Remove ✕ (#1828). Explicit, and keyed only to the view, so
+/// it does not move when a neighbouring widget mounts in one of egui's passes and not the
+/// other — which is what made the same rect report two ids and log a multipass clash.
+fn drawing_view_remove_id(view: usize) -> egui::Id {
+    egui::Id::new(("drawing_view_remove", view))
+}
+
 /// Read a hand-drawn style's print colour as **ink on paper**, for the editor's dark sheet
 /// (#1829).
 ///
@@ -27491,23 +27498,28 @@ impl App {
                 }
                 // Remove ✕ only with the border chrome — selected or hovered (#1229).
                 // Uses the bundled ✕ SVG (IconId::Close), never a font glyph (#325).
+                //
+                // Interacted on an **explicit** id keyed to this view (#1828), not `ui.put`'s
+                // auto one. The button is mounted only while the chrome is up, and whether a
+                // card is hovered can resolve differently between egui's two passes over the
+                // same frame; an auto id counts off its siblings, so the same rect came back
+                // with two different ids and egui logged a multipass clash. (An id *salt* does
+                // not help: egui appends the parent's running counter to a child ui either
+                // way. Only naming the id outright is position-independent.)
                 if chrome_active {
                     let x_rect = egui::Rect::from_min_size(
                         egui::pos2(cell.max.x - 24.0, cell.min.y + 4.0),
                         egui::vec2(20.0, 20.0),
                     );
-                    if ui
-                        .put(
-                            x_rect,
-                            egui::Button::new(egui::Image::new(icons::sized_texture(
-                                ui.ctx(),
-                                icons::IconId::Close,
-                            )))
-                            .frame(true),
-                        )
-                        .on_hover_text("Remove view")
-                        .clicked()
-                    {
+                    let x_id = drawing_view_remove_id(vi);
+                    let resp = ui
+                        .interact(x_rect, x_id, egui::Sense::click())
+                        .on_hover_text("Remove view");
+                    let visuals = ui.style().interact(&resp);
+                    painter.rect_filled(x_rect, visuals.corner_radius, visuals.bg_fill);
+                    egui::Image::new(icons::sized_texture(ui.ctx(), icons::IconId::Close))
+                        .paint_at(ui, x_rect.shrink(3.0));
+                    if resp.clicked() {
                         remove_view = Some(vi);
                     }
                 }
@@ -36652,6 +36664,52 @@ mod tests {
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::body_key_for_slot as bkey;
     use super::*;
+
+    /// #1828: the Remove ✕ on a view card is mounted only while the card's chrome is up, and
+    /// whether a card is hovered can resolve differently between egui's two passes over one
+    /// frame. Its id therefore has to be its own — an auto id counts off whichever siblings
+    /// happened to mount, so the same rect came back with two ids and egui logged a multipass
+    /// clash. An id *salt* is not enough: egui appends the parent's running counter to a child
+    /// ui either way, which this pins down.
+    #[test]
+    fn the_remove_button_id_does_not_depend_on_its_neighbours() {
+        // Named outright: the same view always gets the same id, and two views never share one.
+        assert_eq!(drawing_view_remove_id(1), drawing_view_remove_id(1));
+        assert_ne!(drawing_view_remove_id(0), drawing_view_remove_id(1));
+
+        // …and unlike the child-ui routes, it does not move when a sibling appears above it.
+        let ctx = egui::Context::default();
+        let rect = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(20.0, 20.0));
+        let ids = |with_sibling: bool| {
+            let mut explicit = None;
+            let mut salted = None;
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                if with_sibling {
+                    let _ = ui.button("something that only sometimes mounts");
+                }
+                explicit =
+                    Some(ui.interact(rect, drawing_view_remove_id(0), egui::Sense::click()).id);
+                salted = Some(
+                    ui.scope_builder(
+                        egui::UiBuilder::new().id_salt("drawing_view_remove"),
+                        |ui| ui.button("x"),
+                    )
+                    .response
+                    .id,
+                );
+            });
+            (explicit.expect("interacted"), salted.expect("scoped"))
+        };
+        let (explicit_a, salted_a) = ids(false);
+        let (explicit_b, salted_b) = ids(true);
+        assert_eq!(explicit_a, explicit_b, "an explicit id is the same either way");
+        assert_ne!(
+            salted_a, salted_b,
+            "which a salted child ui is not — egui mixes in the sibling counter, so the salt \
+             alone would have left the clash in place"
+        );
+    }
+
 
     /// One frame of the cutting-plane tilt-ring drag (#1766): the same composition the
     /// update path runs — cursor angle on the frozen grab-time ring frame, wrapped

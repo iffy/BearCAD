@@ -4200,7 +4200,7 @@ fn preview_font_family(ctx: &egui::Context, family: &str) -> Option<egui::FontFa
 /// Enter goes to a focused field first. `enabled` is the tool's "ready" flag (all inputs valid);
 /// when not ready the button stays visible but disabled. Returns true when it should commit.
 fn primary_button(ui: &mut egui::Ui, enabled: bool, tooltip: &str) -> bool {
-    let clicked = labeled_row(ui, "", |ui| {
+    let clicked = labeled_row_salted(ui, Some("primary_button"), "", |ui| {
         let blue = egui::Color32::from_rgb(56, 120, 224);
         let img = egui::Image::new(crate::icons::sized_texture_at(
             ui.ctx(),
@@ -4304,7 +4304,7 @@ fn show_calibrate_length(
 /// Enter-fires-it behavior as [`primary_button`], for actions whose name should read
 /// without hovering (e.g. "Derive parameter").
 fn primary_text_button(ui: &mut egui::Ui, enabled: bool, label: &str) -> bool {
-    let clicked = labeled_row(ui, "", |ui| {
+    let clicked = labeled_row_salted(ui, Some("primary_text_button"), "", |ui| {
         let blue = egui::Color32::from_rgb(56, 120, 224);
         let w = ui.available_width().max(56.0);
         ui.add_enabled(
@@ -5037,7 +5037,12 @@ pub(crate) fn labeled_row<R>(
 
 /// [`labeled_row`] with a stable widget salt so a changing visible label (#1581) does
 /// not remount the input on the same rect (#1580).
-fn labeled_row_salted<R>(
+///
+/// Also the way a row with **no** visible label gets an id of its own (#1828): `labeled_row`
+/// salts with the label text, so every unlabelled row shared the key `("labeled_row", "")` —
+/// and two of them mounted in one section (an aligned view's *Projection lines* beside its
+/// *Remove view*) collided, which egui reports as a multipass id clash.
+pub(crate) fn labeled_row_salted<R>(
     ui: &mut egui::Ui,
     salt: Option<&str>,
     label: impl Into<egui::WidgetText>,
@@ -6950,7 +6955,7 @@ pub fn show_pane(
         ui.add_space(2.0);
         if control.working {
             // Progress in place of the checkmark while the kernel works (#1031).
-            labeled_row(ui, "", |ui| {
+            labeled_row_salted(ui, Some("kernel_working"), "", |ui| {
                 let w = ui.available_width().max(56.0);
                 ui.add_sized(
                     egui::vec2(w, 24.0),
@@ -8847,7 +8852,7 @@ pub fn show_pane(
                     );
                 });
         });
-        labeled_row(ui, "", |ui| {
+        labeled_row_salted(ui, Some("text_style"), "", |ui| {
             let mut bold = control.bold;
             if ui.selectable_label(bold, egui::RichText::new("B").strong()).clicked() {
                 bold = !bold;
@@ -9050,7 +9055,7 @@ pub fn show_pane(
         });
         // Aligned children can draw dashed projection lines to their base view (#377).
         if control.aligned {
-            labeled_row(ui, "", |ui| {
+            labeled_row_salted(ui, Some("align_lines"), "", |ui| {
                 let mut lines = control.align_lines;
                 if ui.checkbox(&mut lines, "Projection lines").changed() {
                     on_drawing_view_edit(DrawingViewEdit::AlignLines(lines));
@@ -9126,7 +9131,7 @@ pub fn show_pane(
                 }
             });
         }
-        labeled_row(ui, "", |ui| {
+        labeled_row_salted(ui, Some("remove_view"), "", |ui| {
             if ui.button("Remove view").clicked() {
                 on_drawing_view_edit(DrawingViewEdit::Remove);
             }
