@@ -1,5 +1,5 @@
 -- Documentation screenshot: materials — the cube cluster, in Realistic shading, and the
--- same frame again in Loose pencil (#1843). The front page lays the second over the first
+-- same frame again in Dark pencil (#1843/#1844). The front page lays the second over the first
 -- and fades between them along a diagonal, so the hero shows the app drawing the same model
 -- two ways; the two shots must therefore be framed identically, which is why one script
 -- takes both without touching the camera in between.
@@ -36,8 +36,10 @@ bearcad.ui.screenshot(out)
 bearcad.save((out:gsub("%.png$", ".bearcad.json")))
 
 -- The same frame, drawn by hand (#1843) — the camera is untouched, so the two pictures
--- register pixel for pixel and the front page can cross-fade between them.
-bearcad.ui.shading("loose_pencil")
+-- register pixel for pixel and the front page can cross-fade between them. The dark-mode
+-- pencil (#1844), so both halves of the hero sit on the same ground and what changes across
+-- the fade is the drawing, not the paper.
+bearcad.ui.shading("dark_pencil")
 bearcad.ui.wait(3)
 bearcad.ui.screenshot(dir .. "/materials-pencil.png")
 

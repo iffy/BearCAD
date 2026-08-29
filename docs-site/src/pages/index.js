@@ -85,13 +85,15 @@ function Hero() {
       </div>
       <div className={styles.shotWrap}>
         {/* The same model, drawn two ways: the realistic render, with the hand-drawn
-            pencil view fading in over it across a diagonal (#1843). Both shots come
-            from one capture with the camera untouched, so they register exactly. */}
+            dark-pencil view fading in over it across a diagonal (#1843/#1844). Both
+            shots come from one capture with the camera untouched, so they register
+            exactly, and both sit on the same dark ground — what changes across the
+            fade is the drawing. */}
         <div className={styles.shotStack}>
           <img
             className={styles.shot}
             src={useBaseUrl('/img/screenshots/materials.png')}
-            alt="Nine cubes in a 2×2×2 with a centre cube, each a different material color, some with a hole, sphere bite, chamfer or fillet — shaded realistically on the left, drawn as a pencil sketch on the right"
+            alt="Nine cubes in a 2×2×2 with a centre cube, each a different material color, some with a hole, sphere bite, chamfer or fillet — shaded realistically on the left, drawn in white pencil on the right"
           />
           <img
             className={styles.shotPencil}

@@ -674,11 +674,13 @@ impl Default for ViewportPalette {
 
 impl ViewportPalette {
     /// The palette a shading mode draws in (#1805/#1812/#1829). The technical modes use the
-    /// theme's own colors; every mode drawn by hand swaps the ground out for paper and the
-    /// grid for faint ruled guides, so a drawing is a drawing all the way to its background.
+    /// theme's own colors; a mode drawn by hand *on paper* swaps the ground out for paper and
+    /// the grid for faint ruled guides, so a drawing is a drawing all the way to its
+    /// background. The dark-mode pencil (#1844) is the exception on purpose: it draws in
+    /// white on the theme's own ground, which is the whole point of it.
     pub fn for_shading(self, mode: crate::camera::ShadingMode) -> Self {
         match mode {
-            m if m.is_drawn_by_hand() => Self {
+            m if m.draws_on_paper() => Self {
                 background: PENCIL_PAPER,
                 grid: PENCIL_GRID,
                 grid_axis: PENCIL_GRID_AXIS,
@@ -1302,6 +1304,9 @@ impl ViewportScene {
 
         // Every pencil-mode caster's ground footprint, gathered across the body loop and
         // hatched once at the end (#1811) — see the `LoosePencil` arm below.
+        // What the scene's hatched shadows are drawn with — set by whichever pencil mode the
+        // bodies below render in (#1844), since the whole scene shades in one hand.
+        let mut pencil_hatch_ink = PENCIL_HATCH_COLOR;
         let mut pencil_shadow_footprint: Vec<[Vec3; 3]> = Vec::new();
         // …and the solids themselves, which shadow each other (#1818).
         let mut pencil_shadow_casters: Vec<(&crate::extrude::SolidMesh, Vec<CoplanarFlat>)> =
@@ -1549,6 +1554,7 @@ impl ViewportScene {
                 // feature edge drawn by hand over the top. Plain pencil ignores the body
                 // color (one pencil, one color); colored pencil keeps it (#1812).
                 mode @ (crate::camera::ShadingMode::LoosePencil
+                | crate::camera::ShadingMode::DarkPencil
                 | crate::camera::ShadingMode::ColorPencil
                 | crate::camera::ShadingMode::Watercolor) => {
                     use crate::camera::ShadingMode as SM;
@@ -1563,7 +1569,19 @@ impl ViewportScene {
                         SM::ColorPencil => {
                             (crate::pencil::scribble_ground(fill), color_pencil_tones(fill).1)
                         }
+                        // Dark mode (#1844): a white pencil, and a fill a hair above the
+                        // theme's ground so a near face still hides a far one.
+                        SM::DarkPencil => {
+                            (crate::pencil::PENCIL_DARK_BODY_FILL, crate::pencil::PENCIL_WHITE)
+                        }
                         _ => (PENCIL_BODY_FILL, PENCIL_GRAPHITE),
+                    };
+                    // The hatch that stands in for a shadow is the drawing's own pencil, laid
+                    // on lightly — graphite on paper, white on the dark ground (#1844).
+                    let hatch = if mode == SM::DarkPencil {
+                        crate::pencil::PENCIL_DARK_HATCH
+                    } else {
+                        PENCIL_HATCH_COLOR
                     };
                     // Which of this body's faces are worth drawing on — computed once and
                     // used for both its own shading and the shadows it receives (#1818).
@@ -1604,6 +1622,7 @@ impl ViewportScene {
                     pencil_shadow_footprint
                         .extend(ground_shadow_footprint(solid, input.cam));
                     pencil_shadow_casters.push((solid, flats));
+                    pencil_hatch_ink = hatch;
                 }
             }
         }
@@ -1611,11 +1630,23 @@ impl ViewportScene {
         // shadow, and it is drawn once: hatching each body's footprint separately laid a
         // second set of strokes over every overlap — on its own scan-line phase, so the
         // shared region went both denser and darker than either shadow.
-        mesh.push_pencil_ground_hatch(&pencil_shadow_footprint, input.cam, input.viewport, &vp);
+        mesh.push_pencil_ground_hatch(
+            &pencil_shadow_footprint,
+            pencil_hatch_ink,
+            input.cam,
+            input.viewport,
+            &vp,
+        );
         // …and the shadows the solids throw on *each other* (#1818): the ground was the only
         // receiver, so a part sitting on another part cast nothing and the two read as
         // unrelated outlines.
-        mesh.push_pencil_cast_shadows(&pencil_shadow_casters, input.cam, input.viewport, &vp);
+        mesh.push_pencil_cast_shadows(
+            &pencil_shadow_casters,
+            pencil_hatch_ink,
+            input.cam,
+            input.viewport,
+            &vp,
+        );
 
         // Imported unit instances (#722/#724) render through the ordinary body loop above:
         // each instance materializes as a derived body (`BodySource::UnitInstance`), so
@@ -2830,6 +2861,7 @@ impl<'a> SceneMesh<'a> {
     fn push_pencil_cast_shadows(
         &mut self,
         casters: &[(&crate::extrude::SolidMesh, Vec<CoplanarFlat>)],
+        ink: Color32,
         cam: &Camera,
         viewport: UiRect,
         view_proj: &Mat4,
@@ -2882,7 +2914,7 @@ impl<'a> SceneMesh<'a> {
                 ) {
                     self.push_polyline_segment(
                         &crate::pencil::stroke_inside(a, b, 0),
-                        PENCIL_HATCH_COLOR,
+                        ink,
                         PENCIL_HATCH_WIDTH_PX,
                         cam,
                         viewport,
@@ -2899,6 +2931,7 @@ impl<'a> SceneMesh<'a> {
     fn push_pencil_ground_hatch(
         &mut self,
         footprint: &[[Vec3; 3]],
+        ink: Color32,
         cam: &Camera,
         viewport: UiRect,
         view_proj: &Mat4,
@@ -2908,7 +2941,7 @@ impl<'a> SceneMesh<'a> {
         for (a, b) in pencil_hatch_segments(footprint) {
             self.push_polyline_segment(
                 &pencil_stroke(a, b, 0),
-                PENCIL_HATCH_COLOR,
+                ink,
                 PENCIL_HATCH_WIDTH_PX,
                 cam,
                 viewport,
@@ -15047,6 +15080,32 @@ mod loose_pencil_tests {
         );
     }
 
+    /// #1844: the dark-mode pencil is drawn by hand like the others, but on the app's own
+    /// ground rather than on paper — that is the whole of what makes it dark mode. Its pencil
+    /// is white, and light enough to read against that ground.
+    #[test]
+    fn the_dark_pencil_draws_in_white_on_the_theme_ground() {
+        use crate::camera::ShadingMode;
+        let theme = ViewportPalette::default();
+        let dark = theme.for_shading(ShadingMode::DarkPencil);
+        assert!(ShadingMode::DarkPencil.is_drawn_by_hand(), "it is a pencil view");
+        assert!(!ShadingMode::DarkPencil.draws_on_paper(), "but not one drawn on paper");
+        assert_eq!(dark.background, theme.background, "it keeps the theme's ground");
+        assert_eq!(dark.grid, theme.grid, "and the theme's grid");
+        let lum = |c: Color32| c.r() as u32 + c.g() as u32 + c.b() as u32;
+        assert!(
+            lum(crate::pencil::PENCIL_WHITE) > lum(theme.background) * 3,
+            "a white pencil reads against a dark ground"
+        );
+        assert!(
+            lum(crate::pencil::PENCIL_DARK_BODY_FILL) > lum(theme.background),
+            "and a body's fill sits just above that ground, so a near face hides a far one"
+        );
+        for mode in [ShadingMode::LoosePencil, ShadingMode::ColorPencil, ShadingMode::Watercolor] {
+            assert!(mode.draws_on_paper(), "{mode:?} is still drawn on paper");
+        }
+    }
+
     /// #1805: the pencil view draws on paper; every other mode keeps the theme's colors.
     #[test]
     fn loose_pencil_swaps_the_palette_for_paper() {
@@ -15055,7 +15114,7 @@ mod loose_pencil_tests {
         assert_eq!(paper.background, PENCIL_PAPER);
         assert_ne!(paper.grid, theme.grid, "the grid becomes a faint ruled guide");
         for mode in crate::camera::SHADING_MODES {
-            if mode.is_drawn_by_hand() {
+            if mode.draws_on_paper() {
                 continue;
             }
             assert_eq!(

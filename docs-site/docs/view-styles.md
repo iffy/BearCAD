@@ -73,28 +73,36 @@ shadow is the only cue for whether a part rests on the ground or floats above it
 
 ## Pencil
 
-Second row of the popup. White paper, strokes that overshoot their corners and wobble along
-their length, and a hatched contact shadow. The same edge is drawn the same way from every
-angle, so the drawing doesn't crawl as you orbit.
+Second row of the popup. Strokes that overshoot their corners and wobble along their length,
+and a hatched contact shadow. The same edge is drawn the same way from every angle, so the
+drawing doesn't crawl as you orbit.
 
 <div className="row">
 <div className="col col--6">
 
-**Loose pencil** — one pencil, one color.
+**Loose pencil** — one pencil, one color, on white paper.
 
 <img src={useBaseUrl("/img/screenshots/view-styles-loose_pencil.png")} alt="Nine cubes drawn in graphite on white paper with hand-drawn strokes" />
 
 </div>
 <div className="col col--6">
 
-**Colored pencil** — each body's color scribbled in, sloppily, past the lines; solids shadow each other.
+**Dark pencil** — the same hand with the lights out: a white pencil on the dark background.
 
-<img src={useBaseUrl("/img/screenshots/view-styles-color_pencil.png")} alt="The same hand-drawn cubes, each in its own color" />
+<img src={useBaseUrl("/img/screenshots/view-styles-dark_pencil.png")} alt="The same hand-drawn cubes in white pencil on the app's dark background" />
 
 </div>
 </div>
 
 <div className="row">
+<div className="col col--6">
+
+**Colored pencil** — each body's color laid in with the side of the lead, past the lines;
+solids shadow each other.
+
+<img src={useBaseUrl("/img/screenshots/view-styles-color_pencil.png")} alt="The same hand-drawn cubes, each in its own color" />
+
+</div>
 <div className="col col--6">
 
 **Watercolor** — the same drawing, painted: each color a wash that pools and dries darker at

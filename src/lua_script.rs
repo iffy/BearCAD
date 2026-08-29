@@ -12434,6 +12434,11 @@ pub mod tests {
             ("solid_wireframe", ShadingMode::SolidWireframe),
             ("realistic", ShadingMode::Realistic),
             ("loose_pencil", ShadingMode::LoosePencil),
+            ("dark_pencil", ShadingMode::DarkPencil),
+            // The dark-mode pencil answers to what a hand would call it, too (#1844).
+            ("chalk", ShadingMode::DarkPencil),
+            ("color_pencil", ShadingMode::ColorPencil),
+            ("watercolor", ShadingMode::Watercolor),
         ] {
             let state = run_lua(&format!(r#"bearcad.ui.shading("{name}")"#));
             assert_eq!(state.cam.shading_mode(), expected, "shading({name})");
@@ -20799,6 +20804,7 @@ pub mod tests {
             );
         }
     }
+
 
     /// #1840: a face's colored-pencil scribble is painted *with* that face, not after every
     /// face — the marks on a plate used to land on top of the block standing on it, in the

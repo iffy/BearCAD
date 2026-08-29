@@ -93,6 +93,7 @@ pub enum IconId {
     ShadingSolidWireframe,
     ShadingRealistic,
     ShadingLoosePencil,
+    ShadingDarkPencil,
     ShadingColorPencil,
     ShadingWatercolor,
     GroundGrid,
@@ -154,7 +155,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 101] = [
+    pub const ALL: [Self; 102] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -220,6 +221,7 @@ impl IconId {
         Self::ShadingSolidWireframe,
         Self::ShadingRealistic,
         Self::ShadingLoosePencil,
+        Self::ShadingDarkPencil,
         Self::ShadingColorPencil,
         Self::ShadingWatercolor,
         Self::GroundGrid,
@@ -327,6 +329,7 @@ impl IconId {
             Self::ShadingSolidWireframe => include_str!("assets/icons/solid_wireframe.svg"),
             Self::ShadingRealistic => include_str!("assets/icons/realistic.svg"),
             Self::ShadingLoosePencil => include_str!("assets/icons/loose_pencil.svg"),
+            Self::ShadingDarkPencil => include_str!("assets/icons/dark_pencil.svg"),
             Self::ShadingColorPencil => include_str!("assets/icons/color_pencil.svg"),
             Self::ShadingWatercolor => include_str!("assets/icons/watercolor.svg"),
             Self::GroundGrid => include_str!("assets/icons/ground_grid.svg"),
@@ -435,6 +438,7 @@ impl IconId {
             Self::ShadingSolidWireframe => "Solid + wireframe",
             Self::ShadingRealistic => "Realistic",
             Self::ShadingLoosePencil => "Loose pencil",
+            Self::ShadingDarkPencil => "Dark pencil",
             Self::ShadingColorPencil => "Colored pencil",
             Self::ShadingWatercolor => "Watercolor",
             Self::GroundGrid => "Ground grid",
@@ -512,6 +516,7 @@ pub fn icon_for_shading_mode(mode: crate::camera::ShadingMode) -> IconId {
         crate::camera::ShadingMode::SolidWireframe => IconId::ShadingSolidWireframe,
         crate::camera::ShadingMode::Realistic => IconId::ShadingRealistic,
         crate::camera::ShadingMode::LoosePencil => IconId::ShadingLoosePencil,
+        crate::camera::ShadingMode::DarkPencil => IconId::ShadingDarkPencil,
         crate::camera::ShadingMode::ColorPencil => IconId::ShadingColorPencil,
         crate::camera::ShadingMode::Watercolor => IconId::ShadingWatercolor,
     }

@@ -142,6 +142,11 @@ pub enum ShadingMode {
     /// way a hand draws it. Bodies read as their outlines with a paper-toned fill that hides
     /// what is behind them; the contact shadow is hatched rather than smeared.
     LoosePencil,
+    /// [`Self::LoosePencil`] with the lights out (#1844): the same hand, drawing in white on
+    /// the app's own dark ground instead of graphite on paper — a white pencil, or chalk.
+    /// Everything else about it is the plain pencil view; only what the marks are made of and
+    /// what they are made on changes.
+    DarkPencil,
     /// [`Self::LoosePencil`] in color (#1812): each body drawn in its own material color,
     /// laid on lightly the way a colored pencil leaves it — paper still showing through —
     /// and outlined in a darker tone of that same color rather than graphite.
@@ -153,13 +158,14 @@ pub enum ShadingMode {
 }
 
 /// All shading modes, in the order they list in the HUD popup.
-pub const SHADING_MODES: [ShadingMode; 8] = [
+pub const SHADING_MODES: [ShadingMode; 9] = [
     ShadingMode::Wireframe,
     ShadingMode::TransparentSolid,
     ShadingMode::Solid,
     ShadingMode::SolidWireframe,
     ShadingMode::Realistic,
     ShadingMode::LoosePencil,
+    ShadingMode::DarkPencil,
     ShadingMode::ColorPencil,
     ShadingMode::Watercolor,
 ];
@@ -177,6 +183,7 @@ pub const SHADING_MODE_ROWS: [&[ShadingMode]; 2] = [
     ],
     &[
         ShadingMode::LoosePencil,
+        ShadingMode::DarkPencil,
         ShadingMode::ColorPencil,
         ShadingMode::Watercolor,
     ],
@@ -193,6 +200,7 @@ impl ShadingMode {
             }
             "realistic" | "matte" | "satin" => Some(Self::Realistic),
             "loose_pencil" | "pencil" | "sketchy" => Some(Self::LoosePencil),
+            "dark_pencil" | "pencil_dark" | "white_pencil" | "chalk" => Some(Self::DarkPencil),
             // The British spellings stay accepted (#1832): they are what scripts written
             // before the rename say, and a name is cheap to keep answering to.
             "color_pencil" | "colour_pencil" | "colored_pencil" | "coloured_pencil" => {
@@ -214,6 +222,7 @@ impl ShadingMode {
             Self::SolidWireframe => "Solid + wireframe",
             Self::Realistic => "Realistic",
             Self::LoosePencil => "Loose pencil",
+            Self::DarkPencil => "Dark pencil",
             Self::ColorPencil => "Colored pencil",
             Self::Watercolor => "Watercolor",
         }
@@ -227,6 +236,7 @@ impl ShadingMode {
             Self::SolidWireframe => "solid_wireframe",
             Self::Realistic => "realistic",
             Self::LoosePencil => "loose_pencil",
+            Self::DarkPencil => "dark_pencil",
             Self::ColorPencil => "color_pencil",
             Self::Watercolor => "watercolor",
         }
@@ -236,7 +246,18 @@ impl ShadingMode {
     /// paper, whatever fills them. The three share a ground, a grid, an axis palette and a
     /// hatched contact shadow; only the way color is laid on differs.
     pub fn is_drawn_by_hand(self) -> bool {
-        matches!(self, Self::LoosePencil | Self::ColorPencil | Self::Watercolor)
+        matches!(
+            self,
+            Self::LoosePencil | Self::DarkPencil | Self::ColorPencil | Self::Watercolor
+        )
+    }
+
+    /// Whether the mode draws on **paper** (#1844) — the warm white ground, the faint ruled
+    /// guides and the muted axes that go with it. [`Self::DarkPencil`] is drawn by hand too,
+    /// but with a white pencil on the app's own dark ground, so it keeps the theme's palette:
+    /// that is the whole of what makes it the dark-mode pencil.
+    pub fn draws_on_paper(self) -> bool {
+        self.is_drawn_by_hand() && self != Self::DarkPencil
     }
 }
 
@@ -2115,7 +2136,12 @@ mod tests {
         // The hand-drawn modes share a row of their own (#1829).
         assert_eq!(
             SHADING_MODE_ROWS[SHADING_MODE_ROWS.len() - 1],
-            &[ShadingMode::LoosePencil, ShadingMode::ColorPencil, ShadingMode::Watercolor]
+            &[
+                ShadingMode::LoosePencil,
+                ShadingMode::DarkPencil,
+                ShadingMode::ColorPencil,
+                ShadingMode::Watercolor
+            ]
         );
         assert!(
             SHADING_MODE_ROWS[SHADING_MODE_ROWS.len() - 1]

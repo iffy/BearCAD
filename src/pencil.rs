@@ -32,6 +32,17 @@ pub const PENCIL_GRID_AXIS: Color32 = Color32::from_rgb(196, 193, 184);
 pub const PENCIL_X_AXIS: Color32 = Color32::from_rgb(184, 96, 92);
 pub const PENCIL_Y_AXIS: Color32 = Color32::from_rgb(104, 152, 104);
 pub const PENCIL_Z_AXIS: Color32 = Color32::from_rgb(96, 122, 176);
+/// Dark mode for the pencil view (#1844): a white pencil on the app's own dark ground.
+///
+/// Never pure white — pure white reads as a UI line rather than a drawn one, exactly as pure
+/// black would on paper. The fill inside a body is a hair *above* the theme's background, so
+/// a near face still hides a far one without the fill reading as paint; the hatch that stands
+/// in for a shadow is the same white laid on lightly, which is the relationship graphite and
+/// its hatch have on paper.
+pub const PENCIL_WHITE: Color32 = Color32::from_rgb(228, 230, 238);
+pub const PENCIL_DARK_BODY_FILL: Color32 = Color32::from_rgb(38, 39, 44);
+pub const PENCIL_DARK_HATCH: Color32 = Color32::from_rgba_premultiplied(85, 86, 90, 96);
+
 /// A pencil outline carries the drawing, so it is heavier than the thin technical wireframe
 /// overlay (#1810).
 pub const PENCIL_LINE_WIDTH_PX: f32 = 2.1;

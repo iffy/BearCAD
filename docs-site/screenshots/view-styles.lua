@@ -25,7 +25,7 @@ bearcad.ui.wait(2)
 -- test fails if the two lists ever disagree.
 local styles = {
   "wireframe", "transparent", "solid", "solid_wireframe",
-  "realistic", "loose_pencil", "color_pencil", "watercolor",
+  "realistic", "loose_pencil", "dark_pencil", "color_pencil", "watercolor",
 }
 for _, style in ipairs(styles) do
   bearcad.ui.shading(style)
