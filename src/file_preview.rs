@@ -88,20 +88,27 @@ pub fn export_preview_png(doc: &Document, path: &str) -> Result<(), String> {
 /// After a successful SQLite save: embed the preview in `meta` and publish it to the OS.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn attach_preview_after_save(path: &str, doc: &Document) {
+    // A JSON document is a flat serialization with nowhere to keep a preview (#1817).
+    // The OS thumbnail still applies — that lives beside the file, not in it.
+    let embeddable = !crate::storage::saves_as_json(path);
     let Some(png) = document_preview_png(doc) else {
         // Empty model: clear any stale custom icon so Finder doesn't show an old thumbnail.
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             clear_os_preview(path);
         }));
-        clear_embedded_preview(path);
+        if embeddable {
+            clear_embedded_preview(path);
+        }
         return;
     };
-    if let Err(e) = embed_preview_png(path, &png) {
-        crate::diag::warn(format!("preview embed failed for {path}: {e}"));
+    if embeddable {
+        if let Err(e) = embed_preview_png(path, &png) {
+            crate::diag::warn(format!("preview embed failed for {path}: {e}"));
+        }
+        // #1790: the STL QuickLook snapshot is retired — purge legacy blobs so old files
+        // slim down on their next save.
+        clear_embedded_preview_stl(path);
     }
-    // #1790: the STL QuickLook snapshot is retired — purge legacy blobs so old files
-    // slim down on their next save.
-    let _ = clear_embedded_preview_stl(path);
     // Icon attach is best-effort: a panic here must not unwind through save (#1339).
     // SIGBUS from ImageIO cannot be caught — `apply_os_preview` must not call it.
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| apply_os_preview(path, &png))) {
@@ -1123,6 +1130,36 @@ mod tests {
             "legacy preview_stl blob must be deleted on save"
         );
         assert!(load_embedded_preview_png(&path_s).is_some(), "PNG survives");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// #1817: a JSON document has nowhere to put a preview blob, so saving one must not
+    /// try and then warn ("file is not a database") on every save.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn saving_a_json_document_does_not_warn_about_the_preview() {
+        let doc = cube_document();
+        let path = std::env::temp_dir().join(format!(
+            "bearcad_preview_json_{}.bearcad.json",
+            std::process::id()
+        ));
+        let path_s = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        crate::storage::save(&path_s, &doc).expect("save");
+        attach_preview_after_save(&path_s, &doc);
+        assert!(
+            !crate::diag::session_log().contains(&format!("preview embed failed for {path_s}")),
+            "a JSON save must not warn about the preview it cannot embed"
+        );
+
+        // An empty document takes the clear-the-preview path, which must be as quiet.
+        attach_preview_after_save(&path_s, &Document::default());
+        assert!(
+            !crate::diag::session_log().contains(&format!("preview embed failed for {path_s}")),
+            "clearing a JSON document's preview must not warn either"
+        );
 
         let _ = std::fs::remove_file(&path);
     }

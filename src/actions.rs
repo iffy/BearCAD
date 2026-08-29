@@ -32118,19 +32118,57 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             px0 > vx0 - slack && px1 < vx1 + slack && py0 > vy0 - slack && py1 < vy1 + slack,
             "the pencil drawing wandered off its subject"
         );
-        // And the hand is steady between renders: the same view redraws the same strokes.
-        // (Compared as a set — the underlying edge list comes back in an unspecified order,
-        // which the rendered page is indifferent to.)
+        // And the hand is steady between renders: the same view redraws the same strokes,
+        // in the same order (#1816).
         let key = |g: &crate::drawing::StyledViewGeometry| {
-            let mut k: Vec<[u32; 4]> = g
-                .segments
+            g.segments
                 .iter()
                 .map(|(a, b)| [a.x.to_bits(), a.y.to_bits(), b.x.to_bits(), b.y.to_bits()])
-                .collect();
-            k.sort_unstable();
-            k
+                .collect::<Vec<_>>()
         };
         assert_eq!(key(&pencil), key(&geometry(&state)), "the hand wavered between renders");
+    }
+
+    /// #1816: a drawing of a curved body exports byte-for-byte the same twice running.
+    /// The view's silhouette edges used to be collected by walking a `HashMap`, whose order
+    /// is unspecified and reseeded per map, so two exports of an unchanged document differed
+    /// in the order of their drawing commands — defeating diffing, caching or checksumming
+    /// an export.
+    #[test]
+    fn exporting_the_same_drawing_twice_gives_the_same_bytes() {
+        use crate::model::{DrawingOrientation, DrawingViewStyle};
+        let mut state = two_box_state(false);
+        let sketch = state.doc.sketches.keys().next().expect("the fixture sketched");
+        state.apply(Action::CreateCircle { cx: 40.0, cy: 0.0, r: 8.0, diameter_expr: None });
+        let circle = state.doc.circles.keys().next().expect("a circle to extrude");
+        state.apply(Action::CreateExtrusion {
+            expression: None,
+            sketch,
+            faces: vec![ExtrudeFace::Circle(circle)],
+            distance: 20.0,
+            body: crate::actions::ExtrudeBodyChoice::New,
+            target: None,
+            symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+        });
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::AddDrawingView {
+            drawing: dkey(0),
+            bodies: state.doc.bodies.keys().collect(),
+            orientation: DrawingOrientation::Isometric,
+        });
+        for style in [DrawingViewStyle::Visible, DrawingViewStyle::LoosePencil] {
+            state.apply(Action::SetDrawingViewStyle { drawing: dkey(0), view: 0, style });
+            let first = crate::drawing::drawing_to_svg(&state.doc, dkey(0)).unwrap();
+            let second = crate::drawing::drawing_to_svg(&state.doc, dkey(0)).unwrap();
+            assert_eq!(first, second, "{style:?} export is not reproducible");
+            let pdf_first = crate::drawing::drawing_to_pdf(&state.doc, dkey(0)).unwrap();
+            let pdf_second = crate::drawing::drawing_to_pdf(&state.doc, dkey(0)).unwrap();
+            assert_eq!(pdf_first, pdf_second, "{style:?} PDF export is not reproducible");
+        }
     }
 
     /// #1822: naming a material that already exists, with no color of its own, applies it.

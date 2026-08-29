@@ -5606,15 +5606,19 @@ pub fn solid_mesh_silhouette_edges(
             by_edge.entry(key).or_insert_with(|| (a, b, Vec::new())).2.push(facing);
         }
     }
-    by_edge
-        .into_values()
-        .filter(|(_, _, facings)| match facings.as_slice() {
+    // Sorted by the quantized edge key, like `solid_mesh_unique_edges`: a `HashMap` walk is
+    // in an unspecified order, which used to leak all the way out to a drawing's SVG/PDF
+    // export and make the same document export to different bytes each run (#1816).
+    let mut edges: Vec<_> = by_edge
+        .into_iter()
+        .filter(|(_, (_, _, facings))| match facings.as_slice() {
             [_] => true,                       // naked boundary edge
             [f0, f1] => f0.signum() != f1.signum(), // facing flips → silhouette
             _ => false,
         })
-        .map(|(a, b, _)| (a, b))
-        .collect()
+        .collect();
+    edges.sort_by_key(|(key, _)| *key);
+    edges.into_iter().map(|(_, (a, b, _))| (a, b)).collect()
 }
 
 
@@ -5716,9 +5720,14 @@ pub fn solid_mesh_smooth_silhouette_edges(
                 .push((normal, centroid));
         }
     }
+    // Sorted by the quantized edge key so the same view yields the same edge list every run
+    // (#1816) — a `HashMap` walk is in an unspecified order, and that order reached a
+    // drawing's exported SVG/PDF.
+    let mut by_edge: Vec<(EdgeKey, EdgeFaces)> = by_edge.into_iter().collect();
+    by_edge.sort_by_key(|(key, _)| *key);
     by_edge
-        .into_values()
-        .filter_map(|edge| {
+        .into_iter()
+        .filter_map(|(_, edge)| {
             let [(n1, c1), (n2, c2)] = edge.faces.as_slice() else {
                 return None;
             };

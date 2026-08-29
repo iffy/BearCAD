@@ -18,6 +18,14 @@ pub fn to_json_bytes(doc: &Document) -> Result<Vec<u8>> {
     serde_json::to_vec(doc).map_err(|e| e.to_string())
 }
 
+/// Whether saving to `path` writes the JSON codec rather than the SQLite document format.
+/// JSON is a flat serialization with no `blobs` table, so anything blob-shaped — the
+/// embedded preview thumbnail (#1817) — has to be skipped for such a path rather than
+/// attempted and warned about.
+pub fn saves_as_json(path: &str) -> bool {
+    path.ends_with(".json")
+}
+
 /// Parse a JSON document (see [`to_json_bytes`]) and run the shared post-load fixups.
 pub fn from_json_bytes(bytes: &[u8]) -> Result<Document> {
     let mut doc: Document = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;

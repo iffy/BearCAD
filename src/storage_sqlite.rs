@@ -541,7 +541,7 @@ fn sniff_sqlite(path: &str) -> Result<bool> {
 /// Save `doc` to `path`, overwriting any existing document content.
 pub fn save(path: &str, doc: &Document) -> Result<()> {
     validate_document_parameters_no_cycles(doc)?;
-    if path.ends_with(".json") {
+    if crate::storage::saves_as_json(path) {
         let bytes = crate::storage::to_json_bytes(doc)?;
         return std::fs::write(path, bytes).map_err(|e| e.to_string());
     }
