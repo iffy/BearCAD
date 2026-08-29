@@ -4330,6 +4330,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     t.set("page_width", drawing.page_width_mm)?;
                     t.set("page_height", drawing.page_height_mm)?;
                     t.set("margin", drawing.margin_mm)?;
+                    // Which sheet the *editor* shows it on (#1831); the exports are always
+                    // black ink on white.
+                    t.set("paper", if drawing.white_paper { "white" } else { "dark" })?;
                     t.set("views", drawing.views.len())?;
                     t.set("annotations", drawing.annotations.len())?;
                     if let Some(name) = &drawing.name {
@@ -9751,6 +9754,28 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     offset,
                 })
             }
+        })?,
+    )?;
+
+    // The sheet the editor shows a drawing on (#1831): `bearcad.drawing_paper{ drawing,
+    // paper = "white" | "dark" }`. White is what the print looks like, so a drawing can be
+    // checked without exporting it; the exports themselves are unaffected.
+    api.set(
+        "drawing_paper",
+        lua.create_function(|lua, opts: Table| {
+            let drawing: usize = opts.ordinal_req("drawing")?;
+            let paper: String = opts.get("paper")?;
+            let white = match paper.to_ascii_lowercase().as_str() {
+                "white" | "print" | "paper" => true,
+                "dark" | "sheet" | "black" => false,
+                other => {
+                    return Err(mlua::Error::external(format!(
+                        "drawing_paper: unknown paper '{other}' (try white, dark)"
+                    )))
+                }
+            };
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::DrawingPaper { drawing, white }) }
         })?,
     )?;
 
@@ -18697,6 +18722,31 @@ pub mod tests {
         run_lua_expect_ok(
             r#"assert(bearcad.ui.headless() == false, "a windowed run has windows")"#,
         );
+    }
+
+    /// #1831: the editor's sheet can be switched to white, so a drawing can be checked
+    /// against what the print will actually look like without exporting it. It is a property
+    /// of the drawing, so it is saved with the document and every view on the page follows it.
+    #[test]
+    fn a_drawing_can_be_put_on_white_paper() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 40, depth = 30, height = 20 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
+            assert(bearcad.get{ kind = "drawing", index = d }.paper == "dark",
+                   "the editor's sheet starts dark, matching the app")
+            bearcad.drawing_paper{ drawing = d, paper = "white" }
+            assert(bearcad.get{ kind = "drawing", index = d }.paper == "white",
+                   "and can be put on white paper to preview the print")
+            bearcad.drawing_paper{ drawing = d, paper = "dark" }
+            assert(bearcad.get{ kind = "drawing", index = d }.paper == "dark", "and back")
+            local ok = pcall(bearcad.drawing_paper, { drawing = d, paper = "beige" })
+            assert(not ok, "an unknown paper is an error, not a silent no-op")
+        "#,
+        );
+        assert!(!state.doc.drawings[dkey(0)].white_paper);
     }
 
     /// #1575: `bearcad.ui.pane_rect(...)` reports last-frame pane bounds, or nil when hidden.

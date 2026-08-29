@@ -1558,6 +1558,7 @@ fn save_drawings(tx: &Connection, arena: &Arena<Drawing>) -> Result<()> {
                 to_json(&serde_json::json!({
                     "views": d.views,
                     "annotations": d.annotations,
+                    "white_paper": d.white_paper,
                 }))?,
             ],
         )
@@ -3399,6 +3400,8 @@ struct DrawingPayload {
     views: Vec<crate::model::DrawingView>,
     #[serde(default)]
     annotations: crate::arena::Arena<crate::model::DrawingAnnotation>,
+    #[serde(default)]
+    white_paper: bool,
 }
 
 fn load_drawings(conn: &Connection) -> Result<Arena<Drawing>> {
@@ -3433,6 +3436,7 @@ fn load_drawings(conn: &Connection) -> Result<Arena<Drawing>> {
                 page_height_mm: page_height_mm as f32,
                 margin_mm: margin_mm as f32,
                 annotations: payload.annotations,
+                white_paper: payload.white_paper,
             },
         ));
     }

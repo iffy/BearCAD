@@ -465,6 +465,8 @@ pub enum Instruction {
         offset: f32,
     },
     /// Set a placed view's display style (#1651): `"visible"` / `"wireframe"` / `"shaded"`.
+    /// The sheet the editor shows a drawing on (#1831).
+    DrawingPaper { drawing: usize, white: bool },
     SetDrawingViewStyle {
         drawing: usize,
         view: usize,
@@ -1681,6 +1683,10 @@ impl Instruction {
                      index = {index}, offset = {offset} }}"
                 )
             }
+            Instruction::DrawingPaper { drawing, white } => format!(
+                "bearcad.drawing_paper{{ drawing = {drawing}, paper = \"{}\" }}",
+                if *white { "white" } else { "dark" }
+            ),
             Instruction::SetDrawingViewStyle { drawing, view, style } => format!(
                 "bearcad.drawing_view_style{{ drawing = {drawing}, view = {view}, \
                  style = {style:?} }}"
@@ -7482,6 +7488,13 @@ impl ScriptRunner {
                     )),
                 });
                 self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::DrawingPaper { drawing, white } => {
+                let Some(key) = state.doc.drawings.keys().nth(drawing) else {
+                    return StepResult::Continue;
+                };
+                state.apply(Action::SetDrawingPaper { drawing: key, white });
                 StepResult::Continue
             }
             Instruction::SetDrawingViewStyle { drawing, view, style } => {

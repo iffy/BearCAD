@@ -31,6 +31,12 @@ With **Select**, a selected projection shows corner grips. Drag a corner to resi
 card (centre stays put). Aligned partners share the matching axis — Above/Below share
 width, Left/Right share height — so a resize on any of them updates the linked dimension.
 
+## White paper
+
+The editor's sheet is dark to match the app; exports are black ink on white. Right-click the
+drawing in the Elements pane and pick **White paper** to see the printed version without
+exporting it. It saves with the document.
+
 ## Exporting
 
 **Export** saves a vector **PDF** or **SVG**. Both are WYSIWYG at the page's configured
@@ -68,6 +74,7 @@ bearcad.drawing_curve_dimension{ drawing = d, view = 0,
 -- Display style and which way a placed view faces.
 bearcad.drawing_view_style{ drawing = d, view = 0, style = "shaded" }
 -- visible | wireframe | shaded | colorful | loose_pencil | color_pencil | watercolor
+bearcad.drawing_paper{ drawing = 0, paper = "white" }   -- "white" | "dark"
 bearcad.drawing_view_orientation{ drawing = d, view = 0, orientation = "front-right-top" }
 
 -- Edit a view's caption label: hide it, move it, or set custom text ("" = automatic).

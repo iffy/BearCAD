@@ -15771,6 +15771,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             let mut add_to_drawing: Option<SceneElement> = None;
             let mut create_drawing_of_body: Option<model::BodyKey> = None;
             let mut rename_drawing: Option<(model::DrawingKey, String)> = None;
+            let mut set_drawing_paper: Option<(model::DrawingKey, bool)> = None;
             let mut pane_hovered_element: Option<SceneElement> = None;
             let mut add_component: Option<Option<model::ComponentKey>> = None;
             let mut add_cross_section = false;
@@ -15821,6 +15822,9 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                         };
                     let mut queue_rename_drawing = |index: model::DrawingKey, name: String| {
                         rename_drawing = Some((index, name));
+                    };
+                    let mut queue_set_drawing_paper = |index: model::DrawingKey, white: bool| {
+                        set_drawing_paper = Some((index, white));
                     };
                     let mut queue_set_body_shadow = |index: model::BodyKey, shadow: bool| {
                         set_body_shadow = Some((index, shadow));
@@ -15965,6 +15969,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                         &mut queue_hover_drawing_element,
                         selected_drawing_leaf,
                         &mut queue_rename_drawing,
+                        &mut queue_set_drawing_paper,
                         &mut queue_set_body_shadow,
                         &mut queue_export_body,
                         &mut queue_export_body_step,
@@ -16106,6 +16111,9 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             }
             if let Some((drawing, name)) = rename_drawing {
                 self.state.apply(Action::RenameDrawing { drawing, name });
+            }
+            if let Some((drawing, white)) = set_drawing_paper {
+                self.state.apply(Action::SetDrawingPaper { drawing, white });
             }
             if let Some((element, additive)) = click_element {
                 self.state.apply(Action::ClickSceneElement { element, additive });
@@ -26904,8 +26912,24 @@ impl App {
     fn draw_drawing_pane(&mut self, ui: &mut egui::Ui, drawing: model::DrawingKey) {
         // The editor is white-on-black to match the app's dark-mode aesthetic (#254); export
         // (see `drawing.rs`) stays the opposite — black ink on a white sheet.
-        const INK: egui::Color32 = egui::Color32::from_gray(228);
-        const SHEET: egui::Color32 = egui::Color32::from_gray(24);
+        //
+        // A drawing can be put on **white paper** instead (#1831), which is the export's own
+        // pairing: it is how you see what the print will look like without exporting it.
+        let white_paper = self
+            .state
+            .doc
+            .drawings
+            .get(drawing)
+            .is_some_and(|d| d.white_paper);
+        let (ink, sheet) = if white_paper {
+            (egui::Color32::from_gray(20), egui::Color32::from_gray(214))
+        } else {
+            (egui::Color32::from_gray(228), egui::Color32::from_gray(24))
+        };
+        #[allow(non_snake_case)]
+        let INK = ink;
+        #[allow(non_snake_case)]
+        let SHEET = sheet;
 
         // Dark sheet across the whole central area.
         let area = ui.available_rect_before_wrap();
@@ -27034,11 +27058,26 @@ impl App {
                     egui::Rect::from_center_size(area.center() + self.drawing_pan, page_size);
                 page_rect = Some(page);
                 // A faint white page on the dark sheet, with the margin as a dashed inset.
-                ui.painter().rect_filled(page, 2.0, egui::Color32::from_gray(40));
+                // On white paper (#1831) the page *is* white and the sheet around it a shade
+                // off, so the two still read apart — the same way they do on the dark one.
+                let (page_fill, page_edge, margin_edge) = if white_paper {
+                    (
+                        egui::Color32::WHITE,
+                        egui::Color32::from_gray(150),
+                        egui::Color32::from_gray(200),
+                    )
+                } else {
+                    (
+                        egui::Color32::from_gray(40),
+                        egui::Color32::from_gray(120),
+                        egui::Color32::from_gray(70),
+                    )
+                };
+                ui.painter().rect_filled(page, 2.0, page_fill);
                 ui.painter().rect_stroke(
                     page,
                     2.0,
-                    egui::Stroke::new(1.0, egui::Color32::from_gray(120)),
+                    egui::Stroke::new(1.0, page_edge),
                     egui::StrokeKind::Inside,
                 );
                 let inset = (pm * scale).min(page_size.x / 2.0 - 1.0).min(page_size.y / 2.0 - 1.0);
@@ -27046,7 +27085,7 @@ impl App {
                     ui.painter().rect_stroke(
                         page.shrink(inset),
                         0.0,
-                        egui::Stroke::new(1.0, egui::Color32::from_gray(70)),
+                        egui::Stroke::new(1.0, margin_edge),
                         egui::StrokeKind::Inside,
                     );
                 }
@@ -28073,13 +28112,19 @@ impl App {
                         // meant to sit a long way toward the *paper*, and here the paper is the
                         // dark sheet — so it goes down toward the sheet, not up toward white,
                         // and the scribble over it is what carries the color.
+                        // On white paper the print values *are* the right values (#1831);
+                        // the dark sheet is the one that needs them mapped down.
                         let level = |c: u8| {
-                            (c as f32 / 255.0 * face.shade.clamp(0.0, 1.0) * 110.0) as u8 + 30
+                            if white_paper {
+                                (c as f32 * face.shade.clamp(0.0, 1.0)) as u8
+                            } else {
+                                (c as f32 / 255.0 * face.shade.clamp(0.0, 1.0) * 110.0) as u8 + 30
+                            }
                         };
                         // One raw mesh per coplanar face (#1651): its triangles meet without
                         // the feathered edges a per-triangle fill would leave, so the
                         // tessellation's diagonals don't show as faint seams.
-                        let color = if sty.scribbled {
+                        let color = if sty.scribbled && !white_paper {
                             ink_on_dark_sheet(face.tint)
                         } else {
                             egui::Color32::from_rgb(
@@ -28137,12 +28182,17 @@ impl App {
                         let s = stroke.shade.clamp(0.0, 1.0);
                         let tint: [u8; 3] =
                             std::array::from_fn(|i| (stroke.tint[i] as f32 * s) as u8);
+                        let color = if white_paper {
+                            egui::Color32::from_rgb(tint[0], tint[1], tint[2])
+                        } else {
+                            ink_on_dark_sheet(tint)
+                        };
                         painter.line_segment(
                             [
                                 to_screen(egui::vec2(stroke.a.x, stroke.a.y)),
                                 to_screen(egui::vec2(stroke.b.x, stroke.b.y)),
                             ],
-                            egui::Stroke::new(stroke.width, ink_on_dark_sheet(tint)),
+                            egui::Stroke::new(stroke.width, color),
                         );
                     }
                 }

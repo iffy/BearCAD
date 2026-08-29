@@ -3280,6 +3280,9 @@ pub enum Action {
     CreateDrawingOfBody { body: crate::model::BodyKey },
     /// Rename a technical drawing (#255): empty clears back to the default label.
     RenameDrawing { drawing: crate::model::DrawingKey, name: String },
+    /// Show the editor's sheet as white paper rather than the app's dark one (#1831), so a
+    /// drawing can be checked against what the print will look like without exporting it.
+    SetDrawingPaper { drawing: crate::model::DrawingKey, white: bool },
     /// Set a drawing's page size and margin, in millimetres (#273). `None` keeps the
     /// drawing's current value, so partial updates work (#406).
     SetDrawingPage {
@@ -14334,6 +14337,20 @@ impl AppState {
                 let trimmed = name.trim().to_string();
                 d.name = (!trimmed.is_empty()).then_some(trimmed);
                 self.status = "Renamed drawing".to_string();
+                ActionResult::Ok
+            }
+            Action::SetDrawingPaper { drawing, white } => {
+                let Some(d) = self.doc.drawings.get_mut(drawing) else {
+                    let e = format!("Drawing {} not found", drawing.index());
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                d.white_paper = white;
+                self.status = if white {
+                    "Drawing on white paper".to_string()
+                } else {
+                    "Drawing on the dark sheet".to_string()
+                };
                 ActionResult::Ok
             }
             Action::SetDrawingPage { drawing, width_mm, height_mm, margin_mm } => {

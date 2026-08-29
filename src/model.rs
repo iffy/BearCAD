@@ -5443,6 +5443,11 @@ pub struct Drawing {
     /// Free text annotations placed on the page (#312): notes, titles, callouts.
     #[serde(default)]
     pub annotations: crate::arena::Arena<DrawingAnnotation>,
+    /// Show the editor's sheet as **white paper** rather than the app's dark one (#1831), so a
+    /// drawing can be checked against what the print will actually look like without exporting
+    /// it. The exports are unaffected — they were always black ink on white.
+    #[serde(default)]
+    pub white_paper: bool,
 }
 
 /// A drawing's identity (#1055): stable across deletions of other drawings.
@@ -5619,6 +5624,7 @@ impl Default for Drawing {
             page_height_mm: default_page_height_mm(),
             margin_mm: default_page_margin_mm(),
             annotations: crate::arena::Arena::new(),
+            white_paper: false,
         }
     }
 }

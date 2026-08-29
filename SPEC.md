@@ -2594,6 +2594,13 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   `drawing::styled_view_geometry`, shared by the editor pane (greys darkened for the dark
   sheet) and both exports (the `Canvas` trait gained a filled-polygon primitive).
   `Action::SetDrawingViewStyle`.
+- **White paper (#1831):** the editor's sheet is dark to match the app, but a drawing can be
+  put on **white paper** — the exports' own pairing of black ink on white — so what the print
+  will look like can be checked without exporting it. Right-click the drawing in the Elements
+  pane; `Drawing::white_paper`, so it saves with the document and every view on the page follows
+  it. On white the shaded fills and the hand-drawn marks use the print values directly, rather
+  than the dark sheet's `ink_on_dark_sheet` reading. Exports are unaffected: they were always
+  black on white. `Action::SetDrawingPaper`, `bearcad.drawing_paper{ drawing, paper }`.
 - **View card size (#1207):** each projection stores `size_x`/`size_y` as page fractions
   (default 0.42). Under **Select**, a selected card shows corner grips; dragging a corner
   resizes about the card centre (`Action::SetDrawingViewSize`, one undo step for the

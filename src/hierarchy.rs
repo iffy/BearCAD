@@ -4551,6 +4551,7 @@ pub fn show_pane(
     on_hover_drawing_element: &mut impl FnMut(Option<HierarchyNode>),
     selected_drawing_leaf: Option<HierarchyNode>,
     on_rename_drawing: &mut impl FnMut(crate::model::DrawingKey, String),
+    on_set_drawing_paper: &mut impl FnMut(crate::model::DrawingKey, bool),
     on_set_body_shadow: &mut impl FnMut(crate::model::BodyKey, bool),
     on_export_body: &mut impl FnMut(crate::model::BodyKey),
     on_export_body_step: &mut impl FnMut(crate::model::BodyKey),
@@ -4848,6 +4849,7 @@ pub fn show_pane(
                         on_hover_drawing_element,
                         selected_drawing_leaf,
                         on_rename_drawing,
+                        on_set_drawing_paper,
                         on_set_body_shadow,
                         on_export_body,
                         on_export_body_step,
@@ -4924,6 +4926,7 @@ pub fn show_pane(
                 on_set_rollback,
                 on_edit_drawing,
                 on_rename_drawing,
+                on_set_drawing_paper,
             );
         }
     }
@@ -5079,6 +5082,7 @@ fn show_graph_view(
     on_set_rollback: &mut impl FnMut(Option<RollbackMarker>),
     on_edit_drawing: &mut impl FnMut(crate::model::DrawingKey),
     on_rename_drawing: &mut impl FnMut(crate::model::DrawingKey, String),
+    on_set_drawing_paper: &mut impl FnMut(crate::model::DrawingKey, bool),
 ) {
     let layout = graph_lane_layout(doc, tree);
     if layout.rows.is_empty() {
@@ -5364,7 +5368,14 @@ fn show_graph_view(
                     match node {
                         HierarchyNode::Drawing(index) => {
                             response.context_menu(|ui| {
-                                drawing_context_menu(ui, doc, index, on_edit_drawing, on_rename_drawing);
+                                drawing_context_menu(
+                                    ui,
+                                    doc,
+                                    index,
+                                    on_edit_drawing,
+                                    on_rename_drawing,
+                                    on_set_drawing_paper,
+                                );
                             });
                         }
                         HierarchyNode::EdgeTreatment { extrusion, index } => {
@@ -5938,6 +5949,7 @@ fn show_row(
     on_hover_drawing_element: &mut impl FnMut(Option<HierarchyNode>),
     selected_drawing_leaf: Option<HierarchyNode>,
     on_rename_drawing: &mut impl FnMut(crate::model::DrawingKey, String),
+    on_set_drawing_paper: &mut impl FnMut(crate::model::DrawingKey, bool),
     on_set_body_shadow: &mut impl FnMut(crate::model::BodyKey, bool),
     on_export_body: &mut impl FnMut(crate::model::BodyKey),
     on_export_body_step: &mut impl FnMut(crate::model::BodyKey),
@@ -6082,7 +6094,16 @@ fn show_row(
                 on_edit_drawing(index);
             }
             response
-                .context_menu(|ui| drawing_context_menu(ui, doc, index, on_edit_drawing, on_rename_drawing));
+                .context_menu(|ui| {
+                    drawing_context_menu(
+                        ui,
+                        doc,
+                        index,
+                        on_edit_drawing,
+                        on_rename_drawing,
+                        on_set_drawing_paper,
+                    )
+                });
         });
         return;
     }
@@ -6413,9 +6434,18 @@ fn drawing_context_menu(
     index: crate::model::DrawingKey,
     on_edit_drawing: &mut impl FnMut(crate::model::DrawingKey),
     on_rename_drawing: &mut impl FnMut(crate::model::DrawingKey, String),
+    on_set_drawing_paper: &mut impl FnMut(crate::model::DrawingKey, bool),
 ) {
     if ui.button("Edit drawing").clicked() {
         on_edit_drawing(index);
+        ui.close();
+    }
+    // The editor's sheet is dark to match the app; white shows what the print will look like
+    // without exporting it (#1831).
+    let white = doc.drawings.get(index).is_some_and(|d| d.white_paper);
+    let label = if white { "Dark sheet" } else { "White paper" };
+    if ui.button(label).clicked() {
+        on_set_drawing_paper(index, !white);
         ui.close();
     }
     ui.separator();
@@ -7924,6 +7954,7 @@ label_hidden: false,
             &mut |_| {},
             &mut |_| {},
             None,
+            &mut |_, _| {},
             &mut |_, _| {},
             &mut |_, _| {},
             &mut |_| {},
