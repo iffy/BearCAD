@@ -2558,16 +2558,57 @@ pub fn styled_view_geometry(
         // term goes entirely. Each style mixes its own — a colored pencil only grazes the
         // paper, a wash covers — and the tint carries the result, so both renderers read one
         // print color rather than each re-deriving it (#1829).
-        for face in &mut fills {
+        //
+        // A wash also dries in splotches (#1839): pools of deeper pigment, and patches of
+        // paper the water never covered. They are laid straight onto the flat they belong to,
+        // so the paint order that put that flat where it is holds for them too, and neither
+        // kind lines up with the outline — a wash runs past the line in places and falls
+        // short of it in others. That, more than any tone, is what separates a painting from
+        // a printed fill.
+        let wash = view.style == DrawingViewStyle::Watercolor;
+        let page = crate::pencil::HatchFrame { origin: Vec3::ZERO, u: Vec3::X, v: Vec3::Y };
+        let mut painted: Vec<ShadedFace> = Vec::with_capacity(fills.len());
+        for mut face in fills {
             let body = eframe::egui::Color32::from_rgb(face.tint[0], face.tint[1], face.tint[2]);
-            let ground = if view.style == DrawingViewStyle::Watercolor {
+            let ground = if wash {
                 crate::pencil::wash_tone(body)
             } else {
                 crate::pencil::scribble_ground(body)
             };
             face.tint = [ground.r(), ground.g(), ground.b()];
             face.shade = 1.0;
+            if !wash {
+                painted.push(face);
+                continue;
+            }
+            let pool = crate::pencil::wash_pool_tone(body);
+            let flat: Vec<[Vec3; 3]> = face
+                .tris
+                .iter()
+                .map(|t| std::array::from_fn(|i| Vec3::new(t[i].x, t[i].y, 0.0)))
+                .collect();
+            let splotches = crate::pencil::wash_splotches(&page, &flat);
+            let plane = face.plane;
+            painted.push(face);
+            for splotch in splotches {
+                let rim = crate::pencil::splotch_outline(&page, &splotch);
+                let center = glam::Vec2::new(splotch.center.x, splotch.center.y);
+                let tris = (0..rim.len())
+                    .map(|i| {
+                        let (a, b) = (rim[i], rim[(i + 1) % rim.len()]);
+                        [center, glam::Vec2::new(a.x, a.y), glam::Vec2::new(b.x, b.y)]
+                    })
+                    .collect();
+                let tint = if splotch.dry { crate::pencil::wash_dry_tone(body) } else { pool };
+                painted.push(ShadedFace {
+                    tris,
+                    shade: 1.0,
+                    tint: [tint.r(), tint.g(), tint.b()],
+                    plane,
+                });
+            }
         }
+        fills = painted;
     }
 
     // A colored pencil draws its outline in a deepened version of what it filled with    // A colored pencil draws its outline in a deepened version of what it filled with

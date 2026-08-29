@@ -2776,8 +2776,30 @@ impl<'a> SceneMesh<'a> {
     ) {
         let pool = fill_color(crate::pencil::wash_edge_tone(base), crate::pencil::WASH_POOL_ALPHA);
         let rim = fill_color(crate::pencil::wash_edge_tone(base), crate::pencil::WASH_EDGE_ALPHA);
+        // The splotches it dried into (#1839): deeper where the pigment gathered, nearly bare
+        // paper where the water never reached, and neither of them stopping at the outline.
+        // A wash laid on as one even tone reads as a printed fill, not as paint.
+        let splotch_deep = crate::pencil::wash_pool_tone(base);
+        let splotch_dry = crate::pencil::wash_dry_tone(base);
+        let eye = cam.eye();
         for flat in flats {
             let frame = crate::pencil::HatchFrame::new(flat.point, flat.normal);
+            for splotch in crate::pencil::wash_splotches(&frame, &flat.tris) {
+                let color = if splotch.dry { splotch_dry } else { splotch_deep };
+                let lift = |p: Vec3| {
+                    offset_toward_camera(p, flat.normal, eye, STROKE_DEPTH_BIAS * 0.5)
+                };
+                let rim = crate::pencil::splotch_outline(&frame, &splotch);
+                let center = lift(splotch.center);
+                for i in 0..rim.len() {
+                    self.push_triangle(
+                        center,
+                        lift(rim[i]),
+                        lift(rim[(i + 1) % rim.len()]),
+                        color,
+                    );
+                }
+            }
             // Pooling: broad, soft, low-opacity bands, each flat pooling its own way.
             let angle = crate::pencil::PENCIL_HATCH_ANGLE_RAD + flat.angle_offset;
             for (a, b) in crate::pencil::hatch_in_frame(

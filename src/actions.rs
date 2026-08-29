@@ -32309,6 +32309,84 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert_eq!(key(&pencil), key(&geometry(&state)), "the hand wavered between renders");
     }
 
+    /// #1839: a wash on the page dries in splotches too — pools of deeper pigment and
+    /// patches the water left dry — laid over the flat they belong to and free to run past
+    /// its outline. A flat filled with one even tone reads as printed, not painted.
+    #[test]
+    fn a_page_wash_dries_in_splotches_that_ignore_the_outline() {
+        use crate::model::{DrawingOrientation, DrawingViewStyle};
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::AddDrawingView {
+            drawing: dkey(0),
+            bodies: vec![bkey(0)],
+            orientation: DrawingOrientation::Isometric,
+        });
+        state.apply(Action::AddMaterial {
+            name: Some("Sea".to_string()),
+            color: Some([60, 110, 200]),
+            bodies: vec![bkey(0)],
+        });
+        let geometry = |state: &AppState| {
+            crate::drawing::styled_view_geometry(
+                &state.doc,
+                &state.doc.drawings[dkey(0)].views,
+                &state.doc.drawings[dkey(0)].views[0],
+            )
+        };
+        let style = |state: &mut AppState, style| {
+            state.apply(Action::SetDrawingViewStyle { drawing: dkey(0), view: 0, style });
+        };
+        style(&mut state, DrawingViewStyle::Colorful);
+        let plain = geometry(&state);
+        style(&mut state, DrawingViewStyle::Watercolor);
+        let wash = geometry(&state);
+
+        let body = eframe::egui::Color32::from_rgb(60, 110, 200);
+        let tone = |c: eframe::egui::Color32| [c.r(), c.g(), c.b()];
+        let ground = tone(crate::pencil::wash_tone(body));
+        let pool = tone(crate::pencil::wash_pool_tone(body));
+        let dry = tone(crate::pencil::wash_dry_tone(body));
+        assert!(
+            wash.faces.len() > plain.faces.len() * 2,
+            "every flat carries its splotches: {} fills for {} faces",
+            wash.faces.len(),
+            plain.faces.len()
+        );
+        assert!(wash.faces.iter().any(|f| f.tint == pool), "pigment gathered deeper in places");
+        assert!(wash.faces.iter().any(|f| f.tint == dry), "and the water left other places dry");
+        for face in &wash.faces {
+            assert!(
+                [ground, pool, dry].contains(&face.tint),
+                "a wash is its own color, three draws of it: {:?}",
+                face.tint
+            );
+        }
+
+        // The splotches do not stop at the outline: some of the wash lies past the shape the
+        // plain style paints, and never by more than a brush-width.
+        let inside = |p: glam::Vec2| {
+            plain.faces.iter().flat_map(|f| f.tris.iter()).any(|t| {
+                let area2 = (t[1] - t[0]).perp_dot(t[2] - t[0]);
+                if area2.abs() < 1e-9 {
+                    return false;
+                }
+                let w0 = (t[1] - p).perp_dot(t[2] - p) / area2;
+                let w1 = (t[2] - p).perp_dot(t[0] - p) / area2;
+                (w0 >= -1e-4) && (w1 >= -1e-4) && (1.0 - w0 - w1 >= -1e-4)
+            })
+        };
+        let strayed = wash
+            .faces
+            .iter()
+            .flat_map(|f| f.tris.iter())
+            .flat_map(|t| t.iter())
+            .filter(|p| !inside(**p))
+            .count();
+        assert!(strayed > 0, "a wash runs outside the line it was painted inside");
+    }
+
     /// #1829: the Watercolor projection style is the pencil drawing, painted — the same
     /// hand-drawn edges, with the color laid on as a wash that pools and dries darker at the
     /// edges instead of being scribbled on.
@@ -32361,8 +32439,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert!(
             wash.faces
                 .iter()
-                .all(|f| f.tint == [wash_ground.r(), wash_ground.g(), wash_ground.b()]),
-            "carrying the color the wash dries to — a wash covers, where a pencil grazes"
+                .any(|f| f.tint == [wash_ground.r(), wash_ground.g(), wash_ground.b()]),
+            "carrying the color the wash dries to — a wash covers, where a pencil grazes              (the rest of the fills are the splotches laid over it, #1839)"
         );
         let pencil_ground =
             crate::pencil::scribble_ground(eframe::egui::Color32::from_rgb(60, 110, 200));

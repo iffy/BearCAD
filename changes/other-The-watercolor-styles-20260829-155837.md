@@ -1,0 +1,1 @@
+The watercolor styles now dry in splotches — pools of deeper pigment and patches the water left dry — that run past the outline in places and fall short of it in others, instead of filling each face with one even tone.
