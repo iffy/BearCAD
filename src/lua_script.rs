@@ -9842,6 +9842,42 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Read back the lines a placed view actually draws (#1841): `bearcad.drawing_view_lines{
+    // drawing, view }` → an array of `{ x1, y1, x2, y2 }` in the view's own millimetres.
+    // Hidden-line removal has already run, so a script can check what a style hides.
+    api.set(
+        "drawing_view_lines",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let drawing: usize = opts.ordinal_req("drawing")?;
+            let view: usize = opts.ordinal_req("view")?;
+            let state = unsafe { tick.state() };
+            let d = state
+                .doc
+                .drawings
+                .keys()
+                .nth(drawing)
+                .and_then(|k| state.doc.drawings.get(k))
+                .ok_or_else(|| mlua::Error::external(format!("no drawing {drawing}")))?;
+            let v = d
+                .views
+                .get(view)
+                .ok_or_else(|| mlua::Error::external(format!("no view {view}")))?;
+            let out = lua.create_table()?;
+            for (i, (a, b)) in
+                crate::drawing::drawing_view_lines(&state.doc, &d.views, v).iter().enumerate()
+            {
+                let e = lua.create_table()?;
+                e.set("x1", a.x)?;
+                e.set("y1", a.y)?;
+                e.set("x2", b.x)?;
+                e.set("y2", b.y)?;
+                out.set(i + 1, e)?;
+            }
+            Ok(out)
+        })?,
+    )?;
+
     // Turn a placed view to face another way (#1651) — the Context pane's navigation bear.
     // `bearcad.drawing_view_orientation{ drawing, view, orientation }`.
     api.set(
@@ -20684,6 +20720,137 @@ pub mod tests {
 
     /// #180: a drawing exports to a self-contained SVG with its title, view captions,
     /// projected edge lines, and shown dimensions.
+
+    /// The plate-with-a-hole scene the drawing styles are documented with: a 60×40×10 plate
+    /// bored through, and a block standing on it.
+    #[cfg(test)]
+    fn plate_with_a_hole_state(style: &str) -> AppState {
+        run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{{ width = 60, depth = 40, height = 10, name = "Plate" }}
+            bearcad.begin_sketch{{ kind = "primitive_face", primitive = 0, face = "top" }}
+            bearcad.circle{{ x = 18, y = 20, r = 7, name = "Hole" }}
+            bearcad.extrude{{ circle = 0, distance = -14, body = "cut" }}
+            bearcad.exit_sketch()
+            local plate = bearcad.count("body") - 1
+            bearcad.cuboid{{ at = {{ 14, 0, 10 }}, width = 20, depth = 20, height = 18, name = "Boss" }}
+            local boss = bearcad.count("body") - 1
+            local d = bearcad.drawing{{}}
+            bearcad.drawing_view{{ drawing = d, bodies = {{ plate, boss }}, orientation = "front-right-top" }}
+            bearcad.drawing_view_style{{ drawing = d, view = 0, style = "{style}" }}
+        "#
+        ))
+    }
+
+    /// How close a page point has to come to a drawn segment to count as drawn.
+    #[cfg(test)]
+    fn drawn_within(segments: &[(glam::Vec2, glam::Vec2)], p: glam::Vec2, tol: f32) -> bool {
+        segments.iter().any(|(a, b)| {
+            let d = *b - *a;
+            let t = (p - *a).dot(d) / d.length_squared().max(1e-9);
+            (p - (*a + d * t.clamp(0.0, 1.0))).length() < tol
+        })
+    }
+
+    /// #1841/#1842: a hole's far rim is hidden by the solid around it. Every style but
+    /// Wireframe removes hidden lines, and a detected circle is no exception — its smooth
+    /// outline used to be stroked whole, straight over the material covering it, so a bored
+    /// plate showed both rims of its hole in full.
+    #[test]
+    fn a_holes_far_rim_is_hidden_in_every_style_that_hides_lines() {
+        for style in ["visible", "shaded", "colorful", "loose_pencil", "color_pencil", "watercolor"]
+        {
+            let state = plate_with_a_hole_state(style);
+            let views = state.doc.drawings[dkey(0)].views.clone();
+            let (right, up) = crate::drawing::resolved_view_axes(&views, &views[0]);
+            let project = |p: glam::Vec3| glam::Vec2::new(p.dot(right), p.dot(up));
+            let creases = crate::drawing::drawing_view_world_edges(&state.doc, &views[0]);
+            let circles = crate::drawing::classify_world_circles(&creases);
+            assert_eq!(circles.len(), 2, "the bore has two rims ({style})");
+            let (near, far) = if circles[0].center.z > circles[1].center.z {
+                (&circles[0], &circles[1])
+            } else {
+                (&circles[1], &circles[0])
+            };
+            // The direction, in the rims' own plane, that the far rim is offset toward on the
+            // page: its extreme point that way is the part of the far rim buried deepest under
+            // the plate, and the matching point of the near rim is the front of the opening.
+            let axis_on_page = project(far.center) - project(near.center);
+            let basis = |c: &crate::drawing::WorldCircle| {
+                let u = c.normal.cross(right).normalize_or_zero();
+                let v = c.normal.cross(u).normalize_or_zero();
+                let dir = (u * project(u).dot(axis_on_page) + v * project(v).dot(axis_on_page))
+                    .normalize_or_zero();
+                dir
+            };
+            let dir = basis(far);
+            let hidden = project(far.center + dir * far.radius);
+            let shown = project(near.center + dir * near.radius);
+            let lines = crate::drawing::drawing_view_lines(&state.doc, &views, &views[0]);
+            let tol = far.radius * 0.15;
+            assert!(
+                !drawn_within(&lines, hidden, tol),
+                "{style}: the far rim of the bore is drawn where the plate covers it"
+            );
+            assert!(
+                drawn_within(&lines, shown, tol),
+                "{style}: the near rim of the bore is missing at the front of the opening"
+            );
+        }
+    }
+
+    /// #1841: an edge stops where the solid in front of it starts. Visibility used to be
+    /// sampled at 32 fixed points along each edge, so a line ran on past the block hiding it
+    /// by up to a thirty-second of its length before the next sample noticed.
+    #[test]
+    fn a_hidden_edge_stops_where_the_solid_in_front_of_it_does() {
+        let state = plate_with_a_hole_state("visible");
+        let views = state.doc.drawings[dkey(0)].views.clone();
+        let view = &views[0];
+        let occ = crate::drawing::ViewOcclusion::for_view(&state.doc, &views, view)
+            .expect("the view has a solid");
+        let lines = crate::drawing::drawing_view_lines(&state.doc, &views, view);
+        // The longest edge the block hides part of — the plate's own long edge running behind
+        // it — is where the overrun showed.
+        let edges = crate::drawing::drawing_view_world_edges(&state.doc, view);
+        let split = edges
+            .iter()
+            .filter(|(a, b)| {
+                let n = 40;
+                let seen = (0..=n).map(|i| occ.hides(a.lerp(*b, i as f32 / n as f32)));
+                let mut any = false;
+                let mut all = true;
+                for h in seen {
+                    any |= h;
+                    all &= h;
+                }
+                any && !all
+            })
+            .max_by(|x, y| (x.1 - x.0).length().total_cmp(&(y.1 - y.0).length()))
+            .copied()
+            .expect("some edge is partly hidden");
+        let project = |p: glam::Vec3| {
+            let (right, up) = crate::drawing::resolved_view_axes(&views, view);
+            glam::Vec2::new(p.dot(right), p.dot(up))
+        };
+        let len = (split.1 - split.0).length();
+        let n = 200;
+        let mut wrong = 0;
+        for i in 0..=n {
+            let t = i as f32 / n as f32;
+            let p = split.0.lerp(split.1, t);
+            let hidden = occ.hides(p);
+            // A tolerance well under one sample step: a mismatch here means the run boundary
+            // landed somewhere other than where the solid actually starts.
+            let drawn = drawn_within(&lines, project(p), len * 0.002);
+            if hidden == drawn {
+                wrong += 1;
+            }
+        }
+        assert!(wrong <= 2, "{wrong} of {n} points along a half-hidden edge are drawn wrongly");
+    }
+
     #[test]
     fn drawing_svg_export_has_lines_and_dimensions() {
         let state = run_lua(

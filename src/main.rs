@@ -27744,6 +27744,10 @@ impl App {
                     .iter()
                     .map(|c| crate::drawing::project_world_circle(c, vright, vup))
                     .collect();
+                // Only a wireframe view strokes a detected circle whole (#1841/#1842); every
+                // other style hides what its solid covers, rims included, and gets them as the
+                // visible arcs in the styled geometry's segments.
+                let whole_circles = crate::drawing::view_strokes_whole_circles(view);
                 let on_circle = |a: egui::Vec2, b: egui::Vec2| {
                     crate::drawing::projected_segment_on_circle(
                         glam::Vec2::new(a.x, a.y),
@@ -28206,7 +28210,7 @@ impl App {
                         })
                         .unwrap_or(INK);
                     for (a, b) in &sty.segments {
-                        if on_circle(egui::vec2(a.x, a.y), egui::vec2(b.x, b.y)) {
+                        if whole_circles && on_circle(egui::vec2(a.x, a.y), egui::vec2(b.x, b.y)) {
                             continue;
                         }
                         painter.line_segment(
@@ -28275,8 +28279,10 @@ impl App {
                         format!("Ø{}", crate::value::format_length_display_in(wc.radius * 2.0, unit));
                     match pc {
                         crate::drawing::ProjectedCircle::Round { center, radius } => {
-                            let sc = to_screen(egui::vec2(center.x, center.y));
-                            painter.circle_stroke(sc, radius * scale, outline);
+                            if whole_circles || hovered_circle == Some(ci) {
+                                let sc = to_screen(egui::vec2(center.x, center.y));
+                                painter.circle_stroke(sc, radius * scale, outline);
+                            }
                             if !show_dim {
                                 continue;
                             }
@@ -28358,7 +28364,9 @@ impl App {
                         }
                         crate::drawing::ProjectedCircle::EdgeOn { a, b } => {
                             let (av, bv) = (egui::vec2(a.x, a.y), egui::vec2(b.x, b.y));
-                            painter.line_segment([to_screen(av), to_screen(bv)], outline);
+                            if whole_circles || hovered_circle == Some(ci) {
+                                painter.line_segment([to_screen(av), to_screen(bv)], outline);
+                            }
                             if !show_dim {
                                 continue;
                             }
@@ -28471,16 +28479,22 @@ impl App {
                             }
                         }
                         crate::drawing::ProjectedCircle::Angled { center, major, minor } => {
-                            // The true ellipse, as a closed polyline (#1775).
-                            let pts = crate::drawing::angled_circle_points(
-                                *center,
-                                *major,
-                                *minor,
-                                48,
-                            );
-                            let screen: Vec<egui::Pos2> =
-                                pts.iter().map(|p| to_screen(egui::vec2(p.x, p.y))).collect();
-                            painter.add(egui::Shape::line(screen, outline));
+                            if whole_circles || hovered_circle == Some(ci) {
+                                // The true ellipse, as a closed polyline (#1775) — closed, so
+                                // it has no gap where the walk around it began.
+                                let pts = crate::drawing::angled_circle_points(
+                                    *center,
+                                    *major,
+                                    *minor,
+                                    48,
+                                );
+                                let mut screen: Vec<egui::Pos2> =
+                                    pts.iter().map(|p| to_screen(egui::vec2(p.x, p.y))).collect();
+                                if let Some(first) = screen.first().copied() {
+                                    screen.push(first);
+                                }
+                                painter.add(egui::Shape::line(screen, outline));
+                            }
                             if !show_dim {
                                 continue;
                             }

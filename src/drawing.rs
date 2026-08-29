@@ -832,6 +832,110 @@ pub fn angled_circle_points(
         .collect()
 }
 
+/// How many chords a detected circle's rim is redrawn with before hidden-line removal
+/// (#1841). The mesh tessellates a circle into 48; twice that keeps the arcs that survive
+/// reading as a curve rather than a polygon.
+pub const SMOOTH_CIRCLE_SEGMENTS: usize = 96;
+
+/// A detected circle as a closed world-space polyline: `segments` chords, the last point
+/// repeating the first so `windows(2)` walks the whole rim.
+pub fn world_circle_points(c: &WorldCircle, segments: usize) -> Vec<Vec3> {
+    let segments = segments.max(4);
+    let u = if c.normal.cross(Vec3::Z).length_squared() > 1e-6 {
+        c.normal.cross(Vec3::Z).normalize()
+    } else {
+        c.normal.cross(Vec3::X).normalize_or_zero()
+    };
+    let v = c.normal.cross(u).normalize_or_zero();
+    (0..=segments)
+        .map(|i| {
+            let t = std::f32::consts::TAU * i as f32 / segments as f32;
+            c.center + u * (c.radius * t.cos()) + v * (c.radius * t.sin())
+        })
+        .collect()
+}
+
+/// Whether a world segment is a chord of `c` — both ends on its rim, so it is part of the
+/// tessellated polygon that circle was detected from.
+pub fn world_segment_on_circle(a: Vec3, b: Vec3, c: &WorldCircle) -> bool {
+    let tol = c.radius * 0.02 + 1e-3;
+    let on = |p: Vec3| {
+        let d = p - c.center;
+        d.dot(c.normal).abs() < tol && (d.length() - c.radius).abs() < tol
+    };
+    on(a) && on(b)
+}
+
+/// One projected circle as the chords a renderer strokes it with: the ellipse (or round
+/// outline) closed back on its first point, or the single foreshortened line edge-on.
+pub fn projected_circle_chords(pc: &ProjectedCircle) -> Vec<(glam::Vec2, glam::Vec2)> {
+    let closed = |pts: Vec<glam::Vec2>| {
+        (0..pts.len()).map(|i| (pts[i], pts[(i + 1) % pts.len()])).collect()
+    };
+    match pc {
+        ProjectedCircle::Round { center, radius } => closed(
+            (0..48)
+                .map(|i| {
+                    let t = std::f32::consts::TAU * i as f32 / 48.0;
+                    *center + glam::Vec2::new(t.cos(), t.sin()) * *radius
+                })
+                .collect(),
+        ),
+        ProjectedCircle::EdgeOn { a, b } => vec![(*a, *b)],
+        ProjectedCircle::Angled { center, major, minor } => {
+            closed(angled_circle_points(*center, *major, *minor, 48))
+        }
+    }
+}
+
+/// The model lines a projection strokes, in view space — what the editor and the exports both
+/// put on the page for the geometry itself (#1841). A wireframe view's detected circles come
+/// through whole; every other style's rims are already in `styled.segments`, hidden where the
+/// solid hides them.
+pub fn view_stroked_lines(
+    styled: &StyledViewGeometry,
+    pcircles: &[ProjectedCircle],
+    view: &DrawingView,
+) -> Vec<(glam::Vec2, glam::Vec2)> {
+    let whole = view_strokes_whole_circles(view);
+    let mut out: Vec<(glam::Vec2, glam::Vec2)> = styled
+        .segments
+        .iter()
+        .filter(|(a, b)| !(whole && projected_segment_on_circle(*a, *b, pcircles)))
+        .copied()
+        .collect();
+    if whole {
+        for pc in pcircles {
+            out.extend(projected_circle_chords(pc));
+        }
+    }
+    out
+}
+
+/// [`view_stroked_lines`] for one view of a document, working the styled geometry and the
+/// detected circles out for itself. Scripts read this back with `bearcad.drawing_view_lines`.
+pub fn drawing_view_lines(
+    doc: &Document,
+    views: &[DrawingView],
+    view: &DrawingView,
+) -> Vec<(glam::Vec2, glam::Vec2)> {
+    let (right, up) = resolved_view_axes(views, view);
+    let pcircles: Vec<ProjectedCircle> = classify_world_circles(&drawing_view_world_edges(doc, view))
+        .iter()
+        .map(|c| project_world_circle(c, right, up))
+        .collect();
+    view_stroked_lines(&styled_view_geometry(doc, views, view), &pcircles, view)
+}
+
+/// Whether this view strokes a detected circle's outline whole (#1841/#1842). A wireframe
+/// (or sketch) view draws every edge, hidden ones included, so the smooth outline can go
+/// down in one pass. Every other style hides what the solid covers, and a rim is no
+/// exception — those views get the rim as the visible arcs in [`styled_view_geometry`]'s
+/// segments instead.
+pub fn view_strokes_whole_circles(view: &DrawingView) -> bool {
+    view.sketch.is_some() || view.style == crate::model::DrawingViewStyle::Wireframe
+}
+
 /// Whether a projected 2D segment lies on one of the projected circles (#313), so it's drawn as
 /// part of the smooth circle/edge-on line instead of a straight stroke or dimension.
 pub fn projected_segment_on_circle(a: glam::Vec2, b: glam::Vec2, pcs: &[ProjectedCircle]) -> bool {
@@ -1981,6 +2085,149 @@ fn painter_order(flats: &[ShadedFace], right: Vec3, up: Vec3, toward: Vec3) -> V
     out
 }
 
+/// One triangle of a view's solid, projected onto the page with a depth at each corner.
+struct ProjTri {
+    p: [glam::Vec2; 3],
+    d: [f32; 3],
+    /// Twice the signed area of the projected triangle; ~0 = edge-on, skipped.
+    area2: f32,
+}
+
+/// How far outside a projected triangle a point may sit and still count as inside, in
+/// barycentric units (#1713) — enough to close the seam between two triangles of one
+/// flat, far too little to reach across a real gap.
+const BARY_TOL: f32 = 1e-5;
+
+/// How many places along an edge visibility is sampled before the run boundaries are honed
+/// (#1841). The samples find every stretch the solid hides; the bisection below pins where
+/// each one starts and ends.
+const OCCLUSION_SAMPLES: usize = 32;
+/// Bisection steps run at each visibility change, halving the interval each time: 2⁻²⁰ of an
+/// edge is far finer than any page can show.
+const OCCLUSION_REFINE_STEPS: usize = 20;
+
+/// A drawing view's own solid, projected, as a test for whether a point of the model is
+/// hidden behind it — the hidden-line removal every style but Wireframe does (#1713).
+pub struct ViewOcclusion {
+    tris: Vec<ProjTri>,
+    right: Vec3,
+    up: Vec3,
+    /// Depth grows toward the viewer along this axis.
+    toward: Vec3,
+    /// Depth slack, scaled to the model, so a face doesn't hide the edge lying on it.
+    eps: f32,
+}
+
+impl ViewOcclusion {
+    /// The occluder for `view`, or `None` when the view has no solid (a sketch view, or
+    /// bodies that don't mesh). Test-only: the renderers build theirs inside
+    /// [`styled_view_geometry`], from the mesh they already have.
+    #[cfg(test)]
+    pub fn for_view(doc: &Document, views: &[DrawingView], view: &DrawingView) -> Option<Self> {
+        let (right, up) = resolved_view_axes(views, view);
+        Self::from_mesh(&drawing_view_solid_mesh(doc, view)?, right, up)
+    }
+
+    fn from_mesh(mesh: &crate::extrude::SolidMesh, right: Vec3, up: Vec3) -> Option<Self> {
+        let toward = right.cross(up);
+        let (lo, hi) = mesh.bounds()?;
+        let eps = (hi - lo).length().max(1e-3) * 2e-3;
+        let tris = mesh
+            .triangles
+            .iter()
+            .map(|t| {
+                let project = |p: Vec3| glam::Vec2::new(p.dot(right), p.dot(up));
+                let p = [project(t[0]), project(t[1]), project(t[2])];
+                let area2 = (p[1] - p[0]).perp_dot(p[2] - p[0]);
+                ProjTri { p, d: [t[0].dot(toward), t[1].dot(toward), t[2].dot(toward)], area2 }
+            })
+            .filter(|t| t.area2.abs() > 1e-6)
+            .collect();
+        Some(ViewOcclusion { tris, right, up, toward, eps })
+    }
+
+    /// Where a world point lands on the page.
+    pub fn project(&self, p: Vec3) -> glam::Vec2 {
+        glam::Vec2::new(p.dot(self.right), p.dot(self.up))
+    }
+
+    /// Whether some face of the solid is strictly in front of the world point `p`.
+    pub fn hides(&self, p: Vec3) -> bool {
+        self.hides_page(self.project(p), p.dot(self.toward))
+    }
+
+    fn hides_page(&self, point: glam::Vec2, depth: f32) -> bool {
+        self.tris.iter().any(|t| {
+            // Barycentric coordinates of `point` in the projected triangle.
+            let w0 = (t.p[1] - point).perp_dot(t.p[2] - point) / t.area2;
+            let w1 = (t.p[2] - point).perp_dot(t.p[0] - point) / t.area2;
+            let w2 = 1.0 - w0 - w1;
+            // A point on the seam between two triangles of the same flat belongs to both;
+            // float error can put it a hair outside *both*, leaving a crack the hidden edge
+            // shows through — a stub of a hidden line poking out of a solid (#1713). A sliver
+            // of tolerance closes the seam.
+            if w0 < -BARY_TOL || w1 < -BARY_TOL || w2 < -BARY_TOL {
+                return false;
+            }
+            w0 * t.d[0] + w1 * t.d[1] + w2 * t.d[2] > depth + self.eps
+        })
+    }
+
+    /// The stretches of the world segment `a`–`b` the solid leaves visible, as `t` ranges.
+    ///
+    /// Sampling alone puts each boundary on a thirty-second of the edge, which reads as a
+    /// line overrunning the block that hides it (#1841); each change of visibility between
+    /// two samples is bisected down to where the solid's outline really crosses.
+    pub fn visible_runs(&self, a: Vec3, b: Vec3) -> Vec<(f32, f32)> {
+        let visible = |t: f32| {
+            let p = a.lerp(b, t);
+            !self.hides(p)
+        };
+        let refine = |lo: f32, hi: f32, lo_visible: bool| {
+            let (mut lo, mut hi) = (lo, hi);
+            for _ in 0..OCCLUSION_REFINE_STEPS {
+                let mid = (lo + hi) * 0.5;
+                if visible(mid) == lo_visible {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            (lo + hi) * 0.5
+        };
+        let mut runs = Vec::new();
+        let mut run_start: Option<f32> = None;
+        let mut prev: Option<(f32, bool)> = None;
+        for i in 0..OCCLUSION_SAMPLES {
+            let t = (i as f32 + 0.5) / OCCLUSION_SAMPLES as f32;
+            let vis = visible(t);
+            match (vis, run_start) {
+                // The first sample stands for the edge's start: nothing before it to bisect.
+                (true, None) => {
+                    run_start = Some(match prev {
+                        Some((pt, pv)) => refine(pt, t, pv),
+                        None => 0.0,
+                    })
+                }
+                (false, Some(s)) => {
+                    let end = match prev {
+                        Some((pt, pv)) => refine(pt, t, pv),
+                        None => 0.0,
+                    };
+                    runs.push((s, end));
+                    run_start = None;
+                }
+                _ => {}
+            }
+            prev = Some((t, vis));
+        }
+        if let Some(s) = run_start {
+            runs.push((s, 1.0));
+        }
+        runs
+    }
+}
+
 /// Project a view's geometry under its display style (#301). Sketch views have no solid to
 /// occlude or shade, so they always render as plain wireframe.
 pub fn styled_view_geometry(
@@ -1994,7 +2241,8 @@ pub fn styled_view_geometry(
     // Crease edges plus the view-dependent silhouette (#319) so smooth-surface outlines (a
     // cylinder's straight sides) are stroked; circle detection/dimensioning use crease edges
     // only, so the silhouette here doesn't affect them.
-    let mut edges = drawing_view_world_edges(doc, view);
+    let crease_edges = drawing_view_world_edges(doc, view);
+    let mut edges = crease_edges.clone();
     edges.extend(drawing_view_silhouette_edges(doc, views, view));
     // A sectioned view hatches the faces its planes opened (#1689). The hatch travels in its
     // own field rather than with the stroked edges (#1784) — it draws thinner — and apart
@@ -2049,75 +2297,27 @@ pub fn styled_view_geometry(
     };
     // Depth grows toward the viewer along the view's out-of-page axis.
     let toward = right.cross(up);
-    let Some((lo, hi)) = mesh.bounds() else {
+    let Some(occlusion) = ViewOcclusion::from_mesh(&mesh, right, up) else {
         return wireframe();
     };
-    let eps = (hi - lo).length().max(1e-3) * 2e-3;
 
-    // Projected triangles with per-vertex depth, for point-occlusion tests.
-    struct ProjTri {
-        p: [glam::Vec2; 3],
-        d: [f32; 3],
-        /// Twice the signed area of the projected triangle; ~0 = edge-on, skipped.
-        area2: f32,
+    // A detected circle (#313) is drawn as one smooth outline rather than the tessellated
+    // polygon the mesh carries. The renderers used to stroke that outline whole, over
+    // whatever stood in front of it — so a bored plate showed the far rim of its hole in
+    // full (#1841/#1842). The rim is refined here instead, in world space, and goes through
+    // the hidden-line pass with every other edge; the renderers leave the whole outline to
+    // the styles that draw hidden lines anyway (see [`view_strokes_whole_circles`]).
+    for c in classify_world_circles(&crease_edges) {
+        edges.retain(|(a, b)| !world_segment_on_circle(*a, *b, &c));
+        let pts = world_circle_points(&c, SMOOTH_CIRCLE_SEGMENTS);
+        edges.extend(pts.windows(2).map(|w| (w[0], w[1])));
     }
-    let tris: Vec<ProjTri> = mesh
-        .triangles
-        .iter()
-        .map(|t| {
-            let p = [project(t[0]), project(t[1]), project(t[2])];
-            let area2 = (p[1] - p[0]).perp_dot(p[2] - p[0]);
-            ProjTri { p, d: [t[0].dot(toward), t[1].dot(toward), t[2].dot(toward)], area2 }
-        })
-        .filter(|t| t.area2.abs() > 1e-6)
-        .collect();
-    /// How far outside a projected triangle a point may sit and still count as inside, in
-    /// barycentric units (#1713) — enough to close the seam between two triangles of one
-    /// flat, far too little to reach across a real gap.
-    const BARY_TOL: f32 = 1e-5;
-    // Whether some face is strictly in front of `(point, depth)`.
-    let occluded = |point: glam::Vec2, depth: f32| -> bool {
-        tris.iter().any(|t| {
-            // Barycentric coordinates of `point` in the projected triangle.
-            let w0 = (t.p[1] - point).perp_dot(t.p[2] - point) / t.area2;
-            let w1 = (t.p[2] - point).perp_dot(t.p[0] - point) / t.area2;
-            let w2 = 1.0 - w0 - w1;
-            // A point on the seam between two triangles of the same flat belongs to both;
-            // float error can put it a hair outside *both*, leaving a crack the hidden edge
-            // shows through — a stub of a hidden line poking out of a solid (#1713). A sliver
-            // of tolerance closes the seam.
-            if w0 < -BARY_TOL || w1 < -BARY_TOL || w2 < -BARY_TOL {
-                return false;
-            }
-            w0 * t.d[0] + w1 * t.d[1] + w2 * t.d[2] > depth + eps
-        })
-    };
 
-    // Sample each edge and keep the visible runs (hidden-line removal).
-    const SAMPLES: usize = 32;
+    // Keep the visible run of each edge (hidden-line removal).
     let mut segments: Vec<(glam::Vec2, glam::Vec2)> = Vec::new();
     for (a, b) in &edges {
-        let mut run_start: Option<f32> = None;
-        let mut push_run = |from: f32, to: f32| {
-            let wa = a.lerp(*b, from);
-            let wb = a.lerp(*b, to);
-            segments.push((project(wa), project(wb)));
-        };
-        for i in 0..SAMPLES {
-            let t = (i as f32 + 0.5) / SAMPLES as f32;
-            let w = a.lerp(*b, t);
-            let visible = !occluded(project(w), w.dot(toward));
-            match (visible, run_start) {
-                (true, None) => run_start = Some(i as f32 / SAMPLES as f32),
-                (false, Some(s)) => {
-                    push_run(s, i as f32 / SAMPLES as f32);
-                    run_start = None;
-                }
-                _ => {}
-            }
-        }
-        if let Some(s) = run_start {
-            push_run(s, 1.0);
+        for (from, to) in occlusion.visible_runs(*a, *b) {
+            segments.push((project(a.lerp(*b, from)), project(a.lerp(*b, to))));
         }
     }
 
@@ -2808,6 +3008,9 @@ fn render_view_geometry<C: Canvas>(
     // Strokes (and shaded fills) come from the view's display style (#301); the fit above
     // always uses the full wireframe bbox so switching styles never re-scales the view.
     let styled = styled_view_geometry(doc, views, view);
+    // A hidden-line style's rims come through `styled.segments` as the arcs that survive
+    // (#1841/#1842); only a wireframe view still strokes a detected circle whole.
+    let whole_circles = view_strokes_whole_circles(view);
     for face in &styled.faces {
         // `shade` scales the face's tint (#1807): white for the grey Shaded style, the body's
         // own material color for Colorful, and for the hand-colored styles the ground tone
@@ -2830,12 +3033,36 @@ fn render_view_geometry<C: Canvas>(
         .map(|t| Rgb(t[0], t[1], t[2]))
         .unwrap_or(BLACK);
     for (a, b) in &styled.segments {
-        // A segment lying on a detected circle is drawn as part of the smooth circle instead.
-        if projected_segment_on_circle(*a, *b, &pcircles) {
+        // In a wireframe view a segment lying on a detected circle is left to the smooth
+        // outline stroked below; in every other style that outline *is* these segments,
+        // hidden where the solid hides them (#1841/#1842).
+        if whole_circles && projected_segment_on_circle(*a, *b, &pcircles) {
             continue;
         }
         let (sa, sb) = (to_screen(*a), to_screen(*b));
         canvas.line(sa.x, sa.y, sb.x, sb.y, ink, MODEL_STROKE);
+    }
+    // Smooth detected circles (round) or their foreshortened diameter line (edge-on) — a
+    // whole outline, so only for the views that draw hidden lines anyway.
+    for pc in pcircles.iter().filter(|_| whole_circles) {
+        match pc {
+            ProjectedCircle::Round { center, radius } => {
+                let sc = to_screen(*center);
+                canvas.circle(sc.x, sc.y, radius * scale, BLACK, MODEL_STROKE);
+            }
+            ProjectedCircle::EdgeOn { a, b } => {
+                let (sa, sb) = (to_screen(*a), to_screen(*b));
+                canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, MODEL_STROKE);
+            }
+            ProjectedCircle::Angled { center, major, minor } => {
+                // The true ellipse, as a closed polyline (#1775).
+                let pts = angled_circle_points(*center, *major, *minor, 48);
+                for i in 0..pts.len() {
+                    let (sa, sb) = (to_screen(pts[i]), to_screen(pts[(i + 1) % pts.len()]));
+                    canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, MODEL_STROKE);
+                }
+            }
+        }
     }
     // Colored-pencil shading (#1821): a stroke is a darker patch of the fill it lies on, so
     // it takes the same tint × shade the fills do.
@@ -2857,28 +3084,6 @@ fn render_view_geometry<C: Canvas>(
         let (sa, sb) = (to_screen(*a), to_screen(*b));
         canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, HATCH_STROKE);
     }
-    // Smooth detected circles (round) or their foreshortened diameter line (edge-on).
-    for pc in &pcircles {
-        match pc {
-            ProjectedCircle::Round { center, radius } => {
-                let sc = to_screen(*center);
-                canvas.circle(sc.x, sc.y, radius * scale, BLACK, MODEL_STROKE);
-            }
-            ProjectedCircle::EdgeOn { a, b } => {
-                let (sa, sb) = (to_screen(*a), to_screen(*b));
-                canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, MODEL_STROKE);
-            }
-            ProjectedCircle::Angled { center, major, minor } => {
-                // The true ellipse, as a closed polyline (#1775).
-                let pts = angled_circle_points(*center, *major, *minor, 48);
-                for i in 0..pts.len() {
-                    let (sa, sb) = (to_screen(pts[i]), to_screen(pts[(i + 1) % pts.len()]));
-                    canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, MODEL_STROKE);
-                }
-            }
-        }
-    }
-
     // Length dimensions (#294): architectural dimension lines — extension lines, an offset
     // dimension line with arrowheads, and the measured length centred on it. Sizes are a
     // fraction of the projected extent so they read at any scale; a per-edge override

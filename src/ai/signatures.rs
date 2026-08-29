@@ -72,6 +72,7 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.drawing_view_add"            , "bearcad.drawing_view_add{ drawing, view, body, bodies, component }"),
     ("bearcad.drawing_view_align_lines"    , "bearcad.drawing_view_align_lines{ drawing, view, show }"),
     ("bearcad.drawing_view_label"          , "bearcad.drawing_view_label{ drawing, view, hidden, pos, text }"),
+    ("bearcad.drawing_view_lines"          , "bearcad.drawing_view_lines{ drawing, view }          -- the lines the view draws: { x1, y1, x2, y2 } in view mm, hidden lines already removed"),
     ("bearcad.drawing_view_orientation"    , "bearcad.drawing_view_orientation{ drawing, view, orientation }"),
     ("bearcad.drawing_view_size"           , "bearcad.drawing_view_size{ drawing, view, width, height, size_x, size_y }"),
     ("bearcad.drawing_paper"               , "bearcad.drawing_paper{ drawing, paper }   -- white | dark (the editor's sheet; exports are always white)"),
