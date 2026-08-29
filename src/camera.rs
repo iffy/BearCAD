@@ -2158,20 +2158,41 @@ mod tests {
             );
         }
         // The other direction: a style that has gone away must not leave a picture behind.
+        // (The drawing-projection pictures share the prefix, so discount them.)
         assert_eq!(
-            PAGE.matches("/img/screenshots/view-styles-").count(),
+            PAGE.matches("/img/screenshots/view-styles-").count()
+                - PAGE.matches("/img/screenshots/view-styles-drawing-").count(),
             SHADING_MODES.len(),
             "the page shows a different number of styles than there are"
         );
 
-        // Drawing projections have their own style list, named on the same page.
+        // Drawing projections have their own style list, named on the same page — and
+        // #1838: shown there, one small picture each, the way the shading modes are.
+        const DRAWING_CAPTURE: &str =
+            include_str!("../docs-site/screenshots/view-styles-drawing.lua");
         for style in crate::model::DrawingViewStyle::ALL {
             assert!(
                 PAGE.contains(style.label()),
                 "the page never names the {:?} projection style",
                 style
             );
+            let shot = format!("/img/screenshots/view-styles-drawing-{}.png", style.script_name());
+            assert!(
+                PAGE.contains(&shot),
+                "the page has no picture of the {:?} projection style — expected {shot}",
+                style
+            );
+            assert!(
+                DRAWING_CAPTURE.contains(&format!("\"{}\"", style.script_name())),
+                "docs-site/screenshots/view-styles-drawing.lua never captures {:?}",
+                style
+            );
         }
+        assert_eq!(
+            PAGE.matches("/img/screenshots/view-styles-drawing-").count(),
+            crate::model::DrawingViewStyle::ALL.len(),
+            "the page shows a different number of projection styles than there are"
+        );
     }
 
     #[test]
