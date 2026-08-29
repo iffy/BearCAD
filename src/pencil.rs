@@ -45,37 +45,81 @@ pub const PENCIL_HATCH_WIDTH_PX: f32 = 1.3;
 /// Graphite laid down lightly — premultiplied, so it composites as a ~45%-coverage stroke.
 pub const PENCIL_HATCH_COLOR: Color32 = Color32::from_rgba_premultiplied(26, 27, 31, 118);
 
-/// Shading a *face* in coloured pencil (#1818). A flat fill reads as paint; a real coloured
-/// pencil drawing gets its tone from strokes laid across the face, closer together where the
-/// surface turns away from the light. These bracket that spacing, in world mm: the lit side of
-/// a solid is barely touched, the side facing away is worked over.
-pub const PENCIL_SHADE_SPACING_LIT_MM: f32 = 3.4;
-pub const PENCIL_SHADE_SPACING_DARK_MM: f32 = 1.15;
-/// Below this much light, the face is gone over a second time at a crossed angle — the way a
-/// hand deepens a shadow.
-pub const PENCIL_SHADE_CROSS_BELOW: f32 = 0.5;
-/// How far the crossing pass turns from the first.
-pub const PENCIL_SHADE_CROSS_TURN_RAD: f32 = 1.05;
-pub const PENCIL_SHADE_WIDTH_PX: f32 = 1.6;
-/// Coverage of one shading stroke. Light: tone comes from laying many of them side by side.
-pub const PENCIL_SHADE_ALPHA: f32 = 0.5;
+/// Laying colour on a face with a coloured pencil (#1818/#1825).
+///
+/// Not a flat fill — that reads as paint. The colour is *scribbled* in: ruled strokes this far
+/// apart, run past the outline a little and broken by gaps of bare paper, the way a hand
+/// filling a shape quickly does. The spacing is one number and not a function of the light
+/// (#1825): a coloured pencil drawing gets its form from its outlines, so every side of a
+/// solid is laid on the same, exactly as the plain pencil mode does it.
+pub const PENCIL_SCRIBBLE_SPACING_MM: f32 = 1.5;
+pub const PENCIL_SHADE_WIDTH_PX: f32 = 2.8;
+/// Coverage of one scribble stroke. Light: the tone comes from laying many side by side.
+pub const PENCIL_SHADE_ALPHA: f32 = 0.8;
+/// How far a scribble runs past the end of its span, as a fraction of that span and capped in
+/// mm — the "outside the lines" of a quick fill.
+pub const PENCIL_SCRIBBLE_OVERSHOOT: f32 = 0.09;
+pub const PENCIL_SCRIBBLE_OVERSHOOT_MAX_MM: f32 = 3.0;
+/// Roughly how much of a span the pencil actually lands on. The rest is the gaps.
+pub const PENCIL_SCRIBBLE_COVERAGE: f32 = 0.68;
+/// A landed piece is this fraction of the span, give or take — small enough that a face gets
+/// several per line, big enough that it reads as a stroke rather than a dotted line.
+const PENCIL_SCRIBBLE_PIECE: f32 = 0.30;
+const PENCIL_SCRIBBLE_PIECE_JITTER: f32 = 0.22;
+/// Guard: a degenerate span must not ask for an unbounded number of pieces.
+const PENCIL_SCRIBBLE_MAX_PIECES: usize = 48;
 /// Spacing of the hatch a body's shadow lays on the face it falls on (#1818) — a touch tighter
 /// than the ground hatch, so a shadow on a part reads as darker than one on the paper.
 pub const PENCIL_CAST_SPACING_MM: f32 = 1.7;
 /// …and turned well across the strokes shading that face, so the two read as separate layers
 /// rather than as one heavier tone.
 pub const PENCIL_CAST_TURN_RAD: f32 = 1.72;
-/// How far the coloured-pencil fill is allowed to travel from the laid-on tone toward the
-/// pressed-hard one as a surface turns from the light (#1818). Well short of the whole way:
-/// the strokes on top are what carry the shading, this only has to stop every side of a solid
-/// reading as the same value.
-pub const PENCIL_FILL_TONE_RANGE: f32 = 0.45;
 
-/// How a face's own colour reads when it is *shaded* with a coloured pencil (#1818): the body
-/// colour deepened a little toward graphite, so a stroke reads as pencil pressure rather than
-/// as a brighter version of the fill underneath it.
+/// How a face's own colour reads when it is *scribbled* on with a coloured pencil (#1818): the
+/// body colour deepened a little toward graphite, so a stroke reads as pencil pressure rather
+/// than as a brighter version of the fill underneath it.
 pub fn shading_tone(base: Color32) -> Color32 {
-    mix(base, PENCIL_GRAPHITE, 0.28)
+    mix(base, PENCIL_GRAPHITE, 0.16)
+}
+
+/// One ruled span, as the pieces a quick scribble actually leaves (#1825).
+///
+/// A hand filling a shape lifts and re-lands, and runs past the outline on the way — so the
+/// line is not continuous, the paper shows through, and the colour sits a little outside the
+/// lines. Every piece is keyed to the span's own endpoints, so the same face scribbles the
+/// same way from every angle and on every redraw; re-rolling it per frame would make the whole
+/// drawing crawl as the camera moved.
+pub fn scribble(a: Vec3, b: Vec3, pass: usize) -> Vec<(Vec3, Vec3)> {
+    let along = b - a;
+    let length = along.length();
+    if length < 1e-6 {
+        return Vec::new();
+    }
+    let dir = along / length;
+    let over = (length * PENCIL_SCRIBBLE_OVERSHOOT).min(PENCIL_SCRIBBLE_OVERSHOOT_MAX_MM);
+    // `noise` is -1..1; the ends run *out*, never in, so a span never falls short of its own
+    // shape — a scribble overshoots, it does not leave a margin.
+    let mut at = -over * noise(seed(a, b, usize::MAX, pass)).abs();
+    let end = length + over * noise(seed(b, a, usize::MAX, pass)).abs();
+
+    let mut out = Vec::new();
+    for i in 0..PENCIL_SCRIBBLE_MAX_PIECES {
+        if at >= end {
+            break;
+        }
+        let s = seed(a, b, i, pass);
+        let piece =
+            length * (PENCIL_SCRIBBLE_PIECE + PENCIL_SCRIBBLE_PIECE_JITTER * noise(s).abs());
+        let next = (at + piece).min(end);
+        // Whether the pencil was down for this piece. Above the coverage threshold it lifted,
+        // which is where the bare paper comes from.
+        if noise(s ^ 0x5F35_6495).abs() < PENCIL_SCRIBBLE_COVERAGE && next - at > 1e-4 {
+            out.push((a + dir * at, a + dir * next));
+        }
+        // A short lift before the next piece, sometimes barely any.
+        at = next + length * 0.04 * noise(s ^ 0x9E37_79B9).abs();
+    }
+    out
 }
 
 /// Blend two colours, `t` of the way from `a` to `b`.
@@ -85,12 +129,12 @@ fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from_rgb(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()))
 }
 
-/// Hatch spacing and whether to cross-hatch for a face receiving `lit` (0..1) of the key light.
-pub fn shade_spacing(lit: f32) -> (f32, bool) {
-    let t = lit.clamp(0.0, 1.0);
-    let spacing = PENCIL_SHADE_SPACING_DARK_MM
-        + (PENCIL_SHADE_SPACING_LIT_MM - PENCIL_SHADE_SPACING_DARK_MM) * t;
-    (spacing, t < PENCIL_SHADE_CROSS_BELOW)
+/// The ground tone a coloured-pencil body is filled with (#1825): its own colour taken most of
+/// the way to the paper. It is only there so a near face hides a far one — what the eye reads
+/// as the colour is the scribble laid over it, and the gaps in that scribble have to read as
+/// bare paper, not as a lighter wash of the same colour.
+pub fn scribble_ground(base: Color32) -> Color32 {
+    mix(base, PENCIL_PAPER, 0.88)
 }
 
 /// How a body's own colour reads in coloured pencil (#1812): the fill it is laid on with,

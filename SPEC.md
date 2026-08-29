@@ -2568,12 +2568,14 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   sorted (`drawing::painter_order`) — otherwise a bar's shaded side leaks through onto the top
   of the block it grows out of. Sketch views have no solid, so they always draw wireframe.
   Two more styles draw by hand: **Loose pencil** (#1809) wobbles and overshoots the visible
-  edges, and **Coloured pencil** (#1821) is the viewport's coloured-pencil mode on the page —
-  the same hand-drawn edges, in a deepened version of the body's own colour when the view shows
-  one, over that colour's fills, with `crate::pencil` strokes laid across each flat for its
-  tone and the solids' shadows dropped onto one another. Shading strokes travel as
-  `ShadingStroke`s carrying the same `tint`/`shade` pair the fills do, so the sheet and the
-  print map them with the formula they already use. The projection logic is
+  edges, and **Coloured pencil** (#1821/#1825) is the viewport's coloured-pencil mode on the
+  page — the same hand-drawn edges, in a deepened version of the body's own colour when the
+  view shows one, over a ground of that colour, with `crate::pencil` scribble strokes laid
+  across each flat and the solids' shadows dropped onto one another. One tone on every side.
+  Strokes travel as `ShadingStroke`s, and `StyledViewGeometry::scribbled` marks the fills as a
+  pencil **ground** rather than a shaded surface: the tint stays the body's own colour, because
+  "most of the way to the paper" means toward white on the print and toward the sheet's own
+  dark in the editor, so each surface maps it. The projection logic is
   `drawing::styled_view_geometry`, shared by the editor pane (greys darkened for the dark
   sheet) and both exports (the `Canvas` trait gained a filled-polygon primitive).
   `Action::SetDrawingViewStyle`.
@@ -5129,15 +5131,18 @@ The model in one place:
       a laid-on fill so a near edge hides a far one, every feature edge and silhouette gone
       over twice with a repeatable wobble, and a hatched contact shadow instead of a smeared
       blot. Plain pencil is one graphite colour; coloured pencil keeps each body's material
-      colour and, on top of that, **shades** (#1818): the fill deepens as a surface turns from
-      the key light, and every flat big enough to carry them (`PENCIL_FLAT_MIN_AREA_MM2`, at
-      most `PENCIL_FLAT_LIMIT` per body — a tessellated sphere is hundreds of facets) is gone
-      over with strokes whose spacing tightens with the shade and which cross a second time
-      where the face turns away. Solids also cast hatched shadows **on each other** (#1818),
-      not only on the ground: every lit flat is a receiver, everything standing over it is
-      projected onto its plane along the light, and the hatch is clipped to the flat.
-      `crate::pencil` holds the strokes, tones and hatching, shared with the drawings
-      workbench's pencil style (#1809).
+      colour and **scribbles it in** (#1818/#1825): the fill goes most of the way to the paper
+      (`pencil::scribble_ground`) and every flat big enough to carry them
+      (`PENCIL_FLAT_MIN_AREA_MM2`, at most `PENCIL_FLAT_LIMIT` per body — a tessellated sphere
+      is hundreds of facets) is gone over with ruled strokes that `pencil::scribble` breaks
+      into pieces: run a little past the outline, with gaps of bare paper between them, the way
+      a hand fills a shape quickly. **One density and one tone on every side (#1825)** — no
+      light-and-dark, which read as a render; a coloured pencil drawing gets its form from its
+      outlines, exactly as the plain pencil mode does. Solids do cast hatched shadows **on each
+      other** (#1818), not only on the ground: every lit flat is a receiver, everything standing
+      over it is projected onto its plane along the light, and the hatch is clipped to the flat.
+      `crate::pencil` holds the strokes, tones, scribble and hatching, shared with the drawings
+      workbench's pencil styles (#1809/#1821).
 
   **Lighting runs per pixel, on smooth normals (#1037).** Solids carry a world-space normal
   and a lighting-model tag per vertex (`GpuVertex::normal`, whose `w` is a `ShadingModel`);

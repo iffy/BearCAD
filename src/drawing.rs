@@ -1830,6 +1830,12 @@ pub struct StyledViewGeometry {
     /// Coloured-pencil shading (#1821): the strokes laid across each face to give it its tone,
     /// and the shadows the solids drop on one another. Empty for every other style.
     pub shading: Vec<ShadingStroke>,
+    /// Whether these fills are a coloured-pencil *ground* tone rather than a shaded surface
+    /// (#1825): the body's own colour, one value on every side, meant to sit a long way toward
+    /// the paper so the scribble over it is what reads. Which way "toward the paper" goes is
+    /// the renderer's to decide — white on the print, the sheet's own dark on the editor —
+    /// so the tint travels unmixed and each surface maps it.
+    pub scribbled: bool,
     /// The colour to stroke the edges in (#1821), or `None` for the usual ink. A coloured
     /// pencil draws its outlines in a deepened version of what it filled with, the way the
     /// viewport's mode does — but only when the view shows one colour: edges come from the
@@ -2002,6 +2008,7 @@ pub fn styled_view_geometry(
         segments: edges.iter().map(|(a, b)| (project(*a), project(*b))).collect(),
         hatch: hatch.clone(),
         shading: Vec::new(),
+        scribbled: false,
         stroke_tint: None,
     };
     if view.sketch.is_some() || view.style == DrawingViewStyle::Wireframe {
@@ -2122,7 +2129,14 @@ pub fn styled_view_geometry(
                 }
                 let q = |v: f32| (v * 1000.0).round() as i32;
                 let key = ([q(n.x), q(n.y), q(n.z), q(n.dot(t[0]) * 0.1)], *tint);
-                let shade = 0.62 + 0.33 * n.dot(light).max(0.0);
+                // Coloured pencil takes one value on every side (#1825): its ground tone is
+                // the body's own colour taken toward the paper, not a lit surface, so the key
+                // light plays no part in it.
+                let shade = if view.style == DrawingViewStyle::ColourPencil {
+                    1.0
+                } else {
+                    0.62 + 0.33 * n.dot(light).max(0.0)
+                };
                 let depth = (t[0] + t[1] + t[2]).dot(toward) / 3.0;
                 let tri = [project(t[0]), project(t[1]), project(t[2])];
                 match planes.iter_mut().find(|f| f.key == key) {
@@ -2170,9 +2184,11 @@ pub fn styled_view_geometry(
         segments = drawn;
     }
 
-    // Coloured pencil (#1821): the same hand as the viewport's mode — strokes laid across each
-    // flat, tighter where it turns from the light and crossed a second time where it turns
-    // away, and the shadows the solids drop on one another. The tone is drawn, not poured.
+    // Coloured pencil (#1821/#1825): the same hand as the viewport's mode — the colour
+    // *scribbled* across each flat, run a little past its outline and broken by gaps of bare
+    // paper, plus the shadows the solids drop on one another. One density and one tone on
+    // every side, whichever way it faces: a coloured pencil drawing gets its form from its
+    // outlines, exactly as the plain pencil style does.
     let mut shading = Vec::new();
     if view.style == DrawingViewStyle::ColourPencil {
         let light = (toward * 1.2 - right * 0.35 + up * 0.55).normalize();
@@ -2193,9 +2209,11 @@ pub fn styled_view_geometry(
         };
         for face in &fills {
             let (n, c) = face.plane;
-            let lit = n.dot(light).max(0.0);
-            let (spacing, cross) = crate::pencil::shade_spacing(lit);
-            // A stable turn per flat, so two faces meeting at an edge are not shaded in
+            // Read off the body's own colour before the fills are lightened below.
+            let body = eframe::egui::Color32::from_rgb(face.tint[0], face.tint[1], face.tint[2]);
+            let laid_on = crate::pencil::shading_tone(body);
+            let stroke_tint = [laid_on.r(), laid_on.g(), laid_on.b()];
+            // A stable turn per flat, so two faces meeting at an edge are not scribbled in
             // lockstep — keyed to the plane, so a view redraws identically every time.
             let mut h = 0x811C_9DC5u32;
             for v in [n.x, n.y, n.z, c] {
@@ -2203,32 +2221,30 @@ pub fn styled_view_geometry(
             }
             let turn = (h >> 8) as f32 / (1 << 24) as f32 * std::f32::consts::PI;
             let flat = lift(&face.tris);
-            let mut angles = vec![crate::pencil::PENCIL_HATCH_ANGLE_RAD + turn];
-            if cross {
-                angles.push(
-                    crate::pencil::PENCIL_HATCH_ANGLE_RAD
-                        + turn
-                        + crate::pencil::PENCIL_SHADE_CROSS_TURN_RAD,
-                );
-            }
-            let mut push = |segments: Vec<(Vec3, Vec3)>, shade: f32, pass: usize| {
+            let mut push = |segments: Vec<(Vec3, Vec3)>, tint: [u8; 3], shade: f32| {
                 for (a, b) in segments {
-                    let points = crate::pencil::stroke_inside(a, b, pass);
-                    shading.extend(points.windows(2).map(|w| ShadingStroke {
-                        a: glam::Vec2::new(w[0].x, w[0].y),
-                        b: glam::Vec2::new(w[1].x, w[1].y),
-                        tint: face.tint,
-                        shade,
-                    }));
+                    for (from, to) in crate::pencil::scribble(a, b, 0) {
+                        let points = crate::pencil::stroke_inside(from, to, 0);
+                        shading.extend(points.windows(2).map(|w| ShadingStroke {
+                            a: glam::Vec2::new(w[0].x, w[0].y),
+                            b: glam::Vec2::new(w[1].x, w[1].y),
+                            tint,
+                            shade,
+                        }));
+                    }
                 }
             };
-            for (pass, angle) in angles.into_iter().enumerate() {
-                push(
-                    crate::pencil::hatch_in_frame(&page, spacing, angle, &flat, None),
-                    face.shade * PENCIL_STROKE_SHADE,
-                    pass,
-                );
-            }
+            push(
+                crate::pencil::hatch_in_frame(
+                    &page,
+                    crate::pencil::PENCIL_SCRIBBLE_SPACING_MM,
+                    crate::pencil::PENCIL_HATCH_ANGLE_RAD + turn,
+                    &flat,
+                    None,
+                ),
+                stroke_tint,
+                1.0,
+            );
             // What stands between this flat and the light, dropped onto its plane and clipped
             // to the flat — the drawings-page half of the viewport's cast shadows (#1818).
             let facing = n.dot(light);
@@ -2255,16 +2271,21 @@ pub fn styled_view_geometry(
                             + turn
                             + crate::pencil::PENCIL_CAST_TURN_RAD,
                         &cast,
-                        Some(&flat),
+                        Some(flat.as_slice()),
                     ),
-                    face.shade * PENCIL_SHADOW_SHADE,
-                    0,
+                    stroke_tint,
+                    PENCIL_SHADOW_SHADE,
                 );
             }
         }
+        // The fill underneath is only there so a near face hides a far one — a drawing's
+        // enclosed areas are paper, not paint. One value on every side (#1825): the light term
+        // goes entirely. The tint stays the body's own colour and `scribbled` says how to read
+        // it, because "most of the way to the paper" means the opposite thing on the white
+        // print and on the editor's dark sheet.
     }
 
-    // A coloured pencil draws its outline in a deepened version of what it filled with
+    // A coloured pencil draws its outline in a deepened version of what it filled with    // A coloured pencil draws its outline in a deepened version of what it filled with
     // (#1812/#1821) — but only when there is one colour to deepen.
     let stroke_tint = (view.style == DrawingViewStyle::ColourPencil)
         .then(|| {
@@ -2280,14 +2301,20 @@ pub fn styled_view_geometry(
         })
         .flatten();
 
-    StyledViewGeometry { faces: fills, segments, hatch, shading, stroke_tint }
+    StyledViewGeometry {
+        faces: fills,
+        segments,
+        hatch,
+        shading,
+        scribbled: view.style == DrawingViewStyle::ColourPencil,
+        stroke_tint,
+    }
 }
 
-/// How much darker a coloured-pencil shading stroke is than the fill it lies on (#1821), and
-/// how much darker again a cast shadow is. Both scale the face's own `shade`, so the sheet and
-/// the print map them with the formula they already use for fills.
-const PENCIL_STROKE_SHADE: f32 = 0.74;
-const PENCIL_SHADOW_SHADE: f32 = 0.46;
+/// How much darker a coloured-pencil cast shadow is than the scribble it lies among (#1821).
+/// It rides the same `tint`/`shade` pair the fills use, so the sheet and the print map it with
+/// the formula they already have.
+const PENCIL_SHADOW_SHADE: f32 = 0.62;
 /// How far above a flat a triangle must stand to shadow it — the contact face itself must not.
 const SHADOW_CASTER_MIN_MM: f32 = 0.05;
 
@@ -2656,9 +2683,20 @@ fn render_view_geometry<C: Canvas>(
     let styled = styled_view_geometry(doc, views, view);
     for face in &styled.faces {
         // `shade` scales the face's tint (#1807): white for the grey Shaded style, the body's
-        // own material colour for Colorful.
+        // own material colour for Colorful. A coloured-pencil ground is that colour taken most
+        // of the way to the paper instead (#1825) — the page really is white, so "toward the
+        // paper" is toward white here.
         let lit = |c: u8| (c as f32 * face.shade.clamp(0.0, 1.0)).round().clamp(0.0, 255.0) as u8;
-        let fill = Rgb(lit(face.tint[0]), lit(face.tint[1]), lit(face.tint[2]));
+        let fill = if styled.scribbled {
+            let g = crate::pencil::scribble_ground(eframe::egui::Color32::from_rgb(
+                face.tint[0],
+                face.tint[1],
+                face.tint[2],
+            ));
+            Rgb(g.r(), g.g(), g.b())
+        } else {
+            Rgb(lit(face.tint[0]), lit(face.tint[1]), lit(face.tint[2]))
+        };
         for pts in &face.tris {
             let s: Vec<(f32, f32)> = pts
                 .iter()

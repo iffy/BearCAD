@@ -87,7 +87,7 @@ angle, so the drawing doesn't crawl as you orbit.
 </div>
 <div className="col col--6">
 
-**Coloured pencil** — each body in its own colour, shaded with strokes; solids shadow each other.
+**Coloured pencil** — each body's colour scribbled in, sloppily, past the lines; solids shadow each other.
 
 <img src={useBaseUrl("/img/screenshots/view-styles-colour_pencil.png")} alt="The same hand-drawn cubes, each in its own colour" />
 
@@ -106,7 +106,7 @@ per view rather than per viewport:
 | Shaded | Grey-shaded faces under the visible edges. |
 | Colorful | Shaded, keeping each body's material colour. |
 | Loose pencil | The visible edges drawn by hand. |
-| Coloured pencil | The same hand, in each body's colour, shaded with strokes and with the solids' shadows on each other. |
+| Coloured pencil | The same hand, with each body's colour scribbled in and the solids' shadows on each other. |
 
 ```lua
 bearcad.drawing_view_style{ drawing = 0, view = 0, style = "colorful" }

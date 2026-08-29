@@ -28014,8 +28014,17 @@ impl App {
                         // without blowing out (exports keep the light print values). The
                         // face's tint is white for the grey Shaded style and the body's own
                         // material colour for Colorful (#1807), so one formula serves both.
+                        //
+                        // A coloured-pencil ground is neither (#1825): it is the body's colour
+                        // meant to sit a long way toward the *paper*, and here the paper is the
+                        // dark sheet — so it goes down toward the sheet, not up toward white,
+                        // and the scribble over it is what carries the colour.
                         let level = |c: u8| {
-                            (c as f32 / 255.0 * face.shade.clamp(0.0, 1.0) * 110.0) as u8 + 30
+                            if sty.scribbled {
+                                (c as f32 * 0.22) as u8 + 18
+                            } else {
+                                (c as f32 / 255.0 * face.shade.clamp(0.0, 1.0) * 110.0) as u8 + 30
+                            }
                         };
                         // One raw mesh per coplanar face (#1651): its triangles meet without
                         // the feathered edges a per-triangle fill would leave, so the
@@ -28067,11 +28076,13 @@ impl App {
                             egui::Stroke::new(crate::drawing::HATCH_STROKE, INK),
                         );
                     }
-                    // Coloured-pencil shading (#1821): the same tint/shade pair the fills
-                    // carry, so one formula maps both onto the dark sheet.
+                    // The scribble itself (#1821/#1825). It carries the body's colour, which
+                    // on the dark sheet wants lifting rather than mapping down — this is the
+                    // mark on the paper, not the paper.
                     for stroke in &sty.shading {
                         let level = |c: u8| {
-                            (c as f32 / 255.0 * stroke.shade.clamp(0.0, 1.0) * 110.0) as u8 + 30
+                            let s = stroke.shade.clamp(0.0, 1.0);
+                            ((c as f32 * 0.62 + 55.0) * s) as u8
                         };
                         painter.line_segment(
                             [

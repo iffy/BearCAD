@@ -32145,11 +32145,11 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert_eq!(state.doc.bodies[bkey(1)].material, None, "and nothing was applied");
     }
 
-    /// #1821: the Coloured pencil projection style is the viewport's coloured-pencil mode on
-    /// the page — hand-drawn edges over each body's own colour, shaded with strokes rather
-    /// than a flat fill, and with the solids' shadows falling on each other.
+    /// #1821/#1825: the Coloured pencil projection style is the viewport's coloured-pencil mode
+    /// on the page — hand-drawn edges, and the body's colour *scribbled* in rather than poured,
+    /// at one lightness on every side.
     #[test]
-    fn coloured_pencil_drawing_view_shades_with_strokes() {
+    fn coloured_pencil_drawing_view_scribbles_the_colour_in() {
         use crate::model::{DrawingOrientation, DrawingViewStyle};
         let mut state = two_box_state(false);
         state.apply(Action::ExitSketch);
@@ -32177,35 +32177,57 @@ translate_mode: crate::model::MoveTranslateMode::Free,
 
         style(&mut state, DrawingViewStyle::Colorful);
         let colorful = geometry(&state);
-        assert!(colorful.shading.is_empty(), "only the pencil style lays strokes on faces");
+        assert!(colorful.shading.is_empty(), "only the pencil style scribbles on faces");
+        // Colorful shades by the light, so its faces come out at a range of values.
+        let colorful_shades: std::collections::HashSet<u32> =
+            colorful.faces.iter().map(|f| f.shade.to_bits()).collect();
+        assert!(colorful_shades.len() > 1, "Colorful has light and dark sides");
+
         style(&mut state, DrawingViewStyle::LoosePencil);
         let loose = geometry(&state);
         style(&mut state, DrawingViewStyle::ColourPencil);
         let pencil = geometry(&state);
 
-        // Colour like Colorful…
-        assert!(
-            pencil.faces.iter().any(|f| f.tint == [200, 60, 60]),
-            "the body keeps its own colour, got {:?}",
-            pencil.faces.iter().map(|f| f.tint).collect::<Vec<_>>()
-        );
-        // …edges like Loose pencil…
+        // Edges drawn by hand, like Loose pencil…
         assert!(
             pencil.segments.len() > loose.segments.len() / 2,
             "the edges are still drawn by hand"
         );
-        // …and the tone comes from strokes, in the body's colour, darker than the fill they
-        // lie on. A flat fill is what made the style read as a sticker.
-        assert!(!pencil.shading.is_empty(), "the faces are shaded with strokes");
-        for stroke in &pencil.shading {
-            assert_eq!(stroke.tint, [200, 60, 60], "shading is the body's own colour");
-            assert!(stroke.shade > 0.0, "and it is a tone, not black");
-        }
-        let lightest_face = pencil.faces.iter().map(|f| f.shade).fold(0.0f32, f32::max);
+        // …one lightness on every side (#1825) — no light-and-dark, which read as a render…
+        let shades: std::collections::HashSet<u32> =
+            pencil.faces.iter().map(|f| f.shade.to_bits()).collect();
+        assert_eq!(shades.len(), 1, "every side of a coloured-pencil solid is laid on the same");
+        let tints: std::collections::HashSet<[u8; 3]> =
+            pencil.faces.iter().map(|f| f.tint).collect();
+        assert_eq!(tints.len(), 1, "and in one colour");
+        // …the fill under it is flagged as a pencil *ground* and keeps the body's own colour
+        // unmixed. Which way "most of the way to the paper" goes is the renderer's call — the
+        // print page is white, the editor's sheet is dark — so the geometry does not decide.
+        assert!(pencil.scribbled, "the fills are a pencil ground, not a shaded surface");
+        let body = *tints.iter().next().expect("one tint");
+        assert_eq!(body, [200, 60, 60], "the body's own colour travels unmixed");
+        let ground = crate::pencil::scribble_ground(eframe::egui::Color32::from_rgb(
+            body[0], body[1], body[2],
+        ));
+        let paper = crate::pencil::PENCIL_PAPER;
         assert!(
-            pencil.shading.iter().all(|s| s.shade < lightest_face),
-            "a stroke reads darker than the face it is laid on"
+            ground.r() > body[0] && ground.r() <= paper.r(),
+            "and taking it toward the paper lightens it, {} → {}",
+            body[0],
+            ground.r()
         );
+        assert!(ground.r() > ground.g(), "without losing the hue, got {ground:?}");
+
+        // …and the colour itself is scribbled on, in a deepened version of the body's own.
+        assert!(!pencil.shading.is_empty(), "the faces are scribbled in");
+        for stroke in &pencil.shading {
+            assert!(stroke.tint[0] > stroke.tint[1], "the scribble keeps the body's hue");
+            assert!(
+                stroke.tint[0] < ground.r(),
+                "and reads darker than the ground it lies on, {:?} vs {ground:?}",
+                stroke.tint
+            );
+        }
         // The hand is steady: the same view redraws the same strokes.
         let key = |g: &crate::drawing::StyledViewGeometry| {
             let mut k: Vec<[u32; 4]> = g

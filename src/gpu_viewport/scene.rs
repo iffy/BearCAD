@@ -224,8 +224,8 @@ const SHADOW_MAP_PADDING: f32 = 8.0;
 use crate::pencil::{
     colour_tones as colour_pencil_tones, hatch_segments as pencil_hatch_segments,
     stroke as pencil_stroke, PENCIL_BODY_FILL, PENCIL_GRAPHITE, PENCIL_GRID, PENCIL_GRID_AXIS,
-    PENCIL_FILL_TONE_RANGE, PENCIL_HATCH_COLOR, PENCIL_HATCH_WIDTH_PX, PENCIL_LINE_WIDTH_PX,
-    PENCIL_PAPER, PENCIL_PASSES,
+    PENCIL_HATCH_COLOR, PENCIL_HATCH_WIDTH_PX, PENCIL_LINE_WIDTH_PX, PENCIL_PAPER,
+    PENCIL_PASSES,
     PENCIL_X_AXIS, PENCIL_Y_AXIS, PENCIL_Z_AXIS,
 };
 
@@ -1525,7 +1525,10 @@ impl ViewportScene {
                 | crate::camera::ShadingMode::ColourPencil) => {
                     let coloured = mode == crate::camera::ShadingMode::ColourPencil;
                     let (paper_fill, stroke) = if coloured {
-                        colour_pencil_tones(fill)
+                        // The fill goes further toward the paper than the outline's tone does
+                        // (#1825), so the gaps in the scribble over it read as bare paper.
+                        let (_, line) = colour_pencil_tones(fill);
+                        (crate::pencil::scribble_ground(fill), line)
                     } else {
                         (PENCIL_BODY_FILL, PENCIL_GRAPHITE)
                     };
@@ -1540,7 +1543,6 @@ impl ViewportScene {
                         mesh.push_solid_pencil_fill(
                             solid,
                             paper_fill,
-                            stroke,
                             &coplanar_planes,
                             input.cam,
                         );
@@ -2636,33 +2638,18 @@ impl<'a> SceneMesh<'a> {
         self.push_shaded_solid(solid, None, fill, cam, coplanar_planes, ShadingModel::Unlit);
     }
 
-    /// The coloured-pencil fill (#1818): the same laid-on tone as [`Self::push_solid_flat`],
-    /// but deepened where the surface turns from the key light, so a solid has a light and a
-    /// dark side even where it is too finely tessellated to carry strokes (a sphere is
-    /// hundreds of facets; hatching each one buries the drawing).
+    /// The coloured-pencil ground tone (#1818/#1825): the body's own colour laid on *very*
+    /// lightly, one value on every side. It is only here so a near face hides a far one — a
+    /// drawing's enclosed areas are paper, not paint. What the eye reads as the colour is the
+    /// scribble laid over it by [`Self::push_pencil_face_shading`].
     fn push_solid_pencil_fill(
         &mut self,
         solid: &crate::extrude::SolidMesh,
         fill: Color32,
-        deep: Color32,
         coplanar_planes: &[(Vec3, Vec3)],
         cam: &Camera,
     ) {
-        let light = SCENE_LIGHT_DIR.normalize_or_zero();
-        let tone = |n: Vec3| {
-            let lit = n.dot(light).max(0.0);
-            // Even the brightest side keeps a little tone: paper white is the background.
-            let t = (1.0 - lit) * PENCIL_FILL_TONE_RANGE;
-            let mix = |a: u8, b: u8| {
-                (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
-            };
-            Color32::from_rgb(
-                mix(fill.r(), deep.r()),
-                mix(fill.g(), deep.g()),
-                mix(fill.b(), deep.b()),
-            )
-        };
-        self.push_toned_solid(solid, None, &tone, cam, coplanar_planes, ShadingModel::Unlit);
+        self.push_solid_flat(solid, fill, coplanar_planes, cam);
     }
 
     /// Draw a body's feature edges as pencil strokes (#1805): each edge gone over
@@ -2696,11 +2683,12 @@ impl<'a> SceneMesh<'a> {
         }
     }
 
-    /// Shade a body's faces with coloured pencil (#1818): each flat gone over with strokes in
-    /// the body's own colour, closer together the further that flat turns from the key light,
-    /// and crossed a second time where it turns away altogether. A flat fill reads as paint —
-    /// this is where the light and dark sides of a solid come from, and it is what makes the
-    /// tone look laid down by hand rather than poured in.
+    /// Scribble a body's faces in with coloured pencil (#1818/#1825): each flat gone over with
+    /// strokes in the body's own colour, run a little past its outline and broken by gaps of
+    /// bare paper — the way a hand fills a shape quickly. A flat fill reads as paint.
+    ///
+    /// One density on every side, whichever way it faces (#1825): a coloured pencil drawing
+    /// gets its form from its outlines, exactly as the plain pencil mode does.
     fn push_pencil_face_shading(
         &mut self,
         flats: &[CoplanarFlat],
@@ -2709,26 +2697,23 @@ impl<'a> SceneMesh<'a> {
         viewport: UiRect,
         view_proj: &Mat4,
     ) {
-        let light = SCENE_LIGHT_DIR.normalize_or_zero();
         let tone = crate::pencil::shading_tone(base);
         let color = fill_color(tone, crate::pencil::PENCIL_SHADE_ALPHA);
         for flat in flats {
-            let lit = flat.normal.dot(light).max(0.0);
-            let (spacing, cross) = crate::pencil::shade_spacing(lit);
             let frame = crate::pencil::HatchFrame::new(flat.point, flat.normal);
             // Each flat gets its own stroke direction, keyed to the plane it lies in, so two
-            // faces meeting at an edge are not shaded in lockstep.
+            // faces meeting at an edge are not scribbled in lockstep.
             let angle = crate::pencil::PENCIL_HATCH_ANGLE_RAD + flat.angle_offset;
-            let mut passes = vec![angle];
-            if cross {
-                passes.push(angle + crate::pencil::PENCIL_SHADE_CROSS_TURN_RAD);
-            }
-            for (pass, angle) in passes.into_iter().enumerate() {
-                for (a, b) in
-                    crate::pencil::hatch_in_frame(&frame, spacing, angle, &flat.tris, None)
-                {
+            for (a, b) in crate::pencil::hatch_in_frame(
+                &frame,
+                crate::pencil::PENCIL_SCRIBBLE_SPACING_MM,
+                angle,
+                &flat.tris,
+                None,
+            ) {
+                for (from, to) in crate::pencil::scribble(a, b, 0) {
                     self.push_polyline_segment(
-                        &crate::pencil::stroke_inside(a, b, pass),
+                        &crate::pencil::stroke_inside(from, to, 0),
                         color,
                         crate::pencil::PENCIL_SHADE_WIDTH_PX,
                         cam,
@@ -14599,22 +14584,11 @@ mod loose_pencil_tests {
         assert!(pencil_hatch_segments(&[]).is_empty());
     }
 
-    /// #1818: a face is shaded by strokes laid across it, and how close together they sit is
-    /// what makes one side of a solid lighter than another. A flat fill gave every side of a
-    /// cube the same value, so a coloured-pencil drawing read as a flat sticker.
+    /// #1825: every side of a solid takes the *same* tone. The light-and-dark sides #1818 gave
+    /// the mode read as a render; a coloured pencil drawing gets its form from the outlines,
+    /// and the colour is just laid on — the same way the plain pencil mode works.
     #[test]
-    fn shading_strokes_crowd_on_the_sides_turned_from_the_light() {
-        let (lit_spacing, lit_cross) = crate::pencil::shade_spacing(1.0);
-        let (mid_spacing, _) = crate::pencil::shade_spacing(0.6);
-        let (dark_spacing, dark_cross) = crate::pencil::shade_spacing(0.0);
-        assert!(
-            dark_spacing < mid_spacing && mid_spacing < lit_spacing,
-            "less light, tighter strokes: {dark_spacing} < {mid_spacing} < {lit_spacing}"
-        );
-        assert!(!lit_cross, "a face full in the light is not crossed a second time");
-        assert!(dark_cross, "a face turned away from it is");
-
-        // …and a square shaded that way really does get more strokes on the dark side.
+    fn every_face_is_scribbled_at_the_same_density() {
         let square = |n: Vec3| {
             let frame = crate::pencil::HatchFrame::new(Vec3::ZERO, n);
             let c = |x: f32, y: f32| frame.origin + frame.u * x + frame.v * y;
@@ -14623,20 +14597,64 @@ mod loose_pencil_tests {
                 [c(0.0, 0.0), c(20.0, 20.0), c(0.0, 20.0)],
             ]
         };
-        let count = |n: Vec3, lit: f32| {
-            let (spacing, _) = crate::pencil::shade_spacing(lit);
+        // Count the ruled lines a face gets, for faces pointing every which way relative to
+        // the key light. Ruled lines, not stroke pieces: the gaps are meant to differ.
+        let lines = |n: Vec3| {
             crate::pencil::hatch_in_frame(
                 &crate::pencil::HatchFrame::new(Vec3::ZERO, n),
-                spacing,
+                crate::pencil::PENCIL_SCRIBBLE_SPACING_MM,
                 0.4,
                 &square(n),
                 None,
             )
             .len()
         };
+        let up = lines(Vec3::Z);
+        for n in [Vec3::X, Vec3::Y, -Vec3::X, -Vec3::Z] {
+            assert_eq!(lines(n), up, "every side is laid on the same, {n:?} is not");
+        }
+    }
+
+    /// #1825: the colour is *scribbled* in — it runs a little past the outline and leaves gaps
+    /// of bare paper, the way a hand filling a shape quickly does. A solid, edge-to-edge fill
+    /// reads as paint.
+    #[test]
+    fn a_scribbled_stroke_overshoots_its_ends_and_leaves_gaps() {
+        let (a, b) = (Vec3::ZERO, Vec3::new(30.0, 0.0, 0.0));
+        let pieces = crate::pencil::scribble(a, b, 0);
+        assert!(pieces.len() > 1, "a scribbled span is broken up, got {}", pieces.len());
+
+        let covered: f32 = pieces.iter().map(|(p, q)| (*q - *p).length()).sum();
+        assert!(covered > 0.0, "something is drawn");
         assert!(
-            count(Vec3::Z, 0.0) > count(Vec3::Z, 1.0),
-            "the dark side of the same square is worked over more"
+            covered < 30.0,
+            "and not all of it — the gaps are the point, covered {covered:.1} of 30"
+        );
+
+        // It runs past at least one end: the colour goes outside the lines.
+        let lo = pieces.iter().flat_map(|(p, q)| [p.x, q.x]).fold(f32::MAX, f32::min);
+        let hi = pieces.iter().flat_map(|(p, q)| [p.x, q.x]).fold(f32::MIN, f32::max);
+        assert!(
+            lo < -1e-3 || hi > 30.0 + 1e-3,
+            "a scribble runs past the outline, got {lo:.2}..{hi:.2}"
+        );
+        // But not wildly: it is a slip of the hand, not a different shape.
+        assert!(lo > -4.0 && hi < 34.0, "and only a little, got {lo:.2}..{hi:.2}");
+
+        // Repeatable: the same span scribbles the same way, or the drawing crawls as the
+        // camera moves.
+        let again = crate::pencil::scribble(a, b, 0);
+        assert_eq!(pieces.len(), again.len());
+        for (x, y) in pieces.iter().zip(&again) {
+            assert_eq!(x.0, y.0);
+            assert_eq!(x.1, y.1);
+        }
+        // …and two different spans do not scribble identically.
+        let other = crate::pencil::scribble(Vec3::new(0.0, 7.0, 0.0), Vec3::new(30.0, 7.0, 0.0), 0);
+        assert!(
+            other.len() != pieces.len()
+                || other.iter().zip(&pieces).any(|(x, y)| x.0.x != y.0.x),
+            "every scan line would land in lockstep"
         );
     }
 
