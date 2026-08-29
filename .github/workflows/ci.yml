@@ -145,6 +145,9 @@ jobs:
           # These tests drive real OS windows — ⌘` window cycling and the
           # McMaster-Carr helper process — which only exist when the app opens a
           # windowed one under Xvfb. Everything else runs headless (faster, no X).
+          # The scripts here also self-skip when run headless (#1815), so running the
+          # directory locally is not a false failure — which makes *this* list the only
+          # thing that actually covers them. Do not drop it.
           WINDOWED="cmd_backtick_cycles_mcmaster"
           failed=0
           for script in "${tests[@]}"; do

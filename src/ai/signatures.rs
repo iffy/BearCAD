@@ -285,6 +285,7 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.ui.wait"                     , "bearcad.ui.wait(frames)"),
     ("bearcad.ui.wait_ms"                  , "bearcad.ui.wait_ms(ms)"),
     ("bearcad.ui.wheel"                    , "bearcad.ui.wheel(scroll)"),
+    ("bearcad.ui.headless"                 , "bearcad.ui.headless()   -- true when the run has no OS window"),
     ("bearcad.ui.widget_id_warnings"       , "bearcad.ui.widget_id_warnings()"),
     ("bearcad.ui.window_count"             , "bearcad.ui.window_count()"),
     ("bearcad.ui.windows"                  , "bearcad.ui.windows()"),

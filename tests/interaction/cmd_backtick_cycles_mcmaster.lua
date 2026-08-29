@@ -1,6 +1,18 @@
 -- Interaction regression (#1477): ⌘` / Ctrl+` cycles every OS window, including
 -- the DEV Report issue window and the McMaster-Carr catalog helper. Jumping
 -- straight to the catalog (the old #1023 toggle) would skip Report issue.
+--
+-- This is the one script in the suite that needs *real OS windows*: there is nothing to
+-- cycle when the app never opened one. Headless it skips itself (#1815) rather than failing,
+-- so running the whole directory the obvious way works everywhere. CI still runs it for real
+-- — `.github/workflows/ci.yml` gives this script a windowed Xvfb run, which is what actually
+-- covers the behaviour.
+if bearcad.ui.headless() then
+  print("skip: ⌘` window cycling needs real OS windows (run with --no-headless)")
+  bearcad.quit()
+  return
+end
+
 bearcad.new()
 bearcad.ui.tool("select")
 bearcad.ui.pane("elements", "hide")

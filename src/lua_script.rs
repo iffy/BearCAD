@@ -5988,6 +5988,19 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, ()| Ok(crate::diag::widget_id_change_warnings()))?,
     )?;
 
+    // Whether this run has no OS window at all (#1815) — `--headless`, the default for
+    // `--script`. A test that can only work against real windows (⌘` cycling, a helper
+    // process) checks this and skips, rather than failing everywhere but CI's Xvfb job.
+    api.set(
+        "headless",
+        lua.create_function(|lua, ()| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            Ok(unsafe { tick.state() }.headless)
+        })?,
+    )?;
+
     api.set(
         "parameter",
         lua.create_function(|lua, args: MultiValue| {
@@ -10078,7 +10091,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         bearcad.ui = {}
         local ui_funcs = {
             "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_calibrate", "focus_dim", "pane", "pane_rect", "elements_row_rect", "drawing_view_rect", "pane_scroll", "scroll_pane", "ai_sections", "ai_pane_sections", "ai_mcp", "menu_structure",
-            "widget_id_warnings", "palette", "settings",
+            "widget_id_warnings", "headless", "palette", "settings",
             "changelog",
             "mcmaster",
             "report_issue", "windows", "focused_window", "viewport",
@@ -18603,6 +18616,36 @@ pub mod tests {
             assert(type(n) == "number", "count should be a number, got " .. type(n))
             assert(n >= 0, "count should not be negative")
         "#,
+        );
+    }
+
+    /// #1815: a script can tell whether the run has real OS windows at all. A test that drives
+    /// window cycling or a helper process has no way to run headless, and without this it can
+    /// only fail — which is a false failure every time someone runs the suite locally.
+    #[test]
+    fn lua_headless_reports_whether_windows_exist() {
+        let mut runner = ScriptRunner::from_lua_source(
+            r#"
+            assert(type(bearcad.ui.headless) == "function")
+            assert(bearcad.ui.headless() == true,
+                   "a run with no window should say so")
+            "#,
+        )
+        .unwrap();
+        runner.verbose = false;
+        let mut state = AppState::default();
+        state.headless = true;
+        let mut synthetic = SyntheticInput::default();
+        let ctx = egui::Context::default();
+        let vp = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0));
+        while !runner.done {
+            runner.tick(&mut state, &mut synthetic, Some(vp), &ctx);
+        }
+        assert!(runner.error.is_none(), "script error: {:?}", runner.error);
+
+        // …and a windowed run says the opposite, so the flag is read, not assumed.
+        run_lua_expect_ok(
+            r#"assert(bearcad.ui.headless() == false, "a windowed run has windows")"#,
         );
     }
 

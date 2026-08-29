@@ -402,6 +402,7 @@ bearcad.ui.fps_look(dx, dy)
 bearcad.ui.fps_move{ forward, strafe }
 bearcad.ui.fps_scale(scale)
 bearcad.ui.ground(name)
+bearcad.ui.headless()   -- true when the run has no OS window
 bearcad.ui.help(on?)
 bearcad.ui.install_age(days?)
 bearcad.ui.key(name, { shift?, ctrl?, cmd? }?)

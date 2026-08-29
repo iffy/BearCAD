@@ -5017,6 +5017,12 @@ pub struct AppState {
     pub script_detached_windows: Vec<String>,
     /// Which cycleable window scripts currently treat as focused (`bearcad.ui.focused_window`).
     pub script_focused_window: String,
+    /// Whether this run has no OS window at all (#1815) — `--headless`, the default for
+    /// `--script`. Scripts read it as `bearcad.ui.headless()` so one that can only work
+    /// against real windows (⌘` cycling, a helper process) can skip itself instead of
+    /// failing. Default `false`: an `AppState` belongs to a windowed app unless told
+    /// otherwise, and `App::set_headless` is what tells it.
+    pub headless: bool,
 }
 
 fn unix_now_secs() -> i64 {
@@ -5160,6 +5166,7 @@ impl Default for AppState {
             script_window_count: 1,
             script_detached_windows: Vec::new(),
             script_focused_window: "main".into(),
+            headless: false,
         }
     }
 }

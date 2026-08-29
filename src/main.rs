@@ -19311,6 +19311,9 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
     /// maximize countdown is already done (there is no window to maximize).
     fn set_headless(&mut self, headless: bool) {
         self.headless = headless;
+        // Scripts read this as `bearcad.ui.headless()` (#1815), so one that can only work
+        // against real windows skips itself instead of failing.
+        self.state.headless = headless;
         if headless {
             self.launch_maximize_frames_remaining = 0;
         }
