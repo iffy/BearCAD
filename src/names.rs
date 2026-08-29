@@ -733,6 +733,20 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
                 None => "Dim".to_string(),
             }
         }
+        // A loupe's two circles are told apart by which is which and how far it magnifies
+        // (#1846).
+        HierarchyNode::DrawingLoupe { drawing, view, index, magnified } => {
+            let loupe = doc
+                .drawings
+                .get(drawing)
+                .and_then(|d| d.views.get(view))
+                .and_then(|v| v.loupes.get(index));
+            let side = if magnified { "Loupe" } else { "Loupe detail" };
+            match loupe {
+                Some(l) => format!("{side} {index} ({:.1}×)", crate::drawing::loupe_zoom(l)),
+                None => side.to_string(),
+            }
+        }
     }
 }
 
@@ -857,6 +871,12 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
                         drawing: *drawing,
                         view: *view,
                         index: *index,
+                    },
+                    D::Loupe { view, index, magnified } => HierarchyNode::DrawingLoupe {
+                        drawing: *drawing,
+                        view: *view,
+                        index: *index,
+                        magnified: *magnified,
                     },
                 },
             )

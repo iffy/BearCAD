@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- a small detail circle joined rim to rim to the bigger one that magnifies it -->
+  <circle cx="8" cy="8" r="5" />
+  <circle cx="21" cy="21" r="9" />
+  <line x1="11.5" y1="11.5" x2="14.6" y2="14.6" />
+</svg>

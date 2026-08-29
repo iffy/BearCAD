@@ -2454,7 +2454,7 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   white-on-black to match the app's dark-mode aesthetic (#254); **export** inverts back to
   black ink on a white sheet.
 - **Workbenches (#254/#271/#272):** opening a drawing switches to the **Drawing workbench**,
-  whose toolbar shows **Back, Select, Projection, Aligned view, Dimension, Text** (#295: no Move
+  whose toolbar shows **Back, Select, Projection, Aligned view, Dimension, Zoom loupe, Text** (#295: no Move
   tool; the Select tool drags projections directly, #293 — and **only** the Select tool: with
   any other tool, e.g. Dimension, dragging across a card moves nothing, #374). Entering the
   workbench with any
@@ -2503,6 +2503,26 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   the child's stored `orientation` is just the nearest face for its label. All six straight-on bases
   offer all four directions; an isometric/edge/corner parent has no aligned children. Scriptable:
   `bearcad.drawing_align_view{ drawing, parent, dir = "below"/"above"/"right"/"left", pos? }`.
+- **Zoom loupes (#1846):** the workbench's **Zoom loupe** tool draws a **detail callout** on a
+  projection: a small circle ringing part of the view and a bigger circle elsewhere on the page
+  redrawing what the small one covers, magnified, with a thin line joining their **rims**. Four
+  clicks place one — centre then rim for each circle, like the Circle tool — and Esc drops a
+  half-made one. Both circles live in the view's own **projected millimetres**
+  (`DrawingView::loupes`, `DrawingLoupe { at, radius, to, to_radius }`), the same space
+  `point_dims` use, so a loupe travels with its projection at any page scale. The magnification
+  is the **ratio of the radii**, so enlarging the big circle zooms further in rather than
+  showing more. `drawing::loupe_drawing` builds what to draw — the two circles, the rim-to-rim
+  connector, and the view's stroked lines clipped to the detail circle then scaled onto the
+  magnified one — so the editor sheet and the SVG/PDF export put down the same thing. Loupe
+  chrome strokes at `drawing::LOUPE_STROKE` (half the model outline); the magnified geometry
+  strokes like the view it came from. Under **Select** each circle is its own element
+  (`DrawingElementRef::Loupe { view, index, magnified }`): click to select, drag the middle to
+  move, drag the outer ring to resize, Delete on either drops the pair. Scriptable:
+  `bearcad.drawing_loupe{ drawing, view, at, radius, to, to_radius }`,
+  `bearcad.edit_drawing_loupe{ …, index, at?, radius?, to?, to_radius? }`,
+  `bearcad.delete_drawing_loupe{ drawing, view, index }`, and
+  `bearcad.drawing_loupes{ drawing, view }` reads them back (with the derived `zoom`);
+  `bearcad.ui.drawing_loupe_rect{ view, index, magnified? }` reports where a circle was drawn.
 - **Text annotations (#312):** the **Text** tool (the same tool, `T` shortcut, brought into
   the Drawing workbench) places **free text on the page** — click for a growing single-line
   box, drag a rectangle for one that word-wraps to that width. Annotations

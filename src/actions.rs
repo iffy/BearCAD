@@ -169,6 +169,10 @@ tools! {
     /// move the mouse to preview an orthographic child view (down/up/left/right) that stays
     /// lined up with the parent; click to commit it.
     DrawingAlign,
+    /// Drawing workbench's zoom-loupe tool (#1846): click a detail on a projection and drag
+    /// out a circle round it, then click and drag out a second, bigger circle anywhere —
+    /// which redraws what the first one covers, magnified by the ratio of their radii.
+    DrawingLoupe,
     /// View workbench's cutting-plane tool (#1671/#1687): click a face, plane, or edge to
     /// hang a cutting plane off it, then slide, turn, or flip it in the context pane. Each
     /// click adds another plane, so a view can cut in several directions at once.
@@ -209,6 +213,7 @@ impl Tool {
             "project" | "projection" => Some(Tool::Project),
             "drawing_add" | "add_view" => Some(Tool::DrawingAdd),
             "drawing_align" | "aligned_view" | "align_view" => Some(Tool::DrawingAlign),
+            "loupe" | "drawing_loupe" | "zoom_loupe" => Some(Tool::DrawingLoupe),
             _ => None,
         }
     }
@@ -3474,6 +3479,25 @@ pub enum Action {
     },
     /// Remove a free point-to-point dimension (#1645).
     RemoveDrawingPointDim { drawing: crate::model::DrawingKey, view: usize, index: usize },
+    /// Add a zoom loupe to a drawing view (#1846). Both centres and radii are in the view's
+    /// projected millimetres.
+    AddDrawingLoupe {
+        drawing: crate::model::DrawingKey,
+        view: usize,
+        loupe: crate::model::DrawingLoupe,
+    },
+    /// Move or resize one of a view's zoom loupes (#1846); `None` fields are left alone.
+    SetDrawingLoupe {
+        drawing: crate::model::DrawingKey,
+        view: usize,
+        index: usize,
+        at: Option<(f32, f32)>,
+        radius: Option<f32>,
+        to: Option<(f32, f32)>,
+        to_radius: Option<f32>,
+    },
+    /// Remove a zoom loupe (#1846).
+    RemoveDrawingLoupe { drawing: crate::model::DrawingKey, view: usize, index: usize },
     /// Toggle the length dimension of one edge (by quantized world endpoints) in a drawing view.
     ToggleDrawingDimension {
         drawing: crate::model::DrawingKey,
@@ -5334,7 +5358,9 @@ impl AppState {
             !(*d == drawing
                 && match e {
                     R::Projection(v) => *v == view,
-                    R::Dimension { view: v, .. } | R::PointDim { view: v, .. } => *v == view,
+                    R::Dimension { view: v, .. }
+                    | R::PointDim { view: v, .. }
+                    | R::Loupe { view: v, .. } => *v == view,
                     R::Text(_) => false,
                 })
         });
@@ -5344,7 +5370,13 @@ impl AppState {
             }
             match e {
                 R::Projection(v) if *v > view => *v -= 1,
-                R::Dimension { view: v, .. } | R::PointDim { view: v, .. } if *v > view => *v -= 1,
+                R::Dimension { view: v, .. }
+                | R::PointDim { view: v, .. }
+                | R::Loupe { view: v, .. }
+                    if *v > view =>
+                {
+                    *v -= 1
+                }
                 _ => {}
             }
         }
@@ -10923,6 +10955,9 @@ impl AppState {
                     Tool::DrawingAlign => {
                         "Aligned view — click a projection, then move the mouse and click to place a lined-up view".to_string()
                     }
+                    Tool::DrawingLoupe => {
+                        "Zoom loupe — click a detail on a projection and drag out a circle, then click and drag out the magnified one".to_string()
+                    }
                 };
                 // #492/#1504: Chamfer/Fillet in a sketch keep only treatable vertices
                 // and seed the draft from them (last-used amount, same as a click).
@@ -14855,6 +14890,87 @@ impl AppState {
                     }
                 }
                 self.status = "Removed dimension".to_string();
+                ActionResult::Ok
+            }
+            Action::AddDrawingLoupe { drawing, view, loupe } => {
+                let Some(v) = self
+                    .doc
+                    .drawings
+                    .get_mut(drawing)
+                    .and_then(|d| d.views.get_mut(view))
+                else {
+                    return ActionResult::Err(format!(
+                        "No view {view} in drawing {}",
+                        drawing.index()
+                    ));
+                };
+                let mut loupe = loupe;
+                loupe.radius = loupe.radius.abs().max(crate::model::MIN_LOUPE_RADIUS_MM);
+                loupe.to_radius = loupe.to_radius.abs().max(crate::model::MIN_LOUPE_RADIUS_MM);
+                v.loupes.push(loupe);
+                let index = self.doc.drawings[drawing].views[view].loupes.len() - 1;
+                // Select the magnified circle: it is the one you place last and usually want
+                // to nudge next (#1846).
+                self.select_drawing_only(
+                    drawing,
+                    crate::context::DrawingElementRef::Loupe { view, index, magnified: true },
+                );
+                self.status = format!("Added loupe {index} ({:.1}×)", crate::drawing::loupe_zoom(&loupe));
+                ActionResult::Ok
+            }
+            Action::SetDrawingLoupe { drawing, view, index, at, radius, to, to_radius } => {
+                let Some(loupe) = self
+                    .doc
+                    .drawings
+                    .get_mut(drawing)
+                    .and_then(|d| d.views.get_mut(view))
+                    .and_then(|v| v.loupes.get_mut(index))
+                else {
+                    return ActionResult::Err(format!("No loupe {index}"));
+                };
+                if let Some(at) = at {
+                    loupe.at = at;
+                }
+                if let Some(r) = radius {
+                    loupe.radius = r.abs().max(crate::model::MIN_LOUPE_RADIUS_MM);
+                }
+                if let Some(to) = to {
+                    loupe.to = to;
+                }
+                if let Some(r) = to_radius {
+                    loupe.to_radius = r.abs().max(crate::model::MIN_LOUPE_RADIUS_MM);
+                }
+                ActionResult::Ok
+            }
+            Action::RemoveDrawingLoupe { drawing, view, index } => {
+                let Some(v) = self
+                    .doc
+                    .drawings
+                    .get_mut(drawing)
+                    .and_then(|d| d.views.get_mut(view))
+                    .filter(|v| index < v.loupes.len())
+                else {
+                    return ActionResult::Err(format!("No loupe {index}"));
+                };
+                v.loupes.remove(index);
+                for magnified in [false, true] {
+                    self.deselect_drawing_element(
+                        drawing,
+                        crate::context::DrawingElementRef::Loupe { view, index, magnified },
+                    );
+                }
+                // Later loupes shift down; keep any selection of them pointing at the same one.
+                for (d, e) in self.selected_drawing_elements.iter_mut() {
+                    if *d != drawing {
+                        continue;
+                    }
+                    if let crate::context::DrawingElementRef::Loupe { view: v, index: i, .. } = e {
+                        if *v == view && *i > index {
+                            *i -= 1;
+                        }
+                    }
+                }
+                self.status = "Removed loupe".to_string();
                 ActionResult::Ok
             }
             Action::RemoveDrawingAnnotation { drawing, annotation } => {

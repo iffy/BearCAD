@@ -227,6 +227,7 @@ bearcad.count(kind)
 bearcad.cross_section{ name }
 bearcad.cuboid{ width, depth, height, at?, normal?, u_axis?, name? }
 bearcad.cylinder{ radius, height, at?, normal?, u_axis?, name? }
+bearcad.delete_drawing_loupe{ drawing, view, index }
 bearcad.delete_section_plane{ view, cut }
 bearcad.delete_selection()
 bearcad.derive_parameter{ kind, a, b, body, body_b, name, instance, face, edge }
@@ -241,6 +242,8 @@ bearcad.drawing_circle_dimension{ drawing, view, center }
 bearcad.drawing_curve_dimension{ drawing, view, points }
 bearcad.drawing_dim_offset{ drawing, view, offset, a, b }
 bearcad.drawing_dimension{ drawing, view, a, b }
+bearcad.drawing_loupe{ drawing, view, at, radius, to, to_radius }   -- at/to are {u, v} in the view's projected mm
+bearcad.drawing_loupes{ drawing, view }   -- { at, radius, to, to_radius, zoom } each
 bearcad.drawing_move_view{ drawing, view, x, y }
 bearcad.drawing_page{ drawing, width, height, margin }
 bearcad.drawing_paper{ drawing, paper }   -- white | dark (the editor's sheet; exports are always white)
@@ -261,6 +264,7 @@ bearcad.drawing_view_style{ drawing, view, style }   -- visible, wireframe, shad
 bearcad.drawing_views(index)
 bearcad.edit_boolean{ index, op, a, b, keep_b, keep_leftovers }
 bearcad.edit_dim(axis)
+bearcad.edit_drawing_loupe{ drawing, view, index, at?, radius?, to?, to_radius? }
 bearcad.edit_extrusion{ extrusion, distance, by, to }
 bearcad.edit_joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin, frame_axis, frame_axis2, position, position2, position3, slide_min, slide_max, slide_min_to, slide_max_to, turn_min, turn_max, name }   -- face = { moving, fixed, flip?, offset?, spin? }
 bearcad.edit_mirror{ index, plane, bodies, output }
@@ -391,6 +395,7 @@ bearcad.ui.drag_ground(x0, y0, x1, y1)
 bearcad.ui.drag_line({ … }, anchor_u?, anchor_v?, u?, v?)
 bearcad.ui.drag_vertex({ … }, u?, v?)
 bearcad.ui.drag_world(x0, y0, z0, x1, y1, z1)
+bearcad.ui.drawing_loupe_rect{ view, index, magnified? }   -- { x, y, w, h } of the circle's box, window coords
 bearcad.ui.drawing_view_rect(view)
 bearcad.ui.elements_graph{ shadow_bodies? }
 bearcad.ui.elements_row_rect(label)

@@ -325,6 +325,7 @@ fn hierarchy_node_kind_name(node: crate::hierarchy::HierarchyNode) -> &'static s
         N::DrawingProjection { .. } => "projection",
         N::DrawingAnnotation { .. } => "annotation",
         N::DrawingDimension { .. } | N::DrawingPointDim { .. } => "drawing_dimension",
+        N::DrawingLoupe { .. } => "drawing_loupe",
         N::EdgeTreatment { .. } => "edge_treatment",
         N::UnitChild { .. } => "unit_child",
         N::Views => "views",
@@ -387,6 +388,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
                 D::Projection(_) => "projection",
                 D::Text(_) => "annotation",
                 D::Dimension { .. } | D::PointDim { .. } => "drawing_dimension",
+                D::Loupe { .. } => "drawing_loupe",
             }
         }
     }
@@ -506,6 +508,7 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
                     .and_then(|d| d.annotations.keys().position(|k| k == key))
                     .unwrap_or(0),
                 D::Dimension { view, .. } | D::PointDim { view, .. } => view,
+                D::Loupe { index, .. } => index,
             }
         }
     }
@@ -1003,6 +1006,17 @@ fn section_plane_body_scope(
             )))
         }
     })
+}
+
+/// A loupe's `at` / `to` centre: a `{u, v}` point in the view's projected millimetres (#1846).
+fn loupe_point(opts: &Table, key: &str) -> mlua::Result<(f32, f32)> {
+    let v: Vec<f32> = opts.get(key)?;
+    if v.len() != 2 {
+        return Err(mlua::Error::external(format!(
+            "drawing_loupe `{key}` must be a {{u, v}} point in the view's projected millimetres"
+        )));
+    }
+    Ok((v[0], v[1]))
 }
 
 /// A cutting plane's `depth` option (#1845). Outer `None` is the key being absent —
@@ -4951,6 +4965,28 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 }
                 out.set(i + 1, entry)?;
             }
+            // The drawing page keeps its own selection (#346) — projections, notes,
+            // dimensions, loupes. Without these a script could not see what a click on the
+            // page picked at all (#1846). Each carries the drawing it is on.
+            let n = state.scene_selection.iter().count();
+            for (i, (drawing, element)) in state.selected_drawing_elements.iter().enumerate() {
+                let el = SceneElement::DrawingElement {
+                    drawing: *drawing,
+                    element: *element,
+                };
+                let entry = lua.create_table()?;
+                entry.set("kind", element_kind_name(el.clone()))?;
+                entry.set("index", element_index(&state.doc, el))?;
+                entry.set(
+                    "drawing",
+                    state.doc.drawings.keys().position(|k| k == *drawing).unwrap_or(0),
+                )?;
+                if let crate::context::DrawingElementRef::Loupe { view, magnified, .. } = element {
+                    entry.set("view", *view)?;
+                    entry.set("magnified", *magnified)?;
+                }
+                out.set(n + i + 1, entry)?;
+            }
             Ok(out)
         })?,
     )?;
@@ -5941,6 +5977,36 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
             let Some(rect) = crate::context::context_row_rect(unsafe { tick.egui_ctx() }, &label)
             else {
+                return Ok(Value::Nil);
+            };
+            let t = lua.create_table()?;
+            t.set("x", rect.min.x)?;
+            t.set("y", rect.min.y)?;
+            t.set("w", rect.width())?;
+            t.set("h", rect.height())?;
+            Ok(Value::Table(t))
+        })?,
+    )?;
+
+    // #1846: where the page drew one circle of a zoom loupe last frame, in window
+    // coordinates like `drawing_view_rect` — `{ x, y, w, h }` of the square it is inscribed
+    // in, so a script can aim at its centre to move it or its rim to resize it.
+    api.set(
+        "drawing_loupe_rect",
+        lua.create_function(|lua, opts: Table| {
+            check_keys(&opts, "drawing_loupe_rect", &["view", "index", "magnified"])?;
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let view: usize = opts.ordinal_req("view")?;
+            let index: usize = opts.ordinal_req("index")?;
+            let magnified: bool = opts.get::<Option<bool>>("magnified")?.unwrap_or(true);
+            let Some(rect) = crate::drawing_loupe_rect(
+                unsafe { tick.egui_ctx() },
+                view,
+                index,
+                magnified,
+            ) else {
                 return Ok(Value::Nil);
             };
             let t = lua.create_table()?;
@@ -9772,6 +9838,121 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1846: a zoom loupe on a projection — a detail circle over the geometry (`at` /
+    // `radius`) and a magnified circle elsewhere (`to` / `to_radius`) that redraws what the
+    // first covers, scaled by the ratio of the radii. Both are in the view's projected
+    // millimetres, like `drawing_point_dimension`. Returns the loupe's index.
+    api.set(
+        "drawing_loupe",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "drawing_loupe",
+                &["drawing", "view", "at", "radius", "to", "to_radius"],
+            )?;
+            let drawing: usize = opts.ordinal_req("drawing")?;
+            let view: usize = opts.ordinal_req("view")?;
+            let at = loupe_point(&opts, "at")?;
+            let to = loupe_point(&opts, "to")?;
+            let radius: f32 = opts.get("radius")?;
+            let to_radius: f32 = opts.get("to_radius")?;
+            unsafe {
+                tick.exec(Instruction::AddDrawingLoupe {
+                    drawing,
+                    view,
+                    at,
+                    radius,
+                    to,
+                    to_radius,
+                })?
+            };
+            let state = unsafe { tick.state() };
+            let index = state
+                .doc
+                .drawings
+                .keys()
+                .nth(drawing)
+                .and_then(|k| state.doc.drawings[k].views.get(view))
+                .map(|v| v.loupes.len().saturating_sub(1))
+                .unwrap_or(0);
+            Ok(index)
+        })?,
+    )?;
+    // #1846: move or resize either circle of an existing loupe; absent keys are left alone.
+    api.set(
+        "edit_drawing_loupe",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "edit_drawing_loupe",
+                &["drawing", "view", "index", "at", "radius", "to", "to_radius"],
+            )?;
+            let instr = Instruction::EditDrawingLoupe {
+                drawing: opts.ordinal_req("drawing")?,
+                view: opts.ordinal_req("view")?,
+                index: opts.ordinal_req("index")?,
+                at: opts
+                    .get::<Option<Table>>("at")?
+                    .map(|_| loupe_point(&opts, "at"))
+                    .transpose()?,
+                radius: opts.get("radius")?,
+                to: opts
+                    .get::<Option<Table>>("to")?
+                    .map(|_| loupe_point(&opts, "to"))
+                    .transpose()?,
+                to_radius: opts.get("to_radius")?,
+            };
+            unsafe { tick.exec(instr) }
+        })?,
+    )?;
+    api.set(
+        "delete_drawing_loupe",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(&opts, "delete_drawing_loupe", &["drawing", "view", "index"])?;
+            let instr = Instruction::DeleteDrawingLoupe {
+                drawing: opts.ordinal_req("drawing")?,
+                view: opts.ordinal_req("view")?,
+                index: opts.ordinal_req("index")?,
+            };
+            unsafe { tick.exec(instr) }
+        })?,
+    )?;
+    // #1846: a view's loupes, `{ at = {u,v}, radius, to = {u,v}, to_radius, zoom }` each —
+    // projected view millimetres, the space the loupe is placed in.
+    api.set(
+        "drawing_loupes",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(&opts, "drawing_loupes", &["drawing", "view"])?;
+            let drawing: usize = opts.ordinal_req("drawing")?;
+            let view: usize = opts.ordinal_req("view")?;
+            let state = unsafe { tick.state() };
+            let out = lua.create_table()?;
+            let Some(v) = state
+                .doc
+                .drawings
+                .keys()
+                .nth(drawing)
+                .and_then(|k| state.doc.drawings[k].views.get(view))
+            else {
+                return Ok(out);
+            };
+            for (i, loupe) in v.loupes.iter().enumerate() {
+                let t = lua.create_table()?;
+                t.set("at", vec![loupe.at.0, loupe.at.1])?;
+                t.set("radius", loupe.radius)?;
+                t.set("to", vec![loupe.to.0, loupe.to.1])?;
+                t.set("to_radius", loupe.to_radius)?;
+                t.set("zoom", crate::drawing::loupe_zoom(loupe))?;
+                out.set(i + 1, t)?;
+            }
+            Ok(out)
+        })?,
+    )?;
+
     // #1645: change what an existing point-to-point dimension measures.
     api.set(
         "drawing_point_dimension_axis",
@@ -10278,7 +10459,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         -- `bearcad.ui.*` sub-namespace so scripts can focus on modeling (#46).
         bearcad.ui = {}
         local ui_funcs = {
-            "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_calibrate", "focus_dim", "pane", "pane_rect", "elements_row_rect", "context_row_rect", "drawing_view_rect", "pane_scroll", "scroll_pane", "ai_sections", "ai_pane_sections", "ai_mcp", "menu_structure",
+            "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_calibrate", "focus_dim", "pane", "pane_rect", "elements_row_rect", "context_row_rect", "drawing_view_rect", "drawing_loupe_rect", "pane_scroll", "scroll_pane", "ai_sections", "ai_pane_sections", "ai_mcp", "menu_structure",
             "widget_id_warnings", "headless", "_deferred", "palette", "settings",
             "changelog",
             "mcmaster",

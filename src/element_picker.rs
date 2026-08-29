@@ -153,6 +153,8 @@ impl ElementKind {
                     D::Projection(_) => ElementKind::Projection,
                     D::Text(_) => ElementKind::Annotation,
                     D::Dimension { .. } | D::PointDim { .. } => ElementKind::Dimension,
+                    // A loupe is a circle drawn on the page (#1846).
+                    D::Loupe { .. } => ElementKind::Circle,
                 }
             }
             // A flat body face (#555/#566) is its own kind, so a "planes or faces" picker can

@@ -19,6 +19,7 @@ name with a modeling tool but do a different job here.
 | <img src={useBaseUrl("/img/icons/project.svg")} width="22" /> | [Projection](/docs/drawing-tools/projection) | — | Drop a projection of a body or sketch onto the page. |
 | | [Aligned view](/docs/drawing-tools/aligned-view) | — | Add a projection lined up with an existing one. |
 | <img src={useBaseUrl("/img/icons/dimension.svg")} width="22" /> | [Dimension](/docs/drawing-tools/dimension) | `D` | Show or hide a view's length, diameter, and angle dimensions. |
+| <img src={useBaseUrl("/img/icons/zoom_loupe.svg")} width="22" /> | [Zoom loupe](/docs/drawing-tools/zoom-loupe) | — | Ring a detail and redraw it larger elsewhere on the page. |
 | <img src={useBaseUrl("/img/icons/text.svg")} width="22" /> | [Text](/docs/drawing-tools/text) | `T` | Add page **text notes** (with live parameter variables). |
 
 The [Drawings](/docs/tools/drawing) page covers the sheet itself: creating one, page

@@ -977,6 +977,121 @@ pub const PT_PER_MM: f32 = 72.0 / 25.4;
 /// editor, export, and scripting agree. Per-view sizes live on each view's `size_x`/`size_y`;
 /// this is only the historical default.
 pub const CELL_FRAC: f32 = 0.42;
+/// The magnification a zoom loupe draws at (#1846): the ratio of its two circles, so growing
+/// the magnified circle magnifies rather than showing more of the part.
+pub fn loupe_zoom(loupe: &crate::model::DrawingLoupe) -> f32 {
+    if loupe.radius.abs() < 1e-6 {
+        return 1.0;
+    }
+    loupe.to_radius / loupe.radius
+}
+
+/// A loupe's two centres, in the view's projected millimetres (#1846).
+pub fn loupe_centers(loupe: &crate::model::DrawingLoupe) -> (glam::Vec2, glam::Vec2) {
+    (
+        glam::Vec2::new(loupe.at.0, loupe.at.1),
+        glam::Vec2::new(loupe.to.0, loupe.to.1),
+    )
+}
+
+/// The line joining a loupe's circles (#1846): the centre line trimmed back to each rim, so
+/// it touches the edges rather than running through them. `None` when the circles overlap and
+/// there is no gap to bridge.
+pub fn loupe_connector(loupe: &crate::model::DrawingLoupe) -> Option<(glam::Vec2, glam::Vec2)> {
+    let (c1, c2) = loupe_centers(loupe);
+    let span = c2 - c1;
+    let gap = span.length() - loupe.radius.abs() - loupe.to_radius.abs();
+    if gap <= 1e-4 {
+        return None;
+    }
+    let dir = span.normalize();
+    Some((c1 + dir * loupe.radius.abs(), c2 - dir * loupe.to_radius.abs()))
+}
+
+/// The part of `(a, b)` inside the circle at `center` with radius `r`, or `None` when the
+/// segment misses it entirely (#1846).
+pub fn clip_segment_to_circle(
+    a: glam::Vec2,
+    b: glam::Vec2,
+    center: glam::Vec2,
+    r: f32,
+) -> Option<(glam::Vec2, glam::Vec2)> {
+    let d = b - a;
+    let f = a - center;
+    let aa = d.length_squared();
+    if aa < 1e-12 {
+        return ((a - center).length() <= r).then_some((a, b));
+    }
+    // |a + t·d − c|² = r², solved for the interval of `t` inside the circle.
+    let bb = 2.0 * f.dot(d);
+    let cc = f.length_squared() - r * r;
+    let disc = bb * bb - 4.0 * aa * cc;
+    if disc < 0.0 {
+        return None;
+    }
+    let root = disc.sqrt();
+    let (t0, t1) = ((-bb - root) / (2.0 * aa), (-bb + root) / (2.0 * aa));
+    let (lo, hi) = (t0.max(0.0), t1.min(1.0));
+    (hi - lo > 1e-6).then(|| (a + d * lo, a + d * hi))
+}
+
+/// What a loupe's magnified circle draws inside itself (#1846): the view's own segments
+/// clipped to the detail circle, then scaled by the zoom about that circle's centre and moved
+/// onto the magnified one. Anything clear of the detail circle is dropped.
+pub fn loupe_magnified_segments(
+    loupe: &crate::model::DrawingLoupe,
+    segments: &[(glam::Vec2, glam::Vec2)],
+) -> Vec<(glam::Vec2, glam::Vec2)> {
+    let (c1, c2) = loupe_centers(loupe);
+    let zoom = loupe_zoom(loupe);
+    let map = |p: glam::Vec2| c2 + (p - c1) * zoom;
+    segments
+        .iter()
+        .filter_map(|(a, b)| clip_segment_to_circle(*a, *b, c1, loupe.radius.abs()))
+        .map(|(a, b)| (map(a), map(b)))
+        .collect()
+}
+
+/// Everything a renderer draws for one zoom loupe (#1846), in the view's projected
+/// millimetres. Built once by [`loupe_drawing`] so the editor sheet and the SVG/PDF export
+/// put down the same thing.
+pub struct LoupeDrawing {
+    /// The detail circle over the geometry: centre and radius.
+    pub detail: (glam::Vec2, f32),
+    /// The magnified circle.
+    pub magnified: (glam::Vec2, f32),
+    /// The rim-to-rim line joining them, absent when the circles overlap.
+    pub connector: Option<(glam::Vec2, glam::Vec2)>,
+    /// The view's edges as the magnified circle redraws them.
+    pub content: Vec<(glam::Vec2, glam::Vec2)>,
+    /// The view's section hatch, likewise — kept apart so it strokes thinner, as it does on
+    /// the view itself.
+    pub hatch: Vec<(glam::Vec2, glam::Vec2)>,
+}
+
+/// What to draw for one zoom loupe (#1846): its two circles, the line joining their rims, and
+/// the view's own lines redrawn magnified inside the big one. `lines` is the view's stroked
+/// geometry ([`view_stroked_lines`]) and `hatch` its section hatch.
+pub fn loupe_drawing(
+    loupe: &crate::model::DrawingLoupe,
+    lines: &[(glam::Vec2, glam::Vec2)],
+    hatch: &[(glam::Vec2, glam::Vec2)],
+) -> LoupeDrawing {
+    let (c1, c2) = loupe_centers(loupe);
+    LoupeDrawing {
+        detail: (c1, loupe.radius.abs()),
+        magnified: (c2, loupe.to_radius.abs()),
+        connector: loupe_connector(loupe),
+        content: loupe_magnified_segments(loupe, lines),
+        hatch: loupe_magnified_segments(loupe, hatch),
+    }
+}
+
+/// Stroke width for a loupe's circles and the line joining them (#1846): thinner than the
+/// model outline, so the loupe reads as an annotation over the drawing rather than part of
+/// the part. The geometry it magnifies strokes at the usual [`MODEL_STROKE`].
+pub const LOUPE_STROKE: f32 = MODEL_STROKE * 0.5;
+
 /// Padding inside a view card between its border and the projected geometry.
 pub const CELL_PAD: f32 = 12.0;
 /// Screen-pixel half-size of a selected view's corner resize grip (#1207).
@@ -3185,6 +3300,28 @@ fn render_view_geometry<C: Canvas>(
         let (sa, sb) = (to_screen(*a), to_screen(*b));
         canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, HATCH_STROKE);
     }
+    // Zoom loupes (#1846): the detail circle, the magnified one redrawing what it covers, and
+    // the thin line joining their rims.
+    let loupe_lines = view_stroked_lines(&styled, &pcircles, view);
+    for loupe in &view.loupes {
+        let d = loupe_drawing(loupe, &loupe_lines, &styled.hatch);
+        for (a, b) in &d.content {
+            let (sa, sb) = (to_screen(*a), to_screen(*b));
+            canvas.line(sa.x, sa.y, sb.x, sb.y, ink, MODEL_STROKE);
+        }
+        for (a, b) in &d.hatch {
+            let (sa, sb) = (to_screen(*a), to_screen(*b));
+            canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, HATCH_STROKE);
+        }
+        for (c, r) in [d.detail, d.magnified] {
+            let sc = to_screen(c);
+            canvas.circle(sc.x, sc.y, r * scale, BLACK, LOUPE_STROKE);
+        }
+        if let Some((a, b)) = d.connector {
+            let (sa, sb) = (to_screen(a), to_screen(b));
+            canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, LOUPE_STROKE);
+        }
+    }
     // Length dimensions (#294): architectural dimension lines — extension lines, an offset
     // dimension line with arrowheads, and the measured length centred on it. Sizes are a
     // fraction of the projected extent so they read at any scale; a per-edge override
@@ -3787,6 +3924,69 @@ fn assemble_pdf(width: f32, height: f32, content: &[u8]) -> Vec<u8> {
             .as_bytes(),
     );
     out
+}
+
+#[cfg(test)]
+mod loupe_tests {
+    use super::*;
+    use crate::model::DrawingLoupe;
+
+    fn loupe() -> DrawingLoupe {
+        DrawingLoupe { at: (10.0, 5.0), radius: 4.0, to: (60.0, 5.0), to_radius: 12.0 }
+    }
+
+    /// #1846: the zoom is the ratio of the two circles, so growing the magnified circle
+    /// magnifies rather than showing more.
+    #[test]
+    fn loupe_zoom_is_the_ratio_of_the_circles() {
+        assert!((loupe_zoom(&loupe()) - 3.0).abs() < 1e-6);
+    }
+
+    /// #1846: the two circles are joined edge to edge, not centre to centre — the connector
+    /// starts on the detail circle's rim and ends on the magnified one's.
+    #[test]
+    fn loupe_connector_runs_rim_to_rim() {
+        let l = loupe();
+        let (a, b) = loupe_connector(&l).expect("the circles are apart");
+        let (c1, c2) = (glam::Vec2::new(l.at.0, l.at.1), glam::Vec2::new(l.to.0, l.to.1));
+        assert!(((a - c1).length() - l.radius).abs() < 1e-4, "starts on the detail rim: {a:?}");
+        assert!(((b - c2).length() - l.to_radius).abs() < 1e-4, "ends on the magnified rim: {b:?}");
+        // And it runs along the line between the centres.
+        let along = (c2 - c1).normalize();
+        assert!((b - a).normalize().distance(along) < 1e-4, "runs centre to centre");
+        // Overlapping circles have no gap to bridge.
+        let touching = DrawingLoupe { to: (18.0, 5.0), ..l };
+        assert!(loupe_connector(&touching).is_none(), "no connector when they overlap");
+    }
+
+    /// #1846: the magnified circle redraws what the detail circle covers, scaled by the zoom
+    /// and re-centred — and nothing outside the detail circle comes along.
+    #[test]
+    fn loupe_magnifies_only_what_the_detail_circle_covers() {
+        let l = loupe();
+        let inside = (glam::Vec2::new(8.0, 5.0), glam::Vec2::new(12.0, 5.0));
+        let outside = (glam::Vec2::new(40.0, 40.0), glam::Vec2::new(44.0, 44.0));
+        // A segment that starts inside and leaves is clipped at the rim.
+        let crossing = (glam::Vec2::new(10.0, 5.0), glam::Vec2::new(30.0, 5.0));
+        let out = loupe_magnified_segments(&l, &[inside, outside, crossing]);
+        assert_eq!(out.len(), 2, "the segment clear of the circle is dropped: {out:?}");
+
+        let (a, b) = out[0];
+        assert!(a.distance(glam::Vec2::new(54.0, 5.0)) < 1e-4, "left end 3x out from the centre: {a:?}");
+        assert!(b.distance(glam::Vec2::new(66.0, 5.0)) < 1e-4, "right end: {b:?}");
+
+        let c2 = glam::Vec2::new(l.to.0, l.to.1);
+        for (a, b) in &out {
+            assert!((*a - c2).length() <= l.to_radius + 1e-3, "stays inside the magnified circle");
+            assert!((*b - c2).length() <= l.to_radius + 1e-3, "stays inside the magnified circle");
+        }
+        // The crossing segment is cut at the rim: it reaches the magnified circle's edge.
+        let (_, end) = out[1];
+        assert!(
+            ((end - c2).length() - l.to_radius).abs() < 1e-3,
+            "a segment leaving the detail circle stops on the magnified rim, got {end:?}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -4427,7 +4627,7 @@ mod tests {
             bodies: vec![bkey(0)], sketch: None, orientation: O::Top,
             dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
             dimensioned_circles: Vec::new(), dimensioned_curves: Vec::new(),
-circle_dim_offsets: Vec::new(), point_dims: Vec::new(), aligned_parent: None, aligned_dir: None,
+circle_dim_offsets: Vec::new(), point_dims: Vec::new(), loupes: Vec::new(), aligned_parent: None, aligned_dir: None,
             scale: None, style: Default::default(), pos_x: 0.5, pos_y: 0.5,
             size_x: CELL_FRAC, size_y: CELL_FRAC,
             align_lines: false,
@@ -4494,7 +4694,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
             bodies: vec![bkey(0)], sketch: None, orientation: O::Front,
             dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
             dimensioned_circles: Vec::new(), dimensioned_curves: Vec::new(),
-circle_dim_offsets: Vec::new(), point_dims: Vec::new(), aligned_parent: None, aligned_dir: None,
+circle_dim_offsets: Vec::new(), point_dims: Vec::new(), loupes: Vec::new(), aligned_parent: None, aligned_dir: None,
             scale: None, style: Default::default(), pos_x: 0.5, pos_y: 0.5,
             size_x: CELL_FRAC, size_y: CELL_FRAC,
             align_lines: false,
@@ -4922,7 +5122,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
                 angle_dims: Vec::new(),
                 dimension_offsets: Vec::new(),
                 dimensioned_circles: Vec::new(), dimensioned_curves: Vec::new(),
-circle_dim_offsets: Vec::new(), point_dims: Vec::new(),
+circle_dim_offsets: Vec::new(), point_dims: Vec::new(), loupes: Vec::new(),
                 aligned_parent: None,
                 aligned_dir: None,
                 scale: None,

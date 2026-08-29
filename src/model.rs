@@ -5114,7 +5114,30 @@ pub struct DrawingView {
     /// interpolation fields (#338), resolved against the document's parameters.
     #[serde(default)]
     pub label_text: Option<String>,
+    /// Zoom loupes on this projection (#1846): a detail circle drawn over the geometry and a
+    /// bigger circle elsewhere that redraws what it covers, magnified.
+    #[serde(default)]
+    pub loupes: Vec<DrawingLoupe>,
 }
+
+/// A zoom loupe on a projection (#1846): a small circle ringing a detail of the view, and a
+/// second, larger circle that redraws what the first one covers, magnified by the ratio of
+/// their radii. A thin line joins their rims. Both live in the view's own projected
+/// millimetres — the same space `point_dims` use — so a loupe travels with its view and holds
+/// its place whatever the page scale.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DrawingLoupe {
+    /// Centre of the detail circle, on the projection.
+    pub at: (f32, f32),
+    pub radius: f32,
+    /// Centre of the magnified circle — anywhere, on the projection or off it.
+    pub to: (f32, f32),
+    pub to_radius: f32,
+}
+
+/// Smallest loupe circle, in a view's projected millimetres: below this it is a dot with no
+/// detail in it and no rim to grab (#1846).
+pub const MIN_LOUPE_RADIUS_MM: f32 = 0.5;
 
 /// What a free point-to-point dimension measures (#1645).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -5187,6 +5210,7 @@ impl DrawingView {
             circle_dim_offsets: Vec::new(),
             dimensioned_curves: Vec::new(),
             point_dims: Vec::new(),
+            loupes: Vec::new(),
             aligned_parent: None,
             aligned_dir: None,
             align_lines: false,
@@ -5216,6 +5240,7 @@ impl DrawingView {
             circle_dim_offsets: Vec::new(),
             dimensioned_curves: Vec::new(),
             point_dims: Vec::new(),
+            loupes: Vec::new(),
             aligned_parent: None,
             aligned_dir: None,
             align_lines: false,

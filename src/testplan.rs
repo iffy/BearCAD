@@ -211,6 +211,8 @@ const FEATURE_SECTIONS: &[Section] = &[
             "Drawing align: aligned view down, up, left, and right of a parent",
             "Drawing align: projection lines between parent and child",
             "Drawing: resize a projection card; aligned partners share an axis",
+            "Zoom loupe: ring a detail, place the magnified circle, check it redraws magnified",
+            "Zoom loupe: select either circle, move it, and drag its rim to resize",
             "Drawing dimension: edge length",
             "Drawing dimension: circle diameter",
             "Drawing dimension: angle between two edges",

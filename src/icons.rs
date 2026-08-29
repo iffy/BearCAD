@@ -23,6 +23,8 @@ pub enum IconId {
     Rectangle,
     Line,
     Circle,
+    /// The Zoom loupe tool (#1846): a detail circle joined to the circle that magnifies it.
+    ZoomLoupe,
     Dimension,
     Constraint,
     Plane,
@@ -155,11 +157,12 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 102] = [
+    pub const ALL: [Self; 103] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
         Self::Circle,
+        Self::ZoomLoupe,
         Self::Dimension,
         Self::Constraint,
         Self::Plane,
@@ -266,6 +269,7 @@ impl IconId {
             Self::Rectangle => include_str!("assets/icons/rectangle.svg"),
             Self::Line => include_str!("assets/icons/line.svg"),
             Self::Circle => include_str!("assets/icons/circle.svg"),
+            Self::ZoomLoupe => include_str!("assets/icons/zoom_loupe.svg"),
             Self::Dimension => include_str!("assets/icons/dimension.svg"),
             Self::Constraint => include_str!("assets/icons/constraint.svg"),
             Self::Plane => include_str!("assets/icons/plane.svg"),
@@ -375,6 +379,7 @@ impl IconId {
             Self::Rectangle => "Rectangle",
             Self::Line => "Line",
             Self::Circle => "Circle",
+            Self::ZoomLoupe => "Zoom loupe",
             Self::Dimension => "Dimension",
             Self::Constraint => "Constraint",
             Self::Plane => "Plane",

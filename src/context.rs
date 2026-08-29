@@ -943,6 +943,9 @@ pub enum DrawingElementRef {
     Dimension { view: usize, a: [i32; 3], b: [i32; 3] },
     /// A free point-to-point dimension (#1645), by its place in the view's `point_dims`.
     PointDim { view: usize, index: usize },
+    /// One circle of a zoom loupe (#1846): `magnified` picks the big circle over the detail
+    /// one, so either can be moved or resized on its own.
+    Loupe { view: usize, index: usize, magnified: bool },
 }
 
 /// One edit from the drawing-annotation context section (#312).
@@ -1944,6 +1947,7 @@ fn tool_context_title(input: &ContextInput<'_>) -> Option<&'static str> {
         Tool::Circle => "Circle",
         Tool::ConstructionPlane => "Construction plane",
         Tool::SectionPlane => "Cutting plane",
+        Tool::DrawingLoupe => "Zoom loupe",
         Tool::Sketch => "Sketch",
         Tool::Dimension => "Dimension",
         Tool::Constraint => "Constraint",

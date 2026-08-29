@@ -377,6 +377,7 @@ impl<'a> EmitCtx<'a> {
             | HierarchyNode::UnitChild { .. }
             | HierarchyNode::DrawingDimension { .. }
             | HierarchyNode::DrawingPointDim { .. }
+            | HierarchyNode::DrawingLoupe { .. }
             | HierarchyNode::DrawingProjection { .. }
             | HierarchyNode::DrawingAnnotation { .. }
             | HierarchyNode::EdgeTreatment { .. }

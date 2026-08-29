@@ -114,6 +114,7 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
         | Tool::Shell
         | Tool::DrawingAdd
         | Tool::DrawingAlign
+        | Tool::DrawingLoupe
         | Tool::SectionPlane => None,
         Tool::Select => None,
     }
@@ -196,6 +197,7 @@ pub fn tool_script_name(tool: Tool) -> &'static str {
         Tool::Text => "text",
         Tool::DrawingAdd => "drawing_add",
         Tool::DrawingAlign => "drawing_align",
+        Tool::DrawingLoupe => "drawing_loupe",
     }
 }
 

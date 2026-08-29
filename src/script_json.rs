@@ -180,6 +180,7 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
                 D::Projection(_) => "projection",
                 D::Text(_) => "annotation",
                 D::Dimension { .. } | D::PointDim { .. } => "drawing_dimension",
+                D::Loupe { .. } => "drawing_loupe",
             }
         }
     }

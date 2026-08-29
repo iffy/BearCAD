@@ -420,7 +420,7 @@ pub fn spaces(tool: Tool) -> &'static [ToolSpace] {
         | Tool::Shell
         | Tool::Joint => &[Solid],
         // Drawing workbench only.
-        Tool::DrawingAdd | Tool::DrawingAlign => &[Drawing],
+        Tool::DrawingAdd | Tool::DrawingAlign | Tool::DrawingLoupe => &[Drawing],
         // View workbench only (#1671).
         Tool::SectionPlane => &[View],
     }
@@ -486,6 +486,7 @@ pub fn visible_toolbar_tools(drawing: bool, _in_sketch: bool) -> Vec<Tool> {
             Tool::DrawingAdd,
             Tool::DrawingAlign,
             Tool::Dimension,
+            Tool::DrawingLoupe,
             Tool::Text,
         ];
     }
@@ -1045,6 +1046,8 @@ pub fn row(tool: Tool, space: ToolSpace) -> ToolRow {
             pickers: DRAWING_ALIGN_PICKERS,
             ..base
         },
+        // Placed by four clicks on the page (#1846), not by a picker or a value field.
+        Tool::DrawingLoupe => ToolRow { gizmo: Gizmo::Placement, ..base },
     };
     // #1505: every Enter-to-commit tool uses the same blue primary button. Derived
     // here so a new `commit_on_enter` row cannot ship a grey text `Button`.
@@ -1096,7 +1099,8 @@ pub fn stored_value_fields(tool: Tool, space: ToolSpace) -> &'static [&'static s
         | Tool::Slice
         | Tool::Text
         | Tool::DrawingAdd
-        | Tool::DrawingAlign => &[],
+        | Tool::DrawingAlign
+        | Tool::DrawingLoupe => &[],
         Tool::ConstructionPlane => &["offset", "angle"],
         Tool::SectionPlane => &["offset", "roll", "tilt_v"],
         Tool::Extrude => &["distance", "taper"],
@@ -1250,6 +1254,7 @@ mod tests {
                             | Tool::Dimension
                             | Tool::DrawingAdd
                             | Tool::DrawingAlign
+                            | Tool::DrawingLoupe
                     ),
                     "{:?}/{:?} keeps picks but names no draft",
                     r.tool,

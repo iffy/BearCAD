@@ -92,6 +92,10 @@ bearcad.drawing_page{ drawing = d, width = 297, height = 210, margin = 12 }
 -- axis: Above/Below share width, Left/Right share height. Omitted keys keep the value.
 bearcad.drawing_view_size{ drawing = d, view = 0, width = 0.3, height = 0.4 }
 
+-- A zoom loupe: ring a detail and redraw it larger elsewhere (projected view mm).
+bearcad.drawing_loupe{ drawing = d, view = 0, at = {0, 0}, radius = 8,
+                       to = {10, -50}, to_radius = 20 }
+
 -- Export the drawing as a vector PDF, or as an SVG.
 bearcad.export_drawing_pdf{ drawing = d, path = "plate.pdf" }
 bearcad.export_drawing_svg{ drawing = d, path = "plate.svg" }
@@ -113,3 +117,6 @@ bearcad.select{ kind = "annotation", drawing = d, index = 0 }
 bearcad.select{ kind = "dimension", drawing = d, view = 0, a = {0, 0, 0}, b = {40, 0, 0} }
 bearcad.select{ kind = "dimension", drawing = d, view = 0, index = 0 }
 ```
+
+`bearcad.selection()` reports page items too, each with the `drawing` it is on — that is
+how a script sees what a click on the page picked.

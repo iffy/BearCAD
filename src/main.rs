@@ -1354,10 +1354,38 @@ struct DrawingDimLabelDrag {
     mm_per_px: f32,
 }
 
+/// A zoom loupe being placed on the page (#1846): four clicks — the detail circle's centre,
+/// its rim, the magnified circle's centre, its rim — each stage previewing under the cursor.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DrawingLoupeDraft {
+    /// The projection the detail circle sits on; its projected millimetres are the space.
+    view: usize,
+    at: egui::Vec2,
+    /// `None` until the second click fixes the detail circle's size.
+    radius: Option<f32>,
+    /// `None` until the third click puts the magnified circle's centre down.
+    to: Option<egui::Vec2>,
+}
+
+/// One circle of a placed loupe being dragged (#1846): moved by its middle, resized by its rim.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DrawingLoupeDrag {
+    drawing: model::DrawingKey,
+    view: usize,
+    index: usize,
+    magnified: bool,
+    /// Dragging the rim resizes; dragging inside moves.
+    resizing: bool,
+    /// Where the circle's centre was when the drag started, and the pointer's offset from it,
+    /// so a move keeps the grab point under the cursor instead of snapping the centre to it.
+    grab_offset: egui::Vec2,
+}
+
 /// Whether the Select tool should relocate a drawing projection card (#1227).
-/// An in-flight dimension-label drag owns the pointer instead.
-fn drawing_view_should_relocate(tool: Tool, dim_label_drag_active: bool) -> bool {
-    tool == Tool::Select && !dim_label_drag_active
+/// An in-flight drag of something *on* the card — a dimension label, a loupe circle
+/// (#1846) — owns the pointer instead.
+fn drawing_view_should_relocate(tool: Tool, element_drag_active: bool) -> bool {
+    tool == Tool::Select && !element_drag_active
 }
 
 /// A drag on one of the Free Move tool's face-centred translation arrows (#215/#1233): which
@@ -2188,7 +2216,8 @@ fn crowd_type_rank(kind: &construction::PickTargetKind) -> u8 {
             crate::context::DrawingElementRef::Projection(_) => 9,
             crate::context::DrawingElementRef::Dimension { .. }
             | crate::context::DrawingElementRef::PointDim { .. } => 10,
-            crate::context::DrawingElementRef::Text(_) => 11,
+            crate::context::DrawingElementRef::Loupe { .. } => 11,
+            crate::context::DrawingElementRef::Text(_) => 12,
         },
     }
 }
@@ -4054,6 +4083,10 @@ struct App {
     /// point in that view's projected millimetres, and the body it came from (when known).
     /// Esc or a tool change clears it.
     drawing_point_dim_pick: Option<(usize, egui::Vec2, Option<model::BodyKey>)>,
+    /// A half-placed zoom loupe (#1846). Esc or a tool change clears it.
+    drawing_loupe_draft: Option<DrawingLoupeDraft>,
+    /// A loupe circle being dragged on the page (#1846).
+    drawing_loupe_drag: Option<DrawingLoupeDrag>,
     /// The page Exploder took a press (#1641) and the release is still to come — egui reports
     /// a click on release, a frame after the fan already acted and closed, so the page must
     /// keep ignoring that click.
@@ -5599,6 +5632,8 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             drawing_zoom: 1.0,
             drawing_pan: egui::Vec2::ZERO,
             drawing_point_dim_pick: None,
+            drawing_loupe_draft: None,
+            drawing_loupe_drag: None,
             drawing_exploder_owns_click: false,
             drawing_view_drag: None,
             drawing_view_resize_drag: None,
@@ -7676,6 +7711,11 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                                 view,
                                 index,
                             });
+                        }
+                        // Either circle of a loupe deletes the pair (#1846): one circle on
+                        // its own has nothing to magnify or be magnified into.
+                        context::DrawingElementRef::Loupe { view, index, .. } => {
+                            self.state.apply(Action::RemoveDrawingLoupe { drawing, view, index });
                         }
                     }
                 }
@@ -15321,6 +15361,12 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                         "Aligned view",
                     );
                     self.tool_button(ui, icons::IconId::Dimension, Tool::Dimension, "Dimension");
+                    self.tool_button(
+                        ui,
+                        icons::IconId::ZoomLoupe,
+                        Tool::DrawingLoupe,
+                        "Zoom loupe",
+                    );
                     self.tool_button(ui, icons::IconId::Text, Tool::Text, "Text");
                     ui.separator();
                     let zoom_btn = icons::selectable_icon_button_at(
@@ -17006,6 +17052,14 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                                 drawing: *d,
                                 view: *view,
                                 index: *index,
+                            }
+                        }
+                        context::DrawingElementRef::Loupe { view, index, magnified } => {
+                            hierarchy::HierarchyNode::DrawingLoupe {
+                                drawing: *d,
+                                view: *view,
+                                index: *index,
+                                magnified: *magnified,
                             }
                         }
                     };
@@ -26545,6 +26599,32 @@ pub fn drawing_view_card_rect(ctx: &egui::Context, view: usize) -> Option<egui::
     ctx.data(|d| d.get_temp::<egui::Rect>(drawing_view_card_rect_id(view)))
 }
 
+fn drawing_loupe_rect_id(view: usize, index: usize, magnified: bool) -> egui::Id {
+    egui::Id::new(("drawing_loupe_rect", view, index, magnified))
+}
+
+fn set_drawing_loupe_rect(
+    ctx: &egui::Context,
+    view: usize,
+    index: usize,
+    magnified: bool,
+    rect: egui::Rect,
+) {
+    ctx.data_mut(|d| d.insert_temp(drawing_loupe_rect_id(view, index, magnified), rect));
+}
+
+/// Where the page drew one circle of a zoom loupe this frame (#1846), in window coordinates
+/// like `drawing_view_rect` — the square the circle is inscribed in, so a script can aim at
+/// its centre (to move it) or its rim (to resize it). `None` when it isn't on screen.
+pub fn drawing_loupe_rect(
+    ctx: &egui::Context,
+    view: usize,
+    index: usize,
+    magnified: bool,
+) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<egui::Rect>(drawing_loupe_rect_id(view, index, magnified)))
+}
+
 fn drawing_view_edge_mid_id(view: usize) -> egui::Id {
     egui::Id::new(("drawing_view_edge_mid", view))
 }
@@ -27084,7 +27164,10 @@ impl App {
         let mut pan_suppressed_by_card = self.drawing_view_drag.is_some()
             || self.drawing_view_resize_drag.is_some()
             // A dim-label drag owns the pointer: don't pan the sheet underneath it (#1227).
-            || self.drawing_dim_label_drag.is_some();
+            || self.drawing_dim_label_drag.is_some()
+            // So does a loupe circle being moved or resized (#1846) — panning the sheet under
+            // it would carry the circle along and the drag would read as no movement at all.
+            || self.drawing_loupe_drag.is_some();
         // Which card a press over overlapping views belongs to (#1707), decided across the
         // whole card loop rather than by whichever card was drawn first: the cards are drawn
         // in order, so a later one sits on top, and the card you have selected outranks
@@ -27417,7 +27500,8 @@ impl App {
                 if grabbed
                     && drawing_view_should_relocate(
                         self.state.tool,
-                        self.drawing_dim_label_drag.is_some(),
+                        self.drawing_dim_label_drag.is_some()
+                            || self.drawing_loupe_drag.is_some(),
                     )
                 {
                     // Relative drag: keep the grab point under the cursor instead of snapping
@@ -28290,6 +28374,153 @@ impl App {
                             ],
                             egui::Stroke::new(crate::drawing::HATCH_STROKE, INK),
                         );
+                    }
+                }
+                // Zoom loupes (#1846): a thin circle round a detail and a bigger one
+                // elsewhere redrawing what it covers, magnified, joined rim to rim. Outside
+                // the styled block so a sketch view — which has no styled geometry and
+                // strokes its own edges — gets loupes too.
+                {
+                    let ink = styled
+                        .as_ref()
+                        .and_then(|s| s.stroke_tint)
+                        .map(|t| {
+                            if white_paper {
+                                return egui::Color32::from_rgb(t[0], t[1], t[2]);
+                            }
+                            let lift = |c: u8| ((c as f32 * 0.45) as u8).saturating_add(120);
+                            egui::Color32::from_rgb(lift(t[0]), lift(t[1]), lift(t[2]))
+                        })
+                        .unwrap_or(INK);
+                    let loupe_lines: Vec<(glam::Vec2, glam::Vec2)> = match &styled {
+                        Some(sty) => crate::drawing::view_stroked_lines(sty, &pcircles, view),
+                        // A sketch view's lines are its projected edges, straight up.
+                        None => proj
+                            .iter()
+                            .map(|(a, b)| {
+                                (glam::Vec2::new(a.x, a.y), glam::Vec2::new(b.x, b.y))
+                            })
+                            .collect(),
+                    };
+                    let empty: Vec<(glam::Vec2, glam::Vec2)> = Vec::new();
+                    let sty_hatch = styled.as_ref().map(|s| &s.hatch).unwrap_or(&empty);
+                    let sv = |p: glam::Vec2| to_screen(egui::vec2(p.x, p.y));
+                    for (li, loupe) in view.loupes.iter().enumerate() {
+                        let d = crate::drawing::loupe_drawing(loupe, &loupe_lines, sty_hatch);
+                        for (a, b) in &d.content {
+                            painter.line_segment(
+                                [sv(*a), sv(*b)],
+                                egui::Stroke::new(crate::drawing::MODEL_STROKE, ink),
+                            );
+                        }
+                        for (a, b) in &d.hatch {
+                            painter.line_segment(
+                                [sv(*a), sv(*b)],
+                                egui::Stroke::new(crate::drawing::HATCH_STROKE, INK),
+                            );
+                        }
+                        // The loupe's own chrome strokes thinner than the model outline, and
+                        // blue on whichever circle is selected.
+                        for (magnified, (c, r)) in [(false, d.detail), (true, d.magnified)] {
+                            let element = context::DrawingElementRef::Loupe {
+                                view: vi,
+                                index: li,
+                                magnified,
+                            };
+                            let selected =
+                                self.state.is_drawing_element_selected(drawing, element);
+                            let sc = sv(c);
+                            let sr = r * scale;
+                            set_drawing_loupe_rect(
+                                ui.ctx(),
+                                vi,
+                                li,
+                                magnified,
+                                egui::Rect::from_center_size(sc, egui::vec2(sr * 2.0, sr * 2.0)),
+                            );
+                            painter.circle_stroke(
+                                sc,
+                                sr,
+                                egui::Stroke::new(
+                                    crate::drawing::LOUPE_STROKE,
+                                    if selected {
+                                        egui::Color32::from_rgb(90, 150, 230)
+                                    } else {
+                                        INK
+                                    },
+                                ),
+                            );
+                            // Either circle is grabbable on its own (#1846): click selects,
+                            // a drag from inside moves it and a drag on the rim resizes it.
+                            // The hit area is the disc, so a click in the middle of the
+                            // magnified circle takes the loupe rather than the card under it.
+                            if self.state.tool != Tool::Select {
+                                continue;
+                            }
+                            let hit = egui::Rect::from_center_size(
+                                sc,
+                                egui::vec2(sr * 2.0, sr * 2.0),
+                            );
+                            let lr = ui.interact(
+                                hit,
+                                ui.make_persistent_id((
+                                    "drawing_loupe", drawing, vi, li, magnified,
+                                )),
+                                egui::Sense::click_and_drag(),
+                            );
+                            let over = pointer_screen
+                                .is_some_and(|pp| (pp - sc).length() <= sr + 4.0);
+                            if lr.clicked() && over && !exploder_open {
+                                if ui
+                                    .input(|i| selection::additive_click_modifiers(&i.modifiers))
+                                {
+                                    self.state.toggle_drawing_element(drawing, element);
+                                } else {
+                                    self.state.select_drawing_only(drawing, element);
+                                }
+                            }
+                            if over || self.drawing_loupe_drag.is_some_and(|g| {
+                                g.view == vi && g.index == li && g.magnified == magnified
+                            }) {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                            }
+                            // Claim the pointer on press, before the card-move grab does
+                            // (#1227) — the same guard the dimension labels use.
+                            if self.drawing_loupe_drag.is_none()
+                                && primary_down
+                                && press_origin.is_some_and(|o| (o - sc).length() <= sr + 4.0)
+                            {
+                                if let Some(o) = press_origin {
+                                    self.drawing_loupe_drag = Some(DrawingLoupeDrag {
+                                        drawing,
+                                        view: vi,
+                                        index: li,
+                                        magnified,
+                                        // The outer ring resizes, the middle moves: a fixed
+                                        // few pixels of rim is a hard target on a big
+                                        // circle, and the inside of a loupe is what you
+                                        // grab to slide it.
+                                        resizing: (o - sc).length()
+                                            >= sr - (sr * 0.3).max(6.0),
+                                        grab_offset: o - sc,
+                                    });
+                                    // The card grab already started this frame (it is
+                                    // decided further up): hand the pointer over, or the
+                                    // card slides under the circle and the drag reads as
+                                    // no movement at all.
+                                    if self.drawing_view_drag == Some((drawing, vi)) {
+                                        self.drawing_view_drag = None;
+                                    }
+                                    pan_suppressed_by_card = true;
+                                }
+                            }
+                        }
+                        if let Some((a, b)) = d.connector {
+                            painter.line_segment(
+                                [sv(a), sv(b)],
+                                egui::Stroke::new(crate::drawing::LOUPE_STROKE, INK),
+                            );
+                        }
                     }
                 }
                 // A rotated label drawn centred at a screen point (#314/#320).
@@ -29240,6 +29471,185 @@ impl App {
             }
         }
 
+        // A grabbed loupe circle follows the pointer (#1846): dragged by its middle it moves,
+        // dragged by its rim it resizes — and resizing the magnified circle is how the zoom is
+        // set, since the zoom is the ratio of the two.
+        if let Some(grab) = self.drawing_loupe_drag {
+            let released = ui.input(|i| !i.pointer.primary_down());
+            if let (Some((scale, bbox, center)), Some(pp)) = (
+                view_transforms.get(grab.view).copied().flatten(),
+                pointer_screen,
+            ) {
+                if scale.abs() > 1e-6 {
+                    let mm = |sp: egui::Pos2| {
+                        let d = sp - center;
+                        bbox + egui::vec2(d.x, -d.y) / scale
+                    };
+                    let loupe = self
+                        .state
+                        .doc
+                        .drawings
+                        .get(drawing)
+                        .and_then(|d| d.views.get(grab.view))
+                        .and_then(|v| v.loupes.get(grab.index))
+                        .copied();
+                    if let Some(loupe) = loupe {
+                        let (at, to) = (
+                            egui::vec2(loupe.at.0, loupe.at.1),
+                            egui::vec2(loupe.to.0, loupe.to.1),
+                        );
+                        let centre = if grab.magnified { to } else { at };
+                        let (mut new_at, mut new_to) = (None, None);
+                        let (mut new_r, mut new_to_r) = (None, None);
+                        if grab.resizing {
+                            let r = (mm(pp) - centre).length();
+                            if grab.magnified {
+                                new_to_r = Some(r);
+                            } else {
+                                new_r = Some(r);
+                            }
+                        } else {
+                            let moved = mm(pp - grab.grab_offset);
+                            if grab.magnified {
+                                new_to = Some((moved.x, moved.y));
+                            } else {
+                                new_at = Some((moved.x, moved.y));
+                            }
+                        }
+                        self.state.apply(Action::SetDrawingLoupe {
+                            drawing,
+                            view: grab.view,
+                            index: grab.index,
+                            at: new_at,
+                            radius: new_r,
+                            to: new_to,
+                            to_radius: new_to_r,
+                        });
+                    }
+                }
+            }
+            if released {
+                self.drawing_loupe_drag = None;
+            }
+        }
+
+        // Zoom-loupe tool (#1846): four clicks lay down a loupe — the detail circle's centre
+        // on a projection, its rim, the magnified circle's centre anywhere on the page, its
+        // rim. Every stage previews under the cursor, and Esc drops the half-made one.
+        // Page-level rather than per-card because the magnified circle goes anywhere, while
+        // both circles live in the *detail* view's projected millimetres.
+        if self.state.tool == Tool::DrawingLoupe {
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.drawing_loupe_draft = None;
+            }
+            // A view's projected mm ↔ screen, through the transform that view drew with.
+            let view_mm = |vi: usize, sp: egui::Pos2| -> Option<egui::Vec2> {
+                let (scale, bbox, center) = view_transforms.get(vi).copied().flatten()?;
+                (scale.abs() > 1e-6).then(|| {
+                    let d = sp - center;
+                    bbox + egui::vec2(d.x, -d.y) / scale
+                })
+            };
+            let view_px = |vi: usize, p: egui::Vec2| -> Option<egui::Pos2> {
+                let (scale, bbox, center) = view_transforms.get(vi).copied().flatten()?;
+                let d = (p - bbox) * scale;
+                Some(center + egui::vec2(d.x, -d.y))
+            };
+            let view_scale =
+                |vi: usize| view_transforms.get(vi).copied().flatten().map(|(s, ..)| s);
+            let hovered_view = pointer_screen.and_then(|pp| {
+                (0..views.len()).find(|&vi| {
+                    drawing_view_card_rect(ui.ctx(), vi).is_some_and(|r| r.contains(pp))
+                })
+            });
+            let clicked = ui.input(|i| i.pointer.primary_clicked())
+                && page_rect.is_some_and(|r| pointer_screen.is_some_and(|p| r.contains(p)))
+                && !self.drawing_exploder_owns_click;
+            let preview = egui::Stroke::new(1.2, egui::Color32::from_rgb(90, 150, 230));
+            match (self.drawing_loupe_draft, pointer_screen) {
+                (None, Some(pp)) => {
+                    if let Some(vi) = hovered_view {
+                        if clicked {
+                            if let Some(at) = view_mm(vi, pp) {
+                                self.drawing_loupe_draft =
+                                    Some(DrawingLoupeDraft { view: vi, at, radius: None, to: None });
+                                self.state.status =
+                                    "Zoom loupe — move out and click to size the detail circle"
+                                        .to_string();
+                            }
+                        } else {
+                            ui.painter().circle_stroke(pp, 3.0, preview);
+                        }
+                    }
+                }
+                (Some(mut draft), Some(pp)) => {
+                    // Both circles are measured in the detail view's own millimetres, so a
+                    // loupe stays put on its projection whatever the page scale.
+                    let Some(scale) = view_scale(draft.view) else {
+                        self.drawing_loupe_draft = None;
+                        return;
+                    };
+                    let mm = |sp: egui::Pos2| view_mm(draft.view, sp).unwrap_or_default();
+                    let cursor = mm(pp);
+                    match (draft.radius, draft.to) {
+                        (None, _) => {
+                            let r = (cursor - draft.at).length();
+                            if let Some(c) = view_px(draft.view, draft.at) {
+                                ui.painter().circle_stroke(c, r * scale, preview);
+                            }
+                            if clicked {
+                                draft.radius =
+                                    Some(r.max(crate::model::MIN_LOUPE_RADIUS_MM));
+                                self.drawing_loupe_draft = Some(draft);
+                                self.state.status =
+                                    "Zoom loupe — click where the magnified circle goes"
+                                        .to_string();
+                            }
+                        }
+                        (Some(r), None) => {
+                            if let Some(c) = view_px(draft.view, draft.at) {
+                                ui.painter().circle_stroke(c, r * scale, preview);
+                                ui.painter().line_segment([c, pp], preview);
+                            }
+                            if clicked {
+                                draft.to = Some(cursor);
+                                self.drawing_loupe_draft = Some(draft);
+                                self.state.status =
+                                    "Zoom loupe — move out and click to size the magnified circle"
+                                        .to_string();
+                            }
+                        }
+                        (Some(r), Some(to)) => {
+                            let to_r = (cursor - to).length();
+                            if let (Some(c1), Some(c2)) =
+                                (view_px(draft.view, draft.at), view_px(draft.view, to))
+                            {
+                                ui.painter().circle_stroke(c1, r * scale, preview);
+                                ui.painter().circle_stroke(c2, to_r * scale, preview);
+                                ui.painter().line_segment([c1, c2], preview);
+                            }
+                            if clicked {
+                                self.state.apply(Action::AddDrawingLoupe {
+                                    drawing,
+                                    view: draft.view,
+                                    loupe: crate::model::DrawingLoupe {
+                                        at: (draft.at.x, draft.at.y),
+                                        radius: r,
+                                        to: (to.x, to.y),
+                                        to_radius: to_r,
+                                    },
+                                });
+                                self.drawing_loupe_draft = None;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        } else {
+            self.drawing_loupe_draft = None;
+        }
+
         // #1225: right-click → "Create aligned view" selects this card and arms the
         // Aligned-view tool with it as the base (same as Select tool + Aligned view, but
         // one click). Applied before the tool block so the ghost is ready this frame.
@@ -29571,7 +29981,8 @@ impl App {
                     match element {
                         context::DrawingElementRef::Projection(v)
                         | context::DrawingElementRef::Dimension { view: v, .. }
-                        | context::DrawingElementRef::PointDim { view: v, .. } => *v == pending,
+                        | context::DrawingElementRef::PointDim { view: v, .. }
+                        | context::DrawingElementRef::Loupe { view: v, .. } => *v == pending,
                         context::DrawingElementRef::Text(_) => false,
                     }
                 }
@@ -36025,6 +36436,17 @@ impl App {
             Tool::DrawingAlign => {
                 "Aligned view — click a projection, then move the mouse and click to place a lined-up child view"
             }
+            // Four clicks (#1846): each circle is centre-then-rim, like the Circle tool.
+            Tool::DrawingLoupe => match self.drawing_loupe_draft {
+                None => "Zoom loupe — click the detail on a projection to centre a circle on it",
+                Some(DrawingLoupeDraft { radius: None, .. }) => {
+                    "Zoom loupe — move out and click to size the detail circle • Esc: cancel"
+                }
+                Some(DrawingLoupeDraft { to: None, .. }) => {
+                    "Zoom loupe — click where the magnified circle goes • Esc: cancel"
+                }
+                Some(_) => "Zoom loupe — move out and click to size the magnified circle • Esc: cancel",
+            },
             Tool::Rectangle => {
                 if self.state.creating_rect.is_some() {
                     "Move mouse (free dim) • Type in focused input to constrain • Tab: switch dims • Click/Enter: create rect • Esc: cancel"

@@ -432,6 +432,27 @@ pub enum Instruction {
         b: (f32, f32),
         axis: crate::model::PointDimAxis,
     },
+    /// Add a zoom loupe to a view (#1846), in projected view millimetres.
+    AddDrawingLoupe {
+        drawing: usize,
+        view: usize,
+        at: (f32, f32),
+        radius: f32,
+        to: (f32, f32),
+        to_radius: f32,
+    },
+    /// Move or resize one of a view's zoom loupes (#1846); absent fields are left alone.
+    EditDrawingLoupe {
+        drawing: usize,
+        view: usize,
+        index: usize,
+        at: Option<(f32, f32)>,
+        radius: Option<f32>,
+        to: Option<(f32, f32)>,
+        to_radius: Option<f32>,
+    },
+    /// Drop a zoom loupe (#1846).
+    DeleteDrawingLoupe { drawing: usize, view: usize, index: usize },
     /// Change what a free point-to-point dimension measures (#1645).
     SetDrawingPointDimensionAxis {
         drawing: usize,
@@ -1654,6 +1675,34 @@ impl Instruction {
                  index = {index}, axis = {:?} }}",
                 axis.name()
             ),
+            Instruction::AddDrawingLoupe { drawing, view, at, radius, to, to_radius } => format!(
+                "bearcad.drawing_loupe{{ drawing = {drawing}, view = {view}, \
+                 at = {{ {}, {} }}, radius = {radius}, to = {{ {}, {} }}, to_radius = {to_radius} }}",
+                at.0, at.1, to.0, to.1
+            ),
+            Instruction::EditDrawingLoupe { drawing, view, index, at, radius, to, to_radius } => {
+                let mut parts = vec![
+                    format!("drawing = {drawing}"),
+                    format!("view = {view}"),
+                    format!("index = {index}"),
+                ];
+                if let Some(p) = at {
+                    parts.push(format!("at = {{ {}, {} }}", p.0, p.1));
+                }
+                if let Some(r) = radius {
+                    parts.push(format!("radius = {r}"));
+                }
+                if let Some(p) = to {
+                    parts.push(format!("to = {{ {}, {} }}", p.0, p.1));
+                }
+                if let Some(r) = to_radius {
+                    parts.push(format!("to_radius = {r}"));
+                }
+                format!("bearcad.edit_drawing_loupe{{ {} }}", parts.join(", "))
+            }
+            Instruction::DeleteDrawingLoupe { drawing, view, index } => format!(
+                "bearcad.delete_drawing_loupe{{ drawing = {drawing}, view = {view}, index = {index} }}"
+            ),
             Instruction::ToggleDrawingCircleDimension { drawing, view, center } => format!(
                 "bearcad.drawing_circle_dimension{{ drawing = {drawing}, view = {view}, \
                  center = {{ {}, {}, {} }} }}",
@@ -2045,6 +2094,11 @@ impl Instruction {
             }
             D::PointDim { view, index } => {
                 format!(r#"{{ kind = "dimension", drawing = {dord}, view = {view}, index = {index} }}"#)
+            }
+            D::Loupe { view, index, magnified } => {
+                format!(
+                    r#"{{ kind = "drawing_loupe", drawing = {dord}, view = {view}, index = {index}, magnified = {magnified} }}"#
+                )
             }
         };
     }
@@ -2765,6 +2819,7 @@ fn element_script_tokens(
                     ),
                 ),
                 D::Dimension { view, .. } | D::PointDim { view, .. } => ("drawing_dimension", view),
+                D::Loupe { index, .. } => ("drawing_loupe", index),
             };
             ElementScriptTokens {
                 kind,
@@ -4895,6 +4950,7 @@ fn tool_lua_name(tool: Tool) -> &'static str {
         Tool::Text => "text",
         Tool::DrawingAdd => "drawing_add",
         Tool::DrawingAlign => "drawing_align",
+        Tool::DrawingLoupe => "drawing_loupe",
     }
 }
 
@@ -7423,6 +7479,45 @@ impl ScriptRunner {
                     return StepResult::Continue;
                 };
                 let result = state.apply(Action::AddDrawingPointDim { drawing, view, a, b, axis });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::AddDrawingLoupe { drawing, view, at, radius, to, to_radius } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
+                let result = state.apply(Action::AddDrawingLoupe {
+                    drawing,
+                    view,
+                    loupe: crate::model::DrawingLoupe { at, radius, to, to_radius },
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::EditDrawingLoupe { drawing, view, index, at, radius, to, to_radius } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
+                let result = state.apply(Action::SetDrawingLoupe {
+                    drawing,
+                    view,
+                    index,
+                    at,
+                    radius,
+                    to,
+                    to_radius,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::DeleteDrawingLoupe { drawing, view, index } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
+                let result = state.apply(Action::RemoveDrawingLoupe { drawing, view, index });
                 self.record_action_error(result);
                 StepResult::Continue
             }

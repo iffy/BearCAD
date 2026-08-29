@@ -109,6 +109,7 @@ pub fn tool_label(tool: Tool) -> &'static str {
         Tool::Circle => "Circle",
         Tool::ConstructionPlane => "Construction plane",
         Tool::SectionPlane => "Cutting plane",
+        Tool::DrawingLoupe => "Zoom loupe",
         Tool::Sketch => "Sketch",
         Tool::Dimension => "Dimension",
         Tool::Constraint => "Constraint",
@@ -803,6 +804,17 @@ impl Operation for DrawingAlign {
     const SPACE: OpSpace = OpSpace::TwoD;
 }
 
+pub struct DrawingLoupe;
+impl Operation for DrawingLoupe {
+    const TOOL: Tool = Tool::DrawingLoupe;
+    const VARIANT: &'static str = "";
+    const INPUTS: &'static [ElementType] = &[ElementType::DrawingView];
+    const OUTPUTS: &'static [ElementType] = &[];
+    const SHADOWS: &'static [ElementType] = &[];
+    const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::TwoD;
+}
+
 // ── Gather list for opsigs (explicit; adding a type without listing it is a miss) ─
 
 /// Every operation variant, for `opsigs` and coverage tests.
@@ -856,6 +868,7 @@ pub static ALL_OPERATIONS: &[OpSig] = &[
     sig::<Text>(),
     sig::<DrawingAdd>(),
     sig::<DrawingAlign>(),
+    sig::<DrawingLoupe>(),
 ];
 
 // ── Render / CLI ────────────────────────────────────────────────────────────

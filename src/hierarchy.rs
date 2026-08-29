@@ -200,6 +200,14 @@ pub enum HierarchyNode {
     /// A free point-to-point dimension on a projection (#1645), nested under it like an edge
     /// dimension; `index` is its place in the view's `point_dims`.
     DrawingPointDim { drawing: crate::model::DrawingKey, view: usize, index: usize },
+    /// One circle of a zoom loupe on a projection (#1846), nested under it like a dimension;
+    /// `index` is its place in the view's `loupes` and `magnified` picks which circle.
+    DrawingLoupe {
+        drawing: crate::model::DrawingKey,
+        view: usize,
+        index: usize,
+        magnified: bool,
+    },
     /// A joint between parts (#891): a childless top-level row whose members feed it as
     /// graph inputs — a relationship, not a feature, so nothing nests under it.
     Joint(crate::model::JointKey),
@@ -663,6 +671,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         | HierarchyNode::DrawingAnnotation { .. }
         | HierarchyNode::DrawingDimension { .. }
         | HierarchyNode::DrawingPointDim { .. }
+        | HierarchyNode::DrawingLoupe { .. }
         // A unit's contents are read-only from the importing document (#723): no scene
         // identity means no selection, visibility, deletion, or renaming can target them.
         | HierarchyNode::UnitChild { .. } => return None,
@@ -2890,7 +2899,8 @@ impl ElementFilter {
             HierarchyNode::DrawingProjection { .. }
             | HierarchyNode::DrawingAnnotation { .. }
             | HierarchyNode::DrawingDimension { .. }
-            | HierarchyNode::DrawingPointDim { .. } => {
+            | HierarchyNode::DrawingPointDim { .. }
+            | HierarchyNode::DrawingLoupe { .. } => {
                 self.drawings && self.drawing_components
             }
             HierarchyNode::UnitInstance(_) => true,
@@ -4069,6 +4079,8 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
         HierarchyNode::DrawingDimension { .. } | HierarchyNode::DrawingPointDim { .. } => {
             IconId::Dimension
         }
+        // A loupe is a circle drawn on the page (#1846).
+        HierarchyNode::DrawingLoupe { .. } => IconId::Circle,
         // A placed unit is an assembly of parts, not the import action (#923).
         HierarchyNode::UnitInstance(_) => IconId::Assembly,
         HierarchyNode::UnitChild { instance, ordinal } => {
@@ -7638,7 +7650,7 @@ mod tests {
                 angle_dims: Vec::new(),
                 dimension_offsets: Vec::new(),
                 dimensioned_circles: Vec::new(), dimensioned_curves: Vec::new(),
-circle_dim_offsets: Vec::new(), point_dims: Vec::new(),
+circle_dim_offsets: Vec::new(), point_dims: Vec::new(), loupes: Vec::new(),
                 aligned_parent: None,
                 aligned_dir: None,
                 scale: None,
@@ -7693,7 +7705,7 @@ label_hidden: false,
                 angle_dims: Vec::new(),
                 dimension_offsets: Vec::new(),
                 dimensioned_circles: Vec::new(), dimensioned_curves: Vec::new(),
-circle_dim_offsets: Vec::new(), point_dims: Vec::new(),
+circle_dim_offsets: Vec::new(), point_dims: Vec::new(), loupes: Vec::new(),
                 aligned_parent: None,
                 aligned_dir: None,
                 scale: None,
@@ -10528,6 +10540,7 @@ pub fn element_live_index(
                     .get(*drawing)
                     .and_then(|d| d.annotations.keys().position(|k| k == *key))?,
                 D::Dimension { view, .. } | D::PointDim { view, .. } => *view,
+                D::Loupe { index, .. } => *index,
             })
         }
         // X/Y/Z report as 0/1/2 (#952), matching `lua_script::element_index`.
