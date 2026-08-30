@@ -521,6 +521,14 @@ pub struct CreatingCircle {
     pub anchor: CircleAnchor,
 }
 
+/// Smallest span a drawn shape may have and still commit (#1852).
+///
+/// The floor is only there to throw away a click that never became a drag; half a
+/// millimetre was refusing real detail — a 0.3 mm rectangle on a zoomed-in face is an
+/// ordinary thing to draw. A hundredth of a millimetre is below anything anyone means to
+/// draw and still well above the pointer's own jitter at any sane zoom.
+pub const MIN_DRAWN_SPAN_MM: f32 = 0.01;
+
 impl CreatingCircle {
     /// The distance from `origin` to the cursor in local mm (the radius in centre mode, the
     /// full diameter in edge mode).
@@ -11127,7 +11135,7 @@ impl AppState {
                 let y = ov.min(ev);
                 let w = (eu - ou).abs();
                 let h = (ev - ov).abs();
-                if w > 0.5 && h > 0.5 {
+                if w > MIN_DRAWN_SPAN_MM && h > MIN_DRAWN_SPAN_MM {
                     let construction_edges = if cr.construction { [true; 4] } else { [false; 4] };
                     // Snapshot for rollback if a typed width/height constraint fails to apply.
                     let lines_before: Vec<_> = self.doc.lines.keys().collect();
@@ -11277,7 +11285,7 @@ impl AppState {
                 let (u1, v1) = world_to_local(&frame, end);
                 let mut line = Line::from_local_endpoints(session.sketch, u0, v0, u1, v1);
                 line.construction = cl.construction;
-                if line.length() > 0.5 {
+                if line.length() > MIN_DRAWN_SPAN_MM {
                     // #73: while curve-mode is on, retroactively smooth (or corner-ize) the
                     // joint with the previous chained segment, and give this segment matching
                     // handles. No-op (both stay as they were / `None`) when curve-mode is off.
@@ -11521,7 +11529,7 @@ impl AppState {
                 let mut circle =
                     Circle::from_local_center_radius(session.sketch, cu, cv, r, angle);
                 circle.construction = cc.construction;
-                if circle.r > 0.25 {
+                if circle.r * 2.0 > MIN_DRAWN_SPAN_MM {
                     let circle_index = self.doc.circles.insert(circle);
                     self.doc.shape_order.push(ShapeKind::Circle);
                     if cc.user_edited {
@@ -13412,7 +13420,7 @@ impl AppState {
                 };
                 let mut line = Line::from_local_endpoints(session.sketch, x0, y0, x1, y1);
                 let length = line.length();
-                if length <= 0.5 {
+                if length <= MIN_DRAWN_SPAN_MM {
                     return ActionResult::Err("Line is too short".to_string());
                 }
                 line.construction = self.draw_construction;
@@ -29380,6 +29388,90 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             crate::command_log::CommandLog::new_recording(false),
         ));
         state
+    }
+
+    /// #1852: the drag-drawn minimum was half a millimetre, which refused perfectly
+    /// ordinary small detail — a 0.3 mm rectangle on a zoomed-in face. Only a degenerate
+    /// (sub-hundredth-of-a-millimetre) drag is worth refusing.
+    #[test]
+    fn small_drawn_shapes_commit_down_to_a_hundredth_of_a_millimetre() {
+        let mut state = AppState::default();
+        begin_default_sketch(&mut state);
+        state.creating_rect = Some(CreatingRect {
+            origin: Vec3::ZERO,
+            texts: ["".to_string(), "".to_string()],
+            focused: 0,
+            last_mouse: Vec3::new(0.05, 0.05, 0.0),
+            user_edited: [false, false],
+            pending_focus: false,
+            construction: false,
+            anchor: RectAnchor::Corner,
+        });
+        assert_eq!(
+            state.apply(Action::CommitRectangle),
+            ActionResult::Ok,
+            "a 0.05 mm rectangle should commit, got status {:?}",
+            state.status
+        );
+        assert_eq!(state.doc.lines.len(), 4, "the rectangle's four lines");
+
+        state.creating_line = Some(CreatingLine {
+            origin: Vec3::ZERO,
+            text: String::new(),
+            last_mouse: Vec3::new(0.05, 0.0, 0.0),
+            user_edited: false,
+            pending_focus: false,
+            construction: false,
+            curve_mode: false,
+            tangent_constraint: true,
+            chained_from: None,
+            chained_from_bezier: None,
+        });
+        assert_eq!(
+            state.apply(Action::CommitLine),
+            ActionResult::Ok,
+            "a 0.05 mm line should commit, got status {:?}",
+            state.status
+        );
+
+        state.creating_circle = Some(CreatingCircle {
+            origin: Vec3::ZERO,
+            text: String::new(),
+            last_mouse: Vec3::new(0.05, 0.0, 0.0),
+            user_edited: false,
+            pending_focus: false,
+            construction: false,
+            anchor: CircleAnchor::Center,
+        });
+        assert_eq!(
+            state.apply(Action::CommitCircle),
+            ActionResult::Ok,
+            "a Ø0.1 mm circle should commit, got status {:?}",
+            state.status
+        );
+        assert_eq!(state.doc.circles.len(), 1);
+    }
+
+    /// A drag that never moved is still nothing to draw (#1852 keeps a floor, just a small one).
+    #[test]
+    fn a_degenerate_drag_still_refuses_to_commit() {
+        let mut state = AppState::default();
+        begin_default_sketch(&mut state);
+        state.creating_rect = Some(CreatingRect {
+            origin: Vec3::ZERO,
+            texts: ["".to_string(), "".to_string()],
+            focused: 0,
+            last_mouse: Vec3::new(0.001, 0.001, 0.0),
+            user_edited: [false, false],
+            pending_focus: false,
+            construction: false,
+            anchor: RectAnchor::Corner,
+        });
+        assert!(
+            matches!(state.apply(Action::CommitRectangle), ActionResult::Err(_)),
+            "a 0.001 mm rectangle is a stray click, not a shape"
+        );
+        assert_eq!(state.doc.lines.len(), 0);
     }
 
     #[test]
