@@ -1138,6 +1138,23 @@ pub fn drawing_view_cuts<'a>(
         .unwrap_or(&[])
 }
 
+/// The bodies a view actually projects (#1854).
+///
+/// The stored keys are what the view was made from; each resolves to whatever live body
+/// replaced it, so a projection keeps up when the part gains a feature (extruding onto a
+/// body consumes it and produces a new one) instead of drawing the part as it used to be.
+pub fn drawing_view_bodies(doc: &Document, view: &DrawingView) -> Vec<crate::model::BodyKey> {
+    let mut out: Vec<crate::model::BodyKey> = Vec::new();
+    for &bi in &view.bodies {
+        for live in crate::model::live_successor_bodies(doc, bi) {
+            if !out.contains(&live) {
+                out.push(live);
+            }
+        }
+    }
+    out
+}
+
 /// One body's mesh as this view shows it (#1689): cut by the view's cross-section planes
 /// when it has any — each only where its cut/exclude scope takes this body (#1769) — and
 /// whole otherwise.
@@ -1160,7 +1177,7 @@ pub fn drawing_view_solid_mesh(
         return None;
     }
     let mut mesh = crate::extrude::SolidMesh::default();
-    for &bi in &view.bodies {
+    for bi in drawing_view_bodies(doc, view) {
         if let Some(solid) = drawing_view_body_mesh(doc, view, bi) {
             mesh.triangles.extend(solid.triangles);
         }
@@ -1182,9 +1199,9 @@ fn drawing_view_body_meshes(
     // *colored* pencil rather than the grey one.
     let colorful = view.style == crate::model::DrawingViewStyle::Colorful
         || view.style.is_hand_colored();
-    view.bodies
-        .iter()
-        .filter_map(|&bi| {
+    drawing_view_bodies(doc, view)
+        .into_iter()
+        .filter_map(|bi| {
             let solid = drawing_view_body_mesh(doc, view, bi)?;
             let tint = match (colorful, doc.bodies.get(bi)) {
                 (true, Some(body)) => {
@@ -1206,7 +1223,7 @@ pub fn drawing_view_source_label(doc: &Document, view: &DrawingView) -> String {
     if let Some(si) = view.sketch {
         return node_label(doc, HierarchyNode::Sketch(si));
     }
-    match view.bodies.as_slice() {
+    match drawing_view_bodies(doc, view).as_slice() {
         [] => "Projection".to_string(),
         [bi] => node_label(doc, HierarchyNode::Body(*bi)),
         bodies => {
@@ -1270,7 +1287,7 @@ pub fn drawing_view_world_edges(doc: &Document, view: &DrawingView) -> Vec<(Vec3
         // the stroke geometry, so it doesn't interfere with circle detection (#313). Multi-body
         // views union each body's creases (#1190/#1191).
         let mut edges = Vec::new();
-        for &bi in &view.bodies {
+        for bi in drawing_view_bodies(doc, view) {
             if let Some(mesh) = drawing_view_body_mesh(doc, view, bi) {
                 edges.extend(crate::gpu_viewport::solid_mesh_unique_edges(&mesh));
             }
@@ -1325,7 +1342,7 @@ pub fn drawing_view_vertex_bodies(
     view: &DrawingView,
 ) -> std::collections::HashMap<[i32; 3], crate::model::BodyKey> {
     let mut map = std::collections::HashMap::new();
-    for &bi in &view.bodies {
+    for bi in drawing_view_bodies(doc, view) {
         let Some(mesh) = drawing_view_body_mesh(doc, view, bi) else {
             continue;
         };
@@ -5414,6 +5431,161 @@ label_hidden: false,
             );
         }
         assert!(HATCH_STROKE < MODEL_STROKE, "the hatch draws thinner than edges");
+    }
+
+    /// #1854: extruding onto a body consumes it and produces a new one. A drawing view of
+    /// the consumed body must follow to the live result — it was still projecting the old
+    /// solid, so the page showed the part as it was before the boss was added.
+    #[test]
+    fn a_drawing_view_follows_the_body_that_replaced_its_own() {
+        let mut state = crate::actions::AppState::default();
+        let mut shape = crate::model::Primitive::new(crate::model::PrimitiveKind::Cuboid);
+        shape.width = "40".into();
+        shape.depth = "40".into();
+        shape.height = "40".into();
+        state.apply(crate::actions::Action::CreateShape { shape });
+        let original = state.doc.bodies.keys().next().expect("the cuboid's body");
+        state.apply(crate::actions::Action::CreateDrawing { name: None });
+        let drawing = state.doc.drawings.keys().next().expect("the drawing");
+        state.apply(crate::actions::Action::AddDrawingView {
+            drawing,
+            bodies: vec![original],
+            orientation: crate::model::DrawingOrientation::Front,
+        });
+        let before = crate::extrude::mesh_signed_volume(
+            &drawing_view_solid_mesh(&state.doc, &state.doc.drawings[drawing].views[0])
+                .expect("the view projects the cuboid"),
+        )
+        .abs();
+        assert!((before - 64000.0).abs() < 50.0, "the 40³ cuboid, got {before}");
+
+        // A 10×10 boss 10 tall on the top face: the cuboid body is consumed, a new one lives.
+        let top = crate::model::FaceId::PrimitiveFace {
+            primitive: state.doc.primitives.keys().next().expect("the cuboid"),
+            face: crate::model::PrimitiveFace::CuboidTop,
+        };
+        let sketch = state.doc.add_sketch(top);
+        let rect = crate::construction::add_line_rectangle(
+            &mut state.doc, sketch, 5.0, 5.0, 10.0, 10.0, [false; 4],
+        );
+        state.apply(crate::actions::Action::CreateExtrusion {
+            expression: None,
+            sketch,
+            faces: vec![crate::model::ExtrudeFace::Polygon(rect.to_vec())],
+            distance: 10.0,
+            body: crate::actions::ExtrudeBodyChoice::Merge,
+            target: None,
+            symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: None,
+        });
+        assert!(
+            state.doc.bodies[original].shadow,
+            "the merge should consume the original body"
+        );
+        let live: Vec<_> = state
+            .doc
+            .bodies
+            .iter()
+            .filter(|(_, b)| !b.shadow)
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(live.len(), 1, "one live body after the merge, got {live:?}");
+
+        let view = &state.doc.drawings[drawing].views[0];
+        assert_eq!(
+            drawing_view_bodies(&state.doc, view),
+            live,
+            "the view should project the body that replaced its own"
+        );
+        let after = crate::extrude::mesh_signed_volume(
+            &drawing_view_solid_mesh(&state.doc, view).expect("the view still projects"),
+        )
+        .abs();
+        assert!(
+            (after - 65000.0).abs() < 50.0,
+            "the view should show the cuboid plus the 1000 mm³ boss, got {after}"
+        );
+        assert!(
+            !drawing_view_source_label(&state.doc, view).contains(&format!("Body {}", original.index())),
+            "the caption should name the live body, got {:?}",
+            drawing_view_source_label(&state.doc, view)
+        );
+    }
+
+    /// #1854, as reported: the body had already been *cut* before the boss was added, so the
+    /// new source's "producing" extrusion is the older cut and the host cannot be found by
+    /// peeling it. The view still has to follow — a whole chain of consumed bodies leads to
+    /// one live one.
+    #[test]
+    fn a_drawing_view_follows_a_body_through_a_cut_then_an_add() {
+        let mut state = crate::actions::AppState::default();
+        let mut shape = crate::model::Primitive::new(crate::model::PrimitiveKind::Cuboid);
+        shape.width = "40".into();
+        shape.depth = "40".into();
+        shape.height = "40".into();
+        state.apply(crate::actions::Action::CreateShape { shape });
+        let primitive = state.doc.primitives.keys().next().expect("the cuboid");
+        let original = state.doc.bodies.keys().next().expect("the cuboid's body");
+        state.apply(crate::actions::Action::CreateDrawing { name: None });
+        let drawing = state.doc.drawings.keys().next().expect("the drawing");
+        state.apply(crate::actions::Action::AddDrawingView {
+            drawing,
+            bodies: vec![original],
+            orientation: crate::model::DrawingOrientation::Front,
+        });
+
+        let top = crate::model::FaceId::PrimitiveFace {
+            primitive,
+            face: crate::model::PrimitiveFace::CuboidTop,
+        };
+        // A 10×10 pocket 10 deep, then a 10×10 boss 10 tall beside it.
+        // The top face's frame hangs from a corner, so local (0, 0)..(40, 40) is the face.
+        for (x, distance, body) in [
+            (5.0, -10.0, crate::actions::ExtrudeBodyChoice::Cut),
+            (25.0, 10.0, crate::actions::ExtrudeBodyChoice::Merge),
+        ] {
+            let sketch = state.doc.add_sketch(top.clone());
+            let rect = crate::construction::add_line_rectangle(
+                &mut state.doc, sketch, x, 15.0, 10.0, 10.0, [false; 4],
+            );
+            state.apply(crate::actions::Action::CreateExtrusion {
+                expression: None,
+                sketch,
+                faces: vec![crate::model::ExtrudeFace::Polygon(rect.to_vec())],
+                distance,
+                body,
+                target: None,
+                symmetric: false,
+                taper: 0.0,
+                taper_mode: crate::model::ExtrudeTaperMode::Distance,
+                taper_expression: None,
+            });
+        }
+        let live: Vec<_> = state
+            .doc
+            .bodies
+            .iter()
+            .filter(|(_, b)| !b.shadow)
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(live.len(), 1, "one live body after cut + add, got {live:?}");
+
+        let view = &state.doc.drawings[drawing].views[0];
+        assert_eq!(
+            drawing_view_bodies(&state.doc, view),
+            live,
+            "the view should follow the whole chain to the live body"
+        );
+        let volume = crate::extrude::mesh_signed_volume(
+            &drawing_view_solid_mesh(&state.doc, view).expect("the view still projects"),
+        )
+        .abs();
+        assert!(
+            (volume - 64000.0).abs() < 50.0,
+            "cuboid − 1000 pocket + 1000 boss, got {volume}"
+        );
     }
 
     /// #1785: a curve's length dimension renders in the export — the polyline strokes with

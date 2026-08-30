@@ -2402,6 +2402,77 @@ fn source_without_extrusion(source: &BodySource, extrusion: ExtrusionKey) -> Opt
     Some(peeled)
 }
 
+/// The live bodies that took a consumed body's place (#1854).
+///
+/// Operations consume their input and produce a new body: the input keeps its key and is
+/// marked `shadow`, and whatever came out of the operation is what the user now sees.
+/// Anything still *pointing* at the consumed body — a drawing view, say — should follow, or
+/// it keeps showing the part as it was before the last feature. A body that is not a shadow
+/// body is its own successor, and a shadow body nobody replaced (the user simply marked it
+/// shadow, #1218) stays itself rather than resolving to nothing.
+///
+/// Both links are followed: an operation output names its input (`input_body`), and a
+/// fuse-merge/cut output is matched back to its host by source shape ([`fuse_host_of`]).
+pub fn live_successor_bodies(doc: &Document, body: BodyKey) -> Vec<BodyKey> {
+    if !doc.bodies.get(body).is_some_and(|b| b.shadow) {
+        return vec![body];
+    }
+    let mut out: Vec<BodyKey> = Vec::new();
+    let mut frontier = vec![body];
+    let mut seen: Vec<BodyKey> = vec![body];
+    // The chain cannot be longer than the arena; bound the walk so a cycle cannot hang.
+    for _ in 0..doc.bodies.len().saturating_add(1) {
+        if frontier.is_empty() {
+            break;
+        }
+        let mut next = Vec::new();
+        for consumed in frontier.drain(..) {
+            for (k, b) in doc.bodies.iter() {
+                if k == consumed || seen.contains(&k) {
+                    continue;
+                }
+                let replaces = b.source.input_body(doc) == Some(consumed)
+                    || fuse_host_of(doc, k) == Some(consumed)
+                    || source_extends(doc, &b.source, consumed);
+                if !replaces {
+                    continue;
+                }
+                seen.push(k);
+                if b.shadow {
+                    next.push(k);
+                } else {
+                    out.push(k);
+                }
+            }
+        }
+        frontier = next;
+    }
+    // Nothing replaced it — keep showing the body itself rather than nothing at all.
+    if out.is_empty() { vec![body] } else { out }
+}
+
+/// Whether `later` is `earlier`'s source plus more features (#1854).
+///
+/// Add-to-body and cut-into-body build the new source by copying the host's and appending
+/// the extrusion, so the output *contains* the input: same primitive base, and add/cut
+/// lists that are supersets with at least one of them strictly bigger.
+/// [`fuse_host_of`] can't answer this on its own — it assumes the appended extrusion is
+/// still the source's "producing" one, which stops being true once a later add lands on a
+/// body that already has cuts.
+fn source_extends(doc: &Document, later: &BodySource, earlier: BodyKey) -> bool {
+    let Some(earlier) = doc.bodies.get(earlier).map(|b| &b.source) else {
+        return false;
+    };
+    if later == earlier || later.primitive_base() != earlier.primitive_base() {
+        return false;
+    }
+    let (later_add, later_cut) = (later.extrusion_indices(), later.cut_extrusion_indices());
+    let (add, cut) = (earlier.extrusion_indices(), earlier.cut_extrusion_indices());
+    let covers = add.iter().all(|e| later_add.contains(e))
+        && cut.iter().all(|e| later_cut.contains(e));
+    covers && (later_add.len() + later_cut.len()) > (add.len() + cut.len())
+}
+
 /// Whether any live body is a fuse-merge/cut result of `host` (#1106).
 pub fn body_is_fuse_host(doc: &Document, host: BodyKey) -> bool {
     doc.bodies
