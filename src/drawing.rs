@@ -1092,6 +1092,22 @@ pub fn loupe_drawing(
 /// the part. The geometry it magnifies strokes at the usual [`MODEL_STROKE`].
 pub const LOUPE_STROKE: f32 = MODEL_STROKE * 0.5;
 
+/// The rim band of a loupe circle that **resizes** it, in screen pixels (#1846/#1851).
+///
+/// Inside the band the circle moves; on it, it resizes. Proportional so a big circle keeps a
+/// band you can hit without aiming, with a floor so a small one still has one at all — and
+/// shared by the hit test and the paint, so what a selected loupe *shows* as its grab zone is
+/// exactly the zone that grabs.
+pub fn loupe_resize_band_px(radius_px: f32) -> f32 {
+    (radius_px * 0.3).max(6.0)
+}
+
+/// Radius of the dot at a selected loupe circle's centre — the handle that **moves** it
+/// (#1851). Small enough to leave the magnified detail readable around it.
+pub fn loupe_move_handle_px(radius_px: f32) -> f32 {
+    (radius_px * 0.12).clamp(3.0, 7.0)
+}
+
 /// Padding inside a view card between its border and the projected geometry.
 pub const CELL_PAD: f32 = 12.0;
 /// Screen-pixel half-size of a selected view's corner resize grip (#1207).

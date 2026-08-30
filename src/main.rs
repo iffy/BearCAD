@@ -28450,6 +28450,42 @@ impl App {
                                     },
                                 ),
                             );
+                            // What to grab, once it is selected (#1851): the rim band that
+                            // resizes shows as a wide translucent ring hugging the inside of
+                            // the circle, and the middle that moves shows as a dot at the
+                            // centre. Both are painted at exactly the sizes the hit test
+                            // uses, and the one under the pointer brightens.
+                            let band = crate::drawing::loupe_resize_band_px(sr);
+                            let handle_r = crate::drawing::loupe_move_handle_px(sr);
+                            if selected && sr > band {
+                                let from_centre =
+                                    pointer_screen.map(|pp| (pp - sc).length());
+                                let on_rim = from_centre
+                                    .is_some_and(|d| d >= sr - band && d <= sr + 4.0);
+                                let in_middle = from_centre
+                                    .is_some_and(|d| d < sr - band);
+                                let zone = |lit: bool| {
+                                    if lit {
+                                        egui::Color32::from_rgba_unmultiplied(90, 150, 230, 110)
+                                    } else {
+                                        egui::Color32::from_rgba_unmultiplied(90, 150, 230, 45)
+                                    }
+                                };
+                                painter.circle_stroke(
+                                    sc,
+                                    sr - band * 0.5,
+                                    egui::Stroke::new(band, zone(on_rim)),
+                                );
+                                painter.circle_filled(sc, handle_r, zone(in_middle));
+                                painter.circle_stroke(
+                                    sc,
+                                    handle_r,
+                                    egui::Stroke::new(
+                                        crate::drawing::LOUPE_STROKE,
+                                        egui::Color32::from_rgb(90, 150, 230),
+                                    ),
+                                );
+                            }
                             // Either circle is grabbable on its own (#1846): click selects,
                             // a drag from inside moves it and a drag on the rim resizes it.
                             // The hit area is the disc, so a click in the middle of the
@@ -28482,7 +28518,18 @@ impl App {
                             if over || self.drawing_loupe_drag.is_some_and(|g| {
                                 g.view == vi && g.index == li && g.magnified == magnified
                             }) {
-                                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                                // The rim resizes, the middle moves (#1851) — say which the
+                                // pointer is over. (macOS remaps resize cursors to the arrow,
+                                // #533, which is why the zones are painted as well.)
+                                let on_rim = pointer_screen.is_some_and(|pp| {
+                                    (pp - sc).length()
+                                        >= sr - crate::drawing::loupe_resize_band_px(sr)
+                                });
+                                ui.ctx().set_cursor_icon(if on_rim {
+                                    egui::CursorIcon::ResizeHorizontal
+                                } else {
+                                    egui::CursorIcon::Grab
+                                });
                             }
                             // Claim the pointer on press, before the card-move grab does
                             // (#1227) — the same guard the dimension labels use.
@@ -28501,7 +28548,8 @@ impl App {
                                         // circle, and the inside of a loupe is what you
                                         // grab to slide it.
                                         resizing: (o - sc).length()
-                                            >= sr - (sr * 0.3).max(6.0),
+                                            >= sr
+                                                - crate::drawing::loupe_resize_band_px(sr),
                                         grab_offset: o - sc,
                                     });
                                     // The card grab already started this frame (it is

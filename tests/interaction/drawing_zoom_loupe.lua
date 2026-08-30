@@ -76,6 +76,22 @@ assert(grown.to_radius > moved.to_radius + 0.5,
   string.format("the rim drag enlarged it: %.2f → %.2f", moved.to_radius, grown.to_radius))
 assert(math.abs(grown.to[1] - moved.to[1]) < 1e-3, "and left the centre where it was")
 
+-- #1851: a selected circle says where to grab. The page reports the two zones — `band` px
+-- of rim resize, everything inside moves — at exactly the sizes it paints them, so a script
+-- aims at what a user sees. Grabbing just inside the band must move, not resize.
+local zones = assert(bearcad.ui.drawing_loupe_rect{ view = 0, index = 0, magnified = true })
+assert(zones.band and zones.band > 0, "the rim band has a width, got " .. tostring(zones.band))
+assert(zones.handle and zones.handle > 0, "the centre handle has a size")
+assert(zones.band < zones.w / 2, "the band is a rim, not the whole disc")
+local inner = zones.x + zones.w - zones.band - 3
+bearcad.ui.drag(inner - vp.x, ccy - vp.y, inner - vp.x + 18, ccy - vp.y)
+bearcad.ui.wait(6)
+local nudged = bearcad.drawing_loupes{ drawing = d, view = 0 }[1]
+assert(math.abs(nudged.to_radius - grown.to_radius) < 1e-3,
+  string.format("a grab inside the band moves rather than resizes: %.2f → %.2f",
+    grown.to_radius, nudged.to_radius))
+assert(math.abs(nudged.to[1] - grown.to[1]) > 1, "and it did move")
+
 -- Scripts move and resize either circle too.
 bearcad.edit_drawing_loupe{ drawing = d, view = 0, index = 0, radius = 6, to_radius = 24 }
 local sized = bearcad.drawing_loupes{ drawing = d, view = 0 }[1]

@@ -6054,6 +6054,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             t.set("y", rect.min.y)?;
             t.set("w", rect.width())?;
             t.set("h", rect.height())?;
+            // Which part of the circle does what (#1851): `band` px of rim resize it,
+            // everything inside moves it, and `handle` is the dot drawn at the centre when
+            // it is selected. Painted at exactly these sizes, so a script can aim at the
+            // same zone a user sees.
+            let radius = rect.width() * 0.5;
+            t.set("band", crate::drawing::loupe_resize_band_px(radius))?;
+            t.set("handle", crate::drawing::loupe_move_handle_px(radius))?;
             Ok(Value::Table(t))
         })?,
     )?;

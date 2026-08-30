@@ -247,7 +247,7 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.ui.pane"                     , "bearcad.ui.pane(pane, visible)"),
     ("bearcad.ui.pane_rect"                , "bearcad.ui.pane_rect(pane)"),
     ("bearcad.ui.drawing_view_rect"        , "bearcad.ui.drawing_view_rect(view)"),
-    ("bearcad.ui.drawing_loupe_rect"       , "bearcad.ui.drawing_loupe_rect{ view, index, magnified? }   -- { x, y, w, h } of the circle's box, window coords"),
+    ("bearcad.ui.drawing_loupe_rect"       , "bearcad.ui.drawing_loupe_rect{ view, index, magnified? }   -- { x, y, w, h, band, handle } — the circle's box in window coords, the px of rim that resizes it, and the centre dot that moves it"),
     ("bearcad.ui.elements_row_rect"        , "bearcad.ui.elements_row_rect(label)"),
     ("bearcad.ui.context_row_rect"         , "bearcad.ui.context_row_rect(label)"),
     ("bearcad.ui.menu_items"               , "bearcad.ui.menu_items()   -- labels of the open context menu's items, in order"),
