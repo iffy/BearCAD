@@ -1140,6 +1140,68 @@ fn sketch_face_is_live(doc: &Document, face: &FaceId) -> bool {
     }
 }
 
+/// Whether the built solid still has material where the cursor lands on an analytic face
+/// (#1847).
+///
+/// An analytic face names the *ideal* rectangle a primitive or extrusion contributes; the
+/// booleans that build the body are free to take part of it away. A pocket that breaks out
+/// through a wall leaves a hole spanned by two analytic faces — the wall's own, and the cut
+/// prism's side that sits flush in it — and neither is a surface any more. Offering them
+/// puts the new sketch on geometry the user can see straight through, and the flush one
+/// wins on depth, so the pocket's real inner wall behind it never gets a chance.
+///
+/// Ask the owning body's mesh: does any coplanar triangle cover the world point under the
+/// cursor? Faces with no body behind them (construction planes, sketch profiles, unit
+/// faces) have nothing to ask and stay offerable.
+fn analytic_face_has_material_at(doc: &Document, face: &FaceId, point: Vec3) -> bool {
+    let Some(body) = crate::model::body_index_for_face(doc, face) else {
+        return true;
+    };
+    let groups = crate::extrude::body_face_groups(doc, body);
+    if groups.is_empty() {
+        // No mesh to consult (kernel unavailable, degenerate body) — don't hide the face.
+        return true;
+    }
+    const TOL: f32 = 1e-3;
+    let bounds = crate::extrude::body_face_group_bounds(doc, body);
+    for (gi, triangles) in groups.iter().enumerate() {
+        if let Some((lo, hi)) = bounds.get(gi) {
+            if point.cmplt(*lo - TOL).any() || point.cmpgt(*hi + TOL).any() {
+                continue;
+            }
+        }
+        if triangles.iter().any(|tri| point_on_triangle(point, tri, TOL)) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether `p` lies on `tri` — within `tol` of its plane and inside its edges.
+fn point_on_triangle(p: Vec3, tri: &[Vec3; 3], tol: f32) -> bool {
+    let cross = (tri[1] - tri[0]).cross(tri[2] - tri[0]);
+    let area2 = cross.length();
+    if area2 < 1e-9 {
+        return false;
+    }
+    let n = cross / area2;
+    if (p - tri[0]).dot(n).abs() > tol {
+        return false;
+    }
+    let w0 = (tri[1] - p).cross(tri[2] - p).dot(n) / area2;
+    let w1 = (tri[2] - p).cross(tri[0] - p).dot(n) / area2;
+    let w2 = 1.0 - w0 - w1;
+    w0 >= -1e-4 && w1 >= -1e-4 && w2 >= -1e-4
+}
+
+/// Whether an analytic face candidate under the cursor is a real sketch target (#1847):
+/// a cursor **inside** the face must land on surviving material. A near miss (`dist > 0`,
+/// picked up by the edge margin) lands outside the face polygon altogether, so there is no
+/// point on it to judge — those stay offerable, as before.
+fn analytic_face_offerable(doc: &Document, face: &FaceId, dist: f32, at: Vec3) -> bool {
+    dist > 0.0 || analytic_face_has_material_at(doc, face, at)
+}
+
 /// Map a mesh face key (quantized centroid + normal) to an analytic [`FaceId`] on that body
 /// when one matches (#1156/#1173). Outer shell walls map back to their primitive/extrude
 /// faces; inner walls (and other non-analytic flats) return `None`.
@@ -1431,6 +1493,7 @@ pub fn pick_sketch_face(
                     };
                     if !is_shell_open_face(doc, &candidate)
                         && sketch_face_is_live(doc, &candidate)
+                        && analytic_face_offerable(doc, &candidate, dist, c)
                         && !sketch_shadows(&shadowed_hosts, &candidate, dist)
                     {
                         consider_face_pick_sized(
@@ -1452,6 +1515,7 @@ pub fn pick_sketch_face(
                     };
                     if !is_shell_open_face(doc, &candidate)
                         && sketch_face_is_live(doc, &candidate)
+                        && analytic_face_offerable(doc, &candidate, dist, c)
                         && !sketch_shadows(&shadowed_hosts, &candidate, dist)
                     {
                         consider_face_pick_sized(
@@ -1484,6 +1548,7 @@ pub fn pick_sketch_face(
                     };
                     if !is_shell_open_face(doc, &candidate)
                         && sketch_face_is_live(doc, &candidate)
+                        && analytic_face_offerable(doc, &candidate, dist, c)
                         && !sketch_shadows(&shadowed_hosts, &candidate, dist)
                     {
                         consider_face_pick_sized(
@@ -1506,6 +1571,7 @@ pub fn pick_sketch_face(
                     };
                     if !is_shell_open_face(doc, &candidate)
                         && sketch_face_is_live(doc, &candidate)
+                        && analytic_face_offerable(doc, &candidate, dist, c)
                         && !sketch_shadows(&shadowed_hosts, &candidate, dist)
                     {
                         consider_face_pick_sized(
@@ -1561,6 +1627,7 @@ pub fn pick_sketch_face(
             let candidate = FaceId::PrimitiveFace { primitive: pi, face };
             if !is_shell_open_face(doc, &candidate)
                 && sketch_face_is_live(doc, &candidate)
+                && analytic_face_offerable(doc, &candidate, dist, c)
                 && !sketch_shadows(&shadowed_hosts, &candidate, dist)
             {
                 consider_face_pick_sized(
@@ -1634,6 +1701,7 @@ pub fn pick_sketch_face(
                         instance,
                     };
                     if sketch_face_is_live(doc, &candidate)
+                        && analytic_face_offerable(doc, &candidate, dist, c)
                         && !sketch_shadows(&shadowed_hosts, &candidate, dist)
                     {
                         consider_face_pick_sized(
@@ -1757,8 +1825,13 @@ pub fn sketch_faces_near(
     let mut out: Vec<(FaceId, Vec3, f32)> = Vec::new();
     let mut push = |face: FaceId, centroid: Vec3, dist: f32| {
         // Shell open faces no longer exist on the hollowed body (#1165).
-        // Shadow-body analytic faces are not live sketch targets (#1219).
-        if dist <= radius && !is_shell_open_face(doc, &face) && sketch_face_is_live(doc, &face) {
+        // Shadow-body analytic faces are not live sketch targets (#1219), and neither is
+        // the part of a face a cut has opened a hole through (#1847).
+        if dist <= radius
+            && !is_shell_open_face(doc, &face)
+            && sketch_face_is_live(doc, &face)
+            && analytic_face_offerable(doc, &face, dist, centroid)
+        {
             out.push((face, centroid, dist));
         }
     };
@@ -2813,6 +2886,92 @@ mod tests {
         assert!(
             matches!(face, Some(FaceId::ExtrudeSide { extrusion, .. }) if extrusion == xkey(0)),
             "clicking a side wall should pick it, got {face:?}"
+        );
+    }
+
+    /// #1847: a cut that breaks out through a side wall leaves a **hole** there. Hovering
+    /// inside that hole must offer the pocket's inner wall behind it, not the analytic face
+    /// that used to span the opening — the material under the cursor is gone.
+    #[test]
+    fn pick_sketch_face_skips_a_face_the_cut_opened_a_hole_in() {
+        use crate::model::{
+            Body, BodySource, ExtrudeFace, Extrusion, Primitive, PrimitiveFace, PrimitiveKind,
+        };
+        // 40x40x40 cuboid: x,y in [-20,20], z in [0,40].
+        let mut doc = Document::default();
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.width = "40".to_string();
+        shape.depth = "40".to_string();
+        shape.height = "40".to_string();
+        let pi = doc.primitives.insert(shape);
+        doc.bodies.insert(Body {
+            source: BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: true, // consumed by the cut below
+        });
+        let top = FaceId::PrimitiveFace {
+            primitive: pi,
+            face: PrimitiveFace::CuboidTop,
+        };
+        let sketch = doc.add_sketch(top.clone());
+        // A pocket flush with the +X wall: x in [0,20], y in [-8,8], 20 deep (z in [20,40]).
+        let frame = sketch_frame(&doc, top).expect("cuboid top frame");
+        let (u0, v0) = world_to_local(&frame, Vec3::new(0.0, -8.0, 40.0));
+        let (u1, v1) = world_to_local(&frame, Vec3::new(20.0, 8.0, 40.0));
+        let rect = crate::construction::add_line_rectangle(
+            &mut doc,
+            sketch,
+            u0.min(u1),
+            v0.min(v1),
+            (u1 - u0).abs(),
+            (v1 - v0).abs(),
+            [false; 4],
+        );
+        let cut = doc.extrusions.insert(Extrusion {
+            sketch,
+            faces: vec![ExtrudeFace::Polygon(rect.to_vec())],
+            distance: -20.0,
+            target: None,
+            expression: String::new(),
+            name: None,
+            symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
+            edge_treatments: Vec::new(),
+        });
+        let solid = doc.bodies.insert(Body {
+            source: BodySource::Solid {
+                base: Some(pi),
+                add: Vec::new(),
+                cut: vec![cut],
+            },
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        assert!(
+            crate::extrude::body_solid_mesh(&doc, solid).is_some_and(|m| !m.triangles.is_empty()),
+            "the cut body must tessellate"
+        );
+
+        // Look along -X into the open pocket: screen is (y, z), eye out at +X.
+        let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.y, p.z));
+        let eye = Vec3::new(200.0, 0.0, 30.0);
+        // Middle of the opening — 10 px clear of the pocket floor (z=20) and the top (z=40).
+        let hit = pick_sketch_face(eframe::egui::pos2(0.0, 30.0), &project, &doc, eye)
+            .expect("the pocket's back wall is under the cursor");
+        let at = sketch_frame(&doc, hit.clone()).expect("picked face frame");
+        assert!(
+            at.origin.x < 19.0,
+            "must not offer a face in the plane of the opening (x=20), got {hit:?} at {:?}",
+            at.origin
+        );
+        assert!(
+            (at.origin.x - 0.0).abs() < 1.0,
+            "expected the pocket's inner wall at x=0, got {hit:?} at {:?}",
+            at.origin
         );
     }
 
