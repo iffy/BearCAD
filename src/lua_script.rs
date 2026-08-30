@@ -5966,6 +5966,46 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1856: the items of the context menu that is open right now. `menu_items()` lists
+    // their labels in the order shown; `menu_item_rect(label)` says where one landed, in
+    // window coordinates, so a script can click it with the ordinary pointer helpers. Both
+    // are empty/nil when no menu is up — the popup is an egui window a script otherwise has
+    // no way to reach into.
+    api.set(
+        "menu_items",
+        lua.create_function(|lua, ()| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let out = lua.create_table()?;
+            for (i, label) in crate::hierarchy::menu_item_labels(unsafe { tick.egui_ctx() })
+                .into_iter()
+                .enumerate()
+            {
+                out.set(i + 1, label)?;
+            }
+            Ok(out)
+        })?,
+    )?;
+    api.set(
+        "menu_item_rect",
+        lua.create_function(|lua, label: String| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let Some(rect) = crate::hierarchy::menu_item_rect(unsafe { tick.egui_ctx() }, &label)
+            else {
+                return Ok(Value::Nil);
+            };
+            let t = lua.create_table()?;
+            t.set("x", rect.min.x)?;
+            t.set("y", rect.min.y)?;
+            t.set("w", rect.width())?;
+            t.set("h", rect.height())?;
+            Ok(Value::Table(t))
+        })?,
+    )?;
+
     // #1828: where the Context pane drew the row labelled `label` last frame, in window
     // coordinates (like `pane_rect`) — `{ x, y, w, h }`, or `nil` when the pane is not
     // showing such a row. Unlabelled rows answer to their salt ("align_lines").
@@ -10459,7 +10499,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         -- `bearcad.ui.*` sub-namespace so scripts can focus on modeling (#46).
         bearcad.ui = {}
         local ui_funcs = {
-            "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_calibrate", "focus_dim", "pane", "pane_rect", "elements_row_rect", "context_row_rect", "drawing_view_rect", "drawing_loupe_rect", "pane_scroll", "scroll_pane", "ai_sections", "ai_pane_sections", "ai_mcp", "menu_structure",
+            "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_calibrate", "focus_dim", "pane", "pane_rect", "elements_row_rect", "context_row_rect", "menu_items", "menu_item_rect", "drawing_view_rect", "drawing_loupe_rect", "pane_scroll", "scroll_pane", "ai_sections", "ai_pane_sections", "ai_mcp", "menu_structure",
             "widget_id_warnings", "headless", "_deferred", "palette", "settings",
             "changelog",
             "mcmaster",
@@ -13030,6 +13070,7 @@ pub mod tests {
             assert(bearcad.ui ~= nil, "bearcad.ui table missing")
             for _, name in ipairs({ "move", "click", "tool", "view", "orbit", "pan",
                                     "key", "type", "pane", "pane_rect", "pane_scroll",
+                                    "menu_items", "menu_item_rect",
                                     "scroll_pane", "ai_sections", "ai_mcp", "menu_structure",
                                     "palette", "wait", "help",
                                     "toolbar_shortcuts", "toolbar_tools", "changelog",

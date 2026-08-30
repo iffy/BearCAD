@@ -250,6 +250,8 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.ui.drawing_loupe_rect"       , "bearcad.ui.drawing_loupe_rect{ view, index, magnified? }   -- { x, y, w, h } of the circle's box, window coords"),
     ("bearcad.ui.elements_row_rect"        , "bearcad.ui.elements_row_rect(label)"),
     ("bearcad.ui.context_row_rect"         , "bearcad.ui.context_row_rect(label)"),
+    ("bearcad.ui.menu_items"               , "bearcad.ui.menu_items()   -- labels of the open context menu's items, in order"),
+    ("bearcad.ui.menu_item_rect"           , "bearcad.ui.menu_item_rect(label)   -- { x, y, w, h } of that item, window coords"),
     ("bearcad.ui.pane_scroll"              , "bearcad.ui.pane_scroll(pane)"),
     ("bearcad.ui.picker_focus"             , "bearcad.ui.picker_focus(name)"),
     ("bearcad.ui.reorder_tab"              , "bearcad.ui.reorder_tab(from, to)"),

@@ -419,6 +419,8 @@ bearcad.ui.key(name, { shift?, ctrl?, cmd? }?)
 bearcad.ui.keydown(name, { shift?, ctrl?, cmd? }?)
 bearcad.ui.keyup(name, { shift?, ctrl?, cmd? }?)
 bearcad.ui.mcmaster(verb?, part?)
+bearcad.ui.menu_item_rect(label)   -- { x, y, w, h } of that item, window coords
+bearcad.ui.menu_items()   -- labels of the open context menu's items, in order
 bearcad.ui.menu_structure()
 bearcad.ui.move(x, y)
 bearcad.ui.move_ground(x, y)

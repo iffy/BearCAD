@@ -57,6 +57,63 @@ fn elements_list_row_rects_id() -> egui::Id {
 /// Where the List view drew each of its rows this frame (#1712), by label, in screen points.
 /// Scripts read these through `bearcad.ui.elements_row_rect(label)` so a test can click a row
 /// where it really is. Empty whenever the pane is showing the Graph.
+/// A context-menu item, drawn and **published** so scripts can drive it (#1856).
+///
+/// Menus are egui popups: a script can right-click one open, but the items inside it are
+/// unreachable — nothing outside the closure knows they exist or where they landed. Every
+/// item goes through here, which records `label -> rect` for the frame, so
+/// `bearcad.ui.menu_item_rect("Delete")` gives a script somewhere to click.
+pub(crate) fn menu_button(ui: &mut egui::Ui, label: impl Into<String>) -> egui::Response {
+    let label = label.into();
+    let response = ui.button(label.clone());
+    let ctx = ui.ctx().clone();
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|d| {
+        let items = d.get_temp_mut_or_default::<MenuItemRects>(menu_item_rects_id());
+        // One frame's worth: the popup rebuilds every pass, and a stale rect would point a
+        // script at an item that is no longer on screen.
+        if items.pass != pass {
+            items.pass = pass;
+            items.rects.clear();
+        }
+        items.rects.push((label, response.rect));
+    });
+    response
+}
+
+/// Where the open context menu drew the item labelled `label`, this frame (#1856).
+pub fn menu_item_rect(ctx: &egui::Context, label: &str) -> Option<egui::Rect> {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data(|d| d.get_temp::<MenuItemRects>(menu_item_rects_id()))
+        .filter(|items| items.pass + 1 >= pass)
+        .and_then(|items| {
+            items
+                .rects
+                .into_iter()
+                .find(|(name, _)| name == label)
+                .map(|(_, r)| r)
+        })
+}
+
+/// Every item label the open context menu drew this frame (#1856), in the order shown.
+pub fn menu_item_labels(ctx: &egui::Context) -> Vec<String> {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data(|d| d.get_temp::<MenuItemRects>(menu_item_rects_id()))
+        .filter(|items| items.pass + 1 >= pass)
+        .map(|items| items.rects.into_iter().map(|(name, _)| name).collect())
+        .unwrap_or_default()
+}
+
+#[derive(Clone, Default)]
+struct MenuItemRects {
+    pass: u64,
+    rects: Vec<(String, egui::Rect)>,
+}
+
+fn menu_item_rects_id() -> egui::Id {
+    egui::Id::new("bearcad_menu_item_rects")
+}
+
 pub fn elements_list_row_rect(ctx: &egui::Context, label: &str) -> Option<egui::Rect> {
     ctx.data(|d| d.get_temp::<Vec<(String, egui::Rect)>>(elements_list_row_rects_id()))
         .and_then(|rows| rows.into_iter().find(|(name, _)| name == label).map(|(_, r)| r))
@@ -6404,7 +6461,10 @@ fn show_row(
         }
         // One context menu per element row: any node-specific actions, then a universal Delete
         // so any element can be deleted from the pane (#253). Shared with the Graph view (#623).
-        response.context_menu(|ui| {
+        // Hung off **both** click targets — the name and the type icon (#1856) — the way a
+        // left-click on either already selects the row; a right-click on the icon used to do
+        // nothing at all.
+        let mut menu = |ui: &mut egui::Ui| {
             element_context_menu(
                 ui,
                 doc,
@@ -6435,7 +6495,11 @@ fn show_row(
                 on_paste,
                 crate::selection::delete_menu_count(selection, &element),
             );
-        });
+        };
+        response.context_menu(&mut menu);
+        if let Some(icon) = icon_response.as_ref() {
+            icon.context_menu(&mut menu);
+        }
     });
 }
 
@@ -6522,34 +6586,34 @@ pub(crate) fn element_context_menu(
 ) {
     match node {
         HierarchyNode::Sketch(sketch) => {
-            if ui.button("Edit sketch").clicked() {
+            if menu_button(ui, "Edit sketch").clicked() {
                 on_edit_sketch(sketch);
                 ui.close();
             }
             // In the Drawing workbench, add this sketch as a projection (#278).
-            if active_drawing.is_some() && ui.button("Add to drawing").clicked() {
+            if active_drawing.is_some() && menu_button(ui, "Add to drawing").clicked() {
                 on_add_to_drawing(SceneElement::Sketch(sketch));
                 ui.close();
             }
         }
         HierarchyNode::ConstructionPlane(index) => {
-            if ui.button("Edit plane").clicked() {
+            if menu_button(ui, "Edit plane").clicked() {
                 on_edit_plane(index);
                 ui.close();
             }
-            if ui.button("Import image on this plane…").clicked() {
+            if menu_button(ui, "Import image on this plane…").clicked() {
                 on_import_image_on_plane(index);
                 ui.close();
             }
         }
         HierarchyNode::SectionPlane { view, cut } => {
-            if ui.button("Edit cutting plane").clicked() {
+            if menu_button(ui, "Edit cutting plane").clicked() {
                 on_edit_operation(SceneElement::SectionPlane { view, cut });
                 ui.close();
             }
         }
         HierarchyNode::Extrusion(index) => {
-            if ui.button("Edit extrusion").clicked() {
+            if menu_button(ui, "Edit extrusion").clicked() {
                 on_edit_extrusion(index);
                 ui.close();
             }
@@ -6559,14 +6623,14 @@ pub(crate) fn element_context_menu(
                 Some(crate::model::VertexTreatmentKind::Fillet) => "fillet",
                 _ => "chamfer",
             };
-            if ui.button(format!("Edit {noun}")).clicked() {
+            if menu_button(ui, format!("Edit {noun}")).clicked() {
                 on_edit_edge_treatment_op(index);
                 ui.close();
             }
         }
         HierarchyNode::CrossSection(view) => {
             // In the Drawing workbench, put the whole view on the open page (#1689).
-            if active_drawing.is_some() && ui.button("Add to drawing").clicked() {
+            if active_drawing.is_some() && menu_button(ui, "Add to drawing").clicked() {
                 on_add_to_drawing(SceneElement::CrossSection(view));
                 ui.close();
             }
@@ -6574,12 +6638,12 @@ pub(crate) fn element_context_menu(
         HierarchyNode::Body(index) => {
             // Immediately create a new drawing of this body (#1158) — same paths as CAD →
             // New Drawing + Add to drawing, without needing a drawing open first.
-            if ui.button("Create drawing").clicked() {
+            if menu_button(ui, "Create drawing").clicked() {
                 on_create_drawing_of_body(index);
                 ui.close();
             }
             // In the Drawing workbench, add this body as a view of the open drawing (#274).
-            if active_drawing.is_some() && ui.button("Add to drawing").clicked() {
+            if active_drawing.is_some() && menu_button(ui, "Add to drawing").clicked() {
                 on_add_to_drawing(SceneElement::Body(index));
                 ui.close();
             }
@@ -6590,19 +6654,19 @@ pub(crate) fn element_context_menu(
             } else {
                 "Make shadow body"
             };
-            if ui.button(shadow_label).clicked() {
+            if menu_button(ui, shadow_label).clicked() {
                 on_set_body_shadow(index, !is_shadow);
                 ui.close();
             }
-            if ui.button("Export STL…").clicked() {
+            if menu_button(ui, "Export STL…").clicked() {
                 on_export_body(index);
                 ui.close();
             }
-            if ui.button("Export 3MF…").clicked() {
+            if menu_button(ui, "Export 3MF…").clicked() {
                 on_export_body_3mf(index);
                 ui.close();
             }
-            if ui.button("Export STEP…").clicked() {
+            if menu_button(ui, "Export STEP…").clicked() {
                 on_export_body_step(index);
                 ui.close();
             }
@@ -6611,7 +6675,7 @@ pub(crate) fn element_context_menu(
         // (every instance of the unit updates at once); routed through the universal
         // operation callback and dispatched in `begin_operation_edit`.
         HierarchyNode::UnitInstance(index) => {
-            if ui.button("Update from source file").clicked() {
+            if menu_button(ui, "Update from source file").clicked() {
                 on_edit_operation(SceneElement::UnitInstance(index));
                 ui.close();
             }
@@ -6629,26 +6693,26 @@ pub(crate) fn element_context_menu(
         // A joint carries its rest pose (#898): capture it, go back to it, or send the
         // whole assembly home — alongside the universal Edit.
         HierarchyNode::Joint(index) => {
-            if ui.button("Edit").clicked() {
+            if menu_button(ui, "Edit").clicked() {
                 on_edit_operation(element.clone());
                 ui.close();
             }
-            if ui.button("Set rest to current position").clicked() {
+            if menu_button(ui, "Set rest to current position").clicked() {
                 on_joint_rest(JointRestCommand::SetRest(index));
                 ui.close();
             }
-            if ui.button("Revert to rest position").clicked() {
+            if menu_button(ui, "Revert to rest position").clicked() {
                 on_joint_rest(JointRestCommand::Revert(index));
                 ui.close();
             }
-            if ui.button("Revert all joints").clicked() {
+            if menu_button(ui, "Revert all joints").clicked() {
                 on_joint_rest(JointRestCommand::RevertAll);
                 ui.close();
             }
         }
         // Every other operation edits the universal way: right-click → "Edit" (#546).
         node if node_editable_operation(node).is_some() => {
-            if ui.button("Edit").clicked() {
+            if menu_button(ui, "Edit").clicked() {
                 on_edit_operation(element.clone());
                 ui.close();
             }
@@ -6659,7 +6723,7 @@ pub(crate) fn element_context_menu(
     // (or back to the document root) from its context menu; dragging works too.
     if component_member_node(node) && !doc.components.is_empty() {
         ui.menu_button("Move to", |ui| {
-            if ui.button("Document").clicked() {
+            if menu_button(ui, "Document").clicked() {
                 on_move_to_component(element.clone(), None);
                 ui.close();
             }
@@ -6679,14 +6743,14 @@ pub(crate) fn element_context_menu(
     // Only elements that are graph nodes can be rollback points.
     if hierarchy_node_for_element(element).is_some() {
         ui.menu_button("Rollback", |ui| {
-            if ui.button("Rollback to here").clicked() {
+            if menu_button(ui, "Rollback to here").clicked() {
                 on_set_rollback(Some(RollbackMarker {
                     element: element.clone(),
                     inclusive: false,
                 }));
                 ui.close();
             }
-            if ui.button("Rollback to just before here").clicked() {
+            if menu_button(ui, "Rollback to just before here").clicked() {
                 on_set_rollback(Some(RollbackMarker {
                     element: element.clone(),
                     inclusive: true,
@@ -6696,15 +6760,15 @@ pub(crate) fn element_context_menu(
         });
     }
     // Copy / Paste / Paste Linked (#1236).
-    if element_is_copyable && ui.button("Copy").clicked() {
+    if element_is_copyable && menu_button(ui, "Copy").clicked() {
         on_copy();
         ui.close();
     }
-    if clipboard_has_items && ui.button("Paste").clicked() {
+    if clipboard_has_items && menu_button(ui, "Paste").clicked() {
         on_paste(false);
         ui.close();
     }
-    if clipboard_has_linkable && ui.button("Paste Linked").clicked() {
+    if clipboard_has_linkable && menu_button(ui, "Paste Linked").clicked() {
         on_paste(true);
         ui.close();
     }
@@ -6713,7 +6777,7 @@ pub(crate) fn element_context_menu(
     } else {
         "Delete".to_string()
     };
-    if ui.button(delete_label).clicked() {
+    if menu_button(ui, delete_label).clicked() {
         on_delete_element(element.clone());
         ui.close();
     }
