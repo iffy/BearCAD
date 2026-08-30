@@ -1052,6 +1052,122 @@ pub fn loupe_magnified_segments(
         .collect()
 }
 
+/// Sutherland–Hodgman clip of a convex polygon to a circle (#1850), as a 48-gon inscribed
+/// in it — a couple of thousandths of the radius under the true rim, which is well under a
+/// stroke width at any page scale. Returns the (still convex) remainder, empty when the
+/// polygon misses the circle.
+pub fn clip_convex_to_circle(
+    poly: &[glam::Vec2],
+    center: glam::Vec2,
+    r: f32,
+) -> Vec<glam::Vec2> {
+    const SIDES: usize = 48;
+    let mut out: Vec<glam::Vec2> = poly.to_vec();
+    let apothem = r * (std::f32::consts::PI / SIDES as f32).cos();
+    for i in 0..SIDES {
+        if out.len() < 3 {
+            return Vec::new();
+        }
+        let ang = std::f32::consts::TAU * i as f32 / SIDES as f32;
+        // Half-plane `n · (p − center) <= apothem`, one per side of the inscribed polygon.
+        let n = glam::Vec2::new(ang.cos(), ang.sin());
+        let inside = |p: glam::Vec2| n.dot(p - center) <= apothem;
+        let cut = |a: glam::Vec2, b: glam::Vec2| {
+            let (da, db) = (n.dot(a - center) - apothem, n.dot(b - center) - apothem);
+            let t = da / (da - db);
+            a + (b - a) * t
+        };
+        let mut next = Vec::with_capacity(out.len() + 1);
+        for k in 0..out.len() {
+            let (a, b) = (out[k], out[(k + 1) % out.len()]);
+            match (inside(a), inside(b)) {
+                (true, true) => next.push(b),
+                (true, false) => next.push(cut(a, b)),
+                (false, true) => {
+                    next.push(cut(a, b));
+                    next.push(b);
+                }
+                (false, false) => {}
+            }
+        }
+        out = next;
+    }
+    if out.len() < 3 {
+        return Vec::new();
+    }
+    out
+}
+
+/// One filled patch a loupe redraws inside its magnified circle (#1850): a convex polygon
+/// ready to fan-triangulate, carrying the same `tint`/`shade` the view's own fill does so
+/// every renderer maps it through the formula it already has.
+pub struct LoupeFill {
+    pub points: Vec<glam::Vec2>,
+    pub tint: [u8; 3],
+    pub shade: f32,
+}
+
+/// One shading mark a loupe redraws (#1850) — a colored-pencil scribble or a watercolor
+/// pass, clipped and magnified like everything else it shows.
+pub struct LoupeStroke {
+    pub a: glam::Vec2,
+    pub b: glam::Vec2,
+    pub tint: [u8; 3],
+    pub shade: f32,
+    pub width: f32,
+    pub on_sheet: bool,
+}
+
+/// What a loupe paints under its edges, in back-to-front order (#1850): the styled view's
+/// own fills and shading marks, clipped to the detail circle and magnified.
+pub enum LoupeMark {
+    Fill(LoupeFill),
+    Stroke(LoupeStroke),
+}
+
+/// The styled view's painted marks as the loupe redraws them (#1850).
+pub fn loupe_magnified_marks(
+    loupe: &crate::model::DrawingLoupe,
+    styled: &StyledViewGeometry,
+) -> Vec<LoupeMark> {
+    let (c1, c2) = loupe_centers(loupe);
+    let zoom = loupe_zoom(loupe);
+    let r = loupe.radius.abs();
+    let map = |p: glam::Vec2| c2 + (p - c1) * zoom;
+    let mut out = Vec::new();
+    for mark in styled.painted() {
+        match mark {
+            PaintedMark::Fill(face) => {
+                for tri in &face.tris {
+                    let clipped = clip_convex_to_circle(tri, c1, r);
+                    if clipped.len() < 3 {
+                        continue;
+                    }
+                    out.push(LoupeMark::Fill(LoupeFill {
+                        points: clipped.into_iter().map(map).collect(),
+                        tint: face.tint,
+                        shade: face.shade,
+                    }));
+                }
+            }
+            PaintedMark::Stroke(stroke) => {
+                if let Some((a, b)) = clip_segment_to_circle(stroke.a, stroke.b, c1, r) {
+                    out.push(LoupeMark::Stroke(LoupeStroke {
+                        a: map(a),
+                        b: map(b),
+                        tint: stroke.tint,
+                        shade: stroke.shade,
+                        // A mark measured on the sheet is magnified with what it covers.
+                        width: if stroke.on_sheet { stroke.width * zoom } else { stroke.width },
+                        on_sheet: stroke.on_sheet,
+                    }));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Everything a renderer draws for one zoom loupe (#1846), in the view's projected
 /// millimetres. Built once by [`loupe_drawing`] so the editor sheet and the SVG/PDF export
 /// put down the same thing.
@@ -1067,6 +1183,9 @@ pub struct LoupeDrawing {
     /// The view's section hatch, likewise — kept apart so it strokes thinner, as it does on
     /// the view itself.
     pub hatch: Vec<(glam::Vec2, glam::Vec2)>,
+    /// What goes down *under* the edges (#1850): the styled view's fills and shading marks,
+    /// clipped and magnified, back to front. Empty for a style that paints nothing.
+    pub marks: Vec<LoupeMark>,
 }
 
 /// What to draw for one zoom loupe (#1846): its two circles, the line joining their rims, and
@@ -1076,6 +1195,7 @@ pub fn loupe_drawing(
     loupe: &crate::model::DrawingLoupe,
     lines: &[(glam::Vec2, glam::Vec2)],
     hatch: &[(glam::Vec2, glam::Vec2)],
+    styled: Option<&StyledViewGeometry>,
 ) -> LoupeDrawing {
     let (c1, c2) = loupe_centers(loupe);
     LoupeDrawing {
@@ -1084,6 +1204,7 @@ pub fn loupe_drawing(
         connector: loupe_connector(loupe),
         content: loupe_magnified_segments(loupe, lines),
         hatch: loupe_magnified_segments(loupe, hatch),
+        marks: styled.map(|s| loupe_magnified_marks(loupe, s)).unwrap_or_default(),
     }
 }
 
@@ -3336,8 +3457,55 @@ fn render_view_geometry<C: Canvas>(
     // Zoom loupes (#1846): the detail circle, the magnified one redrawing what it covers, and
     // the thin line joining their rims.
     let loupe_lines = view_stroked_lines(&styled, &pcircles, view);
+    // A loupe may draw its detail in a style of its own (#1850): the restyled geometry is
+    // worked out once per distinct style, not once per loupe.
+    let mut restyled: Vec<(crate::model::DrawingViewStyle, StyledViewGeometry, Vec<(glam::Vec2, glam::Vec2)>)> =
+        Vec::new();
     for loupe in &view.loupes {
-        let d = loupe_drawing(loupe, &loupe_lines, &styled.hatch);
+        let own = loupe.style.filter(|s| *s != view.style);
+        let (lines, sty_for_loupe) = match own {
+            Some(style) => {
+                if !restyled.iter().any(|(s, _, _)| *s == style) {
+                    let mut alt = view.clone();
+                    alt.style = style;
+                    let sty = styled_view_geometry(doc, views, &alt);
+                    let lines = view_stroked_lines(&sty, &pcircles, &alt);
+                    restyled.push((style, sty, lines));
+                }
+                let (_, sty, l) =
+                    restyled.iter().find(|(s, _, _)| *s == style).expect("just inserted");
+                (l, sty)
+            }
+            None => (&loupe_lines, &styled),
+        };
+        let d = loupe_drawing(loupe, lines, &sty_for_loupe.hatch, Some(sty_for_loupe));
+        // The fills and shading marks go down before the edges, as on the card itself.
+        for mark in &d.marks {
+            match mark {
+                LoupeMark::Fill(fill) => {
+                    let level = |c: u8| (c as f32 * fill.shade.clamp(0.0, 1.0)) as u8;
+                    let color =
+                        Rgb(level(fill.tint[0]), level(fill.tint[1]), level(fill.tint[2]));
+                    let pts: Vec<(f32, f32)> = fill
+                        .points
+                        .iter()
+                        .map(|p| {
+                            let s = to_screen(*p);
+                            (s.x, s.y)
+                        })
+                        .collect();
+                    canvas.poly(&pts, color);
+                }
+                LoupeMark::Stroke(stroke) => {
+                    let sh = stroke.shade.clamp(0.0, 1.0);
+                    let tint: [u8; 3] =
+                        std::array::from_fn(|i| (stroke.tint[i] as f32 * sh) as u8);
+                    let (sa, sb) = (to_screen(stroke.a), to_screen(stroke.b));
+                    let width = if stroke.on_sheet { stroke.width * scale } else { stroke.width };
+                    canvas.line(sa.x, sa.y, sb.x, sb.y, Rgb(tint[0], tint[1], tint[2]), width);
+                }
+            }
+        }
         for (a, b) in &d.content {
             let (sa, sb) = (to_screen(*a), to_screen(*b));
             canvas.line(sa.x, sa.y, sb.x, sb.y, ink, MODEL_STROKE);
@@ -3965,7 +4133,96 @@ mod loupe_tests {
     use crate::model::DrawingLoupe;
 
     fn loupe() -> DrawingLoupe {
-        DrawingLoupe { at: (10.0, 5.0), radius: 4.0, to: (60.0, 5.0), to_radius: 12.0 }
+        DrawingLoupe { at: (10.0, 5.0), radius: 4.0, to: (60.0, 5.0), to_radius: 12.0, style: None }
+    }
+
+    /// #1850: what a loupe paints under its edges is clipped to the detail circle and lands
+    /// inside the magnified one — a shaded loupe on a wireframe view is the whole point of
+    /// letting a loupe pick its own style.
+    #[test]
+    fn a_loupe_clips_and_magnifies_the_styled_fills() {
+        let l = loupe();
+        let (c1, c2) = loupe_centers(&l);
+        // One big triangle across the detail circle, and one well clear of it.
+        let styled = StyledViewGeometry {
+            faces: vec![
+                ShadedFace {
+                    tris: vec![[
+                        c1 + glam::Vec2::new(-40.0, -40.0),
+                        c1 + glam::Vec2::new(40.0, -40.0),
+                        c1 + glam::Vec2::new(0.0, 40.0),
+                    ]],
+                    shade: 0.6,
+                    tint: [255, 255, 255],
+                    plane: (Vec3::Z, 0.0),
+                },
+                ShadedFace {
+                    tris: vec![[
+                        c1 + glam::Vec2::new(500.0, 500.0),
+                        c1 + glam::Vec2::new(520.0, 500.0),
+                        c1 + glam::Vec2::new(510.0, 520.0),
+                    ]],
+                    shade: 0.3,
+                    tint: [255, 255, 255],
+                    plane: (Vec3::Z, 0.0),
+                },
+            ],
+            segments: Vec::new(),
+            hatch: Vec::new(),
+            shading: Vec::new(),
+            scribbled: false,
+            stroke_tint: None,
+        };
+        let d = loupe_drawing(&l, &[], &[], Some(&styled));
+        let fills: Vec<&LoupeFill> = d
+            .marks
+            .iter()
+            .filter_map(|m| match m {
+                LoupeMark::Fill(f) => Some(f),
+                LoupeMark::Stroke(_) => None,
+            })
+            .collect();
+        assert_eq!(fills.len(), 1, "the far triangle contributes nothing");
+        let fill = fills[0];
+        assert!((fill.shade - 0.6).abs() < 1e-6, "the fill keeps its own tone");
+        let r = l.to_radius.abs();
+        for p in &fill.points {
+            let inside = (*p - c2).length();
+            assert!(
+                inside <= r + 1e-3,
+                "every corner lands inside the magnified circle: {inside} > {r}"
+            );
+        }
+        // It fills the circle rather than shrinking to a speck: a triangle spanning the
+        // detail circle covers most of the magnified one.
+        let far = fill
+            .points
+            .iter()
+            .map(|p| (*p - c2).length())
+            .fold(0.0_f32, f32::max);
+        assert!(far > r * 0.8, "the clipped fill reaches the rim, got {far} of {r}");
+    }
+
+    /// #1850: a polygon clear of the circle clips away entirely, and one inside is untouched.
+    #[test]
+    fn clipping_to_a_circle_keeps_what_is_inside() {
+        let c = glam::Vec2::new(5.0, 5.0);
+        let inside = [
+            glam::Vec2::new(4.0, 4.0),
+            glam::Vec2::new(6.0, 4.0),
+            glam::Vec2::new(5.0, 6.0),
+        ];
+        let kept = clip_convex_to_circle(&inside, c, 10.0);
+        assert_eq!(kept.len(), 3, "a polygon well inside comes through whole");
+        let outside = [
+            glam::Vec2::new(90.0, 90.0),
+            glam::Vec2::new(92.0, 90.0),
+            glam::Vec2::new(91.0, 92.0),
+        ];
+        assert!(
+            clip_convex_to_circle(&outside, c, 10.0).is_empty(),
+            "one clear of the circle clips away entirely"
+        );
     }
 
     /// #1846: the zoom is the ratio of the two circles, so growing the magnified circle

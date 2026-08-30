@@ -9934,8 +9934,35 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "edit_drawing_loupe",
-                &["drawing", "view", "index", "at", "radius", "to", "to_radius"],
+                &["drawing", "view", "index", "at", "radius", "to", "to_radius", "style"],
             )?;
+            // #1850: `style = "shaded"` draws this loupe's detail in that style; `"view"`
+            // (or `false`) hands it back to the view's own. Sent as its own instruction so
+            // "leave the style alone" and "clear the style" stay distinguishable.
+            if let Some(name) = opts.get::<Option<String>>("style")? {
+                let style = if name.eq_ignore_ascii_case("view") {
+                    None
+                } else {
+                    Some(crate::model::DrawingViewStyle::from_name(&name).ok_or_else(|| {
+                        let known: Vec<&str> = crate::model::DrawingViewStyle::ALL
+                            .iter()
+                            .map(|s| s.script_name())
+                            .collect();
+                        mlua::Error::external(format!(
+                            "unknown loupe style '{name}' (try view, {})",
+                            known.join(", ")
+                        ))
+                    })?)
+                };
+                unsafe {
+                    tick.exec(Instruction::SetDrawingLoupeStyle {
+                        drawing: opts.ordinal_req("drawing")?,
+                        view: opts.ordinal_req("view")?,
+                        index: opts.ordinal_req("index")?,
+                        style,
+                    })?;
+                }
+            }
             let instr = Instruction::EditDrawingLoupe {
                 drawing: opts.ordinal_req("drawing")?,
                 view: opts.ordinal_req("view")?,
@@ -9994,6 +10021,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 t.set("to", vec![loupe.to.0, loupe.to.1])?;
                 t.set("to_radius", loupe.to_radius)?;
                 t.set("zoom", crate::drawing::loupe_zoom(loupe))?;
+                // #1850: the style this loupe draws its detail in — "view" when it follows
+                // the projection's own.
+                t.set(
+                    "style",
+                    loupe.style.map(|s| s.script_name()).unwrap_or("view"),
+                )?;
                 out.set(i + 1, t)?;
             }
             Ok(out)

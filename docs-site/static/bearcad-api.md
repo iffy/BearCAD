@@ -243,7 +243,7 @@ bearcad.drawing_curve_dimension{ drawing, view, points }
 bearcad.drawing_dim_offset{ drawing, view, offset, a, b }
 bearcad.drawing_dimension{ drawing, view, a, b }
 bearcad.drawing_loupe{ drawing, view, at, radius, to, to_radius }   -- at/to are {u, v} in the view's projected mm
-bearcad.drawing_loupes{ drawing, view }   -- { at, radius, to, to_radius, zoom } each
+bearcad.drawing_loupes{ drawing, view }   -- { at, radius, to, to_radius, zoom, style } each
 bearcad.drawing_move_view{ drawing, view, x, y }
 bearcad.drawing_page{ drawing, width, height, margin }
 bearcad.drawing_paper{ drawing, paper }   -- white | dark (the editor's sheet; exports are always white)
@@ -264,7 +264,7 @@ bearcad.drawing_view_style{ drawing, view, style }   -- visible, wireframe, shad
 bearcad.drawing_views(index)
 bearcad.edit_boolean{ index, op, a, b, keep_b, keep_leftovers }
 bearcad.edit_dim(axis)
-bearcad.edit_drawing_loupe{ drawing, view, index, at?, radius?, to?, to_radius? }
+bearcad.edit_drawing_loupe{ drawing, view, index, at?, radius?, to?, to_radius?, style? }   -- style is a drawing view style, or "view" to follow the projection's
 bearcad.edit_extrusion{ extrusion, distance, by, to }
 bearcad.edit_joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin, frame_axis, frame_axis2, position, position2, position3, slide_min, slide_max, slide_min_to, slide_max_to, turn_min, turn_max, name }   -- face = { moving, fixed, flip?, offset?, spin? }
 bearcad.edit_mirror{ index, plane, bodies, output }

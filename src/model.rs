@@ -5204,6 +5204,18 @@ pub struct DrawingLoupe {
     /// Centre of the magnified circle — anywhere, on the projection or off it.
     pub to: (f32, f32),
     pub to_radius: f32,
+    /// How the magnified detail is drawn (#1850). `None` follows the view it sits on — the
+    /// usual case; setting it lets a loupe shade the detail a wireframe view leaves bare (or
+    /// the other way round), which is most of the point of magnifying it.
+    #[serde(default)]
+    pub style: Option<DrawingViewStyle>,
+}
+
+impl DrawingLoupe {
+    /// The style this loupe draws its detail in (#1850): its own, else the view's.
+    pub fn style_on(&self, view: &DrawingView) -> DrawingViewStyle {
+        self.style.unwrap_or(view.style)
+    }
 }
 
 /// Smallest loupe circle, in a view's projected millimetres: below this it is a dot with no

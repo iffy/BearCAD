@@ -451,6 +451,13 @@ pub enum Instruction {
         to: Option<(f32, f32)>,
         to_radius: Option<f32>,
     },
+    /// Draw a zoom loupe's detail in its own style (#1850); `None` follows the view's.
+    SetDrawingLoupeStyle {
+        drawing: usize,
+        view: usize,
+        index: usize,
+        style: Option<crate::model::DrawingViewStyle>,
+    },
     /// Drop a zoom loupe (#1846).
     DeleteDrawingLoupe { drawing: usize, view: usize, index: usize },
     /// Change what a free point-to-point dimension measures (#1645).
@@ -1700,6 +1707,11 @@ impl Instruction {
                 }
                 format!("bearcad.edit_drawing_loupe{{ {} }}", parts.join(", "))
             }
+            Instruction::SetDrawingLoupeStyle { drawing, view, index, style } => format!(
+                "bearcad.edit_drawing_loupe{{ drawing = {drawing}, view = {view}, \
+                 index = {index}, style = {:?} }}",
+                style.map(|s| s.script_name()).unwrap_or("view")
+            ),
             Instruction::DeleteDrawingLoupe { drawing, view, index } => format!(
                 "bearcad.delete_drawing_loupe{{ drawing = {drawing}, view = {view}, index = {index} }}"
             ),
@@ -7490,7 +7502,7 @@ impl ScriptRunner {
                 let result = state.apply(Action::AddDrawingLoupe {
                     drawing,
                     view,
-                    loupe: crate::model::DrawingLoupe { at, radius, to, to_radius },
+                    loupe: crate::model::DrawingLoupe { at, radius, to, to_radius, style: None },
                 });
                 self.record_action_error(result);
                 StepResult::Continue
@@ -7509,6 +7521,16 @@ impl ScriptRunner {
                     to,
                     to_radius,
                 });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::SetDrawingLoupeStyle { drawing, view, index, style } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
+                let result =
+                    state.apply(Action::SetDrawingLoupeStyle { drawing, view, index, style });
                 self.record_action_error(result);
                 StepResult::Continue
             }

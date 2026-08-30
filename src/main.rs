@@ -27292,6 +27292,9 @@ impl App {
         let mut section_drop_target: Option<usize> = None;
         // Right-click → "Remove cross section N" on a sectioned projection (#1776).
         let mut remove_section: Option<usize> = None;
+        // Right-click a zoom loupe → the style its detail draws in (#1850):
+        // (view, loupe index, style; `None` follows the view's).
+        let mut loupe_style: Option<(usize, usize, Option<model::DrawingViewStyle>)> = None;
         let mut toggle_dim: Option<(usize, [i32; 3], [i32; 3])> = None;
         // A finished free point-to-point dimension (#1645): (view, first point, second point)
         // in the view's projected millimetres.
@@ -28405,8 +28408,99 @@ impl App {
                     let empty: Vec<(glam::Vec2, glam::Vec2)> = Vec::new();
                     let sty_hatch = styled.as_ref().map(|s| &s.hatch).unwrap_or(&empty);
                     let sv = |p: glam::Vec2| to_screen(egui::vec2(p.x, p.y));
+                    // A loupe may draw its detail in its own style (#1850) — shading what a
+                    // wireframe view leaves bare is most of the point of magnifying it. The
+                    // restyled geometry is worked out once per distinct style, not per loupe.
+                    let mut restyled: Vec<(
+                        crate::model::DrawingViewStyle,
+                        crate::drawing::StyledViewGeometry,
+                        Vec<(glam::Vec2, glam::Vec2)>,
+                    )> = Vec::new();
                     for (li, loupe) in view.loupes.iter().enumerate() {
-                        let d = crate::drawing::loupe_drawing(loupe, &loupe_lines, sty_hatch);
+                        let own = loupe.style.filter(|s| *s != view.style);
+                        let (lines, hatch, sty_for_loupe) = match own {
+                            Some(style) if view.sketch.is_none() => {
+                                if !restyled.iter().any(|(s, _, _)| *s == style) {
+                                    let mut alt = view.clone();
+                                    alt.style = style;
+                                    let sty = crate::drawing::styled_view_geometry(
+                                        &self.state.doc,
+                                        &views,
+                                        &alt,
+                                    );
+                                    let lines = crate::drawing::view_stroked_lines(
+                                        &sty, &pcircles, &alt,
+                                    );
+                                    restyled.push((style, sty, lines));
+                                }
+                                let (_, sty, l) = restyled
+                                    .iter()
+                                    .find(|(s, _, _)| *s == style)
+                                    .expect("just inserted");
+                                (l, &sty.hatch, Some(sty))
+                            }
+                            // Following the view, or a sketch view with nothing to restyle.
+                            _ => (&loupe_lines, sty_hatch, styled.as_ref()),
+                        };
+                        let d = crate::drawing::loupe_drawing(
+                            loupe, lines, hatch, sty_for_loupe,
+                        );
+                        // What the styled view paints goes down first (#1850), so the
+                        // magnified edges draw over it exactly as they do on the card.
+                        for mark in &d.marks {
+                            match mark {
+                                crate::drawing::LoupeMark::Fill(fill) => {
+                                    let level = |c: u8| {
+                                        if white_paper {
+                                            (c as f32 * fill.shade.clamp(0.0, 1.0)) as u8
+                                        } else {
+                                            (c as f32 / 255.0
+                                                * fill.shade.clamp(0.0, 1.0)
+                                                * 110.0) as u8
+                                                + 30
+                                        }
+                                    };
+                                    let color = egui::Color32::from_rgb(
+                                        level(fill.tint[0]),
+                                        level(fill.tint[1]),
+                                        level(fill.tint[2]),
+                                    );
+                                    let pts: Vec<egui::Pos2> = fill
+                                        .points
+                                        .iter()
+                                        .map(|p| sv(*p))
+                                        .collect();
+                                    let mut mesh = egui::Mesh::default();
+                                    for p in &pts {
+                                        mesh.colored_vertex(*p, color);
+                                    }
+                                    for k in 1..pts.len().saturating_sub(1) {
+                                        mesh.add_triangle(0, k as u32, k as u32 + 1);
+                                    }
+                                    painter.add(egui::Shape::mesh(mesh));
+                                }
+                                crate::drawing::LoupeMark::Stroke(stroke) => {
+                                    let sh = stroke.shade.clamp(0.0, 1.0);
+                                    let tint: [u8; 3] = std::array::from_fn(|i| {
+                                        (stroke.tint[i] as f32 * sh) as u8
+                                    });
+                                    let color = if white_paper {
+                                        egui::Color32::from_rgb(tint[0], tint[1], tint[2])
+                                    } else {
+                                        ink_on_dark_sheet(tint)
+                                    };
+                                    let width = if stroke.on_sheet {
+                                        stroke.width * scale
+                                    } else {
+                                        stroke.width
+                                    };
+                                    painter.line_segment(
+                                        [sv(stroke.a), sv(stroke.b)],
+                                        egui::Stroke::new(width, color),
+                                    );
+                                }
+                            }
+                        }
                         for (a, b) in &d.content {
                             painter.line_segment(
                                 [sv(*a), sv(*b)],
@@ -28504,6 +28598,38 @@ impl App {
                                 )),
                                 egui::Sense::click_and_drag(),
                             );
+                            // #1850: a loupe can draw its detail in a style of its own —
+                            // right-click it and pick. "Same as the view" hands it back.
+                            lr.context_menu(|ui| {
+                                let mut pick: Option<Option<model::DrawingViewStyle>> = None;
+                                let follows = loupe.style.is_none();
+                                if hierarchy::menu_button(
+                                    ui,
+                                    if follows {
+                                        "✓ Same as the view".to_string()
+                                    } else {
+                                        "Same as the view".to_string()
+                                    },
+                                )
+                                .clicked()
+                                {
+                                    pick = Some(None);
+                                }
+                                for style in model::DrawingViewStyle::ALL {
+                                    let label = if loupe.style == Some(style) {
+                                        format!("✓ {}", style.label())
+                                    } else {
+                                        style.label().to_string()
+                                    };
+                                    if hierarchy::menu_button(ui, label).clicked() {
+                                        pick = Some(Some(style));
+                                    }
+                                }
+                                if let Some(style) = pick {
+                                    loupe_style = Some((vi, li, style));
+                                    ui.close();
+                                }
+                            });
                             let over = pointer_screen
                                 .is_some_and(|pp| (pp - sc).length() <= sr + 4.0);
                             if lr.clicked() && over && !exploder_open {
@@ -29685,6 +29811,7 @@ impl App {
                                         radius: r,
                                         to: (to.x, to.y),
                                         to_radius: to_r,
+                                        style: None,
                                     },
                                 });
                                 self.drawing_loupe_draft = None;
@@ -30002,6 +30129,9 @@ impl App {
                 view,
                 cross_section: None,
             });
+        }
+        if let Some((view, index, style)) = loupe_style {
+            self.state.apply(Action::SetDrawingLoupeStyle { drawing, view, index, style });
         }
         // Never relocate a projection while a dim label is being dragged (#1227).
         if self.drawing_dim_label_drag.is_some() {

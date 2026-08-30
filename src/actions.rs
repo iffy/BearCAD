@@ -3504,6 +3504,13 @@ pub enum Action {
         to: Option<(f32, f32)>,
         to_radius: Option<f32>,
     },
+    /// Draw a zoom loupe's detail in its own style (#1850); `None` follows the view's.
+    SetDrawingLoupeStyle {
+        drawing: crate::model::DrawingKey,
+        view: usize,
+        index: usize,
+        style: Option<crate::model::DrawingViewStyle>,
+    },
     /// Remove a zoom loupe (#1846).
     RemoveDrawingLoupe { drawing: crate::model::DrawingKey, view: usize, index: usize },
     /// Toggle the length dimension of one edge (by quantized world endpoints) in a drawing view.
@@ -14960,6 +14967,23 @@ impl AppState {
                 if let Some(r) = to_radius {
                     loupe.to_radius = r.abs().max(crate::model::MIN_LOUPE_RADIUS_MM);
                 }
+                ActionResult::Ok
+            }
+            Action::SetDrawingLoupeStyle { drawing, view, index, style } => {
+                let Some(loupe) = self
+                    .doc
+                    .drawings
+                    .get_mut(drawing)
+                    .and_then(|d| d.views.get_mut(view))
+                    .and_then(|v| v.loupes.get_mut(index))
+                else {
+                    return ActionResult::Err(format!("No loupe {index}"));
+                };
+                loupe.style = style;
+                self.status = match style {
+                    Some(s) => format!("Loupe style: {}", s.label()),
+                    None => "Loupe follows the view's style".to_string(),
+                };
                 ActionResult::Ok
             }
             Action::RemoveDrawingLoupe { drawing, view, index } => {
