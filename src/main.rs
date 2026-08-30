@@ -16105,7 +16105,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 self.state.apply(Action::MoveToComponent { element, component });
             }
             if let Some(element) = delete_element {
-                self.state.apply(Action::DeleteElement { element });
+                self.state.delete_element_or_selection(element);
             }
             if let Some(instance) = clone_unit_instance {
                 self.state.apply(Action::CloneUnitInstance { instance });
@@ -31741,6 +31741,10 @@ impl App {
                             &mut |linked| {
                                 do_paste = Some(linked);
                             },
+                            crate::selection::delete_menu_count(
+                                &self.state.scene_selection,
+                                &element,
+                            ),
                         );
                     }
                 }
@@ -31879,7 +31883,7 @@ impl App {
                 self.rollback_marker = marker;
             }
             if let Some(element) = delete_element {
-                self.state.apply(Action::DeleteElement { element });
+                self.state.delete_element_or_selection(element);
             }
             if let Some(instance) = clone_unit_instance {
                 self.state.apply(Action::CloneUnitInstance { instance });

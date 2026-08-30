@@ -9650,6 +9650,18 @@ impl AppState {
         }
     }
 
+    /// Delete from a context menu (#1853).
+    ///
+    /// Right-clicking one of several selected rows and choosing Delete means all of them —
+    /// the menu opened *on the selection*, not on that one row. A right-click somewhere
+    /// outside the selection still means only what was clicked.
+    pub fn delete_element_or_selection(&mut self, element: SceneElement) -> ActionResult {
+        if crate::selection::delete_menu_count(&self.scene_selection, &element) > 1 {
+            return self.apply(Action::DeleteSelection);
+        }
+        self.apply(Action::DeleteElement { element })
+    }
+
     pub fn apply(&mut self, action: Action) -> ActionResult {
         // The one funnel every action goes through, so it is the one place worth logging
         // from (#1023). A refusal only ever reached the status bar, where the next action
@@ -29388,6 +29400,53 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             crate::command_log::CommandLog::new_recording(false),
         ));
         state
+    }
+
+    /// #1853: Delete in a context menu opened on a row that is part of a multi-selection
+    /// deletes the **whole** selection. Right-clicking one of six selected elements and
+    /// choosing Delete removed only the row under the cursor.
+    #[test]
+    fn context_menu_delete_takes_the_whole_selection() {
+        let mut state = AppState::default();
+        let planes: Vec<_> = state
+            .doc
+            .construction_planes
+            .keys()
+            .map(SceneElement::ConstructionPlane)
+            .collect();
+        assert_eq!(planes.len(), 3, "the default document's three datum planes");
+        state.apply(Action::ClickSceneElement { element: planes[1].clone(), additive: false });
+        state.apply(Action::ClickSceneElement { element: planes[2].clone(), additive: true });
+
+        state.delete_element_or_selection(planes[1].clone());
+        assert_eq!(
+            state.doc.construction_planes.len(),
+            1,
+            "both selected planes should be gone, got {:?}",
+            state.doc.construction_planes.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// The same menu on a row *outside* the selection deletes only that row (#1853) — a
+    /// right-click somewhere else must not sweep away what happened to be selected.
+    #[test]
+    fn context_menu_delete_outside_the_selection_takes_only_that_element() {
+        let mut state = AppState::default();
+        let planes: Vec<_> = state
+            .doc
+            .construction_planes
+            .keys()
+            .map(SceneElement::ConstructionPlane)
+            .collect();
+        state.apply(Action::ClickSceneElement { element: planes[0].clone(), additive: false });
+        state.apply(Action::ClickSceneElement { element: planes[1].clone(), additive: true });
+
+        state.delete_element_or_selection(planes[2].clone());
+        assert_eq!(
+            state.doc.construction_planes.len(),
+            2,
+            "only the right-clicked plane should be gone"
+        );
     }
 
     /// #1852: the drag-drawn minimum was half a millimetre, which refused perfectly

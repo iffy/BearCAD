@@ -91,6 +91,19 @@ impl SceneSelection {
     }
 }
 
+/// How many elements a context-menu Delete opened on `element` would take (#1853).
+///
+/// A menu opened on one of several selected rows acts on the selection, not on that row
+/// alone; opened anywhere else it acts on just what was clicked.
+pub fn delete_menu_count(selection: &SceneSelection, element: &SceneElement) -> usize {
+    let picked = selection.ordered().len();
+    if picked > 1 && selection.is_selected(element.clone()) {
+        picked
+    } else {
+        1
+    }
+}
+
 /// Click an elements row: deselect when already selected; replace selection unless additive.
 ///
 /// This is the Select picker's pick behaviour (#966): additive toggles, plain replaces — so a

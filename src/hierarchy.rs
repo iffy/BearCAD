@@ -5373,6 +5373,7 @@ fn show_graph_view(
                             crate::copy_paste::copyable_element(&element).is_some(),
                             on_copy,
                             on_paste,
+                            crate::selection::delete_menu_count(selection, &element),
                         );
                     });
                 } else {
@@ -6432,6 +6433,7 @@ fn show_row(
                 crate::copy_paste::copyable_element(&element).is_some(),
                 on_copy,
                 on_paste,
+                crate::selection::delete_menu_count(selection, &element),
             );
         });
     });
@@ -6514,6 +6516,9 @@ pub(crate) fn element_context_menu(
     element_is_copyable: bool,
     on_copy: &mut impl FnMut(),
     on_paste: &mut impl FnMut(bool),
+    // How many elements Delete would take (#1853): >1 when the menu was opened on a row
+    // that is part of a multi-selection, so the item can say so before it happens.
+    delete_count: usize,
 ) {
     match node {
         HierarchyNode::Sketch(sketch) => {
@@ -6703,7 +6708,12 @@ pub(crate) fn element_context_menu(
         on_paste(true);
         ui.close();
     }
-    if ui.button("Delete").clicked() {
+    let delete_label = if delete_count > 1 {
+        format!("Delete {delete_count} elements")
+    } else {
+        "Delete".to_string()
+    };
+    if ui.button(delete_label).clicked() {
         on_delete_element(element.clone());
         ui.close();
     }
@@ -6886,6 +6896,7 @@ mod tests {
                     false,
                     &mut || {},
                     &mut |_| {},
+                    1,
                 );
             }
         });
