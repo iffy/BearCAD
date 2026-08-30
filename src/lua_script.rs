@@ -9981,6 +9981,37 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             unsafe { tick.exec(instr) }
         })?,
     )?;
+    // #1849: show or hide one edge's length dimension **on a loupe**, so the detail it
+    // magnifies can be dimensioned where it is readable. Same world-endpoint key as
+    // `drawing_dimension`; calling it again hides the dimension.
+    api.set(
+        "drawing_loupe_dimension",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "drawing_loupe_dimension",
+                &["drawing", "view", "index", "a", "b"],
+            )?;
+            let point = |key: &str| -> mlua::Result<(f32, f32, f32)> {
+                let v: Vec<f32> = opts.get(key)?;
+                if v.len() != 3 {
+                    return Err(mlua::Error::external(format!(
+                        "drawing_loupe_dimension `{key}` must be a {{x, y, z}} point"
+                    )));
+                }
+                Ok((v[0], v[1], v[2]))
+            };
+            let instr = Instruction::ToggleDrawingLoupeDimension {
+                drawing: opts.ordinal_req("drawing")?,
+                view: opts.ordinal_req("view")?,
+                index: opts.ordinal_req("index")?,
+                a: point("a")?,
+                b: point("b")?,
+            };
+            unsafe { tick.exec(instr) }
+        })?,
+    )?;
     api.set(
         "delete_drawing_loupe",
         lua.create_function(|lua, opts: Table| {
@@ -10027,6 +10058,19 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     "style",
                     loupe.style.map(|s| s.script_name()).unwrap_or("view"),
                 )?;
+                // #1849: the edges dimensioned on this loupe, as {a, b} world-point pairs.
+                let dims = lua.create_table()?;
+                for (n, (a, b)) in loupe.dimensioned_edges.iter().enumerate() {
+                    let pair = lua.create_table()?;
+                    let point = |q: &[i32; 3]| {
+                        let p = crate::hierarchy::dequantize_body_point(*q);
+                        vec![p.x, p.y, p.z]
+                    };
+                    pair.set("a", point(a))?;
+                    pair.set("b", point(b))?;
+                    dims.set(n + 1, pair)?;
+                }
+                t.set("dimensions", dims)?;
                 out.set(i + 1, t)?;
             }
             Ok(out)

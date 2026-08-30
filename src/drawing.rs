@@ -3514,6 +3514,64 @@ fn render_view_geometry<C: Canvas>(
             let (sa, sb) = (to_screen(*a), to_screen(*b));
             canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, HATCH_STROKE);
         }
+        // Dimensions the loupe carries (#1849): drawn against the magnified copy of the
+        // edge, labelled with its real length.
+        {
+            let (c1, c2) = (d.detail.0, d.magnified.0);
+            let zoom = loupe_zoom(loupe);
+            let map = |p: glam::Vec2| c2 + (p - c1) * zoom;
+            for (i, (a, b)) in proj.iter().enumerate() {
+                let (wa, wb) = world_edges[i];
+                if !loupe.dimensioned_edges.contains(&edge_key(wa, wb)) {
+                    continue;
+                }
+                let Some((ca, cb)) = clip_segment_to_circle(*a, *b, c1, loupe.radius.abs())
+                else {
+                    continue;
+                };
+                let (ma, mb) = (map(ca), map(cb));
+                if (mb - ma).length() < 1e-3 {
+                    continue;
+                }
+                let outward = dimension_outward(ma, mb, c2);
+                // Same sizes the card's own dimensions use (they are set further down, where
+                // the view's dimensions are drawn; a loupe's are the same page distances).
+                let diag = extent.length().max(1.0);
+                let geom =
+                    dimension_line_geometry(ma, mb, outward, diag * 0.05, diag * 0.025);
+                let stroke_line = |canvas: &mut C, p: glam::Vec2, q: glam::Vec2| {
+                    let (sp, sq) = (to_screen(p), to_screen(q));
+                    canvas.line(sp.x, sp.y, sq.x, sq.y, BLACK, DIM_STROKE);
+                };
+                for (p, q) in geom.extensions {
+                    stroke_line(canvas, p, q);
+                }
+                stroke_line(canvas, geom.line.0, geom.line.1);
+                for tri in geom.arrows {
+                    let pts: Vec<(f32, f32)> = tri
+                        .iter()
+                        .map(|p| {
+                            let s = to_screen(*p);
+                            (s.x, s.y)
+                        })
+                        .collect();
+                    canvas.poly(&pts, BLACK);
+                }
+                let label = crate::value::format_length_display_in((wa - wb).length(), unit);
+                let (sa, sb) = (to_screen(geom.line.0), to_screen(geom.line.1));
+                let out_screen =
+                    (to_screen(geom.line.0 + outward) - to_screen(geom.line.0)).normalize();
+                let (lp, ang) = dimension_label_layout(
+                    sa,
+                    sb,
+                    out_screen,
+                    text_device_width(11.0, &label),
+                    11.0,
+                    5.0,
+                );
+                canvas.text_rot(lp.x, lp.y, 11.0, Anchor::Middle, &label, ang);
+            }
+        }
         for (c, r) in [d.detail, d.magnified] {
             let sc = to_screen(c);
             canvas.circle(sc.x, sc.y, r * scale, BLACK, LOUPE_STROKE);
@@ -4133,7 +4191,14 @@ mod loupe_tests {
     use crate::model::DrawingLoupe;
 
     fn loupe() -> DrawingLoupe {
-        DrawingLoupe { at: (10.0, 5.0), radius: 4.0, to: (60.0, 5.0), to_radius: 12.0, style: None }
+        DrawingLoupe {
+            at: (10.0, 5.0),
+            radius: 4.0,
+            to: (60.0, 5.0),
+            to_radius: 12.0,
+            style: None,
+            dimensioned_edges: Vec::new(),
+        }
     }
 
     /// #1850: what a loupe paints under its edges is clipped to the detail circle and lands

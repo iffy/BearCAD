@@ -458,6 +458,14 @@ pub enum Instruction {
         index: usize,
         style: Option<crate::model::DrawingViewStyle>,
     },
+    /// Show or hide one edge's length dimension on a loupe (#1849), by world endpoints.
+    ToggleDrawingLoupeDimension {
+        drawing: usize,
+        view: usize,
+        index: usize,
+        a: (f32, f32, f32),
+        b: (f32, f32, f32),
+    },
     /// Drop a zoom loupe (#1846).
     DeleteDrawingLoupe { drawing: usize, view: usize, index: usize },
     /// Change what a free point-to-point dimension measures (#1645).
@@ -1711,6 +1719,11 @@ impl Instruction {
                 "bearcad.edit_drawing_loupe{{ drawing = {drawing}, view = {view}, \
                  index = {index}, style = {:?} }}",
                 style.map(|s| s.script_name()).unwrap_or("view")
+            ),
+            Instruction::ToggleDrawingLoupeDimension { drawing, view, index, a, b } => format!(
+                "bearcad.drawing_loupe_dimension{{ drawing = {drawing}, view = {view}, \
+                 index = {index}, a = {{ {}, {}, {} }}, b = {{ {}, {}, {} }} }}",
+                a.0, a.1, a.2, b.0, b.1, b.2
             ),
             Instruction::DeleteDrawingLoupe { drawing, view, index } => format!(
                 "bearcad.delete_drawing_loupe{{ drawing = {drawing}, view = {view}, index = {index} }}"
@@ -7502,7 +7515,14 @@ impl ScriptRunner {
                 let result = state.apply(Action::AddDrawingLoupe {
                     drawing,
                     view,
-                    loupe: crate::model::DrawingLoupe { at, radius, to, to_radius, style: None },
+                    loupe: crate::model::DrawingLoupe {
+                        at,
+                        radius,
+                        to,
+                        to_radius,
+                        style: None,
+                        dimensioned_edges: Vec::new(),
+                    },
                 });
                 self.record_action_error(result);
                 StepResult::Continue
@@ -7531,6 +7551,24 @@ impl ScriptRunner {
                 };
                 let result =
                     state.apply(Action::SetDrawingLoupeStyle { drawing, view, index, style });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::ToggleDrawingLoupeDimension { drawing, view, index, a, b } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
+                let q = |p: (f32, f32, f32)| {
+                    crate::hierarchy::quantize_body_point(Vec3::new(p.0, p.1, p.2))
+                };
+                let result = state.apply(Action::ToggleDrawingLoupeDimension {
+                    drawing,
+                    view,
+                    index,
+                    a: q(a),
+                    b: q(b),
+                });
                 self.record_action_error(result);
                 StepResult::Continue
             }

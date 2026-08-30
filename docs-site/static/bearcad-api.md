@@ -243,7 +243,8 @@ bearcad.drawing_curve_dimension{ drawing, view, points }
 bearcad.drawing_dim_offset{ drawing, view, offset, a, b }
 bearcad.drawing_dimension{ drawing, view, a, b }
 bearcad.drawing_loupe{ drawing, view, at, radius, to, to_radius }   -- at/to are {u, v} in the view's projected mm
-bearcad.drawing_loupes{ drawing, view }   -- { at, radius, to, to_radius, zoom, style } each
+bearcad.drawing_loupe_dimension{ drawing, view, index, a, b }   -- show/hide one edge's length dimension on a loupe; a/b are its world endpoints
+bearcad.drawing_loupes{ drawing, view }   -- { at, radius, to, to_radius, zoom, style, dimensions } each
 bearcad.drawing_move_view{ drawing, view, x, y }
 bearcad.drawing_page{ drawing, width, height, margin }
 bearcad.drawing_paper{ drawing, paper }   -- white | dark (the editor's sheet; exports are always white)

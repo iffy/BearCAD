@@ -5196,7 +5196,7 @@ pub struct DrawingView {
 /// their radii. A thin line joins their rims. Both live in the view's own projected
 /// millimetres — the same space `point_dims` use — so a loupe travels with its view and holds
 /// its place whatever the page scale.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DrawingLoupe {
     /// Centre of the detail circle, on the projection.
     pub at: (f32, f32),
@@ -5209,6 +5209,12 @@ pub struct DrawingLoupe {
     /// the other way round), which is most of the point of magnifying it.
     #[serde(default)]
     pub style: Option<DrawingViewStyle>,
+    /// Edges dimensioned **on this loupe** (#1849), keyed by quantized world endpoints the
+    /// way a view's own dimensions are. The dimension is drawn against the magnified copy of
+    /// the edge — which is the point: the detail a loupe exists for is too small to dimension
+    /// on the card itself.
+    #[serde(default)]
+    pub dimensioned_edges: Vec<DrawingEdgeKey>,
 }
 
 impl DrawingLoupe {

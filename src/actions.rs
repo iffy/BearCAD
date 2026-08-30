@@ -3511,6 +3511,15 @@ pub enum Action {
         index: usize,
         style: Option<crate::model::DrawingViewStyle>,
     },
+    /// Show or hide the length dimension of one edge **on a loupe** (#1849), keyed by the
+    /// edge's quantized world endpoints like a view's own.
+    ToggleDrawingLoupeDimension {
+        drawing: crate::model::DrawingKey,
+        view: usize,
+        index: usize,
+        a: [i32; 3],
+        b: [i32; 3],
+    },
     /// Remove a zoom loupe (#1846).
     RemoveDrawingLoupe { drawing: crate::model::DrawingKey, view: usize, index: usize },
     /// Toggle the length dimension of one edge (by quantized world endpoints) in a drawing view.
@@ -14934,6 +14943,7 @@ impl AppState {
                 let mut loupe = loupe;
                 loupe.radius = loupe.radius.abs().max(crate::model::MIN_LOUPE_RADIUS_MM);
                 loupe.to_radius = loupe.to_radius.abs().max(crate::model::MIN_LOUPE_RADIUS_MM);
+                let zoom = crate::drawing::loupe_zoom(&loupe);
                 v.loupes.push(loupe);
                 let index = self.doc.drawings[drawing].views[view].loupes.len() - 1;
                 // Select the magnified circle: it is the one you place last and usually want
@@ -14942,7 +14952,7 @@ impl AppState {
                     drawing,
                     crate::context::DrawingElementRef::Loupe { view, index, magnified: true },
                 );
-                self.status = format!("Added loupe {index} ({:.1}×)", crate::drawing::loupe_zoom(&loupe));
+                self.status = format!("Added loupe {index} ({zoom:.1}×)");
                 ActionResult::Ok
             }
             Action::SetDrawingLoupe { drawing, view, index, at, radius, to, to_radius } => {
@@ -14984,6 +14994,26 @@ impl AppState {
                     Some(s) => format!("Loupe style: {}", s.label()),
                     None => "Loupe follows the view's style".to_string(),
                 };
+                ActionResult::Ok
+            }
+            Action::ToggleDrawingLoupeDimension { drawing, view, index, a, b } => {
+                let key = crate::model::normalized_edge_key(a, b);
+                let Some(loupe) = self
+                    .doc
+                    .drawings
+                    .get_mut(drawing)
+                    .and_then(|d| d.views.get_mut(view))
+                    .and_then(|v| v.loupes.get_mut(index))
+                else {
+                    return ActionResult::Err(format!("No loupe {index}"));
+                };
+                if let Some(pos) = loupe.dimensioned_edges.iter().position(|e| *e == key) {
+                    loupe.dimensioned_edges.remove(pos);
+                    self.status = "Hid loupe dimension".to_string();
+                } else {
+                    loupe.dimensioned_edges.push(key);
+                    self.status = "Showed loupe dimension".to_string();
+                }
                 ActionResult::Ok
             }
             Action::RemoveDrawingLoupe { drawing, view, index } => {

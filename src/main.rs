@@ -27295,6 +27295,8 @@ impl App {
         // Right-click a zoom loupe → the style its detail draws in (#1850):
         // (view, loupe index, style; `None` follows the view's).
         let mut loupe_style: Option<(usize, usize, Option<model::DrawingViewStyle>)> = None;
+        // The Dimension tool clicked an edge inside a loupe (#1849): (view, loupe, edge key).
+        let mut toggle_loupe_dim: Option<(usize, usize, crate::model::DrawingEdgeKey)> = None;
         let mut toggle_dim: Option<(usize, [i32; 3], [i32; 3])> = None;
         // A finished free point-to-point dimension (#1645): (view, first point, second point)
         // in the view's projected millimetres.
@@ -28513,6 +28515,155 @@ impl App {
                                 egui::Stroke::new(crate::drawing::HATCH_STROKE, INK),
                             );
                         }
+                        // Dimensions on the loupe (#1849): the magnified copy of an edge
+                        // gets an ordinary architectural dimension, labelled with the edge's
+                        // real length. This is what a loupe is for — the detail is too small
+                        // to dimension on the card.
+                        {
+                            let (c1, c2) = (d.detail.0, d.magnified.0);
+                            let zoom = crate::drawing::loupe_zoom(loupe);
+                            let map = |p: glam::Vec2| c2 + (p - c1) * zoom;
+                            // The pointer's own place in the view's millimetres, for the
+                            // Dimension tool's hover/pick inside the circle.
+                            let mag_hit = |pp: egui::Pos2| {
+                                (pp - sv(c2)).length() <= d.magnified.1 * scale
+                            };
+                            let dim_pick = (self.state.tool == Tool::Dimension)
+                                .then(|| {
+                                    let sc2 = sv(c2);
+                                    let srr = d.magnified.1 * scale;
+                                    ui.interact(
+                                        egui::Rect::from_center_size(
+                                            sc2,
+                                            egui::vec2(srr * 2.0, srr * 2.0),
+                                        ),
+                                        ui.make_persistent_id((
+                                            "drawing_loupe_dim", drawing, vi, li,
+                                        )),
+                                        egui::Sense::click(),
+                                    )
+                                });
+                            // Which magnified edge the cursor is nearest, inside the circle.
+                            let mut near: Option<(f32, usize)> = None;
+                            if self.state.tool == Tool::Dimension {
+                                if let Some(pp) = pointer_screen.filter(|pp| mag_hit(*pp)) {
+                                    for (i, (a, b)) in proj.iter().enumerate() {
+                                        let Some((ca, cb)) =
+                                            crate::drawing::clip_segment_to_circle(
+                                                glam::Vec2::new(a.x, a.y),
+                                                glam::Vec2::new(b.x, b.y),
+                                                c1,
+                                                loupe.radius.abs(),
+                                            )
+                                        else {
+                                            continue;
+                                        };
+                                        let dd = dist_point_to_segment(
+                                            pp,
+                                            sv(map(ca)),
+                                            sv(map(cb)),
+                                        );
+                                        if near.is_none_or(|(bd, _)| dd < bd) {
+                                            near = Some((dd, i));
+                                        }
+                                    }
+                                }
+                            }
+                            let hovered_here = near.filter(|(dd, _)| *dd <= 8.0).map(|(_, i)| i);
+                            if dim_pick.as_ref().is_some_and(|r| r.clicked()) && !exploder_open
+                            {
+                                if let Some(i) = hovered_here {
+                                    let (wa, wb) = world_edges[i];
+                                    let key = edge_key(wa, wb);
+                                    toggle_loupe_dim = Some((vi, li, key));
+                                }
+                            }
+                            for (i, (a, b)) in proj.iter().enumerate() {
+                                let (wa, wb) = world_edges[i];
+                                let key = edge_key(wa, wb);
+                                let shown = loupe.dimensioned_edges.contains(&key);
+                                if !shown && hovered_here != Some(i) {
+                                    continue;
+                                }
+                                let Some((ca, cb)) = crate::drawing::clip_segment_to_circle(
+                                    glam::Vec2::new(a.x, a.y),
+                                    glam::Vec2::new(b.x, b.y),
+                                    c1,
+                                    loupe.radius.abs(),
+                                ) else {
+                                    continue;
+                                };
+                                let (ma, mb) = (map(ca), map(cb));
+                                if hovered_here == Some(i) {
+                                    painter.line_segment(
+                                        [sv(ma), sv(mb)],
+                                        egui::Stroke::new(
+                                            2.4,
+                                            egui::Color32::from_rgb(90, 150, 230),
+                                        ),
+                                    );
+                                }
+                                if !shown || (mb - ma).length() < 1e-3 {
+                                    continue;
+                                }
+                                // Push the dimension away from the loupe's centre, so it
+                                // reads outside the magnified geometry rather than over it.
+                                let seg = mb - ma;
+                                let mut outward = glam::Vec2::new(-seg.y, seg.x).normalize_or_zero();
+                                if outward == glam::Vec2::ZERO {
+                                    outward = glam::Vec2::new(0.0, -1.0);
+                                }
+                                if outward.dot((ma + mb) * 0.5 - c2) < 0.0 {
+                                    outward = -outward;
+                                }
+                                let g = crate::drawing::dimension_line_geometry(
+                                    ma, mb, outward, default_gap, arrow,
+                                );
+                                let sp = |p: glam::Vec2| sv(p);
+                                for (p, q) in g.extensions {
+                                    painter.line_segment(
+                                        [sp(p), sp(q)],
+                                        egui::Stroke::new(crate::drawing::DIM_STROKE, INK),
+                                    );
+                                }
+                                painter.line_segment(
+                                    [sp(g.line.0), sp(g.line.1)],
+                                    egui::Stroke::new(crate::drawing::DIM_STROKE, INK),
+                                );
+                                for tri in g.arrows {
+                                    painter.add(egui::Shape::convex_polygon(
+                                        tri.iter().map(|p| sp(*p)).collect(),
+                                        INK,
+                                        egui::Stroke::NONE,
+                                    ));
+                                }
+                                // The label says the edge's **real** length, not the
+                                // magnified one — the loupe magnifies the picture, not the
+                                // part.
+                                let text = crate::value::format_length_display_in(
+                                    (wa - wb).length(),
+                                    unit,
+                                );
+                                let (sla, slb) = (sp(g.line.0), sp(g.line.1));
+                                let out_screen = (sp(g.line.0 + outward) - sp(g.line.0))
+                                    .normalized();
+                                let (lp, ang) = crate::drawing::dimension_label_layout(
+                                    glam::Vec2::new(sla.x, sla.y),
+                                    glam::Vec2::new(slb.x, slb.y),
+                                    glam::Vec2::new(out_screen.x, out_screen.y),
+                                    crate::drawing::text_device_width(dim_font, &text),
+                                    dim_font,
+                                    5.0 * px_per_pt,
+                                );
+                                let galley =
+                                    painter.layout_no_wrap(text, label_font.clone(), INK);
+                                let rot = egui::emath::Rot2::from_angle(ang);
+                                let pos = egui::pos2(lp.x, lp.y) - rot * (galley.size() * 0.5);
+                                let mut shape = egui::epaint::TextShape::new(pos, galley, INK);
+                                shape.angle = ang;
+                                painter.add(shape);
+                            }
+                        }
                         // The loupe's own chrome strokes thinner than the model outline, and
                         // blue on whichever circle is selected.
                         for (magnified, (c, r)) in [(false, d.detail), (true, d.magnified)] {
@@ -29666,7 +29817,7 @@ impl App {
                         .get(drawing)
                         .and_then(|d| d.views.get(grab.view))
                         .and_then(|v| v.loupes.get(grab.index))
-                        .copied();
+                        .cloned();
                     if let Some(loupe) = loupe {
                         let (at, to) = (
                             egui::vec2(loupe.at.0, loupe.at.1),
@@ -29812,6 +29963,7 @@ impl App {
                                         to: (to.x, to.y),
                                         to_radius: to_r,
                                         style: None,
+                                        dimensioned_edges: Vec::new(),
                                     },
                                 });
                                 self.drawing_loupe_draft = None;
@@ -30132,6 +30284,15 @@ impl App {
         }
         if let Some((view, index, style)) = loupe_style {
             self.state.apply(Action::SetDrawingLoupeStyle { drawing, view, index, style });
+        }
+        if let Some((view, index, (a, b))) = toggle_loupe_dim {
+            self.state.apply(Action::ToggleDrawingLoupeDimension {
+                drawing,
+                view,
+                index,
+                a,
+                b,
+            });
         }
         // Never relocate a projection while a dim label is being dragged (#1227).
         if self.drawing_dim_label_drag.is_some() {
