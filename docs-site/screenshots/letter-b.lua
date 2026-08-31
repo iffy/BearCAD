@@ -130,9 +130,9 @@ bearcad.extrude{ polygon = { 7, 8, 9 }, distance = -13, body = "cut" }
 -- Clean render: leave the sketch, hide the cap sketch's outlines and the ground plane.
 bearcad.exit_sketch()
 bearcad.clear_selection()
-bearcad.set_visible({ kind = "sketch", index = 1 }, "hide")
+bearcad.set_visible({ kind = "sketch", index = 1 }, false)
 -- Hide the three datum planes a new document opens with.
-for i = 0, 2 do bearcad.set_visible({ kind = "construction_plane", index = i }, "hide") end
+bearcad.set_visible({ kind = "plane" }, false)
 
 -- Hide the ground grid too for a clean background (#579).
 bearcad.ui.ground("off")

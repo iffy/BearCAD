@@ -94,16 +94,16 @@ bearcad.ui.wait(8)
 -- A Move makes an output body; the input becomes shadow, so read the last one. The block's
 -- picked corner lands on the slab's picked centre, surfaces together.
 local placed = bearcad.body_stats(bearcad.count("body") - 1).bbox
-assert(math.abs(placed.min[3] - 10) < 0.05,
-  "the block should sit on the slab's top face (z = 10), got " .. placed.min[3])
+assert(math.abs(placed.min.z - 10) < 0.05,
+  "the block should sit on the slab's top face (z = 10), got " .. placed.min.z)
 -- Landing flips the part (the two normals end up opposed), so which corner of the bounding
 -- box the picked one becomes depends on the turn; what must hold is that a corner is there.
 local function touches(lo, hi, v)
   return math.abs(lo - v) < 0.05 or math.abs(hi - v) < 0.05
 end
-assert(touches(placed.min[1], placed.max[1], 15) and touches(placed.min[2], placed.max[2], 15),
+assert(touches(placed.min.x, placed.max.x, 15) and touches(placed.min.y, placed.max.y, 15),
   "its picked corner should land on the slab's centre (15, 15), spans x "
-  .. placed.min[1] .. ".." .. placed.max[1] .. ", y " .. placed.min[2] .. ".." .. placed.max[2])
+  .. placed.min.x .. ".." .. placed.max.x .. ", y " .. placed.min.y .. ".." .. placed.max.y)
 
 print("ok: Face Snap takes a face, then a point on that face")
 bearcad.quit()

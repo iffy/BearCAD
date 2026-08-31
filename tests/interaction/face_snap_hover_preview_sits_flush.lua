@@ -47,9 +47,9 @@ assert(h and h.kind == "body_vertex",
 
 local p = bearcad.move_preview()
 assert(p and p.bbox, "hovering a Face Snap point should preview the move")
-assert(p.bbox.min[3] > 9.5,
+assert(p.bbox.min.z > 9.5,
   "the moving face should sit against the slab top (z = 10), not slice through, min.z="
-  .. p.bbox.min[3])
+  .. p.bbox.min.z)
 
 print("ok: Face Snap hover preview sits the moving face against the fixed face")
 bearcad.quit()

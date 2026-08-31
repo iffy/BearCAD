@@ -33,8 +33,8 @@ bearcad.ui.wait(8)
 
 assert(bearcad.count("body") == 2, "one block plus the cylinder, got " .. bearcad.count("body"))
 local stats = bearcad.body_stats(1)
-local cx = (stats.bbox.min[1] + stats.bbox.max[1]) / 2
-local cy = (stats.bbox.min[2] + stats.bbox.max[2]) / 2
+local cx = (stats.bbox.min.x + stats.bbox.max.x) / 2
+local cy = (stats.bbox.min.y + stats.bbox.max.y) / 2
 assert(math.abs(cx - 40) < 0.2, "the centre snapped to x = 40, got " .. cx)
 assert(math.abs(cy - 20) < 0.2, "the centre snapped to y = 20, got " .. cy)
 
@@ -56,7 +56,7 @@ bearcad.ui.wait(8)
 
 assert(bearcad.count("body") == 3, "a third body, got " .. bearcad.count("body"))
 stats = bearcad.body_stats(2)
-cx = (stats.bbox.min[1] + stats.bbox.max[1]) / 2
+cx = (stats.bbox.min.x + stats.bbox.max.x) / 2
 assert(math.abs(cx - 41.5) < 0.3, "unsnapped, the centre stays at 41.5, got " .. cx)
 
 print("ok: shape placement snaps to a body corner, and doesn't when snapping is off")

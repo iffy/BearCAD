@@ -880,6 +880,27 @@ fn lua_index_arg(lua: &Lua, value: Option<&Value>, what: &str) -> mlua::Result<u
     Ordinal::from_lua(value.clone(), lua).map(|o| o.0)
 }
 
+/// A handle, a list of handles, or `{ kind = "plane" }` (every element of that kind) (#1890).
+fn resolve_element_targets(lua: &Lua, value: Value, verb: &str) -> mlua::Result<Vec<SceneElement>> {
+    if let Value::Table(table) = &value {
+        if let Some(kind) = kind_only_selector(table)? {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let elements = elements_of_kind(unsafe { &tick.state().doc }, &kind);
+            if elements.is_empty() {
+                return Err(mlua::Error::external(format!(
+                    "{verb}: no '{kind}' elements — unknown kind, or none in the document"
+                )));
+            }
+            return Ok(elements);
+        }
+    }
+    let elements = resolve_elements(lua, value)?;
+    if elements.is_empty() {
+        return Err(mlua::Error::external(format!("{verb} requires an element")));
+    }
+    Ok(elements)
+}
+
 /// One element, or a list of them (#1878). An options-style `{ kind, index }` / `{ name }`
 /// table is one element; an array is a list.
 fn resolve_elements(lua: &Lua, value: Value) -> mlua::Result<Vec<SceneElement>> {
@@ -2836,14 +2857,26 @@ fn parse_distance_target(lua: &Lua, table: Table) -> mlua::Result<DistanceTarget
     }
 }
 
-/// A world-space vector as a positional Lua triple `{x, y, z}` (for `bearcad.get`'s plane
-/// origin/normal, `bearcad.body_stats`' bbox corners, and `bearcad.ui.camera{}`'s target).
+/// A world-space vector as `{ x, y, z }` (for `bearcad.get`'s plane origin/normal,
+/// `bearcad.body_stats`' bbox corners, and `bearcad.ui.camera{}`'s target). Array
+/// indices stay as aliases so `min[3]` still reads Z.
 fn vec3_lua(lua: &Lua, v: glam::Vec3) -> mlua::Result<Table> {
     let t = lua.create_table()?;
+    t.set("x", v.x)?;
+    t.set("y", v.y)?;
+    t.set("z", v.z)?;
     t.set(1, v.x)?;
     t.set(2, v.y)?;
     t.set(3, v.z)?;
     Ok(t)
+}
+
+fn vec3_from_lua(t: &Table) -> mlua::Result<(f32, f32, f32)> {
+    Ok((
+        t.get("x").or_else(|_| t.get(1))?,
+        t.get("y").or_else(|_| t.get(2))?,
+        t.get("z").or_else(|_| t.get(3))?,
+    ))
 }
 
 /// Short script name for the face a sketch is hosted on (`bearcad.get`, #107).
@@ -4151,33 +4184,19 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "set_visible",
         lua.create_function(|lua, (element, visible): (Value, Value)| {
-            let visible = parse_visibility(visible)?;
-            // `{ kind = … }` alone is every element of that kind (#1800).
-            if let Value::Table(table) = &element {
-                if let Some(kind) = kind_only_selector(table)? {
-                    let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-                    let elements = elements_of_kind(unsafe { &tick.state().doc }, &kind);
-                    if elements.is_empty() {
-                        return Err(mlua::Error::external(format!(
-                            "set_visible: no '{kind}' elements — unknown kind, or none in the \
-                             document"
-                        )));
-                    }
-                    let mut last = Created(Vec::new());
-                    for element in elements {
-                        last = unsafe {
-                            tick.exec(Instruction::SetElementVisible { element, visible })?
-                        };
-                    }
-                    return Ok(last);
-                }
-            }
-            let element = resolve_element(lua, element)?;
+            let visible = parse_bool(visible, "visible")?;
+            let elements = resolve_element_targets(lua, element, "set_visible")?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            unsafe {
-                tick.exec(Instruction::SetElementVisible { element, visible },
-                )
+            let mut last = Created(Vec::new());
+            for element in elements {
+                last = unsafe {
+                    tick.exec(Instruction::SetElementVisible {
+                        element,
+                        visible: Some(visible),
+                    })?
+                };
             }
+            Ok(last)
         })?,
     )?;
 
@@ -4196,16 +4215,19 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "set_construction",
         lua.create_function(|lua, (element, construction): (Value, Value)| {
-            let element = resolve_element(lua, element)?;
             let construction = parse_bool(construction, "construction")?;
+            let elements = resolve_element_targets(lua, element, "set_construction")?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            unsafe {
-                tick.exec(Instruction::SetShapeConstruction {
+            let mut last = Created(Vec::new());
+            for element in elements {
+                last = unsafe {
+                    tick.exec(Instruction::SetShapeConstruction {
                         element,
                         construction,
-                    },
-                )
+                    })?
+                };
             }
+            Ok(last)
         })?,
     )?;
 
@@ -6037,7 +6059,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         angle_deg_opt(lua, doc, t, "camera", "pitch")?,
                         length_mm_opt(lua, doc, t, "camera", "distance")?,
                         match t.get::<Option<Table>>("target")? {
-                            Some(v) => Some((v.get(1)?, v.get(2)?, v.get(3)?)),
+                            Some(v) => Some(vec3_from_lua(&v)?),
                             None => None,
                         },
                         match t.get::<Option<String>>("projection")? {
@@ -10812,6 +10834,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         local ui_funcs = {
             "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_calibrate", "focus_dim", "pane", "pane_rect", "elements_row_rect", "context_row_rect", "menu_items", "menu_item_rect", "drawing_view_rect", "drawing_loupe_rect", "pane_scroll", "scroll_pane", "ai_sections", "ai_pane_sections", "ai_mcp", "menu_structure",
             "add_geometric_constraint",
+            "apply_construction", "toggle_construction", "apply_visibility", "toggle_visibility",
             "widget_id_warnings", "headless", "_deferred", "palette", "settings",
             "changelog",
             "mcmaster",
@@ -11279,7 +11302,7 @@ pub mod tests {
             local ok = pcall(function() bearcad.edit_shape{ index = 0, width = -20 } end)
             assert(not ok, "edit to a negative width must be rejected")
             local stats = bearcad.body_stats(0)
-            assert(math.abs((stats.bbox.max[1] - stats.bbox.min[1]) - 5) < 1e-3)
+            assert(math.abs((stats.bbox.max.x - stats.bbox.min.x) - 5) < 1e-3)
             "#,
         );
     }
@@ -12689,7 +12712,7 @@ pub mod tests {
             local pan_step = bearcad.ui.tutorial_step()
             bearcad.ui.tutorial_assist()
             assert(bearcad.ui.tutorial_step() == pan_step, "pan has no assist")
-            bearcad.ui.camera{ target = {home.target[1] + 40, home.target[2] + 20, home.target[3]} }
+            bearcad.ui.camera{ target = {home.target.x + 40, home.target.y + 20, home.target.z} }
             assert(bearcad.ui.tutorial_narration() == "Good job!")
             bearcad.ui.tutorial_next()
             assert(bearcad.ui.tutorial_narration():find("zoom", 1, true),
@@ -12714,7 +12737,7 @@ pub mod tests {
             assert(bearcad.ui.tutorial_step() == home_step, "go home has no assist")
             bearcad.ui.camera{
               yaw = home.yaw, pitch = home.pitch, distance = home.distance,
-              target = {home.target[1], home.target[2], home.target[3]}
+              target = {home.target.x, home.target.y, home.target.z}
             }
             assert(bearcad.ui.tutorial_narration():find("Nice", 1, true),
                    bearcad.ui.tutorial_narration())
@@ -13697,9 +13720,61 @@ pub mod tests {
             local ok, err = pcall(bearcad.set_visible, { kind = "image" }, false)
             assert(not ok, "an empty kind must be refused")
             assert(tostring(err):find("no 'image'"), "unexpected error: " .. tostring(err))
+            -- #1890: boolean only — not "hide"/"show"/"toggle".
+            local hide_ok = pcall(bearcad.set_visible, { kind = "plane" }, "hide")
+            assert(not hide_ok, "set_visible must refuse the old hide/show strings")
         "#,
         );
         assert_eq!(state.doc.construction_planes.len(), 3);
+    }
+
+    /// #1890: one `set_visible` / `set_construction` takes a handle, a list, or a kind;
+    /// selection/live-tool forms live on `bearcad.ui`.
+    #[test]
+    fn lua_set_visible_and_set_construction_take_handle_list_or_kind() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            local box = bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            local p0 = bearcad.element("plane", 0)
+            local p1 = bearcad.element("plane", 1)
+            bearcad.set_visible({ p0, p1 }, false)
+            assert(not bearcad.visible(p0) and not bearcad.visible(p1), "list hide")
+            bearcad.set_visible(p0, true)
+            assert(bearcad.visible(p0) and not bearcad.visible(p1), "handle show")
+
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.set_construction({ kind = "line" }, true)
+            assert(bearcad.get{ kind = "line", index = 0 }.construction)
+            assert(bearcad.get{ kind = "line", index = 3 }.construction)
+            local sides = { bearcad.element("line", 0), bearcad.element("line", 1) }
+            bearcad.set_construction(sides, false)
+            assert(not bearcad.get{ kind = "line", index = 0 }.construction)
+            assert(not bearcad.get{ kind = "line", index = 1 }.construction)
+            assert(bearcad.get{ kind = "line", index = 2 }.construction)
+
+            assert(type(bearcad.ui.toggle_visibility) == "function")
+            assert(type(bearcad.ui.apply_visibility) == "function")
+            assert(type(bearcad.ui.toggle_construction) == "function")
+            assert(type(bearcad.ui.apply_construction) == "function")
+            assert(bearcad.toggle_visibility == nil)
+            assert(bearcad.apply_visibility == nil)
+            assert(bearcad.toggle_construction == nil)
+            assert(bearcad.apply_construction == nil)
+
+            bearcad.select(box)
+            bearcad.ui.apply_visibility(false)
+            assert(not bearcad.visible(box))
+            bearcad.ui.toggle_visibility()
+            assert(bearcad.visible(box))
+
+            bearcad.select({ kind = "line", index = 2 })
+            bearcad.ui.apply_construction(false)
+            assert(not bearcad.get{ kind = "line", index = 2 }.construction)
+            bearcad.ui.toggle_construction()
+            assert(bearcad.get{ kind = "line", index = 2 }.construction)
+        "#,
+        );
     }
 
     /// #1801: a creation call hands back a stable handle for what it made, and every operand
@@ -13939,8 +14014,8 @@ pub mod tests {
                                    mode = "count_fit_ends", count = 5, length = 360 }
             local src = bearcad.body_stats(0).bbox
             local last = bearcad.body_stats(4).bbox
-            local function cx(b) return (b.min[1] + b.max[1]) / 2 end
-            local function cy(b) return (b.min[2] + b.max[2]) / 2 end
+            local function cx(b) return (b.min.x + b.max.x) / 2 end
+            local function cy(b) return (b.min.y + b.max.y) / 2 end
             assert(math.abs(cx(src) - cx(last)) > 8,
                 "end-mode last copy must not sit on the first, src x=" .. cx(src) .. " last x=" .. cx(last))
             assert(cy(last) < -10,
@@ -16455,8 +16530,8 @@ pub mod tests {
             bearcad.rect{ width = 20, height = 20 }
             bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20, taper = 180, taper_mode = "angle" }
             local s = bearcad.body_stats(0)
-            local span_x = s.bbox.max[1] - s.bbox.min[1]
-            local span_y = s.bbox.max[2] - s.bbox.min[2]
+            local span_x = s.bbox.max.x - s.bbox.min.x
+            local span_y = s.bbox.max.y - s.bbox.min.y
             assert(span_x < 5000 and span_y < 5000,
                 "bbox should stay under 5 m, got " .. span_x .. " x " .. span_y)
             local st = bearcad.status()
@@ -16510,7 +16585,7 @@ pub mod tests {
             bearcad.rect{ width = 20, height = 20 }
             bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 1000, taper = 89, taper_mode = "angle" }
             local s = bearcad.body_stats(0)
-            local span_x = s.bbox.max[1] - s.bbox.min[1]
+            local span_x = s.bbox.max.x - s.bbox.min.x
             assert(span_x < 25000,
                 "long 89° extrude should not flare past the size cap, span=" .. span_x)
             local st = bearcad.status()
@@ -16902,9 +16977,9 @@ pub mod tests {
             bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15, body = "add" }
             local live = bearcad.count("body") - 1
             local after = bearcad.body_stats(live).bbox
-            assert(after.min[3] > before.min[3] - 1,
+            assert(after.min.z > before.min.z - 1,
               "combined body must not drop back to the pre-joint height")
-            assert(after.max[3] > before.max[3] + 10,
+            assert(after.max.z > before.max.z + 10,
               "boss must stay on the posed moving body")
             "#,
         );
@@ -17953,9 +18028,13 @@ pub mod tests {
             assert(s ~= nil, "body_stats should return a table for body 0")
             assert(math.abs(s.volume - 12000) < 120, "volume " .. tostring(s.volume))
             assert(s.triangles > 0)
-            assert(math.abs((s.bbox.max[1] - s.bbox.min[1]) - 40) < 0.1)
-            assert(math.abs((s.bbox.max[2] - s.bbox.min[2]) - 30) < 0.1)
-            assert(math.abs((s.bbox.max[3] - s.bbox.min[3]) - 10) < 0.1)
+            -- #1887: bbox corners are { x, y, z }, matching camera target — not a 1-based array.
+            assert(s.bbox.min.x ~= nil and s.bbox.min.y ~= nil and s.bbox.min.z ~= nil,
+              "bbox.min should have named x,y,z")
+            assert(math.abs((s.bbox.max.x - s.bbox.min.x) - 40) < 0.1)
+            assert(math.abs((s.bbox.max.y - s.bbox.min.y) - 30) < 0.1)
+            assert(math.abs((s.bbox.max.z - s.bbox.min.z) - 10) < 0.1)
+            assert(s.bbox.min[3] == s.bbox.min.z, "array indices stay as aliases")
             assert(bearcad.body_stats(5) == nil)
         "#,
         );
@@ -20488,9 +20567,14 @@ pub mod tests {
             local c = bearcad.ui.camera{}
             assert(math.abs(c.yaw - 1.0) < 1e-4, "yaw " .. c.yaw)
             assert(math.abs(c.distance - 200) < 1e-3, "distance " .. c.distance)
-            assert(math.abs(c.target[1] - 1) < 1e-4)
-            assert(math.abs(c.target[2] - 2) < 1e-4)
-            assert(math.abs(c.target[3] - 3) < 1e-4)
+            assert(math.abs(c.target.x - 1) < 1e-4)
+            assert(math.abs(c.target.y - 2) < 1e-4)
+            assert(math.abs(c.target.z - 3) < 1e-4)
+            bearcad.ui.camera{ target = { x = 4, y = 5, z = 6 } }
+            local named = bearcad.ui.camera{}
+            assert(math.abs(named.target.x - 4) < 1e-4)
+            assert(math.abs(named.target.y - 5) < 1e-4)
+            assert(math.abs(named.target.z - 6) < 1e-4)
             assert(type(c.pitch) == "number")
             assert(c.projection == "perspective")
             -- a partial set leaves the other fields alone
@@ -20546,7 +20630,7 @@ pub mod tests {
             bearcad.cuboid{ width = 20, depth = 4, height = 4 }
             bearcad.move_bodies{ bodies = {0}, rz = 90 }
             local bb = bearcad.body_stats(bearcad.count("body") - 1).bbox
-            local size = { bb.max[1] - bb.min[1], bb.max[2] - bb.min[2] }
+            local size = { bb.max.x - bb.min.x, bb.max.y - bb.min.y }
             assert(math.abs(size[1] - 4) < 0.1 and math.abs(size[2] - 20) < 0.1,
                    "quarter turn gives " .. size[1] .. " x " .. size[2])
         "#,

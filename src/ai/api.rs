@@ -159,6 +159,8 @@ bearcad.selection()
 bearcad.pickers()                  -- active tool pickers; bearcad.picker("Targets") for one
 bearcad.gizmos()                   -- live gizmo rows; bearcad.gizmo("move_rz") for one
 bearcad.visible(el)                -- effective visibility, component chain included
+bearcad.set_visible(el, false)     -- handle, list, or { kind = "plane" }; boolean only
+bearcad.set_construction(el, true) -- same targets; selection forms are bearcad.ui.*
 bearcad.sketch_dof()
 bearcad.sketch_conflicts()
 bearcad.status()

@@ -11,7 +11,7 @@ bearcad.slice{
 -- Hide the x < 0 fragment so the original top +Y edge's left half is gone.
 for i = 0, 8 do
   local s = bearcad.body_stats(i)
-  if s and s.bbox and s.bbox.max[1] < 1 then
+  if s and s.bbox and s.bbox.max.x < 1 then
     bearcad.set_body_shadow{ body = i, shadow = true }
   end
 end

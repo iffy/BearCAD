@@ -25,7 +25,7 @@ bearcad.ui.tool("dimension")
 -- A clean background (#667): the ground plane's quad and the grid both away. The
 -- sketch drawn on that plane stays visible.
 -- Hide the three datum planes a new document opens with.
-for i = 0, 2 do bearcad.set_visible({ kind = "construction_plane", index = i }, "hide") end
+bearcad.set_visible({ kind = "plane" }, false)
 bearcad.ui.ground("off")
 bearcad.ui.view("top")
 bearcad.ui.wait(2)

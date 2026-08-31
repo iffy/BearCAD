@@ -29,7 +29,7 @@ bearcad.ui.wait(8)
 
 assert(bearcad.count("body") == 1, "cuboid body missing, got " .. bearcad.count("body"))
 local stats = bearcad.body_stats(0)
-local h = stats.bbox.max[3] - stats.bbox.min[3]
+local h = stats.bbox.max.z - stats.bbox.min.z
 assert(math.abs(h - 20) < 0.15, "typed height 20 should overwrite live value, got " .. h)
 
 -- Cylinder: centre + radius click, then type height (must not stay stuck on Radius).
@@ -50,7 +50,7 @@ bearcad.ui.wait(8)
 
 assert(bearcad.count("body") == 2, "cylinder body missing, got " .. bearcad.count("body"))
 stats = bearcad.body_stats(1)
-local ch = stats.bbox.max[3] - stats.bbox.min[3]
+local ch = stats.bbox.max.z - stats.bbox.min.z
 assert(math.abs(ch - 15) < 0.15, "cylinder height 15 after base click, got " .. ch)
 
 print("ok: shape height type-overwrites while the top rides the pointer")

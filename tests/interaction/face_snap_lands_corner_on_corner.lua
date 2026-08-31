@@ -49,11 +49,11 @@ local placed = bearcad.body_stats(bearcad.count("body") - 1).bbox
 local function touches(lo, hi, v)
   return math.abs(lo - v) < 0.05 or math.abs(hi - v) < 0.05
 end
-assert(math.abs(placed.min[3] - 10) < 0.05,
-  "the block sits on the slab's top face (z = 10), got " .. placed.min[3])
-assert(touches(placed.min[1], placed.max[1], 30) and touches(placed.min[2], placed.max[2], 30),
+assert(math.abs(placed.min.z - 10) < 0.05,
+  "the block sits on the slab's top face (z = 10), got " .. placed.min.z)
+assert(touches(placed.min.x, placed.max.x, 30) and touches(placed.min.y, placed.max.y, 30),
   "the two corners should be coincident at (30, 30), block spans x "
-  .. placed.min[1] .. ".." .. placed.max[1] .. ", y " .. placed.min[2] .. ".." .. placed.max[2])
+  .. placed.min.x .. ".." .. placed.max.x .. ", y " .. placed.min.y .. ".." .. placed.max.y)
 
 print("ok: a corner mates exactly on a corner")
 bearcad.quit()

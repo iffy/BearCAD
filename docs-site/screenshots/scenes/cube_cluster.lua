@@ -82,7 +82,7 @@ bearcad.begin_sketch{ kind = "primitive_face", primitive = 5, face = "top" }
 bearcad.circle{ x = size / 2, y = size / 2, r = 5, name = "Hole" }
 bearcad.extrude{ circle = 0, distance = -(size + 2), body = "cut" }
 bearcad.exit_sketch()
-bearcad.set_visible({ kind = "sketch", index = 0 }, "hide")
+bearcad.set_visible({ kind = "sketch", index = 0 }, false)
 
 -- Green (right-front-bottom): subtract a sphere from the right (+X) side.
 -- Centre on the wall (a hemispherical bite). Radius is a little larger than

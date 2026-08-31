@@ -259,34 +259,48 @@ fn run_command(
 
     // Element-referencing verbs resolve their `element` argument against the live document
     // (by name or `{kind, index}`), which instruction_from_json can't do on its own.
-    // `set_visible{ kind = … }` with no index sweeps every element of that kind (#1800) —
-    // the same bulk form the desktop API takes.
-    if name == "set_visible" {
-        if let Some(kind) = args.get("element").and_then(kind_only_selector) {
-            let visible = parse_visible(args.get("visible"));
-            let mut elements = Vec::new();
-            while let Some(element) =
-                script_json::scene_element_from_kind(&state.doc, &kind, elements.len())
-            {
-                elements.push(element);
+    // `set_visible` / `set_construction` take a handle, a list, or `{ kind = … }` (#1890).
+    if matches!(name, "set_visible" | "set_construction") {
+        let element = args
+            .get("element")
+            .ok_or_else(|| format!("{name} requires an `element`"))?;
+        let elements = resolve_element_targets(element, &state.doc, name)?;
+        match name {
+            "set_visible" => {
+                let visible = parse_bool_arg(args.get("visible"), "visible")?;
+                for element in elements {
+                    exec(
+                        runner,
+                        Instruction::SetElementVisible {
+                            element,
+                            visible: Some(visible),
+                        },
+                        state,
+                        synthetic,
+                        viewport,
+                        ctx,
+                    )?;
+                }
             }
-            if elements.is_empty() {
-                return Err(format!(
-                    "set_visible: no '{kind}' elements — unknown kind, or none in the document"
-                ));
+            "set_construction" => {
+                let construction = parse_bool_arg(args.get("construction"), "construction")?;
+                for element in elements {
+                    exec(
+                        runner,
+                        Instruction::SetShapeConstruction {
+                            element,
+                            construction,
+                        },
+                        state,
+                        synthetic,
+                        viewport,
+                        ctx,
+                    )?;
+                }
             }
-            for element in elements {
-                exec(
-                    runner,
-                    Instruction::SetElementVisible { element, visible },
-                    state,
-                    synthetic,
-                    viewport,
-                    ctx,
-                )?;
-            }
-            return Ok(Value::Null);
+            _ => unreachable!(),
         }
+        return Ok(Value::Null);
     }
     if name == "delete" {
         let v = args.get("element").ok_or("delete requires an element")?;
@@ -311,7 +325,7 @@ fn run_command(
         return Ok(Value::Null);
     }
 
-    if matches!(name, "select" | "set_name" | "set_visible" | "set_construction") {
+    if matches!(name, "select" | "set_name") {
         let element = resolve_element(
             args.get("element").ok_or_else(|| format!("{name} requires an `element`"))?,
             &state.doc,
@@ -328,17 +342,6 @@ fn run_command(
                     .and_then(Value::as_str)
                     .ok_or("set_name requires a `name`")?
                     .to_string(),
-            },
-            "set_visible" => Instruction::SetElementVisible {
-                element,
-                visible: parse_visible(args.get("visible")),
-            },
-            "set_construction" => Instruction::SetShapeConstruction {
-                element,
-                construction: args
-                    .get("construction")
-                    .and_then(Value::as_bool)
-                    .ok_or("set_construction requires a boolean `construction`")?,
             },
             _ => unreachable!(),
         };
@@ -862,6 +865,50 @@ fn resolve_ids_in_place(value: &mut Value, doc: &Document) -> Result<(), String>
     Ok(())
 }
 
+/// A handle, a list, or `{ kind = "plane" }` (#1890) — the web mirror of
+/// `lua_script::resolve_element_targets`.
+fn resolve_element_targets(
+    v: &Value,
+    doc: &Document,
+    verb: &str,
+) -> Result<Vec<SceneElement>, String> {
+    if let Some(kind) = kind_only_selector(v) {
+        let mut elements = Vec::new();
+        while let Some(element) =
+            script_json::scene_element_from_kind(doc, &kind, elements.len())
+        {
+            elements.push(element);
+        }
+        if elements.is_empty() {
+            return Err(format!(
+                "{verb}: no '{kind}' elements — unknown kind, or none in the document"
+            ));
+        }
+        return Ok(elements);
+    }
+    match v {
+        Value::Array(arr) => {
+            if arr.is_empty() {
+                return Err(format!("{verb} requires an element"));
+            }
+            arr.iter().map(|item| resolve_element(item, doc)).collect()
+        }
+        other => Ok(vec![resolve_element(other, doc)?]),
+    }
+}
+
+fn parse_bool_arg(v: Option<&Value>, label: &str) -> Result<bool, String> {
+    match v {
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(Value::String(s)) => match s.to_ascii_lowercase().as_str() {
+            "true" | "on" | "yes" | "1" => Ok(true),
+            "false" | "off" | "no" | "0" => Ok(false),
+            other => Err(format!("unknown {label} value '{other}'")),
+        },
+        _ => Err(format!("expected boolean for {label}")),
+    }
+}
+
 /// The kind a bare `{ kind = … }` element selector sweeps (#1800) — the web mirror of
 /// `lua_script::kind_only_selector`. `None` when the object names one specific element.
 fn kind_only_selector(v: &Value) -> Option<String> {
@@ -971,19 +1018,6 @@ fn drawing_element_from_json(
         }
     };
     Ok(SceneElement::DrawingElement { drawing: key, element })
-}
-
-/// A `visible` argument → `Some(true|false)` (show/hide) or `None` (toggle).
-fn parse_visible(v: Option<&Value>) -> Option<bool> {
-    match v {
-        Some(Value::Bool(b)) => Some(*b),
-        Some(Value::String(s)) => match s.to_ascii_lowercase().as_str() {
-            "show" | "on" | "true" | "yes" | "1" => Some(true),
-            "hide" | "off" | "false" | "no" | "0" => Some(false),
-            _ => None,
-        },
-        _ => None,
-    }
 }
 
 /// Verbs that only make sense in the desktop app: synthetic GUI input (which needs the native

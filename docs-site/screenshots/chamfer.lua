@@ -33,9 +33,9 @@ bearcad.chamfer_edge{
 
 bearcad.exit_sketch()
 -- Hide the three datum planes a new document opens with.
-for i = 0, 2 do bearcad.set_visible({ kind = "construction_plane", index = i }, "hide") end
+bearcad.set_visible({ kind = "plane" }, false)
 -- The source sketch too: its rectangle sits outside the beveled body and reads as a stray outline.
-bearcad.set_visible({ kind = "sketch", index = 0 }, "hide")
+bearcad.set_visible({ kind = "sketch", index = 0 }, false)
 -- Hide the ground grid too for a clean background (#579).
 bearcad.ui.ground("off")
 bearcad.ui.tool("dimension")

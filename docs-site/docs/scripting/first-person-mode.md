@@ -86,5 +86,5 @@ bearcad.ui.fps()
 local before = bearcad.ui.camera{}
 bearcad.ui.fps_move{ forward = 500 }
 local after = bearcad.ui.camera{}
-assert(after.target[1] ~= before.target[1] or after.target[2] ~= before.target[2])
+assert(after.target.x ~= before.target.x or after.target.y ~= before.target.y)
 ```

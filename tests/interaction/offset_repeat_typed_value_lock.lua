@@ -80,7 +80,7 @@ bearcad.ui.wait(10)
 assert(bearcad.count("body") >= 2, "repeat should produce copies")
 -- Typed 50 mm to the end of the last item. A 120 mm nudge would have stretched it.
 local stats = bearcad.body_stats(bearcad.count("body") - 1)
-local xmax = stats.bbox.max[1]
+local xmax = stats.bbox.max.x
 assert(math.abs(xmax - 50) < 1.5,
   string.format("typed repeat Distance 50 must stick, last body xmax=%.2f", xmax))
 

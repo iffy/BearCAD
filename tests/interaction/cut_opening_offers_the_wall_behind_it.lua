@@ -50,7 +50,7 @@ bearcad.extrude{ circle = 0, distance = 5 }
 bearcad.ui.wait(8)
 local stats = bearcad.body_stats(bearcad.count("body") - 1)
 assert(stats, "the test prism should have a mesh")
-local lo, hi = stats.bbox.min[1], stats.bbox.max[1]
+local lo, hi = stats.bbox.min.x, stats.bbox.max.x
 assert(math.min(math.abs(lo - 40), math.abs(hi - 40)) < 0.5, string.format(
   "sketch should sit on the pocket wall at x = 40, got a prism spanning x %.2f..%.2f",
   lo, hi))

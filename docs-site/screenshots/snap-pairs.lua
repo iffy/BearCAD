@@ -61,12 +61,8 @@ end
 -- holding both the parked slab and where it's going. The tool colors the cast itself —
 -- cyan ghost, dimmed source, green/red/blue marks — so nothing here needs a material.
 local function shoot(name)
-  for i = 0, bearcad.count("construction_plane") - 1 do
-    bearcad.set_visible({ kind = "construction_plane", index = i }, "hide")
-  end
-  for i = 0, bearcad.count("sketch") - 1 do
-    bearcad.set_visible({ kind = "sketch", index = i }, "hide")
-  end
+  bearcad.set_visible({ kind = "plane" }, false)
+  bearcad.set_visible({ kind = "sketch" }, false)
   bearcad.ui.ground("off")
   bearcad.ui.auto_zoom(false)
   bearcad.ui.view("corner", "front_left_top")

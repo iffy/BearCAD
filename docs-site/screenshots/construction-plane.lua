@@ -26,8 +26,9 @@ bearcad.begin_sketch{ kind = "plane", index = 3 }
 bearcad.circle{ x = 30, y = 20, r = 12 }
 bearcad.exit_sketch()
 
--- Hide the three datum planes a new document opens with.
-for i = 0, 2 do bearcad.set_visible({ kind = "construction_plane", index = i }, "hide") end
+-- Hide the three datum planes a new document opens with; keep the offset plane.
+bearcad.set_visible({ kind = "plane" }, false)
+bearcad.set_visible({ kind = "plane", index = 3 }, true)
 -- Hide the ground grid too for a clean background (#579).
 bearcad.ui.ground("off")
 bearcad.ui.tool("dimension")

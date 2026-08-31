@@ -19,7 +19,7 @@ bearcad.ui.auto_zoom(false)
 bearcad.ui.ground("off")
 -- Hide the sketch: its circle centre sits exactly on the bore's axis in this view, and a
 -- sketch point outranks everything.
-bearcad.set_visible({ kind = "sketch", index = 0 }, "hide")
+bearcad.set_visible({ kind = "sketch", index = 0 }, false)
 bearcad.ui.tool("select")
 bearcad.ui.view("top")
 bearcad.ui.wait(5)

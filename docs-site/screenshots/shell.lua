@@ -26,7 +26,7 @@ bearcad.shell{
 
 -- Hide the three datum planes a new document opens with, and the ground grid, for a clean
 -- background (#579/#667).
-for i = 0, 2 do bearcad.set_visible({ kind = "construction_plane", index = i }, "hide") end
+bearcad.set_visible({ kind = "plane" }, false)
 bearcad.ui.ground("off")
 bearcad.ui.tool("shell")
 -- High enough to look down into the open top; near enough to the front that the outside

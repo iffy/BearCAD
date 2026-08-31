@@ -2006,12 +2006,10 @@ impl Instruction {
             ),
             Instruction::SetElementVisible { element, visible } => {
                 let target = element_lua_ref(element, doc);
-                let verb = match visible {
-                    Some(true) => "show",
-                    Some(false) => "hide",
-                    None => "toggle",
-                };
-                format!("bearcad.set_visible({target}, {verb:?})")
+                match visible {
+                    Some(v) => format!("bearcad.set_visible({target}, {v})"),
+                    None => format!("bearcad.set_visible({target}, not bearcad.visible({target}))"),
+                }
             }
             Instruction::AddMaterial { name, color, bodies } => {
                 let name = name
@@ -2054,13 +2052,13 @@ impl Instruction {
                 )
             }
             Instruction::ApplyConstruction { construction } => {
-                format!("bearcad.apply_construction({construction})")
+                format!("bearcad.ui.apply_construction({construction})")
             }
-            Instruction::ToggleConstruction => "bearcad.toggle_construction()".to_string(),
+            Instruction::ToggleConstruction => "bearcad.ui.toggle_construction()".to_string(),
             Instruction::ApplySelectionVisibility { visible } => {
-                format!("bearcad.apply_visibility({visible})")
+                format!("bearcad.ui.apply_visibility({visible})")
             }
-            Instruction::ToggleSelectionVisibility => "bearcad.toggle_visibility()".to_string(),
+            Instruction::ToggleSelectionVisibility => "bearcad.ui.toggle_visibility()".to_string(),
             Instruction::SetElementName { element, name } => {
                 format!(
                     "bearcad.set_name({}, {name:?})",
@@ -10173,6 +10171,34 @@ mod tests {
         };
         // The default region stays implicit, exactly as it was written before regions.
         assert_eq!(viewport.as_lua(), "bearcad.ui.screenshot(\"out.png\")");
+    }
+
+    #[test]
+    fn visibility_and_construction_instructions_write_back_out() {
+        assert_eq!(
+            Instruction::ApplySelectionVisibility { visible: false }.as_lua(),
+            "bearcad.ui.apply_visibility(false)"
+        );
+        assert_eq!(
+            Instruction::ToggleSelectionVisibility.as_lua(),
+            "bearcad.ui.toggle_visibility()"
+        );
+        assert_eq!(
+            Instruction::ApplyConstruction { construction: true }.as_lua(),
+            "bearcad.ui.apply_construction(true)"
+        );
+        assert_eq!(
+            Instruction::ToggleConstruction.as_lua(),
+            "bearcad.ui.toggle_construction()"
+        );
+        assert_eq!(
+            Instruction::SetElementVisible {
+                element: SceneElement::Body(crate::model::body_key_for_slot(0)),
+                visible: Some(false),
+            }
+            .as_lua(),
+            "bearcad.set_visible({ kind = \"body\", index = 0 }, false)"
+        );
     }
 
     #[test]

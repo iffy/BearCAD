@@ -37,20 +37,20 @@ local up = bearcad.get{ kind = "shape", index = 0 }
 assert(up.normal[3] > 0.9, "grows +Z, normal z=" .. tostring(up.normal[3]))
 assert(math.abs(up.height - 20) < 1.5, "20 mm up, got " .. up.height)
 local stats = bearcad.body_stats(0)
-assert(stats.bbox.min[3] > -1.5,
-  "up cuboid stays on the ground, min.z=" .. stats.bbox.min[3])
-assert(stats.bbox.max[3] > 15,
-  "and reaches the cursor, max.z=" .. stats.bbox.max[3])
+assert(stats.bbox.min.z > -1.5,
+  "up cuboid stays on the ground, min.z=" .. stats.bbox.min.z)
+assert(stats.bbox.max.z > 15,
+  "and reaches the cursor, max.z=" .. stats.bbox.max.z)
 
 local down = bearcad.get{ kind = "shape", index = 1 }
 assert(down.normal[3] < -0.9,
   "grows -Z (behind the ground), normal z=" .. tostring(down.normal[3]))
 assert(math.abs(down.height - 20) < 1.5, "20 mm down, got " .. down.height)
 stats = bearcad.body_stats(1)
-assert(stats.bbox.max[3] < 1.5,
-  "down cuboid's base stays on the ground, max.z=" .. stats.bbox.max[3])
-assert(stats.bbox.min[3] < -15,
-  "and reaches behind it, min.z=" .. stats.bbox.min[3])
+assert(stats.bbox.max.z < 1.5,
+  "down cuboid's base stays on the ground, max.z=" .. stats.bbox.max.z)
+assert(stats.bbox.min.z < -15,
+  "and reaches behind it, min.z=" .. stats.bbox.min.z)
 
 -- Same on a vertical face: the YZ plane (normal +X), matching the report.
 -- Off-axis enough that a behind-the-face click still resolves a signed height.
@@ -73,20 +73,20 @@ assert(inn.normal[1] < -0.9,
   "grows -X (behind YZ), normal x=" .. tostring(inn.normal[1]))
 assert(math.abs(inn.height - 20) < 1.5, "20 mm behind, got " .. inn.height)
 stats = bearcad.body_stats(2)
-assert(stats.bbox.max[1] < 1.5,
-  "behind cuboid's base stays on YZ, max.x=" .. stats.bbox.max[1])
-assert(stats.bbox.min[1] < -15,
-  "and reaches behind it, min.x=" .. stats.bbox.min[1])
+assert(stats.bbox.max.x < 1.5,
+  "behind cuboid's base stays on YZ, max.x=" .. stats.bbox.max.x)
+assert(stats.bbox.min.x < -15,
+  "and reaches behind it, min.x=" .. stats.bbox.min.x)
 
 local out = bearcad.get{ kind = "shape", index = 3 }
 assert(out.normal[1] > 0.9,
   "grows +X off YZ, normal x=" .. tostring(out.normal[1]))
 assert(math.abs(out.height - 20) < 1.5, "20 mm out, got " .. out.height)
 stats = bearcad.body_stats(3)
-assert(stats.bbox.min[1] > -1.5,
-  "out cuboid stays on YZ, min.x=" .. stats.bbox.min[1])
-assert(stats.bbox.max[1] > 15,
-  "and reaches the cursor, max.x=" .. stats.bbox.max[1])
+assert(stats.bbox.min.x > -1.5,
+  "out cuboid stays on YZ, min.x=" .. stats.bbox.min.x)
+assert(stats.bbox.max.x > 15,
+  "and reaches the cursor, max.x=" .. stats.bbox.max.x)
 
 print("ok: cuboid height follows the cursor on either side of the face")
 bearcad.quit()

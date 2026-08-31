@@ -24,7 +24,7 @@ bearcad.begin_sketch{ kind = "primitive_face", primitive = 0, face = "top" }
 bearcad.circle{ x = 18, y = 20, r = 7, name = "Hole" }
 bearcad.extrude{ circle = 0, distance = -14, body = "cut" }
 bearcad.exit_sketch()
-bearcad.set_visible({ kind = "sketch", index = 0 }, "hide")
+bearcad.set_visible({ kind = "sketch", index = 0 }, false)
 local plate = bearcad.count("body") - 1
 bearcad.set_material{ body = plate, material = 1 }
 

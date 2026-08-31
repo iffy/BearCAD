@@ -133,6 +133,8 @@ bearcad.selection()
 bearcad.pickers()                  -- active tool pickers; bearcad.picker("Targets") for one
 bearcad.gizmos()                   -- live gizmo rows; bearcad.gizmo("move_rz") for one
 bearcad.visible(el)                -- effective visibility, component chain included
+bearcad.set_visible(el, false)     -- handle, list, or { kind = "plane" }; boolean only
+bearcad.set_construction(el, true) -- same targets; selection forms are bearcad.ui.*
 bearcad.sketch_dof()
 bearcad.sketch_conflicts()
 bearcad.status()
@@ -204,8 +206,6 @@ cover.
 ```
 bearcad.add_parameter(name, expression)
 bearcad.add_unit_instance{ unit, name }
-bearcad.apply_construction(construction)
-bearcad.apply_visibility(visible)
 bearcad.bake(index)   -- freeze a boolean's result into standalone bodies and consume its inputs
 bearcad.begin_combine{ op, a, b, keep_b }
 bearcad.begin_edit_section_plane{ view, cut }
@@ -367,7 +367,7 @@ bearcad.selection()
 bearcad.session_log()
 bearcad.session_writes()
 bearcad.set_body_shadow{ body, shadow }
-bearcad.set_construction(element, construction)
+bearcad.set_construction(element, construction)   -- handle, list, or { kind = "line" }
 bearcad.set_dim(axis, value)
 bearcad.set_dim_label_offset(axis, offset)
 bearcad.set_gizmo{ name, value }
@@ -377,7 +377,7 @@ bearcad.set_name(element, name)
 bearcad.set_parameter(name, expression)
 bearcad.set_unit_parameter{ instance, name, value, expression }
 bearcad.set_units{ length, angle, component, sketch }
-bearcad.set_visible(element, visible)   -- element = { kind = "plane" } (no index): every element of that kind
+bearcad.set_visible(element, visible)   -- handle, list, or { kind = "plane" }; boolean only
 bearcad.shell{ bodies, faces, thickness, name }
 bearcad.sketch_conflicts(sketch?)
 bearcad.sketch_dof(sketch?)
@@ -389,8 +389,6 @@ bearcad.status()
 bearcad.sweep{ circle, circles, polygon, path, bodies, body, name }
 bearcad.sync_unit(value)
 bearcad.text{ text, x, y, size, font, bold, italic, underline, rotation, wrap, flip, name }
-bearcad.toggle_construction()
-bearcad.toggle_visibility()
 bearcad.tool_row()
 bearcad.tool_table()
 bearcad.ui.add_geometric_constraint(name)
@@ -400,6 +398,8 @@ bearcad.ui.ai_sections(how)
 bearcad.ui.angle_snap(degrees)
 bearcad.ui.animate_joints(on?)
 bearcad.ui.animate_zoom_to_fit(on?)
+bearcad.ui.apply_construction(construction)
+bearcad.ui.apply_visibility(visible)
 bearcad.ui.auto_zoom(on?)
 bearcad.ui.camera{ yaw, pitch, distance, target, projection, shading, ground }?   -- no fields = read
 bearcad.ui.changelog(verb?)
@@ -473,7 +473,9 @@ bearcad.ui.snapping(on?)
 bearcad.ui.tab(index?)
 bearcad.ui.tab_count()
 bearcad.ui.tabs()
+bearcad.ui.toggle_construction()
 bearcad.ui.toggle_projection()
+bearcad.ui.toggle_visibility()
 bearcad.ui.tool(name?) -- no name reads the armed tool
 bearcad.ui.tool_hints(on?)
 bearcad.ui.tool_mode(mode?)
